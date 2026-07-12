@@ -1,0 +1,24 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+python /app/manage.py migrate --noinput
+python /app/manage.py collectstatic --noinput
+
+WEB_CONCURRENCY="${WEB_CONCURRENCY:-4}"
+GUNICORN_TIMEOUT="${GUNICORN_TIMEOUT:-120}"
+GUNICORN_KEEPALIVE="${GUNICORN_KEEPALIVE:-5}"
+GUNICORN_MAX_REQUESTS="${GUNICORN_MAX_REQUESTS:-1000}"
+GUNICORN_MAX_REQUESTS_JITTER="${GUNICORN_MAX_REQUESTS_JITTER:-100}"
+
+exec gunicorn config.asgi \
+  --bind 0.0.0.0:5000 \
+  --chdir=/app \
+  -k uvicorn_worker.UvicornWorker \
+  --workers "${WEB_CONCURRENCY}" \
+  --timeout "${GUNICORN_TIMEOUT}" \
+  --keep-alive "${GUNICORN_KEEPALIVE}" \
+  --max-requests "${GUNICORN_MAX_REQUESTS}" \
+  --max-requests-jitter "${GUNICORN_MAX_REQUESTS_JITTER}"

@@ -1,0 +1,75 @@
+log:
+  level: INFO
+
+entryPoints:
+  web:
+    address: ':80'
+    http:
+      redirections:
+        entryPoint:
+          to: web-secure
+
+  web-secure:
+    address: ':443'
+
+  flower:
+    address: ':5555'
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: '${ACME_EMAIL}'
+      storage: /etc/traefik/acme/acme.json
+      httpChallenge:
+        entryPoint: web
+
+http:
+  routers:
+    web-secure-router:
+      rule: 'Host(`${TRAEFIK_DOMAIN}`) || Host(`www.${TRAEFIK_DOMAIN}`)'
+      entryPoints:
+        - web-secure
+      middlewares:
+        - csrf
+      service: django
+      tls:
+        certResolver: letsencrypt
+
+    # Local testing: https://localhost/ (uses Traefik default self-signed cert)
+    localhost-secure-router:
+      rule: 'Host(`localhost`)'
+      entryPoints:
+        - web-secure
+      middlewares:
+        - csrf
+      service: django
+      tls: {}
+
+    flower-secure-router:
+      rule: 'Host(`${TRAEFIK_DOMAIN}`)'
+      entryPoints:
+        - flower
+      service: flower
+      tls:
+        certResolver: letsencrypt
+
+  middlewares:
+    csrf:
+      headers:
+        hostsProxyHeaders: ['X-CSRFToken']
+
+  services:
+    django:
+      loadBalancer:
+        servers:
+          - url: http://django:5000
+
+    flower:
+      loadBalancer:
+        servers:
+          - url: http://flower:5555
+
+providers:
+  file:
+    filename: /etc/traefik/traefik.yml
+    watch: true

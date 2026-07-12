@@ -1,0 +1,91 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:equipment_equipment_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+<div class="module aligned">
+    <div class="form-row">
+        <div>
+            <label>{% trans "Selected Equipment" %}:</label>
+            <ul>
+                {% for eq in equipment %}
+                <li>
+                    <strong>{{ eq.code }}</strong> - {{ eq.name }}
+                    {% if eq.equipment_group %}
+                        <em>(Current Group: {{ eq.equipment_group.name }})</em>
+                    {% else %}
+                        <em>(No Group)</em>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+            <p class="help">
+                {% trans "Select an equipment group to assign these equipment to, or leave empty to remove them from their current groups." %}
+            </p>
+        </div>
+    </div>
+</div>
+
+<form method="post" id="assign-to-group-form" novalidate>
+    {% csrf_token %}
+    {% for id in selected_ids %}
+    <input type="hidden" name="selected_ids" value="{{ id }}">
+    {% endfor %}
+    
+    {# Add empty formset management fields to prevent Django admin formset validation errors #}
+    <input type="hidden" name="form-TOTAL_FORMS" value="0" id="id_form-TOTAL_FORMS">
+    <input type="hidden" name="form-INITIAL_FORMS" value="0" id="id_form-INITIAL_FORMS">
+    <input type="hidden" name="form-MIN_NUM_FORMS" value="0" id="id_form-MIN_NUM_FORMS">
+    <input type="hidden" name="form-MAX_NUM_FORMS" value="1000" id="id_form-MAX_NUM_FORMS">
+    
+    <div class="module aligned">
+        <div class="form-row">
+            <div>
+                <label for="id_equipment_group">{% trans "Equipment Group" %}:</label>
+                <select name="equipment_group" id="id_equipment_group" style="width: 400px;">
+                    <option value="">{% trans "--- Remove from group ---" %}</option>
+                    {% for group in groups %}
+                    <option value="{{ group.equipment_group_id }}">{{ group.name }} ({{ group.code }})</option>
+                    {% endfor %}
+                </select>
+                <p class="help">
+                    {% trans "Select an equipment group to assign all selected equipment to, or choose 'Remove from group' to unassign them." %}
+                </p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="submit-row">
+        <input type="submit" value="{% trans 'Assign to Group' %}" class="default" name="assign">
+        <a href="{% url 'admin:equipment_equipment_changelist' %}" class="button">{% trans 'Cancel' %}</a>
+    </div>
+</form>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('assign-to-group-form');
+    form.addEventListener('submit', function(e) {
+        const select = document.getElementById('id_equipment_group');
+        if (select.value === '') {
+            if (!confirm('{% trans "Are you sure you want to remove all selected equipment from their groups?" %}')) {
+                e.preventDefault();
+                return false;
+            }
+        }
+    });
+});
+</script>
+
+{% endblock %}

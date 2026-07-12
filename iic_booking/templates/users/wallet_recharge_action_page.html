@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wallet Recharge Request Action</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            max-width: 600px;
+            width: 100%;
+            overflow: hidden;
+        }
+        .header {
+            background: #4CAF50;
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        .content {
+            padding: 30px;
+        }
+        .request-details {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 25px;
+            border-left: 4px solid #4CAF50;
+        }
+        .detail-row {
+            margin: 12px 0;
+            display: flex;
+            flex-wrap: wrap;
+        }
+        .detail-label {
+            font-weight: 600;
+            color: #495057;
+            min-width: 140px;
+            margin-right: 10px;
+        }
+        .detail-value {
+            color: #212529;
+            flex: 1;
+        }
+        .buttons {
+            text-align: center;
+            margin: 30px 0;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+        }
+        .button {
+            flex: 1;
+            max-width: 200px;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+            color: white;
+        }
+        .button-approve {
+            background: #4CAF50;
+        }
+        .button-approve:hover {
+            opacity: 0.9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+        }
+        .button-reject {
+            background: #f44336;
+        }
+        .button-reject:hover {
+            opacity: 0.9;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(244, 67, 54, 0.4);
+        }
+        .note {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+            font-size: 13px;
+            text-align: center;
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+            font-size: 12px;
+            border-top: 1px solid #e9ecef;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Wallet Recharge Request</h1>
+            <p>Request ID: #{{ recharge_request.id }}</p>
+        </div>
+        <div class="content">
+            <div class="request-details">
+                <div class="detail-row">
+                    <span class="detail-label">User:</span>
+                    <span class="detail-value">{{ recharge_request.user.name|default:recharge_request.user.email }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Email:</span>
+                    <span class="detail-value">{{ recharge_request.user.email }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Amount:</span>
+                    <span class="detail-value"><strong>₹{{ recharge_request.amount }}</strong></span>
+                </div>
+                {% if recharge_request.department %}
+                <div class="detail-row">
+                    <span class="detail-label">Department:</span>
+                    <span class="detail-value">{{ recharge_request.department.name }}{% if recharge_request.department.code %} ({{ recharge_request.department.code }}){% endif %}</span>
+                </div>
+                {% endif %}
+                <div class="detail-row">
+                    <span class="detail-label">Request Date:</span>
+                    <span class="detail-value">{{ recharge_request.created_at|date:"Y-m-d H:i:s" }}</span>
+                </div>
+                {% if recharge_request.project %}
+                <div class="detail-row">
+                    <span class="detail-label">Project Name:</span>
+                    <span class="detail-value">{{ recharge_request.project.name }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Project Code:</span>
+                    <span class="detail-value">{{ recharge_request.project.project_code }}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Agency:</span>
+                    <span class="detail-value">{{ recharge_request.project.agency }}</span>
+                </div>
+                {% elif recharge_request.project_details %}
+                <div class="detail-row">
+                    <span class="detail-label">Project Details:</span>
+                    <span class="detail-value">{{ recharge_request.project_details }}</span>
+                </div>
+                {% endif %}
+            </div>
+            
+            <div class="buttons">
+                <a href="{{ approve_url }}" class="button button-approve">✓ Approve Request</a>
+                <a href="{{ reject_url }}" class="button button-reject">✗ Reject Request</a>
+            </div>
+            
+            <div class="note">
+                <strong>Note:</strong> Click the buttons above to approve or reject this request. Approval requires only an optional message. Rejection requires a mandatory message explaining the reason.
+            </div>
+        </div>
+        <div class="footer">
+            <p>This is an automated form from IIC Booking System.</p>
+            <p>If you did not expect this email, please ignore it.</p>
+        </div>
+    </div>
+</body>
+</html>

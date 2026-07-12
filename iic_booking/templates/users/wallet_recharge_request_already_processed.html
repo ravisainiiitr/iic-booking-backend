@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ status_title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            max-width: 600px;
+            width: 100%;
+            overflow: hidden;
+            text-align: center;
+        }
+        .header {
+            background: {{ status_color }};
+            color: white;
+            padding: 40px 30px;
+        }
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        .icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+        .content {
+            padding: 40px 30px;
+        }
+        .status-message {
+            font-size: 18px;
+            color: #495057;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+        .request-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .info-row {
+            margin: 10px 0;
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+        .info-label {
+            font-weight: 600;
+            color: #6c757d;
+            min-width: 140px;
+        }
+        .info-value {
+            color: #212529;
+            flex: 1;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            margin-top: 20px;
+            transition: all 0.3s;
+        }
+        .btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+            font-size: 12px;
+            border-top: 1px solid #e9ecef;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon">{{ status_icon }}</div>
+            <h1>{{ status_title }}</h1>
+        </div>
+        <div class="content">
+            <div class="status-message">
+                {{ status_message }}
+            </div>
+            
+            <div class="request-info">
+                <div class="info-row">
+                    <span class="info-label">Request ID:</span>
+                    <span class="info-value">#{{ recharge_request.id }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">User:</span>
+                    <span class="info-value">{{ recharge_request.user.email }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Amount:</span>
+                    <span class="info-value">₹{{ recharge_request.amount }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Status:</span>
+                    <span class="info-value"><strong>{{ recharge_request.get_status_display }}</strong></span>
+                </div>
+                {% if recharge_request.department %}
+                <div class="info-row">
+                    <span class="info-label">Department:</span>
+                    <span class="info-value">{{ recharge_request.department.name }}{% if recharge_request.department.code %} ({{ recharge_request.department.code }}){% endif %}</span>
+                </div>
+                {% endif %}
+                {% if recharge_request.project %}
+                <div class="info-row">
+                    <span class="info-label">Project Name:</span>
+                    <span class="info-value">{{ recharge_request.project.name }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Project Code:</span>
+                    <span class="info-value">{{ recharge_request.project.project_code }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Agency:</span>
+                    <span class="info-value">{{ recharge_request.project.agency }}</span>
+                </div>
+                {% elif recharge_request.project_details %}
+                <div class="info-row">
+                    <span class="info-label">Project Details:</span>
+                    <span class="info-value">{{ recharge_request.project_details }}</span>
+                </div>
+                {% endif %}
+                {% if recharge_request.approved_by_email %}
+                <div class="info-row">
+                    <span class="info-label">Processed By:</span>
+                    <span class="info-value">{{ recharge_request.approved_by_email }}</span>
+                </div>
+                {% endif %}
+                {% if recharge_request.responded_at %}
+                <div class="info-row">
+                    <span class="info-label">Processed At:</span>
+                    <span class="info-value">{{ recharge_request.responded_at|date:"Y-m-d H:i:s" }}</span>
+                </div>
+                {% endif %}
+                {% if recharge_request.response_message %}
+                <div class="info-row">
+                    <span class="info-label">Response Message:</span>
+                    <span class="info-value">{{ recharge_request.response_message }}</span>
+                </div>
+                {% endif %}
+            </div>
+            
+            <a href="javascript:window.close()" class="btn">Close</a>
+        </div>
+        <div class="footer">
+            <p>This is an automated page from IIC Booking System.</p>
+        </div>
+    </div>
+</body>
+</html>

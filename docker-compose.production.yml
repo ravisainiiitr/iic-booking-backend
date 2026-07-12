@@ -1,0 +1,60 @@
+services:
+  django: &django
+    build:
+      context: .
+      dockerfile: ./compose/production/django/Dockerfile
+
+    image: iic_booking_production_django
+    depends_on:
+      - redis
+    env_file:
+      - ./.envs/.production/.django
+    environment:
+      TZ: Asia/Kolkata
+    # App binds to 5000 (gunicorn in start script); expose as 8000 on host
+    ports:
+      - '8080:5000'
+    command: /start
+
+  # traefik:
+  #   build:
+  #     context: .
+  #     dockerfile: ./compose/production/traefik/Dockerfile
+  #   image: iic_booking_production_traefik
+  #   env_file:
+  #     - ./.envs/.production/.traefik
+  #   depends_on:
+  #     - django
+  #   volumes:
+  #     - production_traefik:/etc/traefik/acme
+  #   ports:
+  #     - '0.0.0.0:80:80'
+  #     - '0.0.0.0:443:443'
+  #     - '0.0.0.0:5555:5555'
+
+  redis:
+    image: docker.io/redis:7.2
+    container_name: iic_booking_production_redis
+
+  celeryworker:
+    <<: *django
+    image: iic_booking_production_celeryworker
+    command: /start-celeryworker
+    ports: []
+
+  celerybeat:
+    <<: *django
+    image: iic_booking_production_celerybeat
+    command: /start-celerybeat
+    ports: []
+
+  flower:
+    <<: *django
+    image: iic_booking_production_flower
+    command: /start-flower
+    ports:
+      - '5555:5555'
+
+
+volumes:
+  production_traefik:

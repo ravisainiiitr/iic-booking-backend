@@ -1,0 +1,108 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:equipment_dailyslot_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+<div class="module aligned">
+    <div class="form-row">
+        <div>
+            <label>{% trans "Selected Slots" %}:</label>
+            <ul>
+                {% for slot in slots %}
+                <li>
+                    <strong>{{ slot.slot_master.equipment.code }}</strong> - 
+                    Slot {{ slot.slot_master.slot_number }}{% if slot.slot_master.slot_name %} ({{ slot.slot_master.slot_name }}){% endif %} - 
+                    {{ slot.date|date:"Y-m-d" }} {{ slot.start_datetime|time:"H:i" }}-{{ slot.end_datetime|time:"H:i" }} 
+                    <em>(Current: {{ slot.get_status_display }})</em>
+                </li>
+                {% endfor %}
+            </ul>
+            <p class="help" style="color: #dc3545;">
+                {% trans "Warning: Slots with existing bookings cannot be changed to a different status. They will be skipped." %}
+            </p>
+        </div>
+    </div>
+</div>
+
+<form method="post" id="bulk-status-change-form" novalidate>
+    {% csrf_token %}
+    {% for id in selected_ids %}
+    <input type="hidden" name="selected_ids" value="{{ id }}">
+    {% endfor %}
+    
+    {# Add empty formset management fields to prevent Django admin formset validation errors #}
+    <input type="hidden" name="form-TOTAL_FORMS" value="0" id="id_form-TOTAL_FORMS">
+    <input type="hidden" name="form-INITIAL_FORMS" value="0" id="id_form-INITIAL_FORMS">
+    <input type="hidden" name="form-MIN_NUM_FORMS" value="0" id="id_form-MIN_NUM_FORMS">
+    <input type="hidden" name="form-MAX_NUM_FORMS" value="1000" id="id_form-MAX_NUM_FORMS">
+    
+    <fieldset class="module aligned">
+        <h2>{% trans "Status Change Details" %}</h2>
+        
+        {% if form.non_field_errors %}
+        <div class="errornote">
+            {{ form.non_field_errors }}
+        </div>
+        {% endif %}
+        
+        {% for field in form %}
+        <div class="form-row{% if field.errors %} errors{% endif %}">
+            <div>
+                {{ field.label_tag }}
+                {{ field }}
+                {% if field.help_text %}
+                <p class="help">{{ field.help_text }}</p>
+                {% endif %}
+                {% if field.errors %}
+                <ul class="errorlist">
+                    {% for error in field.errors %}
+                    <li>{{ error }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </fieldset>
+    
+    <div class="submit-row">
+        <input type="submit" value="{% trans 'Change Status for Selected Slots' %}" class="default" name="_save">
+        <a href="{% url 'admin:equipment_dailyslot_changelist' %}" class="button">{% trans 'Cancel' %}</a>
+    </div>
+</form>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const statusField = document.querySelector('#id_status');
+    const blockedLabelField = document.querySelector('#id_blocked_label');
+    const blockedLabelRow = blockedLabelField.closest('.form-row');
+    
+    function toggleBlockedLabel() {
+        if (statusField.value === 'BLOCKED') {
+            blockedLabelRow.style.display = '';
+        } else {
+            blockedLabelRow.style.display = 'none';
+            blockedLabelField.value = '';
+        }
+    }
+    
+    // Initial state
+    toggleBlockedLabel();
+    
+    // Update on change
+    statusField.addEventListener('change', toggleBlockedLabel);
+});
+</script>
+{% endblock %}

@@ -1,0 +1,79 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:users_subwallet_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+<div class="module aligned">
+    <div class="form-row">
+        <div>
+            <label>{% trans "User" %}:</label>
+            <p><strong>{{ sub_wallet.wallet.user.email }}</strong> ({{ sub_wallet.wallet.user.name|default:sub_wallet.wallet.user.email }})</p>
+        </div>
+    </div>
+    <div class="form-row">
+        <div>
+            <label>{% trans "Department" %}:</label>
+            <p><strong>{{ sub_wallet.department.name }}</strong>{% if sub_wallet.department.code %} ({{ sub_wallet.department.code }}){% endif %}</p>
+        </div>
+    </div>
+    <div class="form-row">
+        <div>
+            <label>{% trans "Current Balance" %}:</label>
+            <p><strong style="font-size: 16px; color: #28a745;">₹{{ sub_wallet.balance }}</strong></p>
+            {% if sub_wallet.balance <= 0 %}
+            <p class="help" style="color: #dc3545;">{% trans "Warning: Balance is zero or negative. Debit operation may fail." %}</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<form method="post" id="subwallet-debit-form">
+    {% csrf_token %}
+    
+    <fieldset class="module aligned">
+        <h2>{% trans "Transaction Details" %}</h2>
+        
+        {% if form.non_field_errors %}
+        <div class="errornote">
+            {{ form.non_field_errors }}
+        </div>
+        {% endif %}
+        
+        {% for field in form %}
+        <div class="form-row{% if field.errors %} errors{% endif %}">
+            <div>
+                {{ field.label_tag }}
+                {{ field }}
+                {% if field.help_text %}
+                <p class="help">{{ field.help_text }}</p>
+                {% endif %}
+                {% if field.errors %}
+                <ul class="errorlist">
+                    {% for error in field.errors %}
+                    <li>{{ error }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </fieldset>
+    
+    <div class="submit-row">
+        <input type="submit" value="{% trans 'Debit Sub-Wallet' %}" class="default" name="_save">
+        <a href="{% url 'admin:users_subwallet_changelist' %}" class="button">{% trans 'Cancel' %}</a>
+    </div>
+</form>
+{% endblock %}
