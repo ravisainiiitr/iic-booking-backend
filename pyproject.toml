@@ -192,7 +192,7 @@ dependencies = [
     "python-slugify==8.0.4",
     "razorpay==1.4.2",
     "redis==7.1.0",
-    "reportlab==4.2.5",
+    "reportlab==5.0.0",
     "openpyxl==3.1.5",
     "requests==2.32.3",
     "sentry-sdk==2.48.0",
