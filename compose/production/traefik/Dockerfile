@@ -1,4 +1,4 @@
-FROM docker.io/traefik:3.6.5
+FROM docker.io/traefik:v3.7.7
 RUN apk add --no-cache gettext \
   && mkdir -p /etc/traefik/acme \
   && touch /etc/traefik/acme/acme.json \
