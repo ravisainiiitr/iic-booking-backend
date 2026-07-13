@@ -163,6 +163,21 @@ class UserAdmin(auth_admin.UserAdmin):
                 ),
             },
         ),
+        (
+            _("OIC dashboard cards"),
+            {
+                "fields": (
+                    "oic_enable_ta_nomination",
+                    "oic_enable_ta_duty_assignments",
+                    "oic_enable_leave_management",
+                    "oic_enable_reward_config",
+                ),
+                "description": _(
+                    "For Officer In Charge (manager) users only. Enable which dashboard cards this OIC can see. "
+                    "Admins always see these cards."
+                ),
+            },
+        ),
         (_("Important dates"), {"fields": ("last_login", "date_joined")}),
     )
     list_display = [

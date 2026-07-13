@@ -250,6 +250,28 @@ class User(AbstractUser):
         ),
     )
 
+    # Officer In Charge (manager) dashboard feature flags — enable per user in Django admin.
+    oic_enable_ta_nomination = BooleanField(
+        _("OIC: show TA nomination call"),
+        default=False,
+        help_text=_("When enabled, this Officer In Charge sees the TA nomination call card on the dashboard."),
+    )
+    oic_enable_ta_duty_assignments = BooleanField(
+        _("OIC: show TA duty assignments"),
+        default=False,
+        help_text=_("When enabled, this Officer In Charge sees the TA duty assignments card on the dashboard."),
+    )
+    oic_enable_leave_management = BooleanField(
+        _("OIC: show leave management"),
+        default=False,
+        help_text=_("When enabled, this Officer In Charge sees the leave management card on the dashboard."),
+    )
+    oic_enable_reward_config = BooleanField(
+        _("OIC: show reward config"),
+        default=False,
+        help_text=_("When enabled, this Officer In Charge sees the reward config card on the dashboard."),
+    )
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
 

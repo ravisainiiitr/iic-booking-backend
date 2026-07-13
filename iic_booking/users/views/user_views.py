@@ -35,6 +35,11 @@ def _require_admin_panel(request):
     return request.user.user_type in UserType.get_admin_panel_codes()
 
 
+def _require_admin_user(request):
+    """Return True if request user is Admin user_type (not OIC/operator/finance)."""
+    return getattr(request.user, "user_type", None) == UserType.ADMIN
+
+
 class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericViewSet):
     """ViewSet for User model."""
 
@@ -56,10 +61,10 @@ class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericV
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve_user(self, request, pk=None):
-        """Approve a user (set admin_approved=True). Admin-panel only. Sends approval email."""
-        if not _require_admin_panel(request):
+        """Approve a user (set admin_approved=True). Admin only. Sends approval email."""
+        if not _require_admin_user(request):
             return Response(
-                {"error": "Only admin-panel users can approve users."},
+                {"error": "Only Admin users can approve users."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         user = self.get_object()
@@ -92,10 +97,10 @@ class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericV
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject_user(self, request, pk=None):
-        """Reject a user (set admin_approved=False). Admin-panel only."""
-        if not _require_admin_panel(request):
+        """Reject a user (set admin_approved=False). Admin only."""
+        if not _require_admin_user(request):
             return Response(
-                {"error": "Only admin-panel users can reject users."},
+                {"error": "Only Admin users can reject users."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         user = self.get_object()
@@ -110,9 +115,9 @@ class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericV
         return Response({"message": "User rejected successfully.", "user": serializer.data}, status=status.HTTP_200_OK)
 
     def perform_update(self, serializer):
-        """Save serializer data; allow admin-panel users to also set user_type and name."""
+        """Save serializer data; only Admin may change other users' user_type/name via this path."""
         serializer.save()
-        if _require_admin_panel(self.request):
+        if _require_admin_user(self.request):
             instance = serializer.instance
             update_fields = []
             if "user_type" in self.request.data:

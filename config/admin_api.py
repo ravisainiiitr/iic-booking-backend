@@ -458,6 +458,19 @@ def admin_api_router():
         serializer_class = UserSerializer
         lookup_url_kwarg = "pk"
 
+        def get_permissions(self):
+            # Only Admin user_type may create/update/delete users or set passwords.
+            # Other admin-panel roles may list/retrieve for read-only views.
+            if self.action in (
+                "create",
+                "update",
+                "partial_update",
+                "destroy",
+                "set_password",
+            ):
+                return [IsAdminUser()]
+            return [IsAdminPanelUser()]
+
         def get_queryset(self):
             qs = super().get_queryset()
             if self.action != "list":

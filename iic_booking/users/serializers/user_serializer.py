@@ -92,6 +92,10 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer[User]):
             "admin_approved",
             "force_inactive",
             "use_discounted_charge_profile",
+            "oic_enable_ta_nomination",
+            "oic_enable_ta_duty_assignments",
+            "oic_enable_leave_management",
+            "oic_enable_reward_config",
         ]
         read_only_fields = ["id", "email"]
 
@@ -209,6 +213,10 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "wallet_low_balance_alert_threshold",
             "use_discounted_charge_profile",
             "istem_portal_acknowledged",
+            "oic_enable_ta_nomination",
+            "oic_enable_ta_duty_assignments",
+            "oic_enable_leave_management",
+            "oic_enable_reward_config",
         ]
         read_only_fields = [
             "id",
@@ -219,6 +227,10 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "user_type_display",
             "is_faculty",
             "user_type_alias",
+            "oic_enable_ta_nomination",
+            "oic_enable_ta_duty_assignments",
+            "oic_enable_leave_management",
+            "oic_enable_reward_config",
         ]
     
     def to_representation(self, instance):
