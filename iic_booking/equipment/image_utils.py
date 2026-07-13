@@ -49,12 +49,20 @@ def open_local_equipment_image_backup(stored_path: str) -> Tuple[Optional[bytes]
         return None, None, None
 
 
+def _allow_local_equipment_image_fallback() -> bool:
+    """
+    Local backups live under MEDIA_ROOT inside the container.
+
+    In production that path is wiped on every image rebuild unless a named volume
+    is mounted — so local-only "success" must never satisfy availability checks.
+    """
+    return bool(getattr(settings, "ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK", False))
+
+
 def equipment_image_path_available(stored_path: str, storage=None) -> bool:
-    """True when stored_path exists in S3 (via storage) or local backup."""
+    """True when stored_path exists in configured storage (S3). Optional local fallback."""
     if not (stored_path and stored_path.strip()):
         return False
-    if local_equipment_image_exists(stored_path):
-        return True
     if storage is not None:
         try:
             if hasattr(storage, "exists") and storage.exists(stored_path):
@@ -64,31 +72,29 @@ def equipment_image_path_available(stored_path: str, storage=None) -> bool:
             return True
         except Exception:
             pass
+    if _allow_local_equipment_image_fallback() and local_equipment_image_exists(stored_path):
+        return True
     return False
 
 
 def equipment_image_available(file_field) -> bool:
-    """True when the image exists in S3 (field storage) or the local backup."""
+    """True when the image exists in configured storage (S3). Optional local fallback."""
+    if verify_file_field_in_storage(file_field):
+        return True
     if not file_field or not getattr(file_field, "name", None):
         return False
     name = (file_field.name or "").strip()
     if not name:
         return False
-    if local_equipment_image_exists(name):
+    if _allow_local_equipment_image_fallback() and local_equipment_image_exists(name):
         return True
-    try:
-        storage = file_field.storage
-        with storage.open(name, "rb") as fh:
-            fh.read(1)
-        return True
-    except Exception:
-        return False
+    return False
 
 
 def persist_equipment_image_upload(equipment, uploaded_file) -> str:
     """
-    Save an uploaded image to S3 and local backup.
-    Clears the DB path and raises if the file cannot be read back from storage.
+    Save an uploaded image to configured storage (S3 in production) and local backup.
+    Clears the DB path and raises if the file cannot be read back from remote storage.
     """
     uploaded_file.seek(0)
     content = uploaded_file.read()
@@ -103,10 +109,14 @@ def persist_equipment_image_upload(equipment, uploaded_file) -> str:
 
     save_local_equipment_image_backup(path, content)
 
-    if not equipment_image_available(equipment.image):
+    # Require the configured storage backend (S3), not the ephemeral local backup.
+    if not verify_file_field_in_storage(equipment.image):
         equipment.image = ""
         equipment.save(update_fields=["image"])
-        raise ValueError(f"Equipment image was not found in storage after save. Path: {path}")
+        raise ValueError(
+            f"Equipment image was not found in remote storage after save. "
+            f"Check AWS credentials/bucket. Path: {path}"
+        )
 
     return path
 

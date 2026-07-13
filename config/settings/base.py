@@ -216,6 +216,13 @@ AWS_S3_FILE_OVERWRITE = False
 # The storage backend will automatically generate signed URLs when url() is called
 MEDIA_URL = f"https://{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com/media/"
 
+# Local equipment image backups under MEDIA_ROOT are wiped when containers rebuild.
+# Only allow them to satisfy "image available" checks in local/dev (see local.py).
+ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK = env.bool(
+    "ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK",
+    default=False,
+)
+
 STORAGES = {
     "default": {
         # django-storages S3 backend
@@ -227,6 +234,7 @@ STORAGES = {
     },
     "staticfiles": {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+
     },
 }
 
@@ -282,8 +290,8 @@ X_FRAME_OPTIONS = "DENY"
 # EMAIL
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#email-backend
-# Configure email backend - can use SMTP or anymail API
-# Default to SMTP for SES (can be overridden via DJANGO_EMAIL_BACKEND env var)
+# Configure email backend - can use SMTP or anymail SES API
+# Default to SMTP (can be overridden via DJANGO_EMAIL_BACKEND / USE_AWS_SES_API)
 EMAIL_BACKEND = env(
     "DJANGO_EMAIL_BACKEND",
     default="django.core.mail.backends.smtp.EmailBackend",
@@ -291,11 +299,21 @@ EMAIL_BACKEND = env(
 # https://docs.djangoproject.com/en/dev/ref/settings/#email-timeout
 EMAIL_TIMEOUT = env.int("DJANGO_EMAIL_TIMEOUT", default=15)
 
-# SES SMTP Configuration
-# ------------------------------------------------------------------------------
-# Get SES region for SMTP endpoint
-ses_region = env("AWS_S3_REGION_NAME", default="ap-south-1").strip()
+# SES region (shared by SMTP host default and SES API)
+ses_region = env("AWS_SES_REGION_NAME", default=env("AWS_S3_REGION_NAME", default="ap-south-1")).strip()
 
+# Dedicated SES IAM keys (do NOT reuse S3 AWS_ACCESS_KEY_ID unless intentional).
+AWS_SES_ACCESS_KEY_ID = env("AWS_SES_ACCESS_KEY_ID", default="")
+AWS_SES_SECRET_ACCESS_KEY = env("AWS_SES_SECRET_ACCESS_KEY", default="")
+
+# Prefer SES API when dedicated SES keys are present (unless explicitly disabled).
+USE_AWS_SES_API = env.bool(
+    "USE_AWS_SES_API",
+    default=bool(AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY),
+)
+
+# SES SMTP Configuration (used when USE_AWS_SES_API is False)
+# ------------------------------------------------------------------------------
 # SES SMTP endpoint format: email-smtp.{region}.amazonaws.com
 # https://docs.aws.amazon.com/ses/latest/dg/send-email-smtp.html
 EMAIL_HOST = env(
@@ -306,9 +324,9 @@ EMAIL_PORT = env.int("AWS_SES_SMTP_PORT", default=587)
 EMAIL_USE_TLS = env.bool("AWS_SES_SMTP_USE_TLS", default=True)
 EMAIL_USE_SSL = env.bool("AWS_SES_SMTP_USE_SSL", default=False)
 
-# SES SMTP credentials (username and password from IAM user)
-# Get these from AWS IAM Console -> Users -> ses-smtp-user -> Security credentials -> SMTP credentials
-# If AWS_SES_SMTP_PASSWORD contains + or /, put it in double quotes in .env: AWS_SES_SMTP_PASSWORD="your+pass/word"
+# SES SMTP credentials (SMTP username/password from IAM "SMTP credentials" converter).
+# These are NOT the same as Access Key ID / Secret Access Key.
+# If AWS_SES_SMTP_PASSWORD contains + or /, put it in double quotes in .env.
 EMAIL_HOST_USER = env("AWS_SES_SMTP_USERNAME", default="")
 EMAIL_HOST_PASSWORD = env("AWS_SES_SMTP_PASSWORD", default="")
 
@@ -342,21 +360,28 @@ SHIPPING_LABEL_FROM_ADDRESS = env(
     default="The Head,\nInstitute Instrumentation Centre,\nIndian Institute of Technology Roorkee\nRoorkee - 247667 (Uttarakhand) India",
 )
 
-# Warn if using SMTP backend but credentials are missing (emails will fail)
-if "smtp" in EMAIL_BACKEND.lower() and (not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD):
+# AWS SES API (django-anymail) — uses Access Key ID / Secret Access Key
+# ------------------------------------------------------------------------------
+if USE_AWS_SES_API:
+    if "anymail" not in INSTALLED_APPS:
+        INSTALLED_APPS += ["anymail"]
+    EMAIL_BACKEND = env(
+        "DJANGO_EMAIL_BACKEND",
+        default="anymail.backends.amazon_ses.EmailBackend",
+    )
+    ANYMAIL = {
+        "AMAZON_SES_CLIENT_PARAMS": {
+            "aws_access_key_id": AWS_SES_ACCESS_KEY_ID,
+            "aws_secret_access_key": AWS_SES_SECRET_ACCESS_KEY,
+            "region_name": ses_region,
+        },
+    }
+elif "smtp" in EMAIL_BACKEND.lower() and (not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD):
     logging.getLogger(__name__).warning(
         "Outgoing email may fail: AWS_SES_SMTP_USERNAME and/or AWS_SES_SMTP_PASSWORD are not set. "
-        "Set them in .env for SES SMTP, or use DJANGO_EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend for local testing."
+        "Set them in .env for SMTP, or set AWS_SES_ACCESS_KEY_ID / AWS_SES_SECRET_ACCESS_KEY "
+        "to use SES API, or use DJANGO_EMAIL_BACKEND=django.core.mail.backends.console.EmailBackend."
     )
-
-# Optional: Anymail configuration (if you want to use API instead of SMTP)
-# Uncomment and configure if you want to switch to anymail API backend
-# INSTALLED_APPS += ["anymail"]
-# ANYMAIL = {
-#     "AMAZON_SES_AWS_ACCESS_KEY_ID": env("AWS_SES_ACCESS_KEY_ID", default=""),
-#     "AMAZON_SES_AWS_SECRET_ACCESS_KEY": env("AWS_SES_SECRET_ACCESS_KEY", default=""),
-#     "AMAZON_SES_REGION": ses_region,
-# }
 
 # IMAP (incoming email) configuration
 # ------------------------------------------------------------------------------

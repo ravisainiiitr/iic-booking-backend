@@ -11,6 +11,10 @@ services:
       - ./.envs/.production/.django
     environment:
       TZ: Asia/Kolkata
+    # Persist MEDIA_ROOT across rebuilds (local backup / legacy files).
+    # Primary image storage must still be S3 — do not use `docker compose down -v`.
+    volumes:
+      - production_media:/app/iic_booking/media
     # App binds to 5000 (gunicorn in start script); expose as 8000 on host
     ports:
       - '8080:5000'
@@ -58,3 +62,4 @@ services:
 
 volumes:
   production_traefik:
+  production_media:

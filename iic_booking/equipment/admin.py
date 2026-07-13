@@ -14,7 +14,7 @@ from iic_booking.users.models.user_type import UserType
 
 logger = logging.getLogger(__name__)
 from .image_utils import equipment_image_available, equipment_image_path_available, save_local_equipment_image_backup
-from iic_booking.equipment.models import equipment_image_storage
+from iic_booking.equipment.models import get_equipment_image_storage
 from .models import (
     Equipment,
     EquipmentCategory,
@@ -1051,7 +1051,7 @@ class EquipmentAdmin(admin.ModelAdmin):
             existing_image_name
             and not new_image_uploaded
             and not clear_image_requested
-            and equipment_image_path_available(existing_image_name, equipment_image_storage)
+            and equipment_image_path_available(existing_image_name, get_equipment_image_storage())
             and (not getattr(obj, "image", None) or not getattr(obj.image, "name", None) or obj.image.name != existing_image_name)
         ):
             try:
@@ -1070,13 +1070,17 @@ class EquipmentAdmin(admin.ModelAdmin):
                 except Exception:
                     pass
 
-        # Safety check: ensure the uploaded image exists in storage or local backup.
+        # Safety check: require remote storage (S3), not ephemeral container-local backup.
         if getattr(obj, "image", None) and getattr(obj.image, "name", None):
-            if not equipment_image_available(obj.image):
+            from .image_utils import verify_file_field_in_storage
+
+            if not verify_file_field_in_storage(obj.image):
                 messages.error(
                     request,
                     _(
-                        "Equipment image was not found in storage after save. Path: %(path)s"
+                        "Equipment image was not found in remote storage after save "
+                        "(local backup alone is not enough — images vanish on redeploy). "
+                        "Check AWS credentials/bucket. Path: %(path)s"
                     )
                     % {"path": obj.image.name},
                 )

@@ -100,6 +100,8 @@ if not env.bool("USE_S3_MEDIA", default=False):
         "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
         "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
     }
+    # Local filesystem is the source of truth when not using S3.
+    ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK = True
 # Your stuff...
 # ------------------------------------------------------------------------------
 # Skip quota checks by default in local dev (faster booking UX / benchmarking).

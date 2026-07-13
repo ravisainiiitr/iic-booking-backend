@@ -234,6 +234,11 @@ class CommunicationService:
         meta = dict(metadata or {})
         if cc_emails:
             meta["cc_emails"] = cc_emails
+        meta.setdefault("email_backend", getattr(settings, "EMAIL_BACKEND", ""))
+        meta.setdefault(
+            "email_provider",
+            "aws_ses" if getattr(settings, "USE_AWS_SES_API", False) else "smtp",
+        )
 
         # Create communication log entry
         communication_log = CommunicationLog.objects.create(
@@ -335,6 +340,12 @@ class CommunicationService:
         html_message = rendered.get('html_message', '')
         if not subject or not message:
             raise ValueError(f"Template '{template_obj.code}' missing subject or message.")
+        meta = dict(metadata or {})
+        meta.setdefault("email_backend", getattr(settings, "EMAIL_BACKEND", ""))
+        meta.setdefault(
+            "email_provider",
+            "aws_ses" if getattr(settings, "USE_AWS_SES_API", False) else "smtp",
+        )
         communication_log = CommunicationLog.objects.create(
             communication_type=CommunicationLog.CommunicationType.EMAIL,
             recipient=user,
@@ -343,7 +354,7 @@ class CommunicationService:
             subject=subject,
             message=message,
             status=CommunicationLog.CommunicationStatus.PENDING,
-            metadata=metadata or {},
+            metadata=meta,
             created_by=created_by or get_current_user(),
         )
         try:

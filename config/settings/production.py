@@ -2,6 +2,7 @@
 import logging
 
 import sentry_sdk
+from django.core.exceptions import ImproperlyConfigured
 from sentry_sdk.integrations.celery import CeleryIntegration
 from sentry_sdk.integrations.django import DjangoIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -13,6 +14,9 @@ from .base import INSTALLED_APPS
 from .base import REDIS_URL
 from .base import SPECTACULAR_SETTINGS
 from .base import env
+from .base import AWS_SES_ACCESS_KEY_ID
+from .base import AWS_SES_SECRET_ACCESS_KEY
+from .base import ses_region
 
 # GENERAL
 # ------------------------------------------------------------------------------
@@ -108,9 +112,26 @@ ADMIN_URL = env("DJANGO_ADMIN_URL")
 
 # EMAIL
 # ------------------------------------------------------------------------------
-# SES configuration is in base.py
-# Email backend defaults to SES (anymail.backends.amazon_ses.EmailBackend)
-# Can be overridden via DJANGO_EMAIL_BACKEND environment variable
+# All notification emails (CommunicationService, send_mail, Celery tasks) use
+# Django EMAIL_BACKEND. Production must always send via AWS SES API.
+USE_AWS_SES_API = True
+EMAIL_BACKEND = "anymail.backends.amazon_ses.EmailBackend"
+if "anymail" not in INSTALLED_APPS:
+    INSTALLED_APPS += ["anymail"]
+
+if not (AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY):
+    raise ImproperlyConfigured(
+        "Production email requires AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY "
+        "in .envs/.production/.django (AWS SES API). Do not use IITR SMTP in production."
+    )
+
+ANYMAIL = {
+    "AMAZON_SES_CLIENT_PARAMS": {
+        "aws_access_key_id": AWS_SES_ACCESS_KEY_ID,
+        "aws_secret_access_key": AWS_SES_SECRET_ACCESS_KEY,
+        "region_name": ses_region,
+    },
+}
 
 
 # LOGGING
@@ -194,3 +215,14 @@ SPECTACULAR_SETTINGS["SERVERS"] = [
 ]
 # Your stuff...
 # ------------------------------------------------------------------------------
+# Equipment images must live in S3 (or another durable store). Never treat
+# container-local MEDIA_ROOT backups as sufficient in production.
+ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK = False
+
+if not (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY):
+    logging.getLogger(__name__).warning(
+        "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are empty. "
+        "Equipment images will disappear after redeploy unless instance IAM "
+        "can write to S3 bucket %s.",
+        AWS_STORAGE_BUCKET_NAME,
+    )

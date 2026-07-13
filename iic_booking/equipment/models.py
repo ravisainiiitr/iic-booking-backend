@@ -10,14 +10,28 @@ from django.db import connection, models, transaction
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 from django.utils.text import get_valid_filename
-from iic_booking.storage_backends import EquipmentImageStorage
+from django.core.files.storage import storages
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.user_group import UserGroup
 from iic_booking.users.models.department import Department, DepartmentType
 
 logger = logging.getLogger(__name__)
-equipment_image_storage = EquipmentImageStorage()
+
+
+def get_equipment_image_storage():
+    """
+    Use Django's default storage backend.
+
+    Production: S3 (durable across deploys).
+    Local (USE_S3_MEDIA off): filesystem under MEDIA_ROOT.
+    """
+    return storages["default"]
+
+
+# Alias used by admin/imports — call get_equipment_image_storage() at use time.
+# Kept as a callable so ImageField(storage=...) resolves lazily after settings load.
+equipment_image_storage = get_equipment_image_storage
 
 
 class EquipmentCategory(models.Model):
@@ -136,13 +150,16 @@ class Equipment(models.Model):
     status = models.CharField(max_length=255, help_text='Status of the equipment', blank=True, null=True, choices=EquipmentStatus.choices)
     location = models.TextField(help_text='Location of the equipment', blank=True, null=True)
     image = models.ImageField(
-        storage=equipment_image_storage,
+        storage=get_equipment_image_storage,
         upload_to=equipment_image_upload_to,
         max_length=512,
         blank=True,
         null=True,
         verbose_name=_("Equipment image"),
-        help_text=_("Photo shown when booking. Stored in S3 (media/equipment_images/) until replaced."),
+        help_text=_(
+            "Photo shown when booking. Stored via default media storage "
+            "(S3 in production) so images survive deploys."
+        ),
     )
     video_file = models.FileField(
         upload_to='equipment_videos/%Y/%m/%d/',
