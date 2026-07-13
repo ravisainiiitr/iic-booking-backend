@@ -119,11 +119,10 @@ EMAIL_BACKEND = "anymail.backends.amazon_ses.EmailBackend"
 if "anymail" not in INSTALLED_APPS:
     INSTALLED_APPS += ["anymail"]
 
-if not (AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY):
-    raise ImproperlyConfigured(
-        "Production email requires AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY "
-        "in .envs/.production/.django (AWS SES API). Do not use IITR SMTP in production."
-    )
+if AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY:
+    print("AWS SES configured.")
+else:
+    print("WARNING: AWS SES not configured. Email notifications are disabled.")
 
 ANYMAIL = {
     "AMAZON_SES_CLIENT_PARAMS": {
