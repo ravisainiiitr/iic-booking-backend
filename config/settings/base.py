@@ -306,37 +306,29 @@ ses_region = env("AWS_SES_REGION_NAME", default=env("AWS_S3_REGION_NAME", defaul
 AWS_SES_ACCESS_KEY_ID = env("AWS_SES_ACCESS_KEY_ID", default="")
 AWS_SES_SECRET_ACCESS_KEY = env("AWS_SES_SECRET_ACCESS_KEY", default="")
 
-# Prefer SES API when dedicated SES keys are present (unless explicitly disabled).
-USE_AWS_SES_API = env.bool(
-    "USE_AWS_SES_API",
-    default=bool(AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY),
-)
+# Prefer SES API only when explicitly enabled (do not auto-enable from leftover SES keys).
+USE_AWS_SES_API = env.bool("USE_AWS_SES_API", default=False)
 
-# SES SMTP Configuration (used when USE_AWS_SES_API is False)
+# SMTP Configuration (IITR nsmtp by default; used when USE_AWS_SES_API is False)
 # ------------------------------------------------------------------------------
-# SES SMTP endpoint format: email-smtp.{region}.amazonaws.com
-# https://docs.aws.amazon.com/ses/latest/dg/send-email-smtp.html
 EMAIL_HOST = env(
     "AWS_SES_SMTP_HOST",
-    default=f"email-smtp.{ses_region}.amazonaws.com",
+    default="nsmtp.iitr.ac.in",
 )
 EMAIL_PORT = env.int("AWS_SES_SMTP_PORT", default=587)
 EMAIL_USE_TLS = env.bool("AWS_SES_SMTP_USE_TLS", default=True)
 EMAIL_USE_SSL = env.bool("AWS_SES_SMTP_USE_SSL", default=False)
 
-# SES SMTP credentials (SMTP username/password from IAM "SMTP credentials" converter).
-# These are NOT the same as Access Key ID / Secret Access Key.
-# If AWS_SES_SMTP_PASSWORD contains + or /, put it in double quotes in .env.
+# SMTP credentials (IITR mailbox username/password)
+# If password contains + or /, put it in double quotes in .env.
 EMAIL_HOST_USER = env("AWS_SES_SMTP_USERNAME", default="")
 EMAIL_HOST_PASSWORD = env("AWS_SES_SMTP_PASSWORD", default="")
 
 # Default from email address
-# IMPORTANT: This email address MUST be verified in AWS SES before sending emails
-# Go to AWS SES Console -> Verified identities -> Create identity (verify email or domain)
 # https://docs.djangoproject.com/en/dev/ref/settings/#default-from-email
 DEFAULT_FROM_EMAIL = env(
     "DJANGO_DEFAULT_FROM_EMAIL",
-    default="IIC Booking <no-reply@iicbooking.iitr.ac.in>",
+    default="IIC Booking <iicbooking@iitr.ac.in>",
 )
 # https://docs.djangoproject.com/en/dev/ref/settings/#server-email
 SERVER_EMAIL = env("DJANGO_SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)

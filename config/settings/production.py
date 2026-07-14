@@ -112,25 +112,41 @@ ADMIN_URL = env("DJANGO_ADMIN_URL")
 
 # EMAIL
 # ------------------------------------------------------------------------------
-# All notification emails (CommunicationService, send_mail, Celery tasks) use
-# Django EMAIL_BACKEND. Production must always send via AWS SES API.
-USE_AWS_SES_API = True
-EMAIL_BACKEND = "anymail.backends.amazon_ses.EmailBackend"
-if "anymail" not in INSTALLED_APPS:
-    INSTALLED_APPS += ["anymail"]
+# Production uses IITR SMTP (nsmtp.iitr.ac.in:587 STARTTLS) — verified working on EC2.
+# Set USE_AWS_SES_API=True only if switching back to AWS SES later.
+USE_AWS_SES_API = env.bool("USE_AWS_SES_API", default=False)
 
-if AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY:
-    print("AWS SES configured.")
+if USE_AWS_SES_API:
+    EMAIL_BACKEND = "anymail.backends.amazon_ses.EmailBackend"
+    if "anymail" not in INSTALLED_APPS:
+        INSTALLED_APPS += ["anymail"]
+    if not (AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY):
+        raise ImproperlyConfigured(
+            "USE_AWS_SES_API=True requires AWS_SES_ACCESS_KEY_ID and AWS_SES_SECRET_ACCESS_KEY."
+        )
+    ANYMAIL = {
+        "AMAZON_SES_CLIENT_PARAMS": {
+            "aws_access_key_id": AWS_SES_ACCESS_KEY_ID,
+            "aws_secret_access_key": AWS_SES_SECRET_ACCESS_KEY,
+            "region_name": ses_region,
+        },
+    }
 else:
-    print("WARNING: AWS SES not configured. Email notifications are disabled.")
-
-ANYMAIL = {
-    "AMAZON_SES_CLIENT_PARAMS": {
-        "aws_access_key_id": AWS_SES_ACCESS_KEY_ID,
-        "aws_secret_access_key": AWS_SES_SECRET_ACCESS_KEY,
-        "region_name": ses_region,
-    },
-}
+    EMAIL_BACKEND = env(
+        "DJANGO_EMAIL_BACKEND",
+        default="django.core.mail.backends.smtp.EmailBackend",
+    )
+    EMAIL_HOST = env("AWS_SES_SMTP_HOST", default="nsmtp.iitr.ac.in")
+    EMAIL_PORT = env.int("AWS_SES_SMTP_PORT", default=587)
+    EMAIL_USE_TLS = env.bool("AWS_SES_SMTP_USE_TLS", default=True)
+    EMAIL_USE_SSL = env.bool("AWS_SES_SMTP_USE_SSL", default=False)
+    EMAIL_HOST_USER = env("AWS_SES_SMTP_USERNAME", default="")
+    EMAIL_HOST_PASSWORD = env("AWS_SES_SMTP_PASSWORD", default="")
+    if not EMAIL_HOST_USER or not EMAIL_HOST_PASSWORD:
+        logging.getLogger(__name__).warning(
+            "Production SMTP: AWS_SES_SMTP_USERNAME / AWS_SES_SMTP_PASSWORD missing in "
+            ".envs/.production/.django — outbound email will fail."
+        )
 
 
 # LOGGING
