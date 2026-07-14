@@ -123,6 +123,14 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer[User]):
         return data
 
 
+class UserBookForListSerializer(serializers.ModelSerializer[User]):
+    """Minimal user fields for OIC/admin 'book for user' combobox (avoids heavy nested work)."""
+
+    class Meta:
+        model = User
+        fields = ["id", "name", "email", "user_type"]
+
+
 class UserSerializer(serializers.ModelSerializer[User]):
     """Serializer for User model."""
 
@@ -141,7 +149,8 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
     is_faculty = serializers.SerializerMethodField()
 
-    profile_picture = serializers.ImageField(read_only=True)
+    # MethodField — never call ImageField.url during list (signed S3 / NoSuchKey broke OIC user pickers).
+    profile_picture = serializers.SerializerMethodField()
 
     def get_user_type_display(self, obj):
         return obj.get_user_type_display_label()
@@ -151,6 +160,13 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
     def get_is_faculty(self, obj):
         return obj.is_faculty()
+
+    def get_profile_picture(self, obj):
+        try:
+            return obj.get_profile_picture_url_or_none(request=self.context.get("request"))
+        except Exception:
+            # Never fail list/detail serialization because of a bad/missing media object.
+            return None
 
     def validate(self, attrs):
         enabled = attrs.get("wallet_low_balance_alert_enabled")
@@ -227,17 +243,13 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "user_type_display",
             "is_faculty",
             "user_type_alias",
+            "can_have_wallet",
+            "profile_picture",
+            "date_joined",
+            "last_login",
             "oic_enable_ta_nomination",
             "oic_enable_ta_duty_assignments",
             "oic_enable_leave_management",
             "oic_enable_reward_config",
         ]
-    
-    def to_representation(self, instance):
-        """Override to expose a stable non-expiring profile picture proxy URL."""
-        data = super().to_representation(instance)
-        request = self.context.get("request")
-        url = instance.get_profile_picture_url_or_none(request=request)
-        data["profile_picture"] = url
-        return data
 

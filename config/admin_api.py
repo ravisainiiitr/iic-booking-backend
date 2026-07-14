@@ -70,6 +70,7 @@ def admin_api_router():
         AdminUserUpdateSerializer,
         AdminUserSetPasswordSerializer,
     )
+    from iic_booking.users.serializers.user_serializer import UserBookForListSerializer
     from iic_booking.users.serializers.project_serializer import ProjectSerializer
     from iic_booking.users.serializers.wallet_serializer import (
         WalletSerializer,
@@ -532,6 +533,12 @@ def admin_api_router():
                 return AdminUserCreateSerializer
             if self.action in ("update", "partial_update"):
                 return AdminUserUpdateSerializer
+            if self.action == "list" and str(self.request.query_params.get("lite", "")).lower() in (
+                "1",
+                "true",
+                "yes",
+            ):
+                return UserBookForListSerializer
             return UserSerializer
 
         def perform_update(self, serializer):

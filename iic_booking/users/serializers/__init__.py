@@ -4,7 +4,13 @@ from .department_serializer import (
     DepartmentSerializer,
     DepartmentListSerializer,
 )
-from .user_serializer import UserSerializer, AdminUserCreateSerializer, AdminUserUpdateSerializer, AdminUserSetPasswordSerializer
+from .user_serializer import (
+    UserSerializer,
+    UserBookForListSerializer,
+    AdminUserCreateSerializer,
+    AdminUserUpdateSerializer,
+    AdminUserSetPasswordSerializer,
+)
 from .billing_serializer import ExternalBillingProfileSerializer
 from rest_framework import serializers
 from ..models.organization_request import OrganizationRequest
@@ -30,6 +36,7 @@ __all__ = [
     "DepartmentSerializer",
     "DepartmentListSerializer",
     "UserSerializer",
+    "UserBookForListSerializer",
     "AdminUserCreateSerializer",
     "AdminUserUpdateSerializer",
     "AdminUserSetPasswordSerializer",
