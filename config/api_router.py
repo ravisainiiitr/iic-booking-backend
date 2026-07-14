@@ -298,6 +298,7 @@ from iic_booking.support.api_views import (
     ticket_comment_create,
     ticket_comments_list,
     ticket_type_list,
+    ticket_attachment,
     chat_agent,
 )
 from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats
@@ -735,6 +736,7 @@ urlpatterns = router.urls + [
     # Support Ticket endpoints
     path("tickets/", ticket_list, name="ticket-list"),  # GET and POST (public can POST)
     path("tickets/<int:ticket_id>/", ticket_detail, name="ticket-detail"),
+    path("tickets/<int:ticket_id>/attachment/", ticket_attachment, name="ticket-attachment"),
     path("tickets/<int:ticket_id>/comments/", ticket_comments_list, name="ticket-comments-list"),
     path("tickets/<int:ticket_id>/comments/create/", ticket_comment_create, name="ticket-comment-create"),
     path("ticket-types/", ticket_type_list, name="ticket-type-list"),

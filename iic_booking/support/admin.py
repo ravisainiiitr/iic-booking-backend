@@ -36,7 +36,13 @@ class TicketAdmin(admin.ModelAdmin):
             return obj.assigned_to.name or obj.assigned_to.email
         return "-"
     get_assigned_to_display.short_description = "Assigned To"
-    
+
+    def has_attachment(self, obj):
+        return bool(getattr(obj, "attachment", None) and obj.attachment.name)
+
+    has_attachment.boolean = True
+    has_attachment.short_description = "Attachment"
+
     list_display = [
         'ticket_id',
         'subject',
@@ -45,6 +51,7 @@ class TicketAdmin(admin.ModelAdmin):
         'priority',
         'get_user_display',
         'get_assigned_to_display',
+        'has_attachment',
         'created_at',
     ]
     list_filter = [
@@ -73,7 +80,7 @@ class TicketAdmin(admin.ModelAdmin):
             'fields': ('ticket_id', 'user', 'public_name', 'public_email', 'public_phone')
         }),
         ('Ticket Details', {
-            'fields': ('ticket_type', 'subject', 'description', 'priority')
+            'fields': ('ticket_type', 'subject', 'description', 'attachment', 'priority')
         }),
         ('Related Items', {
             'fields': ('related_equipment', 'related_booking')

@@ -13,7 +13,7 @@ import logging
 from iic_booking.users.models.user_type import UserType
 
 logger = logging.getLogger(__name__)
-from .image_utils import save_local_equipment_image_backup
+from .image_utils import persist_equipment_image_upload
 from .models import (
     Equipment,
     EquipmentCategory,

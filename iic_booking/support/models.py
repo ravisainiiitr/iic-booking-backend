@@ -128,6 +128,7 @@ class Ticket(models.Model):
     attachment = models.FileField(
         _("Attachment"),
         upload_to="support/ticket_attachments/%Y/%m/%d/",
+        max_length=512,
         blank=True,
         null=True,
         help_text=_("Optional document/image attached by the requester"),

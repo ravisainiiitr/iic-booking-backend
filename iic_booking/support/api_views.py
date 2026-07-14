@@ -1,9 +1,11 @@
 """API views for support tickets."""
 
 import logging
+import mimetypes
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -27,12 +29,84 @@ def _priority_label(priority_code: str) -> str:
     return dict(Ticket.TicketPriority.choices).get(priority_code, priority_code)
 
 
+def _ticket_frontend_link() -> str:
+    base = (getattr(settings, "FRONTEND_URL", None) or "").rstrip("/")
+    return f"{base}/tickets" if base else ""
+
+
+def _ticket_email_context(ticket: Ticket) -> dict:
+    notes = (ticket.resolution_notes or "").strip() or "(No notes provided)"
+    link = _ticket_frontend_link()
+    return {
+        "user_name": ticket.get_user_name() or "User",
+        "user_email": ticket.get_user_email() or "",
+        "ticket_id": ticket.ticket_id,
+        "subject": ticket.subject or "",
+        "status_display": _status_label(ticket.status),
+        "resolution_notes": notes,
+        "link": f"View ticket: {link}" if link else "",
+    }
+
+
+def _send_ticket_resolution_email(ticket: Ticket) -> None:
+    """Notify requester when a ticket is marked resolved/closed (template + fallback)."""
+    recipient_email = ticket.get_user_email()
+    if not recipient_email:
+        return
+
+    ctx = _ticket_email_context(ticket)
+    try:
+        from iic_booking.communication.models import CommunicationTemplate
+        from iic_booking.communication.service import CommunicationService
+
+        template_code = "support_ticket_resolution_email"
+        template_obj = CommunicationService.get_template(
+            template=template_code,
+            communication_type=CommunicationTemplate.CommunicationType.EMAIL,
+        )
+        if template_obj and ticket.user_id:
+            CommunicationService.send_email(
+                recipient=ticket.user,
+                template=template_obj,
+                template_context=ctx,
+            )
+            return
+
+        if template_obj:
+            rendered = CommunicationService.render_template(template_obj, context=ctx)
+            subject = rendered.get("subject") or f"Support ticket #{ticket.ticket_id} updated"
+            message = rendered.get("message") or ""
+            html_message = (rendered.get("html_message") or "").strip() or None
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[recipient_email],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            return
+    except Exception as e:
+        logger.exception(
+            "Failed to send ticket resolution email (template) to %s: %s",
+            recipient_email,
+            e,
+        )
+
+    # Plain fallback
+    _send_ticket_update_email(
+        ticket,
+        action_summary=f"Status updated to {_status_label(ticket.status)}.",
+        action_details=f"Notes / Reason:\n{ctx['resolution_notes']}",
+    )
+
+
 def _send_ticket_update_email(ticket: Ticket, action_summary: str, action_details: str = "") -> None:
     """Notify the ticket owner about status/action updates."""
     recipient_email = ticket.get_user_email()
     if not recipient_email:
         return
-    link = (getattr(settings, "FRONTEND_URL", "") + "/tickets") if getattr(settings, "FRONTEND_URL", None) else ""
+    link = _ticket_frontend_link()
     lines = [
         f"Hello {ticket.get_user_name()},",
         "",
@@ -57,6 +131,14 @@ def _send_ticket_update_email(ticket: Ticket, action_summary: str, action_detail
         )
     except Exception as e:
         logger.exception("Failed to send ticket update email to %s: %s", recipient_email, e)
+
+
+def _user_can_access_ticket(user, ticket: Ticket) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_staff", False):
+        return True
+    return ticket.user_id is not None and ticket.user_id == getattr(user, "id", None)
 
 
 @api_view(["GET", "POST"])
@@ -126,7 +208,7 @@ def ticket_list(request):
         # Order by creation date (newest first)
         queryset = queryset.order_by('-created_at')
         
-        serializer = TicketSerializer(queryset, many=True)
+        serializer = TicketSerializer(queryset, many=True, context={"request": request})
         return Response(
             {
                 "tickets": serializer.data,
@@ -161,7 +243,7 @@ def ticket_list(request):
             )
             
             # Return full ticket data
-            full_serializer = TicketSerializer(ticket)
+            full_serializer = TicketSerializer(ticket, context={"request": request})
             return Response(full_serializer.data, status=status.HTTP_201_CREATED)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -205,7 +287,7 @@ def ticket_detail(request, ticket_id):
                 status=status.HTTP_403_FORBIDDEN,
             )
         
-        serializer = TicketSerializer(ticket)
+        serializer = TicketSerializer(ticket, context={"request": request})
         return Response(serializer.data)
     
     # PATCH or PUT - update ticket
@@ -235,7 +317,9 @@ def ticket_detail(request, ticket_id):
     old_assigned_to = ticket.assigned_to
     old_resolution_notes = ticket.resolution_notes or ""
 
-    serializer = TicketSerializer(ticket, data=request.data, partial=(request.method == "PATCH"))
+    serializer = TicketSerializer(
+        ticket, data=request.data, partial=(request.method == "PATCH"), context={"request": request}
+    )
     if serializer.is_valid():
         # Handle status changes
         if 'status' in request.data:
@@ -249,6 +333,11 @@ def ticket_detail(request, ticket_id):
         updated_ticket = serializer.instance
         if request.user.is_staff:
             action_lines = []
+            status_changed_to_resolution = (
+                old_status != updated_ticket.status
+                and updated_ticket.status
+                in (Ticket.TicketStatus.RESOLVED, Ticket.TicketStatus.CLOSED)
+            )
             if old_status != updated_ticket.status:
                 action_lines.append(
                     f"Status updated from {_status_label(old_status)} to {_status_label(updated_ticket.status)}."
@@ -277,11 +366,14 @@ def ticket_detail(request, ticket_id):
                     comment="\n".join(action_lines),
                     is_internal=False,
                 )
-                _send_ticket_update_email(
-                    updated_ticket,
-                    action_summary=action_lines[0],
-                    action_details="\n".join(action_lines[1:]) if len(action_lines) > 1 else "",
-                )
+                if status_changed_to_resolution:
+                    _send_ticket_resolution_email(updated_ticket)
+                else:
+                    _send_ticket_update_email(
+                        updated_ticket,
+                        action_summary=action_lines[0],
+                        action_details="\n".join(action_lines[1:]) if len(action_lines) > 1 else "",
+                    )
 
         return Response(serializer.data)
     
@@ -583,3 +675,53 @@ def chat_agent(request):
         "say so and we will create a support ticket for you."
     )
     return Response({"reply": reply, "ticket_id": None}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def ticket_attachment(request, ticket_id):
+    """
+    Stream a ticket attachment through the API (stable URL; works with private S3).
+
+    Access: ticket owner or staff. Accepts Authorization header or ?token= for link opens.
+    """
+    from iic_booking.users.api.token_auth import resolve_request_user
+
+    user = resolve_request_user(request)
+    if not user or not getattr(user, "is_authenticated", False):
+        return Response(
+            {"error": "Authentication required."},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    try:
+        ticket = Ticket.objects.get(ticket_id=ticket_id)
+    except Ticket.DoesNotExist:
+        return Response({"error": "Ticket not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _user_can_access_ticket(user, ticket):
+        return Response(
+            {"error": "You don't have permission to view this attachment."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if not getattr(ticket, "attachment", None) or not getattr(ticket.attachment, "name", None):
+        return Response({"error": "No attachment for this ticket."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        file_handle = ticket.attachment.open("rb")
+    except Exception as e:
+        logger.exception(
+            "Failed to open ticket attachment ticket_id=%s path=%s: %s",
+            ticket_id,
+            getattr(ticket.attachment, "name", None),
+            e,
+        )
+        return Response({"error": "Attachment not available."}, status=status.HTTP_404_NOT_FOUND)
+
+    filename = (ticket.attachment.name or "attachment").rsplit("/", 1)[-1]
+    content_type, _ = mimetypes.guess_type(filename)
+    response = FileResponse(file_handle, content_type=content_type or "application/octet-stream")
+    response["Content-Disposition"] = f'inline; filename="{filename}"'
+    response["Cache-Control"] = "private, max-age=300"
+    return response

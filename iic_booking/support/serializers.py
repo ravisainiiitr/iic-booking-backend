@@ -72,14 +72,37 @@ class TicketSerializer(serializers.ModelSerializer):
     comments = TicketCommentSerializer(many=True, read_only=True)
     comments_count = serializers.IntegerField(source='comments.count', read_only=True)
     attachment_url = serializers.SerializerMethodField()
+    attachment_name = serializers.SerializerMethodField()
 
     def get_attachment_url(self, obj):
-        if not getattr(obj, "attachment", None):
+        """Stable proxy URL (does not expire like signed S3 URLs)."""
+        if not getattr(obj, "attachment", None) or not getattr(obj.attachment, "name", None):
             return None
         try:
-            return obj.attachment.url
+            from django.urls import NoReverseMatch, reverse
+
+            try:
+                path = reverse("ticket-attachment", kwargs={"ticket_id": obj.ticket_id})
+            except NoReverseMatch:
+                path = reverse("api:ticket-attachment", kwargs={"ticket_id": obj.ticket_id})
+            request = self.context.get("request")
+            if request is not None:
+                try:
+                    return request.build_absolute_uri(path)
+                except Exception:
+                    return path
+            return path
         except Exception:
+            try:
+                return obj.attachment.url
+            except Exception:
+                return None
+
+    def get_attachment_name(self, obj):
+        if not getattr(obj, "attachment", None) or not getattr(obj.attachment, "name", None):
             return None
+        name = (obj.attachment.name or "").rsplit("/", 1)[-1]
+        return name or None
     
     def get_ticket_type_name(self, obj):
         """Get the display name for the ticket type."""
@@ -101,6 +124,7 @@ class TicketSerializer(serializers.ModelSerializer):
             'subject',
             'description',
             'attachment_url',
+            'attachment_name',
             'related_equipment',
             'related_equipment_name',
             'related_equipment_code',
