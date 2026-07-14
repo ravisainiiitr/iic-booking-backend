@@ -257,13 +257,13 @@ def persist_equipment_image_upload(equipment, uploaded_file) -> str:
     """
     Save an uploaded image to configured storage (S3 in production).
 
-    Writes the new object first and only updates the DB (and deletes the previous
-    object) after the new file can be opened from remote storage. This keeps the
-    prior image if the new upload cannot be verified.
+    Writes the new object first and only updates the DB after the new file can be
+    opened from remote storage. Previous object is deleted only at the exact key
+    that opened successfully (never blast-delete path candidates — that could
+    remove the wrong S3 object).
 
-    Production never depends on local MEDIA_ROOT copies — those are wiped on
-    container rebuilds. Local backup is written only when
-    ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK is enabled (dev).
+    On verify failure we leave the orphan object in place for diagnosis rather than
+    immediately deleting it.
     """
     from iic_booking.equipment.models import equipment_image_upload_to, get_equipment_image_storage
 
@@ -282,47 +282,83 @@ def persist_equipment_image_upload(equipment, uploaded_file) -> str:
     if not normalized:
         raise ValueError("Failed to persist equipment image path")
 
+    bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "") or ""
+    location = (getattr(storage, "location", None) or getattr(storage, "_location", None) or "").strip("/")
+    expected_s3_key = f"{location}/{normalized}" if location else normalized
+
     # Verify the new object opens via candidates (handles location=media quirks).
-    verified = False
+    verified_key = None
     for key in storage_path_candidates(normalized):
         try:
             with storage.open(key, "rb") as fh:
                 if fh.read(1):
-                    verified = True
+                    verified_key = key
                     break
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "Equipment image verify miss for key=%s (equipment_id=%s): %s",
+                key,
+                getattr(equipment, "equipment_id", None),
+                exc,
+            )
             continue
-    if not verified:
-        for key in storage_path_candidates(saved_key):
-            try:
-                storage.delete(key)
-            except Exception:
-                pass
+    if not verified_key:
+        logger.error(
+            "Equipment image uploaded but could not be re-opened. "
+            "Leaving orphan at suggested=%s saved_key=%s normalized=%s "
+            "expected_s3=s3://%s/%s (equipment_id=%s). NOT deleting for diagnosis.",
+            suggested,
+            saved_key,
+            normalized,
+            bucket,
+            expected_s3_key,
+            getattr(equipment, "equipment_id", None),
+        )
         raise ValueError(
             f"Equipment image was not found in remote storage after save. "
-            f"Check AWS credentials/bucket. Path: {normalized}"
+            f"Check AWS credentials/bucket. Expected s3://{bucket}/{expected_s3_key}"
         )
 
     old_name = get_equipment_image_storage_path(equipment) or ""
-    equipment.image.name = normalized
+    old_opened_key = None
+    if old_name:
+        for key in storage_path_candidates(old_name):
+            # Never treat the newly uploaded key as "old".
+            if key == verified_key or normalize_storage_path(key) == normalize_storage_path(verified_key):
+                continue
+            try:
+                with storage.open(key, "rb") as fh:
+                    if fh.read(1):
+                        old_opened_key = key
+                        break
+            except Exception:
+                continue
+
+    equipment.image.name = normalize_storage_path(verified_key) or normalized
     equipment.save(update_fields=["image"])
 
     # Dev-only mirror; production serves exclusively from S3 across deploys.
-    save_local_equipment_image_backup(normalized, content)
+    save_local_equipment_image_backup(equipment.image.name, content)
 
-    old_norm = normalize_storage_path(old_name) if old_name else ""
-    if old_name and old_norm != normalized:
-        for key in storage_path_candidates(old_name):
-            try:
-                storage.delete(key)
-            except Exception:
-                logger.warning(
-                    "Could not delete replaced equipment image key %s (equipment_id=%s)",
-                    key,
-                    getattr(equipment, "equipment_id", None),
-                )
+    if old_opened_key and old_opened_key != verified_key:
+        try:
+            storage.delete(old_opened_key)
+        except Exception:
+            logger.warning(
+                "Could not delete replaced equipment image key %s (equipment_id=%s)",
+                old_opened_key,
+                getattr(equipment, "equipment_id", None),
+            )
 
-    return normalized
+    logger.info(
+        "Equipment image persisted equipment_id=%s db_path=%s verified_key=%s s3://%s/%s",
+        getattr(equipment, "equipment_id", None),
+        equipment.image.name,
+        verified_key,
+        bucket,
+        expected_s3_key,
+    )
+    return equipment.image.name
 
 
 def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:

@@ -1072,13 +1072,18 @@ class EquipmentAdmin(admin.ModelAdmin):
             upload = request.FILES.get("image")
             if upload:
                 try:
-                    from .image_utils import normalize_equipment_image_db_path
+                    from .image_utils import persist_equipment_image_upload
 
-                    normalize_equipment_image_db_path(obj, save=True)
+                    # Re-persist via the same verified S3 path used by the admin API so
+                    # Django Admin ImageField saves cannot leave mismatched keys.
                     upload.seek(0)
-                    save_local_equipment_image_backup(obj.image.name, upload.read())
-                except Exception:
-                    pass
+                    persist_equipment_image_upload(obj, upload)
+                except Exception as e:
+                    messages.error(
+                        request,
+                        _("Failed to store equipment image in remote storage: %(err)s")
+                        % {"err": str(e)},
+                    )
 
         # Safety check: warn if remote storage cannot open the image (do not clear the DB path).
         if getattr(obj, "image", None) and getattr(obj.image, "name", None):
