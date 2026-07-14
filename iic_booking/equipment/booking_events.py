@@ -3,7 +3,6 @@
 import html
 import re
 import logging
-import threading
 from typing import Optional, Dict, Any
 from django.db import transaction
 from django.utils import timezone
@@ -274,52 +273,48 @@ def create_booking_event(
 
 def _dispatch_booking_event_notification(event_id: int) -> None:
     """
-    Send booking email/push off the request path (daemon thread).
+    Send booking email/push after DB commit.
 
-    Sends directly in-thread rather than only queuing Celery. Celery ``.delay()``
-    can succeed (message accepted by Redis) while no worker delivers mail, so
-    confirmations were silently dropped on production. The HTTP request still
-    returns immediately because this runs in a background thread.
+    Runs synchronously in the on_commit callback (same request lifecycle).
+    Daemon threads under Gunicorn+UvicornWorker were unreliable — the process
+    could finish the request and tear down before SMTP completed, so confirmations
+    never left the server. A few seconds of SMTP during on_commit is acceptable.
     """
+    from django.db import close_old_connections
 
-    def _run():
-        from django.db import close_old_connections
-
-        close_old_connections()
+    close_old_connections()
+    try:
+        event = BookingEvent.objects.select_related(
+            "booking",
+            "booking__user",
+            "booking__equipment",
+            "created_by",
+        ).get(event_id=event_id)
+        send_booking_event_notification(event)
+        BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
+    except Exception:
+        logger.error(
+            "Booking notification failed for event_id=%s",
+            event_id,
+            exc_info=True,
+        )
+        # Last-resort queue (retry later if a Celery worker is healthy).
         try:
-            event = BookingEvent.objects.select_related(
-                "booking",
-                "booking__user",
-                "booking__equipment",
-                "created_by",
-            ).get(event_id=event_id)
-            send_booking_event_notification(event)
-            BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
+            from iic_booking.equipment.tasks import send_booking_event_notifications_task
+
+            send_booking_event_notifications_task.delay(event_id)
+            logger.warning(
+                "Queued Celery retry for booking notification event_id=%s",
+                event_id,
+            )
         except Exception:
             logger.error(
-                "Background booking notification failed for event_id=%s",
+                "Also failed to queue Celery booking notification for event_id=%s",
                 event_id,
                 exc_info=True,
             )
-            # Last-resort: try Celery if in-thread send failed (e.g. transient SMTP).
-            try:
-                from iic_booking.equipment.tasks import send_booking_event_notifications_task
-
-                send_booking_event_notifications_task.delay(event_id)
-            except Exception:
-                logger.error(
-                    "Also failed to queue Celery booking notification for event_id=%s",
-                    event_id,
-                    exc_info=True,
-                )
-        finally:
-            close_old_connections()
-
-    threading.Thread(
-        target=_run,
-        daemon=True,
-        name=f"booking-notify-{event_id}",
-    ).start()
+    finally:
+        close_old_connections()
 
 
 def send_booking_event_notification(event: BookingEvent) -> None:
@@ -585,7 +580,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 apply_equipment_completion_email_extra_to_context(
                     context, equipment, also_append_to_comment=True
                 )
-            CommunicationService.send_email(
+            log = CommunicationService.send_email(
                 recipient=user,
                 template=email_template_code,
                 template_context=context,
@@ -601,12 +596,20 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     else None
                 ),
             )
+            from iic_booking.communication.models import CommunicationLog
+
+            if log is None or getattr(log, "status", None) != CommunicationLog.CommunicationStatus.SENT:
+                err = getattr(log, "error_message", None) or "Email send returned without SENT status"
+                raise RuntimeError(
+                    f"Booking confirmation email not delivered to {user.email}: {err}"
+                )
             logger.info(f"Booking event email notification sent to {user.email} for event {event.event_id}")
         except Exception as e:
             logger.error(
                 f"Failed to send booking event email to {user.email}: {str(e)}",
                 exc_info=True
             )
+            raise
     # For internal student: also send booking confirmation to the associated Wallet owner (Supervisor)
     if event.event_type == BookingEventType.CREATED and email_template_code:
         try:

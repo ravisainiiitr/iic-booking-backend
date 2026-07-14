@@ -26,10 +26,12 @@ class Command(BaseCommand):
             self.stdout.write(
                 self.style.WARNING(
                     f"Backend: {settings.EMAIL_BACKEND}\n"
+                    f"USE_AWS_SES_API: {getattr(settings, 'USE_AWS_SES_API', False)}\n"
                     f"Host: {getattr(settings, 'EMAIL_HOST', 'N/A')}\n"
                     f"Port: {getattr(settings, 'EMAIL_PORT', 'N/A')}\n"
                     f"Use TLS: {getattr(settings, 'EMAIL_USE_TLS', 'N/A')}\n"
-                    f"User: {'(set)' if getattr(settings, 'EMAIL_HOST_USER', '') else '(empty)'}\n"
+                    f"User: {'(set)' if getattr(settings, 'EMAIL_HOST_USER', '') else '(empty — email will fail)'}\n"
+                    f"Password: {'(set)' if getattr(settings, 'EMAIL_HOST_PASSWORD', '') else '(empty — email will fail)'}\n"
                     f"From: {settings.DEFAULT_FROM_EMAIL}"
                 )
             )
