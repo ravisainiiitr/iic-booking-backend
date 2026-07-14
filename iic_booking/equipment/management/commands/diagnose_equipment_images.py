@@ -33,10 +33,16 @@ class Command(BaseCommand):
             default=50,
             help="Max rows to inspect when no --equipment-id (default 50).",
         )
+        parser.add_argument(
+            "--config-only",
+            action="store_true",
+            help="Print storage/backend/bucket config only (no DB scan).",
+        )
 
     def handle(self, *args, **options):
         eid = options.get("equipment_id")
         sample = int(options.get("sample") or 50)
+        config_only = bool(options.get("config_only"))
 
         storage = get_equipment_image_storage()
         bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", "") or "(unset)"
@@ -54,6 +60,12 @@ class Command(BaseCommand):
                 f"allow_local_fallback={getattr(settings, 'ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK', False)}"
             )
         )
+        self.stdout.write(
+            f"Expected S3 key prefix: s3://{bucket}/{location + '/' if location else ''}equipment_images/"
+        )
+
+        if config_only:
+            return
 
         if eid:
             qs = Equipment.objects.filter(pk=eid)
