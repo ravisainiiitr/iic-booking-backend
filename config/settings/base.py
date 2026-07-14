@@ -193,17 +193,17 @@ AWS_ACCESS_KEY_ID = env("AWS_ACCESS_KEY_ID", default="")
 AWS_SECRET_ACCESS_KEY = env("AWS_SECRET_ACCESS_KEY", default="")
 AWS_STORAGE_BUCKET_NAME = env("AWS_STORAGE_BUCKET_NAME", default="iic-booking-s3")
 AWS_S3_REGION_NAME = env("AWS_S3_REGION_NAME", default="ap-south-1")
-# Enable signed URLs for secure access (instead of public access)
-# Signed URLs expire after a specified time, providing time-limited access
-# When True, django-storages will automatically generate signed URLs with query parameters
+# Enable signed URLs for secure access (instead of public access).
+# Prefer stable Django streaming proxies for equipment/profile images (they never expire).
+# django-storages reads AWS_QUERYSTRING_EXPIRE (seconds). Keep AWS_S3_QUERYSTRING_EXPIRE as alias.
 AWS_QUERYSTRING_AUTH = True
-# Expiration time for signed URLs (in seconds). Max 604800 (7 days) for AWS SigV4.
-# Use 7 days so equipment and profile images stay valid when API responses are cached or tab is left open.
-AWS_S3_QUERYSTRING_EXPIRE = env.int("AWS_S3_SIGNED_URL_EXPIRATION", default=604800)  # 7 days
+_signed_url_expire = env.int("AWS_S3_SIGNED_URL_EXPIRATION", default=604800)  # 7 days max for SigV4
+AWS_QUERYSTRING_EXPIRE = _signed_url_expire
+AWS_S3_QUERYSTRING_EXPIRE = _signed_url_expire  # used by some app code; kept for compatibility
 
 AWS_S3_OBJECT_PARAMETERS = {
-    # Force clients/intermediaries to always fetch fresh from S3 for media files.
-    "CacheControl": "no-store, max-age=0",
+    # Objects themselves do not expire; CacheControl only affects browser/CDN caching of direct S3 URLs.
+    "CacheControl": "public, max-age=86400",
 }
 # Disable ACLs - modern S3 buckets have ACLs disabled by default
 # Use signed URLs for access control instead
@@ -230,6 +230,8 @@ STORAGES = {
         "OPTIONS": {
             "location": "media",
             "file_overwrite": False,
+            "querystring_auth": True,
+            "querystring_expire": _signed_url_expire,
         },
     },
     "staticfiles": {

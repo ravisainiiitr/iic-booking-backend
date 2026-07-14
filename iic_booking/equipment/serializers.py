@@ -251,9 +251,9 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
         return None
     
     def get_operator_profile_picture(self, obj):
-        """Return operator's profile picture URL (only if file exists in storage)."""
+        """Return operator's stable profile-picture proxy URL (does not expire)."""
         if obj.operator:
-            return obj.operator.get_profile_picture_url_or_none()
+            return obj.operator.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
 
 
@@ -304,9 +304,9 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
         return None
     
     def get_manager_profile_picture(self, obj):
-        """Return manager's profile picture URL (only if file exists in storage)."""
+        """Return manager's stable profile-picture proxy URL (does not expire)."""
         if obj.manager:
-            return obj.manager.get_profile_picture_url_or_none()
+            return obj.manager.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
 
 
@@ -1861,9 +1861,9 @@ class BookingSerializer(serializers.ModelSerializer):
         return None
 
     def get_user_profile_picture(self, obj):
-        """Return user's profile picture URL (only if file exists in storage)."""
+        """Return user's stable profile-picture proxy URL (does not expire)."""
         if obj.user:
-            return obj.user.get_profile_picture_url_or_none()
+            return obj.user.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
 
     def get_created_by_name(self, obj):

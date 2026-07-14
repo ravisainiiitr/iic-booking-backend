@@ -498,8 +498,12 @@ def admin_api_router():
                     | Q(user_type=UserType.INDIVIDUAL_STUDENT, user_type_alias="IITR Startups")
                 )
             user_type = self.request.query_params.get("user_type", "").strip()
-            if user_type and user_type in [c[0] for c in UserType.get_choices()]:
-                qs = qs.filter(user_type=user_type)
+            if user_type:
+                # Case-insensitive match so "faculty"/"Faculty" both resolve to stored codes.
+                by_lower = {str(code).lower(): code for code, _label in UserType.get_choices()}
+                canonical = by_lower.get(user_type.lower())
+                if canonical:
+                    qs = qs.filter(user_type=canonical)
             user_type_alias = self.request.query_params.get("user_type_alias", "").strip()
             if user_type_alias:
                 qs = qs.filter(user_type_alias=user_type_alias)

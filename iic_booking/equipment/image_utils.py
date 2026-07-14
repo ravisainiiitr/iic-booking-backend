@@ -255,33 +255,67 @@ def persist_equipment_image_upload(equipment, uploaded_file) -> str:
     """
     Save an uploaded image to configured storage (S3 in production) and local backup.
 
-    Raises if the file cannot be read back from remote storage. Does NOT clear the
-    DB path on a false-negative verify — that historically wiped valid S3 objects
-    whose keys used a media/ prefix mismatch.
+    Writes the new object first and only updates the DB (and deletes the previous
+    object) after the new file can be opened from remote storage. This keeps the
+    prior image if the new upload cannot be verified.
     """
+    from iic_booking.equipment.models import equipment_image_upload_to, get_equipment_image_storage
+
     uploaded_file.seek(0)
     content = uploaded_file.read()
     if not content:
         raise ValueError("Empty image file")
 
-    upload_name = os.path.basename(getattr(uploaded_file, "name", "") or "upload.jpg")
-    equipment.image.save(upload_name, ContentFile(content), save=True)
-    path = normalize_equipment_image_db_path(equipment, save=True) or (
-        equipment.image.name or ""
-    ).strip()
-    if not path:
+    storage = get_equipment_image_storage()
+    suggested = equipment_image_upload_to(
+        equipment, getattr(uploaded_file, "name", "") or "upload.jpg"
+    )
+    # Save under a new key without touching Equipment.image yet (preserves old path).
+    saved_key = storage.save(suggested, ContentFile(content))
+    normalized = normalize_storage_path(saved_key) or (saved_key or "").strip()
+    if not normalized:
         raise ValueError("Failed to persist equipment image path")
 
-    save_local_equipment_image_backup(path, content)
-
-    if not verify_file_field_in_storage(equipment.image):
-        # Leave DB path intact; clearing it made images permanently disappear in prod.
+    # Verify the new object opens via candidates (handles location=media quirks).
+    verified = False
+    for key in storage_path_candidates(normalized):
+        try:
+            with storage.open(key, "rb") as fh:
+                if fh.read(1):
+                    verified = True
+                    break
+        except Exception:
+            continue
+    if not verified:
+        for key in storage_path_candidates(saved_key):
+            try:
+                storage.delete(key)
+            except Exception:
+                pass
         raise ValueError(
             f"Equipment image was not found in remote storage after save. "
-            f"Check AWS credentials/bucket. Path: {path}"
+            f"Check AWS credentials/bucket. Path: {normalized}"
         )
 
-    return path
+    old_name = get_equipment_image_storage_path(equipment) or ""
+    equipment.image.name = normalized
+    equipment.save(update_fields=["image"])
+
+    save_local_equipment_image_backup(normalized, content)
+
+    old_norm = normalize_storage_path(old_name) if old_name else ""
+    if old_name and old_norm != normalized:
+        for key in storage_path_candidates(old_name):
+            try:
+                storage.delete(key)
+            except Exception:
+                logger.warning(
+                    "Could not delete replaced equipment image key %s (equipment_id=%s)",
+                    key,
+                    getattr(equipment, "equipment_id", None),
+                )
+
+    return normalized
 
 
 def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:

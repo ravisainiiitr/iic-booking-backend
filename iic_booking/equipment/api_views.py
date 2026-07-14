@@ -1641,7 +1641,7 @@ def equipment_image_proxy(request, pk):
         )
 
     response = HttpResponse(content, content_type=content_type or "image/jpeg")
-    response["Cache-Control"] = "private, max-age=86400"
+    response["Cache-Control"] = "public, max-age=86400"
     response["Content-Length"] = len(content)
     return response
 
@@ -1711,7 +1711,8 @@ def equipment_calculate(request, pk):
         pricing_profile = ChargeProfilePricingProfile.STANDARD
 
     user_id_param = request.query_params.get("user_id")
-    if user_id_param and user_is_authenticated and str(request.user.user_type or "").lower() == UserType.ADMIN:
+    actor_type = str(request.user.user_type or "").lower() if user_is_authenticated else ""
+    if user_id_param and user_is_authenticated and actor_type in (UserType.ADMIN, UserType.MANAGER):
         from iic_booking.users.models import User
         try:
             target_user = User.objects.get(pk=int(user_id_param))
@@ -2458,10 +2459,11 @@ def _book_equipment_impl(request, pk):
             status=status.HTTP_400_BAD_REQUEST,
         )
     
-    # Booking user: admin may pass user_id to book on behalf of another user
+    # Booking user: admin/OIC may pass user_id to book on behalf of another user
     booking_user = request.user
     user_id_body = request.data.get("user_id")
-    if user_id_body is not None and str(request.user.user_type or "").lower() == UserType.ADMIN:
+    actor_type = str(request.user.user_type or "").lower()
+    if user_id_body is not None and actor_type in (UserType.ADMIN, UserType.MANAGER):
         from iic_booking.users.models import User
         try:
             booking_user = User.objects.get(pk=int(user_id_body))

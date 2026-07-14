@@ -234,9 +234,10 @@ class UserSerializer(serializers.ModelSerializer[User]):
         ]
     
     def to_representation(self, instance):
-        """Override to handle invalid or missing profile picture paths gracefully."""
+        """Override to expose a stable non-expiring profile picture proxy URL."""
         data = super().to_representation(instance)
-        url = instance.get_profile_picture_url_or_none()
+        request = self.context.get("request")
+        url = instance.get_profile_picture_url_or_none(request=request)
         data["profile_picture"] = url
         return data
 

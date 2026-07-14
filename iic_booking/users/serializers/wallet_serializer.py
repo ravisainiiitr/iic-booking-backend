@@ -421,9 +421,9 @@ class WalletJoinRequestSerializer(serializers.ModelSerializer):
         return obj.student.phone_number if obj.student else None
     
     def get_student_profile_picture(self, obj):
-        """Return student's profile picture URL (only if file exists in storage)."""
+        """Return student's stable profile-picture proxy URL (does not expire)."""
         if obj.student:
-            return obj.student.get_profile_picture_url_or_none()
+            return obj.student.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
     
     def get_student_branch_name(self, obj):
@@ -455,9 +455,9 @@ class WalletJoinRequestSerializer(serializers.ModelSerializer):
         return obj.faculty.phone_number if obj.faculty else None
     
     def get_faculty_profile_picture(self, obj):
-        """Return faculty's profile picture URL (only if file exists in storage)."""
+        """Return faculty's stable profile-picture proxy URL (does not expire)."""
         if obj.faculty:
-            return obj.faculty.get_profile_picture_url_or_none()
+            return obj.faculty.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
 
 

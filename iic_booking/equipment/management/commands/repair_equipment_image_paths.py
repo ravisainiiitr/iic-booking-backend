@@ -86,6 +86,7 @@ class Command(BaseCommand):
                 )
                 cleared += 1
             else:
+                equipment._allow_clear_equipment_image = True
                 equipment.image = ""
                 equipment.save(update_fields=["image"])
                 self.stdout.write(

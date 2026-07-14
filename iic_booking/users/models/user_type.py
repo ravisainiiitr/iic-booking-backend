@@ -58,6 +58,26 @@ class UserType:
         return {cls.ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
 
     @classmethod
+    def is_end_user_booking_type(cls, user_type: str | None) -> bool:
+        """True for student/faculty/external categories that pay via department wallets.
+
+        Staff types (admin, OIC, lab/accounts incharge) are excluded.
+        """
+        if not user_type:
+            return False
+        code = str(user_type).strip().lower()
+        return code in {
+            cls.STUDENT,
+            cls.INDIVIDUAL_STUDENT,
+            cls.FACULTY,
+            cls.EXTERNAL,
+            cls.RND.lower(),
+            cls.INSTITUTE.lower(),
+            cls.STARTUP_INCUBATED_IITR,
+            cls.EXTERNAL_STARTUP_MSME,
+        }
+
+    @classmethod
     def get_wallet_eligible_codes(cls) -> set[str]:
         """Get user type codes that can have their own individual wallet.
         

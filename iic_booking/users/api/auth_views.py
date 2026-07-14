@@ -16,13 +16,13 @@ from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.welcome_email import build_welcome_email
-from django.http import HttpResponseRedirect
+from django.http import HttpResponseRedirect, HttpResponse
 from django.urls import reverse
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.authtoken.models import Token
@@ -1699,23 +1699,21 @@ def profile_me(request):
 @permission_classes([IsAuthenticated])
 def profile_me_avatar(request):
     """
-    GET: Redirect to the current user's profile picture URL (fresh S3 signed URL).
-         Use this as img src so the avatar does not expire when API responses are cached.
+    GET: Stream the current user's profile picture (stable URL; does not expire).
     POST: Upload or update the current user's profile picture.
           Expects multipart form data with key 'avatar' (image file).
-          Returns profile_picture and avatar_url (same value) for compatibility.
+          Returns stable proxy profile_picture / avatar_url.
     """
     if request.method == "GET":
-        user = request.user
-        url = user.get_profile_picture_url_or_none()
-        if not url:
+        from iic_booking.users.media_utils import stream_profile_picture_response
+
+        streamed = stream_profile_picture_response(request.user)
+        if streamed is None:
             return Response(
                 {"error": "No profile picture set."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        response = HttpResponseRedirect(redirect_to=url)
-        response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        return response
+        return streamed
 
     # POST: upload
     avatar_file = request.FILES.get("avatar")
@@ -1725,10 +1723,9 @@ def profile_me_avatar(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     user = request.user
-    # Optional: validate image type/size here
     user.profile_picture = avatar_file
     user.save(update_fields=["profile_picture"])
-    url = user.profile_picture.url if user.profile_picture else None
+    url = user.get_profile_picture_url_or_none(request=request)
     return Response({
         "profile_picture": url,
         "avatar_url": url,
@@ -1736,13 +1733,17 @@ def profile_me_avatar(request):
 
 
 @api_view(["GET"])
+@authentication_classes([])  # Ignore stale Authorization for anonymous <img> loads
 @permission_classes([AllowAny])
 def user_profile_picture_proxy(request, user_id):
     """
-    Redirect to the given user's profile picture URL (fresh S3 signed URL).
-    Use as img src so avatars do not expire when API responses are cached.
-    Public read (no auth required) so img src works without credentials.
+    Stream the given user's profile picture from storage through the API.
+
+    Stable URL for <img src> — does not expire like signed S3 URLs. Public read so
+    avatars work without credentials.
     """
+    from iic_booking.users.media_utils import stream_profile_picture_response
+
     User = get_user_model()
     try:
         user = User.objects.get(pk=user_id)
@@ -1751,15 +1752,13 @@ def user_profile_picture_proxy(request, user_id):
             {"error": "User not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    url = user.get_profile_picture_url_or_none()
-    if not url:
+    streamed = stream_profile_picture_response(user)
+    if streamed is None:
         return Response(
             {"error": "No profile picture set."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    response = HttpResponseRedirect(redirect_to=url)
-    response["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-    return response
+    return streamed
 
 
 @api_view(["GET"])

@@ -3,7 +3,6 @@
 from typing import ClassVar
 
 from django.contrib.auth.models import AbstractUser
-from django.core.files.storage import default_storage
 from django.db.models import BooleanField
 from django.db.models import CharField
 from django.db.models import DateField
@@ -286,16 +285,18 @@ class User(AbstractUser):
         """
         return reverse("users:detail", kwargs={"pk": self.id})
 
-    def get_profile_picture_url_or_none(self):
-        """Return profile picture URL only if the file exists in storage (avoids S3 NoSuchKey in frontend)."""
-        if not self.profile_picture or not self.profile_picture.name:
+    def get_profile_picture_url_or_none(self, request=None):
+        """
+        Return a stable API proxy URL for the profile picture (does not expire).
+
+        Prefer this over raw storage/.url signed S3 links. The proxy streams bytes
+        from storage; files stay available until an admin/user replaces the upload.
+        """
+        if not self.profile_picture or not getattr(self.profile_picture, "name", None):
             return None
-        try:
-            if default_storage.exists(self.profile_picture.name):
-                return self.profile_picture.url
-        except (ValueError, AttributeError, OSError):
-            pass
-        return None
+        from iic_booking.users.media_utils import build_profile_picture_proxy_url
+
+        return build_profile_picture_proxy_url(self.pk, request=request)
 
     def get_user_type_code(self) -> str:
         """Get user type code for backward compatibility.

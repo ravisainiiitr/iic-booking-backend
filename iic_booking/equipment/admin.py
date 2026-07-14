@@ -1031,6 +1031,9 @@ class EquipmentAdmin(admin.ModelAdmin):
 
         new_image_uploaded = bool(request.FILES.get("image"))
         clear_image_requested = bool(request.POST.get("image-clear"))
+        if clear_image_requested:
+            # Allow intentional admin “clear” of the image field.
+            obj._allow_clear_equipment_image = True
 
         old_time_from = None
         old_time_to = None

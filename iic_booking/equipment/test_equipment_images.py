@@ -94,6 +94,28 @@ class EquipmentImagePersistenceTests(TestCase):
         self.assertIsNotNone(url)
         self.assertIn(str(self.equipment.equipment_id), url)
 
+    def test_accidental_image_clear_is_blocked(self):
+        upload = ContentFile(b"\xff\xd8\xffkeep", name="keep.jpg")
+        path = persist_equipment_image_upload(self.equipment, upload)
+        self.equipment.refresh_from_db()
+        self.assertEqual(self.equipment.image.name, path)
+
+        self.equipment.image = ""
+        self.equipment.save(update_fields=["image"])
+        self.equipment.refresh_from_db()
+        self.assertEqual(self.equipment.image.name, path)
+
+    def test_explicit_image_clear_is_allowed(self):
+        upload = ContentFile(b"\xff\xd8\xffkeep", name="keep2.jpg")
+        persist_equipment_image_upload(self.equipment, upload)
+        self.equipment.refresh_from_db()
+
+        self.equipment._allow_clear_equipment_image = True
+        self.equipment.image = ""
+        self.equipment.save(update_fields=["image"])
+        self.equipment.refresh_from_db()
+        self.assertFalse(bool(self.equipment.image and self.equipment.image.name))
+
 
 class EquipmentImageProxyUrlNameTests(SimpleTestCase):
     def test_proxy_route_resolves(self):
