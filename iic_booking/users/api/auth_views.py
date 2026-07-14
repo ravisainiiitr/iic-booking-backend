@@ -290,6 +290,7 @@ def _get_or_create_user_from_omniport(*, email: str, defaults: dict):
             raise
 
     if profile_picture_file:
+        # Only reached for newly created users (existing accounts return above).
         try:
             user.profile_picture = profile_picture_file
             user.save(update_fields=["profile_picture"])
@@ -566,10 +567,17 @@ def omniport_callback(request):
             logger.error(f"Failed to get or create department '{department_name}': {str(e)}")
             # Continue without department if creation fails
     
-    # Download and upload profile picture to S3 before saving user
-    # This ensures the file is uploaded to S3 before the user model is saved
+    # Download Channel i profile picture only when this account does not already have one.
+    # Policy: capture once (first login / empty picture). Never overwrite a picture the user
+    # already has (including one they uploaded later in IIC Booking).
     profile_picture_file = None
-    if profile_picture_path:
+    existing_for_picture = User.objects.filter(email__iexact=email).first() if email else None
+    already_has_profile_picture = bool(
+        existing_for_picture
+        and existing_for_picture.profile_picture
+        and getattr(existing_for_picture.profile_picture, "name", None)
+    )
+    if profile_picture_path and not already_has_profile_picture:
         actual_path = "https://channeli.in" + profile_picture_path
         try:
             response = requests.get(actual_path, timeout=10)
@@ -600,6 +608,11 @@ def omniport_callback(request):
         except requests.RequestException as e:
             logger.error(f"Failed to download profile picture from {actual_path}: {str(e)}")
             profile_picture_file = None
+    elif already_has_profile_picture:
+        logger.info(
+            "Omniport login: skipping Channel i profile picture for %s (already set)",
+            email,
+        )
     
     # If user_type is still None, use determine_user_type_from_omniport
     if not user_type:
@@ -642,7 +655,11 @@ def omniport_callback(request):
                 if not User.objects.filter(emp_id=emp_id).exclude(pk=user.pk).exists():
                     user.emp_id = emp_id
                     update_fields.append("emp_id")
-            if profile_picture_file and not user.profile_picture:
+            # Profile picture: Channel i seeds only when the account still has none.
+            # Never overwrite a picture already stored (user change or prior Channel i capture).
+            if profile_picture_file and not (
+                user.profile_picture and getattr(user.profile_picture, "name", None)
+            ):
                 user.profile_picture = profile_picture_file
                 update_fields.append("profile_picture")
             if name and not user.name:
