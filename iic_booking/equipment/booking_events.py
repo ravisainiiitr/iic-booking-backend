@@ -274,12 +274,12 @@ def create_booking_event(
 
 def _dispatch_booking_event_notification(event_id: int) -> None:
     """
-    Queue notification via Celery, or send email/push in-thread as fallback.
+    Send booking email/push off the request path (daemon thread).
 
-    Always schedules work on a daemon thread so the caller returns immediately. When
-    Redis/broker is down, Celery's ``.delay()`` can retry for tens of seconds before
-    raising; running it on the request/on_commit thread previously stalled
-    ``POST .../book/`` after the booking was already committed.
+    Sends directly in-thread rather than only queuing Celery. Celery ``.delay()``
+    can succeed (message accepted by Redis) while no worker delivers mail, so
+    confirmations were silently dropped on production. The HTTP request still
+    returns immediately because this runs in a background thread.
     """
 
     def _run():
@@ -287,30 +287,31 @@ def _dispatch_booking_event_notification(event_id: int) -> None:
 
         close_old_connections()
         try:
-            try:
-                from iic_booking.equipment.tasks import send_booking_event_notifications_task
-
-                send_booking_event_notifications_task.delay(event_id)
-            except Exception:
-                logger.warning(
-                    "Failed to queue async booking notification for event_id=%s; sending in thread",
-                    event_id,
-                    exc_info=True,
-                )
-                event = BookingEvent.objects.select_related(
-                    "booking",
-                    "booking__user",
-                    "booking__equipment",
-                    "created_by",
-                ).get(event_id=event_id)
-                send_booking_event_notification(event)
-                BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
+            event = BookingEvent.objects.select_related(
+                "booking",
+                "booking__user",
+                "booking__equipment",
+                "created_by",
+            ).get(event_id=event_id)
+            send_booking_event_notification(event)
+            BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
         except Exception:
             logger.error(
                 "Background booking notification failed for event_id=%s",
                 event_id,
                 exc_info=True,
             )
+            # Last-resort: try Celery if in-thread send failed (e.g. transient SMTP).
+            try:
+                from iic_booking.equipment.tasks import send_booking_event_notifications_task
+
+                send_booking_event_notifications_task.delay(event_id)
+            except Exception:
+                logger.error(
+                    "Also failed to queue Celery booking notification for event_id=%s",
+                    event_id,
+                    exc_info=True,
+                )
         finally:
             close_old_connections()
 
@@ -589,6 +590,16 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 template=email_template_code,
                 template_context=context,
                 metadata=metadata,
+                cc_emails=(
+                    [event.created_by.email]
+                    if (
+                        event.created_by
+                        and event.created_by.id != user.id
+                        and (event.created_by.email or "").strip()
+                        and event.event_type == BookingEventType.CREATED
+                    )
+                    else None
+                ),
             )
             logger.info(f"Booking event email notification sent to {user.email} for event {event.event_id}")
         except Exception as e:
