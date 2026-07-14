@@ -236,7 +236,8 @@ class Department(Model):
         blank=True,
         help_text=_(
             "SRIC / accounts grant code for this internal department (instrument cost centre). "
-            "Used in SRIC transfer API and recharge workflows."
+            "Also editable under Admin → Wallet SRIC office notification settings. "
+            "Used in SRIC Office recharge emails and the SRIC transfer API."
         ),
     )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)

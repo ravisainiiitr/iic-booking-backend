@@ -19,12 +19,12 @@ class WalletSricSettings(models.Model):
         ),
     )
     grant_code_for_credit = models.CharField(
-        _("Grant code for credit"),
+        _("Default grant code (fallback)"),
         max_length=80,
         default="IIC-000-002",
         help_text=_(
-            "Shown in the SRIC Office wallet recharge email as “Grant Code for Credit”. "
-            "Change if your institute uses a different reference."
+            "Used in the SRIC Office recharge email only when the selected internal department "
+            "has no grant code of its own. Prefer setting codes per department below / on this page."
         ),
     )
 

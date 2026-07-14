@@ -1,0 +1,211 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .sric-grant-picker {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
+    align-items: flex-end;
+    margin: 0 0 1.25rem;
+    padding: 1rem;
+    background: var(--darkened-bg, #f8f8f8);
+    border: 1px solid var(--border-color, #ccc);
+    border-radius: 4px;
+  }
+  .sric-grant-picker label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+  .sric-grant-picker select,
+  .sric-grant-picker input[type="text"] {
+    min-width: 16rem;
+    max-width: 100%;
+  }
+  .sric-grant-table { width: 100%; border-collapse: collapse; }
+  .sric-grant-table th,
+  .sric-grant-table td {
+    padding: 0.5rem 0.65rem;
+    border-bottom: 1px solid var(--hairline-color, #eee);
+    text-align: left;
+    vertical-align: middle;
+  }
+  .sric-grant-table tr.sric-row-highlight {
+    background: #fff8d5;
+  }
+  .sric-grant-table input[type="text"] { width: 14rem; max-width: 100%; }
+  .sric-help { color: var(--body-quiet-color, #666); font-size: 0.9rem; margin: 0.35rem 0 1rem; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; {{ opts.verbose_name_plural|capfirst }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <h1>{{ title }}</h1>
+
+  {% if form.errors or formset.errors or formset.non_form_errors %}
+  <p class="errornote">{% translate "Please correct the errors below." %}</p>
+  {{ form.non_field_errors }}
+  {{ formset.non_form_errors }}
+  {% endif %}
+
+  <form method="post" id="walletsricsettings_form" novalidate>
+    {% csrf_token %}
+    {{ formset.management_form }}
+
+    <fieldset class="module aligned">
+      <h2>{% translate "SRIC Office emails" %}</h2>
+      <p class="sric-help">
+        {% translate "Recipients receive the email when a faculty member uses “Send to SRIC Office” on a wallet recharge request (after OTP verification). The email includes the grant code of the internal department selected on that recharge request." %}
+      </p>
+      <div class="form-row">
+        <div>
+          <label for="{{ form.recipient_emails.id_for_label }}">{{ form.recipient_emails.label }}:</label>
+          {{ form.recipient_emails.errors }}
+          {{ form.recipient_emails }}
+          {% if form.recipient_emails.help_text %}<div class="help">{{ form.recipient_emails.help_text }}</div>{% endif %}
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="{{ form.grant_code_for_credit.id_for_label }}">{{ form.grant_code_for_credit.label }}:</label>
+          {{ form.grant_code_for_credit.errors }}
+          {{ form.grant_code_for_credit }}
+          {% if form.grant_code_for_credit.help_text %}<div class="help">{{ form.grant_code_for_credit.help_text }}</div>{% endif %}
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="module aligned">
+      <h2>{% translate "Grant codes by internal department" %}</h2>
+      <p class="sric-help">
+        {% translate "Select a department in the combobox below (or edit the table), set its grant code, then click Save. SRIC emails for a faculty recharge use that department’s grant code." %}
+      </p>
+
+      <div class="sric-grant-picker">
+        <div>
+          <label for="id_sric_dept_combobox">{% translate "Internal department" %}</label>
+          <select id="id_sric_dept_combobox">
+            <option value="">{% translate "— Select department —" %}</option>
+            {% for row in formset %}
+              {% if row.instance.pk %}
+              <option
+                value="{{ row.instance.pk }}"
+                data-grant="{{ row.instance.internal_grant_code|default:'' }}"
+              >
+                {{ row.instance.name }}{% if row.instance.code %} ({{ row.instance.code }}){% endif %}
+              </option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label for="id_sric_dept_grant_quick">{% translate "Grant code for selected department" %}</label>
+          <input type="text" id="id_sric_dept_grant_quick" maxlength="80" placeholder="e.g. IIC-000-002" autocomplete="off">
+        </div>
+        <div>
+          <button type="button" class="button" id="id_sric_apply_grant">{% translate "Apply to selected" %}</button>
+        </div>
+      </div>
+
+      {% if formset.forms %}
+      <table class="sric-grant-table" id="sric-grant-table">
+        <thead>
+          <tr>
+            <th>{% translate "Department" %}</th>
+            <th>{% translate "Code" %}</th>
+            <th>{% translate "Grant code for credit" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in formset %}
+          <tr class="sric-dept-row" data-dept-id="{{ row.instance.pk }}">
+            <td>
+              {{ row.id }}
+              <strong>{{ row.instance.name }}</strong>
+            </td>
+            <td>{{ row.instance.code|default:"—" }}</td>
+            <td>
+              {{ row.internal_grant_code.errors }}
+              {{ row.internal_grant_code }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p>{% translate "No internal departments found." %}</p>
+      {% endif %}
+    </fieldset>
+
+    <div class="submit-row">
+      <input type="submit" value="{% translate 'Save' %}" class="default" name="_save">
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  var combo = document.getElementById("id_sric_dept_combobox");
+  var quick = document.getElementById("id_sric_dept_grant_quick");
+  var applyBtn = document.getElementById("id_sric_apply_grant");
+  if (!combo || !quick || !applyBtn) return;
+
+  function rowForId(id) {
+    return document.querySelector('.sric-dept-row[data-dept-id="' + id + '"]');
+  }
+
+  function grantInput(row) {
+    return row ? row.querySelector('input[type="text"]') : null;
+  }
+
+  function clearHighlights() {
+    document.querySelectorAll(".sric-dept-row.sric-row-highlight").forEach(function (el) {
+      el.classList.remove("sric-row-highlight");
+    });
+  }
+
+  combo.addEventListener("change", function () {
+    var id = combo.value;
+    clearHighlights();
+    if (!id) {
+      quick.value = "";
+      return;
+    }
+    var opt = combo.options[combo.selectedIndex];
+    quick.value = opt.getAttribute("data-grant") || "";
+    var row = rowForId(id);
+    if (row) {
+      row.classList.add("sric-row-highlight");
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      var inp = grantInput(row);
+      if (inp) quick.value = inp.value;
+    }
+  });
+
+  applyBtn.addEventListener("click", function () {
+    var id = combo.value;
+    if (!id) {
+      window.alert("{% translate 'Select an internal department first.' %}");
+      return;
+    }
+    var row = rowForId(id);
+    var inp = grantInput(row);
+    if (!inp) return;
+    inp.value = quick.value.trim();
+    clearHighlights();
+    row.classList.add("sric-row-highlight");
+    var opt = combo.options[combo.selectedIndex];
+    if (opt) opt.setAttribute("data-grant", inp.value);
+  });
+})();
+</script>
+{% endblock %}

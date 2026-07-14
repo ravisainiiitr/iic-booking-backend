@@ -693,23 +693,10 @@ class WalletCreditFacilitySettingsAdmin(admin.ModelAdmin):
 
 @admin.register(WalletSricSettings)
 class WalletSricSettingsAdmin(admin.ModelAdmin):
-    """Singleton: SRIC Office recipient emails for faculty wallet recharge."""
+    """Singleton: SRIC Office emails + per-internal-department grant codes."""
 
+    change_form_template = "admin/users/walletsricsettings/change_form.html"
     list_display = ["recipient_preview"]
-
-    fieldsets = (
-        (
-            _("SRIC Office emails"),
-            {
-                "fields": ("recipient_emails", "grant_code_for_credit"),
-                "description": _(
-                    "Recipients receive the email when a faculty member uses "
-                    "“Send to SRIC Office” on a wallet recharge request (after OTP verification). "
-                    "You can adjust subject and body wording under Communication → Communication templates."
-                ),
-            },
-        ),
-    )
 
     def recipient_preview(self, obj):
         if not obj:
@@ -732,6 +719,93 @@ class WalletSricSettingsAdmin(admin.ModelAdmin):
 
         obj = WalletSricSettings.get_singleton()
         return redirect("admin:users_walletsricsettings_change", object_id=obj.pk)
+
+    def _internal_department_qs(self):
+        return Department.objects.filter(
+            department_type=DepartmentType.INTERNAL,
+        ).order_by("name", "code")
+
+    def _grant_formset_class(self):
+        from django import forms
+
+        class InternalDepartmentGrantForm(forms.ModelForm):
+            class Meta:
+                model = Department
+                fields = ("internal_grant_code",)
+                widgets = {
+                    "internal_grant_code": forms.TextInput(
+                        attrs={
+                            "maxlength": 80,
+                            "placeholder": "e.g. IIC-000-002",
+                            "autocomplete": "off",
+                        }
+                    ),
+                }
+
+        return forms.modelformset_factory(
+            Department,
+            form=InternalDepartmentGrantForm,
+            extra=0,
+            can_delete=False,
+        )
+
+    def _settings_form_class(self):
+        from django import forms
+
+        class WalletSricSettingsForm(forms.ModelForm):
+            class Meta:
+                model = WalletSricSettings
+                fields = ("recipient_emails", "grant_code_for_credit")
+                widgets = {
+                    "recipient_emails": forms.Textarea(attrs={"rows": 5, "cols": 80}),
+                    "grant_code_for_credit": forms.TextInput(attrs={"maxlength": 80}),
+                }
+
+        return WalletSricSettingsForm
+
+    def change_view(self, request, object_id, form_url="", extra_context=None):
+        from django.contrib import messages
+        from django.shortcuts import get_object_or_404, redirect
+        from django.template.response import TemplateResponse
+
+        obj = get_object_or_404(WalletSricSettings, pk=object_id)
+        qs = self._internal_department_qs()
+        FormClass = self._settings_form_class()
+        FormSet = self._grant_formset_class()
+        prefix = "dept_grants"
+
+        if request.method == "POST":
+            form = FormClass(request.POST, instance=obj)
+            formset = FormSet(request.POST, queryset=qs, prefix=prefix)
+            if form.is_valid() and formset.is_valid():
+                form.save()
+                formset.save()
+                messages.success(
+                    request,
+                    _("SRIC Office settings and department grant codes were saved."),
+                )
+                return redirect("admin:users_walletsricsettings_change", object_id=obj.pk)
+        else:
+            form = FormClass(instance=obj)
+            formset = FormSet(queryset=qs, prefix=prefix)
+
+        context = {
+            **self.admin_site.each_context(request),
+            **(extra_context or {}),
+            "opts": self.model._meta,
+            "original": obj,
+            "title": _("Change %s") % self.model._meta.verbose_name,
+            "form": form,
+            "formset": formset,
+            "has_view_permission": self.has_view_permission(request, obj),
+            "has_change_permission": self.has_change_permission(request, obj),
+            "has_add_permission": False,
+            "has_delete_permission": False,
+            "is_popup": False,
+            "save_as": False,
+            "show_save": True,
+        }
+        return TemplateResponse(request, self.change_form_template, context)
 
 
 @admin.register(UserTypeInactivityTimeout)

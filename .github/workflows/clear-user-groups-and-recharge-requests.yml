@@ -1,0 +1,46 @@
+name: Clear User Groups & Recharge Requests (production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DELETE_USER_GROUPS_AND_RECHARGE_REQUESTS to confirm irreversible wipe'
+        required: true
+        type: string
+
+jobs:
+  clear-groups-recharges:
+    runs-on: self-hosted
+    steps:
+      - name: Verify confirmation token
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DELETE_USER_GROUPS_AND_RECHARGE_REQUESTS" ]; then
+            echo "Confirmation token mismatch — aborting."
+            exit 1
+          fi
+
+      - name: Locate production Django container
+        id: find
+        run: |
+          set -euo pipefail
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django|iic_booking_production_django' | head -n 1 || true)"
+          if [ -z "$CID" ]; then
+            CID="$(docker ps --format '{{.ID}} {{.Image}}' | grep -i 'django' | head -n 1 | awk '{print $1}' || true)"
+          fi
+          if [ -z "$CID" ]; then
+            echo "Could not find a running Django container."
+            exit 1
+          fi
+          echo "Using container: $CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run counts on production Django
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py clear_user_groups_and_recharge_requests
+
+      - name: Wipe user groups and wallet recharge requests
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py clear_user_groups_and_recharge_requests --confirm DELETE_USER_GROUPS_AND_RECHARGE_REQUESTS
