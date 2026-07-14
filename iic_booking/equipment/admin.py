@@ -13,8 +13,7 @@ import logging
 from iic_booking.users.models.user_type import UserType
 
 logger = logging.getLogger(__name__)
-from .image_utils import equipment_image_available, equipment_image_path_available, save_local_equipment_image_backup
-from iic_booking.equipment.models import get_equipment_image_storage
+from .image_utils import save_local_equipment_image_backup
 from .models import (
     Equipment,
     EquipmentCategory,
@@ -1045,32 +1044,40 @@ class EquipmentAdmin(admin.ModelAdmin):
 
         super().save_model(request, obj, form, change)
 
-        # Preserve existing image when admin saves equipment without uploading a new file.
-        # Django forms can sometimes overwrite File/Image fields with empty values when the input is left blank.
+        # Preserve existing image when admin saves without uploading a new file.
+        # Always restore the previous DB path — do not gate on storage availability
+        # (false-negative S3 checks previously left the image blank after unrelated edits).
         if (
             existing_image_name
             and not new_image_uploaded
             and not clear_image_requested
-            and equipment_image_path_available(existing_image_name, get_equipment_image_storage())
-            and (not getattr(obj, "image", None) or not getattr(obj.image, "name", None) or obj.image.name != existing_image_name)
+            and (
+                not getattr(obj, "image", None)
+                or not getattr(obj.image, "name", None)
+                or obj.image.name != existing_image_name
+            )
         ):
             try:
-                obj.image.name = existing_image_name
+                from .image_utils import normalize_storage_path
+
+                obj.image.name = normalize_storage_path(existing_image_name) or existing_image_name
                 obj.save(update_fields=["image"])
             except Exception:
-                # Don't block the save due to image preservation; the safety check below will surface issues.
                 pass
 
         if new_image_uploaded and getattr(obj, "image", None) and obj.image.name:
             upload = request.FILES.get("image")
             if upload:
                 try:
+                    from .image_utils import normalize_equipment_image_db_path
+
+                    normalize_equipment_image_db_path(obj, save=True)
                     upload.seek(0)
                     save_local_equipment_image_backup(obj.image.name, upload.read())
                 except Exception:
                     pass
 
-        # Safety check: require remote storage (S3), not ephemeral container-local backup.
+        # Safety check: warn if remote storage cannot open the image (do not clear the DB path).
         if getattr(obj, "image", None) and getattr(obj.image, "name", None):
             from .image_utils import verify_file_field_in_storage
 

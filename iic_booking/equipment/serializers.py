@@ -113,7 +113,10 @@ def _equipment_image_url(obj, request=None, *, verify_storage=False):
     Return the stable API proxy URL for the equipment image (streams from storage; does not expire).
 
     Clients should use this as img src (or getEquipmentImageUrl on the frontend) instead of raw storage URLs.
-    When verify_storage is True, return None if the file is missing from storage (avoids broken img src).
+
+    By default we return the proxy whenever a DB path exists. Strict verify_storage used to hide
+    images when S3 open() failed due to a media/ prefix mismatch even though the object existed —
+    that looked like "images disappear after some time". The proxy still 404s if truly missing.
     """
     if not get_equipment_image_storage_path(obj):
         return None
@@ -822,11 +825,11 @@ class EquipmentListSerializer(serializers.ModelSerializer):
         read_only_fields = ['equipment_id', 'created_at', 'updated_at']
 
     def get_image_url(self, obj):
-        """Return stable proxy URL for equipment image when the file exists in storage."""
+        """Return stable proxy URL whenever a DB image path exists (no false-negative S3 hide)."""
         return _equipment_image_url(
             obj,
             request=self.context.get("request"),
-            verify_storage=True,
+            verify_storage=False,
         )
     
     def get_video_url(self, obj):
@@ -899,7 +902,7 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
         return _equipment_image_url(
             obj,
             request=self.context.get("request"),
-            verify_storage=True,
+            verify_storage=False,
         )
 
     def get_video_url(self, obj):
@@ -1019,7 +1022,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         return _equipment_image_url(
             obj,
             request=self.context.get("request"),
-            verify_storage=True,
+            verify_storage=False,
         )
     
     def get_video_url(self, obj):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 from typing import Iterable, Optional, Tuple
@@ -9,6 +10,8 @@ from typing import Iterable, Optional, Tuple
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+
+logger = logging.getLogger(__name__)
 
 
 def local_equipment_image_path(stored_path: str) -> str:
@@ -59,70 +62,8 @@ def _allow_local_equipment_image_fallback() -> bool:
     return bool(getattr(settings, "ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK", False))
 
 
-def equipment_image_path_available(stored_path: str, storage=None) -> bool:
-    """True when stored_path exists in configured storage (S3). Optional local fallback."""
-    if not (stored_path and stored_path.strip()):
-        return False
-    if storage is not None:
-        try:
-            if hasattr(storage, "exists") and storage.exists(stored_path):
-                return True
-            with storage.open(stored_path, "rb") as fh:
-                fh.read(1)
-            return True
-        except Exception:
-            pass
-    if _allow_local_equipment_image_fallback() and local_equipment_image_exists(stored_path):
-        return True
-    return False
-
-
-def equipment_image_available(file_field) -> bool:
-    """True when the image exists in configured storage (S3). Optional local fallback."""
-    if verify_file_field_in_storage(file_field):
-        return True
-    if not file_field or not getattr(file_field, "name", None):
-        return False
-    name = (file_field.name or "").strip()
-    if not name:
-        return False
-    if _allow_local_equipment_image_fallback() and local_equipment_image_exists(name):
-        return True
-    return False
-
-
-def persist_equipment_image_upload(equipment, uploaded_file) -> str:
-    """
-    Save an uploaded image to configured storage (S3 in production) and local backup.
-    Clears the DB path and raises if the file cannot be read back from remote storage.
-    """
-    uploaded_file.seek(0)
-    content = uploaded_file.read()
-    if not content:
-        raise ValueError("Empty image file")
-
-    upload_name = os.path.basename(getattr(uploaded_file, "name", "") or "upload.jpg")
-    equipment.image.save(upload_name, ContentFile(content), save=True)
-    path = (equipment.image.name or "").strip()
-    if not path:
-        raise ValueError("Failed to persist equipment image path")
-
-    save_local_equipment_image_backup(path, content)
-
-    # Require the configured storage backend (S3), not the ephemeral local backup.
-    if not verify_file_field_in_storage(equipment.image):
-        equipment.image = ""
-        equipment.save(update_fields=["image"])
-        raise ValueError(
-            f"Equipment image was not found in remote storage after save. "
-            f"Check AWS credentials/bucket. Path: {path}"
-        )
-
-    return path
-
-
 def normalize_storage_path(path: str) -> str:
-    """Return path suitable for default_storage (location=media). Avoids double 'media/' prefix."""
+    """Return path suitable for storage with location=media. Avoids double 'media/' prefix."""
     if not path:
         return path
     path = (path or "").strip()
@@ -135,31 +76,28 @@ def normalize_storage_path(path: str) -> str:
 
 def storage_path_candidates(stored_path: str) -> Iterable[str]:
     """
-    Yield plausible default_storage keys for a stored DB path.
+    Yield plausible storage keys for a stored DB path.
 
     Historically we stored S3 keys sometimes with and sometimes without a leading `media/`.
-    This yields both variants.
+    With S3Boto3Storage(location="media"), the name stored in the DB must NOT include `media/`
+    or open/exists will look for media/media/... .
+    Prefer the normalized (no media/) key first.
     """
     if not (stored_path and stored_path.strip()):
         return []
 
-    raw = stored_path.strip()
-    normalized = raw
+    raw = stored_path.strip().lstrip("/")
+    normalized = normalize_storage_path(raw)
 
-    if normalized.startswith("media/"):
-        normalized = normalized[6:]
-    elif normalized.startswith("media") and (
-        len(normalized) == 5 or normalized[5:6] in ("/", "")
-    ):
-        normalized = normalized[5:].lstrip("/") or normalized
-
-    candidates = [normalized, raw]
+    candidates = []
+    if normalized:
+        candidates.append(normalized)
+    if raw and raw != normalized:
+        candidates.append(raw)
+    # Legacy keys that were uploaded without the storage location prefix applied correctly.
     if normalized and not normalized.startswith("media/"):
         candidates.append("media/" + normalized)
-    if raw and not raw.startswith("media/"):
-        candidates.append("media/" + raw)
 
-    # De-dupe while keeping order
     seen = set()
     out = []
     for c in candidates:
@@ -199,30 +137,6 @@ def resolve_storage_path_for_open(stored_path: str) -> Optional[str]:
     return resolved_path
 
 
-def verify_file_field_in_storage(file_field) -> bool:
-    """Return True if the FileField/ImageField object exists in its configured storage backend."""
-    if not file_field or not getattr(file_field, "name", None):
-        return False
-    name = (file_field.name or "").strip()
-    if not name:
-        return False
-    try:
-        storage = file_field.storage
-        with storage.open(name, "rb") as fh:
-            fh.read(1)
-        return True
-    except Exception:
-        return False
-
-
-def get_equipment_image_storage_path(equipment) -> Optional[str]:
-    """Relative path stored on the ImageField, or None if no image."""
-    if getattr(equipment, "image", None) and equipment.image and getattr(equipment.image, "name", None):
-        name = (equipment.image.name or "").strip()
-        return name or None
-    return None
-
-
 def open_via_field_storage(file_field) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     """Open a FileField via its storage backend, trying legacy path variants."""
     if not file_field or not getattr(file_field, "name", None):
@@ -239,10 +153,12 @@ def open_via_field_storage(file_field) -> Tuple[Optional[bytes], Optional[str], 
             continue
         seen.add(key)
         try:
-            if hasattr(storage, "exists") and not storage.exists(key):
-                continue
+            # Prefer open over exists: S3 exists() with a double-prefix key is a false miss,
+            # and exists() can also lag briefly after PutObject.
             with storage.open(key, "rb") as fh:
                 content = fh.read()
+            if not content:
+                continue
             content_type, _ = mimetypes.guess_type(key)
             if not content_type:
                 content_type = "image/jpeg"
@@ -250,6 +166,122 @@ def open_via_field_storage(file_field) -> Tuple[Optional[bytes], Optional[str], 
         except Exception:
             continue
     return None, None, None
+
+
+def verify_file_field_in_storage(file_field) -> bool:
+    """
+    Return True if the FileField/ImageField object can be opened from storage.
+
+    Uses the same path-candidate logic as open/read so a DB value like
+    media/equipment_images/... still matches an object under location=media.
+    """
+    content, resolved_path, _ = open_via_field_storage(file_field)
+    return bool(content and resolved_path)
+
+
+def equipment_image_path_available(stored_path: str, storage=None) -> bool:
+    """True when stored_path exists in configured storage (S3). Optional local fallback."""
+    if not (stored_path and stored_path.strip()):
+        return False
+    if storage is not None:
+        seen: set[str] = set()
+        for key in storage_path_candidates(stored_path):
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            try:
+                with storage.open(key, "rb") as fh:
+                    if fh.read(1):
+                        return True
+            except Exception:
+                continue
+    if _allow_local_equipment_image_fallback() and local_equipment_image_exists(
+        normalize_storage_path(stored_path)
+    ):
+        return True
+    if _allow_local_equipment_image_fallback() and local_equipment_image_exists(stored_path):
+        return True
+    return False
+
+
+def equipment_image_available(file_field) -> bool:
+    """True when the image exists in configured storage (S3). Optional local fallback."""
+    if verify_file_field_in_storage(file_field):
+        return True
+    if not file_field or not getattr(file_field, "name", None):
+        return False
+    name = (file_field.name or "").strip()
+    if not name:
+        return False
+    if _allow_local_equipment_image_fallback() and (
+        local_equipment_image_exists(normalize_storage_path(name))
+        or local_equipment_image_exists(name)
+    ):
+        return True
+    return False
+
+
+def get_equipment_image_storage_path(equipment) -> Optional[str]:
+    """Relative path stored on the ImageField, or None if no image."""
+    if getattr(equipment, "image", None) and equipment.image and getattr(equipment.image, "name", None):
+        name = (equipment.image.name or "").strip()
+        return name or None
+    return None
+
+
+def normalize_equipment_image_db_path(equipment, *, save: bool = True) -> Optional[str]:
+    """
+    If Equipment.image.name has a redundant media/ prefix, strip it and optionally save.
+    Returns the normalized path, or None if there was no image.
+    """
+    path = get_equipment_image_storage_path(equipment)
+    if not path:
+        return None
+    normalized = normalize_storage_path(path)
+    if normalized != path:
+        equipment.image.name = normalized
+        if save:
+            equipment.save(update_fields=["image"])
+            logger.info(
+                "Normalized equipment %s image path %s -> %s",
+                getattr(equipment, "equipment_id", None),
+                path,
+                normalized,
+            )
+    return normalized
+
+
+def persist_equipment_image_upload(equipment, uploaded_file) -> str:
+    """
+    Save an uploaded image to configured storage (S3 in production) and local backup.
+
+    Raises if the file cannot be read back from remote storage. Does NOT clear the
+    DB path on a false-negative verify — that historically wiped valid S3 objects
+    whose keys used a media/ prefix mismatch.
+    """
+    uploaded_file.seek(0)
+    content = uploaded_file.read()
+    if not content:
+        raise ValueError("Empty image file")
+
+    upload_name = os.path.basename(getattr(uploaded_file, "name", "") or "upload.jpg")
+    equipment.image.save(upload_name, ContentFile(content), save=True)
+    path = normalize_equipment_image_db_path(equipment, save=True) or (
+        equipment.image.name or ""
+    ).strip()
+    if not path:
+        raise ValueError("Failed to persist equipment image path")
+
+    save_local_equipment_image_backup(path, content)
+
+    if not verify_file_field_in_storage(equipment.image):
+        # Leave DB path intact; clearing it made images permanently disappear in prod.
+        raise ValueError(
+            f"Equipment image was not found in remote storage after save. "
+            f"Check AWS credentials/bucket. Path: {path}"
+        )
+
+    return path
 
 
 def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
@@ -265,6 +297,12 @@ def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str
         content, resolved_path, content_type = open_via_field_storage(equipment.image)
         if content is not None and resolved_path:
             return content, resolved_path, content_type
+
+    content, resolved_path, content_type = open_local_equipment_image_backup(
+        normalize_storage_path(stored_path)
+    )
+    if content is not None and resolved_path:
+        return content, resolved_path, content_type
 
     content, resolved_path, content_type = open_local_equipment_image_backup(stored_path)
     if content is not None and resolved_path:
