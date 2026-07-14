@@ -8,8 +8,10 @@ from django.urls import reverse
 from iic_booking.equipment.image_utils import (
     equipment_image_available,
     normalize_storage_path,
+    open_equipment_image_bytes,
     open_via_field_storage,
     persist_equipment_image_upload,
+    save_local_equipment_image_backup,
     storage_path_candidates,
     verify_file_field_in_storage,
 )
@@ -115,6 +117,31 @@ class EquipmentImagePersistenceTests(TestCase):
         self.equipment.save(update_fields=["image"])
         self.equipment.refresh_from_db()
         self.assertFalse(bool(self.equipment.image and self.equipment.image.name))
+
+    def test_open_bytes_ignores_local_backup_when_fallback_disabled(self):
+        """Production must not serve container-local copies (they vanish on redeploy)."""
+        self.equipment.image.name = "equipment_images/only_local.jpg"
+        self.equipment.save(update_fields=["image"])
+        # Force-write a local file even though fallback is off (simulate leftover disk copy).
+        from iic_booking.equipment.image_utils import local_equipment_image_path
+        import os
+
+        path = local_equipment_image_path("equipment_images/only_local.jpg")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"local-only-bytes")
+
+        content, _, _ = open_equipment_image_bytes(self.equipment)
+        self.assertIsNone(content)
+
+    @override_settings(ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK=True)
+    def test_open_bytes_uses_local_backup_when_fallback_enabled(self):
+        self.equipment.image.name = "equipment_images/dev_local.jpg"
+        self.equipment.save(update_fields=["image"])
+        save_local_equipment_image_backup("equipment_images/dev_local.jpg", b"dev-local")
+        content, resolved, _ = open_equipment_image_bytes(self.equipment)
+        self.assertEqual(content, b"dev-local")
+        self.assertTrue(resolved)
 
 
 class EquipmentImageProxyUrlNameTests(SimpleTestCase):

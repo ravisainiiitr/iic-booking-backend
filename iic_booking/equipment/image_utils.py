@@ -21,7 +21,9 @@ def local_equipment_image_path(stored_path: str) -> str:
 
 
 def save_local_equipment_image_backup(stored_path: str, content: bytes) -> None:
-    """Write a local backup so images survive S3 issues and dev restarts."""
+    """Write a local backup for development only (not used as source of truth in production)."""
+    if not _allow_local_equipment_image_fallback():
+        return
     if not (stored_path and stored_path.strip() and content):
         return
     path = local_equipment_image_path(stored_path)
@@ -253,11 +255,15 @@ def normalize_equipment_image_db_path(equipment, *, save: bool = True) -> Option
 
 def persist_equipment_image_upload(equipment, uploaded_file) -> str:
     """
-    Save an uploaded image to configured storage (S3 in production) and local backup.
+    Save an uploaded image to configured storage (S3 in production).
 
     Writes the new object first and only updates the DB (and deletes the previous
     object) after the new file can be opened from remote storage. This keeps the
     prior image if the new upload cannot be verified.
+
+    Production never depends on local MEDIA_ROOT copies — those are wiped on
+    container rebuilds. Local backup is written only when
+    ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK is enabled (dev).
     """
     from iic_booking.equipment.models import equipment_image_upload_to, get_equipment_image_storage
 
@@ -301,6 +307,7 @@ def persist_equipment_image_upload(equipment, uploaded_file) -> str:
     equipment.image.name = normalized
     equipment.save(update_fields=["image"])
 
+    # Dev-only mirror; production serves exclusively from S3 across deploys.
     save_local_equipment_image_backup(normalized, content)
 
     old_norm = normalize_storage_path(old_name) if old_name else ""
@@ -320,8 +327,11 @@ def persist_equipment_image_upload(equipment, uploaded_file) -> str:
 
 def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     """
-    Open equipment image using the field's own storage first.
-    Falls back to legacy default_storage path resolution for old records.
+    Open equipment image from configured storage (S3 in production).
+
+    Local MEDIA_ROOT backups are only used when ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK
+    is True (local/dev). Production must always stream from durable storage so
+    images survive deploys that recreate containers.
     """
     stored_path = get_equipment_image_storage_path(equipment)
     if not stored_path:
@@ -332,14 +342,20 @@ def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str
         if content is not None and resolved_path:
             return content, resolved_path, content_type
 
-    content, resolved_path, content_type = open_local_equipment_image_backup(
-        normalize_storage_path(stored_path)
-    )
+    # Legacy records / path-prefix mismatches via default_storage.
+    content, resolved_path, content_type = open_storage_bytes_first_match(stored_path)
     if content is not None and resolved_path:
         return content, resolved_path, content_type
 
-    content, resolved_path, content_type = open_local_equipment_image_backup(stored_path)
-    if content is not None and resolved_path:
-        return content, resolved_path, content_type
+    if _allow_local_equipment_image_fallback():
+        content, resolved_path, content_type = open_local_equipment_image_backup(
+            normalize_storage_path(stored_path)
+        )
+        if content is not None and resolved_path:
+            return content, resolved_path, content_type
 
-    return open_storage_bytes_first_match(stored_path)
+        content, resolved_path, content_type = open_local_equipment_image_backup(stored_path)
+        if content is not None and resolved_path:
+            return content, resolved_path, content_type
+
+    return None, None, None
