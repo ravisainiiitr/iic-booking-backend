@@ -821,6 +821,8 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'operator_absent_disruption_after_booking_end_hours',
             'make',
             'show_make_on_card',
+            'model_information',
+            'show_model_on_card',
         ]
         read_only_fields = ['equipment_id', 'created_at', 'updated_at']
 
@@ -893,6 +895,8 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
             'internal_department_code',
             'make',
             'show_make_on_card',
+            'model_information',
+            'show_model_on_card',
             'created_at',
             'updated_at',
         ]
@@ -958,6 +962,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'important_instruction',
             'make',
             'show_make_on_card',
+            'model_information',
+            'show_model_on_card',
             'booking_email_extra_text',
             'completion_email_extra_text',
             'print_3d_stl_notification_email',
@@ -1154,7 +1160,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         model = Equipment
         fields = [
             'name', 'code', 'description', 'status', 'location', 'important_instruction',
-            'make', 'show_make_on_card',
+            'make', 'show_make_on_card', 'model_information', 'show_model_on_card',
             'booking_email_extra_text', 'completion_email_extra_text', 'print_3d_stl_notification_email',
             'istem_portal_url', 'istem_fbr_status_url',
             'profile_type', 'category', 'internal_department', 'visibility_group',

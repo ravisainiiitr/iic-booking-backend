@@ -943,6 +943,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'name', 'code', 'category', 'equipment_group', 'internal_department', 'visibility_group',
                 'profile_type', 'description', 'status', 'location',
                 'make', 'show_make_on_card',
+                'model_information', 'show_model_on_card',
                 'split_booking_enabled',
                 'skip_quota_check',
                 'auto_slot_selection_default',

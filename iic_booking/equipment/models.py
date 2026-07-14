@@ -316,7 +316,19 @@ class Equipment(models.Model):
     show_make_on_card = models.BooleanField(
         default=False,
         verbose_name=_("Show Make on equipment card"),
-        help_text=_("When enabled, Make is displayed on catalog cards above department information."),
+        help_text=_("When enabled, Make is displayed on catalog cards below department information."),
+    )
+    model_information = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        verbose_name=_("Model"),
+        help_text=_('Model information (e.g. "Sigma 300", "FE-SEM"). Shown on equipment catalog cards when enabled.'),
+    )
+    show_model_on_card = models.BooleanField(
+        default=False,
+        verbose_name=_("Show Model on equipment card"),
+        help_text=_("When enabled, Model is displayed on catalog cards below Make / department information."),
     )
 
     class WeeklyViewDisplay(models.TextChoices):
