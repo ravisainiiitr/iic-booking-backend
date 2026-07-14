@@ -1,0 +1,32 @@
+name: Clear All Bookings (production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DELETE_ALL_BOOKINGS to confirm irreversible wipe'
+        required: true
+        type: string
+
+jobs:
+  clear-bookings:
+    runs-on: self-hosted
+    steps:
+      - name: Verify confirmation token
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DELETE_ALL_BOOKINGS" ]; then
+            echo "Confirmation token mismatch — aborting."
+            exit 1
+          fi
+
+      - name: Dry-run counts on production Django
+        run: |
+          cd /home/ubuntu
+          docker compose -f docker-compose.production.yml exec -T django \
+            python manage.py clear_all_bookings
+
+      - name: Wipe all bookings on production
+        run: |
+          cd /home/ubuntu
+          docker compose -f docker-compose.production.yml exec -T django \
+            python manage.py clear_all_bookings --confirm DELETE_ALL_BOOKINGS
