@@ -2324,6 +2324,8 @@ def equipment_daily_slots(request, pk):
             'holidays_in_range': set(holidays_in_range.keys()) if holidays_in_range else set(),
             'external_bookable_min_date': slot_window_min_date if for_external_user_ctx else None,
             'external_bookable_max_date': slot_window_max_date if for_external_user_ctx else None,
+            # Email/phone only for admin-panel staff (Admin / OIC / Operator / Finance).
+            'include_booking_user_contact': bool(is_admin),
         },
     )
     # Min/max times for backward compatibility (from the slot_masters we already have)

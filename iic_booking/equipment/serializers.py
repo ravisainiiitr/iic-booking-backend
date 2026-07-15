@@ -570,6 +570,9 @@ class DailySlotSerializer(serializers.ModelSerializer):
     booking_status_display = serializers.SerializerMethodField()
     booking_user_name = serializers.SerializerMethodField()
     booking_user_department_code = serializers.SerializerMethodField()
+    booking_user_department_name = serializers.SerializerMethodField()
+    booking_user_email = serializers.SerializerMethodField()
+    booking_user_phone = serializers.SerializerMethodField()
     available_for_external = serializers.SerializerMethodField()
     # Wall-clock open time (HH:mm:ss) from SlotMaster — aligns weekly grid rows with slot_master_times (start_datetime is TZ-aware ISO).
     slot_open_time = serializers.SerializerMethodField()
@@ -598,6 +601,9 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'booking_status_display',
             'booking_user_name',
             'booking_user_department_code',
+            'booking_user_department_name',
+            'booking_user_email',
+            'booking_user_phone',
             'available_for_external',
             'created_at',
             'updated_at'
@@ -732,25 +738,25 @@ class DailySlotSerializer(serializers.ModelSerializer):
             return obj.booking.get_status_display()
         return None
 
+    def _booking_user(self, obj):
+        booking = getattr(obj, "booking", None)
+        if not booking:
+            return None
+        return getattr(booking, "user", None)
+
     def get_booking_user_name(self, obj):
         """
         Display name for the user who booked this slot.
         Used by the Lab operator/OIC dashboard weekly calendar to label BOOKED cells.
         """
-        booking = getattr(obj, "booking", None)
-        if not booking:
-            return None
-        user = getattr(booking, "user", None)
+        user = self._booking_user(obj)
         if not user:
             return None
         return getattr(user, "name", None) or getattr(user, "email", None) or None
 
     def get_booking_user_department_code(self, obj):
         """Department code of the user who booked this slot (second line on dashboard, when available)."""
-        booking = getattr(obj, "booking", None)
-        if not booking:
-            return None
-        user = getattr(booking, "user", None)
+        user = self._booking_user(obj)
         if not user:
             return None
         dept = getattr(user, "department", None)
@@ -759,6 +765,40 @@ class DailySlotSerializer(serializers.ModelSerializer):
         code = getattr(dept, "code", None)
         code = str(code).strip() if code is not None else ""
         return code or None
+
+    def get_booking_user_department_name(self, obj):
+        """Department name of the user who booked this slot (staff hover details)."""
+        user = self._booking_user(obj)
+        if not user:
+            return None
+        dept = getattr(user, "department", None)
+        if not dept:
+            return None
+        name = getattr(dept, "name", None)
+        name = str(name).strip() if name is not None else ""
+        return name or None
+
+    def get_booking_user_email(self, obj):
+        """Email of the booker — only for admin-panel staff (change-slot / OIC hover)."""
+        if not self.context.get("include_booking_user_contact"):
+            return None
+        user = self._booking_user(obj)
+        if not user:
+            return None
+        email = getattr(user, "email", None)
+        email = str(email).strip() if email is not None else ""
+        return email or None
+
+    def get_booking_user_phone(self, obj):
+        """Mobile/phone of the booker — only for admin-panel staff."""
+        if not self.context.get("include_booking_user_contact"):
+            return None
+        user = self._booking_user(obj)
+        if not user:
+            return None
+        phone = getattr(user, "phone_number", None)
+        phone = str(phone).strip() if phone is not None else ""
+        return phone or None
 
 
 class EquipmentListSerializer(serializers.ModelSerializer):
