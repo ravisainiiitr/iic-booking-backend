@@ -189,6 +189,46 @@ def get_oic_emails_for_equipment(equipment_id: int) -> list[str]:
     return [m.manager.email for m in managers if m.manager and getattr(m.manager, "email", None)]
 
 
+def get_equipment_staff_notify_users(equipment) -> list:
+    """
+    Active Officer In Charge (managers), temporary OIC, and Lab Incharge (operators)
+    assigned to this equipment — for booking event email + in-app notifications.
+    Deduplicated by user id. Prefers active accounts; includes users without email
+    so push/in-app can still be delivered when possible.
+    """
+    if equipment is None:
+        return []
+    eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
+    if eid is None:
+        return []
+
+    from iic_booking.equipment.models import EquipmentTemporaryOIC
+
+    seen: set[int] = set()
+    out: list = []
+
+    def _add(u) -> None:
+        if not u or not getattr(u, "id", None):
+            return
+        if u.id in seen:
+            return
+        if getattr(u, "is_active", True) is False:
+            return
+        seen.add(u.id)
+        out.append(u)
+
+    for em in EquipmentManager.objects.filter(equipment_id=eid).select_related("manager"):
+        _add(em.manager)
+    now = timezone.now()
+    for row in EquipmentTemporaryOIC.objects.filter(
+        equipment_id=eid, resume_at__gt=now
+    ).select_related("temporary_oic"):
+        _add(row.temporary_oic)
+    for eo in EquipmentOperator.objects.filter(equipment_id=eid).select_related("operator"):
+        _add(eo.operator)
+    return out
+
+
 def get_equipment_ids_managed_by_oic(user_id: int) -> list[int]:
     """Return equipment IDs for which the user is OIC (manager) or temporary OIC (until resume_at)."""
     from iic_booking.equipment.models import EquipmentTemporaryOIC

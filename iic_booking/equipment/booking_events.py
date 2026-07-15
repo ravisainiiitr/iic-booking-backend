@@ -482,29 +482,36 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     
     # Get start and end times from slots (for email/display)
     # When equipment has Hide time (SLOT_ID): for non-admin/OIC recipients show date only and hide duration; admin/OIC always get full time.
-    daily_slots = booking.daily_slots.select_related('slot_master').all().order_by('start_datetime')
+    daily_slots = list(booking.daily_slots.select_related('slot_master').all().order_by('start_datetime'))
     from iic_booking.users.models.user_type import UserType
-    recipient_is_admin_oic = getattr(user, 'user_type', None) in UserType.get_admin_panel_codes()
-    use_slot_id_display = (
-        equipment
-        and getattr(equipment, 'weekly_view_display', None) == 'SLOT_ID'
-        and not recipient_is_admin_oic
-    )
 
-    if daily_slots.exists():
-        def _format_local(dt, fmt):
-            if not dt:
-                return ""
-            try:
-                dt_local = timezone.localtime(dt) if timezone.is_aware(dt) else dt
-            except Exception:
-                dt_local = dt
-            return dt_local.strftime(fmt)
+    def _format_local(dt, fmt):
+        if not dt:
+            return ""
+        try:
+            dt_local = timezone.localtime(dt) if timezone.is_aware(dt) else dt
+        except Exception:
+            dt_local = dt
+        return dt_local.strftime(fmt)
 
+    def _apply_slot_times_for_recipient(ctx: dict, recipient) -> None:
+        recipient_is_staff = getattr(recipient, "user_type", None) in UserType.get_admin_panel_codes()
+        use_slot_id_display = (
+            equipment
+            and getattr(equipment, "weekly_view_display", None) == "SLOT_ID"
+            and not recipient_is_staff
+        )
+        if not daily_slots:
+            ctx["start_time"] = ""
+            ctx["end_time"] = ""
+            ctx["booking_date"] = ""
+            ctx["slot_id_display"] = ""
+            return
         if use_slot_id_display:
-            # Slot ID mode: send only date and slot ID(s), no exact timing or duration
-            first_slot = daily_slots.first()
-            booking_date_str = _format_local(first_slot.start_datetime, "%Y-%m-%d") if first_slot.start_datetime else ""
+            first_slot = daily_slots[0]
+            booking_date_str = (
+                _format_local(first_slot.start_datetime, "%Y-%m-%d") if first_slot.start_datetime else ""
+            )
             slot_parts = []
             for ds in daily_slots:
                 if ds.slot_master:
@@ -513,22 +520,22 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 else:
                     slot_parts.append("—")
             slot_id_display = ", ".join(slot_parts) if slot_parts else "—"
-            context["start_time"] = f"Date: {booking_date_str}, Slot(s): {slot_id_display}"
-            context["end_time"] = ""
-            context["booking_date"] = booking_date_str
-            context["slot_id_display"] = slot_id_display
-            context["total_time_minutes"] = ""
-            context["total_hours"] = ""
+            ctx["start_time"] = f"Date: {booking_date_str}, Slot(s): {slot_id_display}"
+            ctx["end_time"] = ""
+            ctx["booking_date"] = booking_date_str
+            ctx["slot_id_display"] = slot_id_display
+            ctx["total_time_minutes"] = ""
+            ctx["total_hours"] = ""
         else:
-            context["start_time"] = _format_local(daily_slots.first().start_datetime, "%Y-%m-%d %H:%M:%S")
-            context["end_time"] = _format_local(daily_slots.last().end_datetime, "%Y-%m-%d %H:%M:%S")
-            context["booking_date"] = ""
-            context["slot_id_display"] = ""
-    else:
-        context["start_time"] = ""
-        context["end_time"] = ""
-        context["booking_date"] = ""
-        context["slot_id_display"] = ""
+            ctx["start_time"] = _format_local(daily_slots[0].start_datetime, "%Y-%m-%d %H:%M:%S")
+            ctx["end_time"] = _format_local(daily_slots[-1].end_datetime, "%Y-%m-%d %H:%M:%S")
+            ctx["booking_date"] = ""
+            ctx["slot_id_display"] = ""
+            if booking.total_time_minutes:
+                ctx["total_time_minutes"] = str(booking.total_time_minutes)
+                ctx["total_hours"] = str(round(booking.total_time_minutes / 60, 2))
+
+    _apply_slot_times_for_recipient(context, user)
 
     # Repeat sample emails: original booking reference (admin-approved request passes this in metadata)
     if email_template_code == "repeat_sample_booking_confirmed_email" and not context.get("original_booking_id"):
@@ -755,4 +762,105 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             logger.error(
                 f"Failed to send booking event push to {user.email}: {str(e)}",
                 exc_info=True
+            )
+
+    # Also notify associated Officer In Charge and Lab Incharge (email + in-app).
+    # Failures for staff must not undo a successful user confirmation.
+    _staff_notify_events = {
+        BookingEventType.CREATED,
+        BookingEventType.CONFIRMED,
+        BookingEventType.CANCELLED,
+        BookingEventType.RESCHEDULED,
+        BookingEventType.COMPLETED,
+        BookingEventType.REFUNDED,
+        BookingEventType.ABSENT,
+        BookingEventType.STATUS_CHANGED,
+        BookingEventType.CHARGE_RECALCULATED,
+        BookingEventType.REPEAT_SAMPLE_CREATED,
+    }
+    if event.event_type in _staff_notify_events and (email_template_code or push_template_code):
+        try:
+            from iic_booking.equipment.reports import get_equipment_staff_notify_users
+
+            staff_users = get_equipment_staff_notify_users(equipment)
+            skip_ids = {user.id}
+            booker_label = (user.name or user.email or "user").strip()
+            staff_mgmt_link = (
+                get_frontend_absolute_url(f"/booking-management?expand={booking.booking_id}")
+                or f"/booking-management?expand={booking.booking_id}"
+            )
+            for staff in staff_users:
+                if not staff or staff.id in skip_ids:
+                    continue
+                skip_ids.add(staff.id)
+                staff_context = dict(context)
+                staff_context["user_name"] = staff.name or staff.email
+                staff_context["user_email"] = staff.email or ""
+                staff_context["booked_for_user_name"] = booker_label
+                staff_context["booked_for_user_email"] = user.email or ""
+                # Staff always see full slot timing (not SLOT_ID-only user masking).
+                _apply_slot_times_for_recipient(staff_context, staff)
+                # Drop end-user sample-prep footer for staff copies.
+                staff_context["user_sample_preparation_notice"] = ""
+                staff_context["user_sample_preparation_notice_html"] = ""
+                staff_context["link"] = staff_mgmt_link
+                staff_meta = {
+                    **metadata,
+                    "link": staff_mgmt_link,
+                    "staff_recipient": True,
+                    "booked_for_user_id": user.id,
+                }
+                if email_template_code and (staff.email or "").strip():
+                    try:
+                        CommunicationService.send_email(
+                            recipient=staff,
+                            template=email_template_code,
+                            template_context=staff_context,
+                            metadata=staff_meta,
+                        )
+                        logger.info(
+                            "Booking event email sent to equipment staff %s for event %s",
+                            staff.email,
+                            event.event_id,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to send booking event email to staff %s: %s",
+                            getattr(staff, "email", staff.id),
+                            e,
+                            exc_info=True,
+                        )
+                if push_template_code:
+                    try:
+                        staff_title = f"Booking — {event.get_event_type_display()}"
+                        staff_message = (
+                            f"{display_booking_ref} — {equipment.name}: "
+                            f"{event.get_event_type_display()} for {booker_label}"
+                        )
+                        CommunicationService.send_push_notification(
+                            recipient=staff,
+                            template=push_template_code,
+                            template_context=staff_context,
+                            metadata=staff_meta,
+                            title=staff_title,
+                            message=staff_message,
+                        )
+                        logger.info(
+                            "Booking event push sent to equipment staff user_id=%s for event %s",
+                            staff.id,
+                            event.event_id,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to send booking event push to staff user_id=%s: %s",
+                            getattr(staff, "id", None),
+                            e,
+                            exc_info=True,
+                        )
+        except Exception as e:
+            logger.error(
+                "Failed to notify equipment staff for booking event %s: %s",
+                event.event_id,
+                e,
+                exc_info=True,
             )
