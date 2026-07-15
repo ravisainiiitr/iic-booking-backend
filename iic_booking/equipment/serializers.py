@@ -65,6 +65,7 @@ from .models import (
 )
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.models.department import Department, DepartmentType
 from iic_booking.communication.utils import booking_display_id_for_email
 
 from .image_utils import get_equipment_image_storage_path, equipment_image_available
@@ -1155,14 +1156,22 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
 
 class EquipmentManagerWriteSerializer(serializers.Serializer):
     manager = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(user_type=UserType.MANAGER, is_active=True).order_by('name', 'email'),
+        queryset=User.objects.filter(
+            user_type=UserType.MANAGER,
+            is_active=True,
+            department__department_type=DepartmentType.INTERNAL,
+        ).order_by('name', 'email'),
         required=True,
     )
 
 
 class EquipmentOperatorWriteSerializer(serializers.Serializer):
     operator = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.filter(user_type=UserType.OPERATOR, is_active=True).order_by('name', 'email'),
+        queryset=User.objects.filter(
+            user_type=UserType.OPERATOR,
+            is_active=True,
+            department__department_type=DepartmentType.INTERNAL,
+        ).order_by('name', 'email'),
         required=True,
     )
     role = serializers.ChoiceField(
@@ -1230,6 +1239,11 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     charge_profiles = ChargeProfileWriteSerializer(many=True, required=False, default=list)
     slot_masters = SlotMasterWriteSerializer(many=True, required=False, default=list)
     print_materials = PrintMaterialWriteSerializer(many=True, required=False, default=list)
+    internal_department = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.filter(department_type=DepartmentType.INTERNAL).order_by("name"),
+        allow_null=True,
+        required=False,
+    )
 
     class Meta:
         model = Equipment
@@ -1255,6 +1269,50 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_additional_accessories', 'input_fields',
             'charge_profiles', 'slot_masters', 'print_materials',
         ]
+
+    def validate_internal_department(self, value):
+        from iic_booking.users.models.department import DepartmentType
+
+        if value is None:
+            return value
+        if getattr(value, "department_type", None) != DepartmentType.INTERNAL:
+            raise serializers.ValidationError(
+                "Internal Department must be a department with type Internal."
+            )
+        return value
+
+    def validate(self, attrs):
+        from iic_booking.users.models.department import DepartmentType
+        from iic_booking.users.models.user import User
+
+        attrs = super().validate(attrs)
+        managers = attrs.get("equipment_managers")
+        operators = attrs.get("equipment_operators")
+        if managers is not None:
+            for item in managers:
+                mgr = item.get("manager") if isinstance(item, dict) else None
+                if mgr is None:
+                    continue
+                user = mgr if isinstance(mgr, User) else User.objects.filter(pk=mgr).select_related("department").first()
+                if not user or getattr(getattr(user, "department", None), "department_type", None) != DepartmentType.INTERNAL:
+                    raise serializers.ValidationError({
+                        "equipment_managers": (
+                            "Only Officer In Charge users belonging to an Internal department can be assigned."
+                        )
+                    })
+        if operators is not None:
+            for item in operators:
+                op = item.get("operator") if isinstance(item, dict) else None
+                if op is None:
+                    continue
+                user = op if isinstance(op, User) else User.objects.filter(pk=op).select_related("department").first()
+                if not user or getattr(getattr(user, "department", None), "department_type", None) != DepartmentType.INTERNAL:
+                    raise serializers.ValidationError({
+                        "equipment_operators": (
+                            "Only Lab Incharge users belonging to an Internal department can be assigned."
+                        )
+                    })
+        return attrs
 
     def create(self, validated_data):
         from django.db import transaction

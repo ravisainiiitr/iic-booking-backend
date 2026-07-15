@@ -885,20 +885,41 @@ def equipment_form_choices(request):
         department_type=DepartmentType.INTERNAL
     ).order_by('name')
     user_groups = UserGroup.objects.all().order_by('name')
-    managers = User.objects.filter(
-        user_type=UserType.MANAGER,
-        is_active=True
-    ).order_by('name', 'email')
-    operators = User.objects.filter(
-        user_type=UserType.OPERATOR,
-        is_active=True
-    ).order_by('name', 'email')
+    # Officers / Lab Incharge for equipment assignment: only users whose department is Internal.
+    managers = (
+        User.objects.filter(
+            user_type=UserType.MANAGER,
+            is_active=True,
+            department__department_type=DepartmentType.INTERNAL,
+        )
+        .select_related("department")
+        .order_by("name", "email")
+    )
+    operators = (
+        User.objects.filter(
+            user_type=UserType.OPERATOR,
+            is_active=True,
+            department__department_type=DepartmentType.INTERNAL,
+        )
+        .select_related("department")
+        .order_by("name", "email")
+    )
+
+    dept_id_raw = (request.query_params.get("internal_department_id") or "").strip()
+    if dept_id_raw and dept_id_raw.lower() not in ("none", "null", "all"):
+        try:
+            dept_id = int(dept_id_raw)
+            if internal_departments.filter(pk=dept_id).exists():
+                managers = managers.filter(department_id=dept_id)
+                operators = operators.filter(department_id=dept_id)
+        except (TypeError, ValueError):
+            pass
 
     return Response({
         "categories": EquipmentCategorySerializer(categories, many=True).data,
         "equipment_groups": EquipmentGroupSerializer(equipment_groups, many=True).data,
         "internal_departments": [
-            {"id": d.id, "name": d.name, "code": d.code or ""}
+            {"id": d.id, "name": d.name, "code": d.code or "", "department_type": DepartmentType.INTERNAL}
             for d in internal_departments
         ],
         "user_groups": [
@@ -906,11 +927,23 @@ def equipment_form_choices(request):
             for g in user_groups
         ],
         "managers": [
-            {"id": u.id, "name": u.name or u.email or "", "email": u.email or ""}
+            {
+                "id": u.id,
+                "name": u.name or u.email or "",
+                "email": u.email or "",
+                "department_id": u.department_id,
+                "department_name": (u.department.name if u.department_id else None),
+            }
             for u in managers
         ],
         "operators": [
-            {"id": u.id, "name": u.name or u.email or "", "email": u.email or ""}
+            {
+                "id": u.id,
+                "name": u.name or u.email or "",
+                "email": u.email or "",
+                "department_id": u.department_id,
+                "department_name": (u.department.name if u.department_id else None),
+            }
             for u in operators
         ],
         "profile_type_choices": [

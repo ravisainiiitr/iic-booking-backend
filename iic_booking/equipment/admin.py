@@ -95,9 +95,11 @@ class EquipmentManagerInlineForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if 'manager' in self.fields:
             from iic_booking.users.models.user import User
+            from iic_booking.users.models.department import DepartmentType
             qs = User.objects.filter(
                 user_type=UserType.MANAGER,
-                is_active=True
+                is_active=True,
+                department__department_type=DepartmentType.INTERNAL,
             ).order_by('name', 'email')
             self.fields['manager'].queryset = qs
             self.fields['manager'].label_from_instance = lambda obj: obj.name or obj.email or str(obj)
@@ -113,12 +115,14 @@ class EquipmentManagerInline(admin.TabularInline):
     classes = ['collapse']
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """Filter manager field to only show users with manager user type."""
+        """Filter manager field to Internal-department managers only."""
         if db_field.name == "manager":
             from iic_booking.users.models.user import User
+            from iic_booking.users.models.department import DepartmentType
             kwargs["queryset"] = User.objects.filter(
                 user_type=UserType.MANAGER,
-                is_active=True
+                is_active=True,
+                department__department_type=DepartmentType.INTERNAL,
             ).order_by('name', 'email')
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
@@ -133,9 +137,11 @@ class EquipmentOperatorInlineForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if 'operator' in self.fields:
             from iic_booking.users.models.user import User
+            from iic_booking.users.models.department import DepartmentType
             qs = User.objects.filter(
                 user_type=UserType.OPERATOR,
-                is_active=True
+                is_active=True,
+                department__department_type=DepartmentType.INTERNAL,
             ).order_by('name', 'email')
             self.fields['operator'].queryset = qs
             self.fields['operator'].label_from_instance = lambda obj: obj.name or obj.email or str(obj)
@@ -176,12 +182,14 @@ class EquipmentOperatorInline(admin.TabularInline):
     classes = ['collapse']
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """Filter operator field to only show users with operator user type."""
+        """Filter operator field to Internal-department operators only."""
         if db_field.name == "operator":
             from iic_booking.users.models.user import User
+            from iic_booking.users.models.department import DepartmentType
             kwargs["queryset"] = User.objects.filter(
                 user_type=UserType.OPERATOR,
-                is_active=True
+                is_active=True,
+                department__department_type=DepartmentType.INTERNAL,
             ).order_by('name', 'email')
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
