@@ -6,10 +6,33 @@ from django.contrib.auth import admin as auth_admin
 from iic_booking.communication.service import CommunicationService
 from django.urls import reverse
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.utils.translation import gettext_lazy as _
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Django admin .button CSS often floats / stacks poorly in changelist cells.
+_ADMIN_ACTION_BTN = (
+    "display:inline-block;float:none;white-space:nowrap;"
+    "padding:4px 10px;text-decoration:none;border-radius:3px;margin:0;line-height:1.3;"
+)
+_ADMIN_ACTION_WRAP = (
+    "display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center;"
+    "max-width:22rem;white-space:normal;"
+)
+
+
+def _admin_action_buttons(*html_buttons):
+    """Join pre-built button HTML into a non-overlapping flex row/wrap."""
+    parts = [b for b in html_buttons if b]
+    if not parts:
+        return format_html('<span style="color:#666;">-</span>')
+    return format_html(
+        '<span class="iic-admin-actions" style="{}">{}</span>',
+        _ADMIN_ACTION_WRAP,
+        mark_safe("".join(str(p) for p in parts)),
+    )
 
 from .forms import UserAdminChangeForm
 from .forms import UserAdminCreationForm
@@ -292,16 +315,17 @@ class UserAdmin(auth_admin.UserAdmin):
         """Display approve/reject action buttons."""
         if not obj:
             return "-"
-        
+
         buttons = []
-        
+
         # Show approve button if email is verified but not approved
         if obj.email_verified and not obj.admin_approved:
             approve_url = reverse("admin:users_user_approve", args=[obj.pk])
             buttons.append(
                 format_html(
-                    '<a class="button" href="{}" style="background-color: #28a745; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-right: 5px;">Approve</a>',
-                    approve_url
+                    '<a class="button" href="{}" style="{}background-color:#28a745;color:#fff;">Approve</a>',
+                    approve_url,
+                    _ADMIN_ACTION_BTN,
                 )
             )
         # Show supervisor approve for Post Doc/RA when not yet supervisor-approved
@@ -309,8 +333,9 @@ class UserAdmin(auth_admin.UserAdmin):
             sup_approve_url = reverse("admin:users_user_supervisor_approve", args=[obj.pk])
             buttons.append(
                 format_html(
-                    '<a class="button" href="{}" style="background-color: #17a2b8; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-right: 5px;">Approve (Supervisor)</a>',
-                    sup_approve_url
+                    '<a class="button" href="{}" style="{}background-color:#17a2b8;color:#fff;">Approve (Supervisor)</a>',
+                    sup_approve_url,
+                    _ADMIN_ACTION_BTN,
                 )
             )
         # Show clear access on hold when access_on_hold is True
@@ -318,34 +343,34 @@ class UserAdmin(auth_admin.UserAdmin):
             clear_hold_url = reverse("admin:users_user_clear_access_hold", args=[obj.pk])
             buttons.append(
                 format_html(
-                    '<a class="button" href="{}" style="background-color: #ffc107; color: #212529; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-right: 5px;">Clear access on hold</a>',
-                    clear_hold_url
+                    '<a class="button" href="{}" style="{}background-color:#ffc107;color:#212529;">Clear access on hold</a>',
+                    clear_hold_url,
+                    _ADMIN_ACTION_BTN,
                 )
             )
-        
+
         # Show reject button if user is approved
         if obj.admin_approved:
             reject_url = reverse("admin:users_user_reject", args=[obj.pk])
             buttons.append(
                 format_html(
-                    '<a class="button" href="{}" style="background-color: #dc3545; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-right: 5px;">Reject</a>',
-                    reject_url
+                    '<a class="button" href="{}" style="{}background-color:#dc3545;color:#fff;">Reject</a>',
+                    reject_url,
+                    _ADMIN_ACTION_BTN,
                 )
             )
         # Force logout: invalidate session so user must sign in again
         force_logout_url = reverse("admin:users_user_force_logout", args=[obj.pk])
         buttons.append(
             format_html(
-                '<a class="button" href="{}" style="background-color: #6c757d; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px;" title="Invalidate this user\'s session">Force logout</a>',
-                force_logout_url
+                '<a class="button" href="{}" style="{}background-color:#6c757d;color:#fff;" title="Invalidate this user\'s session">Force logout</a>',
+                force_logout_url,
+                _ADMIN_ACTION_BTN,
             )
         )
-        
-        if not buttons:
-            return format_html('<span style="color: #666;">-</span>')
-        
-        return format_html("".join(buttons))
-    
+
+        return _admin_action_buttons(*buttons)
+
     approve_actions.short_description = _("Actions")
 
     def get_urls(self):
@@ -984,12 +1009,19 @@ class SubWalletAdmin(admin.ModelAdmin):
         credit_url = reverse("admin:users_subwallet_credit", args=[obj.pk])
         debit_url = reverse("admin:users_subwallet_debit", args=[obj.pk])
         
-        return format_html(
-            '<a class="button" href="{}" style="background-color: #28a745; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; margin-right: 5px;">Credit</a>'
-            '<a class="button" href="{}" style="background-color: #dc3545; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px;">Debit</a>',
-            credit_url,
-            debit_url
+        return _admin_action_buttons(
+            format_html(
+                '<a class="button" href="{}" style="{}background-color:#28a745;color:#fff;">Credit</a>',
+                credit_url,
+                _ADMIN_ACTION_BTN,
+            ),
+            format_html(
+                '<a class="button" href="{}" style="{}background-color:#dc3545;color:#fff;">Debit</a>',
+                debit_url,
+                _ADMIN_ACTION_BTN,
+            ),
         )
+
     credit_debit_actions.short_description = _("Actions")
 
     def get_urls(self):
