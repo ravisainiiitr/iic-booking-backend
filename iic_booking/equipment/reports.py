@@ -139,12 +139,16 @@ def _aggregate_ratings_for_equipment(
     start: date,
     end: date,
 ) -> dict[str, Any]:
-    qs = Booking.objects.filter(
-        equipment_id=equipment_id,
-        rated_at__isnull=False,
-        rating_removed=False,
-        rated_at__date__gte=start,
-        rated_at__date__lte=end,
+    from iic_booking.users.test_accounts import exclude_test_bookings
+
+    qs = exclude_test_bookings(
+        Booking.objects.filter(
+            equipment_id=equipment_id,
+            rated_at__isnull=False,
+            rating_removed=False,
+            rated_at__date__gte=start,
+            rated_at__date__lte=end,
+        )
     )
     n = qs.count()
     out: dict[str, Any] = {
@@ -302,7 +306,7 @@ def get_equipment_report_data(
             date__lte=end,
             slot_master__equipment_id__in=eq_ids,
         )
-        .select_related("slot_master", "slot_master__equipment", "booking")
+        .select_related("slot_master", "slot_master__equipment", "booking", "booking__user")
     )
 
     eq_slot_stats: dict[int, dict[str, float | int]] = {}
@@ -337,6 +341,11 @@ def get_equipment_report_data(
         eq = ds.slot_master.equipment
         hrs = _slot_row_hours(ds.start_datetime, ds.end_datetime)
         st = ds.status
+        bk = ds.booking
+        # Test-account bookings must not affect utilization / disruption stats.
+        is_test_bk = bool(
+            bk is not None and getattr(getattr(bk, "user", None), "is_test_account", False)
+        )
 
         if st == SlotStatus.UNDER_MAINTENANCE:
             eq_slot_stats[eid]["under_maintenance_slots"] += 1
@@ -344,13 +353,13 @@ def get_equipment_report_data(
         elif st == SlotStatus.OPERATOR_ABSENT:
             eq_slot_stats[eid]["operator_absent_slots"] += 1
             eq_slot_stats[eid]["operator_absent_hours"] += hrs
-        elif st == SlotStatus.BOOKING_NOT_UTILIZED:
+        elif st == SlotStatus.BOOKING_NOT_UTILIZED and not is_test_bk:
             eq_slot_stats[eid]["booking_not_utilized_slots"] += 1
             eq_slot_stats[eid]["booking_not_utilized_hours"] += hrs
         elif st == SlotStatus.AVAILABLE:
             eq_slot_stats[eid]["no_booking_slots"] += 1
             eq_slot_stats[eid]["no_booking_hours"] += hrs
-        elif st == SlotStatus.BOOKED:
+        elif st == SlotStatus.BOOKED and not is_test_bk:
             eq_slot_stats[eid]["booked_slots"] += 1
             eq_slot_stats[eid]["booked_hours"] += hrs
         elif st == SlotStatus.BLOCKED:
@@ -358,31 +367,31 @@ def get_equipment_report_data(
         elif st == SlotStatus.NOT_AVAILABLE:
             eq_perf_slots[eid]["blocked_hours"] += hrs
 
-        bk = ds.booking
-        if bk and bk.status == BookingStatus.OTHER_DISRUPTION:
+        if bk and not is_test_bk and bk.status == BookingStatus.OTHER_DISRUPTION:
             eq_perf_slots[eid]["other_disruption_hours"] += hrs
 
         d = ds.date
         in_window = _slot_in_weekly_time_window(eq, ds.start_datetime, ds.end_datetime)
         if in_window and _is_normal_working_calendar_day(d, institute_holidays):
             eq_perf_slots[eid]["available_hours_working_window"] += hrs
-            if bk and bk.status == BookingStatus.COMPLETED:
+            if bk and not is_test_bk and bk.status == BookingStatus.COMPLETED:
                 eq_perf_slots[eid]["completed_hours_working_window"] += hrs
         if in_window and _is_weekend_or_institute_holiday_day(d, institute_holidays):
             eq_perf_slots[eid]["available_hours_weekend_or_holiday"] += hrs
 
-    bookings_in_range = (
+    from iic_booking.users.test_accounts import exclude_test_bookings
+
+    bookings_in_range = exclude_test_bookings(
         Booking.objects.filter(
             equipment_id__in=eq_ids,
             daily_slots__date__gte=start,
             daily_slots__date__lte=end,
-        )
-        .distinct()
+        ).distinct()
     )
     bookings_served = bookings_in_range.exclude(status__in=_SERVED_EXCLUDE_STATUSES)
 
     completed_in_range = bookings_in_range.filter(status=BookingStatus.COMPLETED)
-    overall_bookings_qs = Booking.objects.filter(equipment_id__in=eq_ids)
+    overall_bookings_qs = exclude_test_bookings(Booking.objects.filter(equipment_id__in=eq_ids))
     overall_current = overall_bookings_qs.filter(status=BookingStatus.BOOKED)
 
     in_range_count = dict(

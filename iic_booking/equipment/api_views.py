@@ -4359,7 +4359,9 @@ def list_bookings(request):
 @permission_classes([IsAuthenticated])
 def booking_stats(request):
     """Return lightweight booking aggregates for reports page."""
-    queryset = Booking.objects.all()
+    from iic_booking.users.test_accounts import exclude_test_bookings
+
+    queryset = exclude_test_bookings(Booking.objects.all())
     is_operator_or_manager = check_operator_permission(request.user)
 
     if not is_operator_or_manager:
@@ -4429,9 +4431,11 @@ def dashboard_summary(request):
     today = timezone.localdate()
     today_str = today.isoformat()
 
+    from iic_booking.users.test_accounts import exclude_test_bookings
+
     # Reuse list_bookings scope: own user, Accounts In Charge external list, or operator/manager scope
     is_operator_or_manager = check_operator_permission(request.user)
-    base_qs = Booking.objects.all()
+    base_qs = exclude_test_bookings(Booking.objects.all())
     if _user_is_accounts_finance_user(request.user):
         base_qs = base_qs.filter(
             user_type_snapshot__in=list(UserType.get_external_user_codes()),
@@ -8557,13 +8561,16 @@ def send_bulk_email(request):
 
     failed = []
     sent = 0
+    from iic_booking.users.test_accounts import redirect_email_address
+
     for email in recipient_emails:
         try:
+            delivery_email, per_subject = redirect_email_address(email, subject=subject)
             send_mail(
-                subject=subject,
+                subject=per_subject or subject,
                 message=body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
+                recipient_list=[delivery_email],
                 fail_silently=False,
             )
             sent += 1
@@ -8643,11 +8650,17 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
     message = append_completion_email_extra_plaintext(message, equipment)
     html_message = append_completion_email_extra_html(html_message, equipment)
 
+    from iic_booking.users.test_accounts import redirect_email_for_user
+
+    delivery_email, subject = redirect_email_for_user(
+        user, original_email=user.email, subject=subject
+    )
+
     email = EmailMultiAlternatives(
         subject=subject,
         body=message,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[user.email],
+        to=[delivery_email],
     )
     if html_message:
         email.attach_alternative(html_message, "text/html")
@@ -10397,11 +10410,16 @@ def _send_results_available_push_and_email(booking):
             body_lines[-1],
         ]
     try:
+        from iic_booking.users.test_accounts import redirect_email_for_user
+
+        delivery_email, subject = redirect_email_for_user(
+            user, original_email=user.email, subject=subject
+        )
         send_mail(
             subject=subject,
             message="\n".join(body_lines),
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            recipient_list=[delivery_email],
             fail_silently=True,
         )
     except Exception as e:

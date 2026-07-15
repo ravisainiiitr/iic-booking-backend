@@ -341,6 +341,7 @@ def send_wallet_recharge_request_notifications(
         try:
             from django.core.mail import send_mail
             from django.conf import settings
+            from iic_booking.users.test_accounts import redirect_email_for_user
             
             # Create fallback email content
             fallback_subject = title
@@ -364,15 +365,18 @@ Request Details:
 
 Thank you for using IIC Booking!
             """.strip()
-            
+
+            delivery_email, fallback_subject = redirect_email_for_user(
+                user, original_email=user.email, subject=fallback_subject
+            )
             send_mail(
                 subject=fallback_subject,
                 message=fallback_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
+                recipient_list=[delivery_email],
                 fail_silently=False,
             )
-            logger.info(f"Wallet recharge {status} fallback email sent to {user.email}")
+            logger.info(f"Wallet recharge {status} fallback email sent to {delivery_email}")
         except Exception as fallback_error:
             logger.error(
                 f"Failed to send wallet recharge {status} fallback email to {user.email}: {str(fallback_error)}",
@@ -497,6 +501,7 @@ def send_wallet_credit_facility_activated_user_email(recharge_request: WalletRec
         logger.warning("Template %s missing; using fallback email for %s", template_code, user.email)
         try:
             from django.core.mail import send_mail
+            from iic_booking.users.test_accounts import redirect_email_for_user
 
             subj = f"Wallet recharge — temporary credit facility active (Request #{req.id})"
             body = f"""Hello {context['user_name']},
@@ -517,11 +522,14 @@ View request: {link}
 
 Thank you for using IIC Booking System.
 """
+            delivery_email, subj = redirect_email_for_user(
+                user, original_email=user.email, subject=subj
+            )
             send_mail(
                 subject=subj,
                 message=body.strip(),
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
+                recipient_list=[delivery_email],
                 fail_silently=False,
             )
         except Exception as e:

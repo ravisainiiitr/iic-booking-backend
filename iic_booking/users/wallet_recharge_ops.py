@@ -231,7 +231,11 @@ def send_sric_faculty_recharge_email(
     to_list = list(recipients)
     cc_list: list[str] = []
     if faculty_email and faculty_email.lower() not in {e.lower() for e in to_list}:
-        cc_list.append(faculty_email)
+        from iic_booking.users.test_accounts import redirect_email_for_user
+
+        cc_addr, _ = redirect_email_for_user(user, original_email=faculty_email, subject=None)
+        if cc_addr and cc_addr.lower() not in {e.lower() for e in to_list}:
+            cc_list.append(cc_addr)
 
     try:
         email_msg = EmailMultiAlternatives(
@@ -283,6 +287,7 @@ def notify_admin_finance_new_wallet_recharge_request(
         User.objects.filter(
             user_type__in=[UserType.ADMIN, UserType.FINANCE],
             is_active=True,
+            is_test_account=False,
         )
         .exclude(email__isnull=True)
         .exclude(email="")

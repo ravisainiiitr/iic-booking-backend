@@ -194,10 +194,14 @@ def build_faculty_wallet_expense_report(
     ]
 
     sw_pk_list = [sw.id for sw in sub_wallets]
-    tx_qs = SubWalletTransaction.objects.filter(
-        sub_wallet_id__in=sw_pk_list,
-        created_at__date__gte=start,
-        created_at__date__lte=end,
+    from iic_booking.users.test_accounts import exclude_test_bookings, exclude_test_wallet_txns
+
+    tx_qs = exclude_test_wallet_txns(
+        SubWalletTransaction.objects.filter(
+            sub_wallet_id__in=sw_pk_list,
+            created_at__date__gte=start,
+            created_at__date__lte=end,
+        )
     )
 
     total_debits = Decimal("0.00")
@@ -223,11 +227,13 @@ def build_faculty_wallet_expense_report(
             else:
                 recharge_sum += a
 
-    bq = Booking.objects.filter(
-        user_id__in=member_ids,
-        created_at__date__gte=start,
-        created_at__date__lte=end,
-    ).exclude(status__in=_EXCLUDED_EXPENSE_STATUSES)
+    bq = exclude_test_bookings(
+        Booking.objects.filter(
+            user_id__in=member_ids,
+            created_at__date__gte=start,
+            created_at__date__lte=end,
+        ).exclude(status__in=_EXCLUDED_EXPENSE_STATUSES)
+    )
 
     if equipment_id is not None:
         bq = bq.filter(equipment_id=int(equipment_id))

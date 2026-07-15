@@ -249,6 +249,16 @@ class User(AbstractUser):
         ),
     )
 
+    is_test_account = BooleanField(
+        _("Test account"),
+        default=False,
+        db_index=True,
+        help_text=_(
+            "When enabled, bookings and wallet activity for this user are excluded from revenue "
+            "reports, emails are redirected to the test inbox, and data can be wiped before go-live."
+        ),
+    )
+
     # Officer In Charge (manager) dashboard feature flags — enable per user in Django admin.
     oic_enable_ta_nomination = BooleanField(
         _("OIC: show TA nomination call"),

@@ -1,0 +1,46 @@
+name: Seed Test Users (production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type SEED_TEST_USERS to create/update flagged test accounts on production'
+        required: true
+        type: string
+
+jobs:
+  seed-test-users:
+    runs-on: self-hosted
+    steps:
+      - name: Verify confirmation token
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "SEED_TEST_USERS" ]; then
+            echo "Confirmation token mismatch — aborting."
+            exit 1
+          fi
+
+      - name: Locate production Django container
+        id: find
+        run: |
+          set -euo pipefail
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django|iic_booking_production_django' | head -n 1 || true)"
+          if [ -z "$CID" ]; then
+            CID="$(docker ps --format '{{.ID}} {{.Image}}' | grep -i 'django' | head -n 1 | awk '{print $1}' || true)"
+          fi
+          if [ -z "$CID" ]; then
+            echo "Could not find a running Django container."
+            exit 1
+          fi
+          echo "Using container: $CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Migrate users.is_test_account on production
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py migrate users --noinput
+
+      - name: Seed test users on production
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py seed_test_users

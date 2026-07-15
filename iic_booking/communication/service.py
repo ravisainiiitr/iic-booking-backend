@@ -240,11 +240,20 @@ class CommunicationService:
             "aws_ses" if getattr(settings, "USE_AWS_SES_API", False) else "smtp",
         )
 
+        from iic_booking.users.test_accounts import redirect_email_for_user
+
+        delivery_email, subject = redirect_email_for_user(
+            user, original_email=getattr(user, "email", "") or "", subject=subject
+        )
+        if delivery_email and delivery_email.lower() != (getattr(user, "email", "") or "").lower():
+            meta["test_account_email_redirect"] = delivery_email
+            meta["original_recipient_email"] = getattr(user, "email", "") or ""
+
         # Create communication log entry
         communication_log = CommunicationLog.objects.create(
             communication_type=CommunicationLog.CommunicationType.EMAIL,
             recipient=user,
-            recipient_email=getattr(user, "email", "") or "",
+            recipient_email=delivery_email or (getattr(user, "email", "") or ""),
             template=template_obj,
             subject=subject,
             message=message,
@@ -260,7 +269,7 @@ class CommunicationService:
                     subject=subject,
                     body=message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
-                    to=[user.email],
+                    to=[delivery_email],
                     cc=[e for e in cc_emails if e and str(e).strip()],
                 )
                 if html_message:
@@ -271,7 +280,7 @@ class CommunicationService:
                     subject=subject,
                     message=message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
+                    recipient_list=[delivery_email],
                     html_message=html_message,
                     fail_silently=False,
                 )
@@ -282,7 +291,7 @@ class CommunicationService:
             communication_log.sent_at = timezone.now()
             communication_log.save(update_fields=['status', 'sent_at'])
             
-            logger.info(f"Email sent and logged to {user.email}: {subject}")
+            logger.info(f"Email sent and logged to {delivery_email}: {subject}")
             return communication_log
             
         except Exception as e:
@@ -294,7 +303,7 @@ class CommunicationService:
 
             logger.error(
                 "Failed to send email to %s: %s",
-                user.email,
+                delivery_email,
                 error_message,
                 exc_info=True,
             )
@@ -346,10 +355,18 @@ class CommunicationService:
             "email_provider",
             "aws_ses" if getattr(settings, "USE_AWS_SES_API", False) else "smtp",
         )
+        from iic_booking.users.test_accounts import redirect_email_for_user
+
+        delivery_email, subject = redirect_email_for_user(
+            user, original_email=getattr(user, "email", "") or "", subject=subject
+        )
+        if delivery_email and delivery_email.lower() != (getattr(user, "email", "") or "").lower():
+            meta["test_account_email_redirect"] = delivery_email
+            meta["original_recipient_email"] = getattr(user, "email", "") or ""
         communication_log = CommunicationLog.objects.create(
             communication_type=CommunicationLog.CommunicationType.EMAIL,
             recipient=user,
-            recipient_email=getattr(user, "email", "") or "",
+            recipient_email=delivery_email or (getattr(user, "email", "") or ""),
             template=template_obj,
             subject=subject,
             message=message,
@@ -362,7 +379,7 @@ class CommunicationService:
                 subject=subject,
                 body=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[user.email],
+                to=[delivery_email],
             )
             if html_message:
                 email.content_subtype = 'html'
@@ -380,13 +397,13 @@ class CommunicationService:
             communication_log.status = CommunicationLog.CommunicationStatus.SENT
             communication_log.sent_at = timezone.now()
             communication_log.save(update_fields=['status', 'sent_at'])
-            logger.info(f"Email with {len(attachment_paths)} attachment(s) sent to {user.email}: {subject}")
+            logger.info(f"Email with {len(attachment_paths)} attachment(s) sent to {delivery_email}: {subject}")
             return communication_log
         except Exception as e:
             communication_log.status = CommunicationLog.CommunicationStatus.FAILED
             communication_log.error_message = str(e)
             communication_log.save(update_fields=['status', 'error_message'])
-            logger.error(f"Failed to send email with attachments to {user.email}: {e}", exc_info=True)
+            logger.error(f"Failed to send email with attachments to {delivery_email}: {e}", exc_info=True)
             return communication_log
 
     @staticmethod

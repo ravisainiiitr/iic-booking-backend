@@ -1,0 +1,58 @@
+name: Clear Test Account Data (production)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type CLEAR_TEST_ACCOUNT_DATA to confirm irreversible wipe of test-account activity'
+        required: true
+        type: string
+      delete_users:
+        description: 'Also delete test user accounts (true/false)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  clear-test-account-data:
+    runs-on: self-hosted
+    steps:
+      - name: Verify confirmation token
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "CLEAR_TEST_ACCOUNT_DATA" ]; then
+            echo "Confirmation token mismatch — aborting."
+            exit 1
+          fi
+
+      - name: Locate production Django container
+        id: find
+        run: |
+          set -euo pipefail
+          echo "Home listing:"
+          ls -la /home/ubuntu || true
+          echo "Docker containers:"
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django|iic_booking_production_django' | head -n 1 || true)"
+          if [ -z "$CID" ]; then
+            CID="$(docker ps --format '{{.ID}} {{.Image}}' | grep -i 'django' | head -n 1 | awk '{print $1}' || true)"
+          fi
+          if [ -z "$CID" ]; then
+            echo "Could not find a running Django container."
+            exit 1
+          fi
+          echo "Using container: $CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Dry-run counts on production Django
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py clear_test_account_data
+
+      - name: Wipe test account data on production
+        run: |
+          EXTRA=""
+          if [ "${{ github.event.inputs.delete_users }}" = "true" ]; then
+            EXTRA="--delete-users"
+          fi
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py clear_test_account_data --confirm CLEAR_TEST_ACCOUNT_DATA $EXTRA

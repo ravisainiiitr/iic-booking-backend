@@ -613,6 +613,12 @@ SRIC_EMAIL_FALLBACK = env.bool("SRIC_EMAIL_FALLBACK", default=False)
 # Email address for accounts team to receive wallet recharge requests
 ACCOUNTS_EMAIL = env("ACCOUNTS_EMAIL", default="iicbooking@iitr.ac.in")
 
+# Outbound email for users with is_test_account=True is forced here (testing / pre-launch).
+TEST_ACCOUNT_EMAIL_REDIRECT = env(
+    "TEST_ACCOUNT_EMAIL_REDIRECT",
+    default="ravisaini.15@gmail.com",
+)
+
 # 3D printing / STL analysis
 # ------------------------------------------------------------------------------
 CURAENGINE_PATH = env("CURAENGINE_PATH", default="")
