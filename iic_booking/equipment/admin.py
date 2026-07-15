@@ -103,7 +103,7 @@ class EquipmentManagerInlineForm(forms.ModelForm):
 
 
 class EquipmentManagerInline(admin.TabularInline):
-    """Inline admin for Equipment Office in Charge (Officers in Charge)."""
+    """Inline admin for Equipment Officer In-charge."""
     model = EquipmentManager
     form = EquipmentManagerInlineForm
     extra = 0
@@ -1136,7 +1136,7 @@ class EquipmentAdmin(admin.ModelAdmin):
             return format_html('<br>'.join(str(m) for m in manager_list))
         return "-"
     
-    manager_display.short_description = _("Officers in Charge")
+    manager_display.short_description = _("Officer In-charge")
     
     def operator_display(self, obj):
         """Display operator names and emails."""

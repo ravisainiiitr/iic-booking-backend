@@ -10225,7 +10225,7 @@ def user_reschedule_booking(request, booking_id):
         additional_charge = Decimal(str(getattr(booking, "total_charge", 0) or "0"))
         quota_date = start_time
         # Special case: reschedule from disruption-pending should remain counted in the ORIGINAL period.
-        if previous_status == BookingStatus.DISRUPTION_PENDING and getattr(booking, "quota_period_anchor_at", None) is not None:
+        if booking.status == BookingStatus.DISRUPTION_PENDING and getattr(booking, "quota_period_anchor_at", None) is not None:
             quota_date = booking.quota_period_anchor_at
         if not booking_quota_should_skip(equipment):
             quota_allowed, quota_error = QuotaChecker.check_user_quota(

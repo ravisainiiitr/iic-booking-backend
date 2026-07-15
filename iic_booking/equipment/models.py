@@ -280,7 +280,7 @@ class Equipment(models.Model):
         blank=True,
         default="",
         help_text=_(
-            "Optional hyperlink for Officers in Charge / Admins to verify FBR status on I-STEM "
+            "Optional hyperlink for Officer In-charge / Admins to verify FBR status on I-STEM "
             "(separate from the user booking page URL)."
         ),
         verbose_name=_("I-STEM FBR status check URL"),
