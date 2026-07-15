@@ -21,6 +21,7 @@ from .wallet import (
     WalletWithdrawalRequestStatus,
 )
 from .wallet_credit_facility_settings import WalletCreditFacilitySettings
+from .wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .user_document import UserDocument
 from .user_group import UserGroup, UserGroupMember
 from .project import Project
@@ -57,6 +58,7 @@ __all__ = [
     "WalletRechargeRequestStatus",
     "WalletRechargeCreditFacilityStatus",
     "WalletCreditFacilitySettings",
+    "WalletStudentRechargeSettings",
     "WalletRechargeImportRecord",
     "WalletRechargeParseEntry",
     "ExternalUserBankDetails",

@@ -135,6 +135,13 @@ class DepartmentPaymentReceipt(models.Model):
         related_name="payment_receipts",
     )
     payment_date = models.DateField(null=True, blank=True)
+    receipt_file = models.FileField(
+        _("Payment receipt file"),
+        upload_to="wallet_payment_receipts/%Y/%m/%d/",
+        null=True,
+        blank=True,
+        help_text=_("Scanned / photographed payment receipt (required for IITR Student offline recharge)."),
+    )
     finance_processed_at = models.DateTimeField(null=True, blank=True)
     finance_processed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

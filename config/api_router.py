@@ -99,6 +99,7 @@ from iic_booking.users.api.wallet_views import (
     wallet_credit_facility_settings_view,
     wallet_credit_facility_offer_for_recharge_view,
     wallet_credit_facility_my_status_view,
+    wallet_student_recharge_settings_view,
     legacy_wallet_balance_lookup,
     legacy_wallet_balance_list,
 )
@@ -114,6 +115,7 @@ from iic_booking.users.api.payment_views import (
     sbiepay_return_failure,
     sbiepay_transaction_status,
     submit_payment_utr,
+    submit_wallet_recharge_receipt,
     finance_payment_receipts_list,
     finance_payment_receipt_process,
 )
@@ -441,6 +443,11 @@ urlpatterns = router.urls + [
     path("payments/sbiepay/failure/", sbiepay_return_failure, name="sbiepay-failure"),
     path("payments/sbiepay/status/", sbiepay_transaction_status, name="sbiepay-status"),
     path("payments/utr/submit/", submit_payment_utr, name="payment-utr-submit"),
+    path(
+        "payments/wallet-recharge-receipt/",
+        submit_wallet_recharge_receipt,
+        name="wallet-recharge-receipt-submit",
+    ),
     path("finance/payment-receipts/", finance_payment_receipts_list, name="finance-payment-receipts"),
     path(
         "finance/payment-receipts/<int:receipt_id>/process/",
@@ -482,6 +489,11 @@ urlpatterns = router.urls + [
     
     # Wallet recharge request endpoints
     path("wallet/credit-facility/settings/", wallet_credit_facility_settings_view, name="wallet-credit-facility-settings"),
+    path(
+        "wallet/student-recharge/settings/",
+        wallet_student_recharge_settings_view,
+        name="wallet-student-recharge-settings",
+    ),
     path(
         "wallet/credit-facility/offer-for-recharge/",
         wallet_credit_facility_offer_for_recharge_view,

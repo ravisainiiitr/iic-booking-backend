@@ -42,6 +42,13 @@ def _is_finance_or_admin(user) -> bool:
 
 def _serialize_receipt(r: DepartmentPaymentReceipt) -> dict:
     dept = r.department
+    receipt_file_url = None
+    if getattr(r, "receipt_file", None):
+        try:
+            if r.receipt_file:
+                receipt_file_url = r.receipt_file.url
+        except Exception:
+            receipt_file_url = None
     return {
         "id": r.id,
         "utr_reference": r.utr_reference,
@@ -57,6 +64,8 @@ def _serialize_receipt(r: DepartmentPaymentReceipt) -> dict:
         "payment_date": r.payment_date.isoformat() if r.payment_date else None,
         "finance_processed_at": r.finance_processed_at.isoformat() if r.finance_processed_at else None,
         "finance_remarks": r.finance_remarks,
+        "receipt_file_url": receipt_file_url,
+        "has_receipt_file": bool(receipt_file_url),
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
 
@@ -71,6 +80,13 @@ def sbiepay_initiate(request):
     purpose = (request.data.get("purpose") or "").strip().upper()
     if purpose not in PaymentPurpose.values:
         return Response({"error": "Invalid purpose."}, status=status.HTTP_400_BAD_REQUEST)
+
+    if purpose == PaymentPurpose.WALLET_RECHARGE:
+        from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
+
+        forbidden = assert_iitr_student_may_recharge(request.user)
+        if forbidden:
+            return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
 
     try:
         amount = Decimal(str(request.data.get("amount") or "0")).quantize(Decimal("0.01"))
@@ -220,6 +236,19 @@ def submit_payment_utr(request):
     Offline UTR for wallet recharge or booking shortfall (govt / bank deposit).
     Body: utr_reference, amount, department_id, purpose; booking_id or recharge_request_id.
     """
+    from iic_booking.users.student_wallet_recharge import (
+        is_iitr_student,
+        student_otp_offline_forbidden_message,
+    )
+
+    purpose = (request.data.get("purpose") or "").strip().upper()
+    # IITR Students must use the receipt-file endpoint for wallet recharge offline.
+    if is_iitr_student(request.user) and purpose == DepartmentPaymentReceiptPurpose.WALLET_RECHARGE:
+        return Response(
+            {"error": student_otp_offline_forbidden_message()},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     utr = (request.data.get("utr_reference") or "").strip()
     if not utr:
         return Response({"error": "UTR is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -227,7 +256,6 @@ def submit_payment_utr(request):
         amount = Decimal(str(request.data.get("amount") or "0")).quantize(Decimal("0.01"))
     except (InvalidOperation, TypeError):
         return Response({"error": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
-    purpose = (request.data.get("purpose") or "").strip().upper()
     if purpose not in DepartmentPaymentReceiptPurpose.values:
         return Response({"error": "Invalid purpose."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -286,6 +314,106 @@ def submit_payment_utr(request):
     return Response(
         {"message": "UTR submitted for finance verification.", "receipt": _serialize_receipt(receipt)},
         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_wallet_recharge_receipt(request):
+    """
+    IITR Student offline wallet recharge: multipart amount, department_id, receipt_file;
+    optional utr_reference. Credits faculty accessible wallet when finance processes.
+    """
+    import uuid
+
+    from iic_booking.users.student_wallet_recharge import (
+        assert_iitr_student_may_recharge,
+        is_iitr_student,
+    )
+
+    # Individual students / others may also use this path when they have wallet access.
+    # IITR Students are gated by the admin flag.
+    forbidden = assert_iitr_student_may_recharge(request.user)
+    if forbidden:
+        return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
+
+    upload = request.FILES.get("receipt_file") or request.FILES.get("file")
+    if not upload:
+        return Response(
+            {"error": "Payment receipt file is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        amount = Decimal(str(request.data.get("amount") or "0")).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError):
+        return Response({"error": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
+    if amount <= 0:
+        return Response({"error": "Amount must be positive."}, status=status.HTTP_400_BAD_REQUEST)
+
+    department_id = request.data.get("department_id")
+    if not department_id:
+        return Response({"error": "department_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    wallet = request.user.get_accessible_wallet()
+    if not wallet:
+        if request.user.can_have_wallet():
+            wallet, _ = WalletRepository.get_or_create(request.user)
+        if not wallet:
+            return Response(
+                {
+                    "error": (
+                        "No wallet access. IITR Students must be linked to a faculty wallet "
+                        "before recharging."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    department = resolve_internal_department_for_wallet_recharge(wallet, int(department_id))
+    if not department:
+        return Response({"error": "Invalid department."}, status=status.HTTP_400_BAD_REQUEST)
+
+    utr = (request.data.get("utr_reference") or "").strip()
+    if not utr:
+        utr = f"FILE-{request.user.id}-{uuid.uuid4().hex[:12]}"
+    utr = utr[:64]
+
+    payment_date = request.data.get("payment_date")
+    pd = None
+    if payment_date:
+        from datetime import datetime
+
+        try:
+            pd = datetime.strptime(str(payment_date)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            pass
+
+    if DepartmentPaymentReceipt.objects.filter(utr_reference=utr, department=department).exists():
+        return Response(
+            {"error": "This UTR / reference is already registered for the department."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    receipt = DepartmentPaymentReceipt.objects.create(
+        utr_reference=utr,
+        department=department,
+        user=request.user,
+        amount=amount,
+        purpose=DepartmentPaymentReceiptPurpose.WALLET_RECHARGE,
+        payment_date=pd,
+        receipt_file=upload,
+    )
+
+    msg = (
+        "Payment receipt submitted for finance verification. "
+        "Funds will be parked in the faculty wallet after approval."
+        if is_iitr_student(request.user)
+        else "Payment receipt submitted for finance verification."
+    )
+    return Response(
+        {"message": msg, "receipt": _serialize_receipt(receipt)},
+        status=status.HTTP_201_CREATED,
     )
 
 

@@ -38,6 +38,7 @@ from .forms import UserAdminChangeForm
 from .forms import UserAdminCreationForm
 from .models.wallet_sric_settings import WalletSricSettings
 from .models.wallet_credit_facility_settings import WalletCreditFacilitySettings
+from .models.wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .models import (
     User,
     Department,
@@ -714,6 +715,33 @@ class WalletCreditFacilitySettingsAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return not WalletCreditFacilitySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(WalletStudentRechargeSettings)
+class WalletStudentRechargeSettingsAdmin(admin.ModelAdmin):
+    """Singleton: allow IITR Students to recharge the faculty shared wallet."""
+
+    list_display = ["__str__", "enable_iitr_student_wallet_recharge"]
+
+    fieldsets = (
+        (
+            _("IITR Student recharge"),
+            {
+                "fields": ("enable_iitr_student_wallet_recharge",),
+                "description": _(
+                    "When enabled, IITR Students may recharge via SBIePay or Offline Request "
+                    "(payment receipt upload). Funds are parked in the faculty wallet they are "
+                    "linked to. Individual Students are not affected by this setting."
+                ),
+            },
+        ),
+    )
+
+    def has_add_permission(self, request):
+        return not WalletStudentRechargeSettings.objects.exists()
 
     def has_delete_permission(self, request, obj=None):
         return False

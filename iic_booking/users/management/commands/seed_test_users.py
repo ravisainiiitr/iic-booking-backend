@@ -22,6 +22,9 @@ from iic_booking.users.models.wallet import (
     WalletJoinRequest,
     WalletJoinRequestStatus,
 )
+from iic_booking.users.repositories.wallet_repository import (
+    get_internal_departments_with_equipment,
+)
 from iic_booking.users.test_accounts import (
     TEST_USER_PASSWORD,
     test_email_redirect,
@@ -36,8 +39,12 @@ class Command(BaseCommand):
     help = "Idempotently seed is_test_account users for every user type."
 
     def handle(self, *args, **options):
+        seed_depts = list(get_internal_departments_with_equipment())
+        # Fallback for assigning a User.department when seed_depts is empty
         internal_dept = (
-            Department.objects.filter(department_type=DepartmentType.INTERNAL)
+            seed_depts[0]
+            if seed_depts
+            else Department.objects.filter(department_type=DepartmentType.INTERNAL)
             .order_by("name")
             .first()
         )
@@ -49,6 +56,7 @@ class Command(BaseCommand):
 
         created, updated = [], []
         by_type: dict[str, User] = {}
+        subwallets_topped = 0
 
         with transaction.atomic():
             for code, label in UserType.get_choices():
@@ -107,27 +115,29 @@ class Command(BaseCommand):
 
                 by_type[code] = user
 
-            # Ensure wallets + seed balance for wallet-owning types
+            # Ensure wallets + seed balance for wallet-owning types across
+            # all internal departments that have equipment (plus General).
             for code, _label in UserType.get_choices():
                 user = by_type[code]
                 if not user.can_have_wallet():
                     continue
                 wallet, _ = Wallet.objects.get_or_create(user=user)
-                if not internal_dept:
+                if not seed_depts:
                     continue
-                sw, _ = SubWallet.objects.get_or_create(
-                    wallet=wallet,
-                    department=internal_dept,
-                    defaults={"balance": Decimal("0.00")},
-                )
-                # Top up only when empty so re-runs stay idempotent on funded wallets
-                if Decimal(str(sw.balance or 0)) < SEED_WALLET_INR:
-                    need = SEED_WALLET_INR - Decimal(str(sw.balance or 0))
-                    sw.credit(
-                        need,
-                        description="Seed credit for test account",
-                        related_user=user,
+                for dept in seed_depts:
+                    sw, _ = SubWallet.objects.get_or_create(
+                        wallet=wallet,
+                        department=dept,
+                        defaults={"balance": Decimal("0.00")},
                     )
+                    if Decimal(str(sw.balance or 0)) < SEED_WALLET_INR:
+                        need = SEED_WALLET_INR - Decimal(str(sw.balance or 0))
+                        sw.credit(
+                            need,
+                            description="Seed credit for test account",
+                            related_user=user,
+                        )
+                        subwallets_topped += 1
 
             # Link student → faculty wallet
             student = by_type.get(UserType.STUDENT)
@@ -156,15 +166,17 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS("Test users ready."))
         self.stdout.write(f"  Created: {len(created)}")
         self.stdout.write(f"  Updated: {len(updated)}")
+        self.stdout.write(f"  Seed departments: {len(seed_depts)}")
+        self.stdout.write(f"  Sub-wallets topped up: {subwallets_topped}")
         self.stdout.write(f"  Shared password: {TEST_USER_PASSWORD}")
         self.stdout.write(f"  Email redirect target: {test_email_redirect()}")
         self.stdout.write("")
         self.stdout.write("Accounts:")
         for code, label in UserType.get_choices():
             self.stdout.write(f"  - {label}: {test_user_email_for_type(code)}")
-        if not internal_dept:
+        if not seed_depts:
             self.stdout.write(
                 self.style.WARNING(
-                    "No internal department found — wallets were not credited."
+                    "No equipment-linked internal departments found — wallets were not credited."
                 )
             )

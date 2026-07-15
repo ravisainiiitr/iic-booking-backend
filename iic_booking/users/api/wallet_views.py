@@ -1442,6 +1442,17 @@ def send_user_otp_for_recharge(request):
         - request_id: Temporary request ID for OTP verification
         - message: Success message
     """
+    from iic_booking.users.student_wallet_recharge import (
+        is_iitr_student,
+        student_otp_offline_forbidden_message,
+    )
+
+    if is_iitr_student(request.user):
+        return Response(
+            {"error": student_otp_offline_forbidden_message()},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     serializer = WalletRechargeRequestCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     
@@ -1947,6 +1958,17 @@ def create_wallet_recharge_request(request):
         - request: Created wallet recharge request
         - message: Success message
     """
+    from iic_booking.users.student_wallet_recharge import (
+        is_iitr_student,
+        student_otp_offline_forbidden_message,
+    )
+
+    if is_iitr_student(request.user):
+        return Response(
+            {"error": student_otp_offline_forbidden_message()},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     request_id = request.data.get('request_id')
     user_otp = request.data.get('user_otp')
     
@@ -3692,6 +3714,25 @@ def faculty_wallet_expense_report(request):
     if data.get("error") == "only_faculty":
         return Response({"error": data.get("message", "Forbidden")}, status=status.HTTP_403_FORBIDDEN)
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def wallet_student_recharge_settings_view(request):
+    """Public (authenticated) read of IITR Student wallet recharge admin toggle."""
+    from iic_booking.users.student_wallet_recharge import (
+        iitr_student_recharge_enabled,
+        is_iitr_student,
+    )
+
+    enabled = iitr_student_recharge_enabled()
+    return Response(
+        {
+            "enabled": enabled,
+            "enable_iitr_student_wallet_recharge": enabled,
+            "applies_to_current_user": is_iitr_student(request.user),
+        }
+    )
 
 
 @api_view(["GET"])
