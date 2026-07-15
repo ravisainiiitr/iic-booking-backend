@@ -295,11 +295,29 @@ def create_booking_for_waitlist_user(
     # Pre-lock availability check (cheap early-exit). The select_for_update inside
     # transaction.atomic() is the authoritative anti-double-booking guard.
     daily_slots = DailySlot.objects.filter(**base_filter).order_by("start_datetime")
+    from .slot_department_access import filter_queryset_for_home_department
+
+    daily_slots = filter_queryset_for_home_department(
+        daily_slots,
+        user=booking_user,
+        equipment=equipment,
+        is_admin=False,
+        is_external=is_external,
+    )
     if daily_slots.count() != len(slot_ids):
         return None, "One or more slots are invalid or not available."
     unavailable = [s.id for s in daily_slots if not checker(s)]
     if unavailable:
         return None, f"Slots {unavailable} are not available for booking."
+    # Also reject restricted home-department-only slots explicitly
+    from .slot_department_access import slot_allows_internal_user
+
+    if not is_external:
+        denied = [s.id for s in daily_slots if not slot_allows_internal_user(s, booking_user, equipment)]
+        if denied:
+            return None, (
+                f"Slots {denied} are reserved for the equipment's home department only."
+            )
 
     total_slot_minutes = sum(
         int((s.end_datetime - s.start_datetime).total_seconds() / 60)

@@ -156,6 +156,10 @@ from .calculators import (
     build_safe_input_values_for_charge_calculation,
 )
 from .slot_utils import SlotGenerator, SlotAvailabilityChecker
+from .slot_department_access import (
+    filter_queryset_for_home_department,
+    slot_allows_internal_user,
+)
 from .quota_utils import QuotaChecker, get_quota_breakdown, booking_quota_should_skip
 from .booking_timing import BookingRequestTimer, attach_booking_performance_headers
 from .booking_events import create_booking_event
@@ -2674,6 +2678,13 @@ def _book_equipment_impl(request, pk):
             else:
                 base_filter["reserved_for_external"] = False
             daily_slots = DailySlot.objects.filter(**base_filter).order_by('start_datetime')
+            daily_slots = filter_queryset_for_home_department(
+                daily_slots,
+                user=booking_user,
+                equipment=equipment,
+                is_admin=False,
+                is_external=UserType.is_external_user(user_type),
+            )
         perf.mark("candidate_slots_query")
         book_any_available_slots = request.data.get("book_any_available_slots") is True
         book_even_if_single_slot_available = request.data.get("book_even_if_single_slot_available") is True
@@ -2694,6 +2705,7 @@ def _book_equipment_impl(request, pk):
                     alt = _find_alternative_available_slots(
                         equipment, required_minutes, user_type, is_admin,
                         visible_week_start=visible_week_start, visible_week_end=visible_week_end,
+                        booking_user=booking_user,
                     )
                     if alt:
                         slot_ids, daily_slots = alt
@@ -2734,6 +2746,7 @@ def _book_equipment_impl(request, pk):
                                         equipment, user_type, is_admin,
                                         visible_week_start=visible_week_start,
                                         visible_week_end=visible_week_end,
+                                        booking_user=booking_user,
                                     )
                                     if one_slot:
                                         slot_id, _slot_obj = one_slot
@@ -2826,10 +2839,10 @@ def _book_equipment_impl(request, pk):
                 _create_booking_attempt_log(
                     request, equipment, BookingAttemptOutcome.FAILED,
                     failure_reason=f"Slots {unavailable_slots} are not available for booking.",
-                slots_requested=len(slot_ids),
-                number_of_samples=request.data.get("number_of_samples") or 1,
-                additional_info=_get_additional_info_from_request(request, equipment),
-            )
+                    slots_requested=len(slot_ids),
+                    number_of_samples=request.data.get("number_of_samples") or 1,
+                    additional_info=_get_additional_info_from_request(request, equipment),
+                )
                 return Response(
                     _enrich_failed_booking_response(
                         equipment,
@@ -2840,6 +2853,33 @@ def _book_equipment_impl(request, pk):
                     ),
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if not UserType.is_external_user(user_type):
+                home_denied = [
+                    s.id for s in daily_slots
+                    if not slot_allows_internal_user(s, booking_user, equipment)
+                ]
+                if home_denied:
+                    msg = (
+                        f"Slots {home_denied} are reserved for this equipment's home department only."
+                    )
+                    _create_booking_attempt_log(
+                        request, equipment, BookingAttemptOutcome.FAILED,
+                        failure_reason=msg,
+                        slots_requested=len(slot_ids),
+                        number_of_samples=request.data.get("number_of_samples") or 1,
+                        additional_info=_get_additional_info_from_request(request, equipment),
+                    )
+                    return Response(
+                        _enrich_failed_booking_response(
+                            equipment,
+                            booking_user,
+                            msg,
+                            waitlist_on_failure=waitlist_on_failure,
+                            slot_unavailable_failure=True,
+                        ),
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            perf.mark("slot_availability_checked")
             # Enforce slot window (from/to): only slots fully within the window are bookable
             time_from = getattr(equipment, 'weekly_view_time_from', None)
             time_to = getattr(equipment, 'weekly_view_time_to', None)
@@ -3089,6 +3129,13 @@ def _book_equipment_impl(request, pk):
                     lock_filter["status"] = SlotStatus.AVAILABLE
                     lock_filter["reserved_for_external"] = UserType.is_external_user(user_type)
                     locked_slots_qs = DailySlot.objects.select_for_update().filter(**lock_filter).order_by('start_datetime')
+                    locked_slots_qs = filter_queryset_for_home_department(
+                        locked_slots_qs,
+                        user=booking_user,
+                        equipment=equipment,
+                        is_admin=False,
+                        is_external=UserType.is_external_user(user_type),
+                    )
                 locked_slots = list(locked_slots_qs)
                 perf.mark("select_for_update_slots")
                 if len(locked_slots) != len(slot_ids):
@@ -3103,7 +3150,16 @@ def _book_equipment_impl(request, pk):
                             alt_filter["date__lte"] = visible_week_end
                         alt_qs = DailySlot.objects.select_for_update(skip_locked=True).filter(**alt_filter).order_by(
                             "start_datetime"
-                        )[:_BOOK_ANY_ALT_SLOT_SCAN_LIMIT]
+                        )
+                        if not is_admin:
+                            alt_qs = filter_queryset_for_home_department(
+                                alt_qs,
+                                user=booking_user,
+                                equipment=equipment,
+                                is_admin=False,
+                                is_external=UserType.is_external_user(user_type),
+                            )
+                        alt_qs = alt_qs[:_BOOK_ANY_ALT_SLOT_SCAN_LIMIT]
                         time_from = getattr(equipment, "weekly_view_time_from", None)
                         time_to = getattr(equipment, "weekly_view_time_to", None)
                         collected = []
@@ -3556,6 +3612,13 @@ def _book_equipment_impl(request, pk):
     else:
         slots_filter["reserved_for_external"] = False
     daily_slots = DailySlot.objects.filter(**slots_filter).order_by('start_datetime')
+    daily_slots = filter_queryset_for_home_department(
+        daily_slots,
+        user=booking_user,
+        equipment=equipment,
+        is_admin=is_admin,
+        is_external=UserType.is_external_user(user_type),
+    )
     
     if not daily_slots.exists():
         _create_booking_attempt_log(
@@ -8042,7 +8105,9 @@ def _try_reduce_to_single_slot(equipment, charge_profile_with_type, input_values
     return (reduced, new_time)
 
 
-def _find_one_available_slot_in_window(equipment, user_type, is_admin, visible_week_start=None, visible_week_end=None):
+def _find_one_available_slot_in_window(
+    equipment, user_type, is_admin, visible_week_start=None, visible_week_end=None, booking_user=None
+):
     """
     Find any one available slot for the equipment within the visible week.
     Returns (slot_id, DailySlot) or None.
@@ -8054,28 +8119,35 @@ def _find_one_available_slot_in_window(equipment, user_type, is_admin, visible_w
         base_filter["date__gte"] = visible_week_start
     if visible_week_end is not None:
         base_filter["date__lte"] = visible_week_end
-    slot = (
-        DailySlot.objects.filter(**base_filter)
-        .order_by("start_datetime")
-        .first()
-    )
-    if not slot:
-        return None
+    qs = DailySlot.objects.filter(**base_filter).order_by("start_datetime")
+    if booking_user is not None and not is_admin:
+        qs = filter_queryset_for_home_department(
+            qs,
+            user=booking_user,
+            equipment=equipment,
+            is_admin=False,
+            is_external=UserType.is_external_user(user_type),
+        )
+    candidates = list(qs[:40])
     time_from = getattr(equipment, "weekly_view_time_from", None)
     time_to = getattr(equipment, "weekly_view_time_to", None)
-    if (time_from is not None or time_to is not None) and slot.start_datetime and slot.end_datetime:
-        from django.utils import timezone as tz
-        start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-        end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-        st, et = start_local.time(), end_local.time()
-        if time_from is not None and st < time_from:
-            return None
-        if time_to is not None and et > time_to:
-            return None
-    return (slot.id, slot)
+    for slot in candidates:
+        if (time_from is not None or time_to is not None) and slot.start_datetime and slot.end_datetime:
+            from django.utils import timezone as tz
+            start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
+            end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
+            st, et = start_local.time(), end_local.time()
+            if time_from is not None and st < time_from:
+                continue
+            if time_to is not None and et > time_to:
+                continue
+        return (slot.id, slot)
+    return None
 
 
-def _find_alternative_available_slots(equipment, required_minutes, user_type, is_admin, visible_week_start=None, visible_week_end=None):
+def _find_alternative_available_slots(
+    equipment, required_minutes, user_type, is_admin, visible_week_start=None, visible_week_end=None, booking_user=None
+):
     """
     Find any available slots for the equipment that together cover at least required_minutes.
     Uses same rules as slot_ids path: AVAILABLE, reserved_for_external for external, slot window.
@@ -8090,6 +8162,14 @@ def _find_alternative_available_slots(equipment, required_minutes, user_type, is
     if visible_week_end is not None:
         base_filter["date__lte"] = visible_week_end
     qs = DailySlot.objects.filter(**base_filter).order_by("start_datetime")
+    if booking_user is not None and not is_admin:
+        qs = filter_queryset_for_home_department(
+            qs,
+            user=booking_user,
+            equipment=equipment,
+            is_admin=False,
+            is_external=UserType.is_external_user(user_type),
+        )
     time_from = getattr(equipment, "weekly_view_time_from", None)
     time_to = getattr(equipment, "weekly_view_time_to", None)
     collected = []
@@ -10106,6 +10186,13 @@ def user_reschedule_booking(request, booking_id):
     else:
         slots_filter["reserved_for_external"] = False
     available_slots = DailySlot.objects.filter(**slots_filter).order_by('start_datetime')
+    available_slots = filter_queryset_for_home_department(
+        available_slots,
+        user=booking.user,
+        equipment=equipment,
+        is_admin=False,
+        is_external=UserType.is_external_user(getattr(booking.user, "user_type", None)),
+    )
     
     if not available_slots.exists():
         return Response(
@@ -12059,7 +12146,16 @@ def create_repeat_booking(request, booking_id):
         }
         if UserType.is_external_user(getattr(orig_booking.user, "user_type", None)):
             slot_filter["reserved_for_external"] = True
+        else:
+            slot_filter["reserved_for_external"] = False
         daily_slots = DailySlot.objects.filter(**slot_filter).order_by("start_datetime")
+        daily_slots = filter_queryset_for_home_department(
+            daily_slots,
+            user=orig_booking.user,
+            equipment=equipment,
+            is_admin=False,
+            is_external=UserType.is_external_user(getattr(orig_booking.user, "user_type", None)),
+        )
         if daily_slots.count() != len(slot_ids):
             return Response(
                 {"error": "One or more slots are invalid or not available. Please select only available slots for this equipment."},

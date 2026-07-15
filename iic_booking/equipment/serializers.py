@@ -590,6 +590,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'status_display',
             'blocked_label',
             'reserved_for_external',
+            'home_department_only',
             'booking',
             'booking_id',
             'real_booking_id',
@@ -678,6 +679,12 @@ class DailySlotSerializer(serializers.ModelSerializer):
                 and instance.date not in holidays_in_range
             ):
                 data['status_display'] = 'Reserved for External User'
+            elif (
+                instance.status == SlotStatus.AVAILABLE
+                and getattr(instance, 'home_department_only', False)
+                and not getattr(instance, 'reserved_for_external', False)
+            ):
+                data['status_display'] = 'Home department only'
         return data
 
     def _show_completed_as_booked_for_weekly(self, obj):

@@ -1752,6 +1752,107 @@ def admin_api_router():
                 status=status.HTTP_200_OK,
             )
 
+        @action(detail=True, methods=["post"], url_path="bulk-home-department-only")
+        def bulk_home_department_only(self, request, pk=None):
+            """
+            Mark slots as home-department only (or unmark to open to all departments).
+            Body: { "home_department_only": true|false, "slot_ids": [1,2,...] } OR
+                  { "home_department_only": true|false, "dates": ["YYYY-MM-DD", ...] } OR
+                  { "home_department_only": true|false, "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }.
+            Only Admin and OIC. Default unmarked = any department may book (subject to quotas).
+            """
+            from datetime import datetime as dt, timedelta
+            from iic_booking.equipment.slot_utils import SlotGenerator
+
+            equipment = self.get_object()
+            data = request.data or {}
+            flag = data.get("home_department_only")
+            if flag is None:
+                return Response(
+                    {"error": "Missing 'home_department_only' (true or false)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            flag = flag in (True, "true", "True", "1", 1)
+
+            slot_ids = []
+            slot_ids_raw = data.get("slot_ids")
+            if slot_ids_raw is not None and isinstance(slot_ids_raw, list):
+                for x in slot_ids_raw:
+                    try:
+                        slot_ids.append(int(x))
+                    except (TypeError, ValueError):
+                        pass
+                slots = list(
+                    DailySlot.objects.filter(
+                        id__in=slot_ids,
+                        slot_master__equipment=equipment,
+                    ),
+                )
+                slot_ids = [s.id for s in slots]
+            else:
+                dates_raw = data.get("dates")
+                start_str = (data.get("start_date") or "").strip()
+                end_str = (data.get("end_date") or "").strip()
+                date_set = set()
+                if dates_raw and isinstance(dates_raw, list):
+                    for d in dates_raw:
+                        s = (d if isinstance(d, str) else str(d)).strip()[:10]
+                        try:
+                            date_set.add(dt.strptime(s, "%Y-%m-%d").date())
+                        except ValueError:
+                            pass
+                elif start_str and end_str:
+                    try:
+                        start_d = dt.strptime(start_str[:10], "%Y-%m-%d").date()
+                        end_d = dt.strptime(end_str[:10], "%Y-%m-%d").date()
+                        if start_d > end_d:
+                            start_d, end_d = end_d, start_d
+                        d = start_d
+                        while d <= end_d:
+                            date_set.add(d)
+                            d += timedelta(days=1)
+                    except ValueError:
+                        return Response(
+                            {"error": "Invalid start_date or end_date. Use YYYY-MM-DD."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                if not date_set:
+                    return Response(
+                        {"error": "Provide 'slot_ids', 'dates' (list of YYYY-MM-DD), or 'start_date' and 'end_date'."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                SlotGenerator.ensure_slot_masters_exist(equipment)
+                min_date = min(date_set)
+                max_date = max(date_set)
+                current = min_date
+                while current <= max_date:
+                    week_end = min(current + timedelta(days=6), max_date)
+                    SlotGenerator.generate_slots_for_week(equipment, current, week_end, allow_holiday=True)
+                    current = week_end + timedelta(days=1)
+                slots = list(
+                    DailySlot.objects.filter(
+                        slot_master__equipment=equipment,
+                        date__in=date_set,
+                    ),
+                )
+                slot_ids = [s.id for s in slots]
+
+            if not slot_ids:
+                return Response(
+                    {"updated": 0, "message": "No slots found for the selection."},
+                    status=status.HTTP_200_OK,
+                )
+            DailySlot.objects.filter(id__in=slot_ids).update(home_department_only=flag)
+            label = (
+                "Home department only"
+                if flag
+                else "Open to all departments"
+            )
+            return Response(
+                {"updated": len(slot_ids), "message": f"Marked {len(slot_ids)} slot(s) as {label}."},
+                status=status.HTTP_200_OK,
+            )
+
         @action(detail=True, methods=["get"], url_path="waitlist")
         def waitlist(self, request, pk=None):
             """List waitlist entries for this equipment (admin/OIC). Ordered by created_at (FIFO)."""

@@ -1392,6 +1392,16 @@ class DailySlot(models.Model):
         verbose_name=_('Reserved for External Users'),
         help_text=_('When True, this slot is shown as Available to external users; only these slots can be booked by external users. Admin and OIC can mark/unmark.')
     )
+    home_department_only = models.BooleanField(
+        default=False,
+        db_index=True,
+        verbose_name=_('Home department only'),
+        help_text=_(
+            'When True, only students/faculty whose department matches this equipment’s '
+            'internal department may book this slot. Default False = any department. '
+            'Admin and OIC can mark/unmark. Has no effect if the equipment has no internal department.'
+        ),
+    )
     booking = models.ForeignKey(
         'Booking',
         on_delete=models.SET_NULL,
