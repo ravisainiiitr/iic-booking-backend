@@ -835,6 +835,15 @@ class ChargeProfile(models.Model):
         ),
         verbose_name=_("Require I-STEM FBR"),
     )
+
+    show_charge_breakdown = models.BooleanField(
+        default=True,
+        help_text=_(
+            "When enabled, the itemized charge breakdown is shown in the Charge Calculation "
+            "section during booking / estimate. When disabled, only totals are shown."
+        ),
+        verbose_name=_("Show charge breakdown"),
+    )
     
     # Primary charge unit (e.g., per sample, per hour)
     primary_unit_charge = models.DecimalField(

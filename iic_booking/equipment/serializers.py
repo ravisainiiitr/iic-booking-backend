@@ -513,6 +513,7 @@ class ChargeProfileSerializer(serializers.ModelSerializer):
             'user_type',
             'is_active',
             'require_istem_fbr',
+            'show_charge_breakdown',
             'primary_unit_charge',
             'secondary_unit_charge',
             'breakpoint',
@@ -1215,6 +1216,7 @@ class ChargeProfileWriteSerializer(serializers.Serializer):
     user_type = serializers.CharField(max_length=50)
     is_active = serializers.BooleanField(default=True)
     require_istem_fbr = serializers.BooleanField(default=False, required=False)
+    show_charge_breakdown = serializers.BooleanField(default=True, required=False)
     primary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2)
     secondary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=0)
     breakpoint = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True, required=False)
@@ -1382,12 +1384,14 @@ def _create_related(equipment, inlines):
             source_element_field_key=(item.get('source_element_field_key') or '').strip() or None,
         )
     for item in inlines.get('charge_profiles', []):
+        show_bd = item.get('show_charge_breakdown', True)
         ChargeProfile.objects.create(
             equipment=equipment,
             user_type=item['user_type'],
             pricing_profile=ChargeProfilePricingProfile.STANDARD,
             is_active=item.get('is_active', True),
             require_istem_fbr=item.get('require_istem_fbr', False),
+            show_charge_breakdown=show_bd,
             primary_unit_charge=item['primary_unit_charge'], secondary_unit_charge=item.get('secondary_unit_charge', 0),
             breakpoint=item.get('breakpoint'), time_formula=item.get('time_formula') or '',
         )
@@ -1398,6 +1402,7 @@ def _create_related(equipment, inlines):
             pricing_profile=ChargeProfilePricingProfile.DISCOUNTED,
             is_active=True,
             require_istem_fbr=item.get('require_istem_fbr', False),
+            show_charge_breakdown=show_bd,
             primary_unit_charge=0,
             secondary_unit_charge=0,
             breakpoint=item.get('breakpoint'),
@@ -1481,6 +1486,7 @@ def _sync_related(equipment, inlines):
         )
         for item in inlines['charge_profiles']:
             user_type = item['user_type']
+            show_bd = item.get('show_charge_breakdown', True)
             # STANDARD (editable by equipment admin UI)
             profile, created = ChargeProfile.objects.get_or_create(
                 equipment=equipment,
@@ -1489,6 +1495,7 @@ def _sync_related(equipment, inlines):
                 defaults={
                     'is_active': item.get('is_active', True),
                     'require_istem_fbr': item.get('require_istem_fbr', False),
+                    'show_charge_breakdown': show_bd,
                     'primary_unit_charge': item['primary_unit_charge'],
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
                     'breakpoint': item.get('breakpoint'),
@@ -1498,6 +1505,7 @@ def _sync_related(equipment, inlines):
             if not created:
                 profile.is_active = item.get('is_active', True)
                 profile.require_istem_fbr = item.get('require_istem_fbr', False)
+                profile.show_charge_breakdown = show_bd
                 profile.primary_unit_charge = item['primary_unit_charge']
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
                 profile.breakpoint = item.get('breakpoint')
@@ -1512,6 +1520,7 @@ def _sync_related(equipment, inlines):
                 defaults={
                     'is_active': True,
                     'require_istem_fbr': item.get('require_istem_fbr', False),
+                    'show_charge_breakdown': show_bd,
                     'primary_unit_charge': 0,
                     'secondary_unit_charge': 0,
                     'breakpoint': item.get('breakpoint'),
@@ -1521,6 +1530,7 @@ def _sync_related(equipment, inlines):
             if not discounted_created:
                 discounted_profile.is_active = True
                 discounted_profile.require_istem_fbr = item.get('require_istem_fbr', False)
+                discounted_profile.show_charge_breakdown = show_bd
                 discounted_profile.primary_unit_charge = 0
                 discounted_profile.secondary_unit_charge = 0
                 discounted_profile.breakpoint = item.get('breakpoint')

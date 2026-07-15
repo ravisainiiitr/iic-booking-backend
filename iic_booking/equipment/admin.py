@@ -625,6 +625,7 @@ class ChargeProfileInline(admin.StackedInline):
         'pricing_profile',
         'is_active',
         'require_istem_fbr',
+        'show_charge_breakdown',
         'primary_unit_charge',
         'secondary_unit_charge',
         'breakpoint',
