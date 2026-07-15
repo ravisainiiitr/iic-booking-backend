@@ -284,6 +284,14 @@ from iic_booking.equipment.api_document_views import (
     equipment_proforma_invoice_pdf,
     proforma_invoice_pdf_download,
 )
+from iic_booking.equipment.equipment_addition_requests import (
+    equipment_addition_form_choices,
+    equipment_addition_request_create,
+    equipment_addition_request_list,
+    equipment_addition_request_detail,
+    equipment_addition_request_approve,
+    equipment_addition_request_reject,
+)
 from iic_booking.communication.api_views import (
     get_notifications,
     mark_notification_as_read,
@@ -549,6 +557,38 @@ urlpatterns = router.urls + [
     # Equipment endpoints
     path("equipments/", equipment_list, name="equipment-list"),
     path("equipments/catalog-departments/", equipment_catalog_departments, name="equipment-catalog-departments"),
+
+    # Public equipment addition proposals (admin approves before create)
+    path(
+        "equipment-addition-requests/form-choices/",
+        equipment_addition_form_choices,
+        name="equipment-addition-form-choices",
+    ),
+    path(
+        "equipment-addition-requests/",
+        equipment_addition_request_create,
+        name="equipment-addition-request-create",
+    ),
+    path(
+        "admin/equipment-addition-requests/",
+        equipment_addition_request_list,
+        name="admin-equipment-addition-request-list",
+    ),
+    path(
+        "admin/equipment-addition-requests/<int:pk>/",
+        equipment_addition_request_detail,
+        name="admin-equipment-addition-request-detail",
+    ),
+    path(
+        "admin/equipment-addition-requests/<int:pk>/approve/",
+        equipment_addition_request_approve,
+        name="admin-equipment-addition-request-approve",
+    ),
+    path(
+        "admin/equipment-addition-requests/<int:pk>/reject/",
+        equipment_addition_request_reject,
+        name="admin-equipment-addition-request-reject",
+    ),
     path("equipment-categories/", equipment_category_list, name="equipment-category-list"),
     path("equipments/<int:pk>/image/", equipment_image_proxy, name="equipment-image-proxy"),
     path("equipments/<int:pk>/calculate/", equipment_calculate, name="equipment-calculate"),

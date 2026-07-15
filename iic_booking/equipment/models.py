@@ -14,7 +14,7 @@ from django.core.files.storage import storages
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.user_group import UserGroup
-from iic_booking.users.models.department import Department, DepartmentType
+from iic_booking.users.models.department import Department, DepartmentType, InternalDepartmentSubcategory
 
 logger = logging.getLogger(__name__)
 
@@ -4917,3 +4917,121 @@ class EquipmentWriteOffActionLog(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+
+
+class EquipmentAdditionRequestStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    APPROVED = "APPROVED", _("Approved")
+    REJECTED = "REJECTED", _("Rejected")
+
+
+def equipment_addition_image_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1].lower() or ".jpg"
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+    unique = uuid.uuid4().hex[:12]
+    return f"equipment_addition_requests/images/{unique}{ext}"
+
+
+def equipment_addition_document_upload_to(instance, filename):
+    safe = get_valid_filename(filename)[:120] or "document"
+    unique = uuid.uuid4().hex[:12]
+    return f"equipment_addition_requests/documents/{unique}_{safe}"
+
+
+class EquipmentAdditionRequest(models.Model):
+    """Public proposal to add equipment; Admin approves before a real Equipment row is created."""
+
+    id = models.AutoField(primary_key=True)
+    status = models.CharField(
+        max_length=20,
+        choices=EquipmentAdditionRequestStatus.choices,
+        default=EquipmentAdditionRequestStatus.PENDING,
+        db_index=True,
+    )
+    name = models.CharField(max_length=255, help_text=_("Proposed equipment name"))
+    code = models.CharField(max_length=255, help_text=_("Proposed equipment code"))
+    description = models.TextField(blank=True, default="")
+    make = models.CharField(max_length=255, blank=True, default="")
+    model_information = models.CharField(max_length=255, blank=True, default="")
+    year_of_installation = models.CharField(max_length=20, blank=True, default="")
+    location = models.TextField(blank=True, default="")
+    specifications = models.TextField(blank=True, default="")
+    sample_requirements = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Sample requirements and preparation"),
+    )
+    slots_per_day = models.PositiveIntegerField(null=True, blank=True)
+    slot_duration_minutes = models.PositiveIntegerField(null=True, blank=True)
+    slot_start_time = models.TimeField(null=True, blank=True)
+    slot_end_time = models.TimeField(null=True, blank=True)
+    charge_calculation_basis = models.TextField(blank=True, default="")
+    time_calculation_basis = models.TextField(blank=True, default="")
+    charge_iitr_student = models.CharField(max_length=255, blank=True, default="")
+    charge_iitr_faculty = models.CharField(max_length=255, blank=True, default="")
+    charge_external_educational_student = models.CharField(max_length=255, blank=True, default="")
+    charge_external_govt_rnd = models.CharField(max_length=255, blank=True, default="")
+    charge_industry = models.CharField(max_length=255, blank=True, default="")
+    charge_startup_incubated_iitr = models.CharField(max_length=255, blank=True, default="")
+    charge_external_startup_msme = models.CharField(max_length=255, blank=True, default="")
+    equipment_image = models.ImageField(
+        upload_to=equipment_addition_image_upload_to,
+        blank=True,
+        null=True,
+        max_length=512,
+        verbose_name=_("Equipment image"),
+    )
+    supporting_document = models.FileField(
+        upload_to=equipment_addition_document_upload_to,
+        blank=True,
+        null=True,
+        max_length=512,
+        verbose_name=_("Supporting document"),
+    )
+    internal_department = models.ForeignKey(
+        Department,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="equipment_addition_requests",
+        limit_choices_to={
+            "department_type": DepartmentType.INTERNAL,
+            "internal_subcategory": InternalDepartmentSubcategory.IIT_ROORKEE_DEPT_CENTRES,
+        },
+        verbose_name=_("Internal department"),
+    )
+    proposed_oic_name = models.CharField(max_length=255, blank=True, default="")
+    proposed_oic_email = models.EmailField(blank=True, default="")
+    proposed_operator_name = models.CharField(max_length=255, blank=True, default="")
+    proposed_operator_email = models.EmailField(blank=True, default="")
+    submitter_name = models.CharField(max_length=255)
+    submitter_email = models.EmailField()
+    submitter_phone = models.CharField(max_length=40, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    reviewed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="equipment_addition_reviews",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_notes = models.TextField(blank=True, default="")
+    created_equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="addition_requests",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = _("Equipment addition request")
+        verbose_name_plural = _("Equipment addition requests")
+
+    def __str__(self):
+        return f"{self.code} — {self.name} ({self.status})"

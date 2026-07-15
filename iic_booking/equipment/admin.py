@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 from .image_utils import persist_equipment_image_upload
 from .models import (
     Equipment,
+    EquipmentAdditionRequest,
     EquipmentCategory,
     EquipmentGroup,
     EquipmentGroupQuota,
@@ -2134,6 +2135,26 @@ class SemesterAdmin(admin.ModelAdmin):
     list_filter = ["is_active"]
     search_fields = ["code", "name"]
     ordering = ["-start_date"]
+
+
+@admin.register(EquipmentAdditionRequest)
+class EquipmentAdditionRequestAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "code",
+        "name",
+        "status",
+        "submitter_name",
+        "submitter_email",
+        "internal_department",
+        "created_at",
+        "reviewed_at",
+    ]
+    list_filter = ["status", "internal_department"]
+    search_fields = ["code", "name", "submitter_name", "submitter_email"]
+    readonly_fields = ["created_at", "updated_at", "reviewed_at", "created_equipment"]
+    raw_id_fields = ["internal_department", "reviewed_by", "created_equipment"]
+    date_hierarchy = "created_at"
 
 
 @admin.register(StudentEquipmentNomination)
