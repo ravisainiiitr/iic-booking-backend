@@ -454,6 +454,8 @@ DEFAULT_CALENDAR_COLORS = {
         "OPERATOR_ABSENT": "#eab308",     # Amber
         "BOOKING_NOT_UTILIZED": "#a855f7",  # Purple
         "RESERVED_FOR_EXTERNAL": "#94a3b8",  # Slate for "Reserved for External User" (internal view)
+        "HOME_DEPARTMENT_ONLY": "#c4b5fd",  # Violet — home dept only (unmarked while policy active)
+        "NON_HOME_RESERVED": "#06b6d4",  # Cyan — reserved for other departments
         "NOT_AVAILABLE": "#e2e8f0",  # Light slate for "Not Available" (external view)
         "COMPLETED": "#059669",  # Emerald for completed bookings (distinct from BOOKED red)
     },
@@ -478,6 +480,8 @@ def get_calendar_colors():
                 "OPERATOR_ABSENT",
                 "BOOKING_NOT_UTILIZED",
                 "RESERVED_FOR_EXTERNAL",
+                "HOME_DEPARTMENT_ONLY",
+                "NON_HOME_RESERVED",
                 "NOT_AVAILABLE",
             }
             slot_colors = dict(DEFAULT_CALENDAR_COLORS["slot_colors"])
@@ -2861,9 +2865,20 @@ def _book_equipment_impl(request, pk):
                     if not slot_allows_internal_user(s, booking_user, equipment)
                 ]
                 if home_denied:
-                    msg = (
-                        f"Slots {home_denied} are reserved for this equipment's home department only."
+                    from .slot_department_access import department_access_denial_message
+
+                    denied_slots = [s for s in daily_slots if s.id in home_denied]
+                    msg = department_access_denial_message(
+                        denied_slots[0], booking_user, equipment
+                    ) if denied_slots else (
+                        f"Slots {home_denied} are not available for your department under "
+                        "home / non-home reservation rules."
                     )
+                    if len(home_denied) > 1:
+                        msg = (
+                            f"Slots {home_denied} are not available for your department under "
+                            "home / non-home reservation rules."
+                        )
                     _create_booking_attempt_log(
                         request, equipment, BookingAttemptOutcome.FAILED,
                         failure_reason=msg,

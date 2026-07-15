@@ -690,7 +690,35 @@ class DailySlotSerializer(serializers.ModelSerializer):
                 and getattr(instance, 'home_department_only', False)
                 and not getattr(instance, 'reserved_for_external', False)
             ):
-                data['status_display'] = 'Home department only'
+                from .slot_department_access import non_home_reservation_released_to_all
+
+                equipment = None
+                try:
+                    equipment = instance.slot_master.equipment if instance.slot_master_id else None
+                except Exception:
+                    equipment = None
+                if equipment and non_home_reservation_released_to_all(instance, equipment):
+                    data['status_display'] = 'Available (all departments)'
+                else:
+                    data['status_display'] = 'Reserved for other departments'
+            elif (
+                instance.status == SlotStatus.AVAILABLE
+                and not getattr(instance, 'home_department_only', False)
+                and not getattr(instance, 'reserved_for_external', False)
+            ):
+                from .slot_department_access import equipment_department_slot_policy_active
+
+                equipment = None
+                try:
+                    equipment = instance.slot_master.equipment if instance.slot_master_id else None
+                except Exception:
+                    equipment = None
+                policy_cache = self.context.setdefault("_dept_policy_active_by_eq", {})
+                eid = getattr(equipment, "equipment_id", None) if equipment else None
+                if eid is not None and eid not in policy_cache:
+                    policy_cache[eid] = equipment_department_slot_policy_active(equipment)
+                if eid is not None and policy_cache.get(eid):
+                    data['status_display'] = 'Home department only'
         return data
 
     def _show_completed_as_booked_for_weekly(self, obj):

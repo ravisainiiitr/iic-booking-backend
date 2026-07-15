@@ -1755,11 +1755,18 @@ def admin_api_router():
         @action(detail=True, methods=["post"], url_path="bulk-home-department-only")
         def bulk_home_department_only(self, request, pk=None):
             """
-            Mark slots as home-department only (or unmark to open to all departments).
+            Mark slots as reserved for non-home department (or clear the mark).
+
             Body: { "home_department_only": true|false, "slot_ids": [1,2,...] } OR
                   { "home_department_only": true|false, "dates": ["YYYY-MM-DD", ...] } OR
                   { "home_department_only": true|false, "start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD" }.
-            Only Admin and OIC. Default unmarked = any department may book (subject to quotas).
+
+            Only Admin and OIC.
+            true  = reserved for non-home department users
+            false = clear reservation (becomes home-department only while any other
+                    upcoming reserved mark remains on the equipment; otherwise open to all)
+            Unbooked reserved slots open to all departments within Reschedule Hours Threshold
+            before the slot start.
             """
             from datetime import datetime as dt, timedelta
             from iic_booking.equipment.slot_utils import SlotGenerator
@@ -1844,9 +1851,9 @@ def admin_api_router():
                 )
             DailySlot.objects.filter(id__in=slot_ids).update(home_department_only=flag)
             label = (
-                "Home department only"
+                "Reserved for non-home department"
                 if flag
-                else "Open to all departments"
+                else "Home department (cleared non-home reservation)"
             )
             return Response(
                 {"updated": len(slot_ids), "message": f"Marked {len(slot_ids)} slot(s) as {label}."},
@@ -2615,6 +2622,8 @@ def admin_api_router():
                 "OPERATOR_ABSENT",
                 "BOOKING_NOT_UTILIZED",
                 "RESERVED_FOR_EXTERNAL",
+                "HOME_DEPARTMENT_ONLY",
+                "NON_HOME_RESERVED",
                 "NOT_AVAILABLE",
             }
             updated = []

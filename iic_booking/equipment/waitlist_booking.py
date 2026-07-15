@@ -316,7 +316,7 @@ def create_booking_for_waitlist_user(
         denied = [s.id for s in daily_slots if not slot_allows_internal_user(s, booking_user, equipment)]
         if denied:
             return None, (
-                f"Slots {denied} are reserved for the equipment's home department only."
+                f"Slots {denied} are not available for your department under home / non-home reservation rules."
             )
 
     total_slot_minutes = sum(

@@ -1395,11 +1395,14 @@ class DailySlot(models.Model):
     home_department_only = models.BooleanField(
         default=False,
         db_index=True,
-        verbose_name=_('Home department only'),
+        verbose_name=_('Reserved for non-home department'),
         help_text=_(
-            'When True, only students/faculty whose department matches this equipment’s '
-            'internal department may book this slot. Default False = any department. '
-            'Admin and OIC can mark/unmark. Has no effect if the equipment has no internal department.'
+            'When True, this slot is reserved for users outside the equipment’s home '
+            '(internal) department. Unmarked slots are home-department only while any '
+            'upcoming reserved mark exists on the equipment. Unbooked reserved slots open '
+            'to all departments once within Reschedule Hours Threshold before start. '
+            'Admin and OIC can mark/unmark. Has no effect if the equipment has no '
+            'internal department.'
         ),
     )
     booking = models.ForeignKey(
