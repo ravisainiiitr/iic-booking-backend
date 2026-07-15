@@ -10068,8 +10068,9 @@ def user_reschedule_booking(request, booking_id):
             status=status.HTTP_404_NOT_FOUND,
         )
     
-    # Check if the booking belongs to the authenticated user
-    if booking.user != request.user:
+    # Own bookings for normal users; Admin / OIC / Lab Operator may reschedule any booking.
+    is_staff_rescheduler = check_operator_permission(request.user)
+    if booking.user != request.user and not is_staff_rescheduler:
         return Response(
             {"error": "You don't have permission to reschedule this booking. You can only reschedule your own bookings."},
             status=status.HTTP_403_FORBIDDEN,
@@ -10090,7 +10091,12 @@ def user_reschedule_booking(request, booking_id):
     # Enforce reschedule-hours threshold for user actions (normal case).
     # If now is strictly inside the threshold window before the allocated slot start time,
     # disallow reschedule. (Maintenance disruption policy bypasses this threshold check.)
-    if not getattr(booking, "maintenance_disruption_flag", False) and booking.status != BookingStatus.DISRUPTION_PENDING:
+    # Staff (Admin / OIC / Operator) are not bound by the threshold.
+    if (
+        not is_staff_rescheduler
+        and not getattr(booking, "maintenance_disruption_flag", False)
+        and booking.status != BookingStatus.DISRUPTION_PENDING
+    ):
         equipment = booking.equipment
         threshold_hours = getattr(equipment, "reschedule_hours_threshold", None) or 48
         earliest_start = (
