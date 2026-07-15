@@ -933,6 +933,7 @@ def equipment_form_choices(request):
                 "email": u.email or "",
                 "department_id": u.department_id,
                 "department_name": (u.department.name if u.department_id else None),
+                "department_code": (u.department.code if u.department_id else None),
             }
             for u in managers
         ],
@@ -943,6 +944,7 @@ def equipment_form_choices(request):
                 "email": u.email or "",
                 "department_id": u.department_id,
                 "department_name": (u.department.name if u.department_id else None),
+                "department_code": (u.department.code if u.department_id else None),
             }
             for u in operators
         ],
