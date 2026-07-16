@@ -909,6 +909,15 @@ def login(request):
             },
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    if not user.is_department_access_enabled():
+        return Response(
+            {
+                "error": "Department access disabled",
+                "message": "Your department access has been disabled by the Main Administrator.",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
     
     # Authenticate user (check password)
     authenticated_user = authenticate(request=request, username=email, password=password)

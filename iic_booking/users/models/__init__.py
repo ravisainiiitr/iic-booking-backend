@@ -39,6 +39,7 @@ from .equipment_supply_chain_role import (
     EquipmentSupplyChainRole,
     UserEquipmentSupplyChainRole,
 )
+from .rbac import PermissionDefinition, DeptAdminPermissionGrant, StaffPermissionGrant
 
 __all__ = [
     "UserManager",
@@ -78,5 +79,8 @@ __all__ = [
     "SricTransferRequest",
     "EquipmentSupplyChainRole",
     "UserEquipmentSupplyChainRole",
+    "PermissionDefinition",
+    "DeptAdminPermissionGrant",
+    "StaffPermissionGrant",
 ]
 

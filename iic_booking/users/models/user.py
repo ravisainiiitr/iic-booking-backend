@@ -335,7 +335,33 @@ class User(AbstractUser):
         """
         if not self.user_type:
             return False
+        if self.user_type in {
+            UserType.DEPT_ADMIN,
+            UserType.MANAGER,
+            UserType.OPERATOR,
+            UserType.FINANCE,
+        }:
+            department = getattr(self, "department", None)
+            if (
+                department is None
+                or getattr(department, "department_type", None) != DepartmentType.INTERNAL
+                or not getattr(department, "access_enabled", True)
+            ):
+                return False
         return self.user_type in UserType.get_admin_panel_codes()
+
+    def is_department_access_enabled(self) -> bool:
+        """Whether the user's internal department currently has panel access enabled."""
+        if self.user_type == UserType.ADMIN:
+            return True
+        if self.user_type not in UserType.get_admin_panel_codes():
+            return True
+        department = getattr(self, "department", None)
+        return bool(
+            department
+            and getattr(department, "department_type", None) == DepartmentType.INTERNAL
+            and getattr(department, "access_enabled", True)
+        )
 
     def uses_omniport_auth(self) -> bool:
         """Check if user authenticates via Omniport.

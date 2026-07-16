@@ -2322,8 +2322,8 @@ class BookingSampleTraceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BookingSampleTrace
-        fields = ['id', 'status', 'status_display', 'sample_identifiers', 'tracking_id', 'reason', 'user_reply', 'reply_attachments', 'created_at', 'created_by', 'created_by_name']
-        read_only_fields = ['id', 'created_at']
+        fields = ['id', 'status', 'status_display', 'sample_identifiers', 'tracking_id', 'reason', 'results_folder_path', 'user_reply', 'reply_attachments', 'created_at', 'created_by', 'created_by_name']
+        read_only_fields = ['id', 'created_at', 'results_folder_path']
 
     def get_created_by_name(self, obj):
         if obj.created_by:

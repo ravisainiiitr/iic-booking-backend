@@ -11064,18 +11064,48 @@ def _build_in_analysis_results_folder(booking) -> str:
     Base -> Equipment Code -> Internal/External -> Year -> Department -> User -> Virtual Booking ID
     """
     import os
+    from pathlib import Path
+
+    from django.contrib.auth import get_user_model
+
+    from iic_booking.users.models import Department
 
     equipment = getattr(booking, "equipment", None)
+    if equipment is None and getattr(booking, "equipment_id", None):
+        from iic_booking.equipment.models import Equipment
+
+        equipment = (
+            Equipment.objects.filter(pk=booking.equipment_id)
+            .only("equipment_id", "code", "results_base_location")
+            .first()
+        )
     user = getattr(booking, "user", None)
+    if user is None and getattr(booking, "user_id", None):
+        user = (
+            get_user_model()
+            .objects.filter(pk=booking.user_id)
+            .only("id", "name", "email", "user_type", "department_id")
+            .first()
+        )
 
     base_location = (getattr(equipment, "results_base_location", None) or r"D:\Results").strip()
+    # Normalize mixed separators / escaped backslashes from UI saves.
+    base_location = base_location.replace("\\\\", "\\").strip().strip('"').strip("'")
+    if not base_location:
+        base_location = r"D:\Results"
+
     equipment_code = _safe_results_path_component(getattr(equipment, "code", "") or "Equipment", "Equipment")
     user_type_label = "External" if UserType.is_external_user(getattr(user, "user_type", None)) else "Internal"
     year_label = str(timezone.now().year)
-    department_label = _safe_results_path_component(
-        getattr(getattr(user, "department", None), "name", "") or "Unknown Department",
-        "Unknown Department",
-    )
+
+    # Fetch only the department name so folder creation does not depend on every Department column.
+    department_name = ""
+    department_id = getattr(user, "department_id", None) if user else None
+    if department_id:
+        department_name = (
+            Department.objects.filter(pk=department_id).values_list("name", flat=True).first() or ""
+        )
+    department_label = _safe_results_path_component(department_name or "Unknown Department", "Unknown Department")
     user_label = _safe_results_path_component(
         getattr(user, "name", "") or getattr(user, "email", "") or "Unknown User",
         "Unknown User",
@@ -11085,16 +11115,34 @@ def _build_in_analysis_results_folder(booking) -> str:
         "Booking",
     )
 
-    full_path = os.path.join(
-        base_location,
-        equipment_code,
-        user_type_label,
-        year_label,
-        department_label,
-        user_label,
-        booking_label,
+    full_path = str(
+        Path(base_location)
+        / equipment_code
+        / user_type_label
+        / year_label
+        / department_label
+        / user_label
+        / booking_label
     )
+    full_path = os.path.normpath(full_path)
     os.makedirs(full_path, exist_ok=True)
+    if not os.path.isdir(full_path):
+        raise OSError(f"Folder was not created at: {full_path}")
+    # Marker file so operators can confirm the system created this folder.
+    marker = os.path.join(full_path, ".iic_results_folder")
+    try:
+        with open(marker, "a", encoding="utf-8") as fh:
+            fh.write(
+                f"booking={getattr(booking, 'virtual_booking_id', '') or getattr(booking, 'booking_id', '')}\n"
+            )
+    except OSError:
+        # Folder creation succeeded even if marker write is blocked.
+        logger.warning("Could not write results-folder marker at %s", marker)
+    logger.info(
+        "In Analysis results folder ready booking_id=%s path=%s",
+        getattr(booking, "booking_id", None),
+        full_path,
+    )
     return full_path
 
 
@@ -11146,7 +11194,7 @@ def set_booking_sample_status(request, booking_id):
     Reason is mandatory for SAMPLE_REJECTED and HELD_AT_OFFICE.
     """
     try:
-        booking = Booking.objects.get(booking_id=booking_id)
+        booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -11221,6 +11269,7 @@ def set_booking_sample_status(request, booking_id):
         sample_identifiers=sample_identifiers,
         tracking_id=tracking_id,
         reason=reason,
+        results_folder_path=in_analysis_folder_path or "",
         created_by=request.user,
     )
     if status_value == SampleTraceStatus.SAMPLE_REJECTED:
@@ -11301,6 +11350,57 @@ def set_booking_sample_status(request, booking_id):
         payload["in_analysis_folder_path"] = in_analysis_folder_path
         payload["in_analysis_folder_opened"] = in_analysis_folder_opened
     return Response(payload, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def ensure_booking_results_folder(request, booking_id):
+    """
+    Create (or recreate) the In Analysis results folder for a booking and optionally open it
+    on the backend host. Staff only (admin / OIC / lab incharge).
+    """
+    import os
+
+    if not check_operator_permission(request.user):
+        return Response(
+            {"error": "Only Admin, Officer In Charge, or Lab Incharge can create results folders."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        folder_path = _build_in_analysis_results_folder(booking)
+        opened = _try_open_folder_on_host(folder_path)
+    except Exception as e:
+        logger.exception("ensure_booking_results_folder failed for booking %s", booking_id)
+        return Response(
+            {"error": f"Unable to create results folder: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    processing_event = (
+        BookingSampleTrace.objects.filter(booking=booking, status=SampleTraceStatus.PROCESSING)
+        .order_by("-created_at")
+        .first()
+    )
+    if processing_event and folder_path and processing_event.results_folder_path != folder_path:
+        processing_event.results_folder_path = folder_path
+        processing_event.save(update_fields=["results_folder_path"])
+
+    return Response(
+        {
+            "message": "Results folder is ready.",
+            "in_analysis_folder_path": folder_path,
+            "in_analysis_folder_opened": opened,
+            "exists": os.path.isdir(folder_path),
+            "virtual_booking_id": booking.virtual_booking_id,
+            "results_base_location": getattr(booking.equipment, "results_base_location", None),
+        },
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(["POST"])

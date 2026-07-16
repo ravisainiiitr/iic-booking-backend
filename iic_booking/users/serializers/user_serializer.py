@@ -7,6 +7,8 @@ from rest_framework import serializers
 
 from ..models import User
 from ..models import UserType
+from ..models.department import DepartmentType
+from ..rbac import ensure_default_dept_admin_permission_grants
 
 
 class AdminUserSetPasswordSerializer(serializers.Serializer):
@@ -52,6 +54,12 @@ class AdminUserCreateSerializer(serializers.ModelSerializer[User]):
         ut = attrs.get("user_type")
         if ut != UserType.STUDENT and ut != UserType.INDIVIDUAL_STUDENT and attrs.get("user_type_alias"):
             attrs["user_type_alias"] = None
+        department = attrs.get("department")
+        if ut == UserType.DEPT_ADMIN:
+            if department is None:
+                raise serializers.ValidationError({"department": "Department Administrator must belong to an internal department."})
+            if getattr(department, "department_type", None) != DepartmentType.INTERNAL:
+                raise serializers.ValidationError({"department": "Department Administrator can only be assigned to an internal department."})
         return attrs
 
     def create(self, validated_data):
@@ -71,6 +79,7 @@ class AdminUserCreateSerializer(serializers.ModelSerializer[User]):
         if user_type_alias and str(user_type_alias).strip():
             user.user_type_alias = str(user_type_alias).strip()[:100]
             user.save(update_fields=["user_type_alias"])
+        ensure_default_dept_admin_permission_grants(user)
         return user
 
 
@@ -110,7 +119,18 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer[User]):
         # Ensure email_verified is set when admin_approved is enabled via admin edit.
         if attrs.get("admin_approved") is True:
             attrs["email_verified"] = True
+        department = attrs.get("department", getattr(self.instance, "department", None))
+        if ut == UserType.DEPT_ADMIN:
+            if department is None:
+                raise serializers.ValidationError({"department": "Department Administrator must belong to an internal department."})
+            if getattr(department, "department_type", None) != DepartmentType.INTERNAL:
+                raise serializers.ValidationError({"department": "Department Administrator can only be assigned to an internal department."})
         return attrs
+
+    def update(self, instance, validated_data):
+        user = super().update(instance, validated_data)
+        ensure_default_dept_admin_permission_grants(user)
+        return user
 
     def to_representation(self, instance):
         """Include department_code, department_name, user_type_display for response."""

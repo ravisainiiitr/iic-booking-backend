@@ -19,6 +19,7 @@ class DepartmentSerializer(serializers.ModelSerializer[Department]):
             "name",
             "code",
             "internal_grant_code",
+            "access_enabled",
             "department_type",
             "department_type_display",
             "external_subcategory",
@@ -48,6 +49,6 @@ class DepartmentListSerializer(serializers.ModelSerializer[Department]):
 
     class Meta:
         model = Department
-        fields = ["id", "name", "code", "department_type", "department_type_display"]
+        fields = ["id", "name", "code", "department_type", "department_type_display", "access_enabled"]
         read_only_fields = ["id"]
 

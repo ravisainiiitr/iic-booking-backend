@@ -2665,6 +2665,13 @@ class BookingSampleTrace(models.Model):
         verbose_name=_('Reason'),
         help_text=_('Mandatory for Sample Rejected and Held at Office'),
     )
+    results_folder_path = models.CharField(
+        max_length=1000,
+        blank=True,
+        default='',
+        verbose_name=_('Results folder path'),
+        help_text=_('Filesystem path created when status is In Analysis (PROCESSING).'),
+    )
     user_reply = models.TextField(
         blank=True,
         default='',

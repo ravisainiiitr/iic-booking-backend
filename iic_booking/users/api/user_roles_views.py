@@ -13,6 +13,7 @@ User = get_user_model()
 # Map backend user_type to frontend role key (UserManagement roleLabels).
 USER_TYPE_TO_ROLE = {
     UserType.ADMIN: "admin",
+    UserType.DEPT_ADMIN: "dept_admin",
     UserType.MANAGER: "officer_in_charge",
     UserType.OPERATOR: "operator",
     UserType.FINANCE: "accounts",

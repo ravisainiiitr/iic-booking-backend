@@ -30,6 +30,7 @@ from iic_booking.users.models.department import (
 )
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.rbac import is_department_admin, user_has_permission
 
 from .models import (
     Equipment,
@@ -56,6 +57,16 @@ class IsAdminUserType(permissions.BasePermission):
             and user.is_authenticated
             and getattr(user, "user_type", None) == UserType.ADMIN
         )
+
+
+class IsEquipmentAdditionReviewer(permissions.BasePermission):
+    def has_permission(self, request, view):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, "user_type", None) == UserType.ADMIN:
+            return True
+        return is_department_admin(user) and user_has_permission(user, "equipment.request_add", department_id=user.department_id)
 
 
 def _parse_optional_int(value):
@@ -457,11 +468,13 @@ def equipment_addition_request_create(request):
 
 @api_view(["GET"])
 @authentication_classes([TokenAuthenticationWithInactivity, SessionAuthentication])
-@permission_classes([IsAdminUserType])
+@permission_classes([IsEquipmentAdditionReviewer])
 def equipment_addition_request_list(request):
     qs = EquipmentAdditionRequest.objects.select_related(
         "internal_department", "reviewed_by", "created_equipment"
     ).all()
+    if getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN:
+        qs = qs.filter(internal_department_id=request.user.department_id)
     status_filter = (request.query_params.get("status") or "").strip().upper()
     if status_filter and status_filter != "ALL":
         qs = qs.filter(status=status_filter)
@@ -473,13 +486,15 @@ def equipment_addition_request_list(request):
 
 @api_view(["GET"])
 @authentication_classes([TokenAuthenticationWithInactivity, SessionAuthentication])
-@permission_classes([IsAdminUserType])
+@permission_classes([IsEquipmentAdditionReviewer])
 def equipment_addition_request_detail(request, pk: int):
     try:
         obj = EquipmentAdditionRequest.objects.select_related(
             "internal_department", "reviewed_by", "created_equipment"
         ).get(pk=pk)
     except EquipmentAdditionRequest.DoesNotExist:
+        return Response({"error": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
+    if getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN and obj.internal_department_id != request.user.department_id:
         return Response({"error": "Request not found."}, status=status.HTTP_404_NOT_FOUND)
     return Response(
         EquipmentAdditionRequestSerializer(obj, context={"request": request}).data

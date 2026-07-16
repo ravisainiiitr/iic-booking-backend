@@ -6,6 +6,7 @@ from django.db.models import CharField
 from django.db.models import DateTimeField
 from django.db.models import ForeignKey
 from django.db.models import Model
+from django.db.models import BooleanField
 from django.db.models import TextField
 from django.utils.translation import gettext_lazy as _
 
@@ -239,6 +240,11 @@ class Department(Model):
             "Also editable under Admin → Wallet SRIC office notification settings. "
             "Used in SRIC Office recharge emails and the SRIC transfer API."
         ),
+    )
+    access_enabled = BooleanField(
+        _("Access enabled"),
+        default=True,
+        help_text=_("When disabled, departmental admin-panel access is blocked for this internal department."),
     )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)

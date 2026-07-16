@@ -11,6 +11,7 @@ class UserType:
 
     # User type code constants (lowercase codes for database storage)
     ADMIN = "admin"
+    DEPT_ADMIN = "dept_admin"
     MANAGER = "manager"
     OPERATOR = "operator"
     FINANCE = "finance"
@@ -34,6 +35,7 @@ class UserType:
         """
         return [
             (cls.ADMIN, _("Admin")),
+            (cls.DEPT_ADMIN, _("Department Administrator")),
             (cls.MANAGER, _("Officer In Charge")),
             (cls.OPERATOR, _("Lab Incharge")),
             (cls.FINANCE, _("Accounts In Charge")),
@@ -55,7 +57,7 @@ class UserType:
         Returns:
             Set of user type codes
         """
-        return {cls.ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
+        return {cls.ADMIN, cls.DEPT_ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
 
     @classmethod
     def is_end_user_booking_type(cls, user_type: str | None) -> bool:
@@ -123,7 +125,7 @@ class UserType:
         Returns:
             Set of management user type codes
         """
-        return {cls.ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
+        return {cls.ADMIN, cls.DEPT_ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
     
     @classmethod
     def is_internal_user(cls, user_type: str) -> bool:
@@ -168,7 +170,7 @@ class UserType:
         Returns:
             Set of user type codes for Omniport authentication
         """
-        return {cls.STUDENT, cls.INDIVIDUAL_STUDENT, cls.FACULTY, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
+        return {cls.STUDENT, cls.INDIVIDUAL_STUDENT, cls.FACULTY, cls.DEPT_ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
 
     @classmethod
     def get_email_auth_codes(cls) -> set[str]:
