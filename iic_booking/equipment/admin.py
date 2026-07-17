@@ -1000,6 +1000,8 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'booking_not_utilize_window_hours',
                 'operator_unavailable_after_booking_end_hours',
                 'operator_absent_disruption_after_booking_end_hours',
+                'show_completion_countdown',
+                'completion_countdown_hours',
                 'repeat_sample_request_days', 'repeat_sample_disclaimer',
             ),
             'description': _(
@@ -1017,6 +1019,8 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'moved past Sample Sent but is not finished — skipped if latest trace is forwarded, accepted, processing, held, or rejected. '
                 'Auto Operator Absent Disruption: hours after last slot end when latest trace is stuck at Forwarded, '
                 'Accepted, or Processing; opens disruption (refund vs reschedule). '
+                'Show time remaining to complete: optional countdown on booking details from Sample Accepted; '
+                'Admin/OIC grace extensions update the deadline. '
                 'Repeat sample: days after completion when user can request a repeat; disclaimer shown in popup. Define actual timings in Slot Masters below.'
             ),
             'classes': ('collapse',)

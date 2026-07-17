@@ -451,6 +451,23 @@ class Equipment(models.Model):
             'Set to 0 to disable.'
         ),
     )
+    show_completion_countdown = models.BooleanField(
+        default=False,
+        verbose_name=_('Show time remaining to complete'),
+        help_text=_(
+            'When enabled, booking details show a live countdown to complete the booking. '
+            'The timer starts only after Sample Accepted and uses Completion countdown hours. '
+            'Admin/OIC grace extensions update the deadline.'
+        ),
+    )
+    completion_countdown_hours = models.PositiveIntegerField(
+        default=48,
+        verbose_name=_('Completion countdown hours'),
+        help_text=_(
+            'Hours allowed to complete the booking after Sample Accepted (used only when '
+            '"Show time remaining to complete" is enabled). Set to 0 to hide the countdown.'
+        ),
+    )
 
     profile_type = models.CharField(
         max_length=20,

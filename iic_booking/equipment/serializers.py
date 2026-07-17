@@ -33,6 +33,7 @@ from .models import (
     IstemFbrStatus,
     BookingEvent,
     BookingSampleTrace,
+    SampleTraceStatus,
     BookingCancellationRequest,
     RepeatSampleRequest,
     TARewardConfig,
@@ -67,6 +68,88 @@ from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.department import Department, DepartmentType
 from iic_booking.communication.utils import booking_display_id_for_email
+
+
+def build_booking_completion_countdown(booking):
+    """
+    Live countdown payload for booking details when equipment enables it.
+    Starts at first Sample Accepted; deadline extends with operator_absent_hold_until.
+    """
+    from datetime import timedelta
+
+    equipment = getattr(booking, "equipment", None)
+    if not equipment or not getattr(equipment, "show_completion_countdown", False):
+        return None
+    hours = int(getattr(equipment, "completion_countdown_hours", 0) or 0)
+    if hours <= 0:
+        return None
+
+    status_u = (getattr(booking, "status", None) or "").upper()
+    if status_u in {
+        BookingStatus.COMPLETED,
+        BookingStatus.CANCELLED,
+        BookingStatus.REFUNDED,
+        BookingStatus.ABSENT,
+        BookingStatus.WAITLISTED,
+        BookingStatus.HOLD,
+        BookingStatus.BOOKING_NOT_UTILIZED,
+    }:
+        return None
+
+    events = getattr(booking, "_prefetched_objects_cache", {}).get("sample_trace_events")
+    if events is None:
+        events_qs = getattr(booking, "sample_trace_events", None)
+        events = list(events_qs.order_by("created_at")) if events_qs is not None else []
+    else:
+        events = sorted(events, key=lambda e: e.created_at)
+
+    if not events:
+        return None
+
+    terminal = {
+        SampleTraceStatus.COMPLETED,
+        SampleTraceStatus.RETURNED,
+        SampleTraceStatus.ARCHIVED,
+        SampleTraceStatus.DISPOSED,
+        SampleTraceStatus.NOT_UTILIZED,
+        SampleTraceStatus.OP_UNAVAILABLE,
+    }
+    latest = events[-1]
+    if getattr(latest, "status", None) in terminal:
+        return None
+
+    accepted = next((e for e in events if e.status == SampleTraceStatus.SAMPLE_ACCEPTED), None)
+    if not accepted or not getattr(accepted, "created_at", None):
+        return None
+
+    started_at = accepted.created_at
+    if timezone.is_naive(started_at):
+        started_at = timezone.make_aware(started_at)
+    base_deadline = started_at + timedelta(hours=hours)
+    deadline_at = base_deadline
+
+    hold_until = getattr(booking, "operator_absent_hold_until", None)
+    extended = False
+    if hold_until is not None:
+        if timezone.is_naive(hold_until):
+            hold_until = timezone.make_aware(hold_until)
+        if hold_until > deadline_at:
+            deadline_at = hold_until
+            extended = True
+
+    now = timezone.now()
+    remaining_seconds = int((deadline_at - now).total_seconds())
+    return {
+        "enabled": True,
+        "started_at": started_at.isoformat(),
+        "deadline_at": deadline_at.isoformat(),
+        "hours": hours,
+        "remaining_seconds": remaining_seconds,
+        "is_overdue": remaining_seconds < 0,
+        "extended": extended,
+    }
+
+
 
 from .image_utils import get_equipment_image_storage_path, equipment_image_available
 
@@ -896,6 +979,8 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
+            'show_completion_countdown',
+            'completion_countdown_hours',
             'make',
             'show_make_on_card',
             'model_information',
@@ -1096,6 +1181,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
+            'show_completion_countdown',
+            'completion_countdown_hours',
             'print_materials',
         ]
         read_only_fields = ['equipment_id']
@@ -1265,6 +1352,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
+            'show_completion_countdown',
+            'completion_countdown_hours',
             'repeat_sample_request_days', 'repeat_sample_disclaimer',
             'equipment_managers', 'equipment_operators',
             'equipment_specifications', 'equipment_accessories',
@@ -1629,6 +1718,7 @@ class BookingSerializer(serializers.ModelSerializer):
     istem_fbr_status_url = serializers.SerializerMethodField()
     require_istem_fbr = serializers.SerializerMethodField()
     settlement_department_name = serializers.SerializerMethodField()
+    completion_countdown = serializers.SerializerMethodField()
     print_analysis = PrintAnalysisSerializer(read_only=True)
     print_analysis_batch = PrintAnalysisBatchSerializer(read_only=True)
     print_analyses = serializers.SerializerMethodField()
@@ -1649,6 +1739,9 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_settlement_department_name(self, obj):
         dept = getattr(obj, "settlement_department", None)
         return dept.name if dept else None
+
+    def get_completion_countdown(self, obj):
+        return build_booking_completion_countdown(obj)
 
     def _get_input_fields_cache(self):
         return self.context.setdefault("_booking_input_fields_cache", {})
@@ -1730,6 +1823,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'status_display',
             'notes',
             'operator_absent_hold_until',
+            'completion_countdown',
             'sample_return_after_analysis',
             'return_shipping_fee_amount',
             'return_shipping_company',
