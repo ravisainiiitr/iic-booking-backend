@@ -38,12 +38,12 @@ def build_welcome_email(
     wallet_url = f"{frontend_url}/wallet"
     dashboard_url = f"{frontend_url}/dashboard"
 
-    title = "IIC Booking"
-    org_name = getattr(settings, "ORG_LEGAL_NAME", "IIC Booking, IIT Roorkee")
+    title = "IIT Roorkee"
+    org_name = getattr(settings, "ORG_LEGAL_NAME", "IIT Roorkee")
     student_like = str(user_type or "").lower() in {"student", "individual_student"}
     faculty_like = str(user_type or "").lower() == "faculty"
 
-    subject = f"[{title}] Welcome to IIC Booking Portal"
+    subject = f"[{title}] Welcome to IIT Roorkee Portal"
 
     wallet_para = ""
     if student_like:
@@ -114,7 +114,7 @@ def build_welcome_email(
             <tr>
               <td style="background:#ffffff; padding: 0 22px 22px 22px; border-radius: 0 0 16px 16px;">
                 <div style="font-size: 12px; color: #9ca3af; text-align:center; line-height: 1.5;">
-                  Powered by IIC Booking • IIT Roorkee
+                  Powered by IIT Roorkee
                 </div>
               </td>
             </tr>
@@ -137,7 +137,7 @@ def build_welcome_email(
         f"Wallet: {wallet_url}",
         f"Dashboard: {dashboard_url}",
         "",
-        "Powered by IIC Booking • IIT Roorkee",
+        "Powered by IIT Roorkee",
     ]
     text_body = "\n".join([line for line in text_body_lines if line is not None]).strip()
 

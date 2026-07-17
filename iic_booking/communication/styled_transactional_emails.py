@@ -23,7 +23,7 @@ def _shell(title: str, subtitle: str, body_html: str) -> str:
         <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;width:100%;">
           <tr>
             <td style="padding:24px;border-radius:16px 16px 0 0;background:#1d4ed8;color:#fff;">
-              <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.95;">IIC Booking • IIT Roorkee</div>
+              <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.95;">IIT Roorkee</div>
               <div style="font-size:24px;font-weight:700;margin-top:8px;">{escape(title)}</div>
               <div style="font-size:14px;margin-top:6px;opacity:.95;">{escape(subtitle)}</div>
             </td>
@@ -85,7 +85,24 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
         f"Wallet join request received.\nStudent: {student.name or student.email} ({student.email})\n"
         f"Message: {join_request.message or 'No message'}\nApprove: {approve_link}\nReject: {reject_link}\nReview: {wallet_link}"
     )
-    _send(faculty.email, "[IIC Booking] New wallet join request", faculty_text, faculty_html)
+    _send(faculty.email, "[IIT Roorkee] New wallet join request", faculty_text, faculty_html)
+    try:
+        from iic_booking.communication.service import CommunicationService
+
+        CommunicationService.send_push_notification(
+            recipient=faculty,
+            title="Wallet join request",
+            message=f"{student.name or student.email} requested to join your wallet.",
+            metadata={"wallet_join_request_id": join_request.id, "link": wallet_link},
+        )
+        CommunicationService.send_push_notification(
+            recipient=student,
+            title="Wallet join request submitted",
+            message=f"Your request to join {faculty.name or faculty.email}'s wallet was submitted.",
+            metadata={"wallet_join_request_id": join_request.id, "link": wallet_link},
+        )
+    except Exception:
+        pass
 
     student_body = (
         f"<p style='margin:0 0 12px 0;'>Your request has been sent to the faculty wallet owner.</p>"
@@ -94,7 +111,7 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
     )
     student_html = _shell("Request Submitted", "Wallet join request created successfully", student_body)
     student_text = f"Your wallet join request was submitted successfully.\nFaculty: {faculty.name or faculty.email}\nView status: {wallet_link}"
-    _send(student.email, "[IIC Booking] Wallet join request submitted", student_text, student_html)
+    _send(student.email, "[IIT Roorkee] Wallet join request submitted", student_text, student_html)
 
 
 def send_wallet_join_request_decision_email(join_request, action: str) -> None:
@@ -115,7 +132,18 @@ def send_wallet_join_request_decision_email(join_request, action: str) -> None:
         f"Wallet request status: {pretty}\nFaculty: {faculty.name or faculty.email} ({faculty.email})\n"
         f"Response: {join_request.faculty_response or 'No additional remarks'}\nOpen wallet: {wallet_link}"
     )
-    _send(student.email, f"[IIC Booking] Wallet request {pretty.lower()}", text, html)
+    _send(student.email, f"[IIT Roorkee] Wallet request {pretty.lower()}", text, html)
+    try:
+        from iic_booking.communication.service import CommunicationService
+
+        CommunicationService.send_push_notification(
+            recipient=student,
+            title=f"Wallet request {pretty.lower()}",
+            message=f"Your wallet join request was {pretty.lower()} by {faculty.name or faculty.email}.",
+            metadata={"wallet_join_request_id": join_request.id, "link": wallet_link},
+        )
+    except Exception:
+        pass
 
 
 def send_booking_created_email_to_recipient(booking, recipient, booked_for_user) -> None:
@@ -136,7 +164,7 @@ def send_booking_created_email_to_recipient(booking, recipient, booked_for_user)
         f"Booked for: {booked_for_user.name or booked_for_user.email} ({booked_for_user.email})\n"
         f"Total charge: Rs {booking.total_charge}\nView: {link}"
     )
-    _send(recipient.email, f"[IIC Booking] Booking confirmed #{display_id}", text, html)
+    _send(recipient.email, f"[IIT Roorkee] Booking confirmed #{display_id}", text, html)
 
 
 def send_return_shipping_tracking_email(*, booking, carrier: str, tracking_number: str) -> None:
@@ -161,7 +189,7 @@ def send_return_shipping_tracking_email(*, booking, carrier: str, tracking_numbe
         f"Return shipment dispatched.\nBooking ID: {display_id}\nEquipment: {booking.equipment.name} ({booking.equipment.code})\n"
         f"Shipping company: {carrier_line}\nTracking number: {tracking}\nView booking: {link}"
     )
-    _send(user.email, f"[IIC Booking] Return shipment tracking for #{display_id}", text, html)
+    _send(user.email, f"[IIT Roorkee] Return shipment tracking for #{display_id}", text, html)
 
 
 def send_wallet_recharge_approved_faculty_email(recharge_request) -> None:
@@ -185,5 +213,19 @@ def send_wallet_recharge_approved_faculty_email(recharge_request) -> None:
         f"Amount: Rs {recharge_request.amount}\nDepartment: {recharge_request.department.name if recharge_request.department else 'N/A'}\n"
         f"Link: {link}"
     )
-    _send(wallet_owner.email, "[IIC Booking] Wallet recharge approved", text, html)
+    _send(wallet_owner.email, "[IIT Roorkee] Wallet recharge approved", text, html)
+    try:
+        from iic_booking.communication.service import CommunicationService
+
+        CommunicationService.send_push_notification(
+            recipient=wallet_owner,
+            title="Wallet recharge approved",
+            message=(
+                f"Recharge of Rs {recharge_request.amount} by "
+                f"{requester.name or requester.email} was approved."
+            ),
+            metadata={"wallet_recharge_request_id": recharge_request.id, "link": link},
+        )
+    except Exception:
+        pass
 

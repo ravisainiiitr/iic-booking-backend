@@ -9341,6 +9341,126 @@ def absent_booking(request, booking_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+def extend_booking_operator_absent_hold(request, booking_id):
+    """
+    Admin / Officer in Charge: extend the grace window used by automatic Operator Absent
+    (and Operator Unavailable) jobs without changing slots or rescheduling the booking.
+
+    Body:
+      { "hold_until": "<ISO datetime>" }  — required; must be after last slot end
+      { "clear": true }                   — optional; clears any existing hold
+    """
+    if request.user.user_type not in (UserType.ADMIN, UserType.MANAGER):
+        return Response(
+            {"error": "Only Admin and Officer in charge can extend the operator-absent hold."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        booking = Booking.objects.select_related("user", "equipment").prefetch_related("daily_slots").get(
+            booking_id=booking_id
+        )
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.user.user_type == UserType.MANAGER:
+        if not _user_can_act_as_oic_for_equipment(request.user, booking.equipment):
+            return Response(
+                {"error": "You do not manage this equipment."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    status_u = (booking.status or "").upper()
+    if status_u not in (BookingStatus.BOOKED, BookingStatus.PENDING):
+        return Response(
+            {"error": "Operator-absent hold can only be set for Booked or Pending bookings."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    clear = bool(request.data.get("clear")) if request.data else False
+    if clear:
+        previous = booking.operator_absent_hold_until
+        booking.operator_absent_hold_until = None
+        booking.save(update_fields=["operator_absent_hold_until", "updated_at"])
+        from iic_booking.equipment.booking_events import create_booking_event
+
+        create_booking_event(
+            booking,
+            BookingEventType.COMMENT,
+            created_by=request.user,
+            comment="Cleared operator-absent hold extension.",
+            metadata={
+                "operator_absent_hold_cleared": True,
+                "previous_hold_until": previous.isoformat() if previous else None,
+            },
+            send_notification=False,
+        )
+        serializer = BookingSerializer(booking)
+        return Response(
+            {"message": "Operator-absent hold cleared.", "booking": serializer.data},
+            status=status.HTTP_200_OK,
+        )
+
+    hold_raw = (request.data.get("hold_until") if request.data else None) or None
+    if not hold_raw:
+        return Response(
+            {"error": "hold_until (ISO datetime) is required, or set clear=true."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from django.utils.dateparse import parse_datetime
+
+    hold_until = parse_datetime(str(hold_raw).strip())
+    if hold_until is None:
+        return Response({"error": "Invalid hold_until datetime."}, status=status.HTTP_400_BAD_REQUEST)
+    if timezone.is_naive(hold_until):
+        hold_until = timezone.make_aware(hold_until)
+
+    slots = list(booking.daily_slots.all())
+    end_times = [s.end_datetime for s in slots if getattr(s, "end_datetime", None) is not None]
+    if end_times:
+        end_dt = max(end_times)
+        if timezone.is_naive(end_dt):
+            end_dt = timezone.make_aware(end_dt)
+        if hold_until <= end_dt:
+            return Response(
+                {
+                    "error": "hold_until must be after the booking's last slot end time.",
+                    "last_slot_end": end_dt.isoformat(),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    previous = booking.operator_absent_hold_until
+    booking.operator_absent_hold_until = hold_until
+    booking.save(update_fields=["operator_absent_hold_until", "updated_at"])
+
+    from iic_booking.equipment.booking_events import create_booking_event
+
+    create_booking_event(
+        booking,
+        BookingEventType.COMMENT,
+        created_by=request.user,
+        comment=f"Extended operator-absent hold until {timezone.localtime(hold_until).strftime('%Y-%m-%d %H:%M')}.",
+        metadata={
+            "operator_absent_hold_until": hold_until.isoformat(),
+            "previous_hold_until": previous.isoformat() if previous else None,
+        },
+        send_notification=False,
+    )
+
+    serializer = BookingSerializer(booking)
+    return Response(
+        {
+            "message": "Operator-absent hold extended. Slots were not changed.",
+            "booking": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def booking_maintenance_disruption(request, booking_id):
     """
     Admin or Officer in charge only: flag a booking for under-maintenance disruption policy
@@ -11058,12 +11178,16 @@ def _safe_results_path_component(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
-def _build_in_analysis_results_folder(booking) -> str:
+def _resolve_in_analysis_results_folder_spec(booking) -> dict:
     """
-    Build and create folder structure for "In Analysis":
+    Resolve the intended In Analysis results folder path for the operator's local PC.
+
+    Structure (under equipment results_base_location):
     Base -> Equipment Code -> Internal/External -> Year -> Department -> User -> Virtual Booking ID
+
+    Folder creation happens in the browser on the lab PC (File System Access API),
+    not on the Django server.
     """
-    import os
     from pathlib import Path
 
     from django.contrib.auth import get_user_model
@@ -11115,54 +11239,38 @@ def _build_in_analysis_results_folder(booking) -> str:
         "Booking",
     )
 
-    full_path = str(
-        Path(base_location)
-        / equipment_code
-        / user_type_label
-        / year_label
-        / department_label
-        / user_label
-        / booking_label
-    )
-    full_path = os.path.normpath(full_path)
-    os.makedirs(full_path, exist_ok=True)
-    if not os.path.isdir(full_path):
-        raise OSError(f"Folder was not created at: {full_path}")
-    # Marker file so operators can confirm the system created this folder.
-    marker = os.path.join(full_path, ".iic_results_folder")
-    try:
-        with open(marker, "a", encoding="utf-8") as fh:
-            fh.write(
-                f"booking={getattr(booking, 'virtual_booking_id', '') or getattr(booking, 'booking_id', '')}\n"
-            )
-    except OSError:
-        # Folder creation succeeded even if marker write is blocked.
-        logger.warning("Could not write results-folder marker at %s", marker)
+    segments = [
+        equipment_code,
+        user_type_label,
+        year_label,
+        department_label,
+        user_label,
+        booking_label,
+    ]
+    full_path = str(Path(base_location).joinpath(*segments))
+    # Prefer Windows-style display for lab PCs even when API runs on Linux.
+    display_path = full_path.replace("/", "\\")
+    relative_path = "\\".join(segments)
     logger.info(
-        "In Analysis results folder ready booking_id=%s path=%s",
+        "In Analysis results folder spec booking_id=%s path=%s",
         getattr(booking, "booking_id", None),
-        full_path,
+        display_path,
     )
-    return full_path
+    return {
+        "results_base_location": base_location.replace("/", "\\"),
+        "segments": segments,
+        "relative_path": relative_path,
+        "suggested_full_path": display_path,
+        "virtual_booking_id": getattr(booking, "virtual_booking_id", "") or "",
+    }
 
 
-def _try_open_folder_on_host(folder_path: str) -> bool:
+def _build_in_analysis_results_folder(booking) -> str:
     """
-    Best-effort attempt to open a folder on the backend host machine.
-    Works only when backend runs on a Windows desktop/session with os.startfile.
+    Backward-compatible helper: return the suggested local path string only.
+    Does not create folders on the server.
     """
-    import os
-
-    if not folder_path:
-        return False
-    if os.name != "nt" or not hasattr(os, "startfile"):
-        return False
-    try:
-        os.startfile(folder_path)
-        return True
-    except Exception:
-        logger.exception("Unable to open folder on host: %s", folder_path)
-        return False
+    return _resolve_in_analysis_results_folder_spec(booking)["suggested_full_path"]
 
 
 @api_view(["GET"])
@@ -11251,16 +11359,14 @@ def set_booking_sample_status(request, booking_id):
 
     sample_identifiers = (request.data.get('sample_identifiers') or '').strip() if status_value == SampleTraceStatus.SAMPLE_SENT else ''
     tracking_id = (request.data.get('tracking_id') or '').strip() if status_value == SampleTraceStatus.SAMPLE_SENT else ''
-    in_analysis_folder_path = None
-    in_analysis_folder_opened = False
+    in_analysis_folder_spec = None
     if status_value == SampleTraceStatus.PROCESSING:
         try:
-            in_analysis_folder_path = _build_in_analysis_results_folder(booking)
-            in_analysis_folder_opened = _try_open_folder_on_host(in_analysis_folder_path)
+            in_analysis_folder_spec = _resolve_in_analysis_results_folder_spec(booking)
         except Exception as e:
-            logger.exception("Failed creating In Analysis folder for booking %s: %s", booking.booking_id, e)
+            logger.exception("Failed resolving In Analysis folder path for booking %s: %s", booking.booking_id, e)
             return Response(
-                {"error": f'Unable to create the "In Analysis" folder structure: {str(e)}'},
+                {"error": f'Unable to resolve the "In Analysis" folder path: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
     event = BookingSampleTrace.objects.create(
@@ -11269,7 +11375,7 @@ def set_booking_sample_status(request, booking_id):
         sample_identifiers=sample_identifiers,
         tracking_id=tracking_id,
         reason=reason,
-        results_folder_path=in_analysis_folder_path or "",
+        results_folder_path=(in_analysis_folder_spec or {}).get("suggested_full_path") or "",
         created_by=request.user,
     )
     if status_value == SampleTraceStatus.SAMPLE_REJECTED:
@@ -11346,9 +11452,16 @@ def set_booking_sample_status(request, booking_id):
     }
     if booking_marked_completed_via_analyzed:
         payload["booking"] = BookingSerializer(booking, context={"request": request}).data
-    if status_value == SampleTraceStatus.PROCESSING and in_analysis_folder_path:
-        payload["in_analysis_folder_path"] = in_analysis_folder_path
-        payload["in_analysis_folder_opened"] = in_analysis_folder_opened
+    if status_value == SampleTraceStatus.PROCESSING and in_analysis_folder_spec:
+        payload["in_analysis_folder_path"] = in_analysis_folder_spec["suggested_full_path"]
+        payload["in_analysis_folder_opened"] = False
+        payload["create_on_client"] = True
+        payload["results_base_location"] = in_analysis_folder_spec["results_base_location"]
+        payload["results_folder_segments"] = in_analysis_folder_spec["segments"]
+        payload["results_folder_relative_path"] = in_analysis_folder_spec["relative_path"]
+        payload["virtual_booking_id"] = in_analysis_folder_spec.get("virtual_booking_id") or getattr(
+            booking, "virtual_booking_id", ""
+        )
     return Response(payload, status=status.HTTP_201_CREATED)
 
 
@@ -11356,11 +11469,9 @@ def set_booking_sample_status(request, booking_id):
 @permission_classes([IsAuthenticated])
 def ensure_booking_results_folder(request, booking_id):
     """
-    Create (or recreate) the In Analysis results folder for a booking and optionally open it
-    on the backend host. Staff only (admin / OIC / lab incharge).
+    Return the In Analysis results folder path recipe for local (lab PC) creation.
+    Staff only (admin / OIC / lab incharge). Creation is done in the browser, not on the server.
     """
-    import os
-
     if not check_operator_permission(request.user):
         return Response(
             {"error": "Only Admin, Officer In Charge, or Lab Incharge can create results folders."},
@@ -11372,15 +11483,15 @@ def ensure_booking_results_folder(request, booking_id):
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
     try:
-        folder_path = _build_in_analysis_results_folder(booking)
-        opened = _try_open_folder_on_host(folder_path)
+        folder_spec = _resolve_in_analysis_results_folder_spec(booking)
     except Exception as e:
         logger.exception("ensure_booking_results_folder failed for booking %s", booking_id)
         return Response(
-            {"error": f"Unable to create results folder: {str(e)}"},
+            {"error": f"Unable to resolve results folder path: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    folder_path = folder_spec["suggested_full_path"]
     processing_event = (
         BookingSampleTrace.objects.filter(booking=booking, status=SampleTraceStatus.PROCESSING)
         .order_by("-created_at")
@@ -11392,12 +11503,15 @@ def ensure_booking_results_folder(request, booking_id):
 
     return Response(
         {
-            "message": "Results folder is ready.",
+            "message": "Results folder path ready for local creation.",
             "in_analysis_folder_path": folder_path,
-            "in_analysis_folder_opened": opened,
-            "exists": os.path.isdir(folder_path),
-            "virtual_booking_id": booking.virtual_booking_id,
-            "results_base_location": getattr(booking.equipment, "results_base_location", None),
+            "in_analysis_folder_opened": False,
+            "create_on_client": True,
+            "exists": False,
+            "virtual_booking_id": folder_spec.get("virtual_booking_id") or booking.virtual_booking_id,
+            "results_base_location": folder_spec["results_base_location"],
+            "results_folder_segments": folder_spec["segments"],
+            "results_folder_relative_path": folder_spec["relative_path"],
         },
         status=status.HTTP_200_OK,
     )

@@ -181,6 +181,7 @@ from iic_booking.equipment.api_views import (
     refund_booking,
     mark_booking_not_utilized,
     absent_booking,
+    extend_booking_operator_absent_hold,
     booking_maintenance_disruption,
     booking_other_disruption,
     reschedule_booking,
@@ -658,6 +659,11 @@ urlpatterns = router.urls + [
     path("bookings/<int:booking_id>/refund/", refund_booking, name="refund-booking"),
     path("bookings/<int:booking_id>/mark-not-utilized/", mark_booking_not_utilized, name="mark-booking-not-utilized"),
     path("bookings/<int:booking_id>/absent/", absent_booking, name="absent-booking"),
+    path(
+        "bookings/<int:booking_id>/extend-operator-absent-hold/",
+        extend_booking_operator_absent_hold,
+        name="extend-booking-operator-absent-hold",
+    ),
     path(
         "bookings/<int:booking_id>/maintenance-disruption/",
         booking_maintenance_disruption,

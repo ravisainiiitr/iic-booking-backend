@@ -184,6 +184,7 @@ class TicketCreateSerializer(serializers.ModelSerializer):
             'ticket_type',
             'subject',
             'description',
+            'priority',
             'attachment',
             'related_equipment',
             'related_booking',

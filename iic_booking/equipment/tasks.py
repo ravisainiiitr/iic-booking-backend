@@ -463,6 +463,11 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
         end_dt = max(end_times)
         if timezone.is_naive(end_dt):
             end_dt = timezone.make_aware(end_dt)
+        hold_until = getattr(booking, "operator_absent_hold_until", None)
+        if hold_until is not None:
+            if timezone.is_naive(hold_until):
+                hold_until = timezone.make_aware(hold_until)
+            end_dt = max(end_dt, hold_until)
         if now < end_dt + timedelta(hours=hours):
             continue
 
@@ -546,6 +551,11 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
         end_dt = max(end_times)
         if timezone.is_naive(end_dt):
             end_dt = timezone.make_aware(end_dt)
+        hold_until = getattr(booking, "operator_absent_hold_until", None)
+        if hold_until is not None:
+            if timezone.is_naive(hold_until):
+                hold_until = timezone.make_aware(hold_until)
+            end_dt = max(end_dt, hold_until)
 
         if now < end_dt + timedelta(hours=hours):
             continue

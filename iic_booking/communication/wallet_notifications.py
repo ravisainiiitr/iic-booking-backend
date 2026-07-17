@@ -363,7 +363,7 @@ Request Details:
 {f"- Response: {context['response_message']}" if context.get('response_message') else ""}
 {f"- Approved By: {context['approved_by_email']}" if context.get('approved_by_email') else ""}
 
-Thank you for using IIC Booking!
+Thank you for using IIT Roorkee!
             """.strip()
 
             delivery_email, fallback_subject = redirect_email_for_user(
@@ -520,7 +520,7 @@ Credit facility
 
 View request: {link}
 
-Thank you for using IIC Booking System.
+Thank you for using IIT Roorkee System.
 """
             delivery_email, subj = redirect_email_for_user(
                 user, original_email=user.email, subject=subj

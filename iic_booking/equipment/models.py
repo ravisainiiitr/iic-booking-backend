@@ -1693,6 +1693,18 @@ class Booking(models.Model):
         help_text=_('Additional notes for this booking')
     )
 
+    # Grace deadline for auto Operator Absent / Operator Unavailable jobs (does not change slots).
+    operator_absent_hold_until = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Operator absent hold until'),
+        help_text=_(
+            'When set by Admin/OIC, automatic Operator Absent / Operator Unavailable marking '
+            'uses the later of this time and the last booked slot end as the booking end reference. '
+            'Slots and booking schedule are not modified.'
+        ),
+    )
+
     print_analysis = models.ForeignKey(
         "PrintAnalysis",
         on_delete=models.SET_NULL,

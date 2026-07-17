@@ -643,9 +643,74 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                         display_booking_ref,
                         user.email,
                     )
+                    if push_template_code:
+                        try:
+                            booker_label = (user.name or user.email or "student").strip()
+                            CommunicationService.send_push_notification(
+                                recipient=wallet_owner,
+                                template=push_template_code,
+                                template_context=wallet_context,
+                                metadata=metadata,
+                                title="Student booking confirmed",
+                                message=(
+                                    f"{display_booking_ref} — {equipment.name}: "
+                                    f"booking by {booker_label} is confirmed."
+                                ),
+                            )
+                        except Exception as push_err:
+                            logger.error(
+                                "Failed to send booking confirmation push to wallet owner %s: %s",
+                                wallet_owner.email,
+                                push_err,
+                                exc_info=True,
+                            )
         except Exception as e:
             logger.error(
                 f"Failed to send booking confirmation to wallet owner: {str(e)}",
+                exc_info=True,
+            )
+    # For booking completion: also notify Supervisor (wallet owner) when different from booker
+    if event.event_type == BookingEventType.COMPLETED and (email_template_code or push_template_code):
+        try:
+            from iic_booking.users.repositories.wallet_repository import WalletRepository
+
+            wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
+                user, getattr(booking.equipment, "internal_department", None)
+            )
+            if has_wallet and wallet_target and getattr(wallet_target, "wallet", None):
+                wallet_owner = wallet_target.wallet.user
+                if wallet_owner and wallet_owner.id != user.id:
+                    wallet_context = context.copy()
+                    wallet_context["user_name"] = wallet_owner.name or wallet_owner.email
+                    wallet_context["user_email"] = wallet_owner.email
+                    booker_label = (user.name or user.email or "student").strip()
+                    if email_template_code:
+                        CommunicationService.send_email(
+                            recipient=wallet_owner,
+                            template=email_template_code,
+                            template_context=wallet_context,
+                            metadata=metadata,
+                        )
+                    if push_template_code:
+                        CommunicationService.send_push_notification(
+                            recipient=wallet_owner,
+                            template=push_template_code,
+                            template_context=wallet_context,
+                            metadata=metadata,
+                            title="Booking completed",
+                            message=(
+                                f"{display_booking_ref} — {equipment.name}: "
+                                f"booking by {booker_label} is completed."
+                            ),
+                        )
+                    logger.info(
+                        "Booking completed notification sent to wallet owner %s for booking %s",
+                        wallet_owner.email,
+                        display_booking_ref,
+                    )
+        except Exception as e:
+            logger.error(
+                f"Failed to send booking completed notification to wallet owner: {str(e)}",
                 exc_info=True,
             )
     # For charge recalculated: also send to Supervisor (if different from booking user) with same details and breakup

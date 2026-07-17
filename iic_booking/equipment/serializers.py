@@ -1729,6 +1729,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'status',
             'status_display',
             'notes',
+            'operator_absent_hold_until',
             'sample_return_after_analysis',
             'return_shipping_fee_amount',
             'return_shipping_company',
