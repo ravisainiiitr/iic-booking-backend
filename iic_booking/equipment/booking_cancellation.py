@@ -172,7 +172,7 @@ def compute_partial_cancel_plan(
             )
         reduction_key = partial_cancel_reduction_key(profile_type)
         merged = _merge_reduced_input_values(booking, reduced_input_values)
-        safe_inputs = build_safe_input_values_for_charge_calculation(merged)
+        safe_inputs = build_safe_input_values_for_charge_calculation(merged, equipment=equipment)
         current_raw = (booking.input_values or {}).get(reduction_key)
         new_raw = safe_inputs.get(reduction_key)
         try:
@@ -240,7 +240,7 @@ def compute_partial_cancel_plan(
 
         if (profile_type or "").strip().upper() == EquipmentProfileType.HOUR:
             new_input_values["B"] = len(slots_to_keep)
-            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values)
+            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values, equipment=equipment)
             try:
                 new_time = int(
                     TimeCalculationEngine.calculate_time(
@@ -252,14 +252,14 @@ def compute_partial_cancel_plan(
             except Exception:
                 new_time = keep_time
         else:
-            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values)
+            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values, equipment=equipment)
             new_time = keep_time
     else:
         raise CancellationValidationError(
             "Provide reduced_input_values or slot_ids for partial cancellation."
         )
 
-    safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values)
+    safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values, equipment=equipment)
     try:
         base_charge, breakdown = ChargeCalculationEngine.calculate_charge(
             cp_proxy,
@@ -308,7 +308,7 @@ def _calculate_print_charge_for_inputs(
     input_values: dict,
     time_minutes: int,
 ) -> tuple[Decimal, list]:
-    safe_inputs = build_safe_input_values_for_charge_calculation(input_values)
+    safe_inputs = build_safe_input_values_for_charge_calculation(input_values, equipment=booking.equipment)
     base_charge, breakdown = ChargeCalculationEngine.calculate_charge(
         cp_proxy,
         safe_inputs,
@@ -430,7 +430,7 @@ def compute_partial_cancel_print_items(
         new_charge = max(Decimal("0.00"), (previous_charge - refund_amount).quantize(Decimal("0.01")))
     else:
         try:
-            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values)
+            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values, equipment=booking.equipment)
             base_charge, breakdown = ChargeCalculationEngine.calculate_charge(
                 cp_proxy,
                 safe_inputs,

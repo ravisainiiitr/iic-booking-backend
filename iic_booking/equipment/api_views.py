@@ -33,6 +33,8 @@ from drf_spectacular.utils import extend_schema, inline_serializer, OpenApiParam
 from .models import (
     BookingDisruptionKind,
     Equipment,
+    EquipmentAccessory,
+    EquipmentAdditionalAccessory,
     EquipmentCategory,
     EquipmentGroup,
     EquipmentProfileType,
@@ -149,6 +151,7 @@ from .serializers import (
     EquipmentExpenseSerializer,
     EquipmentWriteOffRequestSerializer,
     EquipmentAccessorySerializer,
+    EquipmentAdditionalAccessorySerializer,
 )
 from .calculators import (
     TimeCalculationEngine,
@@ -1780,7 +1783,7 @@ def equipment_calculate(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
     
-    # Extract input values from query params (A-G)
+    # Extract input values from query params (A-Z and optional *_elements for periodic table)
     input_values = {}
     for key in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']:
         value = request.query_params.get(key)
@@ -1791,6 +1794,13 @@ def equipment_calculate(request, pk):
             except (ValueError, TypeError):
                 # Keep as string if not numeric
                 input_values[key] = value
+        elements_key = f"{key}_elements"
+        elements_val = request.query_params.get(elements_key)
+        if elements_val is not None:
+            input_values[elements_key] = elements_val
+
+    from .calculators import normalize_periodic_table_billable_counts
+    input_values = normalize_periodic_table_billable_counts(equipment, input_values)
 
     numeric_limit_error = _validate_dynamic_numeric_input_limits(
         equipment, input_values, booking_user=booking_user
@@ -2596,6 +2606,9 @@ def _book_equipment_impl(request, pk):
                 # Skip if conversion fails (likely invalid for calculations)
                 continue
 
+    from .calculators import normalize_periodic_table_billable_counts
+    input_values = normalize_periodic_table_billable_counts(equipment, input_values)
+
     # MULTI_PARAM: ensure B (param_code / slot option) is set from selected_parameters so charge is calculated and wallet debited
     if getattr(equipment, "profile_type", None) == "MULTI_PARAM" and "B" not in input_values:
         sel = request.data.get("selected_parameters")
@@ -3016,23 +3029,8 @@ def _book_equipment_impl(request, pk):
                 self.pricing_profile = getattr(charge_profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
                 self.profile_type = equipment.profile_type
         charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
-        safe_input_values = {}
-        for key, value in input_values.items():
-            if isinstance(value, (int, float, bool, str)):
-                if isinstance(value, str):
-                    value_lower = value.lower().strip()
-                    if value_lower in ['true', 'yes']:
-                        safe_input_values[key] = True
-                    elif value_lower in ['false', 'no']:
-                        safe_input_values[key] = False
-                    else:
-                        try:
-                            safe_input_values[key] = float(value_lower) if '.' in value_lower else int(value_lower)
-                        except (ValueError, TypeError):
-                            # Keep as string for MULTI_PARAM param_code (B)
-                            safe_input_values[key] = value
-                else:
-                    safe_input_values[key] = value
+        from .calculators import build_safe_input_values_for_charge_calculation
+        safe_input_values = build_safe_input_values_for_charge_calculation(input_values, equipment=equipment)
         try:
             calculated_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
                 charge_profile_with_type,
@@ -6401,7 +6399,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
             for k, v in (raw_inputs or {}).items():
                 nk = label_to_key.get(str(k), str(k))
                 normalized[nk] = v
-            safe_inputs = build_safe_input_values_for_charge_calculation(normalized)
+            safe_inputs = build_safe_input_values_for_charge_calculation(normalized, equipment=equipment)
 
             user_type = getattr(user, "user_type", None) if user else None
             pricing_profile = ChargeProfilePricingProfile.STANDARD
@@ -11799,7 +11797,7 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
             self.pricing_profile = getattr(cp, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
             self.profile_type = getattr(eq, "profile_type", None)
 
-    safe_input_values = build_safe_input_values_for_charge_calculation(booking.input_values)
+    safe_input_values = build_safe_input_values_for_charge_calculation(booking.input_values, equipment=equipment)
     from .print_3d_views import apply_print_analysis_to_input_values
     safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
     charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
@@ -12014,6 +12012,9 @@ def update_booking_input_values(request, booking_id):
             del current[key]
         elif cleaned is not None:
             current[key] = cleaned
+
+    from .calculators import normalize_periodic_table_billable_counts
+    current = normalize_periodic_table_billable_counts(equipment, current)
 
     booking.input_values = current
     booking.save(update_fields=["input_values"])
@@ -13610,6 +13611,210 @@ def reward_config_view(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     serializer.save(equipment=equipment)
     return Response({"config": serializer.data})
+
+
+def _oic_manageable_equipment_qs(user):
+    if _is_admin_user(user):
+        return Equipment.objects.all().order_by("code", "name")
+    allowed_ids = get_equipment_ids_managed_by_oic(user.id)
+    return Equipment.objects.filter(equipment_id__in=allowed_ids).order_by("code", "name")
+
+
+def _user_can_manage_oic_equipment(user, equipment_id: int) -> bool:
+    if _is_admin_user(user):
+        return True
+    if getattr(user, "user_type", None) != UserType.MANAGER:
+        return False
+    return int(equipment_id) in set(get_equipment_ids_managed_by_oic(user.id))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def oic_equipment_accessories_list(request):
+    """
+    List accessories / additional accessories for equipment managed by the OIC (or all for Admin).
+    Optional query: equipment_id
+    """
+    if not _is_admin_user(request.user) and getattr(request.user, "user_type", None) != UserType.MANAGER:
+        return Response({"error": "Only Admin or Officer In Charge can manage accessories."}, status=status.HTTP_403_FORBIDDEN)
+
+    qs = _oic_manageable_equipment_qs(request.user).prefetch_related(
+        "equipment_accessories",
+        "equipment_additional_accessories",
+    )
+    equipment_id = request.query_params.get("equipment_id")
+    if equipment_id:
+        try:
+            eq_id = int(equipment_id)
+        except (TypeError, ValueError):
+            return Response({"error": "Invalid equipment_id."}, status=status.HTTP_400_BAD_REQUEST)
+        if not _user_can_manage_oic_equipment(request.user, eq_id):
+            return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+        qs = qs.filter(equipment_id=eq_id)
+
+    equipment_rows = []
+    for eq in qs:
+        equipment_rows.append(
+            {
+                "equipment_id": eq.equipment_id,
+                "equipment_code": eq.code,
+                "equipment_name": eq.name,
+                "accessories": EquipmentAccessorySerializer(eq.equipment_accessories.all(), many=True).data,
+                "additional_accessories": EquipmentAdditionalAccessorySerializer(
+                    eq.equipment_additional_accessories.all(), many=True
+                ).data,
+            }
+        )
+    return Response({"equipments": equipment_rows})
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def oic_toggle_equipment_accessory(request, accessory_id):
+    """Toggle or set is_enabled on an EquipmentAccessory."""
+    if not _is_admin_user(request.user) and getattr(request.user, "user_type", None) != UserType.MANAGER:
+        return Response({"error": "Only Admin or Officer In Charge can manage accessories."}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        accessory = EquipmentAccessory.objects.select_related("equipment").get(pk=accessory_id)
+    except EquipmentAccessory.DoesNotExist:
+        return Response({"error": "Accessory not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _user_can_manage_oic_equipment(request.user, accessory.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+
+    if "is_enabled" in (request.data or {}):
+        raw = request.data.get("is_enabled")
+        if isinstance(raw, bool):
+            accessory.is_enabled = raw
+        else:
+            accessory.is_enabled = str(raw).strip().lower() in ("1", "true", "yes", "y")
+    else:
+        accessory.is_enabled = not accessory.is_enabled
+    accessory.save(update_fields=["is_enabled"])
+    return Response({"accessory": EquipmentAccessorySerializer(accessory).data})
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def oic_toggle_equipment_additional_accessory(request, accessory_id):
+    """Toggle or set is_enabled on an EquipmentAdditionalAccessory."""
+    if not _is_admin_user(request.user) and getattr(request.user, "user_type", None) != UserType.MANAGER:
+        return Response({"error": "Only Admin or Officer In Charge can manage accessories."}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        accessory = EquipmentAdditionalAccessory.objects.select_related("equipment").get(pk=accessory_id)
+    except EquipmentAdditionalAccessory.DoesNotExist:
+        return Response({"error": "Additional accessory not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _user_can_manage_oic_equipment(request.user, accessory.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+
+    if "is_enabled" in (request.data or {}):
+        raw = request.data.get("is_enabled")
+        if isinstance(raw, bool):
+            accessory.is_enabled = raw
+        else:
+            accessory.is_enabled = str(raw).strip().lower() in ("1", "true", "yes", "y")
+    else:
+        accessory.is_enabled = not accessory.is_enabled
+    accessory.save(update_fields=["is_enabled"])
+    return Response({"additional_accessory": EquipmentAdditionalAccessorySerializer(accessory).data})
+
+
+@api_view(["GET", "PUT", "PATCH"])
+@permission_classes([IsAuthenticated])
+def oic_equipment_group_quotas(request, group_id=None):
+    """
+    GET (no group_id): list equipment groups that contain OIC-managed equipment, with quotas.
+    GET/PUT/PATCH with group_id: retrieve or update quota rows for that group.
+    Body for update: { "quotas": [ { quota_type, internal_*, external_*, is_enforced }, ... ] }
+    """
+    if not _is_admin_user(request.user) and getattr(request.user, "user_type", None) != UserType.MANAGER:
+        return Response(
+            {"error": "Only Admin or Officer In Charge can manage quota configurations."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    from .models import EquipmentGroupQuota, QuotaType
+    from .serializers import EquipmentGroupDetailSerializer, EquipmentGroupQuotaSerializer
+
+    if _is_admin_user(request.user):
+        group_qs = EquipmentGroup.objects.all()
+    else:
+        allowed_ids = get_equipment_ids_managed_by_oic(request.user.id)
+        group_qs = EquipmentGroup.objects.filter(equipment__equipment_id__in=allowed_ids).distinct()
+
+    if group_id is None and request.method == "GET":
+        groups = group_qs.prefetch_related("equipment", "quotas").order_by("name")
+        return Response(
+            {
+                "groups": EquipmentGroupDetailSerializer(groups, many=True).data,
+            }
+        )
+
+    if group_id is None:
+        return Response({"error": "group_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        group = group_qs.prefetch_related("equipment", "quotas").get(equipment_group_id=group_id)
+    except EquipmentGroup.DoesNotExist:
+        return Response({"error": "Equipment group not found or not managed by you."}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "GET":
+        return Response({"group": EquipmentGroupDetailSerializer(group).data})
+
+    quotas_data = (request.data or {}).get("quotas")
+    if quotas_data is None or not isinstance(quotas_data, list):
+        return Response({"error": "quotas must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+
+    valid_types = {QuotaType.WEEKLY, QuotaType.MONTHLY}
+    seen = set()
+    for q in quotas_data:
+        if not isinstance(q, dict):
+            continue
+        qtype = str(q.get("quota_type") or "").upper()
+        if qtype not in valid_types:
+            continue
+        seen.add(qtype)
+        obj, _ = EquipmentGroupQuota.objects.get_or_create(
+            equipment_group=group,
+            quota_type=qtype,
+            defaults={
+                "internal_individual_quota_minutes": 0,
+                "internal_faculty_quota_minutes": 0,
+                "external_individual_quota_minutes": 0,
+                "external_faculty_quota_minutes": 0,
+                "is_enforced": True,
+            },
+        )
+        for field in (
+            "internal_individual_quota_minutes",
+            "internal_faculty_quota_minutes",
+            "external_individual_quota_minutes",
+            "external_faculty_quota_minutes",
+        ):
+            if field in q:
+                try:
+                    setattr(obj, field, max(0, int(q.get(field) or 0)))
+                except (TypeError, ValueError):
+                    setattr(obj, field, 0)
+        if "is_enforced" in q:
+            raw = q.get("is_enforced")
+            if isinstance(raw, bool):
+                obj.is_enforced = raw
+            else:
+                obj.is_enforced = str(raw).strip().lower() in ("1", "true", "yes", "y")
+        obj.save()
+
+    # Keep only weekly/monthly rows that were submitted (or leave existing others)
+    if seen:
+        group.quotas.exclude(quota_type__in=seen).filter(quota_type__in=valid_types).delete()
+
+    group.refresh_from_db()
+    return Response(
+        {
+            "message": "Quota configurations updated.",
+            "group": EquipmentGroupDetailSerializer(group).data,
+            "quotas": EquipmentGroupQuotaSerializer(group.quotas.all(), many=True).data,
+        }
+    )
 
 
 @api_view(["POST"])

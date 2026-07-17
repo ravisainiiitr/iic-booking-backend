@@ -171,14 +171,75 @@ def safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def build_safe_input_values_for_charge_calculation(
+def parse_periodic_help_text(help_text: Optional[str]) -> tuple[set[str], set[str]]:
+    """Parse PERIODIC_TABLE Help text → (disabled, preselected). See periodic_elements."""
+    from .periodic_elements import parse_periodic_help_text as _parse
+
+    return _parse(help_text)
+
+def normalize_periodic_table_billable_counts(
+    equipment,
     input_values: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Scalar input values for time/charge; excludes periodic table ``*_elements`` keys."""
-    safe: Dict[str, Any] = {}
+    """
+    For PERIODIC_TABLE fields: ensure field count used in charge calculation excludes
+    locked preselected elements defined in Help text as `/Symbol` (e.g. `/C`).
+    Also ensures ``*_elements`` lists include those locked symbols for display.
+    """
     if not input_values or not isinstance(input_values, dict):
+        return {}
+    out = dict(input_values)
+    if equipment is None:
+        return out
+
+    from .models import DynamicInputField, DynamicInputFieldType
+
+    eq_id = getattr(equipment, "pk", None) or getattr(equipment, "equipment_id", None)
+    if not eq_id:
+        return out
+
+    fields = DynamicInputField.objects.filter(
+        equipment_id=eq_id,
+        field_type=DynamicInputFieldType.PERIODIC_TABLE,
+    ).only("field_key", "help_text", "field_type")
+
+    for field in fields:
+        key = field.field_key
+        if not key:
+            continue
+        _disabled, preselected = parse_periodic_help_text(field.help_text)
+        elements_key = f"{key}_elements"
+        raw_elements = out.get(elements_key, "")
+        if isinstance(raw_elements, (list, tuple)):
+            symbols = [str(s).strip() for s in raw_elements if str(s).strip()]
+        else:
+            symbols = [s.strip() for s in str(raw_elements or "").split(",") if s.strip()]
+
+        for sym in preselected:
+            if sym not in symbols:
+                symbols.append(sym)
+
+        billable = [s for s in symbols if s not in preselected]
+        out[elements_key] = ",".join(symbols)
+        out[key] = len(billable)
+
+    return out
+
+
+def build_safe_input_values_for_charge_calculation(
+    input_values: Optional[Dict[str, Any]],
+    equipment=None,
+) -> Dict[str, Any]:
+    """Scalar input values for time/charge; excludes periodic table ``*_elements`` keys."""
+    normalized = (
+        normalize_periodic_table_billable_counts(equipment, input_values)
+        if equipment is not None
+        else (dict(input_values) if input_values and isinstance(input_values, dict) else {})
+    )
+    safe: Dict[str, Any] = {}
+    if not normalized:
         return safe
-    for key, value in input_values.items():
+    for key, value in normalized.items():
         if key.endswith("_elements"):
             continue
         if isinstance(value, (int, float, bool)):

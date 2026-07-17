@@ -220,17 +220,21 @@ class EquipmentAccessoryInline(admin.TabularInline):
     """Inline admin for Equipment Accessories."""
     model = EquipmentAccessory
     extra = 0
-    fields = ['accessory_name', 'is_optional']
+    fields = ['accessory_name', 'is_optional', 'is_enabled']
     readonly_fields = ['created_at']
     classes = ['collapse']
+    verbose_name = _('Accessory')
+    verbose_name_plural = _('Accessories')
 
 class EquipmentAdditionalAccessoryInline(admin.TabularInline):
     """Inline admin for Equipment Additional Accessories."""
     model = EquipmentAdditionalAccessory
     extra = 0
-    fields = ['additional_accessory_name', 'additional_accessory_description', 'is_optional']
+    fields = ['additional_accessory_name', 'additional_accessory_description', 'is_optional', 'is_enabled']
     readonly_fields = ['created_at']
     classes = ['collapse']
+    verbose_name = _('Additional accessory')
+    verbose_name_plural = _('Additional accessories')
 
 class DynamicInputFieldForm(forms.ModelForm):
     """Custom form for DynamicInputField with better options handling."""

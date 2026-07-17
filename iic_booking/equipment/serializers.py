@@ -487,6 +487,7 @@ class EquipmentAccessorySerializer(serializers.ModelSerializer):
             'equipment_accessory_id',
             'accessory_name',
             'is_optional',
+            'is_enabled',
             'quantity',
             'serial_number',
             'notes',
@@ -505,6 +506,7 @@ class EquipmentAdditionalAccessorySerializer(serializers.ModelSerializer):
             'additional_accessory_name',
             'additional_accessory_description',
             'is_optional',
+            'is_enabled',
             'created_at'
         ]
         read_only_fields = ['equipment_additional_accessory_id', 'created_at']
@@ -1172,10 +1174,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     equipment_group_code = serializers.CharField(source='equipment_group.code', read_only=True, allow_null=True)
     visibility_group_name = serializers.CharField(source='visibility_group.name', read_only=True, allow_null=True)
     specifications = EquipmentSpecificationSerializer(many=True, read_only=True, source='equipment_specifications')
-    accessories = EquipmentAccessorySerializer(many=True, read_only=True, source='equipment_accessories')
-    additional_accessories = EquipmentAdditionalAccessorySerializer(
-        many=True, read_only=True, source='equipment_additional_accessories'
-    )
+    accessories = serializers.SerializerMethodField()
+    additional_accessories = serializers.SerializerMethodField()
     input_fields = serializers.SerializerMethodField()
     charge_profiles = serializers.SerializerMethodField()
     slot_masters = SlotMasterSerializer(many=True, read_only=True)
@@ -1281,6 +1281,14 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
                 return None
         return None
 
+    def get_accessories(self, obj):
+        qs = obj.equipment_accessories.filter(is_enabled=True)
+        return EquipmentAccessorySerializer(qs, many=True).data
+
+    def get_additional_accessories(self, obj):
+        qs = obj.equipment_additional_accessories.filter(is_enabled=True)
+        return EquipmentAdditionalAccessorySerializer(qs, many=True).data
+
     def get_input_fields(self, obj):
         fields = DynamicInputFieldSerializer(obj.input_fields.all().order_by("field_key"), many=True).data
         # Always include Any Other Requirements at the end for all equipment booking forms.
@@ -1354,6 +1362,7 @@ class EquipmentSpecificationWriteSerializer(serializers.Serializer):
 class EquipmentAccessoryWriteSerializer(serializers.Serializer):
     accessory_name = serializers.CharField(max_length=255)
     is_optional = serializers.BooleanField(default=False)
+    is_enabled = serializers.BooleanField(default=True, required=False)
     quantity = serializers.IntegerField(required=False, default=1, min_value=1)
     serial_number = serializers.CharField(max_length=120, allow_blank=True, required=False, default='')
     notes = serializers.CharField(allow_blank=True, required=False, default='')
@@ -1363,6 +1372,7 @@ class EquipmentAdditionalAccessoryWriteSerializer(serializers.Serializer):
     additional_accessory_name = serializers.CharField(max_length=255)
     additional_accessory_description = serializers.CharField(allow_blank=True, required=False, default='')
     is_optional = serializers.BooleanField(default=False)
+    is_enabled = serializers.BooleanField(default=True, required=False)
 
 
 class DynamicInputFieldWriteSerializer(serializers.Serializer):
@@ -1531,6 +1541,7 @@ def _create_related(equipment, inlines):
             equipment=equipment,
             accessory_name=item['accessory_name'],
             is_optional=item.get('is_optional', False),
+            is_enabled=item.get('is_enabled', True),
             quantity=item.get('quantity', 1) or 1,
             serial_number=(item.get('serial_number') or '').strip(),
             notes=(item.get('notes') or '').strip(),
@@ -1541,6 +1552,7 @@ def _create_related(equipment, inlines):
             additional_accessory_name=item['additional_accessory_name'],
             additional_accessory_description=item.get('additional_accessory_description', '') or '',
             is_optional=item.get('is_optional', False),
+            is_enabled=item.get('is_enabled', True),
         )
     for item in inlines.get('input_fields', []):
         DynamicInputField.objects.create(
@@ -1616,24 +1628,36 @@ def _sync_related(equipment, inlines):
         for item in inlines['equipment_specifications']:
             EquipmentSpecification.objects.create(equipment=equipment, spec_key=item['spec_key'], spec_value=item.get('spec_value', ''))
     if inlines.get('equipment_accessories') is not None:
+        prev_enabled = {
+            a.accessory_name: a.is_enabled
+            for a in EquipmentAccessory.objects.filter(equipment=equipment)
+        }
         EquipmentAccessory.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_accessories']:
+            name = item['accessory_name']
             EquipmentAccessory.objects.create(
                 equipment=equipment,
-                accessory_name=item['accessory_name'],
+                accessory_name=name,
                 is_optional=item.get('is_optional', False),
+                is_enabled=item.get('is_enabled', prev_enabled.get(name, True)),
                 quantity=item.get('quantity', 1) or 1,
                 serial_number=(item.get('serial_number') or '').strip(),
                 notes=(item.get('notes') or '').strip(),
             )
     if inlines.get('equipment_additional_accessories') is not None:
+        prev_add_enabled = {
+            a.additional_accessory_name: a.is_enabled
+            for a in EquipmentAdditionalAccessory.objects.filter(equipment=equipment)
+        }
         EquipmentAdditionalAccessory.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_additional_accessories']:
+            name = item['additional_accessory_name']
             EquipmentAdditionalAccessory.objects.create(
                 equipment=equipment,
-                additional_accessory_name=item['additional_accessory_name'],
+                additional_accessory_name=name,
                 additional_accessory_description=item.get('additional_accessory_description', '') or '',
                 is_optional=item.get('is_optional', False),
+                is_enabled=item.get('is_enabled', prev_add_enabled.get(name, True)),
             )
     if inlines.get('input_fields') is not None:
         DynamicInputField.objects.filter(equipment=equipment).delete()
@@ -2025,7 +2049,7 @@ class BookingSerializer(serializers.ModelSerializer):
                     self.pricing_profile = getattr(profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
                     self.profile_type = getattr(equipment, "profile_type", None)
 
-            safe_inputs = build_safe_input_values_for_charge_calculation(obj.input_values)
+            safe_inputs = build_safe_input_values_for_charge_calculation(obj.input_values, equipment=eq)
             from .print_3d_views import apply_print_analysis_to_input_values
 
             if getattr(eq, "profile_type", None) == EquipmentProfileType.PRINT_3D:

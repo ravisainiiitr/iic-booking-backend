@@ -179,7 +179,7 @@ def reduce_waitlist_inputs_to_fit_available_slots(
         for n in range(upper, 0, -1):
             candidate = dict(base_inputs)
             candidate["B"] = n
-            safe_inputs = build_safe_input_values_for_charge_calculation(candidate)
+            safe_inputs = build_safe_input_values_for_charge_calculation(candidate, equipment=equipment)
             try:
                 effective_time = int(
                     TimeCalculationEngine.calculate_time(
@@ -214,7 +214,7 @@ def reduce_waitlist_inputs_to_fit_available_slots(
     for a in range(start_a_int, 0, -1):
         candidate = dict(base_inputs)
         candidate["A"] = a
-        safe_inputs = build_safe_input_values_for_charge_calculation(candidate)
+        safe_inputs = build_safe_input_values_for_charge_calculation(candidate, equipment=equipment)
         try:
             effective_time = int(
                 TimeCalculationEngine.calculate_time(
@@ -346,7 +346,7 @@ def create_booking_for_waitlist_user(
             self.profile_type = getattr(equip, "profile_type", None)
 
     charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
-    safe_input_values = build_safe_input_values_for_charge_calculation(input_values or {})
+    safe_input_values = build_safe_input_values_for_charge_calculation(input_values or {}, equipment=equipment)
     try:
         total_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
             charge_profile_with_type,

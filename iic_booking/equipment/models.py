@@ -798,10 +798,19 @@ class EquipmentAccessory(models.Model):
     equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name='equipment_accessories')
     accessory_name = models.CharField(max_length=255, help_text='Name of the accessory')
     is_optional = models.BooleanField(default=False, help_text='Whether this accessory is optional')
+    is_enabled = models.BooleanField(
+        default=True,
+        verbose_name=_('Enabled'),
+        help_text=_('When disabled, this accessory is hidden from public equipment views. OIC can toggle this.'),
+    )
     quantity = models.PositiveIntegerField(default=1, help_text=_('Quantity supplied with the equipment'))
     serial_number = models.CharField(max_length=120, blank=True, default='', verbose_name=_('Serial / tag'))
     notes = models.TextField(blank=True, default='', verbose_name=_('Notes'))
     created_at = models.DateTimeField(auto_now_add=True, help_text='Date and time the equipment accessory was created')
+
+    class Meta:
+        verbose_name = _('Equipment accessory')
+        verbose_name_plural = _('Equipment accessories')
 
     def __str__(self):
         return f"{self.equipment.code} - {self.accessory_name} - {'Optional' if self.is_optional else 'Required'}"
@@ -812,7 +821,16 @@ class EquipmentAdditionalAccessory(models.Model):
     additional_accessory_name = models.CharField(max_length=255, help_text='Name of the additional accessory')
     additional_accessory_description = models.TextField(help_text='Description of the additional accessory', blank=True, null=True)
     is_optional = models.BooleanField(default=False, help_text='Whether this additional accessory is optional')
+    is_enabled = models.BooleanField(
+        default=True,
+        verbose_name=_('Enabled'),
+        help_text=_('When disabled, this additional accessory is hidden from public equipment views. OIC can toggle this.'),
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text='Date and time the equipment additional accessory was created')
+
+    class Meta:
+        verbose_name = _('Equipment additional accessory')
+        verbose_name_plural = _('Equipment additional accessories')
 
     def __str__(self):
         return f"{self.equipment.code} - {self.additional_accessory_name} - {'Optional' if self.is_optional else 'Required'}"
@@ -1035,7 +1053,11 @@ class DynamicInputField(models.Model):
     help_text = models.TextField(
         blank=True,
         null=True,
-        help_text=_('Help text for this field (e.g. list of standards for ICPMS Standard Coverage)')
+        help_text=_(
+            'Help text for this field. For PERIODIC_TABLE: one element per line to disable (e.g. Fe); '
+            'prefix with / to lock-preselect without charge (e.g. /C for Carbon). '
+            'Also used for ICPMS Standard Coverage standards notes.'
+        )
     )
     source_element_field_key = models.CharField(
         max_length=1,

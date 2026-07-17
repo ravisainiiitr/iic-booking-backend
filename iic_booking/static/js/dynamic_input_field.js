@@ -138,7 +138,20 @@
 
     function parseDisabledElementsFromHelpText(text) {
         // One per line. Accept symbol (Fe) or full name (Iron). Ignore empty lines.
-        var raw = (text || '').split('\n');
+        // Lines starting with '/' are locked-preselected (not disabled).
+        var raw = (text || '').split('\n').filter(function(line) {
+            return !(String(line || '').trim().indexOf('/') === 0);
+        });
+        return normalizeElementSymbols(raw);
+    }
+
+    function parsePreselectedElementsFromHelpText(text) {
+        // Lines starting with '/' (e.g. /C) are locked preselected.
+        var raw = (text || '').split('\n').map(function(line) {
+            var s = String(line || '').trim();
+            if (s.indexOf('/') === 0) return s.slice(1).trim();
+            return '';
+        }).filter(Boolean);
         return normalizeElementSymbols(raw);
     }
 
