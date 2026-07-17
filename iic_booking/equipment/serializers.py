@@ -70,23 +70,52 @@ from iic_booking.users.models.department import Department, DepartmentType
 from iic_booking.communication.utils import booking_display_id_for_email
 
 
-def build_booking_completion_countdown(booking):
+def _booking_slot_bounds(booking):
+    """Return (start_dt, end_dt) from daily slots, or (None, None)."""
+    prefetched = getattr(booking, "_prefetched_objects_cache", {}).get("daily_slots")
+    if prefetched is not None:
+        slots = list(prefetched)
+    else:
+        slots_qs = getattr(booking, "daily_slots", None)
+        slots = list(slots_qs.all()) if slots_qs is not None else []
+    starts = [s.start_datetime for s in slots if getattr(s, "start_datetime", None) is not None]
+    ends = [s.end_datetime for s in slots if getattr(s, "end_datetime", None) is not None]
+    if not starts or not ends:
+        return None, None
+    start_dt = min(starts)
+    end_dt = max(ends)
+    if timezone.is_naive(start_dt):
+        start_dt = timezone.make_aware(start_dt)
+    if timezone.is_naive(end_dt):
+        end_dt = timezone.make_aware(end_dt)
+    return start_dt, end_dt
+
+
+def _booking_sample_trace_events(booking):
+    events = getattr(booking, "_prefetched_objects_cache", {}).get("sample_trace_events")
+    if events is None:
+        events_qs = getattr(booking, "sample_trace_events", None)
+        events = list(events_qs.order_by("created_at")) if events_qs is not None else []
+    else:
+        events = sorted(events, key=lambda e: e.created_at)
+    return events
+
+
+def build_booking_lifecycle_countdown(booking):
     """
-    Live countdown payload for booking details when equipment enables it.
-    Starts at first Sample Accepted; deadline extends with operator_absent_hold_until.
+    Sample-lifecycle countdown for booking details:
+      1) submit_sample — until Sample Accepted (deadline: slot start − lead hours, or slot start if atmosphere-sensitive)
+      2) booking — after Sample Accepted until slot end
+      3) collect_sample — after booking completed until collect/discard deadline
     """
     from datetime import timedelta
 
     equipment = getattr(booking, "equipment", None)
-    if not equipment or not getattr(equipment, "show_completion_countdown", False):
-        return None
-    hours = int(getattr(equipment, "completion_countdown_hours", 0) or 0)
-    if hours <= 0:
+    if not equipment or not getattr(equipment, "show_lifecycle_countdowns", True):
         return None
 
     status_u = (getattr(booking, "status", None) or "").upper()
     if status_u in {
-        BookingStatus.COMPLETED,
         BookingStatus.CANCELLED,
         BookingStatus.REFUNDED,
         BookingStatus.ABSENT,
@@ -96,58 +125,104 @@ def build_booking_completion_countdown(booking):
     }:
         return None
 
-    events = getattr(booking, "_prefetched_objects_cache", {}).get("sample_trace_events")
-    if events is None:
-        events_qs = getattr(booking, "sample_trace_events", None)
-        events = list(events_qs.order_by("created_at")) if events_qs is not None else []
-    else:
-        events = sorted(events, key=lambda e: e.created_at)
-
-    if not events:
-        return None
-
-    terminal = {
-        SampleTraceStatus.COMPLETED,
+    events = _booking_sample_trace_events(booking)
+    terminal_done = {
         SampleTraceStatus.RETURNED,
         SampleTraceStatus.ARCHIVED,
         SampleTraceStatus.DISPOSED,
         SampleTraceStatus.NOT_UTILIZED,
         SampleTraceStatus.OP_UNAVAILABLE,
     }
-    latest = events[-1]
-    if getattr(latest, "status", None) in terminal:
+    if any(getattr(e, "status", None) in terminal_done for e in events):
         return None
-
-    accepted = next((e for e in events if e.status == SampleTraceStatus.SAMPLE_ACCEPTED), None)
-    if not accepted or not getattr(accepted, "created_at", None):
-        return None
-
-    started_at = accepted.created_at
-    if timezone.is_naive(started_at):
-        started_at = timezone.make_aware(started_at)
-    base_deadline = started_at + timedelta(hours=hours)
-    deadline_at = base_deadline
-
-    hold_until = getattr(booking, "operator_absent_hold_until", None)
-    extended = False
-    if hold_until is not None:
-        if timezone.is_naive(hold_until):
-            hold_until = timezone.make_aware(hold_until)
-        if hold_until > deadline_at:
-            deadline_at = hold_until
-            extended = True
 
     now = timezone.now()
-    remaining_seconds = int((deadline_at - now).total_seconds())
-    return {
-        "enabled": True,
-        "started_at": started_at.isoformat(),
-        "deadline_at": deadline_at.isoformat(),
-        "hours": hours,
-        "remaining_seconds": remaining_seconds,
-        "is_overdue": remaining_seconds < 0,
-        "extended": extended,
-    }
+    atmosphere = bool(getattr(booking, "atmosphere_sensitive_sample", False))
+    accepted = next((e for e in events if e.status == SampleTraceStatus.SAMPLE_ACCEPTED), None)
+    start_dt, end_dt = _booking_slot_bounds(booking)
+
+    def _payload(*, phase, title, started_at, deadline_at, **extra):
+        if started_at is not None and timezone.is_naive(started_at):
+            started_at = timezone.make_aware(started_at)
+        if deadline_at is not None and timezone.is_naive(deadline_at):
+            deadline_at = timezone.make_aware(deadline_at)
+        remaining = int((deadline_at - now).total_seconds()) if deadline_at is not None else 0
+        return {
+            "enabled": True,
+            "phase": phase,
+            "title": title,
+            "started_at": started_at.isoformat() if started_at else None,
+            "deadline_at": deadline_at.isoformat() if deadline_at else None,
+            "remaining_seconds": remaining,
+            "is_overdue": remaining < 0,
+            "atmosphere_sensitive": atmosphere,
+            **extra,
+        }
+
+    # Phase 3: after booking completed — collect / discard window
+    if status_u == BookingStatus.COMPLETED:
+        collect_hours = int(getattr(equipment, "sample_collect_deadline_hours", 0) or 0)
+        if collect_hours <= 0:
+            return None
+        completed_at = getattr(booking, "completed_at", None)
+        if not completed_at:
+            return None
+        if timezone.is_naive(completed_at):
+            completed_at = timezone.make_aware(completed_at)
+        deadline = completed_at + timedelta(hours=collect_hours)
+        if now >= deadline:
+            return None
+        return _payload(
+            phase="collect_sample",
+            title="Time remaining to collect sample",
+            started_at=completed_at,
+            deadline_at=deadline,
+            collect_hours=collect_hours,
+        )
+
+    # Active booking phases (Booked / Pending / disruption)
+    if status_u not in {
+        BookingStatus.BOOKED,
+        BookingStatus.PENDING,
+        BookingStatus.PENDING_PAYMENT,
+        BookingStatus.DISRUPTION_PENDING,
+        BookingStatus.UNDER_MAINTENANCE,
+        BookingStatus.OTHER_DISRUPTION,
+    }:
+        return None
+
+    if start_dt is None or end_dt is None:
+        return None
+
+    # Phase 2: after Sample Accepted — booking countdown to slot end
+    if accepted is not None:
+        return _payload(
+            phase="booking",
+            title="Time remaining to complete booking",
+            started_at=getattr(accepted, "created_at", None) or start_dt,
+            deadline_at=end_dt,
+            slot_end_at=end_dt.isoformat(),
+        )
+
+    # Phase 1: before Sample Accepted — submit sample countdown
+    lead_hours = int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
+    if atmosphere or lead_hours <= 0:
+        deadline = start_dt
+    else:
+        deadline = start_dt - timedelta(hours=lead_hours)
+    created_at = getattr(booking, "created_at", None) or now
+    return _payload(
+        phase="submit_sample",
+        title="Time remaining to submit sample",
+        started_at=created_at,
+        deadline_at=deadline,
+        slot_start_at=start_dt.isoformat(),
+        lead_hours=lead_hours,
+    )
+
+
+# Backward-compatible alias
+build_booking_completion_countdown = build_booking_lifecycle_countdown
 
 
 
@@ -979,8 +1054,9 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
-            'show_completion_countdown',
-            'completion_countdown_hours',
+            'show_lifecycle_countdowns',
+            'sample_submission_lead_hours',
+            'sample_collect_deadline_hours',
             'make',
             'show_make_on_card',
             'model_information',
@@ -1181,8 +1257,9 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
-            'show_completion_countdown',
-            'completion_countdown_hours',
+            'show_lifecycle_countdowns',
+            'sample_submission_lead_hours',
+            'sample_collect_deadline_hours',
             'print_materials',
         ]
         read_only_fields = ['equipment_id']
@@ -1352,8 +1429,9 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
-            'show_completion_countdown',
-            'completion_countdown_hours',
+            'show_lifecycle_countdowns',
+            'sample_submission_lead_hours',
+            'sample_collect_deadline_hours',
             'repeat_sample_request_days', 'repeat_sample_disclaimer',
             'equipment_managers', 'equipment_operators',
             'equipment_specifications', 'equipment_accessories',
@@ -1718,6 +1796,7 @@ class BookingSerializer(serializers.ModelSerializer):
     istem_fbr_status_url = serializers.SerializerMethodField()
     require_istem_fbr = serializers.SerializerMethodField()
     settlement_department_name = serializers.SerializerMethodField()
+    lifecycle_countdown = serializers.SerializerMethodField()
     completion_countdown = serializers.SerializerMethodField()
     print_analysis = PrintAnalysisSerializer(read_only=True)
     print_analysis_batch = PrintAnalysisBatchSerializer(read_only=True)
@@ -1741,7 +1820,10 @@ class BookingSerializer(serializers.ModelSerializer):
         return dept.name if dept else None
 
     def get_completion_countdown(self, obj):
-        return build_booking_completion_countdown(obj)
+        return build_booking_lifecycle_countdown(obj)
+
+    def get_lifecycle_countdown(self, obj):
+        return build_booking_lifecycle_countdown(obj)
 
     def _get_input_fields_cache(self):
         return self.context.setdefault("_booking_input_fields_cache", {})
@@ -1823,6 +1905,8 @@ class BookingSerializer(serializers.ModelSerializer):
             'status_display',
             'notes',
             'operator_absent_hold_until',
+            'atmosphere_sensitive_sample',
+            'lifecycle_countdown',
             'completion_countdown',
             'sample_return_after_analysis',
             'return_shipping_fee_amount',

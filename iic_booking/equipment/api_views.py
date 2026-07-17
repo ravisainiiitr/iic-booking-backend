@@ -3049,6 +3049,15 @@ def _book_equipment_impl(request, pk):
         total_charge = calculated_charge
         sample_return_after_analysis = False
         return_shipping_fee_amount = Decimal("0.00")
+        atmosphere_raw = request.data.get("atmosphere_sensitive_sample")
+        if atmosphere_raw is None:
+            atmosphere_sensitive_sample = False
+        elif isinstance(atmosphere_raw, bool):
+            atmosphere_sensitive_sample = atmosphere_raw
+        elif isinstance(atmosphere_raw, (int, float)):
+            atmosphere_sensitive_sample = bool(atmosphere_raw)
+        else:
+            atmosphere_sensitive_sample = str(atmosphere_raw).strip().lower() in ("1", "true", "yes", "y")
         if UserType.is_external_user(user_type):
             # External option: return samples after analysis => add return shipping fee BEFORE GST.
             raw = request.data.get("sample_return_after_analysis")
@@ -3389,6 +3398,7 @@ def _book_equipment_impl(request, pk):
                     reward_discount_amount=reward_discount_amount,
                     sample_return_after_analysis=sample_return_after_analysis if UserType.is_external_user(user_type) else False,
                     return_shipping_fee_amount=return_shipping_fee_amount if (UserType.is_external_user(user_type) and sample_return_after_analysis) else Decimal("0.00"),
+                    atmosphere_sensitive_sample=atmosphere_sensitive_sample,
                     wallet_amount_applied=wallet_applied,
                     amount_due=amount_due,
                     settlement_department=settlement_dept,
@@ -3436,11 +3446,45 @@ def _book_equipment_impl(request, pk):
                         f"({total_time_minutes} minutes, ₹{total_charge:.2f})"
                         + (f" on behalf of user {booking_user.id}" if booking_user != request.user else "")
                         + (f"; ₹{amount_due:.2f} payment pending" if amount_due > 0 else "")
+                        + (
+                            "; Atmosphere-sensitive sample — submit at slot start; do not mark Not Utilized before slot start"
+                            if atmosphere_sensitive_sample
+                            else ""
+                        )
                     ),
                     new_status=booking.status,
+                    metadata={"atmosphere_sensitive_sample": True} if atmosphere_sensitive_sample else None,
                     # HOLD / pending payment: do not send booking-confirmed notifications yet.
                     send_notification=not create_as_hold and amount_due <= 0,
                 )
+                if atmosphere_sensitive_sample and not create_as_hold:
+                    try:
+                        from iic_booking.equipment.reports import get_equipment_staff_notify_users
+                        from iic_booking.communication.service import CommunicationService
+                        from iic_booking.communication.utils import booking_display_id_for_email as _bdisp
+
+                        ref = _bdisp(booking)
+                        for staff in get_equipment_staff_notify_users(equipment):
+                            if not staff or not getattr(staff, "email", None):
+                                continue
+                            CommunicationService.send_push_notification(
+                                recipient=staff,
+                                title="Atmosphere-sensitive sample",
+                                message=(
+                                    f"{ref} — {equipment.name}: sample will be brought at slot start. "
+                                    "Do not mark Booking Not Utilized before the slot begins."
+                                ),
+                                metadata={
+                                    "booking_id": booking.booking_id,
+                                    "atmosphere_sensitive_sample": True,
+                                    "notification_type": "warning",
+                                },
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Failed atmosphere-sensitive staff notify for booking %s",
+                            getattr(booking, "booking_id", None),
+                        )
                 perf.mark("booking_event_created")
                 if debit_transaction and getattr(booking, "virtual_booking_id", None):
                     vid = (booking.virtual_booking_id or "").strip()
@@ -9147,6 +9191,26 @@ def mark_booking_not_utilized(request, booking_id):
             {"error": "BOOKED slots are missing end date/time; cannot evaluate slot end."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if getattr(booking, "atmosphere_sensitive_sample", False):
+        starts = [
+            s.start_datetime
+            for s in booked_slots
+            if getattr(s, "start_datetime", None) is not None
+        ]
+        if starts:
+            slot_start = min(starts)
+            if timezone.is_naive(slot_start):
+                slot_start = timezone.make_aware(slot_start)
+            if timezone.now() < slot_start:
+                return Response(
+                    {
+                        "error": (
+                            "This booking is marked atmosphere-sensitive: the sample may arrive at slot start. "
+                            "Do not mark Booking Not Utilized before the slot begins."
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     if timezone.now() < booking_end:
         return Response(
             {

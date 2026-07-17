@@ -451,21 +451,29 @@ class Equipment(models.Model):
             'Set to 0 to disable.'
         ),
     )
-    show_completion_countdown = models.BooleanField(
-        default=False,
-        verbose_name=_('Show time remaining to complete'),
+    show_lifecycle_countdowns = models.BooleanField(
+        default=True,
+        verbose_name=_('Show sample lifecycle countdowns'),
         help_text=_(
-            'When enabled, booking details show a live countdown to complete the booking. '
-            'The timer starts only after Sample Accepted and uses Completion countdown hours. '
-            'Admin/OIC grace extensions update the deadline.'
+            'When enabled, booking details show live countdowns: time to submit sample (before Sample Accepted), '
+            'booking time remaining (after Sample Accepted until slot end), and time to collect sample '
+            '(after booking completed until discard deadline).'
         ),
     )
-    completion_countdown_hours = models.PositiveIntegerField(
-        default=48,
-        verbose_name=_('Completion countdown hours'),
+    sample_submission_lead_hours = models.PositiveIntegerField(
+        default=24,
+        verbose_name=_('Sample submission lead time (hours before slot start)'),
         help_text=_(
-            'Hours allowed to complete the booking after Sample Accepted (used only when '
-            '"Show time remaining to complete" is enabled). Set to 0 to hide the countdown.'
+            'Users must submit samples this many hours before the booked slot starts. '
+            'Atmosphere-sensitive bookings may submit up to slot start instead. Set to 0 to use slot start as the deadline.'
+        ),
+    )
+    sample_collect_deadline_hours = models.PositiveIntegerField(
+        default=72,
+        verbose_name=_('Sample collect / discard deadline (hours after completion)'),
+        help_text=_(
+            'After the booking is completed, users have this many hours to collect the sample before the lab may discard it. '
+            'Set to 0 to hide the collect-sample countdown.'
         ),
     )
 
@@ -1719,6 +1727,14 @@ class Booking(models.Model):
             'When set by Admin/OIC, automatic Operator Absent / Operator Unavailable marking '
             'uses the later of this time and the last booked slot end as the booking end reference. '
             'Slots and booking schedule are not modified.'
+        ),
+    )
+    atmosphere_sensitive_sample = models.BooleanField(
+        default=False,
+        verbose_name=_('Atmosphere-sensitive sample'),
+        help_text=_(
+            'When True, the sample may be submitted at slot start instead of the normal submission lead time. '
+            'Staff are notified and should not mark Booking Not Utilized before the slot begins for delayed submission.'
         ),
     )
 
