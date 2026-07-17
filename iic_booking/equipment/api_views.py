@@ -12044,6 +12044,132 @@ def update_booking_input_values(request, booking_id):
     )
 
 
+@api_view(["PATCH", "POST"])
+@permission_classes([IsAuthenticated])
+def update_booking_atmosphere_sensitive_sample(request, booking_id):
+    """
+    Set or clear atmosphere-sensitive sample on an existing booking.
+
+    Body: { "atmosphere_sensitive_sample": true|false }
+
+    Allowed for the booking owner or lab staff while the booking is BOOKED
+    and Sample Accepted has not been recorded yet.
+    """
+    try:
+        booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if booking.user_id != request.user.id and not check_operator_permission(request.user):
+        return Response(
+            {"error": "You don't have permission to update this booking."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    status_u = (booking.status or "").upper()
+    if status_u != BookingStatus.BOOKED:
+        return Response(
+            {"error": "Atmosphere-sensitive sample can only be changed while the booking is Booked."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if BookingSampleTrace.objects.filter(
+        booking=booking, status=SampleTraceStatus.SAMPLE_ACCEPTED
+    ).exists():
+        return Response(
+            {
+                "error": "Atmosphere-sensitive sample cannot be changed after Sample Accepted."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    raw = request.data.get("atmosphere_sensitive_sample") if request.data is not None else None
+    if raw is None:
+        return Response(
+            {"error": "atmosphere_sensitive_sample (true/false) is required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if isinstance(raw, bool):
+        new_value = raw
+    elif isinstance(raw, (int, float)):
+        new_value = bool(raw)
+    else:
+        new_value = str(raw).strip().lower() in ("1", "true", "yes", "y")
+
+    previous = bool(getattr(booking, "atmosphere_sensitive_sample", False))
+    if previous == new_value:
+        return Response(
+            {
+                "message": "Atmosphere-sensitive sample unchanged.",
+                "booking": BookingSerializer(booking).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    booking.atmosphere_sensitive_sample = new_value
+    booking.save(update_fields=["atmosphere_sensitive_sample", "updated_at"])
+
+    from iic_booking.equipment.booking_events import create_booking_event
+
+    create_booking_event(
+        booking=booking,
+        event_type=BookingEventType.COMMENT,
+        created_by=request.user,
+        comment=(
+            "Marked as atmosphere-sensitive sample (submit at slot start)."
+            if new_value
+            else "Cleared atmosphere-sensitive sample flag."
+        ),
+        metadata={
+            "atmosphere_sensitive_sample": new_value,
+            "previous_atmosphere_sensitive_sample": previous,
+        },
+        send_notification=False,
+    )
+
+    if new_value:
+        try:
+            from iic_booking.equipment.reports import get_equipment_staff_notify_users
+            from iic_booking.communication.service import CommunicationService
+            from iic_booking.communication.utils import booking_display_id_for_email as _bdisp
+
+            equipment = booking.equipment
+            ref = _bdisp(booking)
+            for staff in get_equipment_staff_notify_users(equipment):
+                if not staff or not getattr(staff, "email", None):
+                    continue
+                CommunicationService.send_push_notification(
+                    recipient=staff,
+                    title="Atmosphere-sensitive sample",
+                    message=(
+                        f"{ref} — {equipment.name}: sample will be brought at slot start. "
+                        "Do not mark Booking Not Utilized before the slot begins."
+                    ),
+                    metadata={
+                        "booking_id": booking.booking_id,
+                        "atmosphere_sensitive_sample": True,
+                        "notification_type": "warning",
+                    },
+                )
+        except Exception:
+            logger.exception(
+                "Failed atmosphere-sensitive staff notify for booking %s",
+                getattr(booking, "booking_id", None),
+            )
+
+    return Response(
+        {
+            "message": (
+                "Atmosphere-sensitive sample enabled."
+                if new_value
+                else "Atmosphere-sensitive sample disabled."
+            ),
+            "booking": BookingSerializer(booking).data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def rate_booking(request, booking_id):
