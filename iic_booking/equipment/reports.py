@@ -288,7 +288,31 @@ def get_equipment_report_data(
             ),
         )
     )
-    eq_ids = [e.equipment_id for e in equipment_list]
+    original_eq_ids = [e.equipment_id for e in equipment_list]
+    from .mode_utils import expand_equipment_ids_for_mode_rollup
+
+    eq_ids, mode_rollup = expand_equipment_ids_for_mode_rollup(original_eq_ids)
+    # Report rows are parent (or standalone) only; children fold into parent utilization.
+    payload_eq_ids = sorted({mode_rollup.get(eid, eid) for eid in original_eq_ids})
+    if set(eq_ids) != set(original_eq_ids):
+        equipment_by_id = {
+            e.equipment_id: e
+            for e in Equipment.objects.filter(equipment_id__in=eq_ids).prefetch_related(
+                Prefetch(
+                    "equipment_managers",
+                    queryset=EquipmentManager.objects.select_related("manager"),
+                ),
+                Prefetch(
+                    "equipment_operators",
+                    queryset=EquipmentOperator.objects.select_related("operator"),
+                ),
+            )
+        }
+        equipment_list = [equipment_by_id[eid] for eid in payload_eq_ids if eid in equipment_by_id]
+    else:
+        equipment_by_id = {e.equipment_id: e for e in equipment_list}
+        equipment_list = [equipment_by_id[eid] for eid in payload_eq_ids if eid in equipment_by_id]
+
     def _report_title_for_equipment(base: str, eqs: list) -> str:
         if not eqs:
             return base
@@ -361,21 +385,23 @@ def get_equipment_report_data(
     )
 
     for eid in eq_ids:
-        eq_slot_stats[eid] = {
-            "under_maintenance_slots": 0,
-            "under_maintenance_hours": 0.0,
-            "operator_absent_slots": 0,
-            "operator_absent_hours": 0.0,
-            "booking_not_utilized_slots": 0,
-            "booking_not_utilized_hours": 0.0,
-            "no_booking_slots": 0,
-            "no_booking_hours": 0.0,
-            "booked_slots": 0,
-            "booked_hours": 0.0,
-        }
+        rollup_eid = mode_rollup.get(eid, eid)
+        if rollup_eid not in eq_slot_stats:
+            eq_slot_stats[rollup_eid] = {
+                "under_maintenance_slots": 0,
+                "under_maintenance_hours": 0.0,
+                "operator_absent_slots": 0,
+                "operator_absent_hours": 0.0,
+                "booking_not_utilized_slots": 0,
+                "booking_not_utilized_hours": 0.0,
+                "no_booking_slots": 0,
+                "no_booking_hours": 0.0,
+                "booked_slots": 0,
+                "booked_hours": 0.0,
+            }
 
     for ds in slots_in_range.iterator(chunk_size=500):
-        eid = ds.slot_master.equipment_id
+        eid = mode_rollup.get(ds.slot_master.equipment_id, ds.slot_master.equipment_id)
         if eid not in eq_slot_stats:
             continue
         eq = ds.slot_master.equipment
@@ -447,10 +473,21 @@ def get_equipment_report_data(
         overall_current.values("equipment_id").annotate(c=Count("booking_id")).values_list("equipment_id", "c")
     )
 
+    def _roll_counts(raw: dict) -> dict[int, int]:
+        out: dict[int, int] = defaultdict(int)
+        for eid, c in raw.items():
+            out[mode_rollup.get(eid, eid)] += int(c or 0)
+        return dict(out)
+
+    in_range_count = _roll_counts(in_range_count)
+    completed_in_range_count = _roll_counts(completed_in_range_count)
+    overall_count = _roll_counts(overall_count)
+    overall_current_count = _roll_counts(overall_current_count)
+
     # Distinct users & samples & booking hours (served bookings)
-    user_sets: dict[int, set[int]] = {eid: set() for eid in eq_ids}
-    user_int: dict[int, set[int]] = {eid: set() for eid in eq_ids}
-    user_ext: dict[int, set[int]] = {eid: set() for eid in eq_ids}
+    user_sets: dict[int, set[int]] = {eid: set() for eid in payload_eq_ids}
+    user_int: dict[int, set[int]] = {eid: set() for eid in payload_eq_ids}
+    user_ext: dict[int, set[int]] = {eid: set() for eid in payload_eq_ids}
     samples_total: dict[int, int] = defaultdict(int)
     samples_int: dict[int, int] = defaultdict(int)
     samples_ext: dict[int, int] = defaultdict(int)
@@ -471,7 +508,11 @@ def get_equipment_report_data(
         .iterator(chunk_size=500)
     )
     for row in served_bookings:
-        eid = row["equipment_id"]
+        eid = mode_rollup.get(row["equipment_id"], row["equipment_id"])
+        if eid not in user_sets:
+            user_sets[eid] = set()
+            user_int[eid] = set()
+            user_ext[eid] = set()
         uid = row["user_id"]
         ut = row["user_type_snapshot"]
         user_sets[eid].add(uid)
@@ -518,11 +559,27 @@ def get_equipment_report_data(
         .annotate(total=Sum("total_charge"), count=Count("booking_id"))
         .order_by("-total")[:200]
     )
-    revenue_by_equipment = list(
+    # Roll revenue by equipment up to parent for multi-mode families
+    revenue_by_equipment_raw = list(
         completed_revenue_qs.values("equipment_id", "equipment__code", "equipment__name")
         .annotate(total=Sum("total_charge"), count=Count("booking_id"))
         .order_by("-total")
     )
+    rev_rolled: dict[int, dict] = {}
+    for row in revenue_by_equipment_raw:
+        rid = mode_rollup.get(row["equipment_id"], row["equipment_id"])
+        if rid not in rev_rolled:
+            parent_eq = equipment_by_id.get(rid)
+            rev_rolled[rid] = {
+                "equipment_id": rid,
+                "equipment__code": getattr(parent_eq, "code", None) or row.get("equipment__code"),
+                "equipment__name": getattr(parent_eq, "name", None) or row.get("equipment__name"),
+                "total": 0,
+                "count": 0,
+            }
+        rev_rolled[rid]["total"] += float(row["total"] or 0)
+        rev_rolled[rid]["count"] += int(row["count"] or 0)
+    revenue_by_equipment = sorted(rev_rolled.values(), key=lambda x: -float(x["total"]))
     ext_rev_q = Q()
     for code in ("external", "RND", "rnd", "Industry", "industry", "other", "Other"):
         ext_rev_q |= Q(user_type_snapshot__iexact=code)

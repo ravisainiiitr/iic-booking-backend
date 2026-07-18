@@ -20,6 +20,7 @@ from .models import (
     EquipmentCategory,
     EquipmentGroup,
     EquipmentGroupQuota,
+    EquipmentModeSchedule,
     EquipmentManager,
     EquipmentOperator,
     ICPMSStandardSample,
@@ -866,6 +867,7 @@ class EquipmentAdmin(admin.ModelAdmin):
         'name',
         'category',
         'equipment_group',
+        'parent_equipment',
         'internal_department',
         'visibility_group',
         'profile_type',
@@ -891,6 +893,8 @@ class EquipmentAdmin(admin.ModelAdmin):
         'category__code',
         'equipment_group__name',
         'equipment_group__code',
+        'parent_equipment__code',
+        'parent_equipment__name',
         'internal_department__name',
         'internal_department__code',
         'equipment_managers__manager__email',
@@ -905,6 +909,15 @@ class EquipmentAdmin(admin.ModelAdmin):
             kwargs['queryset'] = Department.objects.filter(
                 department_type=DepartmentType.INTERNAL
             ).order_by('name')
+        if db_field.name == 'parent_equipment':
+            # Only multi-mode-enabled base instruments can be parents; exclude self when editing
+            qs = Equipment.objects.filter(
+                parent_equipment__isnull=True, enable_multi_mode=True
+            ).order_by('code')
+            obj_id = getattr(request.resolver_match, 'kwargs', {}).get('object_id') if request.resolver_match else None
+            if obj_id:
+                qs = qs.exclude(pk=obj_id)
+            kwargs['queryset'] = qs
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
     
     actions = ['generate_slots_one_month', 'assign_to_group']
@@ -954,7 +967,8 @@ class EquipmentAdmin(admin.ModelAdmin):
     fieldsets = (
         (_('Basic Information'), {
             'fields': (
-                'name', 'code', 'category', 'equipment_group', 'internal_department', 'visibility_group',
+                'name', 'code', 'category', 'equipment_group', 'enable_multi_mode', 'parent_equipment',
+                'internal_department', 'visibility_group',
                 'profile_type', 'description', 'status', 'location',
                 'make', 'show_make_on_card',
                 'model_information', 'show_model_on_card',
@@ -1680,6 +1694,29 @@ class BulkStatusChangeForm(forms.Form):
             cleaned_data['blocked_label'] = None
         
         return cleaned_data
+
+
+@admin.register(EquipmentModeSchedule)
+class EquipmentModeScheduleAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "parent_equipment",
+        "mode_equipment",
+        "start_date",
+        "end_date",
+        "behavior",
+        "created_by",
+        "created_at",
+    ]
+    list_filter = ["behavior", "start_date"]
+    search_fields = [
+        "parent_equipment__code",
+        "parent_equipment__name",
+        "mode_equipment__code",
+        "mode_equipment__name",
+    ]
+    autocomplete_fields = ["parent_equipment", "mode_equipment", "created_by"]
+    ordering = ["-start_date", "-end_date"]
 
 
 @admin.register(DailySlot)

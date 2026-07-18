@@ -522,6 +522,27 @@ class Equipment(models.Model):
         verbose_name=_('Equipment Group'),
         help_text=_('Equipment group this equipment belongs to. Quota configuration is applied at group level.'),
     )
+    enable_multi_mode = models.BooleanField(
+        default=False,
+        verbose_name=_('Enable Multi-Mode Equipment'),
+        help_text=_(
+            'When enabled, this base instrument can have alternate operating modes (child equipment) '
+            'and date-based mode schedules. Default is off; equipment behaves as a standard instrument.'
+        ),
+    )
+    parent_equipment = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='mode_children',
+        verbose_name=_('Parent Equipment (multi-mode)'),
+        help_text=_(
+            'When set, this equipment is an alternate operating mode of the parent (base) instrument. '
+            'The parent must have Multi-Mode Equipment enabled. '
+            'Leave empty for standalone equipment or for the base/parent mode itself.'
+        ),
+    )
 
     important_instruction = models.TextField(
         blank=True,
@@ -550,10 +571,171 @@ class Equipment(models.Model):
     def __str__(self):
         return self.code
 
+    def clean(self):
+        super().clean()
+        parent = self.parent_equipment
+        if parent is None:
+            return
+        if self.pk and parent.pk == self.pk:
+            raise ValidationError({'parent_equipment': _('Equipment cannot be its own parent.')})
+        if parent.parent_equipment_id:
+            raise ValidationError({
+                'parent_equipment': _('Parent must be a base instrument (it cannot itself be a child mode).'),
+            })
+        if self.pk and self.mode_children.exists():
+            raise ValidationError({
+                'parent_equipment': _('This equipment already has child modes; it cannot become a child of another parent.'),
+            })
+
     class Meta:
         verbose_name = 'Equipment'
         verbose_name_plural = 'Equipment'
         ordering = ['name']
+
+
+class ModeScheduleBehavior(models.TextChoices):
+    """How an alternate mode interacts with the base/parent mode on a date range."""
+    PARALLEL = 'PARALLEL', _('Parallel')
+    EXCLUSIVE = 'EXCLUSIVE', _('Mutually Exclusive')
+
+
+class EquipmentModeSchedule(models.Model):
+    """
+    Date-ranged activation of a child mode under a multi-mode parent instrument.
+
+    PARALLEL: child is bookable alongside the parent (no cross-mode time conflict).
+    EXCLUSIVE: child replaces the parent in the catalog for those dates; family shares
+    the physical instrument for availability/conflict checks.
+    """
+    id = models.AutoField(primary_key=True)
+    parent_equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name='mode_schedules',
+        verbose_name=_('Parent Equipment'),
+        help_text=_('Base/parent instrument this schedule applies to.'),
+    )
+    mode_equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name='as_mode_schedules',
+        verbose_name=_('Mode Equipment'),
+        help_text=_('Child mode equipment being enabled for the date range.'),
+    )
+    start_date = models.DateField(verbose_name=_('Start Date'))
+    end_date = models.DateField(verbose_name=_('End Date'))
+    start_time = models.TimeField(
+        blank=True,
+        null=True,
+        verbose_name=_('Start Time'),
+        help_text=_('Optional. If set with end time, only slots within this daily window are mode-active.'),
+    )
+    end_time = models.TimeField(
+        blank=True,
+        null=True,
+        verbose_name=_('End Time'),
+        help_text=_('Optional. If set with start time, only slots within this daily window are mode-active.'),
+    )
+    behavior = models.CharField(
+        max_length=20,
+        choices=ModeScheduleBehavior.choices,
+        default=ModeScheduleBehavior.PARALLEL,
+        verbose_name=_('Behavior'),
+    )
+    # Child outside active schedule window
+    unavailable_label = models.CharField(
+        max_length=120,
+        blank=True,
+        default='Mode not scheduled',
+        verbose_name=_('Unavailable Status Label'),
+        help_text=_('Shown on child mode slots outside the configured schedule window.'),
+    )
+    unavailable_color = models.CharField(
+        max_length=20,
+        blank=True,
+        default='#9ca3af',
+        verbose_name=_('Unavailable Background Color'),
+        help_text=_('Background color for child slots outside the schedule (default grey).'),
+    )
+    # Parent during mutually exclusive child window
+    exclusive_blocked_label = models.CharField(
+        max_length=120,
+        blank=True,
+        default='Alternate mode active',
+        verbose_name=_('Blocked Slot Label (exclusive)'),
+        help_text=_('Shown on parent/base slots while a mutually exclusive child mode is active.'),
+    )
+    exclusive_blocked_color = models.CharField(
+        max_length=20,
+        blank=True,
+        default='#9ca3af',
+        verbose_name=_('Blocked Background Color (exclusive)'),
+        help_text=_('Background color for parent slots during exclusive mode (default grey).'),
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='created_mode_schedules',
+        verbose_name=_('Created By'),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Equipment Mode Schedule')
+        verbose_name_plural = _('Equipment Mode Schedules')
+        ordering = ['-start_date', '-end_date', 'id']
+        indexes = [
+            models.Index(fields=['parent_equipment', 'start_date', 'end_date']),
+            models.Index(fields=['mode_equipment', 'start_date', 'end_date']),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.mode_equipment_id} @ {self.parent_equipment_id} "
+            f"{self.start_date}–{self.end_date} ({self.behavior})"
+        )
+
+    def clean(self):
+        super().clean()
+        if self.start_date and self.end_date and self.start_date > self.end_date:
+            raise ValidationError({'end_date': _('End date must be on or after start date.')})
+        if self.start_time and self.end_time and self.start_time > self.end_time:
+            raise ValidationError({'end_time': _('End time must be on or after start time.')})
+        parent = self.parent_equipment
+        mode = self.mode_equipment
+        if parent is None or mode is None:
+            return
+        if parent.parent_equipment_id:
+            raise ValidationError({
+                'parent_equipment': _('Parent must be a base instrument (no parent_equipment set).'),
+            })
+        if mode.pk == parent.pk:
+            raise ValidationError({'mode_equipment': _('Mode cannot be the same as the parent.')})
+        if mode.parent_equipment_id != parent.pk:
+            raise ValidationError({
+                'mode_equipment': _('Mode equipment must be linked as a child of the parent first.'),
+            })
+        # No overlapping EXCLUSIVE schedules for the same parent on overlapping dates
+        if self.behavior == ModeScheduleBehavior.EXCLUSIVE and self.start_date and self.end_date:
+            qs = EquipmentModeSchedule.objects.filter(
+                parent_equipment_id=parent.pk,
+                behavior=ModeScheduleBehavior.EXCLUSIVE,
+                start_date__lte=self.end_date,
+                end_date__gte=self.start_date,
+            )
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError({
+                    'behavior': _(
+                        'Another mutually exclusive schedule already covers part of this date range '
+                        'for this parent instrument.'
+                    ),
+                })
+
 
 class EquipmentUserGroupPurpose(models.TextChoices):
     """Purpose of an equipment-linked user group."""
@@ -801,7 +983,10 @@ class EquipmentAccessory(models.Model):
     is_enabled = models.BooleanField(
         default=True,
         verbose_name=_('Enabled'),
-        help_text=_('When disabled, this accessory is hidden from public equipment views. OIC can toggle this.'),
+        help_text=_(
+            'When disabled, this accessory is shown as Unavailable on booking and equipment views. '
+            'OIC can toggle this.'
+        ),
     )
     quantity = models.PositiveIntegerField(default=1, help_text=_('Quantity supplied with the equipment'))
     serial_number = models.CharField(max_length=120, blank=True, default='', verbose_name=_('Serial / tag'))
@@ -824,7 +1009,10 @@ class EquipmentAdditionalAccessory(models.Model):
     is_enabled = models.BooleanField(
         default=True,
         verbose_name=_('Enabled'),
-        help_text=_('When disabled, this additional accessory is hidden from public equipment views. OIC can toggle this.'),
+        help_text=_(
+            'When disabled, this additional accessory is shown as Unavailable on booking and equipment views. '
+            'OIC can toggle this.'
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True, help_text='Date and time the equipment additional accessory was created')
 

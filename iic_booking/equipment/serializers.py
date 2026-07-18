@@ -1220,6 +1220,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'equipment_group_id',
             'equipment_group_name',
             'equipment_group_code',
+            'enable_multi_mode',
+            'parent_equipment',
             'visibility_group',
             'visibility_group_name',
             'reschedule_hours_threshold',
@@ -1282,11 +1284,15 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         return None
 
     def get_accessories(self, obj):
-        qs = obj.equipment_accessories.filter(is_enabled=True)
+        # Include disabled accessories so users can see what exists but is unavailable.
+        qs = obj.equipment_accessories.all().order_by('-is_enabled', 'accessory_name')
         return EquipmentAccessorySerializer(qs, many=True).data
 
     def get_additional_accessories(self, obj):
-        qs = obj.equipment_additional_accessories.filter(is_enabled=True)
+        # Include disabled additional accessories for booking-decision visibility.
+        qs = obj.equipment_additional_accessories.all().order_by(
+            '-is_enabled', 'additional_accessory_name'
+        )
         return EquipmentAdditionalAccessorySerializer(qs, many=True).data
 
     def get_input_fields(self, obj):
@@ -1429,7 +1435,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'booking_email_extra_text', 'completion_email_extra_text', 'print_3d_stl_notification_email',
             'istem_portal_url', 'istem_fbr_status_url',
             'profile_type', 'category', 'internal_department', 'visibility_group',
-            'equipment_group', 'slot_duration_minutes', 'slots_per_day',
+            'equipment_group', 'enable_multi_mode', 'parent_equipment', 'slot_duration_minutes', 'slots_per_day',
             'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'auto_slot_selection_default', 'weekly_view_display',
             'weekly_view_time_from', 'weekly_view_time_to', 'weekly_view_max_rows', 'weekly_view_default_days',
             'slot_window_reference_weekday', 'slot_window_reference_time',
@@ -1460,11 +1466,49 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_parent_equipment(self, value):
+        if value is None:
+            return value
+        if value.parent_equipment_id:
+            raise serializers.ValidationError(
+                "Parent must be a base instrument (it cannot itself be a child mode)."
+            )
+        if not getattr(value, "enable_multi_mode", False):
+            raise serializers.ValidationError(
+                "Parent must have Multi-Mode Equipment enabled."
+            )
+        instance = getattr(self, "instance", None)
+        if instance and instance.pk and value.pk == instance.pk:
+            raise serializers.ValidationError("Equipment cannot be its own parent.")
+        if instance and instance.pk and instance.mode_children.exists():
+            raise serializers.ValidationError(
+                "This equipment already has child modes; it cannot become a child of another parent."
+            )
+        return value
+
     def validate(self, attrs):
         from iic_booking.users.models.department import DepartmentType
         from iic_booking.users.models.user import User
 
         attrs = super().validate(attrs)
+        instance = getattr(self, "instance", None)
+        enable_multi = attrs.get(
+            "enable_multi_mode",
+            getattr(instance, "enable_multi_mode", False) if instance else False,
+        )
+        parent = attrs.get(
+            "parent_equipment",
+            getattr(instance, "parent_equipment", None) if instance else None,
+        )
+        if enable_multi and parent:
+            raise serializers.ValidationError(
+                {
+                    "enable_multi_mode": (
+                        "A child mode cannot enable Multi-Mode Equipment. "
+                        "Clear Parent Equipment first, or leave Multi-Mode off."
+                    )
+                }
+            )
         managers = attrs.get("equipment_managers")
         operators = attrs.get("equipment_operators")
         if managers is not None:
