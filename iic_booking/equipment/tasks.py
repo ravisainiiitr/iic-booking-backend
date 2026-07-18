@@ -340,6 +340,37 @@ def send_booking_reminders(target_date: Optional[str] = None) -> int:
     return sent
 
 
+@shared_task(name="equipment.send_sample_submission_deadline_reminders")
+def send_sample_submission_deadline_reminders() -> int:
+    """
+    Poll BOOKED bookings and send email + in-app notification once when the
+    sample submission deadline is within 12 hours (deadline = slot start − lead hours).
+    Intended to run every few minutes via Celery beat.
+    """
+    from .sample_submission_deadline_reminders import (
+        iter_bookings_for_sample_submission_deadline_reminders,
+        send_sample_submission_deadline_reminder,
+    )
+
+    sent = 0
+    booking_list = list(iter_bookings_for_sample_submission_deadline_reminders())
+    for booking in booking_list:
+        try:
+            if send_sample_submission_deadline_reminder(booking):
+                sent += 1
+        except Exception:
+            logger.exception(
+                "Failed sample submission deadline reminder for booking_id=%s",
+                booking.booking_id,
+            )
+    logger.info(
+        "send_sample_submission_deadline_reminders: candidates=%d sent=%d",
+        len(booking_list),
+        sent,
+    )
+    return sent
+
+
 @shared_task(name="equipment.check_booking_not_utilized")
 def check_booking_not_utilized() -> int:
     """

@@ -4295,6 +4295,19 @@ def _book_equipment_impl(request, pk):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def approaching_sample_submission_deadlines(request):
+    """
+    Bookings for the current user whose sample submission deadline is within
+    the 12-hour advance window (informational alerts on login / dashboard).
+    """
+    from .sample_submission_deadline_reminders import list_approaching_sample_submission_for_user
+
+    items = list_approaching_sample_submission_for_user(request.user)
+    return Response({"items": items, "count": len(items)}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def list_bookings(request):
     """List bookings with optional filtering.
     

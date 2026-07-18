@@ -1947,6 +1947,15 @@ class Booking(models.Model):
             'Staff are notified and should not mark Booking Not Utilized before the slot begins for delayed submission.'
         ),
     )
+    sample_submission_deadline_reminder_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Sample submission deadline reminder sent at'),
+        help_text=_(
+            'When the advance (12 hours before sample submission deadline) email/notification was sent. '
+            'Null means not yet sent.'
+        ),
+    )
 
     print_analysis = models.ForeignKey(
         "PrintAnalysis",

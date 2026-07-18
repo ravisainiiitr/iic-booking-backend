@@ -158,6 +158,7 @@ from iic_booking.equipment.api_views import (
     temporary_oic_cancel,
     temporary_oic_update,
     list_bookings,
+    approaching_sample_submission_deadlines,
     booking_stats,
     lab_operator_dashboard,
     operator_leave_summary,
@@ -644,6 +645,11 @@ urlpatterns = router.urls + [
     
     # Booking endpoints
     path("bookings/", list_bookings, name="list-bookings"),
+    path(
+        "bookings/approaching-sample-submission/",
+        approaching_sample_submission_deadlines,
+        name="approaching-sample-submission",
+    ),
     path("bookings/stats/", booking_stats, name="booking-stats"),
     path("bookings/lab-operator-dashboard/", lab_operator_dashboard, name="lab-operator-dashboard"),
     path("operator/leave/summary/", operator_leave_summary, name="operator-leave-summary"),
