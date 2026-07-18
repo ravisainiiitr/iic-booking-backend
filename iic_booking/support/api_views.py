@@ -14,9 +14,15 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Ticket, TicketComment, TicketTypeCode
-from .serializers import TicketSerializer, TicketCreateSerializer, TicketCommentSerializer
+from .models import Ticket, TicketComment, TicketEvent, TicketTypeCode
+from .serializers import TicketSerializer, TicketCreateSerializer, TicketCommentSerializer, TicketEventSerializer
 from .chat_ai import get_ai_reply
+from .ticket_service import (
+    STAFF_ASSIGNEE_TYPES,
+    apply_create_routing_and_events,
+    notify_ticket_assignee,
+    record_ticket_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -193,26 +199,61 @@ def ticket_list(request):
         
         # Apply filters
         status_filter = request.query_params.get('status')
-        if status_filter:
+        if status_filter and status_filter.lower() not in ("", "all"):
             queryset = queryset.filter(status=status_filter)
-        
+
         ticket_type = request.query_params.get('ticket_type')
-        if ticket_type:
-            # Filter by ticket type code
+        if ticket_type and ticket_type.lower() not in ("", "all"):
             queryset = queryset.filter(ticket_type=ticket_type)
-        
+
         priority = request.query_params.get('priority')
-        if priority:
+        if priority and priority.lower() not in ("", "all"):
             queryset = queryset.filter(priority=priority)
-        
-        # Order by creation date (newest first)
-        queryset = queryset.order_by('-created_at')
-        
+
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            from django.db.models import Q
+
+            q = Q(subject__icontains=search) | Q(description__icontains=search) | Q(public_email__icontains=search)
+            if search.isdigit():
+                q |= Q(ticket_id=int(search))
+            q |= Q(user__email__icontains=search) | Q(user__name__icontains=search)
+            q |= Q(related_equipment__code__icontains=search) | Q(related_equipment__name__icontains=search)
+            queryset = queryset.filter(q).distinct()
+
+        ordering = (request.query_params.get("ordering") or "-created_at").strip()
+        allowed_ordering = {
+            "created_at",
+            "-created_at",
+            "priority",
+            "-priority",
+            "status",
+            "-status",
+            "updated_at",
+            "-updated_at",
+        }
+        if ordering in allowed_ordering:
+            queryset = queryset.order_by(ordering)
+        else:
+            queryset = queryset.order_by("-created_at")
+
+        try:
+            limit = int(request.query_params.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        try:
+            offset = int(request.query_params.get("offset") or 0)
+        except (TypeError, ValueError):
+            offset = 0
+        total = queryset.count()
+        if limit > 0:
+            queryset = queryset[offset : offset + limit]
+
         serializer = TicketSerializer(queryset, many=True, context={"request": request})
         return Response(
             {
                 "tickets": serializer.data,
-                "count": len(serializer.data),
+                "count": total,
             },
             status=status.HTTP_200_OK,
         )
@@ -233,7 +274,7 @@ def ticket_list(request):
                     )
                 ticket = serializer.save()
 
-            # Create an initial visible log entry so users can track lifecycle in portal.
+            # Initial conversation log (visible to requester)
             raised_by = ticket.get_user_name() if ticket.get_user_name() else "User"
             TicketComment.objects.create(
                 ticket=ticket,
@@ -241,8 +282,11 @@ def ticket_list(request):
                 comment=f"Ticket raised by {raised_by}.",
                 is_internal=False,
             )
-            
-            # Return full ticket data
+
+            # Auto-assign equipment OIC + structured timeline events + assignee notify
+            actor = request.user if request.user.is_authenticated else None
+            ticket = apply_create_routing_and_events(ticket, actor=actor)
+
             full_serializer = TicketSerializer(ticket, context={"request": request})
             return Response(full_serializer.data, status=status.HTTP_201_CREATED)
         
@@ -342,11 +386,34 @@ def ticket_detail(request, ticket_id):
                 action_lines.append(
                     f"Status updated from {_status_label(old_status)} to {_status_label(updated_ticket.status)}."
                 )
+                evt = TicketEvent.EventType.STATUS_CHANGED
+                if updated_ticket.status == Ticket.TicketStatus.RESOLVED:
+                    evt = TicketEvent.EventType.RESOLVED
+                elif updated_ticket.status == Ticket.TicketStatus.CLOSED:
+                    evt = TicketEvent.EventType.CLOSED
+                record_ticket_event(
+                    updated_ticket,
+                    evt,
+                    actor=request.user,
+                    message=action_lines[-1],
+                    from_value=old_status,
+                    to_value=updated_ticket.status,
+                )
             if old_priority != updated_ticket.priority:
                 action_lines.append(
                     f"Priority changed from {_priority_label(old_priority)} to {_priority_label(updated_ticket.priority)}."
                 )
-            if (old_assigned_to.id if old_assigned_to else None) != (updated_ticket.assigned_to.id if updated_ticket.assigned_to else None):
+                record_ticket_event(
+                    updated_ticket,
+                    TicketEvent.EventType.PRIORITY_CHANGED,
+                    actor=request.user,
+                    message=action_lines[-1],
+                    from_value=old_priority,
+                    to_value=updated_ticket.priority,
+                )
+            old_aid = old_assigned_to.id if old_assigned_to else None
+            new_aid = updated_ticket.assigned_to.id if updated_ticket.assigned_to else None
+            if old_aid != new_aid:
                 prev_assignee = (old_assigned_to.name or old_assigned_to.email) if old_assigned_to else "Unassigned"
                 new_assignee = (
                     (updated_ticket.assigned_to.name or updated_ticket.assigned_to.email)
@@ -354,10 +421,36 @@ def ticket_detail(request, ticket_id):
                     else "Unassigned"
                 )
                 action_lines.append(f"Assignment changed from {prev_assignee} to {new_assignee}.")
+                record_ticket_event(
+                    updated_ticket,
+                    TicketEvent.EventType.ASSIGNED,
+                    actor=request.user,
+                    message=action_lines[-1],
+                    from_value=prev_assignee,
+                    to_value=new_assignee,
+                    metadata={
+                        "from_user_id": old_aid,
+                        "to_user_id": new_aid,
+                        "reassigned_by": request.user.id,
+                    },
+                )
+                if updated_ticket.assigned_to_id:
+                    notify_ticket_assignee(
+                        updated_ticket,
+                        assigned_by=request.user,
+                        previous_assignee=old_assigned_to,
+                    )
             if old_resolution_notes.strip() != (updated_ticket.resolution_notes or "").strip():
                 action_lines.append("Resolution notes were updated.")
                 if (updated_ticket.resolution_notes or "").strip():
                     action_lines.append(f"Resolution: {updated_ticket.resolution_notes.strip()}")
+                record_ticket_event(
+                    updated_ticket,
+                    TicketEvent.EventType.NOTES_UPDATED,
+                    actor=request.user,
+                    message="Resolution notes were updated.",
+                    is_internal=False,
+                )
 
             if action_lines:
                 TicketComment.objects.create(
@@ -423,6 +516,15 @@ def ticket_comment_create(request, ticket_id):
         is_internal=is_internal,
     )
 
+    record_ticket_event(
+        ticket,
+        TicketEvent.EventType.INTERNAL_NOTE if is_internal else TicketEvent.EventType.COMMENT,
+        actor=request.user,
+        message=comment_text[:500],
+        is_internal=is_internal,
+        metadata={"comment_id": comment.comment_id},
+    )
+
     # Public staff comments should be sent to the ticket owner and shown as action updates.
     if request.user.is_staff and not is_internal:
         _send_ticket_update_email(
@@ -478,33 +580,76 @@ def ticket_comments_list(request, ticket_id):
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def ticket_type_list(request):
-    """
-    Get list of available ticket types.
-    
-    Public access - returns the three ticket type constants.
-    """
-    ticket_types = [
-        {
-            "code": TicketTypeCode.BOOKING,
-            "name": TicketTypeCode.get_display_name(TicketTypeCode.BOOKING),
-        },
-        {
-            "code": TicketTypeCode.EQUIPMENT,
-            "name": TicketTypeCode.get_display_name(TicketTypeCode.EQUIPMENT),
-        },
-        {
-            "code": TicketTypeCode.OTHER,
-            "name": TicketTypeCode.get_display_name(TicketTypeCode.OTHER),
-        },
-        {
-            "code": TicketTypeCode.QUALITY_IMPROVEMENT,
-            "name": TicketTypeCode.get_display_name(TicketTypeCode.QUALITY_IMPROVEMENT),
-        },
-    ]
+    """Get list of available ticket types (extensible catalog)."""
+    ticket_types = TicketTypeCode.as_api_list()
     return Response(
         {
             "ticket_types": ticket_types,
             "count": len(ticket_types),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ticket_events_list(request, ticket_id):
+    """Structured audit timeline for a ticket."""
+    try:
+        ticket = Ticket.objects.get(ticket_id=ticket_id)
+    except Ticket.DoesNotExist:
+        return Response({"error": "Ticket not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _user_can_access_ticket(request.user, ticket):
+        return Response(
+            {"error": "You don't have permission to view this ticket."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    qs = ticket.events.select_related("actor").all()
+    if not request.user.is_staff:
+        qs = qs.filter(is_internal=False)
+
+    serializer = TicketEventSerializer(qs, many=True)
+    return Response({"events": serializer.data, "count": len(serializer.data)}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def ticket_assignees_search(request):
+    """Searchable staff assignees: admin, manager (OIC), operator, finance."""
+    if not request.user.is_staff:
+        return Response({"error": "Staff only."}, status=status.HTTP_403_FORBIDDEN)
+
+    from django.db.models import Q
+    from iic_booking.users.models import User
+
+    q = (request.query_params.get("q") or "").strip()
+    qs = User.objects.filter(is_active=True, user_type__in=STAFF_ASSIGNEE_TYPES).order_by("name", "email")
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(email__icontains=q))
+    qs = qs[:40]
+    return Response(
+        {
+            "assignees": [
+                {
+                    "id": u.id,
+                    "name": u.name or "",
+                    "email": u.email or "",
+                    "user_type": u.user_type,
+                    "user_type_display": str(
+                        dict(
+                            [
+                                ("admin", "Admin"),
+                                ("manager", "Officer In Charge"),
+                                ("operator", "Lab Incharge"),
+                                ("finance", "Accounts In Charge"),
+                            ]
+                        ).get(u.user_type, u.user_type)
+                    ),
+                }
+                for u in qs
+            ]
         },
         status=status.HTTP_200_OK,
     )
@@ -638,6 +783,7 @@ def chat_agent(request):
             serializer = TicketCreateSerializer(data=ticket_data)
             if serializer.is_valid():
                 ticket = serializer.save(user=request.user)
+                apply_create_routing_and_events(ticket, actor=request.user)
                 return Response(
                     {
                         "reply": (
@@ -654,6 +800,7 @@ def chat_agent(request):
             serializer = TicketCreateSerializer(data=ticket_data)
             if serializer.is_valid():
                 ticket = serializer.save()
+                apply_create_routing_and_events(ticket, actor=None)
                 return Response(
                     {
                         "reply": (

@@ -249,6 +249,15 @@ class User(AbstractUser):
         ),
     )
 
+    user_guide_viewed = BooleanField(
+        _("User guide viewed"),
+        default=False,
+        help_text=_(
+            "True after the user completes or dismisses the role-specific onboarding user guide. "
+            "They can still reopen the guide from the Help menu anytime."
+        ),
+    )
+
     is_test_account = BooleanField(
         _("Test account"),
         default=False,
@@ -412,6 +421,12 @@ class User(AbstractUser):
         if not self.user_type:
             return False
         return self.user_type == UserType.FACULTY
+
+    def get_display_name(self, *, fallback_to_email: bool = True) -> str:
+        """Preferred display name (adds Prof. prefix for faculty)."""
+        from iic_booking.users.display import get_user_display_name
+
+        return get_user_display_name(self, fallback_to_email=fallback_to_email)
 
     def is_individual_student(self) -> bool:
         """Check if user is an individual student.

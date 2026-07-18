@@ -164,6 +164,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
         source="department.department_type", read_only=True, allow_null=True
     )
     user_type_display = serializers.SerializerMethodField()
+    display_name = serializers.SerializerMethodField()
 
     can_have_wallet = serializers.SerializerMethodField()
 
@@ -174,6 +175,9 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
     def get_user_type_display(self, obj):
         return obj.get_user_type_display_label()
+
+    def get_display_name(self, obj):
+        return obj.get_display_name()
 
     def get_can_have_wallet(self, obj):
         return obj.can_have_wallet()
@@ -224,6 +228,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "user_type",
             "user_type_alias",
             "user_type_display",
+            "display_name",
             "is_faculty",
             "emp_id",
             "phone_number",
@@ -249,6 +254,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "wallet_low_balance_alert_threshold",
             "use_discounted_charge_profile",
             "istem_portal_acknowledged",
+            "user_guide_viewed",
             "oic_enable_ta_nomination",
             "oic_enable_ta_duty_assignments",
             "oic_enable_leave_management",
@@ -261,6 +267,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "department_name",
             "department_type",
             "user_type_display",
+            "display_name",
             "is_faculty",
             "user_type_alias",
             "can_have_wallet",

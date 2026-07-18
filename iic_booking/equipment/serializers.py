@@ -392,9 +392,9 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
         ]
     
     def get_operator_name(self, obj):
-        """Return operator's name or email if name is not available."""
+        """Return operator's display name (Prof. for faculty) or email."""
         if obj.operator:
-            return obj.operator.name or obj.operator.email
+            return obj.operator.get_display_name()
         return None
     
     def get_operator_email(self, obj):
@@ -445,9 +445,9 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
         ]
     
     def get_manager_name(self, obj):
-        """Return manager's name or email if name is not available."""
+        """Return manager's display name (Prof. for faculty) or email."""
         if obj.manager:
-            return obj.manager.name or obj.manager.email
+            return obj.manager.get_display_name()
         return None
     
     def get_manager_email(self, obj):
@@ -2239,9 +2239,9 @@ class BookingSerializer(serializers.ModelSerializer):
             return []
 
     def get_user_name(self, obj):
-        """Return user's name or email if name is not available."""
+        """Return user's display name (Prof. for faculty) or email."""
         if obj.user:
-            return obj.user.name or obj.user.email
+            return obj.user.get_display_name()
         return None
     
     def get_user_phone(self, obj):
@@ -2489,7 +2489,7 @@ class BookingListSerializer(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         if obj.user:
-            return obj.user.name or obj.user.email
+            return obj.user.get_display_name()
         return None
 
     def get_user_phone(self, obj):

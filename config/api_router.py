@@ -320,7 +320,13 @@ from iic_booking.support.api_views import (
     ticket_comments_list,
     ticket_type_list,
     ticket_attachment,
+    ticket_events_list,
+    ticket_assignees_search,
     chat_agent,
+)
+from iic_booking.support.portal_feedback_views import (
+    portal_feedback_mine,
+    portal_feedback_admin_list,
 )
 from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats
 
@@ -838,12 +844,16 @@ urlpatterns = router.urls + [
     
     # Support Ticket endpoints
     path("tickets/", ticket_list, name="ticket-list"),  # GET and POST (public can POST)
+    path("tickets/assignees/", ticket_assignees_search, name="ticket-assignees-search"),
     path("tickets/<int:ticket_id>/", ticket_detail, name="ticket-detail"),
     path("tickets/<int:ticket_id>/attachment/", ticket_attachment, name="ticket-attachment"),
     path("tickets/<int:ticket_id>/comments/", ticket_comments_list, name="ticket-comments-list"),
     path("tickets/<int:ticket_id>/comments/create/", ticket_comment_create, name="ticket-comment-create"),
+    path("tickets/<int:ticket_id>/events/", ticket_events_list, name="ticket-events-list"),
     path("ticket-types/", ticket_type_list, name="ticket-type-list"),
     path("chat-agent/", chat_agent, name="chat-agent"),
+    path("portal-feedback/me/", portal_feedback_mine, name="portal-feedback-me"),
+    path("portal-feedback/", portal_feedback_admin_list, name="portal-feedback-admin-list"),
 
     # CMS (public read-only for main page and menu)
     path("cms/menu/", menu_list, name="cms-menu"),

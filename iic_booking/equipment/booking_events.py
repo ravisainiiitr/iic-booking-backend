@@ -273,16 +273,31 @@ def create_booking_event(
 
 def _dispatch_booking_event_notification(event_id: int) -> None:
     """
-    Send booking email/push after DB commit.
+    Queue booking email/push after DB commit so the HTTP booking response stays fast.
 
-    Runs synchronously in the on_commit callback (same request lifecycle).
-    Daemon threads under Gunicorn+UvicornWorker were unreliable — the process
-    could finish the request and tear down before SMTP completed, so confirmations
-    never left the server. A few seconds of SMTP during on_commit is acceptable.
+    Prefer Celery (same pattern as waitlist / Print_3D emails). Fall back to inline
+    SMTP only if the broker cannot be reached — booking success must never depend
+    on email delivery succeeding.
     """
     from django.db import close_old_connections
 
     close_old_connections()
+    try:
+        from iic_booking.equipment.tasks import send_booking_event_notifications_task
+
+        send_booking_event_notifications_task.delay(event_id)
+        logger.info(
+            "Queued Celery booking notification for event_id=%s",
+            event_id,
+        )
+        return
+    except Exception:
+        logger.warning(
+            "Celery queue failed for booking notification event_id=%s; sending inline",
+            event_id,
+            exc_info=True,
+        )
+
     try:
         event = BookingEvent.objects.select_related(
             "booking",
@@ -294,25 +309,10 @@ def _dispatch_booking_event_notification(event_id: int) -> None:
         BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
     except Exception:
         logger.error(
-            "Booking notification failed for event_id=%s",
+            "Booking notification failed for event_id=%s (inline fallback)",
             event_id,
             exc_info=True,
         )
-        # Last-resort queue (retry later if a Celery worker is healthy).
-        try:
-            from iic_booking.equipment.tasks import send_booking_event_notifications_task
-
-            send_booking_event_notifications_task.delay(event_id)
-            logger.warning(
-                "Queued Celery retry for booking notification event_id=%s",
-                event_id,
-            )
-        except Exception:
-            logger.error(
-                "Also failed to queue Celery booking notification for event_id=%s",
-                event_id,
-                exc_info=True,
-            )
     finally:
         close_old_connections()
 
