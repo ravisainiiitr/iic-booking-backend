@@ -260,6 +260,8 @@ from iic_booking.equipment.api_views import (
     oic_equipment_accessories_list,
     oic_toggle_equipment_accessory,
     oic_toggle_equipment_additional_accessory,
+    oic_print_materials,
+    oic_print_material_detail,
     oic_equipment_group_quotas,
     oic_multi_mode_list,
     oic_multi_mode_schedule_create,
@@ -794,6 +796,12 @@ urlpatterns = router.urls + [
         "oic/equipment-additional-accessories/<int:accessory_id>/",
         oic_toggle_equipment_additional_accessory,
         name="oic-toggle-equipment-additional-accessory",
+    ),
+    path("oic/print-materials/", oic_print_materials, name="oic-print-materials"),
+    path(
+        "oic/print-materials/<int:material_id>/",
+        oic_print_material_detail,
+        name="oic-print-material-detail",
     ),
     path("oic/equipment-group-quotas/", oic_equipment_group_quotas, name="oic-equipment-group-quotas"),
     path(

@@ -13,7 +13,8 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.conf import settings
-from django.db import connection, transaction
+from django.db import connection, transaction, IntegrityError
+from django.db.models.deletion import ProtectedError, RestrictedError
 from django.db.transaction import TransactionManagementError
 from django.http import HttpResponse, HttpResponseRedirect
 from django.db.models import Q, Min, Max, Sum, Count, Subquery, OuterRef, DecimalField, Exists, Prefetch
@@ -118,6 +119,7 @@ from .models import (
     EquipmentWriteOffStatus,
     EquipmentWriteOffActionLog,
     EquipmentWriteOffActionType,
+    PrintMaterial,
 )
 from .serializers import (
     EquipmentListSerializer,
@@ -152,6 +154,7 @@ from .serializers import (
     EquipmentWriteOffRequestSerializer,
     EquipmentAccessorySerializer,
     EquipmentAdditionalAccessorySerializer,
+    PrintMaterialSerializer,
 )
 from .calculators import (
     TimeCalculationEngine,
@@ -13893,6 +13896,229 @@ def oic_toggle_equipment_additional_accessory(request, accessory_id):
         accessory.is_enabled = not accessory.is_enabled
     accessory.save(update_fields=["is_enabled"])
     return Response({"additional_accessory": EquipmentAdditionalAccessorySerializer(accessory).data})
+
+
+def _oic_can_manage_print_materials(user) -> bool:
+    return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
+
+
+def _oic_print_3d_equipment_qs(user):
+    return _oic_manageable_equipment_qs(user).filter(profile_type=EquipmentProfileType.PRINT_3D)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def oic_print_materials(request):
+    """
+    GET: list PRINT_3D equipment managed by OIC/Admin with all materials (active + inactive).
+    POST: create a material on a managed PRINT_3D equipment.
+    """
+    if not _oic_can_manage_print_materials(request.user):
+        return Response(
+            {"error": "Only Admin or Officer In Charge can manage 3D print materials."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if request.method == "GET":
+        qs = _oic_print_3d_equipment_qs(request.user).prefetch_related("print_materials")
+        equipment_id = request.query_params.get("equipment_id")
+        if equipment_id:
+            try:
+                eq_id = int(equipment_id)
+            except (TypeError, ValueError):
+                return Response({"error": "Invalid equipment_id."}, status=status.HTTP_400_BAD_REQUEST)
+            if not _user_can_manage_oic_equipment(request.user, eq_id):
+                return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+            qs = qs.filter(equipment_id=eq_id)
+
+        equipment_rows = []
+        for eq in qs:
+            materials = eq.print_materials.all().order_by("display_order", "name")
+            equipment_rows.append(
+                {
+                    "equipment_id": eq.equipment_id,
+                    "equipment_code": eq.code,
+                    "equipment_name": eq.name,
+                    "materials": PrintMaterialSerializer(materials, many=True).data,
+                }
+            )
+        return Response({"equipments": equipment_rows})
+
+    # POST
+    data = request.data or {}
+    try:
+        eq_id = int(data.get("equipment_id"))
+    except (TypeError, ValueError):
+        return Response({"error": "equipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    if not _user_can_manage_oic_equipment(request.user, eq_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        equipment = Equipment.objects.get(pk=eq_id)
+    except Equipment.DoesNotExist:
+        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+    if equipment.profile_type != EquipmentProfileType.PRINT_3D:
+        return Response(
+            {"error": "Materials can only be managed for PRINT_3D equipment."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    code = str(data.get("code") or "").strip()
+    name = str(data.get("name") or "").strip()
+    if not code or not name:
+        return Response({"error": "code and name are required."}, status=status.HTTP_400_BAD_REQUEST)
+    if PrintMaterial.objects.filter(equipment=equipment, code=code).exists():
+        return Response(
+            {"error": f"A material with code '{code}' already exists for this equipment."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        density = Decimal(str(data.get("density_g_per_cm3") if data.get("density_g_per_cm3") not in (None, "") else "1.240"))
+        price = Decimal(str(data.get("price_per_gram")))
+    except Exception:
+        return Response(
+            {"error": "density_g_per_cm3 and price_per_gram must be valid numbers."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if price < 0 or density <= 0:
+        return Response(
+            {"error": "density must be > 0 and price_per_gram must be >= 0."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user_type_raw = data.get("user_type")
+    user_type = None
+    if user_type_raw is not None and str(user_type_raw).strip() != "":
+        user_type = str(user_type_raw).strip()
+
+    try:
+        display_order = int(data.get("display_order") if data.get("display_order") not in (None, "") else 0)
+    except (TypeError, ValueError):
+        display_order = 0
+
+    is_active = True
+    if "is_active" in data:
+        raw = data.get("is_active")
+        if isinstance(raw, bool):
+            is_active = raw
+        else:
+            is_active = str(raw).strip().lower() in ("1", "true", "yes", "y")
+
+    material = PrintMaterial.objects.create(
+        equipment=equipment,
+        code=code,
+        name=name,
+        density_g_per_cm3=density,
+        price_per_gram=price,
+        user_type=user_type,
+        is_active=is_active,
+        display_order=max(0, display_order),
+    )
+    return Response({"material": PrintMaterialSerializer(material).data}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def oic_print_material_detail(request, material_id):
+    """Update or delete a single PrintMaterial on managed PRINT_3D equipment."""
+    if not _oic_can_manage_print_materials(request.user):
+        return Response(
+            {"error": "Only Admin or Officer In Charge can manage 3D print materials."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        material = PrintMaterial.objects.select_related("equipment").get(pk=material_id)
+    except PrintMaterial.DoesNotExist:
+        return Response({"error": "Material not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _user_can_manage_oic_equipment(request.user, material.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+    if material.equipment.profile_type != EquipmentProfileType.PRINT_3D:
+        return Response(
+            {"error": "Materials can only be managed for PRINT_3D equipment."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if request.method == "DELETE":
+        try:
+            material.delete()
+        except (IntegrityError, ProtectedError, RestrictedError):
+            return Response(
+                {
+                    "error": "Cannot delete this material because it is referenced by existing analyses or bookings. Disable it instead."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"ok": True})
+
+    data = request.data or {}
+    update_fields = []
+
+    if "code" in data:
+        code = str(data.get("code") or "").strip()
+        if not code:
+            return Response({"error": "code cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+        if (
+            PrintMaterial.objects.filter(equipment_id=material.equipment_id, code=code)
+            .exclude(pk=material.pk)
+            .exists()
+        ):
+            return Response(
+                {"error": f"A material with code '{code}' already exists for this equipment."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        material.code = code
+        update_fields.append("code")
+
+    if "name" in data:
+        name = str(data.get("name") or "").strip()
+        if not name:
+            return Response({"error": "name cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+        material.name = name
+        update_fields.append("name")
+
+    if "density_g_per_cm3" in data and data.get("density_g_per_cm3") not in (None, ""):
+        try:
+            density = Decimal(str(data.get("density_g_per_cm3")))
+        except Exception:
+            return Response({"error": "Invalid density_g_per_cm3."}, status=status.HTTP_400_BAD_REQUEST)
+        if density <= 0:
+            return Response({"error": "density must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+        material.density_g_per_cm3 = density
+        update_fields.append("density_g_per_cm3")
+
+    if "price_per_gram" in data and data.get("price_per_gram") not in (None, ""):
+        try:
+            price = Decimal(str(data.get("price_per_gram")))
+        except Exception:
+            return Response({"error": "Invalid price_per_gram."}, status=status.HTTP_400_BAD_REQUEST)
+        if price < 0:
+            return Response({"error": "price_per_gram must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+        material.price_per_gram = price
+        update_fields.append("price_per_gram")
+
+    if "user_type" in data:
+        raw = data.get("user_type")
+        material.user_type = None if raw is None or str(raw).strip() == "" else str(raw).strip()
+        update_fields.append("user_type")
+
+    if "display_order" in data and data.get("display_order") not in (None, ""):
+        try:
+            material.display_order = max(0, int(data.get("display_order")))
+        except (TypeError, ValueError):
+            return Response({"error": "Invalid display_order."}, status=status.HTTP_400_BAD_REQUEST)
+        update_fields.append("display_order")
+
+    if "is_active" in data:
+        raw = data.get("is_active")
+        if isinstance(raw, bool):
+            material.is_active = raw
+        else:
+            material.is_active = str(raw).strip().lower() in ("1", "true", "yes", "y")
+        update_fields.append("is_active")
+
+    if update_fields:
+        material.save(update_fields=update_fields)
+    return Response({"material": PrintMaterialSerializer(material).data})
 
 
 @api_view(["GET", "PUT", "PATCH"])
