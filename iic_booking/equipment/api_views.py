@@ -3737,8 +3737,7 @@ def _book_equipment_impl(request, pk):
         if not start_time or not end_time:
             raise ValueError("Invalid datetime format")
         
-        # Convert to timezone-aware if needed
-        from django.utils import timezone
+        # Convert to timezone-aware if needed (module-level django.utils.timezone)
         if timezone.is_naive(start_time):
             start_time = timezone.make_aware(start_time)
         if timezone.is_naive(end_time):
