@@ -377,40 +377,54 @@ def _resolve_numeric_max_for_field_a(field, input_values, equipment):
 
 def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user=None):
     """
-    Validate numeric constraints for dynamic fields.
-    Currently enforces formula/static max for field key A (if configured).
+    Validate NUMERIC dynamic fields against options / help_text limits.
 
-    External booking users skip this limit (options formula / options.max do not apply).
+    help_text convention (NUMERIC):
+      line 1 = min, line 2 = max, line 3 = step (defaults 0 / 100 / 1).
+
+    Field A may also use options.max_formula / options.max. External booking users
+    skip formula/static options.max for A only; help_text / default range still apply.
     """
-    if booking_user is not None and UserType.is_external_user(
-        getattr(booking_user, "user_type", None) or ""
-    ):
-        return None
+    from .numeric_field_limits import resolve_numeric_field_bounds
 
-    a_field = (
+    is_external = booking_user is not None and UserType.is_external_user(
+        getattr(booking_user, "user_type", None) or ""
+    )
+
+    fields = list(
         DynamicInputField.objects.filter(
             equipment=equipment,
-            field_key="A",
             field_type=DynamicInputFieldType.NUMERIC,
-        )
-        .only("field_key", "field_label", "options")
-        .first()
+        ).only("field_key", "field_label", "options", "help_text")
     )
-    if not a_field:
+    if not fields:
         return None
 
-    a_value = _to_float_or_none(input_values.get("A"))
-    if a_value is None:
-        return None
+    for field in fields:
+        key = field.field_key
+        raw = input_values.get(key)
+        if raw is None or raw == "":
+            continue
+        value = _to_float_or_none(raw)
+        if value is None:
+            continue
 
-    max_allowed = _resolve_numeric_max_for_field_a(a_field, input_values, equipment)
-    if max_allowed is None:
-        return None
+        formula_max = None
+        if key == "A" and not is_external:
+            formula_max = _resolve_numeric_max_for_field_a(field, input_values, equipment)
 
-    if a_value > max_allowed:
-        label = a_field.field_label or "A"
-        pretty_max = int(max_allowed) if float(max_allowed).is_integer() else round(max_allowed, 4)
-        return f"{label} cannot be greater than {pretty_max}."
+        min_v, max_v, _step = resolve_numeric_field_bounds(
+            options=field.options,
+            help_text=field.help_text,
+            formula_max=formula_max,
+        )
+        label = field.field_label or key
+        if value < min_v:
+            pretty = int(min_v) if float(min_v).is_integer() else round(min_v, 6)
+            return f"{label} cannot be less than {pretty}."
+        if value > max_v:
+            pretty = int(max_v) if float(max_v).is_integer() else round(max_v, 6)
+            return f"{label} cannot be greater than {pretty}."
     return None
 
 # Pricing profile selector for booking/charge calculation.

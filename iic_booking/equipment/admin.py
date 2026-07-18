@@ -249,7 +249,8 @@ class DynamicInputFieldForm(forms.ModelForm):
             'For NUMERIC (especially key A), you may enter plain formula like B*4 '
             '(interpreted as {"min":1,"max_formula":"B*4"}), '
             'or JSON like {"min":1,"max":100} / {"min":1,"max_formula":"B*5"}. '
-            'max_formula supports A-Z and SLOT_DURATION_MINUTES.'
+            'max_formula supports A-Z and SLOT_DURATION_MINUTES. '
+            'Prefer Help text for range/step: line1=min, line2=max, line3=step (default 0–100, step 1).'
         )
     )
 
@@ -281,6 +282,13 @@ class DynamicInputFieldForm(forms.ModelForm):
             self.fields['default_value'].help_text = _(
                 'For RADIO/COMBO/MULTI_SELECT: use 1 for first option, 2 for second, etc. '
                 'Or enter the exact option value. For other types, enter the default value.'
+            )
+        if 'help_text' in self.fields:
+            self.fields['help_text'].help_text = _(
+                'NUMERIC: line 1 = lower limit, line 2 = upper limit, line 3 = step '
+                '(e.g. 0 then 100 then 0.01). Defaults 0 / 100 / 1 when blank. '
+                'PERIODIC_TABLE: one element per line to disable; prefix with / to lock-preselect '
+                'without charge. Also used for ICPMS Standard Coverage notes.'
             )
 
     def clean_options_text(self):

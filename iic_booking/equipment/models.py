@@ -1242,7 +1242,10 @@ class DynamicInputField(models.Model):
         blank=True,
         null=True,
         help_text=_(
-            'Help text for this field. For PERIODIC_TABLE: one element per line to disable (e.g. Fe); '
+            'Help text for this field. '
+            'NUMERIC: line 1 = lower limit, line 2 = upper limit, line 3 = step '
+            '(e.g. 0.01). Defaults 0 / 100 / 1 when blank. '
+            'PERIODIC_TABLE: one element per line to disable (e.g. Fe); '
             'prefix with / to lock-preselect without charge (e.g. /C for Carbon). '
             'Also used for ICPMS Standard Coverage standards notes.'
         )
