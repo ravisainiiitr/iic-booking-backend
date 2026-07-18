@@ -2488,10 +2488,19 @@ def book_equipment(request, pk):
 
     try:
         return _book_equipment_impl(request, pk)
-    except Exception:
+    except Exception as exc:
+        # Never re-raise: with ATOMIC_REQUESTS + ASGI, a bare raise becomes a plain-text
+        # uvicorn "Internal Server Error" instead of a useful JSON body for the UI.
         if connection.in_atomic_block:
-            transaction.set_rollback(True)
-        raise
+            try:
+                transaction.set_rollback(True)
+            except Exception:
+                pass
+        logger.exception("book_equipment failed equipment_id=%s", pk)
+        return Response(
+            {"error": f"Error creating booking: {exc}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 def _book_equipment_impl(request, pk):
@@ -8760,8 +8769,12 @@ def _upsert_equipment_booking_requester_group_member(equipment: Equipment, booki
 
 def _schedule_equipment_booking_requester_group_upsert(equipment_pk: int, user_pk: int) -> None:
     """Defer UserGroup membership work until after commit — keeps row-lock window shorter."""
+    import threading
 
     def _run():
+        from django.db import close_old_connections
+
+        close_old_connections()
         try:
             from django.contrib.auth import get_user_model
 
@@ -8775,8 +8788,24 @@ def _schedule_equipment_booking_requester_group_upsert(equipment_pk: int, user_p
                 user_pk,
                 exc_info=True,
             )
+        finally:
+            close_old_connections()
 
-    transaction.on_commit(_run)
+    def _start():
+        try:
+            threading.Thread(
+                target=_run,
+                name=f"booking-requester-group-{equipment_pk}-{user_pk}",
+                daemon=True,
+            ).start()
+        except Exception:
+            logger.exception(
+                "Failed to start requester group upsert thread eq=%s user=%s",
+                equipment_pk,
+                user_pk,
+            )
+
+    transaction.on_commit(_start)
 
 
 @api_view(["POST"])

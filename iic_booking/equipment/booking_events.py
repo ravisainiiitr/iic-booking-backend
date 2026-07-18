@@ -243,10 +243,20 @@ def create_booking_event(
     # (SMTP, FCM, etc.) do not block the booking API.
     if send_notification:
         eid = event.event_id
+
+        def _safe_queue_notification() -> None:
+            try:
+                _dispatch_booking_event_notification(eid)
+            except Exception:
+                logger.exception(
+                    "on_commit booking notification dispatch failed event_id=%s",
+                    eid,
+                )
+
         if transaction.get_connection().in_atomic_block:
-            transaction.on_commit(lambda: _dispatch_booking_event_notification(eid))
+            transaction.on_commit(_safe_queue_notification)
         else:
-            _dispatch_booking_event_notification(eid)
+            _safe_queue_notification()
 
         from .print_3d_notifications import maybe_dispatch_print_3d_stl_notification
 
