@@ -13920,7 +13920,10 @@ def oic_print_materials(request):
         )
 
     if request.method == "GET":
-        qs = _oic_print_3d_equipment_qs(request.user).prefetch_related("print_materials")
+        qs = _oic_print_3d_equipment_qs(request.user).prefetch_related(
+            "print_materials",
+            "charge_profiles",
+        )
         equipment_id = request.query_params.get("equipment_id")
         if equipment_id:
             try:
@@ -13931,15 +13934,30 @@ def oic_print_materials(request):
                 return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
             qs = qs.filter(equipment_id=eq_id)
 
+        choices_dict = dict(UserType.get_choices())
         equipment_rows = []
         for eq in qs:
             materials = eq.print_materials.all().order_by("display_order", "name")
+            profiles = eq.charge_profiles.filter(
+                pricing_profile=ChargeProfilePricingProfile.STANDARD,
+            ).order_by("user_type")
+            charge_rows = []
+            for cp in profiles:
+                charge_rows.append(
+                    {
+                        "user_type": cp.user_type,
+                        "user_type_display": str(choices_dict.get(cp.user_type, cp.user_type)),
+                        "primary_unit_charge": str(cp.primary_unit_charge),
+                        "is_active": bool(cp.is_active),
+                    }
+                )
             equipment_rows.append(
                 {
                     "equipment_id": eq.equipment_id,
                     "equipment_code": eq.code,
                     "equipment_name": eq.name,
                     "materials": PrintMaterialSerializer(materials, many=True).data,
+                    "charge_profiles": charge_rows,
                 }
             )
         return Response({"equipments": equipment_rows})
