@@ -284,9 +284,15 @@ class DynamicInputFieldForm(forms.ModelForm):
                 'Or enter the exact option value. For other types, enter the default value.'
             )
         if 'help_text' in self.fields:
+            self.fields['help_text'].widget = forms.Textarea(
+                attrs={
+                    'rows': 3,
+                    'placeholder': '0\n100\n0.01',
+                }
+            )
             self.fields['help_text'].help_text = _(
                 'NUMERIC: line 1 = lower limit, line 2 = upper limit, line 3 = step '
-                '(e.g. 0 then 100 then 0.01). Defaults 0 / 100 / 1 when blank. '
+                '(e.g. 0 / 100 / 0.01). Defaults 0 / 100 / 1 when blank. '
                 'PERIODIC_TABLE: one element per line to disable; prefix with / to lock-preselect '
                 'without charge. Also used for ICPMS Standard Coverage notes.'
             )

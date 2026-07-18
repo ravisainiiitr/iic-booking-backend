@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional, Tuple
 
 
@@ -9,16 +10,32 @@ DEFAULT_NUMERIC_MIN = 0.0
 DEFAULT_NUMERIC_MAX = 100.0
 DEFAULT_NUMERIC_STEP = 1.0
 
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
 
 def _to_float(value: Any) -> Optional[float]:
     if value is None or value is False:
         return None
     if isinstance(value, bool):
         return None
-    try:
+    if isinstance(value, (int, float)):
         n = float(value)
-    except (TypeError, ValueError):
+        if n != n:
+            return None
+        return n
+    raw = str(value).strip().replace(",", ".")
+    if not raw:
         return None
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        m = _NUMBER_RE.search(raw)
+        if not m:
+            return None
+        try:
+            n = float(m.group(0))
+        except (TypeError, ValueError):
+            return None
     if n != n:  # NaN
         return None
     return n
@@ -31,24 +48,45 @@ def parse_numeric_help_text(help_text: Optional[str]) -> dict[str, float]:
       line 2 → upper limit (max)
       line 3 → step / resolution (e.g. 0.01)
 
+    Also accepts a single line: "0 100 0.01" / "0,100,0.01" / "0;100;0.01".
     Blank or non-numeric lines are ignored for that slot.
     """
     if not help_text or not str(help_text).strip():
         return {}
-    lines = str(help_text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    normalized = str(help_text).replace("\r\n", "\n").replace("\r", "\n").strip()
+    lines = normalized.split("\n")
     out: dict[str, float] = {}
-    if len(lines) >= 1 and lines[0].strip() != "":
-        n = _to_float(lines[0].strip())
+
+    if len(lines) >= 2:
+        min_v = _to_float(lines[0]) if lines[0].strip() else None
+        max_v = _to_float(lines[1]) if len(lines) > 1 and lines[1].strip() else None
+        step_v = _to_float(lines[2]) if len(lines) > 2 and lines[2].strip() else None
+        if min_v is not None:
+            out["min"] = min_v
+        if max_v is not None:
+            out["max"] = max_v
+        if step_v is not None and step_v > 0:
+            out["step"] = step_v
+        return out
+
+    parts = [p for p in re.split(r"[,;\s]+", normalized) if p]
+    if len(parts) >= 3:
+        min_v = _to_float(parts[0])
+        max_v = _to_float(parts[1])
+        step_v = _to_float(parts[2])
+        if min_v is not None:
+            out["min"] = min_v
+        if max_v is not None:
+            out["max"] = max_v
+        if step_v is not None and step_v > 0:
+            out["step"] = step_v
+    elif len(parts) == 1:
+        n = _to_float(parts[0])
         if n is not None:
-            out["min"] = n
-    if len(lines) >= 2 and lines[1].strip() != "":
-        n = _to_float(lines[1].strip())
-        if n is not None:
-            out["max"] = n
-    if len(lines) >= 3 and lines[2].strip() != "":
-        n = _to_float(lines[2].strip())
-        if n is not None and n > 0:
-            out["step"] = n
+            if 0 < n < 1:
+                out["step"] = n
+            else:
+                out["min"] = n
     return out
 
 
