@@ -64,31 +64,40 @@ def maybe_dispatch_print_3d_stl_notification(
     booking_id = booking.booking_id
 
     def _dispatch():
-        try:
-            try:
-                from iic_booking.equipment.tasks import send_print_3d_stl_booking_email_task
+        import threading
 
-                send_print_3d_stl_booking_email_task.delay(booking_id)
-                return
-            except Exception:
-                logger.warning(
-                    "Failed to queue print 3D STL email for booking_id=%s; sending inline",
-                    booking_id,
-                    exc_info=True,
-                )
+        def _run():
             try:
-                send_print_3d_stl_booking_email(booking_id)
+                try:
+                    from iic_booking.equipment.tasks import send_print_3d_stl_booking_email_task
+
+                    send_print_3d_stl_booking_email_task.delay(booking_id)
+                    return
+                except Exception:
+                    logger.warning(
+                        "Failed to queue print 3D STL email for booking_id=%s; sending inline",
+                        booking_id,
+                        exc_info=True,
+                    )
+                try:
+                    send_print_3d_stl_booking_email(booking_id)
+                except Exception:
+                    # Never break booking flow for email/SMTP issues (e.g. SMTP 535 auth errors)
+                    logger.exception(
+                        "print_3d_stl_email: send failed for booking_id=%s (ignored)",
+                        booking_id,
+                    )
             except Exception:
-                # Never break booking flow for email/SMTP issues (e.g. SMTP 535 auth errors)
                 logger.exception(
-                    "print_3d_stl_email: send failed for booking_id=%s (ignored)",
+                    "print_3d_stl_email: unexpected dispatch failure for booking_id=%s (ignored)",
                     booking_id,
                 )
-        except Exception:
-            logger.exception(
-                "print_3d_stl_email: unexpected dispatch failure for booking_id=%s (ignored)",
-                booking_id,
-            )
+
+        threading.Thread(
+            target=_run,
+            name=f"print3d-notify-{booking_id}",
+            daemon=True,
+        ).start()
 
     if transaction.get_connection().in_atomic_block:
         transaction.on_commit(_dispatch)

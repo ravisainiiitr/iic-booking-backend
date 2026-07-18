@@ -273,48 +273,57 @@ def create_booking_event(
 
 def _dispatch_booking_event_notification(event_id: int) -> None:
     """
-    Queue booking email/push after DB commit so the HTTP booking response stays fast.
+    Queue booking email/push after DB commit without blocking the HTTP response.
 
-    Prefer Celery (same pattern as waitlist / Print_3D emails). Fall back to inline
-    SMTP only if the broker cannot be reached — booking success must never depend
-    on email delivery succeeding.
+    Prefer Celery. Fall back to inline SMTP only if the broker cannot be reached.
+    Always runs in a daemon thread so Redis/SMTP latency cannot stall /book/.
     """
-    from django.db import close_old_connections
+    import threading
 
-    close_old_connections()
-    try:
-        from iic_booking.equipment.tasks import send_booking_event_notifications_task
+    def _run() -> None:
+        from django.db import close_old_connections
 
-        send_booking_event_notifications_task.delay(event_id)
-        logger.info(
-            "Queued Celery booking notification for event_id=%s",
-            event_id,
-        )
-        return
-    except Exception:
-        logger.warning(
-            "Celery queue failed for booking notification event_id=%s; sending inline",
-            event_id,
-            exc_info=True,
-        )
-
-    try:
-        event = BookingEvent.objects.select_related(
-            "booking",
-            "booking__user",
-            "booking__equipment",
-            "created_by",
-        ).get(event_id=event_id)
-        send_booking_event_notification(event)
-        BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
-    except Exception:
-        logger.error(
-            "Booking notification failed for event_id=%s (inline fallback)",
-            event_id,
-            exc_info=True,
-        )
-    finally:
         close_old_connections()
+        try:
+            try:
+                from iic_booking.equipment.tasks import send_booking_event_notifications_task
+
+                send_booking_event_notifications_task.delay(event_id)
+                logger.info(
+                    "Queued Celery booking notification for event_id=%s",
+                    event_id,
+                )
+                return
+            except Exception:
+                logger.warning(
+                    "Celery queue failed for booking notification event_id=%s; sending inline",
+                    event_id,
+                    exc_info=True,
+                )
+
+            try:
+                event = BookingEvent.objects.select_related(
+                    "booking",
+                    "booking__user",
+                    "booking__equipment",
+                    "created_by",
+                ).get(event_id=event_id)
+                send_booking_event_notification(event)
+                BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
+            except Exception:
+                logger.error(
+                    "Booking notification failed for event_id=%s (inline fallback)",
+                    event_id,
+                    exc_info=True,
+                )
+        finally:
+            close_old_connections()
+
+    threading.Thread(
+        target=_run,
+        name=f"booking-notify-{event_id}",
+        daemon=True,
+    ).start()
 
 
 def send_booking_event_notification(event: BookingEvent) -> None:
