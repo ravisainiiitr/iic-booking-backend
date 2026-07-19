@@ -863,6 +863,7 @@ def get_visible_equipment_queryset(user):
     - Authenticated: public OR equipment whose visibility_group has user as member.
     - Operator/Admin: all equipment.
     - Manager (OIC): only equipment for which they are OIC (primary or temporary until resume_at).
+    - Department Administrator: only equipment in their assigned internal department.
     """
     queryset = Equipment.objects.all()
     if not user or not user.is_authenticated:
@@ -879,6 +880,11 @@ def get_visible_equipment_queryset(user):
         queryset = queryset.filter(equipment_id__in=allowed_ids)
     elif user.user_type == UserType.ADMIN:
         pass
+    elif user.user_type == UserType.DEPT_ADMIN:
+        dept_id = getattr(user, "department_id", None)
+        if not dept_id:
+            return queryset.none()
+        queryset = queryset.filter(internal_department_id=dept_id)
     else:
         queryset = queryset.filter(
             Q(visibility_group__isnull=True) |
@@ -1321,7 +1327,14 @@ def equipment_list(request):
         )
 
     internal_department_id = (request.query_params.get("internal_department_id") or "").strip()
-    if internal_department_id and internal_department_id.lower() != "all":
+    # Department Administrators are always scoped to their own department (ignore client overrides).
+    if getattr(request.user, "is_authenticated", False) and getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN:
+        dept_id = getattr(request.user, "department_id", None)
+        if not dept_id:
+            queryset = queryset.none()
+        else:
+            queryset = queryset.filter(internal_department_id=dept_id)
+    elif internal_department_id and internal_department_id.lower() != "all":
         try:
             dept_id = int(internal_department_id)
         except (TypeError, ValueError):
