@@ -45,8 +45,8 @@ class Command(BaseCommand):
             )
             raise SystemExit(1)
 
-        subject = "[IIC Booking] Test email"
-        message = "This is a test email from the IIC Booking system. If you received this, outgoing email is working."
+        subject = "[Institute Equipment Booking Portal] Test email"
+        message = "This is a test email from the Institute Equipment Booking Portal. If you received this, outgoing email is working."
         from_email = settings.DEFAULT_FROM_EMAIL
 
         try:
