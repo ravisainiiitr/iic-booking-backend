@@ -8,12 +8,43 @@ Credentials and server settings come from Django settings (IMAP_*).
 import email
 import imaplib
 import logging
+import socket
 from email.utils import parsedate_to_datetime
 from typing import Any, Iterator, List, Optional
 
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
+
+# Seconds to wait for TCP connect / IMAP handshake (avoid hanging until OS WinError 10060).
+IMAP_CONNECT_TIMEOUT_SECONDS = int(getattr(settings, "IMAP_CONNECT_TIMEOUT", 20) or 20)
+
+
+def _friendly_imap_connect_error(host: str, port: int, exc: BaseException) -> ValueError:
+    err_str = str(exc).strip()
+    winerr = getattr(exc, "winerror", None)
+    if (
+        winerr == 10060
+        or "10060" in err_str
+        or "timed out" in err_str.lower()
+        or "timeout" in err_str.lower()
+    ):
+        return ValueError(
+            f"IMAP connection to {host}:{port} timed out. "
+            "Check IMAP_HOST / IMAP_PORT in server settings, that the mail server is reachable "
+            "from this machine, and that the firewall allows outbound TCP "
+            "(typically 993 for SSL or 143 without SSL)."
+        )
+    if winerr == 10061 or "10061" in err_str or "connection refused" in err_str.lower():
+        return ValueError(
+            f"IMAP connection to {host}:{port} was refused. "
+            "Verify host/port and SSL settings (IMAP_USE_SSL)."
+        )
+    if "getaddrinfo" in err_str.lower() or "name or service not known" in err_str.lower():
+        return ValueError(
+            f"IMAP host '{host}' could not be resolved. Check IMAP_HOST spelling/DNS."
+        )
+    return ValueError(f"Cannot connect to IMAP {host}:{port}. {err_str}")
 
 
 class IMAPEmailReader:
@@ -43,18 +74,40 @@ class IMAPEmailReader:
     def _connect(self) -> imaplib.IMAP4:
         """Establish and return IMAP connection (SSL on port 993 or plain on 143)."""
         if not self.user or not self.password:
-            raise ValueError("IMAP_USER and IMAP_PASSWORD must be set in settings or passed to IMAPEmailReader.")
+            raise ValueError(
+                "IMAP credentials are not configured. Set IMAP_USER and IMAP_PASSWORD "
+                "(and IMAP_HOST if needed) in the server environment."
+            )
         if self._connection is not None:
             try:
                 self._connection.noop()
                 return self._connection
             except Exception:
                 self._connection = None
-        if self.use_ssl:
-            self._connection = imaplib.IMAP4_SSL(self.host, self.port)
-        else:
-            self._connection = imaplib.IMAP4(self.host, self.port)
-        self._connection.login(self.user, self.password)
+        try:
+            # Bound connect so Windows does not sit until WinError 10060 (~20–60s+).
+            socket.setdefaulttimeout(IMAP_CONNECT_TIMEOUT_SECONDS)
+            try:
+                if self.use_ssl:
+                    self._connection = imaplib.IMAP4_SSL(self.host, self.port)
+                else:
+                    self._connection = imaplib.IMAP4(self.host, self.port)
+            finally:
+                socket.setdefaulttimeout(None)
+        except (OSError, socket.timeout, socket.error, TimeoutError) as e:
+            logger.exception("IMAP connect failed to %s:%s", self.host, self.port)
+            raise _friendly_imap_connect_error(self.host, self.port, e) from e
+        except Exception as e:
+            logger.exception("IMAP connect unexpected error to %s:%s", self.host, self.port)
+            raise _friendly_imap_connect_error(self.host, self.port, e) from e
+        try:
+            self._connection.login(self.user, self.password)
+        except imaplib.IMAP4.error as e:
+            self.disconnect()
+            raise ValueError(
+                "IMAP login failed. Check IMAP_USER and IMAP_PASSWORD "
+                "(and whether the account requires an app password)."
+            ) from e
         logger.info("IMAP connected to %s:%s as %s", self.host, self.port, self.user)
         return self._connection
 

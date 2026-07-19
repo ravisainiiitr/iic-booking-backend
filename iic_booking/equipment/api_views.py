@@ -8188,15 +8188,23 @@ def get_urgent_request_evidence(request, request_id):
 
 
 def check_operator_permission(user):
-    """Check if user has operator or manager permissions.
+    """Check if user can manage departmental bookings (admin / staff with bookings.manage).
 
     Args:
         user: User instance
 
     Returns:
-        bool: True if user is operator or manager, False otherwise
+        bool: True if user may list/filter others' bookings as staff, False otherwise
     """
-    return user.user_type in [UserType.OPERATOR, UserType.MANAGER, UserType.ADMIN]
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if user.user_type == UserType.ADMIN:
+        return True
+    if user.user_type in [UserType.OPERATOR, UserType.MANAGER, UserType.DEPT_ADMIN]:
+        from iic_booking.users.rbac import user_has_permission
+
+        return user_has_permission(user, "bookings.manage")
+    return False
 
 
 def _user_is_accounts_finance_user(user) -> bool:

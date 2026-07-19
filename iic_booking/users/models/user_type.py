@@ -15,6 +15,8 @@ class UserType:
     MANAGER = "manager"
     OPERATOR = "operator"
     FINANCE = "finance"
+    ORG_ADMIN = "org_admin"
+    EXTERNAL_RELATIONS = "external_relations"
 
     STUDENT = "student"
     INDIVIDUAL_STUDENT = "individual_student"
@@ -39,6 +41,8 @@ class UserType:
             (cls.MANAGER, _("Officer In Charge")),
             (cls.OPERATOR, _("Lab Incharge")),
             (cls.FINANCE, _("Accounts In Charge")),
+            (cls.ORG_ADMIN, _("Organization Administrator")),
+            (cls.EXTERNAL_RELATIONS, _("External Relations Administrator")),
             (cls.STUDENT, _("IITR Student")),
             (cls.INDIVIDUAL_STUDENT, _("Individual Student")),
             (cls.FACULTY, _("IITR Faculty")),
@@ -57,7 +61,14 @@ class UserType:
         Returns:
             Set of user type codes
         """
-        return {cls.ADMIN, cls.DEPT_ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
+        return {
+            cls.ADMIN,
+            cls.DEPT_ADMIN,
+            cls.MANAGER,
+            cls.OPERATOR,
+            cls.FINANCE,
+            cls.EXTERNAL_RELATIONS,
+        }
 
     @classmethod
     def is_end_user_booking_type(cls, user_type: str | None) -> bool:
@@ -125,7 +136,15 @@ class UserType:
         Returns:
             Set of management user type codes
         """
-        return {cls.ADMIN, cls.DEPT_ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
+        return {
+            cls.ADMIN,
+            cls.DEPT_ADMIN,
+            cls.MANAGER,
+            cls.OPERATOR,
+            cls.FINANCE,
+            cls.EXTERNAL_RELATIONS,
+            cls.ORG_ADMIN,
+        }
     
     @classmethod
     def is_internal_user(cls, user_type: str) -> bool:
@@ -186,4 +205,6 @@ class UserType:
             cls.STARTUP_INCUBATED_IITR,
             cls.EXTERNAL_STARTUP_MSME,
             cls.OTHER,
+            cls.ORG_ADMIN,
+            cls.EXTERNAL_RELATIONS,
         }

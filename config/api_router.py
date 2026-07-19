@@ -874,6 +874,21 @@ urlpatterns = router.urls + [
     path("admin/equipment-form-choices/", equipment_form_choices, name="admin-equipment-form-choices"),
     path("admin/bulk-email-recipients/", bulk_email_recipients, name="admin-bulk-email-recipients"),
     path("admin/send-bulk-email/", send_bulk_email, name="admin-send-bulk-email"),
+    path(
+        "admin/admin-panel-access/me/",
+        __import__("config.admin_panel_access_api", fromlist=["AdminPanelAccessMeView"]).AdminPanelAccessMeView.as_view(),
+        name="admin-panel-access-me",
+    ),
+    path(
+        "admin/admin-panel-access/registry/",
+        __import__("config.admin_panel_access_api", fromlist=["AdminPanelAccessRegistryView"]).AdminPanelAccessRegistryView.as_view(),
+        name="admin-panel-access-registry",
+    ),
+    path(
+        "admin/admin-panel-access/upsert/",
+        __import__("config.admin_panel_access_api", fromlist=["AdminPanelRoleConfigViewSet"]).AdminPanelRoleConfigViewSet.as_view({"post": "upsert"}),
+        name="admin-panel-access-upsert",
+    ),
     path("admin/", include(admin_api_router().urls)),
 ]
 

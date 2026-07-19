@@ -1386,10 +1386,11 @@ class DynamicInputFieldWriteSerializer(serializers.Serializer):
     field_label = serializers.CharField(max_length=255)
     field_type = serializers.CharField(max_length=20)
     is_required = serializers.BooleanField(default=False)
+    editing_required = serializers.BooleanField(default=False, required=False)
     default_value = serializers.CharField(max_length=500, allow_blank=True, required=False, default='')
     options = serializers.ListField(child=serializers.CharField(), allow_empty=True, required=False, default=list)
     help_text = serializers.CharField(allow_blank=True, required=False, default='')
-    source_element_field_key = serializers.CharField(max_length=1, allow_blank=True, required=False, default=None)
+    source_element_field_key = serializers.CharField(max_length=1, allow_blank=True, allow_null=True, required=False, default=None)
 
 
 class ChargeProfileWriteSerializer(serializers.Serializer):
@@ -1411,6 +1412,17 @@ class SlotMasterWriteSerializer(serializers.Serializer):
     is_active = serializers.BooleanField(default=True)
 
 
+class MultiParamDefinitionWriteSerializer(serializers.Serializer):
+    """Slot option rows for MULTI_PARAM equipment (Django MultiParamDefinitionInline)."""
+
+    user_type = serializers.CharField(max_length=50, allow_blank=True, allow_null=True, required=False)
+    param_name = serializers.CharField(max_length=255)
+    param_code = serializers.CharField(max_length=50)
+    unit_time_minutes = serializers.IntegerField()
+    unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2)
+    is_active = serializers.BooleanField(default=True)
+
+
 class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     equipment_managers = EquipmentManagerWriteSerializer(many=True, required=False, default=list)
     equipment_operators = EquipmentOperatorWriteSerializer(many=True, required=False, default=list)
@@ -1421,6 +1433,9 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     charge_profiles = ChargeProfileWriteSerializer(many=True, required=False, default=list)
     slot_masters = SlotMasterWriteSerializer(many=True, required=False, default=list)
     print_materials = PrintMaterialWriteSerializer(many=True, required=False, default=list)
+    # Accept either name; detail API exposes these as slot_options.
+    param_definitions = MultiParamDefinitionWriteSerializer(many=True, required=False, default=list)
+    slot_options = MultiParamDefinitionWriteSerializer(many=True, required=False, default=list)
     internal_department = serializers.PrimaryKeyRelatedField(
         queryset=Department.objects.filter(department_type=DepartmentType.INTERNAL).order_by("name"),
         allow_null=True,
@@ -1445,6 +1460,10 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
+            'skip_quota_check',
+            'enable_charge_recalculation',
+            'user_rating_enabled',
+            'sample_preparation_by_user',
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
             'sample_collect_deadline_hours',
@@ -1453,6 +1472,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_specifications', 'equipment_accessories',
             'equipment_additional_accessories', 'input_fields',
             'charge_profiles', 'slot_masters', 'print_materials',
+            'param_definitions', 'slot_options',
         ]
 
     def validate_internal_department(self, value):
@@ -1543,7 +1563,12 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_managers', 'equipment_operators', 'equipment_specifications',
             'equipment_accessories', 'equipment_additional_accessories',
             'input_fields', 'charge_profiles', 'slot_masters', 'print_materials',
+            'param_definitions', 'slot_options',
         ]}
+        # Prefer explicit param_definitions; fall back to slot_options alias from the detail API.
+        if not inlines.get('param_definitions') and inlines.get('slot_options'):
+            inlines['param_definitions'] = inlines['slot_options']
+        inlines.pop('slot_options', None)
         with transaction.atomic():
             equipment = Equipment.objects.create(**validated_data)
             _create_related(equipment, inlines)
@@ -1555,7 +1580,11 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_managers', 'equipment_operators', 'equipment_specifications',
             'equipment_accessories', 'equipment_additional_accessories',
             'input_fields', 'charge_profiles', 'slot_masters', 'print_materials',
+            'param_definitions', 'slot_options',
         ]}
+        if inlines.get('param_definitions') is None and inlines.get('slot_options') is not None:
+            inlines['param_definitions'] = inlines['slot_options']
+        inlines.pop('slot_options', None)
         with transaction.atomic():
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
@@ -1568,7 +1597,7 @@ def _create_related(equipment, inlines):
     from .models import (
         EquipmentManager, EquipmentOperator, EquipmentSpecification,
         EquipmentAccessory, EquipmentAdditionalAccessory, DynamicInputField,
-        ChargeProfile, SlotMaster, PrintMaterial,
+        ChargeProfile, SlotMaster, PrintMaterial, MultiParamDefinition,
     )
     for item in inlines.get('equipment_managers', []):
         EquipmentManager.objects.create(equipment=equipment, manager=item['manager'])
@@ -1602,6 +1631,7 @@ def _create_related(equipment, inlines):
         DynamicInputField.objects.create(
             equipment=equipment, field_key=item['field_key'], field_label=item['field_label'],
             field_type=item['field_type'], is_required=item.get('is_required', False),
+            editing_required=item.get('editing_required', False),
             default_value=item.get('default_value') or '', options=item.get('options', []) or [],
             help_text=item.get('help_text') or '',
             source_element_field_key=(item.get('source_element_field_key') or '').strip() or None,
@@ -1647,13 +1677,23 @@ def _create_related(equipment, inlines):
             is_active=item.get('is_active', True),
             display_order=item.get('display_order', 0) or 0,
         )
+    for item in inlines.get('param_definitions', []):
+        MultiParamDefinition.objects.create(
+            equipment=equipment,
+            user_type=(item.get('user_type') or '').strip() or None,
+            param_name=item['param_name'],
+            param_code=item['param_code'],
+            unit_time_minutes=item['unit_time_minutes'],
+            unit_charge=item['unit_charge'],
+            is_active=item.get('is_active', True),
+        )
 
 
 def _sync_related(equipment, inlines):
     from .models import (
         EquipmentManager, EquipmentOperator, EquipmentSpecification,
         EquipmentAccessory, EquipmentAdditionalAccessory, DynamicInputField,
-        ChargeProfile, SlotMaster, PrintMaterial,
+        ChargeProfile, SlotMaster, PrintMaterial, MultiParamDefinition,
     )
     if inlines.get('equipment_managers') is not None:
         EquipmentManager.objects.filter(equipment=equipment).delete()
@@ -1709,6 +1749,7 @@ def _sync_related(equipment, inlines):
             DynamicInputField.objects.create(
                 equipment=equipment, field_key=item['field_key'], field_label=item['field_label'],
                 field_type=item['field_type'], is_required=item.get('is_required', False),
+                editing_required=item.get('editing_required', False),
                 default_value=item.get('default_value') or '', options=item.get('options', []) or [],
                 help_text=item.get('help_text') or '',
                 source_element_field_key=(item.get('source_element_field_key') or '').strip() or None,
@@ -1793,6 +1834,18 @@ def _sync_related(equipment, inlines):
                 user_type=(item.get('user_type') or '').strip() or None,
                 is_active=item.get('is_active', True),
                 display_order=item.get('display_order', 0) or 0,
+            )
+    if inlines.get('param_definitions') is not None:
+        MultiParamDefinition.objects.filter(equipment=equipment).delete()
+        for item in inlines['param_definitions']:
+            MultiParamDefinition.objects.create(
+                equipment=equipment,
+                user_type=(item.get('user_type') or '').strip() or None,
+                param_name=item['param_name'],
+                param_code=item['param_code'],
+                unit_time_minutes=item['unit_time_minutes'],
+                unit_charge=item['unit_charge'],
+                is_active=item.get('is_active', True),
             )
 
 

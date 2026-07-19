@@ -100,6 +100,7 @@ class AdminUserUpdateSerializer(serializers.ModelSerializer[User]):
             "email_verified",
             "admin_approved",
             "force_inactive",
+            "is_active",
             "use_discounted_charge_profile",
             "oic_enable_ta_nomination",
             "oic_enable_ta_duty_assignments",
@@ -169,6 +170,9 @@ class UserSerializer(serializers.ModelSerializer[User]):
     can_have_wallet = serializers.SerializerMethodField()
 
     is_faculty = serializers.SerializerMethodField()
+    rbac_permissions = serializers.SerializerMethodField()
+    admin_panel_enabled = serializers.SerializerMethodField()
+    admin_panel_modules = serializers.SerializerMethodField()
 
     # MethodField — never call ImageField.url during list (signed S3 / NoSuchKey broke OIC user pickers).
     profile_picture = serializers.SerializerMethodField()
@@ -184,6 +188,39 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
     def get_is_faculty(self, obj):
         return obj.is_faculty()
+
+    def get_rbac_permissions(self, obj):
+        # Only compute for the authenticated subject (current-user / self detail),
+        # or when serializing this user during login (request.user still anonymous).
+        # Avoid N+1 on admin user list endpoints.
+        request = self.context.get("request")
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            if getattr(request.user, "pk", None) != getattr(obj, "pk", None):
+                return []
+        from iic_booking.users.rbac import list_effective_permission_codes
+
+        return list_effective_permission_codes(obj)
+
+    def get_admin_panel_enabled(self, obj):
+        # Same self-vs-list guard as rbac_permissions. During login/OTP the request is
+        # unauthenticated, so we must still compute access for `obj` — otherwise the
+        # client stores admin_panel_enabled=false forever until a full remount refresh.
+        request = self.context.get("request")
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            if getattr(request.user, "pk", None) != getattr(obj, "pk", None):
+                return False
+        from iic_booking.users.rbac import user_has_admin_panel_access
+
+        return user_has_admin_panel_access(obj)
+
+    def get_admin_panel_modules(self, obj):
+        request = self.context.get("request")
+        if request and getattr(request, "user", None) and request.user.is_authenticated:
+            if getattr(request.user, "pk", None) != getattr(obj, "pk", None):
+                return []
+        from iic_booking.users.rbac import list_effective_admin_module_keys
+
+        return list_effective_admin_module_keys(obj)
 
     def get_profile_picture(self, obj):
         try:
@@ -230,6 +267,9 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "user_type_display",
             "display_name",
             "is_faculty",
+            "rbac_permissions",
+            "admin_panel_enabled",
+            "admin_panel_modules",
             "emp_id",
             "phone_number",
             "secondary_phone_number",
@@ -269,6 +309,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "user_type_display",
             "display_name",
             "is_faculty",
+            "rbac_permissions",
             "user_type_alias",
             "can_have_wallet",
             "profile_picture",

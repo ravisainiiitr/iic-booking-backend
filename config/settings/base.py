@@ -380,8 +380,9 @@ elif "smtp" in EMAIL_BACKEND.lower() and (not EMAIL_HOST_USER or not EMAIL_HOST_
 # IMAP (incoming email) configuration
 # ------------------------------------------------------------------------------
 # Used to read email from a mailbox (e.g. ravis.mic2014@iitr.ac.in via imap.iitr.ac.in)
-IMAP_HOST = env("IMAP_HOST", default="mapi.iitr.ac.in")
+IMAP_HOST = env("IMAP_HOST", default="imap.iitr.ac.in")
 IMAP_PORT = env.int("IMAP_PORT", default=993)
+IMAP_CONNECT_TIMEOUT = env.int("IMAP_CONNECT_TIMEOUT", default=20)
 IMAP_USE_SSL = env.bool("IMAP_USE_SSL", default=True)
 IMAP_USER = env("IMAP_USER", default="")
 IMAP_PASSWORD = env("IMAP_PASSWORD", default="")

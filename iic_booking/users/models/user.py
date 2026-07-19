@@ -357,6 +357,8 @@ class User(AbstractUser):
                 or not getattr(department, "access_enabled", True)
             ):
                 return False
+        if self.user_type == UserType.EXTERNAL_RELATIONS:
+            return True
         return self.user_type in UserType.get_admin_panel_codes()
 
     def is_department_access_enabled(self) -> bool:

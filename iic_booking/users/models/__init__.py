@@ -40,6 +40,7 @@ from .equipment_supply_chain_role import (
     UserEquipmentSupplyChainRole,
 )
 from .rbac import PermissionDefinition, DeptAdminPermissionGrant, StaffPermissionGrant
+from .admin_panel_access import AdminPanelRoleConfig
 
 __all__ = [
     "UserManager",
@@ -82,5 +83,6 @@ __all__ = [
     "PermissionDefinition",
     "DeptAdminPermissionGrant",
     "StaffPermissionGrant",
+    "AdminPanelRoleConfig",
 ]
 

@@ -1,27 +1,42 @@
-# Phase 2: External Relations Administrator
+# External Relations Administrator & Organization Administrator
 
-Phase 1 ships only the internal RBAC hierarchy:
+## Roles
 
-- `admin` remains the single Main Administrator.
-- `dept_admin` is added for internal departments only.
-- `manager`, `operator`, and `finance` continue as the subordinate internal staff roles.
+### Main Administrator (`admin`)
+- Full system access, including internal RBAC caps for Department Administrators.
 
-## Phase 2 boundary
+### Department Administrator (`dept_admin`)
+- Internal department only.
+- Caps granted by Main Admin (`DeptAdminPermissionGrant`).
+- May grant subordinate permissions to OIC / Lab / Accounts (`StaffPermissionGrant`).
 
-External organization verification is intentionally deferred.
+### OIC / Lab / Accounts (`manager` / `operator` / `finance`)
+- Staff roles under a Department Administrator.
+- If no explicit staff grants exist yet, role defaults apply (`bookings.manage`, `equipment.manage`, `reports.view`, etc.).
+- Once any staff grant row exists for that user, only explicit grants apply.
 
-When Phase 2 starts, the system should introduce a single **External Relations Administrator** role with these responsibilities:
+### External Relations Administrator (`external_relations`)
+- Reviews external organization KYC / verification requests.
+- Approves or rejects organization verification (same organization-request APIs as Main Admin).
+- May manage external user verification workflows from the External User Management UI.
 
-- Review external organization KYC details during signup or verification.
-- Classify the organization into the correct external type such as Educational Institute, Govt R&D Organizations, Industry, or External Startup/MSME.
-- Approve or reject the verification outcome before the external users proceed with normal department-facing booking workflows.
+### Organization Administrator (`org_admin`)
+- Belongs to an **external** department/organization.
+- Manages members of that organization only (`org.users.manage`).
+- UI: `/organization/users`.
+- Cannot create additional Organization Administrators from that panel.
 
-## Explicit non-goals
+## Permission codes (selected)
 
-Phase 2 should **not** introduce:
+| Code | Who typically uses it |
+|------|------------------------|
+| `bookings.manage` | OIC, Lab, Dept Admin (when capped) |
+| `wallet.manage` | Accounts, Dept Admin (when capped) |
+| `reports.view` | Staff with report access |
+| `permissions.manage_staff` | Dept Admin |
+| `external.org.verify` | External Relations / Main Admin |
+| `org.users.manage` | Org Admin |
 
-- a separate Org Admin hierarchy for external organizations,
-- per-organization administrator accounts,
-- organization-level wallets or nested external membership trees.
+## Current-user payload
 
-External booking requests and operational handling should continue to stay with the institute departments, not with a separate external admin tree.
+`UserSerializer` includes `rbac_permissions` for the authenticated subject only (avoids N+1 on admin user lists). Frontend helpers live in `src/lib/rbac.ts`.

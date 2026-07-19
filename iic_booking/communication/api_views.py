@@ -283,27 +283,34 @@ def notice_detail(request, notice_id):
 @permission_classes([IsAuthenticated])
 def list_inbox_folders(request):
     """
-    List IMAP folders with message counts (staff only). Helps find which folder has mail.
+    List IMAP folders with message counts (Main Admin / staff only).
     """
     if not request.user.is_authenticated:
         return Response({"error": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
-    if not request.user.is_staff:
-        return Response({"error": "Only staff can list inbox folders."}, status=status.HTTP_403_FORBIDDEN)
+    from iic_booking.users.models.user_type import UserType
+
+    if not (
+        getattr(request.user, "is_staff", False)
+        or getattr(request.user, "user_type", None) == UserType.ADMIN
+    ):
+        return Response({"error": "Only admin can list inbox folders."}, status=status.HTTP_403_FORBIDDEN)
     try:
         from .imap_service import get_imap_reader
         reader = get_imap_reader()
         with reader:
             folders = reader.list_folders_with_counts()
         return Response({"folders": folders}, status=status.HTTP_200_OK)
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
-        return Response({"error": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response({"error": f"IMAP error: {str(e)}"}, status=status.HTTP_502_BAD_GATEWAY)
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def fetch_inbox_emails(request):
     """
-    Fetch emails from the configured IMAP inbox (staff only).
+    Fetch emails from the configured IMAP inbox (Main Admin / staff only).
     
     Query params:
         mailbox: Folder name (default INBOX).
@@ -315,8 +322,13 @@ def fetch_inbox_emails(request):
     """
     if not request.user.is_authenticated:
         return Response({"error": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
-    if not request.user.is_staff:
-        return Response({"error": "Only staff can fetch inbox emails."}, status=status.HTTP_403_FORBIDDEN)
+    from iic_booking.users.models.user_type import UserType
+
+    if not (
+        getattr(request.user, "is_staff", False)
+        or getattr(request.user, "user_type", None) == UserType.ADMIN
+    ):
+        return Response({"error": "Only admin can fetch inbox emails."}, status=status.HTTP_403_FORBIDDEN)
 
     mailbox = request.query_params.get("mailbox") or "INBOX"
     try:

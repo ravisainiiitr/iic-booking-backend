@@ -22,9 +22,12 @@ from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.department import DepartmentType
 from iic_booking.users.rbac import (
     STAFF_ROLE_CODES,
+    apply_equipment_department_scope,
     ensure_default_dept_admin_permission_grants,
     get_user_department_scope_id,
     is_department_admin,
+    is_main_or_external_relations,
+    is_organization_admin,
     scope_queryset_to_department,
     user_has_permission,
 )
@@ -33,17 +36,14 @@ logger = logging.getLogger(__name__)
 
 
 class IsAdminPanelUser(permissions.BasePermission):
-    """Allow only admin-panel user types or staff."""
+    """Allow only users with Admin Panel access (Main Admin always; others via role config)."""
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        if getattr(request.user, "is_staff", False):
-            return True
-        user_type = getattr(request.user, "user_type", None)
-        if user_type in UserType.get_admin_panel_codes():
-            return True
-        return False
+        from iic_booking.users.rbac import user_has_admin_panel_access
+
+        return user_has_admin_panel_access(request.user)
 
 
 class IsAdminUser(permissions.BasePermission):
@@ -53,6 +53,48 @@ class IsAdminUser(permissions.BasePermission):
         if not request.user or not request.user.is_authenticated:
             return False
         return getattr(request.user, "user_type", None) == UserType.ADMIN
+
+
+class IsAdminOrDeptCommunicationAdmin(permissions.BasePermission):
+    """Main Admin, or Department Administrator granted admin_settings.communication."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if getattr(request.user, "is_staff", False):
+            return True
+        if getattr(request.user, "user_type", None) == UserType.ADMIN:
+            return True
+        if is_department_admin(request.user) and user_has_permission(
+            request.user, "admin_settings.communication", department_id=request.user.department_id
+        ):
+            return True
+        return False
+
+
+class IsExternalOrgVerifier(permissions.BasePermission):
+    """Main Admin or External Relations Administrator (org KYC / verification)."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if getattr(request.user, "is_staff", False):
+            return True
+        return is_main_or_external_relations(request.user)
+
+
+class IsOrgAdminOrAdminPanel(permissions.BasePermission):
+    """Admin-panel users, or Organization Administrator for own-org APIs."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if getattr(request.user, "is_staff", False):
+            return True
+        user_type = getattr(request.user, "user_type", None)
+        if user_type in UserType.get_admin_panel_codes():
+            return True
+        return is_organization_admin(request.user)
 
 
 def _request_user_scope_id(request) -> int | None:
@@ -67,8 +109,33 @@ def _require_admin_or_dept_permission(request, code: str, department_id: int | N
         raise PermissionDenied("You do not have permission for this departmental action.")
 
 
+def _require_wallet_manage(request):
+    user = getattr(request, "user", None)
+    if getattr(user, "user_type", None) == UserType.ADMIN:
+        return
+    if user_has_permission(user, "wallet.manage") or user_has_permission(user, "admin_settings.wallet"):
+        return
+    raise PermissionDenied("Wallet management permission is required.")
+
+
+def _require_bookings_manage(request):
+    user = getattr(request, "user", None)
+    if getattr(user, "user_type", None) == UserType.ADMIN:
+        return
+    if not user_has_permission(user, "bookings.manage"):
+        raise PermissionDenied("Bookings management permission is required.")
+
+
+def _require_reports_view(request):
+    user = getattr(request, "user", None)
+    if getattr(user, "user_type", None) == UserType.ADMIN:
+        return
+    if not user_has_permission(user, "reports.view"):
+        raise PermissionDenied("Reports view permission is required.")
+
 def admin_api_router():
     """Build router for admin-only model APIs. Call from api_router to include under admin/."""
+    from django.db.models import Q
     from iic_booking.users.models import (
         Department,
         Project,
@@ -409,7 +476,7 @@ def admin_api_router():
             return force_str(dict(OrganizationRequest.Status.choices).get(obj.status, obj.status))
 
     class OrganizationRequestViewSet(ModelViewSet):
-        permission_classes = [IsAdminPanelUser]
+        permission_classes = [IsExternalOrgVerifier]
         queryset = OrganizationRequest.objects.all().select_related("created_department", "approved_by").order_by("-created_at")
         serializer_class = OrganizationRequestSerializer
         http_method_names = ["get", "head", "options", "patch", "post"]
@@ -525,17 +592,32 @@ def admin_api_router():
         lookup_url_kwarg = "pk"
 
     class UserAdminViewSet(ModelViewSet):
-        permission_classes = [IsAdminPanelUser]
+        permission_classes = [IsOrgAdminOrAdminPanel]
         queryset = User.objects.all().select_related("department").order_by("id")
         serializer_class = UserSerializer
         lookup_url_kwarg = "pk"
 
         def get_permissions(self):
-            return [IsAdminPanelUser()]
+            return [IsOrgAdminOrAdminPanel()]
 
         def _assert_can_manage_user_payload(self, payload, instance=None):
             user = self.request.user
             if getattr(user, "user_type", None) == UserType.ADMIN:
+                return
+            if is_organization_admin(user):
+                if not user_has_permission(user, "org.users.manage"):
+                    raise PermissionDenied("Organization user management permission is required.")
+                department_id = payload.get("department", getattr(instance, "department_id", None))
+                if department_id in ("", None):
+                    department_id = None
+                if department_id is None or int(department_id) != int(user.department_id):
+                    raise PermissionDenied("Organization Administrators can manage users only inside their own organization.")
+                target_user_type = payload.get("user_type", getattr(instance, "user_type", None))
+                allowed_org_types = set(UserType.get_external_user_codes()) | {UserType.ORG_ADMIN}
+                if target_user_type not in allowed_org_types:
+                    raise PermissionDenied("Organization Administrators can only manage external organization users.")
+                if target_user_type == UserType.ORG_ADMIN and instance is None:
+                    raise PermissionDenied("Cannot create additional Organization Administrators from this panel.")
                 return
             if not is_department_admin(user):
                 raise PermissionDenied("Only Main Admin or Department Administrator can manage users.")
@@ -548,7 +630,7 @@ def admin_api_router():
                 raise PermissionDenied("Department Administrators can manage users only inside their own department.")
 
             target_user_type = payload.get("user_type", getattr(instance, "user_type", None))
-            if target_user_type in {UserType.ADMIN, UserType.DEPT_ADMIN}:
+            if target_user_type in {UserType.ADMIN, UserType.DEPT_ADMIN, UserType.EXTERNAL_RELATIONS}:
                 raise PermissionDenied("Department Administrators cannot create or edit Main Admin or Department Admin accounts.")
             if target_user_type == UserType.MANAGER and not user_has_permission(user, "oic.assign", department_id=user.department_id):
                 raise PermissionDenied("OIC assignment permission is required.")
@@ -559,9 +641,14 @@ def admin_api_router():
 
         def get_queryset(self):
             qs = super().get_queryset()
-            scope_department_id = _request_user_scope_id(self.request)
-            if scope_department_id is not None:
-                qs = qs.filter(department_id=scope_department_id)
+            if is_organization_admin(self.request.user):
+                qs = qs.filter(department_id=self.request.user.department_id).exclude(
+                    user_type__in=[UserType.ADMIN, UserType.DEPT_ADMIN, UserType.EXTERNAL_RELATIONS]
+                )
+            else:
+                scope_department_id = _request_user_scope_id(self.request)
+                if scope_department_id is not None:
+                    qs = qs.filter(department_id=scope_department_id)
             if self.action != "list":
                 return qs
             search = self.request.query_params.get("search", "").strip()
@@ -580,6 +667,7 @@ def admin_api_router():
                     | Q(user_type=UserType.EXTERNAL_STARTUP_MSME)
                     | Q(user_type=UserType.STARTUP_INCUBATED_IITR)
                     | Q(user_type=UserType.OTHER)
+                    | Q(user_type=UserType.ORG_ADMIN)
                     | Q(user_type=UserType.STUDENT, user_type_alias__in=[
                         "IITR Post Doctoral Fellows",
                         "IITR Research Associates in Projects",
@@ -617,8 +705,57 @@ def admin_api_router():
             return qs
 
         def create(self, request, *args, **kwargs):
+            # Dept Admin may create OIC / Lab / Accounts staff in their own department only.
+            if is_department_admin(request.user):
+                from config.admin_panel_access_api import assert_admin_section_module
+
+                assert_admin_section_module(request.user, "users")
+                staff_type = str(request.data.get("user_type") or "").strip().lower()
+                allowed = {
+                    UserType.MANAGER: "oic.assign",
+                    UserType.OPERATOR: "lab.assign",
+                    UserType.FINANCE: "finance.assign",
+                }
+                if staff_type not in allowed:
+                    raise PermissionDenied(
+                        "Department Administrators can only create Officer In Charge, "
+                        "Lab In Charge, or Accounts In Charge users in their department. "
+                        "Use Map Channel-i user for existing accounts."
+                    )
+                _require_admin_or_dept_permission(
+                    request, "users.manage", department_id=request.user.department_id
+                )
+                _require_admin_or_dept_permission(
+                    request, allowed[staff_type], department_id=request.user.department_id
+                )
+                # Force department — ignore client override.
+                mutable = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+                mutable["department"] = request.user.department_id
+                mutable["user_type"] = staff_type
+                self._assert_can_manage_user_payload(mutable)
+                serializer = self.get_serializer(data=mutable)
+                serializer.is_valid(raise_exception=True)
+                self.perform_create(serializer)
+                headers = self.get_success_headers(serializer.data)
+                return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+            from config.admin_panel_access_api import assert_admin_section_module
+
+            assert_admin_section_module(request.user, "users")
             self._assert_can_manage_user_payload(request.data)
             return super().create(request, *args, **kwargs)
+
+        def list(self, request, *args, **kwargs):
+            from config.admin_panel_access_api import assert_admin_section_module
+
+            assert_admin_section_module(request.user, "users")
+            return super().list(request, *args, **kwargs)
+
+        def retrieve(self, request, *args, **kwargs):
+            from config.admin_panel_access_api import assert_admin_section_module
+
+            assert_admin_section_module(request.user, "users")
+            return super().retrieve(request, *args, **kwargs)
 
         def get_serializer_class(self):
             if self.action == "create":
@@ -636,6 +773,23 @@ def admin_api_router():
         def perform_create(self, serializer):
             user = serializer.save()
             ensure_default_dept_admin_permission_grants(user, granted_by=self.request.user)
+            if is_organization_admin(self.request.user):
+                # Org Admin–created members are approved and active in that organization.
+                User.objects.filter(pk=user.pk).update(
+                    department_id=self.request.user.department_id,
+                    admin_approved=True,
+                    email_verified=True,
+                    is_active=True,
+                    force_inactive=False,
+                )
+            elif is_department_admin(self.request.user):
+                # Dept Admin staff accounts are always in their own department.
+                User.objects.filter(pk=user.pk).update(
+                    department_id=self.request.user.department_id,
+                    admin_approved=True,
+                    is_active=True,
+                    force_inactive=False,
+                )
 
         def perform_update(self, serializer):
             """Send activation email when user becomes active.
@@ -649,6 +803,9 @@ def admin_api_router():
             was_force_inactive = bool(getattr(instance, "force_inactive", False))
             was_active = bool(getattr(instance, "is_active", False))
             send_activation_email = str(self.request.data.get("send_activation_email", "")).lower() in ("1", "true", "yes", "on")
+            # Dept Admin cannot move users out of their department.
+            if is_department_admin(self.request.user):
+                serializer.validated_data["department"] = self.request.user.department
             serializer.save()
             instance.refresh_from_db(fields=["admin_approved", "email_verified", "force_inactive", "is_active", "name", "email"])
 
@@ -687,6 +844,114 @@ def admin_api_router():
             )
             return super().destroy(request, *args, **kwargs)
 
+        @action(detail=False, methods=["get"], url_path="mappable-omniport")
+        def mappable_omniport(self, request):
+            """List same-department Channel-i (Omniport) users that Dept Admin can map to staff roles."""
+            actor = request.user
+            if is_department_admin(actor):
+                ensure_default_dept_admin_permission_grants(actor, granted_by=actor)
+            if not (is_department_admin(actor) or getattr(actor, "user_type", None) == UserType.ADMIN):
+                raise PermissionDenied("Only Department Administrator or Main Admin can list mappable Omniport users.")
+            if is_department_admin(actor):
+                department_id = actor.department_id
+            else:
+                raw = request.query_params.get("department_id")
+                try:
+                    department_id = int(raw) if raw not in (None, "") else None
+                except (TypeError, ValueError):
+                    department_id = None
+            if department_id is None:
+                return Response(
+                    {"error": "department_id is required for Main Admin."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            mappable_types = {
+                UserType.FACULTY,
+                UserType.STUDENT,
+                UserType.INDIVIDUAL_STUDENT,
+            }
+            qs = (
+                User.objects.filter(
+                    department_id=department_id,
+                    user_type__in=mappable_types,
+                    is_active=True,
+                    force_inactive=False,
+                )
+                .filter(Q(email_verified=True) | Q(admin_approved=True) | Q(last_login__isnull=False))
+                .select_related("department")
+                .order_by("name", "email")
+            )
+            search = (request.query_params.get("search") or "").strip()
+            if search:
+                qs = qs.filter(Q(email__icontains=search) | Q(name__icontains=search) | Q(emp_id__icontains=search))
+            qs = qs[:200]
+            data = [
+                {
+                    "id": u.id,
+                    "name": u.name,
+                    "email": u.email,
+                    "user_type": u.user_type,
+                    "user_type_display": u.get_user_type_display_label(),
+                    "emp_id": u.emp_id,
+                    "department": u.department_id,
+                    "department_name": getattr(u.department, "name", None),
+                    "email_verified": u.email_verified,
+                    "admin_approved": u.admin_approved,
+                    "last_login": u.last_login.isoformat() if u.last_login else None,
+                }
+                for u in qs
+            ]
+            return Response(data)
+
+        @action(detail=True, methods=["post"], url_path="map-staff-role")
+        def map_staff_role(self, request, pk=None):
+            """Map an existing Omniport user to OIC / Lab / Accounts within the department."""
+            target = self.get_object()
+            new_type = (request.data.get("user_type") or "").strip()
+            if new_type not in {UserType.MANAGER, UserType.OPERATOR, UserType.FINANCE}:
+                return Response(
+                    {"error": "user_type must be manager, operator, or finance."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            actor = request.user
+            if is_department_admin(actor):
+                ensure_default_dept_admin_permission_grants(actor, granted_by=actor)
+                if target.department_id != actor.department_id:
+                    raise PermissionDenied("You can only map users from your own department.")
+                if target.user_type not in {
+                    UserType.FACULTY,
+                    UserType.STUDENT,
+                    UserType.INDIVIDUAL_STUDENT,
+                    UserType.MANAGER,
+                    UserType.OPERATOR,
+                    UserType.FINANCE,
+                }:
+                    raise PermissionDenied("Only Channel-i (faculty/student) users in your department can be mapped.")
+                department_id = actor.department_id
+            elif getattr(actor, "user_type", None) == UserType.ADMIN:
+                department_id = target.department_id
+            else:
+                raise PermissionDenied("Only Department Administrator or Main Admin can map staff roles.")
+            self._assert_can_manage_user_payload(
+                {"department": department_id, "user_type": new_type},
+                instance=target,
+            )
+            target.user_type = new_type
+            target.department_id = department_id
+            target.admin_approved = True
+            target.is_active = True
+            target.force_inactive = False
+            target.save(
+                update_fields=[
+                    "user_type",
+                    "department_id",
+                    "admin_approved",
+                    "is_active",
+                    "force_inactive",
+                ]
+            )
+            return Response(UserSerializer(target, context={"request": request}).data)
+
         @action(detail=True, methods=["post"], url_path="set-password")
         def set_password(self, request, pk=None):
             """Set user password (mirrors Django admin /admin/users/user/<id>/password/)."""
@@ -710,6 +975,12 @@ def admin_api_router():
         queryset = PermissionDefinition.objects.all().order_by("code")
         serializer_class = PermissionDefinitionSerializer
         http_method_names = ["get"]
+
+        def get_queryset(self):
+            from iic_booking.users.rbac import ensure_default_permission_definitions
+
+            ensure_default_permission_definitions()
+            return super().get_queryset()
 
     class DeptAdminPermissionGrantViewSet(ViewSet):
         permission_classes = [IsAdminPanelUser]
@@ -1257,11 +1528,31 @@ def admin_api_router():
         queryset = Wallet.objects.all().select_related("user")
         serializer_class = AdminWalletSerializer
 
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_wallet_manage(request)
+
+        def get_queryset(self):
+            qs = super().get_queryset()
+            if is_department_admin(self.request.user):
+                qs = qs.filter(user__department_id=self.request.user.department_id)
+            return qs
+
     class SubWalletViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
         queryset = SubWallet.objects.all().select_related("wallet", "wallet__user", "department").order_by("department__name")
         serializer_class = SubWalletSerializer
         lookup_url_kwarg = "pk"
+
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_wallet_manage(request)
+
+        def get_queryset(self):
+            qs = super().get_queryset()
+            if is_department_admin(self.request.user):
+                qs = qs.filter(department_id=self.request.user.department_id)
+            return qs
 
         def get_serializer_class(self):
             if self.action == "create":
@@ -1310,16 +1601,79 @@ def admin_api_router():
         permission_classes = [IsAdminPanelUser]
         queryset = SubWalletTransaction.objects.all().select_related("sub_wallet")
         serializer_class = SubWalletTransactionSerializer
+        http_method_names = ["get", "head", "options", "delete"]
+
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_wallet_manage(request)
+
+        def get_queryset(self):
+            qs = super().get_queryset()
+            if is_department_admin(self.request.user):
+                qs = qs.filter(sub_wallet__department_id=self.request.user.department_id)
+            return qs
+
+        def destroy(self, request, *args, **kwargs):
+            """Delete transaction and reverse its effect on sub-wallet balance (mirrors Django admin)."""
+            from django.db import transaction as db_transaction
+            from django.db.models import F
+
+            txn = self.get_object()
+            sub_wallet = txn.sub_wallet
+            amount = txn.amount
+            txn_id = txn.id
+            txn_type = txn.transaction_type
+            with db_transaction.atomic():
+                if txn_type == SubWalletTransaction.TransactionType.CREDIT:
+                    sub_wallet.__class__.objects.filter(pk=sub_wallet.pk).update(balance=F("balance") - amount)
+                else:
+                    sub_wallet.__class__.objects.filter(pk=sub_wallet.pk).update(balance=F("balance") + amount)
+                txn.delete()
+            logger.info(
+                "SubWalletTransaction %s deleted by user %s (type=%s amount=%s sub_wallet=%s); balance reversed.",
+                txn_id,
+                getattr(request.user, "id", None),
+                txn_type,
+                amount,
+                getattr(sub_wallet, "id", None),
+            )
+            return Response(
+                {
+                    "detail": "Transaction deleted and sub-wallet balance reversed.",
+                    "deleted_id": txn_id,
+                },
+                status=status.HTTP_200_OK,
+            )
 
     class WalletRazorpayOrderViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
         queryset = WalletRazorpayOrder.objects.all().select_related("wallet", "department")
         serializer_class = WalletRazorpayOrderSerializer
 
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_wallet_manage(request)
+
+        def get_queryset(self):
+            qs = super().get_queryset()
+            if is_department_admin(self.request.user):
+                qs = qs.filter(department_id=self.request.user.department_id)
+            return qs
+
     class WalletRechargeRequestViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
         queryset = WalletRechargeRequest.objects.all().select_related("user", "wallet", "department")
         serializer_class = WalletRechargeRequestSerializer
+
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_wallet_manage(request)
+
+        def get_queryset(self):
+            qs = super().get_queryset()
+            if is_department_admin(self.request.user):
+                qs = qs.filter(department_id=self.request.user.department_id)
+            return qs
 
     class BookingViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
@@ -1328,12 +1682,9 @@ def admin_api_router():
         lookup_url_kwarg = "pk"
         lookup_field = "booking_id"
 
-        def get_queryset(self):
-            qs = super().get_queryset()
-            scope_department_id = _request_user_scope_id(self.request)
-            if scope_department_id is not None:
-                qs = qs.filter(equipment__internal_department_id=scope_department_id)
-            return qs
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_bookings_manage(request)
 
         class BookingPagination(PageNumberPagination):
             page_size = 50
@@ -1342,6 +1693,10 @@ def admin_api_router():
 
         def get_queryset(self):
             qs = super().get_queryset()
+            # Non–Main Admin: only bookings for equipment in their department
+            qs = scope_queryset_to_department(
+                qs, self.request.user, "equipment__internal_department_id"
+            )
             if self.action != "list":
                 return qs
             status_filter = self.request.query_params.get("status", "").strip().upper()
@@ -1401,6 +1756,9 @@ def admin_api_router():
         def get_queryset(self):
             from django.db.models import Q
             qs = super().get_queryset()
+            qs = scope_queryset_to_department(
+                qs, self.request.user, "booking__equipment__internal_department_id"
+            )
             if self.action != "list":
                 return qs
             status_filter = self.request.query_params.get("status", "").strip().upper()
@@ -1460,13 +1818,6 @@ def admin_api_router():
         queryset = DailySlot.objects.all().select_related("slot_master", "booking").order_by("-date", "start_datetime")
         serializer_class = DailySlotSerializer
 
-        def get_queryset(self):
-            qs = super().get_queryset()
-            scope_department_id = _request_user_scope_id(self.request)
-            if scope_department_id is not None:
-                qs = qs.filter(slot_master__equipment__internal_department_id=scope_department_id)
-            return qs
-
         class DailySlotPagination(PageNumberPagination):
             page_size = 50
 
@@ -1474,6 +1825,9 @@ def admin_api_router():
 
         def get_queryset(self):
             qs = super().get_queryset()
+            qs = scope_queryset_to_department(
+                qs, self.request.user, "slot_master__equipment__internal_department_id"
+            )
             if self.action != "list":
                 return qs
             status_filter = self.request.query_params.get("status", "").strip().upper()
@@ -1558,6 +1912,12 @@ def admin_api_router():
         lookup_url_kwarg = "pk"
         lookup_field = "equipment_id"
 
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            from config.admin_panel_access_api import assert_admin_section_module
+
+            assert_admin_section_module(request.user, "equipment")
+
         def _assert_dept_admin_equipment_access(self, payload, instance=None):
             user = self.request.user
             if not is_department_admin(user):
@@ -1574,20 +1934,22 @@ def admin_api_router():
             from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
             from iic_booking.equipment.api_views import _get_equipment_ids_for_log_access
             qs = super().get_queryset()
-            # OIC (manager): only equipment they manage (primary or temporary OIC)
-            if getattr(self.request.user, "user_type", None) == UserType.MANAGER:
-                allowed_ids = get_equipment_ids_managed_by_oic(self.request.user.id)
+            user = self.request.user
+            ut = getattr(user, "user_type", None)
+            # OIC (manager): only equipment they manage (primary or temporary OIC), within department
+            if ut == UserType.MANAGER:
+                allowed_ids = get_equipment_ids_managed_by_oic(user.id)
                 if not allowed_ids:
                     return qs.none()
                 qs = qs.filter(equipment_id__in=allowed_ids)
-            # Lab Incharge (operator): only mapped equipment
-            elif getattr(self.request.user, "user_type", None) == UserType.OPERATOR:
-                allowed_ids = _get_equipment_ids_for_log_access(self.request.user) or []
+            # Lab Incharge (operator): only mapped equipment, within department
+            elif ut == UserType.OPERATOR:
+                allowed_ids = _get_equipment_ids_for_log_access(user) or []
                 if not allowed_ids:
                     return qs.none()
                 qs = qs.filter(equipment_id__in=allowed_ids)
-            elif getattr(self.request.user, "user_type", None) == UserType.DEPT_ADMIN:
-                qs = qs.filter(internal_department_id=self.request.user.department_id)
+            # Everyone except Main Admin: strict department isolation
+            qs = apply_equipment_department_scope(qs, user)
             if self.action != "list":
                 return qs
             search = self.request.query_params.get("search", "").strip()
@@ -1632,6 +1994,12 @@ def admin_api_router():
             return Response(list(qs), status=status.HTTP_200_OK)
 
         def create(self, request, *args, **kwargs):
+            if is_department_admin(request.user):
+                raise PermissionDenied(
+                    "Department Administrators cannot create equipment directly. "
+                    "Submit an equipment addition request for Main Admin approval "
+                    "(Add Equipment saves as a pending request)."
+                )
             self._assert_dept_admin_equipment_access(request.data)
             serializer = self.get_serializer(data=request.data)
             serializer.is_valid(raise_exception=True)
@@ -1667,6 +2035,36 @@ def admin_api_router():
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
+            detail_serializer = EquipmentDetailSerializer(equipment, context={"request": request})
+            return Response(detail_serializer.data)
+
+        @action(detail=True, methods=["post"], url_path="clear-image")
+        def clear_image(self, request, pk=None):
+            """Clear the equipment catalog image (Django Admin clear checkbox)."""
+            equipment = self.get_object()
+            old = getattr(equipment, "image", None)
+            if old and getattr(old, "name", None):
+                try:
+                    default_storage.delete(old.name)
+                except Exception:
+                    pass
+            equipment.image = None
+            equipment.save(update_fields=["image"])
+            detail_serializer = EquipmentDetailSerializer(equipment, context={"request": request})
+            return Response(detail_serializer.data)
+
+        @action(detail=True, methods=["post"], url_path="clear-video")
+        def clear_video(self, request, pk=None):
+            """Clear the equipment video file."""
+            equipment = self.get_object()
+            old_video = equipment.video_file
+            if old_video and old_video.name:
+                try:
+                    default_storage.delete(old_video.name)
+                except Exception:
+                    pass
+            equipment.video_file = None
+            equipment.save(update_fields=["video_file"])
             detail_serializer = EquipmentDetailSerializer(equipment, context={"request": request})
             return Response(detail_serializer.data)
 
@@ -2243,12 +2641,37 @@ def admin_api_router():
         @action(detail=True, methods=["get"], url_path="booking-requesters")
         def booking_requesters(self, request, pk=None):
             """
-            Return per-equipment booking requester group members (unique emails).
-            Group membership is auto-managed when bookings are created.
+            Return recipients for equipment email: booking requesters + OIC + Lab In-Charge.
             """
             from iic_booking.users.models.user_group import UserGroupMember
 
             equipment = self.get_object()
+            seen = set()
+            recipients = []
+
+            def _add(user_obj, role: str):
+                if not user_obj:
+                    return
+                email = (getattr(user_obj, "email", "") or "").strip()
+                if not email or email.lower() in seen:
+                    return
+                seen.add(email.lower())
+                recipients.append(
+                    {
+                        "user_id": getattr(user_obj, "id", None),
+                        "email": email,
+                        "name": getattr(user_obj, "name", None) or email,
+                        "role": role,
+                    }
+                )
+
+            # Officer In Charge (managers)
+            for em in equipment.equipment_managers.select_related("manager").all():
+                _add(getattr(em, "manager", None), "oic")
+            # Lab In-Charge (operators)
+            for eo in equipment.equipment_operators.select_related("operator").all():
+                _add(getattr(eo, "operator", None), "lab")
+
             link = (
                 EquipmentUserGroup.objects.filter(
                     equipment=equipment,
@@ -2257,47 +2680,30 @@ def admin_api_router():
                 .select_related("user_group")
                 .first()
             )
-            if not link or not link.user_group:
-                return Response(
-                    {
-                        "equipment_id": equipment.equipment_id,
-                        "equipment_code": equipment.code,
-                        "equipment_name": getattr(equipment, "name", "") or equipment.code,
-                        "group_code": None,
-                        "group_name": None,
-                        "recipients": [],
-                        "count": 0,
-                    }
+            group_code = None
+            group_name = None
+            if link and link.user_group:
+                group_code = link.user_group.code
+                group_name = link.user_group.name
+                members = (
+                    UserGroupMember.objects.filter(user_group=link.user_group)
+                    .select_related("user")
+                    .order_by("user__email")
                 )
-            members = (
-                UserGroupMember.objects.filter(user_group=link.user_group)
-                .select_related("user")
-                .order_by("user__email")
-            )
-            seen = set()
-            recipients = []
-            for m in members:
-                u = getattr(m, "user", None)
-                email = (getattr(u, "email", "") or "").strip()
-                if not email or email in seen:
-                    continue
-                seen.add(email)
-                recipients.append(
-                    {
-                        "user_id": getattr(u, "id", None),
-                        "email": email,
-                        "name": getattr(u, "name", None) or email,
-                    }
-                )
+                for m in members:
+                    _add(getattr(m, "user", None), "booking_requester")
+
             return Response(
                 {
                     "equipment_id": equipment.equipment_id,
                     "equipment_code": equipment.code,
                     "equipment_name": getattr(equipment, "name", "") or equipment.code,
-                    "group_code": link.user_group.code,
-                    "group_name": link.user_group.name,
+                    "group_code": group_code,
+                    "group_name": group_name,
                     "recipients": recipients,
                     "count": len(recipients),
+                    "oic_count": sum(1 for r in recipients if r.get("role") == "oic"),
+                    "lab_count": sum(1 for r in recipients if r.get("role") == "lab"),
                 }
             )
 
@@ -2324,14 +2730,11 @@ def admin_api_router():
         lookup_field = "equipment_group_id"
 
         def get_queryset(self):
-            qs = super().get_queryset()
+            qs = EquipmentGroup.objects.all()
+            # Non–Main Admin: only groups that have equipment in their department
             scope_department_id = _request_user_scope_id(self.request)
             if scope_department_id is not None:
                 qs = qs.filter(equipment__internal_department_id=scope_department_id).distinct()
-            return qs
-
-        def get_queryset(self):
-            qs = EquipmentGroup.objects.all()
             if self.action in ("retrieve", "update", "partial_update"):
                 qs = qs.prefetch_related("equipment", "quotas")
             return qs
@@ -2743,7 +3146,7 @@ def admin_api_router():
             read_only_fields = ["id", "created_at", "updated_at", "created_by_email", "updated_by_email", "communication_type_display"]
 
     class CommunicationTemplateViewSet(ModelViewSet):
-        permission_classes = [IsAdminUser]
+        permission_classes = [IsAdminOrDeptCommunicationAdmin]
         serializer_class = CommunicationTemplateSerializer
         queryset = CommunicationTemplate.objects.all().select_related("created_by", "updated_by").order_by("communication_type", "name")
 
@@ -2792,7 +3195,7 @@ def admin_api_router():
             read_only_fields = fields
 
     class CommunicationLogViewSet(ModelViewSet):
-        permission_classes = [IsAdminUser]
+        permission_classes = [IsAdminOrDeptCommunicationAdmin]
         serializer_class = CommunicationLogSerializer
         queryset = CommunicationLog.objects.all().select_related("recipient", "template", "created_by").order_by("-created_at")
         http_method_names = ["get", "head", "options"]
@@ -2852,7 +3255,7 @@ def admin_api_router():
             read_only_fields = ["notice_id", "created_at", "updated_at", "created_by_name", "created_by_email", "notice_type_display"]
 
     class NoticeViewSet(ModelViewSet):
-        permission_classes = [IsAdminUser]
+        permission_classes = [IsAdminOrDeptCommunicationAdmin]
         serializer_class = NoticeAdminSerializer
         queryset = Notice.objects.all().select_related("created_by").order_by("-priority", "-created_at")
 
@@ -2886,6 +3289,13 @@ def admin_api_router():
     router.register(r"users", UserAdminViewSet, basename="admin-user")
     router.register(r"permission-definitions", PermissionDefinitionViewSet, basename="admin-permission-definition")
     router.register(r"dept-admin-grants", DeptAdminPermissionGrantViewSet, basename="admin-dept-admin-grant")
+    from config.admin_panel_access_api import AdminPanelRoleConfigViewSet
+
+    router.register(
+        r"admin-panel-role-configs",
+        AdminPanelRoleConfigViewSet,
+        basename="admin-panel-role-config",
+    )
     router.register(r"staff-permission-grants", StaffPermissionGrantViewSet, basename="admin-staff-permission-grant")
     router.register(r"user-groups", UserGroupViewSet, basename="admin-usergroup")
     router.register(r"user-group-members", UserGroupMemberViewSet, basename="admin-usergroupmember")
@@ -3035,6 +3445,10 @@ def admin_api_router():
     class EquipmentReportViewSet(ViewSet):
         permission_classes = [IsAdminPanelUser]
 
+        def initial(self, request, *args, **kwargs):
+            super().initial(request, *args, **kwargs)
+            _require_reports_view(request)
+
         def _resolve_equipment_ids(self, request):
             """Return equipment_ids for report: restrict to user's equipment for manager/operator."""
             from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
@@ -3110,5 +3524,9 @@ def admin_api_router():
             return resp
 
     router.register(r"equipment-reports", EquipmentReportViewSet, basename="admin-equipment-reports")
+
+    from config.admin_extra_settings_api import register_extra_admin_routes
+
+    register_extra_admin_routes(router)
 
     return router
