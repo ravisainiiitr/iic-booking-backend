@@ -1,0 +1,39 @@
+name: Migrate Production
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: self-hosted
+    steps:
+      - name: Locate production Django container
+        id: find
+        run: |
+          set -euo pipefail
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django|iic_booking_production_django' | head -n 1 || true)"
+          if [ -z "$CID" ]; then
+            CID="$(docker ps --format '{{.ID}} {{.Image}}' | grep -i 'django' | head -n 1 | awk '{print $1}' || true)"
+          fi
+          if [ -z "$CID" ]; then
+            echo "Could not find a running Django container."
+            exit 1
+          fi
+          echo "Using container: $CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Show migration status (before)
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py showmigrations communication cms
+
+      - name: Run all pending migrations on production
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py migrate --noinput
+
+      - name: Show migration status (after)
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py showmigrations communication cms
