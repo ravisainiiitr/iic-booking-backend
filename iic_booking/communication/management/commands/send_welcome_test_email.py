@@ -2,7 +2,7 @@
 Send a styled welcome email to a recipient for testing.
 
 Example:
-  py -3 manage.py send_welcome_test_email ravis.mic2014@iitr.ac.in
+  py -3 manage.py send_welcome_test_email someone@iitr.ac.in --name "Ada" --user-type faculty --department "Physics"
 """
 
 from __future__ import annotations
@@ -15,15 +15,25 @@ from iic_booking.communication.welcome_email import build_welcome_email
 
 
 class Command(BaseCommand):
-    help = "Send a styled welcome email to a recipient for testing."
+    help = "Send a styled first-login welcome email to a recipient for testing."
 
     def add_arguments(self, parser):
         parser.add_argument("recipient", help="Recipient email address")
-        parser.add_argument("--name", default=None, help="Optional display name to personalize the email")
+        parser.add_argument("--name", default=None, help="Optional display name")
         parser.add_argument(
             "--user-type",
+            default="faculty",
+            help="user_type for role-specific copy (student/faculty/dept_admin/…)",
+        )
+        parser.add_argument(
+            "--user-type-alias",
             default=None,
-            help="Optional user_type for conditional text (student/faculty/etc.)",
+            help="Optional display alias (e.g. IITR Post Doctoral Fellows)",
+        )
+        parser.add_argument(
+            "--department",
+            default=None,
+            help="Optional department name for personalization",
         )
 
     def handle(self, *args, **options):
@@ -32,13 +42,12 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("Recipient email address is required."))
             raise SystemExit(1)
 
-        recipient_name = options.get("name")
-        user_type = options.get("user_type")
-
         content = build_welcome_email(
-            recipient_name=recipient_name,
+            recipient_name=options.get("name"),
             recipient_email=recipient,
-            user_type=user_type,
+            user_type=options.get("user_type"),
+            user_type_alias=options.get("user_type_alias"),
+            department_name=options.get("department"),
         )
 
         send_mail(
@@ -51,4 +60,4 @@ class Command(BaseCommand):
         )
 
         self.stdout.write(self.style.SUCCESS(f"Welcome test email sent to {recipient}."))
-
+        self.stdout.write(f"Subject: {content.subject}")

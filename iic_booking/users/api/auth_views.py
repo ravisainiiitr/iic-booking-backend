@@ -18,7 +18,7 @@ from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
 from iic_booking.communication.service import CommunicationService
-from iic_booking.communication.welcome_email import build_welcome_email
+from iic_booking.communication.welcome_email import build_welcome_email, welcome_email_kwargs_from_user
 from django.http import HttpResponseRedirect, HttpResponse
 from django.urls import reverse
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
@@ -85,10 +85,9 @@ def _omniport_get(url: str, **kwargs):
 
 def _should_send_welcome_email(user) -> bool:
     """
-    Send welcome email only for IITR internal users: IITR Student or Faculty.
+    Send the first-login welcome email to any portal user with a deliverable email.
     """
-    user_type = str(getattr(user, "user_type", "") or "").lower()
-    return user_type in {"student", "individual_student", "faculty"}
+    return bool((getattr(user, "email", None) or "").strip())
 
 
 def _mark_login_and_check_first(user) -> bool:
@@ -886,11 +885,7 @@ def omniport_callback(request):
     # First-login welcome email (styled)
     if _should_send_welcome_email(user) and is_first_login:
         try:
-            content = build_welcome_email(
-                recipient_name=getattr(user, "name", None),
-                recipient_email=user.email,
-                user_type=getattr(user, "user_type", None),
-            )
+            content = build_welcome_email(**welcome_email_kwargs_from_user(user))
             send_mail(
                 subject=content.subject,
                 message=content.text_body,
@@ -1108,11 +1103,7 @@ def login(request):
     # First-login welcome email (styled)
     if _should_send_welcome_email(user) and is_first_login:
         try:
-            content = build_welcome_email(
-                recipient_name=getattr(user, "name", None),
-                recipient_email=user.email,
-                user_type=getattr(user, "user_type", None),
-            )
+            content = build_welcome_email(**welcome_email_kwargs_from_user(user))
             send_mail(
                 subject=content.subject,
                 message=content.text_body,
@@ -1272,11 +1263,7 @@ def verify_login_otp(request):
     # First-login welcome email (styled)
     if _should_send_welcome_email(user) and is_first_login:
         try:
-            content = build_welcome_email(
-                recipient_name=getattr(user, "name", None),
-                recipient_email=user.email,
-                user_type=getattr(user, "user_type", None),
-            )
+            content = build_welcome_email(**welcome_email_kwargs_from_user(user))
             send_mail(
                 subject=content.subject,
                 message=content.text_body,
