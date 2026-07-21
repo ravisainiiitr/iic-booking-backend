@@ -155,13 +155,24 @@ class SubWallet(Model):
             raise ValueError("Amount must be positive")
         SubWallet.objects.filter(id=self.id).update(balance=F("balance") + amount_decimal)
         self.refresh_from_db()
-        return SubWalletTransaction.objects.create(
+        txn = SubWalletTransaction.objects.create(
             sub_wallet=self,
             transaction_type=SubWalletTransaction.TransactionType.CREDIT,
             amount=amount_decimal,
             description=description,
             related_user=related_user,
         )
+        try:
+            from iic_booking.users.department_faculty_credit_facility import on_subwallet_credited
+
+            on_subwallet_credited(self, amount_decimal, source="subwallet.credit")
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "department faculty credit recovery failed after credit on subwallet %s", self.id
+            )
+        return txn
 
     def debit(
         self,
@@ -174,7 +185,7 @@ class SubWallet(Model):
         """Deduct money from this sub-wallet. related_user: user associated with this transaction (for shared-wallet filtering).
 
         minimum_balance_after: lowest allowed balance after debit (default 0). Use a negative floor
-        when an active wallet recharge credit facility allows temporary overdraft.
+        when an active credit facility allows temporary overdraft.
         """
         amount_decimal = Decimal(str(amount))
         if amount_decimal <= 0:
@@ -186,13 +197,24 @@ class SubWallet(Model):
             raise ValueError("Insufficient balance")
         SubWallet.objects.filter(id=self.id).update(balance=F("balance") - amount_decimal)
         self.refresh_from_db()
-        return SubWalletTransaction.objects.create(
+        txn = SubWalletTransaction.objects.create(
             sub_wallet=self,
             transaction_type=SubWalletTransaction.TransactionType.DEBIT,
             amount=amount_decimal,
             description=description,
             related_user=related_user,
         )
+        try:
+            from iic_booking.users.department_faculty_credit_facility import on_subwallet_debited
+
+            on_subwallet_debited(self, amount_decimal)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "department faculty credit activation failed after debit on subwallet %s", self.id
+            )
+        return txn
 
 
 class SubWalletTransaction(Model):

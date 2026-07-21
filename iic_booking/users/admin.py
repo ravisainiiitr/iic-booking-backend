@@ -39,6 +39,11 @@ from .forms import UserAdminCreationForm
 from .models.wallet_sric_settings import WalletSricSettings
 from .models.wallet_credit_facility_settings import WalletCreditFacilitySettings
 from .models.wallet_student_recharge_settings import WalletStudentRechargeSettings
+from .models.department_faculty_credit_facility import (
+    DepartmentFacultyCreditFacilitySettings,
+    FacultyDepartmentCreditFacility,
+    FacultyDepartmentCreditFacilityAuditLog,
+)
 from .models import (
     User,
     Department,
@@ -719,6 +724,32 @@ class WalletCreditFacilitySettingsAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(DepartmentFacultyCreditFacilitySettings)
+class DepartmentFacultyCreditFacilitySettingsAdmin(admin.ModelAdmin):
+    list_display = ["department", "enabled", "joining_date_cutoff", "max_credit_limit", "updated_at"]
+    list_filter = ["enabled"]
+    search_fields = ["department__name", "department__code"]
+    raw_id_fields = ["department", "updated_by"]
+
+
+@admin.register(FacultyDepartmentCreditFacility)
+class FacultyDepartmentCreditFacilityAdmin(admin.ModelAdmin):
+    list_display = ["user", "department", "status", "credit_limit", "availed_at", "closed_at"]
+    list_filter = ["status"]
+    search_fields = ["user__email", "user__name", "department__name"]
+    raw_id_fields = ["user", "department"]
+    readonly_fields = ["availed_at", "closed_at", "created_at", "updated_at"]
+
+
+@admin.register(FacultyDepartmentCreditFacilityAuditLog)
+class FacultyDepartmentCreditFacilityAuditLogAdmin(admin.ModelAdmin):
+    list_display = ["created_at", "event_type", "department", "faculty_user", "actor"]
+    list_filter = ["event_type"]
+    search_fields = ["faculty_user__email", "message", "department__name"]
+    raw_id_fields = ["facility", "department", "faculty_user", "actor"]
+    readonly_fields = ["created_at"]
 
 
 @admin.register(WalletStudentRechargeSettings)

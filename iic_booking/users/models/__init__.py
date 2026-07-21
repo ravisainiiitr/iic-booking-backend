@@ -27,6 +27,13 @@ from .wallet import (
 )
 from .wallet_credit_facility_settings import WalletCreditFacilitySettings
 from .wallet_student_recharge_settings import WalletStudentRechargeSettings
+from .department_faculty_credit_facility import (
+    DepartmentFacultyCreditFacilitySettings,
+    FacultyDepartmentCreditFacility,
+    FacultyDepartmentCreditFacilityStatus,
+    FacultyDepartmentCreditFacilityAuditEvent,
+    FacultyDepartmentCreditFacilityAuditLog,
+)
 from .user_document import UserDocument
 from .user_group import UserGroup, UserGroupMember
 from .project import Project
@@ -70,6 +77,11 @@ __all__ = [
     "WalletRechargeRequestAuditLog",
     "WalletCreditFacilitySettings",
     "WalletStudentRechargeSettings",
+    "DepartmentFacultyCreditFacilitySettings",
+    "FacultyDepartmentCreditFacility",
+    "FacultyDepartmentCreditFacilityStatus",
+    "FacultyDepartmentCreditFacilityAuditEvent",
+    "FacultyDepartmentCreditFacilityAuditLog",
     "WalletRechargeImportRecord",
     "WalletRechargeParseEntry",
     "ExternalUserBankDetails",

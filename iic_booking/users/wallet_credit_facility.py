@@ -82,13 +82,25 @@ def wallet_booking_block_message(sub: SubWallet) -> Optional[str]:
 def subwallet_minimum_balance_after_debit(sub: SubWallet) -> Decimal:
     """
     Lowest allowed balance after a debit. Negative means overdraft allowed up to |value|.
+
+    Composes institute recharge temporary credit with department faculty credit facility
+    (most permissive / most negative floor wins).
     """
     if subwallet_has_expired_credit_block(sub):
         return Decimal("0.00")
+    floors = [Decimal("0.00")]
     req = _active_credit_request_for_subwallet(sub)
-    if not req or not req.credit_limit_amount:
-        return Decimal("0.00")
-    return -Decimal(str(req.credit_limit_amount))
+    if req and req.credit_limit_amount:
+        floors.append(-Decimal(str(req.credit_limit_amount)))
+    try:
+        from .department_faculty_credit_facility import department_faculty_credit_floor
+
+        floors.append(department_faculty_credit_floor(sub))
+    except Exception:
+        logger.exception(
+            "department_faculty_credit_floor failed for subwallet %s", getattr(sub, "id", None)
+        )
+    return min(floors)
 
 
 def wallet_max_spendable_on_subwallet(sub: SubWallet) -> Decimal:

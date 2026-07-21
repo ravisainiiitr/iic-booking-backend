@@ -113,6 +113,11 @@ from iic_booking.users.api.wallet_peer_transfer_views import (
     wallet_peer_transfer_history,
     wallet_peer_transfer_source_departments,
 )
+from iic_booking.users.api.department_faculty_credit_facility_views import (
+    department_faculty_credit_facility_settings_view,
+    department_faculty_credit_facility_faculty_list_view,
+    department_faculty_credit_facility_audit_list_view,
+)
 from iic_booking.users.api.project_views import (
     project_list,
     project_detail,
@@ -501,6 +506,21 @@ urlpatterns = router.urls + [
         "wallet/peer-transfer/history/",
         wallet_peer_transfer_history,
         name="wallet-peer-transfer-history",
+    ),
+    path(
+        "department-faculty-credit-facility/settings/",
+        department_faculty_credit_facility_settings_view,
+        name="department-faculty-credit-facility-settings",
+    ),
+    path(
+        "department-faculty-credit-facility/faculty/",
+        department_faculty_credit_facility_faculty_list_view,
+        name="department-faculty-credit-facility-faculty",
+    ),
+    path(
+        "department-faculty-credit-facility/audit/",
+        department_faculty_credit_facility_audit_list_view,
+        name="department-faculty-credit-facility-audit",
     ),
     path("wallet/sub-wallets/<int:department_id>/transactions/", get_sub_wallet_transactions, name="wallet-sub-wallet-transactions"),
     path("wallet/withdrawal-request/", create_wallet_withdrawal_request, name="wallet-withdrawal-request-create"),
