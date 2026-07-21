@@ -78,6 +78,9 @@ from iic_booking.users.api.wallet_views import (
     cancel_wallet_recharge_request,
     resend_wallet_recharge_notification,
     send_sric_wallet_recharge_notification,
+    wallet_recharge_action_detail,
+    wallet_recharge_action_approve,
+    wallet_recharge_action_reject,
     parse_wallet_recharge_file,
     process_wallet_recharge_rows,
     wallet_recharge_parse_entries,
@@ -103,6 +106,13 @@ from iic_booking.users.api.wallet_views import (
     legacy_wallet_balance_lookup,
     legacy_wallet_balance_list,
 )
+from iic_booking.users.api.wallet_peer_transfer_views import (
+    wallet_peer_transfer_eligible_recipients,
+    wallet_peer_transfer_send_otp,
+    wallet_peer_transfer_confirm,
+    wallet_peer_transfer_history,
+    wallet_peer_transfer_source_departments,
+)
 from iic_booking.users.api.project_views import (
     project_list,
     project_detail,
@@ -124,6 +134,11 @@ from iic_booking.users.api.sric_api_views import (
     sric_transfer_request_detail,
     sric_transfer_request_complete,
     sric_transfer_request_reject,
+)
+from iic_booking.users.api.sync_agent_views import (
+    sync_agent_register,
+    sync_agent_authenticate,
+    sync_agent_refresh,
 )
 from iic_booking.equipment.print_3d_views import (
     equipment_analyze_stl,
@@ -404,6 +419,13 @@ urlpatterns = router.urls + [
     path("inbox-emails/", fetch_inbox_emails, name="inbox-emails"),
     path("inbox-folders/", list_inbox_folders, name="inbox-folders"),
     path("auth/login/", login, name="login"),
+    # Department Sync Agent (DSA) — paths without trailing slash match DSA PortalClient.
+    path("sync-agent/register", sync_agent_register, name="sync-agent-register"),
+    path("sync-agent/register/", sync_agent_register, name="sync-agent-register-slash"),
+    path("sync-agent/authenticate", sync_agent_authenticate, name="sync-agent-authenticate"),
+    path("sync-agent/authenticate/", sync_agent_authenticate, name="sync-agent-authenticate-slash"),
+    path("sync-agent/refresh", sync_agent_refresh, name="sync-agent-refresh"),
+    path("sync-agent/refresh/", sync_agent_refresh, name="sync-agent-refresh-slash"),
     path("auth/logout/", logout, name="logout"),
     path("auth/register/", register, name="register"),
     path("auth/register/user-types/", get_register_user_types, name="register-user-types"),
@@ -455,6 +477,31 @@ urlpatterns = router.urls + [
     path("wallet/bank-details/", wallet_bank_details, name="wallet-bank-details"),
     path("wallet/departments-for-recharge/", get_departments_for_recharge, name="wallet-departments-for-recharge"),
     path("wallet/transfer-between-sub-wallets/", transfer_between_sub_wallets, name="wallet-transfer-between-sub-wallets"),
+    path(
+        "wallet/peer-transfer/source-departments/",
+        wallet_peer_transfer_source_departments,
+        name="wallet-peer-transfer-source-departments",
+    ),
+    path(
+        "wallet/peer-transfer/eligible-recipients/",
+        wallet_peer_transfer_eligible_recipients,
+        name="wallet-peer-transfer-eligible-recipients",
+    ),
+    path(
+        "wallet/peer-transfer/send-otp/",
+        wallet_peer_transfer_send_otp,
+        name="wallet-peer-transfer-send-otp",
+    ),
+    path(
+        "wallet/peer-transfer/confirm/",
+        wallet_peer_transfer_confirm,
+        name="wallet-peer-transfer-confirm",
+    ),
+    path(
+        "wallet/peer-transfer/history/",
+        wallet_peer_transfer_history,
+        name="wallet-peer-transfer-history",
+    ),
     path("wallet/sub-wallets/<int:department_id>/transactions/", get_sub_wallet_transactions, name="wallet-sub-wallet-transactions"),
     path("wallet/withdrawal-request/", create_wallet_withdrawal_request, name="wallet-withdrawal-request-create"),
     path("wallet/withdrawal-requests/", get_my_withdrawal_requests, name="wallet-withdrawal-requests"),
@@ -531,6 +578,9 @@ urlpatterns = router.urls + [
     path("wallet/recharge-request/", create_wallet_recharge_request, name="wallet-recharge-request-create"),
     path("wallet/recharge-requests/pipeline/", get_wallet_recharge_pipeline_requests, name="wallet-recharge-requests-pipeline"),
     path("wallet/recharge-requests/", get_my_recharge_requests, name="wallet-recharge-requests"),
+    path("wallet/recharge-action/<str:token>/", wallet_recharge_action_detail, name="wallet-recharge-action-detail"),
+    path("wallet/recharge-action/<str:token>/approve/", wallet_recharge_action_approve, name="wallet-recharge-action-approve"),
+    path("wallet/recharge-action/<str:token>/reject/", wallet_recharge_action_reject, name="wallet-recharge-action-reject"),
     path("wallet/recharge-requests/<int:request_id>/approve/", approve_wallet_recharge_request, name="wallet-recharge-request-approve"),
     path("wallet/recharge-requests/<int:request_id>/reject/", reject_wallet_recharge_request, name="wallet-recharge-request-reject"),
     path("wallet/recharge-requests/<int:request_id>/cancel/", cancel_wallet_recharge_request, name="wallet-recharge-request-cancel"),

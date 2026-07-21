@@ -160,6 +160,7 @@ from .calculators import (
     TimeCalculationEngine,
     ChargeCalculationEngine,
     build_safe_input_values_for_charge_calculation,
+    quantize_money,
 )
 from .slot_utils import SlotGenerator, SlotAvailabilityChecker
 from .slot_department_access import (
@@ -1933,18 +1934,18 @@ def equipment_calculate(request, pk):
         return_shipping_fee = Decimal("0.00")
         if sample_return:
             try:
-                return_shipping_fee = get_external_return_shipping_fee_amount().quantize(Decimal("0.01"))
+                return_shipping_fee = quantize_money(get_external_return_shipping_fee_amount())
             except Exception:
                 return_shipping_fee = Decimal("0.00")
             if return_shipping_fee > 0:
-                base_charge = (Decimal(str(base_charge)) + return_shipping_fee).quantize(Decimal("0.01"))
+                base_charge = quantize_money(Decimal(str(base_charge)) + return_shipping_fee)
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": "Return shipping charges", "amount": float(return_shipping_fee)},
                 ]
         gst_percent = get_external_gst_percent()
         if gst_percent > 0:
-            gst_amount = (base_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-            total_charge = (base_charge + gst_amount).quantize(Decimal("0.01"))
+            gst_amount = quantize_money(base_charge * gst_percent / Decimal("100"))
+            total_charge = quantize_money(base_charge + gst_amount)
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
@@ -1964,7 +1965,7 @@ def equipment_calculate(request, pk):
             reward_points_applied = Decimal("0.00")
             reward_discount_amount = Decimal("0.00")
 
-    total_after_reward = max(Decimal("0.00"), Decimal(total_charge) - reward_discount_amount).quantize(Decimal("0.01"))
+    total_after_reward = quantize_money(max(Decimal("0"), Decimal(total_charge) - reward_discount_amount))
     # Return results
     response_data = {
         "equipment_id": equipment.equipment_id,
@@ -2050,8 +2051,8 @@ def _calculate_one_proforma_line(request_user, equipment, input_values):
     if UserType.is_external_user(user_type):
         gst_percent = get_external_gst_percent()
         if gst_percent > 0:
-            gst_amount = (base_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-    total_charge = (base_charge + gst_amount).quantize(Decimal("0.01"))
+            gst_amount = quantize_money(base_charge * gst_percent / Decimal("100"))
+    total_charge = quantize_money(base_charge + gst_amount)
     if gst_percent > 0:
         charge_breakdown = list(charge_breakdown) + [
             {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
@@ -2151,9 +2152,9 @@ def proforma_invoice_calculate(request):
         {
             "user_type": user_type,
             "line_items": line_items,
-            "subtotal": str(subtotal.quantize(Decimal("0.01"))),
-            "total_gst": str(total_gst.quantize(Decimal("0.01"))),
-            "total_amount": str(total_amount.quantize(Decimal("0.01"))),
+            "subtotal": str(quantize_money(subtotal)),
+            "total_gst": str(quantize_money(total_gst)),
+            "total_amount": str(quantize_money(total_amount)),
             "amount_in_words": amount_in_words,
         },
         status=status.HTTP_200_OK,
@@ -3193,18 +3194,18 @@ def _book_equipment_impl(request, pk):
                 sample_return_after_analysis = str(raw).strip().lower() in ("1", "true", "yes", "y")
             if sample_return_after_analysis:
                 try:
-                    return_shipping_fee_amount = get_external_return_shipping_fee_amount().quantize(Decimal("0.01"))
+                    return_shipping_fee_amount = quantize_money(get_external_return_shipping_fee_amount())
                 except Exception:
                     return_shipping_fee_amount = Decimal("0.00")
                 if return_shipping_fee_amount > 0:
-                    total_charge = (Decimal(total_charge) + return_shipping_fee_amount).quantize(Decimal("0.01"))
+                    total_charge = quantize_money(Decimal(total_charge) + return_shipping_fee_amount)
                     charge_breakdown = list(charge_breakdown) + [
                         {"description": "Return shipping charges", "amount": float(return_shipping_fee_amount)},
                     ]
             gst_percent = get_external_gst_percent()
             if gst_percent > 0:
-                gst_amount = (total_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-                total_charge = (total_charge + gst_amount).quantize(Decimal("0.01"))
+                gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
+                total_charge = quantize_money(total_charge + gst_amount)
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                 ]
@@ -3218,7 +3219,7 @@ def _book_equipment_impl(request, pk):
             if reward_err:
                 return Response({"error": reward_err}, status=status.HTTP_400_BAD_REQUEST)
             if reward_discount_amount > 0:
-                total_charge = max(Decimal("0.00"), total_charge - reward_discount_amount).quantize(Decimal("0.01"))
+                total_charge = quantize_money(max(Decimal("0"), total_charge - reward_discount_amount))
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": "TA Reward Points", "amount": -float(reward_discount_amount)},
                 ]
@@ -3380,8 +3381,8 @@ def _book_equipment_impl(request, pk):
                             if UserType.is_external_user(user_type):
                                 gst_percent = get_external_gst_percent()
                                 if gst_percent > 0:
-                                    gst_amount = (total_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-                                    total_charge = (total_charge + gst_amount).quantize(Decimal("0.01"))
+                                    gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
+                                    total_charge = quantize_money(total_charge + gst_amount)
                                     charge_breakdown = list(charge_breakdown) + [
                                         {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                                     ]
@@ -3392,7 +3393,7 @@ def _book_equipment_impl(request, pk):
                                 if reward_err:
                                     raise ValueError(reward_err)
                                 if reward_discount_amount > 0:
-                                    total_charge = max(Decimal("0.00"), total_charge - reward_discount_amount).quantize(Decimal("0.01"))
+                                    total_charge = quantize_money(max(Decimal("0"), total_charge - reward_discount_amount))
                                     charge_breakdown = list(charge_breakdown) + [
                                         {"description": "TA Reward Points", "amount": -float(reward_discount_amount)},
                                     ]
@@ -3446,8 +3447,8 @@ def _book_equipment_impl(request, pk):
                                         if UserType.is_external_user(user_type):
                                             gst_percent = get_external_gst_percent()
                                             if gst_percent > 0:
-                                                gst_amount = (total_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-                                                total_charge = (total_charge + gst_amount).quantize(Decimal("0.01"))
+                                                gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
+                                                total_charge = quantize_money(total_charge + gst_amount)
                                                 charge_breakdown = list(charge_breakdown) + [
                                                     {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                                                 ]
@@ -3458,7 +3459,7 @@ def _book_equipment_impl(request, pk):
                                             if reward_err:
                                                 raise ValueError(reward_err)
                                             if reward_discount_amount > 0:
-                                                total_charge = max(Decimal("0.00"), total_charge - reward_discount_amount).quantize(Decimal("0.01"))
+                                                total_charge = quantize_money(max(Decimal("0"), total_charge - reward_discount_amount))
                                                 charge_breakdown = list(charge_breakdown) + [
                                                     {"description": "TA Reward Points", "amount": -float(reward_discount_amount)},
                                                 ]
@@ -3976,8 +3977,8 @@ def _book_equipment_impl(request, pk):
         if UserType.is_external_user(user_type):
             gst_percent = get_external_gst_percent()
             if gst_percent > 0:
-                gst_amount = (total_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-                total_charge = (total_charge + gst_amount).quantize(Decimal("0.01"))
+                gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
+                total_charge = quantize_money(total_charge + gst_amount)
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                 ]
@@ -12014,12 +12015,12 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
         calculated_time_minutes,
         selected_parameters=booking.selected_parameters,
     )
-    new_charge = new_charge.quantize(Decimal("0.01"))
+    new_charge = quantize_money(new_charge)
     if UserType.is_external_user(getattr(booking.user, "user_type", None)):
         gst_percent = get_external_gst_percent()
         if gst_percent > 0:
-            gst_amount = (new_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-            new_charge = (new_charge + gst_amount).quantize(Decimal("0.01"))
+            gst_amount = quantize_money(new_charge * gst_percent / Decimal("100"))
+            new_charge = quantize_money(new_charge + gst_amount)
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
@@ -12031,7 +12032,7 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
     current_total_charge = booking.total_charge
     current_pending_delta = booking.charge_recalculation_pending_amount
     if current_pending_delta is not None:
-        previous_charge = (current_total_charge - current_pending_delta).quantize(Decimal("0.01"))
+        previous_charge = quantize_money(current_total_charge - current_pending_delta)
     else:
         previous_charge = current_total_charge
 
@@ -13296,8 +13297,8 @@ def _calculate_reward_redemption(total_charge, requested_points, booking_user, e
     points_applied = min(req_points, max_points).quantize(Decimal("0.01"))
     if points_applied <= 0:
         return Decimal("0.00"), Decimal("0.00"), "Insufficient reward points."
-    discount_amount = (points_applied * Decimal(cfg.currency_per_point)).quantize(Decimal("0.01"))
-    discount_amount = min(discount_amount, Decimal(total_charge))
+    discount_amount = quantize_money(points_applied * Decimal(cfg.currency_per_point))
+    discount_amount = min(discount_amount, quantize_money(total_charge))
     return points_applied, discount_amount, None
 
 

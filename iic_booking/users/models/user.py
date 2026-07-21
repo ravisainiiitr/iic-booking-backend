@@ -128,7 +128,25 @@ class User(AbstractUser):
         max_length=255,
         blank=True,
         null=True,
-        help_text=_("Designation for faculty members"),
+        help_text=_("Designation for faculty members (from Omniport / Channel i)"),
+    )
+    joining_date = DateField(
+        _("Joining Date"),
+        blank=True,
+        null=True,
+        help_text=_(
+            "Institute joining / programme start date for faculty or students "
+            "(from Omniport role start_date)."
+        ),
+    )
+    graduation_date = DateField(
+        _("Graduation Date"),
+        blank=True,
+        null=True,
+        help_text=_(
+            "Expected or actual graduation / programme end date for students "
+            "(from Omniport student end_date)."
+        ),
     )
     profile_picture = ImageField(
         _("Profile Picture"),

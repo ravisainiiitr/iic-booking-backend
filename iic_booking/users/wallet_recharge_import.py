@@ -214,10 +214,11 @@ def import_wallet_recharge_rows(
                 skipped += 1
                 continue
         else:
+            # Use a pending request only as a department hint. Do not auto-approve —
+            # approval is via SRIC email / admin dashboard only.
             pending_for_dept = _first_pending_recharge_request_for_import(user, amount)
             if pending_for_dept and pending_for_dept.department_id:
                 department = pending_for_dept.department
-                pending_req_to_finalize = pending_for_dept
             else:
                 department = _resolve_department(
                     user,
@@ -233,7 +234,6 @@ def import_wallet_recharge_rows(
             credited += 1
             continue
 
-        recharge_pk_to_notify: Optional[int] = None
         with transaction.atomic():
             sub_wallet, _ = SubWallet.objects.get_or_create(
                 wallet=wallet,
@@ -256,22 +256,7 @@ def import_wallet_recharge_rows(
                 received_from_raw=row.get("received_from") or "",
                 remarks=row.get("remarks") or "",
             )
-            if pending_req_to_finalize is not None:
-                locked_req = (
-                    WalletRechargeRequest.objects.select_for_update()
-                    .filter(
-                        pk=pending_req_to_finalize.pk,
-                        status=WalletRechargeRequestStatus.PENDING,
-                    )
-                    .first()
-                )
-                if locked_req:
-                    _write_recharge_request_approved_from_import(
-                        locked_req,
-                        receipt_no=receipt_no,
-                        via_parse_entry_matcher=False,
-                    )
-                    recharge_pk_to_notify = locked_req.pk
+            # Intentionally do not auto-approve pending WalletRechargeRequest rows.
             credited += 1
             logger.info("Credited Receipt %s FY %s → %s ₹%s", receipt_no, fy_start, user.email, amount)
             processed_receipts.append(receipt_no)
@@ -289,14 +274,6 @@ def import_wallet_recharge_rows(
                 )
             except Exception as e:
                 logger.warning("Failed to send wallet credit email to %s: %s", user.email, e)
-
-        if recharge_pk_to_notify is not None:
-            try:
-                _send_recharge_request_approved_notifications_safe(
-                    WalletRechargeRequest.objects.get(pk=recharge_pk_to_notify)
-                )
-            except WalletRechargeRequest.DoesNotExist:
-                pass
 
     return credited, skipped, errors, processed_receipts
 
@@ -345,59 +322,8 @@ def _import_record_exists_for_parse_entry(entry: WalletRechargeParseEntry) -> bo
 
 def match_pending_recharge_requests_to_parse_entries() -> Tuple[int, List[str]]:
     """
-    For each parse row not yet imported, find a PENDING recharge request (OTP verified) for the same
-    user (emp_id) and amount; credit via import and mark the request approved.
+    Disabled: wallet recharge requests are approved only via SRIC email Approve/Reject
+    or the admin dashboard. Parse/IMAP import must not auto-approve pending requests
+    (avoids double-credit and race with email approval).
     """
-    matched = 0
-    errors: List[str] = []
-    for entry in WalletRechargeParseEntry.objects.all().order_by("-created_at"):
-        if _import_record_exists_for_parse_entry(entry):
-            continue
-        row = _parse_entry_to_import_row(entry)
-        if not row:
-            continue
-        emp_key = (row.get("emp_no") or "").strip()
-        user = User.objects.filter(emp_id=emp_key).first()
-        if user is None and emp_key:
-            user = User.objects.filter(emp_id__iexact=emp_key).first()
-        if user is None:
-            continue
-        reqs = (
-            WalletRechargeRequest.objects.filter(
-                status=WalletRechargeRequestStatus.PENDING,
-                user=user,
-                amount=row["amount"],
-                user_otp_verified=True,
-            )
-            .select_related("department")
-            .order_by("created_at")
-        )
-        req = reqs.first()
-        if not req:
-            continue
-        dept_id = req.department_id
-        credited, _skipped, err_list, _receipts = import_wallet_recharge_rows(
-            [row],
-            default_department_id=dept_id,
-            dry_run=False,
-            credit_department_id=dept_id,
-        )
-        errors.extend(err_list)
-        if credited > 0:
-            locked_req = None
-            with transaction.atomic():
-                locked_req = (
-                    WalletRechargeRequest.objects.select_for_update()
-                    .filter(pk=req.pk, status=WalletRechargeRequestStatus.PENDING)
-                    .first()
-                )
-                if locked_req:
-                    _write_recharge_request_approved_from_import(
-                        locked_req,
-                        receipt_no=str(entry.receipt_no or ""),
-                        via_parse_entry_matcher=True,
-                    )
-            if locked_req:
-                _send_recharge_request_approved_notifications_safe(locked_req)
-            matched += 1
-    return matched, errors
+    return 0, []

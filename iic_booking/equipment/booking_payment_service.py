@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional, Tuple
 
+from iic_booking.equipment.calculators import quantize_money
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.wallet_credit_facility import (
     subwallet_booking_balance_ok,
@@ -25,24 +26,24 @@ def compute_booking_payment_split(
     External users: apply available wallet, remainder collected separately.
     Internal users: full amount from wallet or error (unchanged behaviour).
     """
-    tc = Decimal(str(total_charge or 0)).quantize(Decimal("0.01"))
+    tc = quantize_money(total_charge or 0)
     if create_as_hold or tc <= 0:
-        return Decimal("0.00"), Decimal("0.00"), None
+        return Decimal("0"), Decimal("0"), None
 
     block = wallet_booking_block_message(booking_target)
     if block:
-        return Decimal("0.00"), tc, block
+        return Decimal("0"), tc, block
 
     if UserType.is_external_user(user_type or ""):
         spendable = wallet_max_spendable_on_subwallet(booking_target)
-        applied = min(spendable, tc).quantize(Decimal("0.01"))
-        due = (tc - applied).quantize(Decimal("0.01"))
+        applied = quantize_money(min(spendable, tc))
+        due = quantize_money(tc - applied)
         return applied, due, None
 
     ok, err = subwallet_booking_balance_ok(booking_target, tc, create_as_hold)
     if not ok:
-        return Decimal("0.00"), tc, err
-    return tc, Decimal("0.00"), None
+        return Decimal("0"), tc, err
+    return tc, Decimal("0"), None
 
 
 def booking_payment_fully_settled(booking) -> bool:

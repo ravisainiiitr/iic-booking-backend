@@ -13,12 +13,17 @@ from .wallet import (
     WalletJoinRequestStatus,
     WalletRechargeRequest,
     WalletRechargeRequestStatus,
+    WalletRechargeRejectionReason,
+    WalletRechargeCancellationSource,
     WalletRechargeCreditFacilityStatus,
+    WalletRechargeRequestAuditLog,
     WalletRechargeImportRecord,
     WalletRechargeParseEntry,
     ExternalUserBankDetails,
     WalletWithdrawalRequest,
     WalletWithdrawalRequestStatus,
+    WalletPeerTransfer,
+    WalletPeerTransferStatus,
 )
 from .wallet_credit_facility_settings import WalletCreditFacilitySettings
 from .wallet_student_recharge_settings import WalletStudentRechargeSettings
@@ -41,6 +46,7 @@ from .equipment_supply_chain_role import (
 )
 from .rbac import PermissionDefinition, DeptAdminPermissionGrant, StaffPermissionGrant
 from .admin_panel_access import AdminPanelRoleConfig
+from .sync_agent import SyncAgent
 
 __all__ = [
     "UserManager",
@@ -58,7 +64,10 @@ __all__ = [
     "WalletJoinRequestStatus",
     "WalletRechargeRequest",
     "WalletRechargeRequestStatus",
+    "WalletRechargeRejectionReason",
+    "WalletRechargeCancellationSource",
     "WalletRechargeCreditFacilityStatus",
+    "WalletRechargeRequestAuditLog",
     "WalletCreditFacilitySettings",
     "WalletStudentRechargeSettings",
     "WalletRechargeImportRecord",
@@ -66,6 +75,8 @@ __all__ = [
     "ExternalUserBankDetails",
     "WalletWithdrawalRequest",
     "WalletWithdrawalRequestStatus",
+    "WalletPeerTransfer",
+    "WalletPeerTransferStatus",
     "UserDocument",
     "UserGroup",
     "UserGroupMember",
@@ -84,5 +95,6 @@ __all__ = [
     "DeptAdminPermissionGrant",
     "StaffPermissionGrant",
     "AdminPanelRoleConfig",
+    "SyncAgent",
 ]
 

@@ -16,6 +16,7 @@ from .calculators import (
     ChargeCalculationEngine,
     TimeCalculationEngine,
     build_safe_input_values_for_charge_calculation,
+    quantize_money,
     safe_decimal,
 )
 from .maintenance_policy import (
@@ -109,14 +110,14 @@ def _finalize_charge_for_booking(booking: Booking, base_charge: Decimal, breakdo
     """Apply external GST when the booking user is external (matches booking-time rules)."""
     user_type = getattr(booking, "user_type_snapshot", None) or ""
     if not UserType.is_external_user(user_type):
-        return base_charge.quantize(Decimal("0.01")), breakdown
+        return quantize_money(base_charge), breakdown
 
     gst_percent = _get_external_gst_percent()
     if gst_percent <= 0:
-        return base_charge.quantize(Decimal("0.01")), breakdown
+        return quantize_money(base_charge), breakdown
 
-    gst_amount = (base_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-    total = (base_charge + gst_amount).quantize(Decimal("0.01"))
+    gst_amount = quantize_money(base_charge * gst_percent / Decimal("100"))
+    total = quantize_money(base_charge + gst_amount)
     new_breakdown = list(breakdown) + [
         {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
     ]

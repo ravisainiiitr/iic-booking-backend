@@ -7,13 +7,14 @@ from typing import Dict, List, Any, Optional, Tuple
 from django.core.exceptions import ValidationError
 from .models import ChargeProfile, ChargeProfilePricingProfile, ChargeProfileType, MultiParamDefinition
 
-MONEY_QUANTIZE = Decimal("0.01")
+# Final booking charges are stored/displayed as whole rupees (nearest ₹).
+MONEY_QUANTIZE = Decimal("1")
 ICPMS_STANDARDS_RUNS_PER_STANDARD = Decimal("3")
 ICPMS_BLANK_SAMPLE_UNITS = Decimal("1")
 
 
 def quantize_money(value: Any) -> Decimal:
-    """Round monetary amounts to paise (2 dp); never truncate to whole rupees."""
+    """Round monetary amounts to the nearest whole rupee (₹)."""
     return safe_decimal(value).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
 
 

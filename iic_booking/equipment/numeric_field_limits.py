@@ -13,6 +13,14 @@ DEFAULT_NUMERIC_STEP = 1.0
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
+def _is_truthy_option(value: Any) -> bool:
+    if value is True or value == 1:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes"}
+    return False
+
+
 def _to_float(value: Any) -> Optional[float]:
     if value is None or value is False:
         return None
@@ -126,6 +134,12 @@ def resolve_numeric_field_bounds(
         max_v = _to_float(opts.get("max"))
         if max_v is None:
             max_v = from_help.get("max", DEFAULT_NUMERIC_MAX)
+
+    allow_negative = _is_truthy_option(opts.get("allow_negative")) or _is_truthy_option(
+        opts.get("allowNegative")
+    )
+    if allow_negative and min_v >= 0:
+        min_v = -abs(max_v if max_v != 0 else DEFAULT_NUMERIC_MAX)
 
     if max_v < min_v:
         max_v = min_v

@@ -53,6 +53,7 @@ from .models import (
     ExternalUserBankDetails,
     WalletWithdrawalRequest,
     WalletWithdrawalRequestStatus,
+    WalletPeerTransfer,
     UserType,
     UserDocument,
     UserGroup,
@@ -156,7 +157,7 @@ class UserAdmin(auth_admin.UserAdmin):
     view_on_site = False
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        (_("Personal info"), {"fields": ("name", "gender", "user_type", "user_type_alias", "emp_id", "phone_number", "profile_picture", "profile_picture_preview", "department")}),
+        (_("Personal info"), {"fields": ("name", "gender", "user_type", "user_type_alias", "emp_id", "phone_number", "profile_picture", "profile_picture_preview", "department", "designation", "branch_name", "degree_name", "joining_date", "graduation_date")}),
         (
             _("Verification & Approval"),
             {
@@ -1963,6 +1964,40 @@ class WalletWithdrawalRequestAdmin(admin.ModelAdmin):
     search_fields = ("user__email", "approved_by_email", "response_message", "utr_reference")
     ordering = ("-created_at",)
     readonly_fields = ("created_at", "updated_at", "responded_at", "completed_at")
+
+
+@admin.register(WalletPeerTransfer)
+class WalletPeerTransferAdmin(admin.ModelAdmin):
+    list_display = (
+        "transaction_id",
+        "sender",
+        "recipient",
+        "amount",
+        "grant_code",
+        "status",
+        "otp_verified",
+        "created_at",
+        "completed_at",
+    )
+    list_filter = ("status", "otp_verified", "created_at", "completed_at")
+    search_fields = (
+        "transaction_id",
+        "sender__email",
+        "recipient__email",
+        "grant_code",
+        "remarks",
+    )
+    ordering = ("-created_at",)
+    readonly_fields = (
+        "transaction_id",
+        "otp_verified",
+        "otp_verified_at",
+        "sender_balance_after",
+        "recipient_balance_after",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    )
 
 
 @admin.register(UserEquipmentSupplyChainRole)

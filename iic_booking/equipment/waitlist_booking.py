@@ -24,6 +24,7 @@ from .calculators import (
     ChargeCalculationEngine,
     build_safe_input_values_for_charge_calculation,
     TimeCalculationEngine,
+    quantize_money,
 )
 from .slot_utils import SlotAvailabilityChecker
 from .quota_utils import QuotaChecker, booking_quota_should_skip
@@ -360,8 +361,8 @@ def create_booking_for_waitlist_user(
     if is_external:
         gst_percent = _get_external_gst_percent()
         if gst_percent > 0:
-            gst_amount = (total_charge * gst_percent / Decimal("100")).quantize(Decimal("0.01"))
-            total_charge = (total_charge + gst_amount).quantize(Decimal("0.01"))
+            gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
+            total_charge = quantize_money(total_charge + gst_amount)
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]

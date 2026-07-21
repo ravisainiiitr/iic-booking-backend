@@ -319,6 +319,13 @@ def send_wallet_recharge_request_notifications(
         push_template_code = "wallet_recharge_rejected_push"
         title = "Wallet Recharge Rejected"
         message = f"Your wallet recharge request of ₹{amount:.2f} has been rejected."
+        if recharge_request.response_message:
+            message += f" Reason: {recharge_request.response_message}"
+    elif status == "CANCELLED":
+        email_template_code = "wallet_recharge_rejected_email"
+        push_template_code = "wallet_recharge_rejected_push"
+        title = "Wallet Recharge Cancelled"
+        message = f"Your wallet recharge request of ₹{amount:.2f} has been cancelled."
     else:
         # For PENDING or other statuses
         email_template_code = "wallet_recharge_pending_email"

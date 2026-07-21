@@ -11,7 +11,7 @@ def _safe_str(v: Any) -> str:
 
 def _money(v: Any) -> str:
     try:
-        return f"{Decimal(str(v)).quantize(Decimal('0.01'))}"
+        return f"{Decimal(str(v)).quantize(Decimal('1'))}"
     except Exception:
         return _safe_str(v)
 

@@ -43,17 +43,18 @@ class ChargeProfileWithType:
 
 
 class ChargeApproximationTests(TestCase):
-    def test_quantize_money_preserves_paise(self):
-        self.assertEqual(quantize_money("10.335"), Decimal("10.34"))
-        self.assertEqual(quantize_money(Decimal("99.994")), Decimal("99.99"))
+    def test_quantize_money_rounds_to_nearest_rupee(self):
+        self.assertEqual(quantize_money("10.335"), Decimal("10"))
+        self.assertEqual(quantize_money(Decimal("99.5")), Decimal("100"))
+        self.assertEqual(quantize_money(Decimal("99.4")), Decimal("99"))
 
     def test_finalize_charge_result_rounds_total_and_breakdown(self):
         total, breakdown = finalize_charge_result(
             Decimal("12.345"),
             [{"description": "line", "amount": 3.336}],
         )
-        self.assertEqual(total, Decimal("12.35"))
-        self.assertEqual(breakdown[0]["amount"], 3.34)
+        self.assertEqual(total, Decimal("12"))
+        self.assertEqual(breakdown[0]["amount"], 3.0)
 
 
 class ICPMSChargeTests(TestCase):

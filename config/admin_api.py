@@ -148,6 +148,7 @@ def admin_api_router():
         SubWalletTransaction,
         WalletRazorpayOrder,
         WalletRechargeRequest,
+        WalletRechargeRequestStatus,
         OrganizationRequest,
         PermissionDefinition,
         DeptAdminPermissionGrant,
@@ -1661,19 +1662,303 @@ def admin_api_router():
             return qs
 
     class WalletRechargeRequestViewSet(ModelViewSet):
+        """Manage internal wallet recharge requests (history, approve/reject/cancel, audit)."""
+
         permission_classes = [IsAdminPanelUser]
-        queryset = WalletRechargeRequest.objects.all().select_related("user", "wallet", "department")
+        queryset = (
+            WalletRechargeRequest.objects.all()
+            .select_related(
+                "user",
+                "user__department",
+                "wallet",
+                "department",
+                "project",
+                "account_incharge",
+                "processed_by",
+            )
+            .prefetch_related("audit_logs", "audit_logs__actor")
+            .order_by("-created_at")
+        )
         serializer_class = WalletRechargeRequestSerializer
+        http_method_names = ["get", "post", "head", "options"]
+
+        class WalletRechargeRequestPagination(PageNumberPagination):
+            page_size = 50
+            page_size_query_param = "page_size"
+            max_page_size = 200
+
+        pagination_class = WalletRechargeRequestPagination
 
         def initial(self, request, *args, **kwargs):
             super().initial(request, *args, **kwargs)
             _require_wallet_manage(request)
 
         def get_queryset(self):
+            from django.db.models import Q
+
             qs = super().get_queryset()
-            if is_department_admin(self.request.user):
-                qs = qs.filter(department_id=self.request.user.department_id)
+            user = self.request.user
+            ut = getattr(user, "user_type", None)
+            if ut == UserType.ADMIN:
+                pass
+            elif is_department_admin(user):
+                qs = qs.filter(department_id=user.department_id)
+            elif ut == UserType.FINANCE:
+                qs = qs.filter(
+                    Q(account_incharge_id=user.id)
+                    | Q(department_id=user.department_id)
+                    | Q(department_id__isnull=True)
+                )
+            else:
+                qs = qs.filter(department_id=user.department_id)
+
+            if self.action != "list":
+                return qs
+
+            status_filter = (self.request.query_params.get("status") or "").strip().upper()
+            if status_filter in {s.value for s in WalletRechargeRequestStatus}:
+                qs = qs.filter(status=status_filter)
+
+            search = (self.request.query_params.get("search") or "").strip()
+            if search:
+                qs = qs.filter(
+                    Q(user__email__icontains=search)
+                    | Q(user__name__icontains=search)
+                    | Q(user__emp_id__icontains=search)
+                    | Q(employee_number__icontains=search)
+                    | Q(department__name__icontains=search)
+                    | Q(department_grant_code__icontains=search)
+                    | Q(project_grant_code__icontains=search)
+                    | Q(project__project_code__icontains=search)
+                    | Q(project__name__icontains=search)
+                    | Q(id__icontains=search)
+                )
+
+            department_id = (self.request.query_params.get("department") or "").strip()
+            if department_id:
+                try:
+                    qs = qs.filter(department_id=int(department_id))
+                except ValueError:
+                    pass
+
+            user_id = (self.request.query_params.get("user") or "").strip()
+            if user_id:
+                try:
+                    qs = qs.filter(user_id=int(user_id))
+                except ValueError:
+                    pass
+
+            project_grant = (self.request.query_params.get("project_grant") or "").strip()
+            if project_grant:
+                qs = qs.filter(
+                    Q(project_grant_code__icontains=project_grant)
+                    | Q(project__project_code__icontains=project_grant)
+                )
+
+            date_from = (self.request.query_params.get("date_from") or "").strip()
+            if date_from:
+                try:
+                    from datetime import datetime as dt
+
+                    parsed = dt.strptime(date_from, "%Y-%m-%d").date()
+                    start_dt = timezone.make_aware(dt.combine(parsed, dt.min.time()))
+                    qs = qs.filter(created_at__gte=start_dt)
+                except ValueError:
+                    pass
+
+            date_to = (self.request.query_params.get("date_to") or "").strip()
+            if date_to:
+                try:
+                    from datetime import datetime as dt
+
+                    parsed = dt.strptime(date_to, "%Y-%m-%d").date()
+                    end_dt = timezone.make_aware(dt.combine(parsed + timedelta(days=1), dt.min.time()))
+                    qs = qs.filter(created_at__lt=end_dt)
+                except ValueError:
+                    pass
+
+            ordering = (self.request.query_params.get("ordering") or "-created_at").strip()
+            allowed = {
+                "created_at",
+                "-created_at",
+                "amount",
+                "-amount",
+                "status",
+                "-status",
+                "responded_at",
+                "-responded_at",
+            }
+            if ordering in allowed:
+                qs = qs.order_by(ordering)
             return qs
+
+        @action(detail=True, methods=["post"], url_path="approve")
+        def approve(self, request, pk=None):
+            from iic_booking.users.models.wallet import WalletRechargeCancellationSource  # noqa: F401
+            from iic_booking.users.wallet_recharge_workflow import (
+                RechargeAlreadyProcessed,
+                already_processed_page,
+                approve_request,
+                notify_stakeholders_of_decision,
+            )
+
+            recharge_request = self.get_object()
+            if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+                page = already_processed_page(
+                    recharge_request.status, recharge_request.cancellation_source or ""
+                )
+                return Response(
+                    {
+                        "error": page["message"],
+                        "page_code": page["page_code"],
+                        "already_processed": True,
+                        "request": WalletRechargeRequestSerializer(recharge_request).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            try:
+                approved = approve_request(
+                    recharge_request,
+                    response_message=(request.data.get("response_message") or "").strip(),
+                    actor=request.user,
+                    actor_email=request.user.email,
+                )
+                notify_stakeholders_of_decision(approved)
+                return Response(
+                    {
+                        "message": f"Approved. ₹{approved.amount} credited.",
+                        "request": WalletRechargeRequestSerializer(approved).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            except RechargeAlreadyProcessed as e:
+                recharge_request.refresh_from_db()
+                page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+                return Response(
+                    {"error": page["message"], "page_code": page["page_code"], "already_processed": True},
+                    status=status.HTTP_200_OK,
+                )
+            except ValueError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        @action(detail=True, methods=["post"], url_path="reject")
+        def reject(self, request, pk=None):
+            from iic_booking.users.models.wallet import WalletRechargeRejectionReason
+            from iic_booking.users.wallet_recharge_workflow import (
+                RechargeAlreadyProcessed,
+                already_processed_page,
+                notify_stakeholders_of_decision,
+                reject_request,
+            )
+
+            recharge_request = self.get_object()
+            if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+                page = already_processed_page(
+                    recharge_request.status, recharge_request.cancellation_source or ""
+                )
+                return Response(
+                    {
+                        "error": page["message"],
+                        "page_code": page["page_code"],
+                        "already_processed": True,
+                        "request": WalletRechargeRequestSerializer(recharge_request).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            reason_code = (
+                request.data.get("reason_code") or request.data.get("rejection_reason_code") or ""
+            ).strip() or WalletRechargeRejectionReason.OTHER
+            reason_text = (
+                request.data.get("reason_text")
+                or request.data.get("rejection_reason_text")
+                or request.data.get("response_message")
+                or ""
+            ).strip()
+            try:
+                rejected = reject_request(
+                    recharge_request,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    actor=request.user,
+                    actor_email=request.user.email,
+                )
+                notify_stakeholders_of_decision(rejected)
+                return Response(
+                    {
+                        "message": "Wallet recharge request rejected.",
+                        "request": WalletRechargeRequestSerializer(rejected).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            except RechargeAlreadyProcessed as e:
+                recharge_request.refresh_from_db()
+                page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+                return Response(
+                    {"error": page["message"], "page_code": page["page_code"], "already_processed": True},
+                    status=status.HTTP_200_OK,
+                )
+            except ValueError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        @action(detail=True, methods=["post"], url_path="cancel")
+        def cancel(self, request, pk=None):
+            from iic_booking.users.models.wallet import WalletRechargeCancellationSource
+            from iic_booking.users.wallet_recharge_workflow import (
+                RechargeAlreadyProcessed,
+                already_processed_page,
+                cancel_request,
+                notify_stakeholders_of_decision,
+            )
+
+            recharge_request = self.get_object()
+            if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+                page = already_processed_page(
+                    recharge_request.status, recharge_request.cancellation_source or ""
+                )
+                return Response(
+                    {
+                        "error": page["message"],
+                        "page_code": page["page_code"],
+                        "already_processed": True,
+                        "request": WalletRechargeRequestSerializer(recharge_request).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            ut = getattr(request.user, "user_type", None)
+            source = (
+                WalletRechargeCancellationSource.DEPT_ADMIN
+                if is_department_admin(request.user)
+                else WalletRechargeCancellationSource.ADMIN
+            )
+            if ut == UserType.FINANCE and not is_department_admin(request.user):
+                # Account in-charge cancel is treated as admin cancellation for email status pages
+                source = WalletRechargeCancellationSource.ADMIN
+            try:
+                cancelled = cancel_request(
+                    recharge_request,
+                    source=source,
+                    actor=request.user,
+                    actor_email=request.user.email,
+                    note=(request.data.get("note") or request.data.get("response_message") or "").strip()
+                    or "Cancelled by administrator",
+                )
+                notify_stakeholders_of_decision(cancelled)
+                return Response(
+                    {
+                        "message": "Wallet recharge request cancelled.",
+                        "request": WalletRechargeRequestSerializer(cancelled).data,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            except RechargeAlreadyProcessed as e:
+                recharge_request.refresh_from_db()
+                page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+                return Response(
+                    {"error": page["message"], "page_code": page["page_code"], "already_processed": True},
+                    status=status.HTTP_200_OK,
+                )
+            except ValueError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     class BookingViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]

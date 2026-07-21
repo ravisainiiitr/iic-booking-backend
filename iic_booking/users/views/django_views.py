@@ -9,12 +9,11 @@ from django.views.generic import DetailView
 from django.views.generic import RedirectView
 from django.views.generic import UpdateView
 from django.views import View
-from django.shortcuts import render, get_object_or_404, redirect
-from django.contrib import messages
-from django.http import HttpResponse, Http404
+from django.shortcuts import render, redirect
 
-from ..models import User, WalletRechargeRequest, WalletRechargeRequestStatus
-from ..serializers.wallet_serializer import WalletRechargeRequestApproveSerializer
+from iic_booking.communication.utils import get_frontend_absolute_url
+
+from ..models import User, WalletRechargeRequest
 
 
 class UserDetailView(LoginRequiredMixin, DetailView):
@@ -59,342 +58,83 @@ class UserRedirectView(LoginRequiredMixin, RedirectView):
 user_redirect_view = UserRedirectView.as_view()
 
 
+def _frontend_recharge_action_url(recharge_request: WalletRechargeRequest, action: str) -> str:
+    """Redirect legacy Django approve/reject URLs to the secure frontend token pages."""
+    if not recharge_request.action_token:
+        import secrets
+
+        recharge_request.action_token = secrets.token_urlsafe(32)
+        recharge_request.save(update_fields=["action_token", "updated_at"])
+    return get_frontend_absolute_url(f"/wallet/recharge-action/{recharge_request.action_token}/{action}")
+
+
 class ApproveRechargeRequestView(View):
-    """View for approving wallet recharge requests via web form."""
-    
+    """Legacy backend URL — redirects to frontend token Approve page."""
+
     def get(self, request, request_id):
-        """Display approve form."""
         try:
             recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
         except WalletRechargeRequest.DoesNotExist:
-            return render(request, "users/wallet_recharge_request_not_found.html", {
-                "error_message": "Wallet recharge request not found.",
-                "request_id": request_id,
-            }, status=404)
-        
-        # Show status page if request is not pending
-        if recharge_request.status != WalletRechargeRequestStatus.PENDING:
-            status_info = {
-                WalletRechargeRequestStatus.APPROVED: {
-                    "title": "Request Already Approved",
-                    "message": "This recharge request has already been approved.",
-                    "color": "#4CAF50",
-                    "icon": "✓",
-                },
-                WalletRechargeRequestStatus.REJECTED: {
-                    "title": "Request Already Rejected",
-                    "message": "This recharge request has already been rejected.",
-                    "color": "#f44336",
-                    "icon": "✗",
-                },
-                WalletRechargeRequestStatus.CANCELLED: {
-                    "title": "Request Cancelled",
-                    "message": "This recharge request has been cancelled.",
-                    "color": "#6c757d",
-                    "icon": "⊘",
-                },
-            }
-            info = status_info.get(recharge_request.status, {
-                "title": "Request Already Processed",
-                "message": "This recharge request has already been processed.",
-                "color": "#6c757d",
-                "icon": "!",
-            })
-            
-            return render(request, "users/wallet_recharge_request_already_processed.html", {
-                "recharge_request": recharge_request,
-                "status_title": info["title"],
-                "status_message": info["message"],
-                "status_color": info["color"],
-                "status_icon": info["icon"],
-            }, status=404)
-        
-        context = {
-            "recharge_request": recharge_request,
-            "action": "approve",
-            "action_label": "Approve",
-            "button_color": "#4CAF50",
-        }
-        return render(request, "users/wallet_recharge_action.html", context)
-    
-    def post(self, request, request_id):
-        """Handle approve form submission."""
-        try:
-            recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
-        except WalletRechargeRequest.DoesNotExist:
-            return render(request, "users/wallet_recharge_request_not_found.html", {
-                "error_message": "Wallet recharge request not found.",
-                "request_id": request_id,
-            }, status=404)
-        
-        # Show status page if request is not pending
-        if recharge_request.status != WalletRechargeRequestStatus.PENDING:
-            status_info = {
-                WalletRechargeRequestStatus.APPROVED: {
-                    "title": "Request Already Approved",
-                    "message": "This recharge request has already been approved.",
-                    "color": "#4CAF50",
-                    "icon": "✓",
-                },
-                WalletRechargeRequestStatus.REJECTED: {
-                    "title": "Request Already Rejected",
-                    "message": "This recharge request has already been rejected.",
-                    "color": "#f44336",
-                    "icon": "✗",
-                },
-                WalletRechargeRequestStatus.CANCELLED: {
-                    "title": "Request Cancelled",
-                    "message": "This recharge request has been cancelled.",
-                    "color": "#6c757d",
-                    "icon": "⊘",
-                },
-            }
-            info = status_info.get(recharge_request.status, {
-                "title": "Request Already Processed",
-                "message": "This recharge request has already been processed.",
-                "color": "#6c757d",
-                "icon": "!",
-            })
-            
-            return render(request, "users/wallet_recharge_request_already_processed.html", {
-                "recharge_request": recharge_request,
-                "status_title": info["title"],
-                "status_message": info["message"],
-                "status_color": info["color"],
-                "status_icon": info["icon"],
-            }, status=404)
-        
-        response_message = request.POST.get('response_message', '').strip()
-        
-        try:
-            recharge_request.approve(response_message)
-            
-            # Send notification to user
-            try:
-                from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-                send_wallet_recharge_request_notifications(recharge_request, "APPROVED")
-            except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Failed to send approval notification: {str(e)}")
-            
-            messages.success(
+            return render(
                 request,
-                f"Recharge request approved successfully. ₹{recharge_request.amount} has been credited to {recharge_request.department.name if recharge_request.department else 'wallet'}."
+                "users/wallet_recharge_request_not_found.html",
+                {
+                    "error_message": "Wallet recharge request not found.",
+                    "request_id": request_id,
+                },
+                status=404,
             )
-            return render(request, "users/wallet_recharge_action_success.html", {
-                "recharge_request": recharge_request,
-                "action": "approved",
-            })
-        except ValueError as e:
-            messages.error(request, str(e))
-            return redirect("users:approve-recharge-request", request_id=request_id)
-        except Exception as e:
-            messages.error(request, f"Failed to approve request: {str(e)}")
-            return redirect("users:approve-recharge-request", request_id=request_id)
+        return redirect(_frontend_recharge_action_url(recharge_request, "approve"))
 
-
-class RejectRechargeRequestView(View):
-    """View for rejecting wallet recharge requests via web form."""
-    
-    def get(self, request, request_id):
-        """Display reject form."""
-        try:
-            recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
-        except WalletRechargeRequest.DoesNotExist:
-            return render(request, "users/wallet_recharge_request_not_found.html", {
-                "error_message": "Wallet recharge request not found.",
-                "request_id": request_id,
-            }, status=404)
-        
-        # Show status page if request is not pending
-        if recharge_request.status != WalletRechargeRequestStatus.PENDING:
-            status_info = {
-                WalletRechargeRequestStatus.APPROVED: {
-                    "title": "Request Already Approved",
-                    "message": "This recharge request has already been approved.",
-                    "color": "#4CAF50",
-                    "icon": "✓",
-                },
-                WalletRechargeRequestStatus.REJECTED: {
-                    "title": "Request Already Rejected",
-                    "message": "This recharge request has already been rejected.",
-                    "color": "#f44336",
-                    "icon": "✗",
-                },
-                WalletRechargeRequestStatus.CANCELLED: {
-                    "title": "Request Cancelled",
-                    "message": "This recharge request has been cancelled.",
-                    "color": "#6c757d",
-                    "icon": "⊘",
-                },
-            }
-            info = status_info.get(recharge_request.status, {
-                "title": "Request Already Processed",
-                "message": "This recharge request has already been processed.",
-                "color": "#6c757d",
-                "icon": "!",
-            })
-            
-            return render(request, "users/wallet_recharge_request_already_processed.html", {
-                "recharge_request": recharge_request,
-                "status_title": info["title"],
-                "status_message": info["message"],
-                "status_color": info["color"],
-                "status_icon": info["icon"],
-            }, status=404)
-        
-        context = {
-            "recharge_request": recharge_request,
-            "action": "reject",
-            "action_label": "Reject",
-            "button_color": "#f44336",
-        }
-        return render(request, "users/wallet_recharge_action.html", context)
-    
     def post(self, request, request_id):
-        """Handle reject form submission."""
-        try:
-            recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
-        except WalletRechargeRequest.DoesNotExist:
-            return render(request, "users/wallet_recharge_request_not_found.html", {
-                "error_message": "Wallet recharge request not found.",
-                "request_id": request_id,
-            }, status=404)
-        
-        # Show status page if request is not pending
-        if recharge_request.status != WalletRechargeRequestStatus.PENDING:
-            status_info = {
-                WalletRechargeRequestStatus.APPROVED: {
-                    "title": "Request Already Approved",
-                    "message": "This recharge request has already been approved.",
-                    "color": "#4CAF50",
-                    "icon": "✓",
-                },
-                WalletRechargeRequestStatus.REJECTED: {
-                    "title": "Request Already Rejected",
-                    "message": "This recharge request has already been rejected.",
-                    "color": "#f44336",
-                    "icon": "✗",
-                },
-                WalletRechargeRequestStatus.CANCELLED: {
-                    "title": "Request Cancelled",
-                    "message": "This recharge request has been cancelled.",
-                    "color": "#6c757d",
-                    "icon": "⊘",
-                },
-            }
-            info = status_info.get(recharge_request.status, {
-                "title": "Request Already Processed",
-                "message": "This recharge request has already been processed.",
-                "color": "#6c757d",
-                "icon": "!",
-            })
-            
-            return render(request, "users/wallet_recharge_request_already_processed.html", {
-                "recharge_request": recharge_request,
-                "status_title": info["title"],
-                "status_message": info["message"],
-                "status_color": info["color"],
-                "status_icon": info["icon"],
-            }, status=404)
-        
-        response_message = request.POST.get('response_message', '').strip()
-        
-        if not response_message:
-            messages.error(request, "Response message is required for rejection.")
-            return redirect("users:reject-recharge-request", request_id=request_id)
-        
-        try:
-            recharge_request.reject(response_message)
-            
-            # Send notification to user
-            try:
-                from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-                send_wallet_recharge_request_notifications(recharge_request, "REJECTED")
-            except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"Failed to send rejection notification: {str(e)}")
-            
-            messages.success(request, "Recharge request rejected successfully.")
-            return render(request, "users/wallet_recharge_action_success.html", {
-                "recharge_request": recharge_request,
-                "action": "rejected",
-            })
-        except ValueError as e:
-            messages.error(request, str(e))
-            return redirect("users:reject-recharge-request", request_id=request_id)
-        except Exception as e:
-            messages.error(request, f"Failed to reject request: {str(e)}")
-            return redirect("users:reject-recharge-request", request_id=request_id)
+        return self.get(request, request_id)
 
 
 approve_recharge_request_view = ApproveRechargeRequestView.as_view()
+
+
+class RejectRechargeRequestView(View):
+    """Legacy backend URL — redirects to frontend token Reject page."""
+
+    def get(self, request, request_id):
+        try:
+            recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
+        except WalletRechargeRequest.DoesNotExist:
+            return render(
+                request,
+                "users/wallet_recharge_request_not_found.html",
+                {
+                    "error_message": "Wallet recharge request not found.",
+                    "request_id": request_id,
+                },
+                status=404,
+            )
+        return redirect(_frontend_recharge_action_url(recharge_request, "reject"))
+
+    def post(self, request, request_id):
+        return self.get(request, request_id)
+
+
 reject_recharge_request_view = RejectRechargeRequestView.as_view()
 
 
 class RechargeRequestActionView(View):
-    """View for displaying approve/reject options for a wallet recharge request."""
-    
+    """Legacy overview URL — redirects to frontend token Approve page (status shown there)."""
+
     def get(self, request, request_id):
-        """Display action page with approve and reject buttons."""
         try:
             recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
         except WalletRechargeRequest.DoesNotExist:
-            return render(request, "users/wallet_recharge_request_not_found.html", {
-                "error_message": "Wallet recharge request not found.",
-                "request_id": request_id,
-            }, status=404)
-        
-        # Show status page if request is not pending
-        if recharge_request.status != WalletRechargeRequestStatus.PENDING:
-            status_info = {
-                WalletRechargeRequestStatus.APPROVED: {
-                    "title": "Request Already Approved",
-                    "message": "This recharge request has already been approved.",
-                    "color": "#4CAF50",
-                    "icon": "✓",
+            return render(
+                request,
+                "users/wallet_recharge_request_not_found.html",
+                {
+                    "error_message": "Wallet recharge request not found.",
+                    "request_id": request_id,
                 },
-                WalletRechargeRequestStatus.REJECTED: {
-                    "title": "Request Already Rejected",
-                    "message": "This recharge request has already been rejected.",
-                    "color": "#f44336",
-                    "icon": "✗",
-                },
-                WalletRechargeRequestStatus.CANCELLED: {
-                    "title": "Request Cancelled",
-                    "message": "This recharge request has been cancelled.",
-                    "color": "#6c757d",
-                    "icon": "⊘",
-                },
-            }
-            info = status_info.get(recharge_request.status, {
-                "title": "Request Already Processed",
-                "message": "This recharge request has already been processed.",
-                "color": "#6c757d",
-                "icon": "!",
-            })
-            
-            return render(request, "users/wallet_recharge_request_already_processed.html", {
-                "recharge_request": recharge_request,
-                "status_title": info["title"],
-                "status_message": info["message"],
-                "status_color": info["color"],
-                "status_icon": info["icon"],
-            }, status=404)
-        
-        from django.urls import reverse
-        approve_url = reverse('users:approve-recharge-request', kwargs={'request_id': recharge_request.id})
-        reject_url = reverse('users:reject-recharge-request', kwargs={'request_id': recharge_request.id})
-        
-        context = {
-            "recharge_request": recharge_request,
-            "approve_url": approve_url,
-            "reject_url": reject_url,
-        }
-        return render(request, "users/wallet_recharge_action_page.html", context)
+                status=404,
+            )
+        return redirect(_frontend_recharge_action_url(recharge_request, "approve"))
 
 
 recharge_request_action_view = RechargeRequestActionView.as_view()
-

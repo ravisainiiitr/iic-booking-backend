@@ -10,6 +10,7 @@ from ..models import (
     SubWalletTransaction,
     WalletJoinRequest,
     WalletRechargeRequest,
+    WalletRechargeRequestAuditLog,
     ExternalUserBankDetails,
     WalletWithdrawalRequest,
     UserType,
@@ -486,11 +487,38 @@ class WalletJoinRequestResponseSerializer(serializers.Serializer):
     )
 
 
+class WalletRechargeRequestAuditLogSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WalletRechargeRequestAuditLog
+        fields = [
+            "id",
+            "from_status",
+            "to_status",
+            "action",
+            "actor",
+            "actor_name",
+            "actor_email",
+            "message",
+            "metadata",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_actor_name(self, obj):
+        if obj.actor_id:
+            return obj.actor.name or obj.actor.email
+        return obj.actor_email or ""
+
+
 class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     """Serializer for wallet recharge requests (to a department sub-wallet)."""
     
     user_name = serializers.SerializerMethodField()
     user_email = serializers.SerializerMethodField()
+    user_emp_id = serializers.SerializerMethodField()
+    request_id = serializers.CharField(source="request_id_display", read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     department_id = serializers.IntegerField(source='department.id', read_only=True, allow_null=True)
     department_name = serializers.CharField(source='department.name', read_only=True, allow_null=True)
@@ -500,14 +528,19 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     project_agency = serializers.SerializerMethodField()
     project_head_name = serializers.SerializerMethodField()
     project_head_email = serializers.SerializerMethodField()
+    account_incharge_email = serializers.SerializerMethodField()
+    account_incharge_name = serializers.SerializerMethodField()
+    audit_logs = WalletRechargeRequestAuditLogSerializer(many=True, read_only=True)
     
     class Meta:
         model = WalletRechargeRequest
         fields = [
             'id',
+            'request_id',
             'user',
             'user_name',
             'user_email',
+            'user_emp_id',
             'wallet',
             'department',
             'department_id',
@@ -521,6 +554,13 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'project_head_name',
             'project_head_email',
             'project_details',
+            'employee_number',
+            'user_department_name',
+            'department_grant_code',
+            'project_grant_code',
+            'account_incharge',
+            'account_incharge_email',
+            'account_incharge_name',
             'status',
             'status_display',
             'user_otp_verified',
@@ -530,16 +570,27 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'credit_window_ends_at',
             'credit_facility_status',
             'approved_by_email',
+            'processed_by',
             'response_message',
+            'rejection_reason_code',
+            'rejection_reason_text',
+            'cancellation_source',
             'created_at',
             'updated_at',
             'responded_at',
+            'audit_logs',
         ]
         read_only_fields = [
             'id',
+            'request_id',
             'user',
             'wallet',
             'status',
+            'employee_number',
+            'user_department_name',
+            'department_grant_code',
+            'project_grant_code',
+            'account_incharge',
             'user_otp_verified',
             'sric_notification_sent',
             'credit_facility_opted_in',
@@ -547,10 +598,15 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'credit_window_ends_at',
             'credit_facility_status',
             'approved_by_email',
+            'processed_by',
             'response_message',
+            'rejection_reason_code',
+            'rejection_reason_text',
+            'cancellation_source',
             'created_at',
             'updated_at',
             'responded_at',
+            'audit_logs',
         ]
     
     def get_user_name(self, obj):
@@ -562,6 +618,21 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     def get_user_email(self, obj):
         """Return user's email."""
         return obj.user.email if obj.user else None
+
+    def get_user_emp_id(self, obj):
+        if obj.employee_number:
+            return obj.employee_number
+        return (obj.user.emp_id or "").strip() if obj.user_id else ""
+
+    def get_account_incharge_email(self, obj):
+        if obj.account_incharge_id:
+            return obj.account_incharge.email or ""
+        return ""
+
+    def get_account_incharge_name(self, obj):
+        if obj.account_incharge_id:
+            return obj.account_incharge.name or obj.account_incharge.email or ""
+        return ""
 
     def get_project_agency(self, obj):
         p = obj.project

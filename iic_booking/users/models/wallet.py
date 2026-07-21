@@ -413,6 +413,24 @@ class WalletRechargeRequestStatus(models.TextChoices):
     CANCELLED = 'CANCELLED', _('Cancelled')
 
 
+class WalletRechargeRejectionReason(models.TextChoices):
+    """Predefined rejection reasons for SRIC / admin email rejection form."""
+
+    WRONG_PROJECT_GRANT = "wrong_project_grant", _("Wrong Project Grant Code")
+    INSUFFICIENT_BALANCE = "insufficient_balance", _("Insufficient Balance in Project Grant")
+    MISMATCH_USER_INFO = "mismatch_user_info", _("Mismatch in User Information")
+    OTHER = "other", _("Others")
+
+
+class WalletRechargeCancellationSource(models.TextChoices):
+    """Who cancelled a pending recharge request."""
+
+    USER = "user", _("Cancelled by User")
+    ADMIN = "admin", _("Cancelled by Administrator")
+    DEPT_ADMIN = "dept_admin", _("Cancelled by Department Administrator")
+    SYSTEM = "system", _("Cancelled by System")
+
+
 class WalletRechargeCreditFacilityStatus(models.TextChoices):
     """Temporary overdraft tied to a pending recharge request (parse confirmation)."""
 
@@ -422,7 +440,7 @@ class WalletRechargeCreditFacilityStatus(models.TextChoices):
 
 
 class WalletRechargeRequest(Model):
-    """Model for wallet recharge requests via accounts team with OTP approval."""
+    """Internal user wallet recharge request with secure email approval workflow."""
     
     user = ForeignKey(
         User,
@@ -468,6 +486,49 @@ class WalletRechargeRequest(Model):
         blank=True,
         help_text=_("Optional project details for the recharge (deprecated, use project field instead)"),
     )
+    # Audit snapshots at request time
+    employee_number = CharField(
+        _("Employee Number"),
+        max_length=50,
+        blank=True,
+        help_text=_("Snapshot of user emp_id / employee number at request time"),
+    )
+    user_department_name = CharField(
+        _("User Department"),
+        max_length=255,
+        blank=True,
+        help_text=_("Snapshot of the requesting user's home department name"),
+    )
+    department_grant_code = CharField(
+        _("Department Grant Code (Credit)"),
+        max_length=100,
+        blank=True,
+        help_text=_("Wallet credit grant code for the selected recharge department"),
+    )
+    project_grant_code = CharField(
+        _("Project Grant Code (Debit)"),
+        max_length=100,
+        blank=True,
+        help_text=_("Project grant code used for debit (typically project_code)"),
+    )
+    account_incharge = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="wallet_recharge_requests_as_incharge",
+        verbose_name=_("Department Account In-charge"),
+        help_text=_("Accounts In Charge selected / notified for this request"),
+    )
+    action_token = CharField(
+        _("Action Token"),
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_("Secure token for email Approve / Reject links"),
+    )
     status = CharField(
         _("Status"),
         max_length=20,
@@ -496,7 +557,7 @@ class WalletRechargeRequest(Model):
         _("SRIC office notification sent"),
         default=False,
         help_text=_(
-            "Faculty: set when the SRIC Office notification email has been sent for this request."
+            "Set when the SRIC Office approval email has been sent for this request."
         ),
     )
     credit_facility_opted_in = BooleanField(
@@ -537,24 +598,52 @@ class WalletRechargeRequest(Model):
         _("OTP Code"),
         max_length=6,
         blank=True,
-        help_text=_("OTP code for accounts team email approval"),
+        help_text=_("Deprecated: accounts team OTP (no longer required for email approval)"),
     )
     otp_expires_at = DateTimeField(
         _("OTP Expires At"),
         null=True,
         blank=True,
-        help_text=_("When the accounts team OTP expires"),
+        help_text=_("Deprecated: when the accounts team OTP expires"),
     )
     approved_by_email = CharField(
-        _("Approved By Email"),
+        _("Approved / Rejected By Email"),
         max_length=255,
         blank=True,
-        help_text=_("Email address that approved/rejected the request"),
+        help_text=_("Email address that approved/rejected/cancelled the request"),
+    )
+    processed_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="processed_wallet_recharge_requests",
+        verbose_name=_("Processed By"),
+        help_text=_("Authenticated user who approved/rejected/cancelled (if any)"),
     )
     response_message = TextField(
         _("Response Message"),
         blank=True,
-        help_text=_("Optional response message from accounts team"),
+        help_text=_("Optional response / notes from approver or rejector"),
+    )
+    rejection_reason_code = CharField(
+        _("Rejection Reason Code"),
+        max_length=40,
+        choices=WalletRechargeRejectionReason.choices,
+        blank=True,
+        help_text=_("Predefined rejection reason when status is Rejected"),
+    )
+    rejection_reason_text = TextField(
+        _("Rejection Reason Text"),
+        blank=True,
+        help_text=_("Free-text rejection reason (required when reason is Others)"),
+    )
+    cancellation_source = CharField(
+        _("Cancellation Source"),
+        max_length=20,
+        choices=WalletRechargeCancellationSource.choices,
+        blank=True,
+        help_text=_("Who cancelled the pending request"),
     )
     utr_reference = CharField(
         _("UTR / Transfer Reference"),
@@ -568,7 +657,7 @@ class WalletRechargeRequest(Model):
         _("Responded at"),
         null=True,
         blank=True,
-        help_text=_("When the request was approved/rejected"),
+        help_text=_("When the request was approved/rejected/cancelled"),
     )
     
     class Meta:
@@ -583,6 +672,10 @@ class WalletRechargeRequest(Model):
     def __str__(self) -> str:
         dept_name = self.department.name if self.department else "No Department"
         return f"Recharge Request: {self.user.email} - ₹{self.amount} - {dept_name} ({self.status})"
+
+    @property
+    def request_id_display(self) -> str:
+        return f"WRR-{self.pk}" if self.pk else "WRR-—"
     
     def clean(self) -> None:
         """Validate that department is provided for new recharge requests."""
@@ -590,7 +683,9 @@ class WalletRechargeRequest(Model):
             raise ValidationError(_("Department is required for recharge requests. Recharge requests are now department-specific (sub-wallet based)."))
     
     def save(self, *args, **kwargs) -> None:
-        """Override save to validate department."""
+        """Override save to validate department and ensure action token."""
+        if not self.action_token:
+            self.action_token = secrets.token_urlsafe(32)
         self.full_clean()
         super().save(*args, **kwargs)
     
@@ -622,7 +717,7 @@ class WalletRechargeRequest(Model):
         self.save(update_fields=['user_otp_verified'])
     
     def generate_otp(self) -> str:
-        """Generate a 6-digit OTP for accounts team and set expiry (15 minutes)."""
+        """Deprecated accounts OTP — retained for compatibility."""
         otp = ''.join([str(secrets.randbelow(10)) for _ in range(6)])
         self.otp_code = otp
         self.otp_expires_at = timezone.now() + timedelta(minutes=15)
@@ -630,7 +725,7 @@ class WalletRechargeRequest(Model):
         return otp
     
     def verify_otp(self, otp: str) -> bool:
-        """Verify if the provided accounts team OTP is valid and not expired."""
+        """Deprecated accounts OTP verify."""
         if not self.otp_code or not self.otp_expires_at:
             return False
         
@@ -639,71 +734,81 @@ class WalletRechargeRequest(Model):
         
         return self.otp_code == otp
     
-    def approve(self, response_message: str = "") -> None:
-        """Approve the recharge request (OTP no longer required for approval).
-        Uses ACCOUNTS_EMAIL from settings for approved_by_email.
-        """
-        from django.conf import settings
-        
-        if self.status != WalletRechargeRequestStatus.PENDING:
-            raise ValueError("Request is not in pending status")
-        
-        if not self.user_otp_verified:
-            raise ValueError("User OTP must be verified before approval")
-        
-        # Credit sub-wallet for department
-        if not self.department:
-            raise ValueError("Department is required for recharge requests")
-        
-        description = f"Wallet recharge via accounts team - Request ID: {self.id}"
-        if self.project_details:
-            description += f" - Project: {self.project_details}"
-        
-        sub_wallet = SubWallet.objects.get_or_create(
-            wallet=self.wallet,
-            department=self.department,
-            defaults={"balance": Decimal("0.00")},
-        )[0]
-        sub_wallet.credit(self.amount, description, related_user=self.user)
-        sub_wallet.refresh_from_db()
+    def approve(self, response_message: str = "", *, actor=None, actor_email: str = "") -> None:
+        """Approve and credit wallet. Prefer wallet_recharge_workflow.approve_request for locking."""
+        from iic_booking.users.wallet_recharge_workflow import approve_request
 
-        # Update request status — recharge is realized; credit facility cycle ends (fresh eligibility next time).
-        self.status = WalletRechargeRequestStatus.APPROVED
-        self.approved_by_email = getattr(settings, 'ACCOUNTS_EMAIL', 'accounts@iicbooking.iitr.ac.in')
-        self.response_message = response_message
-        self.responded_at = timezone.now()
-        self.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
-        self.credit_facility_opted_in = False
-        self.save()
+        approve_request(
+            self,
+            response_message=response_message,
+            actor=actor,
+            actor_email=actor_email,
+        )
     
-    def reject(self, response_message: str) -> None:
-        """Reject the recharge request (OTP no longer required).
-        Uses ACCOUNTS_EMAIL from settings for approved_by_email.
-        response_message is required for rejection.
-        """
-        from django.conf import settings
-        
-        if self.status != WalletRechargeRequestStatus.PENDING:
-            raise ValueError("Request is not in pending status")
-        
-        if not response_message or not response_message.strip():
-            raise ValueError("Response message is required for rejection")
-        
-        # Update request status
-        self.status = WalletRechargeRequestStatus.REJECTED
-        self.approved_by_email = getattr(settings, 'ACCOUNTS_EMAIL', 'accounts@iicbooking.iitr.ac.in')
-        self.response_message = response_message.strip()
-        self.responded_at = timezone.now()
-        self.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
-        self.credit_facility_opted_in = False
-        self.save()
-    
-    def cancel(self) -> None:
-        """Delete this pending recharge request (user cancel or superseded OTP draft)."""
-        if self.status != WalletRechargeRequestStatus.PENDING:
-            raise ValueError("Only pending requests can be cancelled")
-        self.delete()
+    def reject(
+        self,
+        response_message: str,
+        *,
+        reason_code: str = "",
+        actor=None,
+        actor_email: str = "",
+    ) -> None:
+        """Reject the request. Prefer wallet_recharge_workflow.reject_request for locking."""
+        from iic_booking.users.wallet_recharge_workflow import reject_request
 
+        reject_request(
+            self,
+            reason_code=reason_code or WalletRechargeRejectionReason.OTHER,
+            reason_text=response_message,
+            actor=actor,
+            actor_email=actor_email,
+        )
+    
+    def cancel(self, *, source: str = "", actor=None, actor_email: str = "", note: str = "") -> None:
+        """Cancel a pending request (keeps the row for audit). Prefer workflow.cancel_request."""
+        from iic_booking.users.wallet_recharge_workflow import cancel_request
+
+        cancel_request(
+            self,
+            source=source or WalletRechargeCancellationSource.USER,
+            actor=actor,
+            actor_email=actor_email,
+            note=note,
+        )
+
+
+class WalletRechargeRequestAuditLog(Model):
+    """Immutable audit trail for wallet recharge request status changes."""
+
+    request = ForeignKey(
+        WalletRechargeRequest,
+        on_delete=CASCADE,
+        related_name="audit_logs",
+        verbose_name=_("Recharge Request"),
+    )
+    from_status = CharField(_("From Status"), max_length=20, blank=True)
+    to_status = CharField(_("To Status"), max_length=20)
+    action = CharField(_("Action"), max_length=40, help_text=_("created / submitted / approved / rejected / cancelled"))
+    actor = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="wallet_recharge_audit_actions",
+        verbose_name=_("Actor"),
+    )
+    actor_email = CharField(_("Actor Email"), max_length=255, blank=True)
+    message = TextField(_("Message"), blank=True)
+    metadata = JSONField(_("Metadata"), default=dict, blank=True)
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Wallet Recharge Request Audit Log")
+        verbose_name_plural = _("Wallet Recharge Request Audit Logs")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.request_id}: {self.action} → {self.to_status}"
 
 class WalletRechargeImportRecord(Model):
     """
@@ -889,3 +994,138 @@ class WalletWithdrawalRequest(Model):
 
     def __str__(self) -> str:
         return f"Withdrawal #{self.id} {self.user.email} ₹{self.amount} ({self.status})"
+
+
+class WalletPeerTransferStatus(models.TextChoices):
+    PENDING_OTP = "PENDING_OTP", _("Pending OTP")
+    COMPLETED = "COMPLETED", _("Completed")
+    FAILED = "FAILED", _("Failed")
+    CANCELLED = "CANCELLED", _("Cancelled")
+    EXPIRED = "EXPIRED", _("Expired")
+
+
+class WalletPeerTransfer(Model):
+    """Faculty wallet-to-wallet transfer under a single department grant (OTP-gated)."""
+
+    transaction_id = CharField(
+        _("Transaction ID"),
+        max_length=40,
+        unique=True,
+        db_index=True,
+        help_text=_("Public unique transfer reference (e.g. W2W-…)"),
+    )
+    sender = ForeignKey(
+        User,
+        on_delete=PROTECT,
+        related_name="wallet_peer_transfers_sent",
+        verbose_name=_("Sender"),
+    )
+    recipient = ForeignKey(
+        User,
+        on_delete=PROTECT,
+        related_name="wallet_peer_transfers_received",
+        verbose_name=_("Recipient"),
+    )
+    initiated_by = ForeignKey(
+        User,
+        on_delete=PROTECT,
+        related_name="wallet_peer_transfers_initiated",
+        verbose_name=_("Initiated By"),
+    )
+    department = ForeignKey(
+        Department,
+        on_delete=PROTECT,
+        related_name="wallet_peer_transfers",
+        verbose_name=_("Department (Grant)"),
+        help_text=_("Department sub-wallet grant used for debit and credit"),
+        limit_choices_to={"department_type": DepartmentType.INTERNAL},
+    )
+    grant_code = CharField(_("Grant Code"), max_length=100, blank=True)
+    amount = DecimalField(_("Transfer Amount"), max_digits=10, decimal_places=2)
+    remarks = TextField(_("Remarks"), blank=True)
+    status = CharField(
+        _("Transaction Status"),
+        max_length=20,
+        choices=WalletPeerTransferStatus.choices,
+        default=WalletPeerTransferStatus.PENDING_OTP,
+        db_index=True,
+    )
+    otp_code = CharField(_("OTP Code"), max_length=6, blank=True)
+    otp_expires_at = DateTimeField(_("OTP Expires At"), null=True, blank=True)
+    otp_verified = BooleanField(_("OTP Verification Status"), default=False)
+    otp_verified_at = DateTimeField(_("OTP Verified At"), null=True, blank=True)
+    sender_balance_after = DecimalField(
+        _("Sender Sub-wallet Balance After"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    recipient_balance_after = DecimalField(
+        _("Recipient Sub-wallet Balance After"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    failure_reason = TextField(_("Failure Reason"), blank=True)
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+    completed_at = DateTimeField(_("Completed at"), null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("Wallet Peer Transfer")
+        verbose_name_plural = _("Wallet Peer Transfers")
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["sender", "status"]),
+            models.Index(fields=["recipient", "status"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.transaction_id} ₹{self.amount} ({self.status})"
+
+    @staticmethod
+    def generate_transaction_id() -> str:
+        stamp = timezone.now().strftime("%Y%m%d")
+        suffix = secrets.token_hex(3).upper()
+        return f"W2W-{stamp}-{suffix}"
+
+    def save(self, *args, **kwargs) -> None:
+        if not self.transaction_id:
+            for _ in range(5):
+                candidate = self.generate_transaction_id()
+                if not WalletPeerTransfer.objects.filter(transaction_id=candidate).exists():
+                    self.transaction_id = candidate
+                    break
+            if not self.transaction_id:
+                self.transaction_id = self.generate_transaction_id()
+        super().save(*args, **kwargs)
+
+    def generate_otp(self) -> str:
+        otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
+        self.otp_code = otp
+        self.otp_expires_at = timezone.now() + timedelta(minutes=10)
+        self.otp_verified = False
+        self.otp_verified_at = None
+        self.save(
+            update_fields=[
+                "otp_code",
+                "otp_expires_at",
+                "otp_verified",
+                "otp_verified_at",
+                "updated_at",
+            ]
+        )
+        return otp
+
+    def verify_otp(self, otp: str) -> bool:
+        if not self.otp_code or not self.otp_expires_at:
+            return False
+        if timezone.now() > self.otp_expires_at:
+            return False
+        if self.otp_verified:
+            return False
+        return self.otp_code == (otp or "").strip()
+

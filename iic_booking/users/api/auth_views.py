@@ -1,10 +1,13 @@
 import secrets
 import base64
+import socket
+from contextlib import contextmanager
 from io import BytesIO
 from urllib.parse import urlencode, quote
 from datetime import datetime
 
 import requests
+import urllib3.util.connection as urllib3_connection
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
@@ -44,6 +47,40 @@ from iic_booking.users.models import UserType, Department, UserLoginLock, Organi
 import logging
 logger = logging.getLogger(__name__)
 User = get_user_model()
+
+
+@contextmanager
+def _omniport_network_context():
+    """
+    Prefer IPv4 for Channel i API calls.
+
+    Some production hosts resolve channeli.in to IPv6 first and hang until timeout,
+    which breaks the OAuth code exchange after the user clicks Allow.
+    """
+    allowed = urllib3_connection.allowed_gai_family
+    urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+    try:
+        yield
+    finally:
+        urllib3_connection.allowed_gai_family = allowed
+
+
+def _omniport_timeout():
+    connect = int(getattr(settings, "OMNIPORT_CONNECT_TIMEOUT", 10))
+    read = int(getattr(settings, "OMNIPORT_READ_TIMEOUT", 30))
+    return (connect, read)
+
+
+def _omniport_post(url: str, **kwargs):
+    kwargs.setdefault("timeout", _omniport_timeout())
+    with _omniport_network_context():
+        return requests.post(url, **kwargs)
+
+
+def _omniport_get(url: str, **kwargs):
+    kwargs.setdefault("timeout", _omniport_timeout())
+    with _omniport_network_context():
+        return requests.get(url, **kwargs)
 
 
 def _should_send_welcome_email(user) -> bool:
@@ -237,6 +274,70 @@ def _blank_to_none(value):
     return value
 
 
+def _omniport_dict_get(data: dict, *keys):
+    """Return the first non-empty value for any of the candidate keys (Channel i key variants)."""
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        if key not in data:
+            continue
+        value = data.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
+def _parse_omniport_date(value):
+    """Parse Omniport date values (ISO string, date, or datetime) into a date or None."""
+    if value is None:
+        return None
+    if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day") and not isinstance(value, str):
+        # datetime.date or datetime.datetime
+        try:
+            return value.date() if hasattr(value, "hour") else value
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null"}:
+        return None
+    # ISO datetime → take date part
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    for date_format in ("%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(text, date_format).date()
+        except ValueError:
+            continue
+    logger.warning("Failed to parse Omniport date value '%s'", value)
+    return None
+
+
+def _role_start_end_dates(role: dict) -> tuple:
+    """Extract joining (start) and end/graduation dates from a student/facultyMember payload."""
+    start_raw = _omniport_dict_get(
+        role,
+        "start_date",
+        "startDate",
+        "start date",
+        "joining_date",
+        "joiningDate",
+        "joining date",
+    )
+    end_raw = _omniport_dict_get(
+        role,
+        "end_date",
+        "endDate",
+        "end date",
+        "graduation_date",
+        "graduationDate",
+        "graduation date",
+    )
+    return _parse_omniport_date(start_raw), _parse_omniport_date(end_raw)
+
+
 def _get_or_create_user_from_omniport(*, email: str, defaults: dict):
     """
     Create or load a Django user from Omniport profile data.
@@ -326,7 +427,12 @@ def omniport_auth_url(request):
         "scope": "read",
         "state": state,
     }
-    return Response({"auth_url": settings.OMNIPORT_AUTH_URL + "?" + urlencode(params)})
+    return Response(
+        {
+            "auth_url": settings.OMNIPORT_AUTH_URL + "?" + urlencode(params),
+            "state": state,
+        }
+    )
 
 
 @api_view(["GET", "POST"])
@@ -413,26 +519,44 @@ def omniport_callback(request):
     token_url = settings.OMNIPORT_TOKEN_URL
     token_response = None
     
+    token_response = None
+    token_error_code = "token_endpoint_error"
+    token_error_message = "Failed to connect to Omniport token service"
     try:
-        token_response = requests.post(
+        token_response = _omniport_post(
             token_url,
             data=token_data_basic,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                "Authorization": f"Basic {encoded_credentials}"
+                "Authorization": f"Basic {encoded_credentials}",
             },
-            timeout=30,
         )
+    except requests.ConnectTimeout as e:
+        token_error_code = "token_endpoint_timeout"
+        token_error_message = (
+            "Connection to Omniport timed out. The server may be unable to reach channeli.in."
+        )
+        logger.error("Omniport token exchange connect timeout at %s: %s", token_url, e)
+    except requests.ReadTimeout as e:
+        token_error_code = "token_endpoint_timeout"
+        token_error_message = "Omniport token service did not respond in time."
+        logger.error("Omniport token exchange read timeout at %s: %s", token_url, e)
+    except requests.ConnectionError as e:
+        token_error_code = "token_endpoint_unreachable"
+        token_error_message = (
+            "Cannot reach Omniport from the server. Check outbound HTTPS access to channeli.in."
+        )
+        logger.error("Omniport token exchange connection error at %s: %s", token_url, e)
     except requests.RequestException as e:
-        logger.warning(f"Basic Auth failed at {token_url}: {e}")
-        token_response = None
-    
+        logger.error("Omniport token exchange request failed at %s: %s", token_url, e)
+
     if not token_response:
-        error_message = "Failed to connect to token endpoint"
         if request.method == "GET":
-            return redirect_to_frontend_with_error(request, error_message, "token_endpoint_error")
+            return redirect_to_frontend_with_error(
+                request, token_error_message, token_error_code
+            )
         return Response(
-            {"error": error_message},
+            {"error": token_error_message, "error_code": token_error_code},
             status=status.HTTP_400_BAD_REQUEST,
         )
     
@@ -469,10 +593,9 @@ def omniport_callback(request):
         )
     
     try:
-        user_response = requests.get(
+        user_response = _omniport_get(
             settings.OMNIPORT_USERINFO_URL,
             headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
         )
         user_response.raise_for_status()
         user_info = user_response.json()
@@ -500,33 +623,58 @@ def omniport_callback(request):
     degree_name = ""  # Initialize to empty string
     department_name = ""  # Initialize to empty string
     designation = ""  # Initialize to empty string
+    joining_date = None
+    graduation_date = None
 
-    student = user_info.get("student", {})
+    student = user_info.get("student") or user_info.get("student_member") or {}
     if student and isinstance(student, dict) and len(student) > 0:
         # Set student user type code
         user_type = UserType.STUDENT
-        branch_name = student.get("branch name", "") if isinstance(student, dict) else ""
-        degree_name = student.get("branch degree name", "") if isinstance(student, dict) else ""
-        department_name = student.get("branch department name", "") if isinstance(student, dict) else ""
-    
-    faculty = user_info.get("facultyMember", {})
+        branch_name = student.get("branch name", "") or student.get("branch_name", "") or ""
+        degree_name = student.get("branch degree name", "") or student.get("branch_degree_name", "") or ""
+        department_name = (
+            student.get("branch department name", "")
+            or student.get("branch_department_name", "")
+            or ""
+        )
+        joining_date, graduation_date = _role_start_end_dates(student)
+
+    faculty = user_info.get("facultyMember") or user_info.get("faculty_member") or {}
     if faculty and isinstance(faculty, dict) and len(faculty) > 0:
         # Set faculty user type code
         user_type = UserType.FACULTY
-        department_name = faculty.get("department name", "") if isinstance(faculty, dict) else ""
-        designation = faculty.get("designation", "") if isinstance(faculty, dict) else ""
+        department_name = (
+            faculty.get("department name", "")
+            or faculty.get("department_name", "")
+            or ""
+        )
+        designation = (faculty.get("designation", "") or "").strip()
+        fac_joining, _fac_end = _role_start_end_dates(faculty)
+        if fac_joining:
+            joining_date = fac_joining
 
-    biological_info = user_info.get("biologicalInformation", {})
-    date_of_birth_str = biological_info.get("dateOfBirth", "") if isinstance(biological_info, dict) else ""
+    biological_info = user_info.get("biologicalInformation") or user_info.get("biological_information") or {}
+    date_of_birth_str = (
+        biological_info.get("dateOfBirth")
+        or biological_info.get("date_of_birth")
+        or ""
+    ) if isinstance(biological_info, dict) else ""
     
-    contact_info = user_info.get("contactInformation", {})
-    email = contact_info.get("instituteWebmailAddress") if isinstance(contact_info, dict) else None
-    phone_number = _blank_to_none(
-        contact_info.get("primaryPhoneNumber") if isinstance(contact_info, dict) else None
-    )
-    secondary_phone_number = _blank_to_none(
-        contact_info.get("secondaryPhoneNumber") if isinstance(contact_info, dict) else None
-    )
+    contact_info = user_info.get("contactInformation") or user_info.get("contact_information") or {}
+    email = None
+    phone_number = None
+    secondary_phone_number = None
+    if isinstance(contact_info, dict):
+        email = (
+            contact_info.get("instituteWebmailAddress")
+            or contact_info.get("institute_webmail_address")
+        )
+        phone_number = _blank_to_none(
+            contact_info.get("primaryPhoneNumber") or contact_info.get("primary_phone_number")
+        )
+        secondary_phone_number = _blank_to_none(
+            contact_info.get("secondaryPhoneNumber") or contact_info.get("secondary_phone_number")
+        )
     
     # Validate that email is present (required for user creation)
     if not email:
@@ -540,19 +688,7 @@ def omniport_callback(request):
         )
     
     # Parse date_of_birth if provided
-    date_of_birth = None
-    if date_of_birth_str:
-        try:
-            # Try to parse date string (format may vary, try common formats)
-            for date_format in ["%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y"]:
-                try:
-                    date_of_birth = datetime.strptime(date_of_birth_str, date_format).date()
-                    break
-                except ValueError:
-                    continue
-        except Exception as e:
-            logger.warning(f"Failed to parse date_of_birth '{date_of_birth_str}': {str(e)}")
-            date_of_birth = None
+    date_of_birth = _parse_omniport_date(date_of_birth_str) if date_of_birth_str else None
     
     # Get or create department if department_name is provided
     department = None
@@ -580,7 +716,7 @@ def omniport_callback(request):
     if profile_picture_path and not already_has_profile_picture:
         actual_path = "https://channeli.in" + profile_picture_path
         try:
-            response = requests.get(actual_path, timeout=10)
+            response = _omniport_get(actual_path)
             if response.status_code == 200:
                 # Get file extension from path
                 file_extension = profile_picture_path.split(".")[-1] if "." in profile_picture_path else "jpg"
@@ -629,6 +765,8 @@ def omniport_callback(request):
         "branch_name": branch_name or "",
         "degree_name": degree_name or "",
         "designation": designation or "",
+        "joining_date": joining_date,
+        "graduation_date": graduation_date,
         "user_type": user_type,
         "department": department,
         "is_active": True,
@@ -665,19 +803,44 @@ def omniport_callback(request):
             if name and not user.name:
                 user.name = name
                 update_fields.append("name")
+            # Refresh Omniport academic / employment fields when Channel i sends them
+            if designation and user.designation != designation:
+                user.designation = designation
+                update_fields.append("designation")
+            if branch_name and user.branch_name != branch_name:
+                user.branch_name = branch_name
+                update_fields.append("branch_name")
+            if degree_name and user.degree_name != degree_name:
+                user.degree_name = degree_name
+                update_fields.append("degree_name")
+            if joining_date and user.joining_date != joining_date:
+                user.joining_date = joining_date
+                update_fields.append("joining_date")
+            if graduation_date and user.graduation_date != graduation_date:
+                user.graduation_date = graduation_date
+                update_fields.append("graduation_date")
+            if date_of_birth and user.date_of_birth != date_of_birth:
+                user.date_of_birth = date_of_birth
+                update_fields.append("date_of_birth")
             if update_fields:
                 user.save(update_fields=update_fields)
             logger.info(
-                "Omniport login existing user email=%s type=%s (unchanged) roles=%s",
+                "Omniport login existing user email=%s type=%s joining=%s graduation=%s designation=%s roles=%s",
                 email,
                 user.user_type,
+                user.joining_date,
+                user.graduation_date,
+                user.designation,
                 user_info.get("roles"),
             )
         else:
             logger.info(
-                "Omniport created user email=%s type=%s roles=%s",
+                "Omniport created user email=%s type=%s joining=%s graduation=%s designation=%s roles=%s",
                 email,
                 user.user_type,
+                joining_date,
+                graduation_date,
+                designation,
                 user_info.get("roles"),
             )
     except Exception as e:

@@ -1696,254 +1696,56 @@ Please do not reply to this email.
 def _notify_accounts_team_and_faculty_after_recharge_request_user_verified(
     http_request, recharge_request
 ):
-    """After wallet user OTP is verified: accounts OTP, email to accounts, PENDING email/push to user, SRIC hooks.
+    """After user OTP is verified: send SRIC approval email + pending notice to the user.
 
-    With ATOMIC_REQUESTS=True, DB errors in notification code must not poison the outer request transaction.
-    Nested atomic() blocks use savepoints so a failed CommunicationLog (etc.) can be caught without leaving
-    PostgreSQL in "current transaction is aborted" state.
+    Email is an approval interface only (Approve / Reject links). Reply/IMAP parsing is not used.
     """
-    from django.conf import settings
-    from django.core.mail import send_mail
-    from django.db import transaction
-    from django.urls import reverse
-    from django.utils import timezone
     import logging
 
-    from iic_booking.communication.service import CommunicationService
-    from iic_booking.communication.models import CommunicationLog, CommunicationTemplate
+    from django.db import transaction
+
+    from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
+    from iic_booking.users.wallet_recharge_workflow import (
+        append_audit_log,
+        find_department_account_incharges,
+        populate_request_snapshots,
+        send_sric_approval_email,
+    )
 
     logger = logging.getLogger(__name__)
-    ru = recharge_request.user
-    recharge_request.generate_otp()
-
-    accounts_email = getattr(settings, "ACCOUNTS_EMAIL", "accounts@iicbooking.iitr.ac.in")
-    amount = recharge_request.amount
-
-    approve_url = http_request.build_absolute_uri(
-        reverse("users:approve-recharge-request", kwargs={"request_id": recharge_request.id})
-    )
-    reject_url = http_request.build_absolute_uri(
-        reverse("users:reject-recharge-request", kwargs={"request_id": recharge_request.id})
-    )
-
-    department_name = recharge_request.department.name if recharge_request.department else "No Department"
-    department_code = (
-        recharge_request.department.code
-        if recharge_request.department and recharge_request.department.code
-        else ""
-    )
-
-    project_name = recharge_request.project.name if recharge_request.project else ""
-    project_code = recharge_request.project.project_code if recharge_request.project else ""
-    project_agency = recharge_request.project.agency if recharge_request.project else ""
-
-    template_context = {
-        "user_name": ru.name or ru.email,
-        "user_email": ru.email,
-        "amount": f"{amount:.2f}",
-        "request_id": str(recharge_request.id),
-        "request_date": recharge_request.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        if recharge_request.created_at
-        else "",
-        "project_name": project_name,
-        "project_code": project_code,
-        "project_agency": project_agency,
-        "project_details": recharge_request.project_details or "",
-        "department_name": department_name,
-        "department_code": department_code,
-        "approve_url": approve_url,
-        "reject_url": reject_url,
-    }
 
     try:
         with transaction.atomic():
-            template_obj = CommunicationService.get_template(
-                template="wallet_recharge_request_email",
-                communication_type=CommunicationTemplate.CommunicationType.EMAIL,
+            populate_request_snapshots(recharge_request)
+            recharge_request.refresh_from_db()
+            if not recharge_request.account_incharge_id and recharge_request.department_id:
+                incharges = find_department_account_incharges(recharge_request.department)
+                if incharges:
+                    recharge_request.account_incharge = incharges[0]
+                    recharge_request.save(update_fields=["account_incharge", "updated_at"])
+            append_audit_log(
+                recharge_request,
+                action="submitted",
+                from_status=WalletRechargeRequestStatus.PENDING,
+                to_status=WalletRechargeRequestStatus.PENDING,
+                actor=getattr(http_request, "user", None),
+                message="User OTP verified; request submitted for SRIC approval",
             )
-
-            if template_obj:
-                rendered = CommunicationService.render_template(
-                    template_obj,
-                    context=template_context,
-                )
-                subject = rendered.get("subject", f"Wallet Recharge Request - ₹{amount} - {ru.email}")
-                message = rendered.get("message", "")
-                html_message = rendered.get("html_message", "")
-
-                try:
-                    accounts_user = User.objects.filter(email=accounts_email).first()
-                except Exception:
-                    accounts_user = None
-
-                send_mail(
-                    subject=subject,
-                    message=message,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[accounts_email],
-                    html_message=html_message,
-                    fail_silently=False,
-                )
-
-                if accounts_user:
-                    CommunicationLog.objects.create(
-                        communication_type=CommunicationLog.CommunicationType.EMAIL,
-                        recipient=accounts_user,
-                        template=template_obj,
-                        subject=subject,
-                        message=message,
-                        status=CommunicationLog.CommunicationStatus.SENT,
-                        sent_at=timezone.now(),
-                        metadata={
-                            "wallet_recharge_request_id": recharge_request.id,
-                            "amount": str(amount),
-                            "user_email": ru.email,
-                        },
-                        created_by=http_request.user,
-                    )
-            else:
-                raise ValueError("Template not found")
     except Exception as e:
-        logger.warning("Failed to use template for accounts email, using fallback: %s", e)
-
-        subject = f"Wallet Recharge Request - ₹{amount} - {ru.email}"
-        html_message = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
-        .content {{ background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; }}
-        .details {{ background-color: white; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #4CAF50; }}
-        .detail-row {{ margin: 10px 0; padding: 5px 0; }}
-        .detail-label {{ font-weight: bold; color: #555; }}
-        .buttons {{ text-align: center; margin: 30px 0; }}
-        .button {{ display: inline-block; padding: 15px 30px; margin: 10px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; color: white; }}
-        .button-approve {{ background-color: #4CAF50; }}
-        .button-reject {{ background-color: #f44336; }}
-        .button:hover {{ opacity: 0.9; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
-        .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
-        .note {{ background-color: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin-top: 20px; font-size: 13px; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Wallet Recharge Request</h1>
-        </div>
-        <div class="content">
-            <p>You have received a new wallet recharge request that requires your approval.</p>
-            <div class="details">
-                <div class="detail-row">
-                    <span class="detail-label">User:</span> {ru.name or ru.email}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Email:</span> {ru.email}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Amount:</span> ₹{amount}
-                </div>
-                {f'<div class="detail-row"><span class="detail-label">Department:</span> {recharge_request.department.name}{f" ({recharge_request.department.code})" if recharge_request.department.code else ""}</div>' if recharge_request.department else ''}
-                <div class="detail-row">
-                    <span class="detail-label">Request ID:</span> #{recharge_request.id}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Request Date:</span> {recharge_request.created_at.strftime('%Y-%m-%d %H:%M:%S')}
-                </div>
-                {f'''
-                <div class="detail-row">
-                    <span class="detail-label">Project Name:</span> {recharge_request.project.name}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Project Code:</span> {recharge_request.project.project_code}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Agency:</span> {recharge_request.project.agency}
-                </div>
-                ''' if recharge_request.project else ''}
-                {f'<div class="detail-row"><span class="detail-label">Project Details:</span> {recharge_request.project_details}</div>' if recharge_request.project_details and not recharge_request.project else ''}
-            </div>
-            <div class="buttons">
-                <a href="{approve_url}" class="button button-approve">✓ Approve Request</a>
-                <a href="{reject_url}" class="button button-reject">✗ Reject Request</a>
-            </div>
-            <div class="note">
-                <strong>Note:</strong> Click the buttons above to approve or reject this request. Approval requires only an optional message. Rejection requires a mandatory message explaining the reason.
-            </div>
-        </div>
-        <div class="footer">
-            <p>This is an automated email from IIC Booking System.</p>
-            <p>Please do not reply to this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-        """
-        department_info = ""
-        if recharge_request.department:
-            dept_code = f" ({recharge_request.department.code})" if recharge_request.department.code else ""
-            department_info = f"- Department: {recharge_request.department.name}{dept_code}\n"
-
-        project_info = ""
-        if recharge_request.project:
-            project_info = (
-                f"- Project Name: {recharge_request.project.name}\n"
-                f"- Project Code: {recharge_request.project.project_code}\n"
-                f"- Agency: {recharge_request.project.agency}\n"
-            )
-        elif recharge_request.project_details:
-            project_info = f"- Project Details: {recharge_request.project_details}\n"
-
-        message = f"""
-Wallet Recharge Request
-
-You have received a new wallet recharge request that requires your approval.
-
-Request Details:
-- User: {ru.name or ru.email}
-- Email: {ru.email}
-- Amount: ₹{amount}
-{department_info}- Request ID: #{recharge_request.id}
-- Request Date: {recharge_request.created_at.strftime('%Y-%m-%d %H:%M:%S')}
-{project_info}
-
-To approve this request, click here: {approve_url}
-To reject this request, click here: {reject_url}
-
-Note: Approval requires only an optional message. Rejection requires a mandatory message explaining the reason.
-
-This is an automated email from IIC Booking System.
-Please do not reply to this email.
-        """
-
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[accounts_email],
-            html_message=html_message,
-            fail_silently=False,
-        )
+        logger.warning("Failed to populate recharge snapshots/audit: %s", e)
 
     try:
         with transaction.atomic():
-            from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-
-            send_wallet_recharge_request_notifications(recharge_request, "PENDING")
-    except Exception as e:
-        logger.warning("Failed to send notification to user: %s", e)
-
-    try:
-        with transaction.atomic():
-            from ..wallet_recharge_ops import try_auto_sric_and_staff_alerts_after_recharge_verified
-
-            try_auto_sric_and_staff_alerts_after_recharge_verified(http_request, recharge_request)
+            send_sric_approval_email(recharge_request)
             recharge_request.refresh_from_db()
     except Exception as e:
-        logger.warning("Post-recharge operational notifications failed: %s", e)
+        logger.warning("Failed to send SRIC approval email: %s", e)
 
+    try:
+        with transaction.atomic():
+            send_wallet_recharge_request_notifications(recharge_request, "PENDING")
+    except Exception as e:
+        logger.warning("Failed to send pending notification to user: %s", e)
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -2011,78 +1813,204 @@ def create_wallet_recharge_request(request):
     return Response({
         "request": request_serializer.data,
         "message": (
-            "Wallet recharge request created successfully. "
-            "The accounts team has been notified; SRIC Office and staff have been notified where configured."
+            "Wallet recharge request submitted successfully. "
+            "The SRIC Office has been emailed Approve / Reject links for this request."
         ),
     }, status=status.HTTP_201_CREATED)
 
 
-@api_view(["POST"])
-@permission_classes([AllowAny])  # Allow any since accounts team might not be users
-def approve_wallet_recharge_request(request, request_id):
-    """Approve a wallet recharge request (OTP no longer required).
-    
-    Request Body:
-        - response_message: Optional response message
-    
-    Returns:
-        - request: Updated wallet recharge request
-        - transaction: Created wallet transaction
-        - message: Success message
-    """
-    response_message = request.data.get('response_message', '').strip()
-    
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def wallet_recharge_action_detail(request, token):
+    """Public status payload for email Approve/Reject pages (token-bound)."""
+    from iic_booking.users.wallet_recharge_workflow import serialize_request_public
+
     try:
-        recharge_request = WalletRechargeRequest.objects.get(
-            pk=request_id,
-            status=WalletRechargeRequestStatus.PENDING
+        recharge_request = WalletRechargeRequest.objects.select_related(
+            "user", "department", "project", "user__department"
+        ).get(action_token=token)
+    except WalletRechargeRequest.DoesNotExist:
+        return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
+    return Response(serialize_request_public(recharge_request), status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def wallet_recharge_action_approve(request, token):
+    """Approve via secure email token. Idempotent if already processed."""
+    from iic_booking.users.wallet_recharge_workflow import (
+        RechargeAlreadyProcessed,
+        already_processed_page,
+        approve_request,
+        notify_stakeholders_of_decision,
+        serialize_request_public,
+    )
+
+    try:
+        recharge_request = WalletRechargeRequest.objects.get(action_token=token)
+    except WalletRechargeRequest.DoesNotExist:
+        return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
+
+    if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+        page = already_processed_page(
+            recharge_request.status, recharge_request.cancellation_source or ""
         )
+        return Response(
+            {**serialize_request_public(recharge_request), **page, "already_processed": True},
+            status=status.HTTP_200_OK,
+        )
+
+    try:
+        approved = approve_request(
+            recharge_request,
+            response_message=(request.data.get("response_message") or "").strip(),
+            actor_email=(request.data.get("actor_email") or "sric-email-approval").strip(),
+        )
+        notify_stakeholders_of_decision(approved)
+        return Response(
+            {
+                **serialize_request_public(approved),
+                "message": f"Approved. ₹{approved.amount} credited to the department wallet.",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except RechargeAlreadyProcessed as e:
+        recharge_request.refresh_from_db()
+        page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+        return Response(
+            {**serialize_request_public(recharge_request), **page, "already_processed": True},
+            status=status.HTTP_200_OK,
+        )
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"error": f"Failed to approve request: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def wallet_recharge_action_reject(request, token):
+    """Reject via secure email token with predefined reasons. Idempotent if already processed."""
+    from iic_booking.users.wallet_recharge_workflow import (
+        RechargeAlreadyProcessed,
+        already_processed_page,
+        notify_stakeholders_of_decision,
+        reject_request,
+        serialize_request_public,
+    )
+
+    try:
+        recharge_request = WalletRechargeRequest.objects.get(action_token=token)
+    except WalletRechargeRequest.DoesNotExist:
+        return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
+
+    if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+        page = already_processed_page(
+            recharge_request.status, recharge_request.cancellation_source or ""
+        )
+        return Response(
+            {**serialize_request_public(recharge_request), **page, "already_processed": True},
+            status=status.HTTP_200_OK,
+        )
+
+    reason_code = (request.data.get("reason_code") or request.data.get("rejection_reason_code") or "").strip()
+    reason_text = (
+        request.data.get("reason_text")
+        or request.data.get("rejection_reason_text")
+        or request.data.get("response_message")
+        or ""
+    ).strip()
+
+    try:
+        rejected = reject_request(
+            recharge_request,
+            reason_code=reason_code,
+            reason_text=reason_text,
+            actor_email=(request.data.get("actor_email") or "sric-email-rejection").strip(),
+        )
+        notify_stakeholders_of_decision(rejected)
+        return Response(
+            {
+                **serialize_request_public(rejected),
+                "message": "Wallet recharge request rejected.",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except RechargeAlreadyProcessed as e:
+        recharge_request.refresh_from_db()
+        page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+        return Response(
+            {**serialize_request_public(recharge_request), **page, "already_processed": True},
+            status=status.HTTP_200_OK,
+        )
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({"error": f"Failed to reject request: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])  # legacy path — prefer token endpoints
+def approve_wallet_recharge_request(request, request_id):
+    """Legacy approve by request id. Prefer /wallet/recharge-action/<token>/approve/."""
+    from iic_booking.users.wallet_recharge_workflow import (
+        RechargeAlreadyProcessed,
+        already_processed_page,
+        approve_request,
+        notify_stakeholders_of_decision,
+        serialize_request_public,
+    )
+
+    response_message = (request.data.get("response_message") or "").strip()
+    try:
+        recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
     except WalletRechargeRequest.DoesNotExist:
         return Response(
-            {"error": "Wallet recharge request not found or already processed."},
+            {"error": "Wallet recharge request not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    
-    try:
-        recharge_request.approve(response_message)
-        transaction_serializer = None
-        department = recharge_request.department
-        if not department:
-            department = Department.objects.filter(
-                name="General", department_type=DepartmentType.INTERNAL
-            ).first()
-        if department:
-            sub_wallet = SubWallet.objects.filter(
-                wallet=recharge_request.wallet, department=department
-            ).first()
-            if sub_wallet:
-                txn = sub_wallet.transactions.order_by("-created_at").first()
-                if txn:
-                    transaction_serializer = SubWalletTransactionSerializer(txn)
-        try:
-            from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-            send_wallet_recharge_request_notifications(recharge_request, "APPROVED")
-            try:
-                send_wallet_recharge_approved_faculty_email(recharge_request)
-            except Exception:
-                pass
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to send approval notification: {str(e)}")
-        request_serializer = WalletRechargeRequestSerializer(recharge_request)
-        target = recharge_request.department.name if recharge_request.department_id else "wallet"
-        return Response({
-            "request": request_serializer.data,
-            "transaction": transaction_serializer.data if transaction_serializer else None,
-            "message": f"Wallet recharge request approved. ₹{recharge_request.amount} credited to {target}.",
-        }, status=status.HTTP_200_OK)
-        
-    except ValueError as e:
-        return Response(
-            {"error": str(e)},
-            status=status.HTTP_400_BAD_REQUEST,
+
+    if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+        page = already_processed_page(
+            recharge_request.status, recharge_request.cancellation_source or ""
         )
+        return Response(
+            {
+                "error": page["message"],
+                "page_code": page["page_code"],
+                "request": serialize_request_public(recharge_request),
+                "already_processed": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    try:
+        actor = request.user if getattr(request.user, "is_authenticated", False) else None
+        approved = approve_request(
+            recharge_request,
+            response_message=response_message,
+            actor=actor,
+            actor_email=getattr(actor, "email", "") or "legacy-approve",
+        )
+        notify_stakeholders_of_decision(approved)
+        request_serializer = WalletRechargeRequestSerializer(approved)
+        target = approved.department.name if approved.department_id else "wallet"
+        return Response(
+            {
+                "request": request_serializer.data,
+                "message": f"Wallet recharge request approved. ₹{approved.amount} credited to {target}.",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except RechargeAlreadyProcessed as e:
+        recharge_request.refresh_from_db()
+        page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+        return Response(
+            {"error": page["message"], "page_code": page["page_code"], "already_processed": True},
+            status=status.HTTP_200_OK,
+        )
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response(
             {"error": f"Failed to approve request: {str(e)}"},
@@ -2091,60 +2019,79 @@ def approve_wallet_recharge_request(request, request_id):
 
 
 @api_view(["POST"])
-@permission_classes([AllowAny])  # Allow any since accounts team might not be users
+@permission_classes([AllowAny])
 def reject_wallet_recharge_request(request, request_id):
-    """Reject a wallet recharge request (OTP no longer required).
-    
-    Request Body:
-        - response_message: Response message (required)
-    
-    Returns:
-        - request: Updated wallet recharge request
-        - message: Success message
-    """
-    response_message = request.data.get('response_message', '').strip()
-    
-    if not response_message:
+    """Legacy reject by request id. Prefer token endpoint with reason_code."""
+    from iic_booking.users.models.wallet import WalletRechargeRejectionReason
+    from iic_booking.users.wallet_recharge_workflow import (
+        RechargeAlreadyProcessed,
+        already_processed_page,
+        notify_stakeholders_of_decision,
+        reject_request,
+        serialize_request_public,
+    )
+
+    reason_code = (request.data.get("reason_code") or request.data.get("rejection_reason_code") or "").strip()
+    reason_text = (
+        request.data.get("reason_text")
+        or request.data.get("rejection_reason_text")
+        or request.data.get("response_message")
+        or ""
+    ).strip()
+    if not reason_code:
+        reason_code = WalletRechargeRejectionReason.OTHER
+    if reason_code == WalletRechargeRejectionReason.OTHER and not reason_text:
         return Response(
             {"error": "Response message is required for rejection"},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    
+
     try:
-        recharge_request = WalletRechargeRequest.objects.get(
-            pk=request_id,
-            status=WalletRechargeRequestStatus.PENDING
-        )
+        recharge_request = WalletRechargeRequest.objects.get(pk=request_id)
     except WalletRechargeRequest.DoesNotExist:
         return Response(
-            {"error": "Wallet recharge request not found or already processed."},
+            {"error": "Wallet recharge request not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    
-    try:
-        recharge_request.reject(response_message)
-        
-        # Send notification to user about rejection
-        try:
-            from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-            send_wallet_recharge_request_notifications(recharge_request, "REJECTED")
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to send rejection notification: {str(e)}")
-        
-        request_serializer = WalletRechargeRequestSerializer(recharge_request)
-        
-        return Response({
-            "request": request_serializer.data,
-            "message": "Wallet recharge request rejected.",
-        }, status=status.HTTP_200_OK)
-        
-    except ValueError as e:
-        return Response(
-            {"error": str(e)},
-            status=status.HTTP_400_BAD_REQUEST,
+
+    if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+        page = already_processed_page(
+            recharge_request.status, recharge_request.cancellation_source or ""
         )
+        return Response(
+            {
+                "error": page["message"],
+                "page_code": page["page_code"],
+                "request": serialize_request_public(recharge_request),
+                "already_processed": True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    try:
+        actor = request.user if getattr(request.user, "is_authenticated", False) else None
+        rejected = reject_request(
+            recharge_request,
+            reason_code=reason_code,
+            reason_text=reason_text,
+            actor=actor,
+            actor_email=getattr(actor, "email", "") or "legacy-reject",
+        )
+        notify_stakeholders_of_decision(rejected)
+        request_serializer = WalletRechargeRequestSerializer(rejected)
+        return Response(
+            {"request": request_serializer.data, "message": "Wallet recharge request rejected."},
+            status=status.HTTP_200_OK,
+        )
+    except RechargeAlreadyProcessed as e:
+        recharge_request.refresh_from_db()
+        page = already_processed_page(e.status, recharge_request.cancellation_source or "")
+        return Response(
+            {"error": page["message"], "page_code": page["page_code"], "already_processed": True},
+            status=status.HTTP_200_OK,
+        )
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response(
             {"error": f"Failed to reject request: {str(e)}"},
@@ -2258,10 +2205,9 @@ def get_wallet_recharge_pipeline_requests(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def send_sric_wallet_recharge_notification(request, request_id):
-    """Faculty: send wallet recharge request email to SRIC Office (after user OTP verified).
+    """Faculty: resend SRIC Office approval-interface email (after user OTP verified)."""
+    from iic_booking.users.wallet_recharge_workflow import send_sric_approval_email
 
-    Recipients and template body/subject are configured by admin (Wallet SRIC settings + Communication).
-    """
     if request.user.user_type != UserType.FACULTY:
         return Response(
             {"error": "Only faculty can send SRIC Office notifications for wallet recharge."},
@@ -2288,15 +2234,15 @@ def send_sric_wallet_recharge_notification(request, request_id):
             {"error": "Verify your email OTP before sending to SRIC Office."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if recharge_request.sric_notification_sent:
-        return Response(
-            {"error": "SRIC Office notification has already been sent for this request."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
 
-    sric_settings = WalletSricSettings.get_singleton()
-    recipients = _parse_sric_recipient_emails(sric_settings.recipient_emails)
-    if not recipients:
+    try:
+        count = send_sric_approval_email(recharge_request)
+    except Exception as e:
+        return Response(
+            {"error": f"Failed to send email: {e}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    if count <= 0:
         return Response(
             {
                 "error": (
@@ -2307,22 +2253,11 @@ def send_sric_wallet_recharge_notification(request, request_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    from ..wallet_recharge_ops import send_sric_faculty_recharge_email
-
-    ok, err = send_sric_faculty_recharge_email(request, recharge_request, recipients=recipients)
-    if not ok:
-        return Response(
-            {"error": err or "Failed to send email."},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-
-    recharge_request.sric_notification_sent = True
-    recharge_request.save(update_fields=["sric_notification_sent", "updated_at"])
-
+    recharge_request.refresh_from_db()
     request_serializer = WalletRechargeRequestSerializer(recharge_request)
     return Response(
         {
-            "message": "Request sent to SRIC Office successfully.",
+            "message": f"Approval email sent to SRIC Office ({count} recipient(s)).",
             "request": request_serializer.data,
         },
         status=status.HTTP_200_OK,
@@ -2332,33 +2267,56 @@ def send_sric_wallet_recharge_notification(request, request_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cancel_wallet_recharge_request(request, request_id):
-    """Remove a pending wallet recharge request (by user). The row is deleted from the database."""
+    """Cancel a pending wallet recharge request (user). Keeps audit history when OTP was verified."""
+    from iic_booking.users.models.wallet import WalletRechargeCancellationSource
+    from iic_booking.users.wallet_recharge_workflow import (
+        RechargeAlreadyProcessed,
+        already_processed_page,
+        cancel_request,
+        notify_stakeholders_of_decision,
+    )
+
     try:
         recharge_request = WalletRechargeRequest.objects.get(
             pk=request_id,
             user=request.user,
-            status=WalletRechargeRequestStatus.PENDING
+            status=WalletRechargeRequestStatus.PENDING,
         )
     except WalletRechargeRequest.DoesNotExist:
         return Response(
             {"error": "Wallet recharge request not found or cannot be cancelled."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    
+
+    was_verified = bool(recharge_request.user_otp_verified)
     try:
-        recharge_request.cancel()
+        cancel_request(
+            recharge_request,
+            source=WalletRechargeCancellationSource.USER,
+            actor=request.user,
+            actor_email=request.user.email,
+            note=(request.data.get("note") or "Cancelled by requesting user").strip(),
+        )
+        if was_verified:
+            try:
+                req = WalletRechargeRequest.objects.filter(pk=request_id).first()
+                if req:
+                    notify_stakeholders_of_decision(req)
+            except Exception:
+                pass
         return Response(
             {
-                "message": "Wallet recharge request removed.",
-                "deleted_id": request_id,
+                "message": "Wallet recharge request cancelled.",
+                "deleted_id": request_id if not was_verified else None,
+                "id": request_id,
             },
             status=status.HTTP_200_OK,
         )
+    except RechargeAlreadyProcessed as e:
+        page = already_processed_page(e.status, "")
+        return Response({"error": page["message"], "page_code": page["page_code"]}, status=status.HTTP_200_OK)
     except ValueError as e:
-        return Response(
-            {"error": str(e)},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         return Response(
             {"error": f"Failed to cancel request: {str(e)}"},
@@ -2369,14 +2327,10 @@ def cancel_wallet_recharge_request(request, request_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def resend_wallet_recharge_notification(request, request_id):
-    """Resend notification for a pending wallet recharge request.
-    
-    This endpoint allows users to resend notifications (to themselves and accounts team)
-    for their pending recharge requests.
-    
-    Returns:
-        - message: Success message
-    """
+    """Resend SRIC approval email + pending notice for a pending recharge request."""
+    from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
+    from iic_booking.users.wallet_recharge_workflow import send_sric_approval_email
+
     try:
         recharge_request = WalletRechargeRequest.objects.get(
             pk=request_id,
@@ -2388,156 +2342,25 @@ def resend_wallet_recharge_notification(request, request_id):
             {"error": "Recharge request not found, already processed, or you don't have permission to access it."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    
-    try:
-        # Resend notification to user
-        from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-        send_wallet_recharge_request_notifications(recharge_request, "PENDING")
-        
-        # Resend notification to accounts team
-        from django.conf import settings
-        from django.core.mail import send_mail
-        from django.urls import reverse
-        
-        accounts_email = getattr(settings, 'ACCOUNTS_EMAIL', 'accounts@iicbooking.iitr.ac.in')
-        amount = recharge_request.amount
-        
-        # Build approve and reject URLs (web forms, not API endpoints)
-        approve_url = request.build_absolute_uri(
-            reverse('users:approve-recharge-request', kwargs={'request_id': recharge_request.id})
-        )
-        reject_url = request.build_absolute_uri(
-            reverse('users:reject-recharge-request', kwargs={'request_id': recharge_request.id})
-        )
-        
-        department_info = ""
-        if recharge_request.department:
-            dept_code = f" ({recharge_request.department.code})" if recharge_request.department.code else ""
-            department_info = f"- Department: {recharge_request.department.name}{dept_code}\n"
-        
-        project_info = ""
-        if recharge_request.project:
-            project_info = f"- Project Name: {recharge_request.project.name}\n- Project Code: {recharge_request.project.project_code}\n- Agency: {recharge_request.project.agency}\n"
-        elif recharge_request.project_details:
-            project_info = f"- Project Details: {recharge_request.project_details}\n"
-        
-        subject = f"Wallet Recharge Request (Resent) - ₹{amount} - {request.user.email}"
-        message = f"""
-Wallet Recharge Request (Resent)
 
-You have received a wallet recharge request that requires your approval.
-
-Request Details:
-- User: {request.user.name or request.user.email}
-- Email: {request.user.email}
-- Amount: ₹{amount}
-{department_info}- Request ID: #{recharge_request.id}
-- Request Date: {recharge_request.created_at.strftime('%Y-%m-%d %H:%M:%S')}
-{project_info}
-
-To approve this request, click here: {approve_url}
-To reject this request, click here: {reject_url}
-
-Note: Approval requires only an optional message. Rejection requires a mandatory message explaining the reason.
-
-This is an automated email from IIC Booking System.
-Please do not reply to this email.
-        """.strip()
-        
-        html_message = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
-        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-        .header {{ background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0; }}
-        .content {{ background-color: #f9f9f9; padding: 20px; border: 1px solid #ddd; }}
-        .details {{ background-color: white; padding: 15px; margin: 15px 0; border-radius: 5px; border-left: 4px solid #4CAF50; }}
-        .detail-row {{ margin: 10px 0; padding: 5px 0; }}
-        .detail-label {{ font-weight: bold; color: #555; }}
-        .buttons {{ text-align: center; margin: 30px 0; }}
-        .button {{ display: inline-block; padding: 15px 30px; margin: 10px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px; color: white; }}
-        .button-approve {{ background-color: #4CAF50; }}
-        .button-reject {{ background-color: #f44336; }}
-        .button:hover {{ opacity: 0.9; transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.2); }}
-        .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
-        .note {{ background-color: #fff3cd; border: 1px solid #ffc107; padding: 15px; border-radius: 5px; margin-top: 20px; font-size: 13px; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Wallet Recharge Request (Resent)</h1>
-        </div>
-        <div class="content">
-            <p>You have received a wallet recharge request that requires your approval.</p>
-            <div class="details">
-                <div class="detail-row">
-                    <span class="detail-label">User:</span> {request.user.name or request.user.email}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Email:</span> {request.user.email}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Amount:</span> ₹{amount}
-                </div>
-                {f'<div class="detail-row"><span class="detail-label">Department:</span> {recharge_request.department.name}{f" ({recharge_request.department.code})" if recharge_request.department.code else ""}</div>' if recharge_request.department else ''}
-                <div class="detail-row">
-                    <span class="detail-label">Request ID:</span> #{recharge_request.id}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Request Date:</span> {recharge_request.created_at.strftime('%Y-%m-%d %H:%M:%S')}
-                </div>
-                {f'''
-                <div class="detail-row">
-                    <span class="detail-label">Project Name:</span> {recharge_request.project.name}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Project Code:</span> {recharge_request.project.project_code}
-                </div>
-                <div class="detail-row">
-                    <span class="detail-label">Agency:</span> {recharge_request.project.agency}
-                </div>
-                ''' if recharge_request.project else ''}
-                {f'<div class="detail-row"><span class="detail-label">Project Details:</span> {recharge_request.project_details}</div>' if recharge_request.project_details and not recharge_request.project else ''}
-            </div>
-            <div class="buttons">
-                <a href="{approve_url}" class="button button-approve">✓ Approve Request</a>
-                <a href="{reject_url}" class="button button-reject">✗ Reject Request</a>
-            </div>
-            <div class="note">
-                <strong>Note:</strong> Click the buttons above to approve or reject this request. Approval requires only an optional message. Rejection requires a mandatory message explaining the reason.
-            </div>
-        </div>
-        <div class="footer">
-            <p>This is an automated email from IIC Booking System.</p>
-            <p>Please do not reply to this email.</p>
-        </div>
-    </div>
-</body>
-</html>
-        """
-        
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[accounts_email],
-            html_message=html_message,
-            fail_silently=False,
-        )
-        
-        return Response({
-            "message": "Notifications have been resent successfully to you and the accounts team.",
-        }, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to resend notification for recharge request {request_id}: {str(e)}")
+    if not recharge_request.user_otp_verified:
         return Response(
-            {"error": f"Failed to resend notifications: {str(e)}"},
+            {"error": "Verify your OTP before the SRIC approval email can be sent."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        send_wallet_recharge_request_notifications(recharge_request, "PENDING")
+        count = send_sric_approval_email(recharge_request)
+        return Response(
+            {
+                "message": f"Notifications resent. SRIC approval email sent to {count} recipient(s).",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as e:
+        return Response(
+            {"error": f"Failed to resend notification: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
