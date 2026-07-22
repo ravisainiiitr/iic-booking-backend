@@ -46,12 +46,30 @@ class IsAdminPanelUser(permissions.BasePermission):
         return user_has_admin_panel_access(request.user)
 
 
+class IsAdminPanelUserOrAccountsInCharge(permissions.BasePermission):
+    """
+    Admin Panel users, or Department Accounts In Charge (finance).
+
+    Accounts In Charge need wallet recharge request access for their department
+    even when Admin Panel Access is not enabled for the finance role.
+    """
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if getattr(request.user, "user_type", None) == UserType.FINANCE:
+            return True
+        from iic_booking.users.rbac import user_has_admin_panel_access
+
+        return user_has_admin_panel_access(request.user)
+
+
 class IsAdminPanelUserOrReportsStaff(permissions.BasePermission):
     """
-    Admin Panel users, or OIC / Lab In-charge with reports.view.
+    Admin Panel users, or OIC / Lab In-charge / Accounts In Charge with reports.view.
 
-    Lab In-charge and OIC need equipment reports without requiring Admin Panel
-    to be enabled for their department role config.
+    Lab In-charge, OIC, and Accounts In Charge need equipment reports without requiring
+    Admin Panel to be enabled for their department role config.
     """
 
     def has_permission(self, request, view):
@@ -62,6 +80,9 @@ class IsAdminPanelUserOrReportsStaff(permissions.BasePermission):
         if user_has_admin_panel_access(request.user):
             return True
         ut = getattr(request.user, "user_type", None)
+        # Accounts In Charge always have Reports access for their department.
+        if ut == UserType.FINANCE:
+            return True
         if ut in {UserType.OPERATOR, UserType.MANAGER}:
             return user_has_permission(
                 request.user,
@@ -138,6 +159,9 @@ def _require_wallet_manage(request):
     user = getattr(request, "user", None)
     if getattr(user, "user_type", None) == UserType.ADMIN:
         return
+    # Accounts In Charge always manage wallet recharge requests for their department.
+    if getattr(user, "user_type", None) == UserType.FINANCE:
+        return
     if user_has_permission(user, "wallet.manage") or user_has_permission(user, "admin_settings.wallet"):
         return
     raise PermissionDenied("Wallet management permission is required.")
@@ -154,6 +178,9 @@ def _require_bookings_manage(request):
 def _require_reports_view(request):
     user = getattr(request, "user", None)
     if getattr(user, "user_type", None) == UserType.ADMIN:
+        return
+    # Accounts In Charge may open Reports for their department by role.
+    if getattr(user, "user_type", None) == UserType.FINANCE:
         return
     if not user_has_permission(user, "reports.view"):
         raise PermissionDenied("Reports view permission is required.")
@@ -1689,7 +1716,7 @@ def admin_api_router():
     class WalletRechargeRequestViewSet(ModelViewSet):
         """Manage internal wallet recharge requests (history, approve/reject/cancel, audit)."""
 
-        permission_classes = [IsAdminPanelUser]
+        permission_classes = [IsAdminPanelUserOrAccountsInCharge]
         queryset = (
             WalletRechargeRequest.objects.all()
             .select_related(
@@ -1730,11 +1757,15 @@ def admin_api_router():
             elif is_department_admin(user):
                 qs = qs.filter(department_id=user.department_id)
             elif ut == UserType.FINANCE:
-                qs = qs.filter(
-                    Q(account_incharge_id=user.id)
-                    | Q(department_id=user.department_id)
-                    | Q(department_id__isnull=True)
-                )
+                # Accounts In Charge: only requests for their assigned department
+                # (or explicitly assigned to them as account_incharge).
+                dept_id = getattr(user, "department_id", None)
+                if dept_id is None:
+                    qs = qs.none()
+                else:
+                    qs = qs.filter(
+                        Q(department_id=dept_id) | Q(account_incharge_id=user.id)
+                    )
             else:
                 qs = qs.filter(department_id=user.department_id)
 
@@ -2285,12 +2316,12 @@ def admin_api_router():
             from config.admin_panel_access_api import assert_admin_section_module
             from iic_booking.users.rbac import user_has_admin_panel_access, user_has_permission
 
-            # Lab In-charge / OIC with reports.view may list scoped equipment for the Reports filter
-            # without full Admin Panel / equipment module access.
+            # Lab In-charge / OIC / Accounts In Charge with reports.view may list scoped
+            # equipment for the Reports filter without full Admin Panel / equipment module access.
             ut = getattr(request.user, "user_type", None)
             if (
                 self.action == "list"
-                and ut in {UserType.OPERATOR, UserType.MANAGER}
+                and ut in {UserType.OPERATOR, UserType.MANAGER, UserType.FINANCE}
                 and user_has_permission(
                     request.user,
                     "reports.view",
@@ -2298,6 +2329,10 @@ def admin_api_router():
                 )
                 and not user_has_admin_panel_access(request.user)
             ):
+                return
+            # Finance role always allowed to list equipment for Reports even if RBAC grants
+            # were customized without reports.view (department scope still applies below).
+            if self.action == "list" and ut == UserType.FINANCE:
                 return
             assert_admin_section_module(request.user, "equipment")
 
