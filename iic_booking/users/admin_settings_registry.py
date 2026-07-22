@@ -121,12 +121,6 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
         "main_admin_only": True,
     },
     {
-        "key": "admin_settings.wallet",
-        "label": "Wallet Management",
-        "description": "Parse and manage wallet recharge emails",
-        "path": "/admin-settings/wallet-recharge-parse",
-    },
-    {
         "key": "admin_settings.legacy_wallet",
         "label": "Legacy Wallet Lookup",
         "path": "/admin-settings/legacy-wallet-import",

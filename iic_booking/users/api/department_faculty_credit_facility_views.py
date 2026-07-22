@@ -12,6 +12,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.users.department_faculty_credit_facility import (
+    avail_faculty_department_credit,
+    faculty_credit_status_for_user,
     get_or_create_settings,
     is_eligible_for_new_facility,
     serialize_available_row,
@@ -218,3 +220,52 @@ def department_faculty_credit_facility_audit_list_view(request):
         for log in logs
     ]
     return Response({"department_id": dept.id, "results": results, "count": len(results)})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def department_faculty_credit_facility_my_status_view(request):
+    """Faculty: credit facility status per department for the Wallet page."""
+    if str(getattr(request.user, "user_type", "") or "").lower() != UserType.FACULTY:
+        return Response({"results": [], "count": 0})
+    rows = faculty_credit_status_for_user(request.user)
+    return Response({"results": rows, "count": len(rows)})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def department_faculty_credit_facility_avail_view(request):
+    """Faculty: avail one-time department credit facility with a chosen amount."""
+    if str(getattr(request.user, "user_type", "") or "").lower() != UserType.FACULTY:
+        return Response(
+            {"error": "Only faculty members can avail the department credit facility."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    department_id = request.data.get("department_id")
+    amount_raw = request.data.get("amount")
+    if department_id is None:
+        return Response({"error": "department_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        amount = Decimal(str(amount_raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return Response({"error": "amount must be a valid number."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        facility = avail_faculty_department_credit(
+            user=request.user,
+            department_id=int(department_id),
+            amount=amount,
+        )
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        return Response(
+            {"error": "Could not avail credit facility."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    return Response(
+        {
+            "message": "Credit facility availed successfully.",
+            "facility": serialize_facility_row(facility),
+        },
+        status=status.HTTP_201_CREATED,
+    )

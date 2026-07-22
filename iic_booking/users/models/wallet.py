@@ -427,6 +427,13 @@ class WalletJoinRequest(Model):
         self.save()
 
 
+class WalletRechargeMode(models.TextChoices):
+    """Offline wallet recharge modes."""
+
+    PROJECT_GRANT = "project_grant", _("Recharge via Project Grant")
+    DIRECT_CASH_DEPOSIT = "direct_cash_deposit", _("Direct Cash Deposit / Bank Transfer")
+
+
 class WalletRechargeRequestStatus(models.TextChoices):
     """Status choices for wallet recharge requests."""
     PENDING = 'PENDING', _('Pending')
@@ -533,6 +540,50 @@ class WalletRechargeRequest(Model):
         blank=True,
         help_text=_("Project grant code used for debit (typically project_code)"),
     )
+    recharge_mode = CharField(
+        _("Recharge Mode"),
+        max_length=32,
+        choices=WalletRechargeMode.choices,
+        default=WalletRechargeMode.PROJECT_GRANT,
+        db_index=True,
+        help_text=_(
+            "Offline recharge path: Project Grant (faculty) or Direct Cash Deposit / Bank Transfer "
+            "(all internal users)."
+        ),
+    )
+    undertaking_accepted = BooleanField(
+        _("Undertaking Accepted"),
+        default=False,
+        help_text=_(
+            "User acknowledged that Direct Cash Deposit / Bank Transfer is used only when no "
+            "active project grant is available."
+        ),
+    )
+    fund_receipt_verified = BooleanField(
+        _("Fund Receipt Verified"),
+        default=False,
+        help_text=_(
+            "Department Account In-charge confirmed that funds were credited to the department "
+            "grant/account (final financial verification)."
+        ),
+    )
+    fund_receipt_verified_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="wallet_recharge_fund_verifications",
+        verbose_name=_("Fund Receipt Verified By"),
+    )
+    fund_receipt_verified_at = DateTimeField(
+        _("Fund Receipt Verified At"),
+        null=True,
+        blank=True,
+    )
+    fund_receipt_verification_remarks = TextField(
+        _("Fund Receipt Verification Remarks"),
+        blank=True,
+    )
     account_incharge = ForeignKey(
         User,
         on_delete=SET_NULL,
@@ -540,7 +591,11 @@ class WalletRechargeRequest(Model):
         blank=True,
         related_name="wallet_recharge_requests_as_incharge",
         verbose_name=_("Department Account In-charge"),
-        help_text=_("Accounts In Charge selected / notified for this request"),
+        help_text=_(
+            "Department Account In-charge notified for this request. This role monitors and manages "
+            "department financial activities including wallet recharges, grant utilization, wallet "
+            "transactions, credit facility usage, and related department financial records."
+        ),
     )
     action_token = CharField(
         _("Action Token"),
@@ -880,49 +935,6 @@ class WalletRechargeImportRecord(Model):
 
     def __str__(self) -> str:
         return f"Receipt {self.receipt_no} FY{self.financial_year_start} → {self.user.email} ₹{self.amount}"
-
-
-class WalletRechargeParseEntry(Model):
-    """
-    Stored parsed wallet recharge table row (shared across devices/users).
-    Key: (date, receipt_no, emp_no). Processed status is derived from WalletRechargeImportRecord when listing.
-    """
-    dated = DateField(_("Date"), null=True, blank=True)
-    receipt_no = CharField(_("Receipt No."), max_length=50, db_index=True)
-    name = CharField(_("Name"), max_length=255, blank=True)
-    emp_no = CharField(_("Emp No."), max_length=50, db_index=True)
-    department = CharField(_("Department"), max_length=255, blank=True)
-    amount = CharField(_("Amount (display)"), max_length=50)
-    payment = TextField(_("Payment Details"), blank=True)
-    created_at = DateTimeField(_("Created at"), auto_now_add=True)
-    source_imap_uid = CharField(
-        _("Source IMAP message UID"),
-        max_length=32,
-        blank=True,
-        null=True,
-        db_index=True,
-        help_text=_("Mailbox UID of the email this row was imported from (optional)."),
-    )
-
-    class Meta:
-        verbose_name = _("Wallet Recharge Parse Entry")
-        verbose_name_plural = _("Wallet Recharge Parse Entries")
-        ordering = ["-created_at"]
-        constraints = [
-            UniqueConstraint(
-                fields=["receipt_no", "dated", "emp_no"],
-                name="unique_parse_entry_dated",
-                condition=Q(dated__isnull=False),
-            ),
-            UniqueConstraint(
-                fields=["receipt_no", "emp_no"],
-                name="unique_parse_entry_no_date",
-                condition=Q(dated__isnull=True),
-            ),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.receipt_no} {self.dated} {self.emp_no}"
 
 
 class ExternalUserBankDetails(Model):

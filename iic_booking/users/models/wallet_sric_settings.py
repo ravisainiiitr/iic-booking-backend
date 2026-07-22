@@ -15,7 +15,16 @@ class WalletSricSettings(models.Model):
         blank=True,
         help_text=_(
             "One address per line, or comma/semicolon separated. "
-            "Used when a faculty member sends a wallet recharge request to the SRIC Office."
+            "Used when a faculty member sends a Project Grant wallet recharge request to the SRIC Office."
+        ),
+    )
+    bill_section_emails = models.TextField(
+        _("SRIC Bill Section email addresses"),
+        blank=True,
+        help_text=_(
+            "One address per line, or comma/semicolon separated. "
+            "Used for Direct Cash Deposit / Bank Transfer wallet recharge requests. "
+            "Configurable by Main Administrator and Department Administrator."
         ),
     )
     grant_code_for_credit = models.CharField(
@@ -40,6 +49,10 @@ class WalletSricSettings(models.Model):
     def get_singleton(cls) -> "WalletSricSettings":
         obj, _ = cls.objects.get_or_create(
             pk=1,
-            defaults={"recipient_emails": "", "grant_code_for_credit": "IIC-000-002"},
+            defaults={
+                "recipient_emails": "",
+                "bill_section_emails": "",
+                "grant_code_for_credit": "IIC-000-002",
+            },
         )
         return obj

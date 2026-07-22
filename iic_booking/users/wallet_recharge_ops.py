@@ -1,13 +1,11 @@
 """
-Wallet recharge operational helpers: SRIC email, admin/finance alerts, faculty pipeline matching hints.
+Wallet recharge operational helpers: SRIC email, admin/finance alerts.
 """
 
 from __future__ import annotations
 
 import logging
 import re
-from collections import defaultdict
-from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Optional
 
 from django.conf import settings
@@ -21,9 +19,7 @@ from iic_booking.communication.utils import get_frontend_absolute_url
 
 from .models.user_type import UserType
 from .models.wallet import (
-    WalletRechargeParseEntry,
     WalletRechargeRequest,
-    WalletRechargeRequestStatus,
 )
 from .models.wallet_sric_settings import WalletSricSettings
 
@@ -305,7 +301,7 @@ def notify_admin_finance_new_wallet_recharge_request(
     elif recharge_request.project_details:
         proj = recharge_request.project_details[:200]
 
-    parse_link = get_frontend_absolute_url("/admin-settings/wallet-recharge-parse")
+    requests_link = get_frontend_absolute_url("/admin-settings/wallet-recharge-requests")
     subject = f"[IIC] Wallet recharge request #{recharge_request.id} — ₹{recharge_request.amount} — Emp {emp}"
     body_lines = [
         "A wallet recharge request was submitted (user OTP verified).",
@@ -318,9 +314,9 @@ def notify_admin_finance_new_wallet_recharge_request(
         f"Project: {proj or '—'}",
         f"SRIC notification sent: {'Yes' if recharge_request.sric_notification_sent else 'No'}",
         "",
-        f"Wallet recharge parse & history: {parse_link}",
+        f"Wallet recharge requests: {requests_link}",
         "",
-        "After SRIC sends the accounts file, parsed rows on that page can auto-match this request by amount + Emp No.",
+        "Review and approve or reject this request from the admin wallet recharge requests page.",
     ]
     body = "\n".join(body_lines)
 
@@ -345,7 +341,7 @@ def try_auto_sric_and_staff_alerts_after_recharge_verified(
     After faculty OTP verification on a recharge request:
     - Create SRIC transfer API record (preferred when SRIC_API_KEY is configured).
     - Optionally send SRIC email if recipients configured and email fallback enabled.
-    - Email Admin + Finance users with a link to the parse workspace.
+    - Email Admin + Finance users with a link to wallet recharge requests.
     """
     from django.conf import settings as django_settings
 
@@ -373,45 +369,3 @@ def try_auto_sric_and_staff_alerts_after_recharge_verified(
             recharge_request.sric_notification_sent = True
 
     notify_admin_finance_new_wallet_recharge_request(http_request, recharge_request)
-
-
-def parse_entry_amount_decimal(entry: WalletRechargeParseEntry) -> Optional[Decimal]:
-    try:
-        return Decimal(str((entry.amount or "").replace(",", "").strip()))
-    except Exception:
-        return None
-
-
-def wallet_recharge_parse_match_index(emp_nos: set[str]) -> dict[str, set[Decimal]]:
-    """One query: map normalized emp_no -> parse-entry amounts (for pipeline UI, avoids N+1)."""
-    if not emp_nos:
-        return {}
-    out: dict[str, set[Decimal]] = defaultdict(set)
-    qs = WalletRechargeParseEntry.objects.filter(emp_no__in=emp_nos).only("emp_no", "amount")
-    for e in qs:
-        emp = (e.emp_no or "").strip()
-        if not emp:
-            continue
-        d = parse_entry_amount_decimal(e)
-        if d is not None:
-            out[emp].add(d)
-    return dict(out)
-
-
-def recharge_request_matches_parse_index(
-    req: WalletRechargeRequest, index: dict[str, set[Decimal]]
-) -> bool:
-    """True if index (from wallet_recharge_parse_match_index) contains req amount for req user's emp."""
-    emp = (req.user.emp_id or "").strip()
-    if not emp:
-        return False
-    return req.amount in index.get(emp, ())
-
-
-def recharge_request_has_matching_parse_row(req: WalletRechargeRequest) -> bool:
-    """True if a stored parse entry exists with same Emp No. and amount as the request (awaiting or extra SRIC row)."""
-    emp = (req.user.emp_id or "").strip()
-    if not emp:
-        return False
-    index = wallet_recharge_parse_match_index({emp})
-    return recharge_request_matches_parse_index(req, index)

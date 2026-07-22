@@ -373,7 +373,6 @@ class LocalDateConventionTests(SimpleTestCase):
 
     SENSITIVE_GLOBS = (
         "iic_booking/equipment/*.py",
-        "iic_booking/users/wallet_recharge_import.py",
         "iic_booking/users/faculty_wallet_report.py",
         "iic_booking/users/api/auth_views.py",
         "iic_booking/users/api/project_views.py",

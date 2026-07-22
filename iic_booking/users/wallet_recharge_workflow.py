@@ -21,6 +21,7 @@ from iic_booking.users.models.wallet import (
     SubWallet,
     WalletRechargeCancellationSource,
     WalletRechargeCreditFacilityStatus,
+    WalletRechargeMode,
     WalletRechargeRejectionReason,
     WalletRechargeRequest,
     WalletRechargeRequestAuditLog,
@@ -127,10 +128,11 @@ def populate_request_snapshots(recharge_request: WalletRechargeRequest) -> None:
     if recharge_request.department_id:
         dept_grant = resolve_department_grant_code(recharge_request.department)
     project_grant = ""
-    if recharge_request.project_id:
-        project_grant = (recharge_request.project.project_code or "").strip()
-    elif (recharge_request.project_details or "").strip():
-        project_grant = (recharge_request.project_details or "").strip()[:100]
+    if getattr(recharge_request, "recharge_mode", None) != WalletRechargeMode.DIRECT_CASH_DEPOSIT:
+        if recharge_request.project_id:
+            project_grant = (recharge_request.project.project_code or "").strip()
+        elif (recharge_request.project_details or "").strip():
+            project_grant = (recharge_request.project_details or "").strip()[:100]
 
     recharge_request.employee_number = emp
     recharge_request.user_department_name = user_dept_name
@@ -167,6 +169,16 @@ def get_sric_recipient_emails() -> list[str]:
     # Fallback to ACCOUNTS_EMAIL so requests are never silently dropped
     fallback = (getattr(settings, "ACCOUNTS_EMAIL", "") or "").strip()
     return [fallback] if fallback and "@" in fallback else []
+
+
+def get_sric_bill_section_emails() -> list[str]:
+    """Recipients for Direct Cash Deposit / Bank Transfer recharge requests."""
+    settings_obj = WalletSricSettings.get_singleton()
+    emails = _parse_sric_recipient_emails(getattr(settings_obj, "bill_section_emails", "") or "")
+    if emails:
+        return emails
+    # Fall back to SRIC Office recipients, then ACCOUNTS_EMAIL
+    return get_sric_recipient_emails()
 
 
 def find_department_account_incharges(department) -> list:
@@ -216,6 +228,13 @@ def serialize_request_public(recharge_request: WalletRechargeRequest) -> dict[st
         "department_grant_code": recharge_request.department_grant_code or "",
         "project_grant_code": recharge_request.project_grant_code or "",
         "project_name": recharge_request.project.name if recharge_request.project_id else "",
+        "recharge_mode": getattr(recharge_request, "recharge_mode", "") or WalletRechargeMode.PROJECT_GRANT,
+        "recharge_mode_display": (
+            recharge_request.get_recharge_mode_display()
+            if hasattr(recharge_request, "get_recharge_mode_display")
+            else ""
+        ),
+        "fund_receipt_verified": bool(getattr(recharge_request, "fund_receipt_verified", False)),
         "status": status,
         "status_display": recharge_request.get_status_display(),
         "rejection_reason_code": recharge_request.rejection_reason_code or "",
@@ -379,14 +398,24 @@ def cancel_request(
 
 def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     """
-    Send SRIC approval-interface email (Approve / Reject buttons).
-    Returns number of recipients emailed.
+    Send approval-interface email (Approve / Reject buttons).
+    Project Grant → SRIC Office recipients.
+    Direct Cash Deposit → SRIC Bill Section + requester + wallet owner.
+    Returns number of primary (approval) recipients emailed.
     """
     populate_request_snapshots(recharge_request)
     recharge_request.refresh_from_db()
-    recipients = get_sric_recipient_emails()
+
+    mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
+    is_cash = mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
+
+    recipients = get_sric_bill_section_emails() if is_cash else get_sric_recipient_emails()
     if not recipients:
-        logger.warning("No SRIC recipients configured for recharge request %s", recharge_request.id)
+        logger.warning(
+            "No %s recipients configured for recharge request %s",
+            "Bill Section" if is_cash else "SRIC Office",
+            recharge_request.id,
+        )
         return 0
 
     user = recharge_request.user
@@ -397,16 +426,32 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     credit_grant = recharge_request.department_grant_code or "—"
     debit_grant = recharge_request.project_grant_code or "—"
     approve_url, reject_url = build_action_urls(recharge_request)
+    mode_label = "Direct Cash Deposit / Bank Transfer" if is_cash else "Recharge via Project Grant"
 
     subject = f"Urgent Wallet Recharge Request from {name} - {emp}"
+    if is_cash:
+        grant_lines_text = f"Recharge Mode: {mode_label}"
+        grant_rows_html = (
+            f'<div class="row"><span class="label">Recharge Mode:</span> {mode_label}</div>'
+            f'<div class="row"><span class="label">Amount to be Credited to Grant:</span> {credit_grant}</div>'
+        )
+    else:
+        grant_lines_text = (
+            f"Amount to be Credited to Grant: {credit_grant}\n"
+            f"Project Grant Code for Debit: {debit_grant}"
+        )
+        grant_rows_html = (
+            f'<div class="row"><span class="label">Amount to be Credited to Grant:</span> {credit_grant}</div>'
+            f'<div class="row"><span class="label">Project Grant Code for Debit:</span> {debit_grant}</div>'
+        )
+
     text_body = f"""Urgent Wallet Recharge Request
 
 Amount of Recharge: ₹{amount}
 Name of the User: {name}
 Employee Number: {emp}
 User Department: {user_dept}
-Amount to be Credited to Grant: {credit_grant}
-Project Grant Code for Debit: {debit_grant}
+{grant_lines_text}
 
 Request ID: {recharge_request.request_id_display}
 
@@ -429,8 +474,7 @@ body{{font-family:Arial,sans-serif;line-height:1.6;color:#333}}
 <div class="row"><span class="label">Name of the User:</span> {name}</div>
 <div class="row"><span class="label">Employee Number:</span> {emp}</div>
 <div class="row"><span class="label">User Department:</span> {user_dept}</div>
-<div class="row"><span class="label">Amount to be Credited to Grant:</span> {credit_grant}</div>
-<div class="row"><span class="label">Project Grant Code for Debit:</span> {debit_grant}</div>
+{grant_rows_html}
 <div class="row"><span class="label">Request ID:</span> {recharge_request.request_id_display}</div>
 <p style="text-align:center;margin:28px 0">
   <a class="btn ok" href="{approve_url}">Approve</a>
@@ -448,16 +492,115 @@ If the request was already processed in the admin dashboard, these buttons will 
         html_message=html_body,
         fail_silently=False,
     )
+
+    # Inform requester + wallet owner (cash deposit / bank transfer mode)
+    if is_cash:
+        info_recipients: list[str] = []
+        requester_email = (user.email or "").strip()
+        if requester_email and "@" in requester_email:
+            info_recipients.append(requester_email)
+        wallet_owner = getattr(getattr(recharge_request, "wallet", None), "user", None)
+        owner_email = (getattr(wallet_owner, "email", None) or "").strip() if wallet_owner else ""
+        if owner_email and "@" in owner_email and owner_email.lower() not in {
+            e.lower() for e in info_recipients
+        }:
+            info_recipients.append(owner_email)
+        # Exclude addresses already in Bill Section list
+        primary_lower = {e.lower() for e in recipients}
+        info_recipients = [e for e in info_recipients if e.lower() not in primary_lower]
+        if info_recipients:
+            info_subject = f"Wallet Recharge Request Submitted — {recharge_request.request_id_display}"
+            info_text = f"""Your wallet recharge request has been submitted.
+
+Request ID: {recharge_request.request_id_display}
+Amount: ₹{amount}
+Recharge Mode: {mode_label}
+Department: {recharge_request.department.name if recharge_request.department_id else "—"}
+
+The SRIC Bill Section has been notified. You will receive a further email when the request is processed.
+"""
+            info_html = f"""<!DOCTYPE html>
+<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333">
+<div style="max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px">
+<h2>Wallet Recharge Request Submitted</h2>
+<p>Your wallet recharge request has been submitted for processing.</p>
+<div class="row"><strong>Request ID:</strong> {recharge_request.request_id_display}</div>
+<div class="row"><strong>Amount:</strong> ₹{amount}</div>
+<div class="row"><strong>Recharge Mode:</strong> {mode_label}</div>
+<div class="row"><strong>Department:</strong> {recharge_request.department.name if recharge_request.department_id else "—"}</div>
+<p style="margin-top:16px">The SRIC Bill Section has been notified. You will receive a further email when the request is processed.</p>
+</div></body></html>"""
+            try:
+                send_mail(
+                    subject=info_subject,
+                    message=info_text,
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=info_recipients,
+                    html_message=info_html,
+                    fail_silently=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to notify requester/wallet owner for cash deposit request %s",
+                    recharge_request.id,
+                )
+
     WalletRechargeRequest.objects.filter(pk=recharge_request.pk).update(sric_notification_sent=True)
     append_audit_log(
         recharge_request,
-        action="sric_email_sent",
+        action="sric_email_sent" if not is_cash else "bill_section_email_sent",
         from_status=WalletRechargeRequestStatus.PENDING,
         to_status=WalletRechargeRequestStatus.PENDING,
         message=f"Approval email sent to {', '.join(recipients)}",
-        metadata={"recipients": recipients},
+        metadata={"recipients": recipients, "recharge_mode": mode},
     )
     return len(recipients)
+
+
+@transaction.atomic
+def verify_fund_receipt(
+    recharge_request: WalletRechargeRequest,
+    *,
+    actor,
+    remarks: str = "",
+) -> WalletRechargeRequest:
+    """Department Account In-charge final financial verification (audit confirmation)."""
+    locked = (
+        WalletRechargeRequest.objects.select_for_update()
+        .select_related("user", "wallet", "department", "fund_receipt_verified_by")
+        .get(pk=recharge_request.pk)
+    )
+    if locked.fund_receipt_verified:
+        raise ValueError("Fund receipt has already been verified for this request.")
+
+    locked.fund_receipt_verified = True
+    locked.fund_receipt_verified_by = actor if getattr(actor, "pk", None) else None
+    locked.fund_receipt_verified_at = timezone.now()
+    locked.fund_receipt_verification_remarks = (remarks or "").strip()
+    locked.save(
+        update_fields=[
+            "fund_receipt_verified",
+            "fund_receipt_verified_by",
+            "fund_receipt_verified_at",
+            "fund_receipt_verification_remarks",
+            "updated_at",
+        ]
+    )
+    append_audit_log(
+        locked,
+        action="fund_receipt_verified",
+        from_status=locked.status,
+        to_status=locked.status,
+        actor=actor,
+        actor_email=getattr(actor, "email", "") or "",
+        message=locked.fund_receipt_verification_remarks or "Fund receipt verified",
+        metadata={
+            "verified_at": locked.fund_receipt_verified_at.isoformat()
+            if locked.fund_receipt_verified_at
+            else None
+        },
+    )
+    return locked
 
 
 def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> None:

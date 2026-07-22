@@ -11620,6 +11620,17 @@ def set_booking_sample_status(request, booking_id):
                 {"error": "Only Admin, Officer In Charge, or Lab Incharge can set this status."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        else:
+            # External bookings: staff may only Hold / Forward for now (Sample Sent still OK above).
+            snap = (getattr(booking, "user_type_snapshot", None) or "").strip()
+            if snap in UserType.get_external_user_codes():
+                if status_value not in (SampleTraceStatus.HELD_AT_OFFICE, SampleTraceStatus.FORWARDED_TO_LAB):
+                    return Response(
+                        {
+                            "error": "Only Hold Booking (Held at Office) or Forward to Laboratory is allowed for external bookings at this time."
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
     sample_identifiers = (request.data.get('sample_identifiers') or '').strip() if status_value == SampleTraceStatus.SAMPLE_SENT else ''
     tracking_id = (request.data.get('tracking_id') or '').strip() if status_value == SampleTraceStatus.SAMPLE_SENT else ''

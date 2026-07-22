@@ -530,6 +530,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     project_head_email = serializers.SerializerMethodField()
     account_incharge_email = serializers.SerializerMethodField()
     account_incharge_name = serializers.SerializerMethodField()
+    fund_receipt_verified_by_name = serializers.SerializerMethodField()
     audit_logs = WalletRechargeRequestAuditLogSerializer(many=True, read_only=True)
     
     class Meta:
@@ -558,6 +559,13 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'user_department_name',
             'department_grant_code',
             'project_grant_code',
+            'recharge_mode',
+            'undertaking_accepted',
+            'fund_receipt_verified',
+            'fund_receipt_verified_by',
+            'fund_receipt_verified_by_name',
+            'fund_receipt_verified_at',
+            'fund_receipt_verification_remarks',
             'account_incharge',
             'account_incharge_email',
             'account_incharge_name',
@@ -590,6 +598,13 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'user_department_name',
             'department_grant_code',
             'project_grant_code',
+            'recharge_mode',
+            'undertaking_accepted',
+            'fund_receipt_verified',
+            'fund_receipt_verified_by',
+            'fund_receipt_verified_by_name',
+            'fund_receipt_verified_at',
+            'fund_receipt_verification_remarks',
             'account_incharge',
             'user_otp_verified',
             'sric_notification_sent',
@@ -634,6 +649,12 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             return obj.account_incharge.name or obj.account_incharge.email or ""
         return ""
 
+    def get_fund_receipt_verified_by_name(self, obj):
+        u = getattr(obj, "fund_receipt_verified_by", None)
+        if not u:
+            return ""
+        return (u.name or "").strip() or (u.email or "")
+
     def get_project_agency(self, obj):
         p = obj.project
         return (p.agency or "").strip() if p else ""
@@ -666,7 +687,21 @@ class WalletRechargeRequestCreateSerializer(serializers.Serializer):
     project_id = serializers.IntegerField(
         required=False,
         allow_null=True,
-        help_text="Project ID (required for faculty users, only active projects allowed)",
+        help_text="Project ID (required for faculty Project Grant mode)",
+    )
+    recharge_mode = serializers.ChoiceField(
+        choices=[
+            ("project_grant", "Recharge via Project Grant"),
+            ("direct_cash_deposit", "Direct Cash Deposit / Bank Transfer"),
+        ],
+        required=False,
+        default="project_grant",
+        help_text="Offline recharge mode",
+    )
+    undertaking_accepted = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text="Required for Direct Cash Deposit / Bank Transfer mode",
     )
     credit_facility_opted_in = serializers.BooleanField(
         required=False,

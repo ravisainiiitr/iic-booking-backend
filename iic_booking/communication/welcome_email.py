@@ -130,6 +130,7 @@ def _role_welcome_line(user_type: str | None) -> str:
 
 
 _FEATURES: list[tuple[str, str, str]] = [
+    ("🏠", "Your personalized dashboard", "All test results, booking updates, approvals, notifications, invoices, and complete activity history live in one place — visit regularly."),
     ("📅", "Centralized booking", "Reserve instruments across departments from one calendar."),
     ("✅", "Transparent approvals", "Clear online workflows for requests and authorisations."),
     ("💳", "Digital wallets", "Grant-based payments and department sub-wallet management."),
@@ -137,7 +138,6 @@ _FEATURES: list[tuple[str, str, str]] = [
     ("🔔", "Live status & alerts", "Real-time booking updates by email and in-app notices."),
     ("🗓️", "Availability calendar", "See open slots before you commit to a booking."),
     ("🔐", "Role-based access", "Secure permissions tailored to your responsibilities."),
-    ("📊", "History & reports", "Comprehensive booking history for research and audit needs."),
 ]
 
 
@@ -219,8 +219,8 @@ def build_welcome_email(
     meta_html = " · ".join(meta_bits)
 
     preheader = (
-        f"Welcome aboard, {display_name}. Discover centralized equipment booking, digital wallets, "
-        f"and sample tracking built for research labs at IIT Roorkee."
+        f"Welcome aboard, {display_name}. Your dashboard is the hub for bookings, sample progress, "
+        f"test reports, wallet activity, and notifications at IIT Roorkee."
     )
 
     html_body = f"""<!doctype html>
@@ -315,6 +315,44 @@ def build_welcome_email(
             </td>
           </tr>
 
+          <!-- Dashboard hub callout -->
+          <tr>
+            <td bgcolor="{_COLOR_SURFACE}" style="background-color:{_COLOR_SURFACE};padding:8px 28px 6px 28px;border-left:1px solid {_COLOR_BORDER};border-right:1px solid {_COLOR_BORDER};">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:linear-gradient(135deg,#ecfdf5 0%,#f0f9ff 100%);border:1px solid #99f6e4;border-radius:14px;">
+                <tr>
+                  <td style="padding:18px 18px 20px 18px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{_COLOR_PRIMARY};">
+                      Your command centre
+                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:17px;font-weight:800;color:{_COLOR_TEXT};margin-top:6px;">
+                      Everything lives on your dashboard
+                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{_COLOR_TEXT};margin-top:8px;">
+                      All <strong>test results</strong>, <strong>booking updates</strong>, <strong>approvals</strong>,
+                      <strong>notifications</strong>, <strong>invoices</strong>, and your complete
+                      <strong>activity history</strong> are available from your personalized dashboard.
+                      Visit it regularly — it is the central hub for managing equipment bookings, monitoring
+                      sample progress, accessing test reports, tracking financial transactions, and receiving
+                      important notifications.
+                    </div>
+                    <div style="margin-top:14px;">
+                      <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                        <tr>
+                          <td bgcolor="{_COLOR_PRIMARY}" style="border-radius:10px;">
+                            <a href="{escape(dashboard_url)}"
+                               style="display:inline-block;padding:11px 16px;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
+                              Open your dashboard
+                            </a>
+                          </td>
+                        </tr>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
           <!-- Features heading -->
           <tr>
             <td bgcolor="{_COLOR_SURFACE}" style="background-color:{_COLOR_SURFACE};padding:18px 28px 6px 28px;border-left:1px solid {_COLOR_BORDER};border-right:1px solid {_COLOR_BORDER};">
@@ -404,6 +442,12 @@ def build_welcome_email(
         f"Your role: {role_label}" + (f" | Department: {dept}" if dept else ""),
         "",
         role_line,
+        "",
+        "YOUR DASHBOARD — the central hub:",
+        "All test results, booking updates, approvals, notifications, invoices, and complete activity",
+        "history are available from your personalized dashboard. Visit regularly to manage bookings,",
+        "monitor sample progress, access test reports, track financial transactions, and receive notices.",
+        f"Open Dashboard: {dashboard_url}",
         "",
         "Key capabilities:",
         *[f"- {title}: {body}" for _, title, body in _FEATURES],

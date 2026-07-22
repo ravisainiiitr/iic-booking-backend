@@ -298,11 +298,22 @@ def register_extra_admin_routes(router):
     class WalletSricSettingsSerializer(serializers.ModelSerializer):
         class Meta:
             model = WalletSricSettings
-            fields = ["id", "recipient_emails", "grant_code_for_credit"]
+            fields = ["id", "recipient_emails", "bill_section_emails", "grant_code_for_credit"]
             read_only_fields = ["id"]
 
+    class IsMainAdminOrDeptAdmin(permissions.BasePermission):
+        """Main Admin or Department Administrator may manage SRIC / Bill Section email settings."""
+
+        def has_permission(self, request, view):
+            user = request.user
+            if not user or not user.is_authenticated:
+                return False
+            if getattr(user, "user_type", None) == UserType.ADMIN:
+                return True
+            return is_department_admin(user)
+
     class WalletSricSettingsViewSet(ViewSet):
-        permission_classes = [IsMainAdmin]
+        permission_classes = [IsMainAdminOrDeptAdmin]
 
         def list(self, request):
             return Response(WalletSricSettingsSerializer(WalletSricSettings.get_singleton()).data)
@@ -312,7 +323,11 @@ def register_extra_admin_routes(router):
 
         def partial_update(self, request, pk=None):
             obj = WalletSricSettings.get_singleton()
-            ser = WalletSricSettingsSerializer(obj, data=request.data, partial=True)
+            data = dict(request.data)
+            # Department Administrators may only update Bill Section emails
+            if is_department_admin(request.user) and getattr(request.user, "user_type", None) != UserType.ADMIN:
+                data = {"bill_section_emails": request.data.get("bill_section_emails", obj.bill_section_emails)}
+            ser = WalletSricSettingsSerializer(obj, data=data, partial=True)
             ser.is_valid(raise_exception=True)
             ser.save()
             return Response(ser.data)

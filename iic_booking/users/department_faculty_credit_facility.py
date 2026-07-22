@@ -10,7 +10,7 @@ import logging
 from decimal import Decimal
 from typing import Any, Optional
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.utils import timezone
 
 from .models.department_faculty_credit_facility import (
@@ -122,7 +122,7 @@ def is_eligible_for_new_facility(
 def department_faculty_credit_floor(sub: SubWallet) -> Decimal:
     """
     Lowest allowed department sub-wallet balance after debit for this facility.
-    Returns 0 when not applicable; otherwise -credit_limit.
+    Credit applies only after the faculty explicitly avails the facility.
     """
     try:
         wallet = sub.wallet
@@ -140,15 +140,9 @@ def department_faculty_credit_floor(sub: SubWallet) -> Decimal:
         .only("status", "credit_limit")
         .first()
     )
-    if facility:
-        if facility.status == FacultyDepartmentCreditFacilityStatus.CLOSED:
-            return ZERO
-        return (-Decimal(str(facility.credit_limit))).quantize(Decimal("0.01"))
-
-    if not is_eligible_for_new_facility(user, sub.department, sub=sub):
+    if not facility or facility.status == FacultyDepartmentCreditFacilityStatus.CLOSED:
         return ZERO
-    settings = get_or_create_settings(sub.department_id)
-    return (-Decimal(str(settings.max_credit_limit))).quantize(Decimal("0.01"))
+    return (-Decimal(str(facility.credit_limit))).quantize(Decimal("0.01"))
 
 
 def _refresh_status_from_balance(
@@ -157,7 +151,14 @@ def _refresh_status_from_balance(
     *,
     actor=None,
     source: str = "",
+    close_if_non_negative: bool = False,
 ) -> None:
+    """
+    Update Active/Exhausted from balance.
+
+    Permanent closure when balance ≥ 0 is only applied when close_if_non_negative=True
+    (recharge recovery after a drawdown). Freshly availed facilities at ₹0 stay Active.
+    """
     if facility.status == FacultyDepartmentCreditFacilityStatus.CLOSED:
         return
 
@@ -166,22 +167,26 @@ def _refresh_status_from_balance(
     prev_status = facility.status
 
     if balance >= ZERO:
-        facility.status = FacultyDepartmentCreditFacilityStatus.CLOSED
-        facility.closed_at = timezone.now()
-        facility.save(update_fields=["status", "closed_at", "updated_at"])
-        _write_audit(
-            department_id=facility.department_id,
-            facility=facility,
-            faculty_user=facility.user,
-            actor=actor,
-            event_type=FacultyDepartmentCreditFacilityAuditEvent.CLOSED,
-            message="Credit facility permanently closed after outstanding credit recovered.",
-            metadata={
-                "source": source,
-                "balance": str(balance),
-                "previous_status": prev_status,
-            },
-        )
+        if close_if_non_negative:
+            facility.status = FacultyDepartmentCreditFacilityStatus.CLOSED
+            facility.closed_at = timezone.now()
+            facility.save(update_fields=["status", "closed_at", "updated_at"])
+            _write_audit(
+                department_id=facility.department_id,
+                facility=facility,
+                faculty_user=facility.user,
+                actor=actor,
+                event_type=FacultyDepartmentCreditFacilityAuditEvent.CLOSED,
+                message="Credit facility permanently closed after outstanding credit recovered.",
+                metadata={
+                    "source": source,
+                    "balance": str(balance),
+                    "previous_status": prev_status,
+                },
+            )
+        elif prev_status == FacultyDepartmentCreditFacilityStatus.EXHAUSTED:
+            facility.status = FacultyDepartmentCreditFacilityStatus.ACTIVE
+            facility.save(update_fields=["status", "updated_at"])
         return
 
     rem = remaining_credit(facility.credit_limit, balance)
@@ -213,7 +218,7 @@ def _refresh_status_from_balance(
 
 @transaction.atomic
 def on_subwallet_debited(sub: SubWallet, amount: Decimal, *, actor=None) -> None:
-    """Activate / refresh facility after a successful debit that may use overdraft."""
+    """Refresh facility status after debit. Does not auto-create (must Avail first)."""
     try:
         user = sub.wallet.user
     except Exception:
@@ -228,81 +233,29 @@ def on_subwallet_debited(sub: SubWallet, amount: Decimal, *, actor=None) -> None
         .filter(user_id=user.id, department_id=sub.department_id)
         .first()
     )
-
-    if facility:
-        if facility.status == FacultyDepartmentCreditFacilityStatus.CLOSED:
-            return
-        _write_audit(
-            department_id=facility.department_id,
-            facility=facility,
-            faculty_user=user,
-            actor=actor,
-            event_type=FacultyDepartmentCreditFacilityAuditEvent.OUTSTANDING_CHANGED,
-            message="Outstanding credit updated after wallet debit.",
-            metadata={
-                "debit_amount": str(Decimal(str(amount))),
-                "balance": str(balance),
-                "outstanding": str(outstanding_credit(balance)),
-                "remaining": str(remaining_credit(facility.credit_limit, balance)),
-            },
-        )
-        _refresh_status_from_balance(facility, sub, actor=actor, source="debit")
+    if not facility or facility.status == FacultyDepartmentCreditFacilityStatus.CLOSED:
         return
 
-    if balance >= ZERO:
-        return
-
-    settings = get_or_create_settings(sub.department_id)
-    if not settings.enabled or settings.joining_date_cutoff is None:
-        return
-    limit = Decimal(str(settings.max_credit_limit or 0))
-    if limit <= 0:
-        return
-    joining = getattr(user, "joining_date", None)
-    if joining is None or joining < settings.joining_date_cutoff:
-        return
-
-    try:
-        with transaction.atomic():
-            facility = FacultyDepartmentCreditFacility.objects.create(
-                user=user,
-                department_id=sub.department_id,
-                status=FacultyDepartmentCreditFacilityStatus.ACTIVE,
-                credit_limit=limit,
-                availed_at=timezone.now(),
-            )
-    except IntegrityError:
-        facility = (
-            FacultyDepartmentCreditFacility.objects.select_for_update()
-            .filter(user_id=user.id, department_id=sub.department_id)
-            .first()
-        )
-        if not facility:
-            return
-        if facility.status != FacultyDepartmentCreditFacilityStatus.CLOSED:
-            _refresh_status_from_balance(facility, sub, actor=actor, source="debit")
-        return
     _write_audit(
         department_id=facility.department_id,
         facility=facility,
         faculty_user=user,
         actor=actor,
-        event_type=FacultyDepartmentCreditFacilityAuditEvent.ACTIVATED,
-        message="Faculty credit facility activated via controlled negative balance.",
+        event_type=FacultyDepartmentCreditFacilityAuditEvent.OUTSTANDING_CHANGED,
+        message="Outstanding credit updated after wallet debit.",
         metadata={
-            "credit_limit": str(limit),
             "debit_amount": str(Decimal(str(amount))),
             "balance": str(balance),
             "outstanding": str(outstanding_credit(balance)),
-            "remaining": str(remaining_credit(limit, balance)),
+            "remaining": str(remaining_credit(facility.credit_limit, balance)),
         },
     )
-    _refresh_status_from_balance(facility, sub, actor=actor, source="activation")
+    _refresh_status_from_balance(facility, sub, actor=actor, source="debit")
 
 
 @transaction.atomic
 def on_subwallet_credited(sub: SubWallet, amount: Decimal, *, actor=None, source: str = "credit") -> None:
-    """Recover outstanding credit on recharge; permanently close when balance ≥ 0."""
+    """Recover outstanding credit on recharge; permanently close when drawdown is fully recovered."""
     try:
         user = sub.wallet.user
     except Exception:
@@ -319,7 +272,9 @@ def on_subwallet_credited(sub: SubWallet, amount: Decimal, *, actor=None, source
         return
 
     sub.refresh_from_db()
-    balance = Decimal(str(sub.balance))
+    balance_after = Decimal(str(sub.balance))
+    credit_amt = Decimal(str(amount))
+    balance_before = balance_after - credit_amt
     _write_audit(
         department_id=facility.department_id,
         facility=facility,
@@ -329,14 +284,169 @@ def on_subwallet_credited(sub: SubWallet, amount: Decimal, *, actor=None, source
         message="Wallet credit applied against outstanding faculty credit facility.",
         metadata={
             "source": source,
-            "credit_amount": str(Decimal(str(amount))),
-            "balance": str(balance),
-            "outstanding": str(outstanding_credit(balance)),
-            "remaining": str(remaining_credit(facility.credit_limit, balance)),
+            "credit_amount": str(credit_amt),
+            "balance_before": str(balance_before),
+            "balance": str(balance_after),
+            "outstanding": str(outstanding_credit(balance_after)),
+            "remaining": str(remaining_credit(facility.credit_limit, balance_after)),
             "status": facility.status,
         },
     )
-    _refresh_status_from_balance(facility, sub, actor=actor, source=source)
+    # Close only when this recharge recovers a previously negative balance to ≥ 0
+    close = balance_before < ZERO and balance_after >= ZERO
+    _refresh_status_from_balance(
+        facility, sub, actor=actor, source=source, close_if_non_negative=close
+    )
+
+
+@transaction.atomic
+def avail_faculty_department_credit(
+    *,
+    user,
+    department_id: int,
+    amount: Decimal,
+) -> FacultyDepartmentCreditFacility:
+    """
+    Faculty explicitly avails a one-time department credit facility for the given amount.
+    """
+    from iic_booking.users.models import Department
+
+    if str(getattr(user, "user_type", "") or "").lower() != UserType.FACULTY:
+        raise ValueError("Only faculty members can avail the department credit facility.")
+
+    try:
+        department = Department.objects.get(pk=int(department_id))
+    except (Department.DoesNotExist, TypeError, ValueError) as exc:
+        raise ValueError("Department not found.") from exc
+
+    amount = Decimal(str(amount)).quantize(Decimal("0.01"))
+    if amount <= ZERO:
+        raise ValueError("Credit amount must be greater than zero.")
+
+    settings = get_or_create_settings(department.id)
+    max_limit = Decimal(str(settings.max_credit_limit or 0))
+    if not settings.enabled or settings.joining_date_cutoff is None or max_limit <= ZERO:
+        raise ValueError("Credit facility is not available for this department.")
+
+    if FacultyDepartmentCreditFacility.objects.filter(
+        user_id=user.id, department_id=department.id
+    ).exists():
+        raise ValueError(
+            "You have already availed the credit facility for this department. "
+            "It is a one-time benefit and cannot be requested again."
+        )
+
+    sw = SubWallet.objects.filter(wallet__user_id=user.id, department_id=department.id).first()
+    balance = Decimal(str(sw.balance)) if sw else ZERO
+    if not is_eligible_for_new_facility(user, department, balance=balance, sub=sw):
+        raise ValueError(
+            "You are not eligible for the credit facility for this department. "
+            "Check joining date, department settings, and that the sub-wallet balance is not positive."
+        )
+
+    if amount > max_limit:
+        raise ValueError(
+            f"Credit amount cannot exceed the department maximum of ₹{max_limit:.2f}."
+        )
+
+    facility = FacultyDepartmentCreditFacility.objects.create(
+        user=user,
+        department_id=department.id,
+        status=FacultyDepartmentCreditFacilityStatus.ACTIVE,
+        credit_limit=amount,
+        availed_at=timezone.now(),
+    )
+    _write_audit(
+        department_id=department.id,
+        facility=facility,
+        faculty_user=user,
+        actor=user,
+        event_type=FacultyDepartmentCreditFacilityAuditEvent.ACTIVATED,
+        message="Faculty availed department credit facility from Wallet.",
+        metadata={
+            "credit_limit": str(amount),
+            "department_max_credit_limit": str(max_limit),
+            "wallet_balance": str(balance),
+        },
+    )
+    return facility
+
+
+def faculty_credit_status_for_user(user) -> list[dict[str, Any]]:
+    """Per-department credit status for the signed-in faculty wallet page."""
+    from iic_booking.users.models import Department
+    from iic_booking.users.models.wallet import Wallet
+
+    if str(getattr(user, "user_type", "") or "").lower() != UserType.FACULTY:
+        return []
+
+    wallet = Wallet.objects.filter(user_id=user.id).first()
+    sub_by_dept: dict[int, SubWallet] = {}
+    if wallet:
+        for sw in SubWallet.objects.filter(wallet=wallet).select_related("department"):
+            sub_by_dept[sw.department_id] = sw
+
+    facilities = {
+        f.department_id: f
+        for f in FacultyDepartmentCreditFacility.objects.filter(user_id=user.id).select_related(
+            "department", "user"
+        )
+    }
+
+    # Departments: home + any with sub-wallet or facility + enabled settings
+    dept_ids = set(sub_by_dept.keys()) | set(facilities.keys())
+    if getattr(user, "department_id", None):
+        dept_ids.add(user.department_id)
+    enabled_settings = DepartmentFacultyCreditFacilitySettings.objects.filter(enabled=True)
+    for s in enabled_settings:
+        dept_ids.add(s.department_id)
+
+    rows: list[dict[str, Any]] = []
+    for dept_id in sorted(dept_ids):
+        try:
+            department = Department.objects.get(pk=dept_id)
+        except Department.DoesNotExist:
+            continue
+        settings = get_or_create_settings(dept_id)
+        sw = sub_by_dept.get(dept_id)
+        balance = Decimal(str(sw.balance)) if sw else ZERO
+        facility = facilities.get(dept_id)
+        max_limit = Decimal(str(settings.max_credit_limit or 0))
+
+        if facility:
+            row = serialize_facility_row(facility, balance=balance)
+            row["eligible"] = False
+            row["can_avail"] = False
+            row["department_max_credit_limit"] = str(max_limit.quantize(Decimal("0.01")))
+            row["settings_enabled"] = settings.enabled
+            rows.append(row)
+            continue
+
+        eligible = is_eligible_for_new_facility(user, department, balance=balance, sub=sw)
+        rows.append(
+            {
+                "id": None,
+                "faculty_user_id": user.id,
+                "department_id": department.id,
+                "department_name": department.name,
+                "status": "available" if eligible else "ineligible",
+                "status_display": "Available" if eligible else "Not eligible",
+                "credit_limit": str(max_limit.quantize(Decimal("0.01"))) if eligible else "0.00",
+                "department_max_credit_limit": str(max_limit.quantize(Decimal("0.01"))),
+                "wallet_balance": str(balance.quantize(Decimal("0.01"))),
+                "outstanding_credit": "0.00",
+                "remaining_credit": str(max_limit.quantize(Decimal("0.01"))) if eligible else "0.00",
+                "availed_at": None,
+                "closed_at": None,
+                "eligible": eligible,
+                "can_avail": eligible,
+                "settings_enabled": settings.enabled,
+                "joining_date_cutoff": (
+                    settings.joining_date_cutoff.isoformat() if settings.joining_date_cutoff else None
+                ),
+            }
+        )
+    return rows
 
 
 def serialize_facility_row(

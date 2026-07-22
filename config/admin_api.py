@@ -1675,6 +1675,7 @@ def admin_api_router():
                 "project",
                 "account_incharge",
                 "processed_by",
+                "fund_receipt_verified_by",
             )
             .prefetch_related("audit_logs", "audit_logs__actor")
             .order_by("-created_at")
@@ -1802,6 +1803,17 @@ def admin_api_router():
                 notify_stakeholders_of_decision,
             )
 
+            if getattr(request.user, "user_type", None) == UserType.FINANCE:
+                return Response(
+                    {
+                        "error": (
+                            "Department Account In-charge cannot approve recharge requests. "
+                            "Use Verify Fund Receipt for financial confirmation."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             recharge_request = self.get_object()
             if recharge_request.status != WalletRechargeRequestStatus.PENDING:
                 page = already_processed_page(
@@ -1850,6 +1862,17 @@ def admin_api_router():
                 notify_stakeholders_of_decision,
                 reject_request,
             )
+
+            if getattr(request.user, "user_type", None) == UserType.FINANCE:
+                return Response(
+                    {
+                        "error": (
+                            "Department Account In-charge cannot reject recharge requests. "
+                            "Use Verify Fund Receipt for financial confirmation."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
             recharge_request = self.get_object()
             if recharge_request.status != WalletRechargeRequestStatus.PENDING:
@@ -1910,6 +1933,17 @@ def admin_api_router():
                 notify_stakeholders_of_decision,
             )
 
+            if getattr(request.user, "user_type", None) == UserType.FINANCE:
+                return Response(
+                    {
+                        "error": (
+                            "Department Account In-charge cannot cancel recharge requests. "
+                            "Use Verify Fund Receipt for financial confirmation."
+                        )
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
             recharge_request = self.get_object()
             if recharge_request.status != WalletRechargeRequestStatus.PENDING:
                 page = already_processed_page(
@@ -1955,6 +1989,41 @@ def admin_api_router():
                 page = already_processed_page(e.status, recharge_request.cancellation_source or "")
                 return Response(
                     {"error": page["message"], "page_code": page["page_code"], "already_processed": True},
+                    status=status.HTTP_200_OK,
+                )
+            except ValueError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        @action(detail=True, methods=["post"], url_path="verify-fund-receipt")
+        def verify_fund_receipt(self, request, pk=None):
+            """Department Account In-charge: confirm funds credited to department grant/account."""
+            from iic_booking.users.wallet_recharge_workflow import verify_fund_receipt
+
+            ut = getattr(request.user, "user_type", None)
+            if ut not in {UserType.FINANCE, UserType.ADMIN} and not is_department_admin(request.user):
+                return Response(
+                    {"error": "Only Department Account In-charge (or Admin) can verify fund receipt."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            recharge_request = self.get_object()
+            remarks = (
+                request.data.get("remarks")
+                or request.data.get("note")
+                or request.data.get("response_message")
+                or ""
+            ).strip()
+            try:
+                verified = verify_fund_receipt(
+                    recharge_request,
+                    actor=request.user,
+                    remarks=remarks,
+                )
+                return Response(
+                    {
+                        "message": "Fund receipt verified successfully.",
+                        "request": WalletRechargeRequestSerializer(verified).data,
+                    },
                     status=status.HTTP_200_OK,
                 )
             except ValueError as e:
