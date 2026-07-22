@@ -760,10 +760,19 @@ class WalletRechargeRequest(Model):
             raise ValidationError(_("Department is required for recharge requests. Recharge requests are now department-specific (sub-wallet based)."))
     
     def save(self, *args, **kwargs) -> None:
-        """Override save to validate department and ensure action token."""
+        """Override save to validate department and ensure action token.
+
+        full_clean() runs only on create. Status transitions (approve/reject/cancel)
+        use update_fields and must not re-validate the entire historical row — that
+        raised ValidationError (not ValueError) and surfaced as HTTP 500 on admin approve.
+        """
         if not self.action_token:
             self.action_token = secrets.token_urlsafe(32)
-        self.full_clean()
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = list(update_fields) + ["action_token"]
+        if self._state.adding:
+            self.full_clean()
         super().save(*args, **kwargs)
     
     def generate_user_otp(self) -> str:

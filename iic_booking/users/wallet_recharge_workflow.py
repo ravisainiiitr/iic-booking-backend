@@ -296,7 +296,18 @@ def approve_request(
     locked.responded_at = timezone.now()
     locked.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
     locked.credit_facility_opted_in = False
-    locked.save()
+    locked.save(
+        update_fields=[
+            "status",
+            "approved_by_email",
+            "processed_by",
+            "response_message",
+            "responded_at",
+            "credit_facility_status",
+            "credit_facility_opted_in",
+            "updated_at",
+        ]
+    )
 
     append_audit_log(
         locked,
@@ -342,7 +353,20 @@ def reject_request(
     locked.responded_at = timezone.now()
     locked.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
     locked.credit_facility_opted_in = False
-    locked.save()
+    locked.save(
+        update_fields=[
+            "status",
+            "approved_by_email",
+            "processed_by",
+            "rejection_reason_code",
+            "rejection_reason_text",
+            "response_message",
+            "responded_at",
+            "credit_facility_status",
+            "credit_facility_opted_in",
+            "updated_at",
+        ]
+    )
 
     append_audit_log(
         locked,
@@ -381,7 +405,19 @@ def cancel_request(
     locked.responded_at = timezone.now()
     locked.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
     locked.credit_facility_opted_in = False
-    locked.save()
+    locked.save(
+        update_fields=[
+            "status",
+            "cancellation_source",
+            "approved_by_email",
+            "processed_by",
+            "response_message",
+            "responded_at",
+            "credit_facility_status",
+            "credit_facility_opted_in",
+            "updated_at",
+        ]
+    )
 
     append_audit_log(
         locked,
@@ -604,78 +640,107 @@ def verify_fund_receipt(
 
 
 def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> None:
-    """Email requesting user, account in-charge, and department administrators."""
-    from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
-    from iic_booking.communication.styled_transactional_emails import (
-        send_wallet_recharge_approved_faculty_email,
-    )
+    """Email requesting user, account in-charge, and department administrators.
 
-    status_key = recharge_request.status  # APPROVED / REJECTED / CANCELLED
+    Never raises — approval/reject/cancel must succeed even if mail fails.
+    """
     try:
-        if status_key == WalletRechargeRequestStatus.APPROVED:
-            send_wallet_recharge_request_notifications(recharge_request, "APPROVED")
-            try:
-                send_wallet_recharge_approved_faculty_email(recharge_request)
-            except Exception:
-                logger.exception("Faculty approved email failed for %s", recharge_request.id)
-        elif status_key == WalletRechargeRequestStatus.REJECTED:
-            send_wallet_recharge_request_notifications(recharge_request, "REJECTED")
-        elif status_key == WalletRechargeRequestStatus.CANCELLED:
-            send_wallet_recharge_request_notifications(recharge_request, "CANCELLED")
-    except Exception:
-        logger.exception("Stakeholder notification failed for request %s", recharge_request.id)
+        from iic_booking.communication.wallet_notifications import send_wallet_recharge_request_notifications
+        from iic_booking.communication.styled_transactional_emails import (
+            send_wallet_recharge_approved_faculty_email,
+        )
 
-    # Extra CC-style notes to in-charge + dept admins
-    recipients: list[str] = []
-    if recharge_request.account_incharge_id and recharge_request.account_incharge.email:
-        recipients.append(recharge_request.account_incharge.email)
-    else:
-        for u in find_department_account_incharges(recharge_request.department):
-            if u.email:
-                recipients.append(u.email)
-    for u in find_department_administrators(recharge_request.department):
-        if u.email:
-            recipients.append(u.email)
-    # Deduplicate, exclude requester
-    requester = (recharge_request.user.email or "").lower()
-    unique = []
-    seen = set()
-    for e in recipients:
-        key = e.strip().lower()
-        if not key or key == requester or key in seen:
-            continue
-        seen.add(key)
-        unique.append(e.strip())
+        status_key = recharge_request.status  # APPROVED / REJECTED / CANCELLED
+        try:
+            if status_key == WalletRechargeRequestStatus.APPROVED:
+                send_wallet_recharge_request_notifications(recharge_request, "APPROVED")
+                try:
+                    send_wallet_recharge_approved_faculty_email(recharge_request)
+                except Exception:
+                    logger.exception("Faculty approved email failed for %s", recharge_request.id)
+            elif status_key == WalletRechargeRequestStatus.REJECTED:
+                send_wallet_recharge_request_notifications(recharge_request, "REJECTED")
+            elif status_key == WalletRechargeRequestStatus.CANCELLED:
+                send_wallet_recharge_request_notifications(recharge_request, "CANCELLED")
+        except Exception:
+            logger.exception("Stakeholder notification failed for request %s", recharge_request.id)
 
-    if not unique:
-        return
+        # Extra CC-style notes to in-charge + dept admins
+        recipients: list[str] = []
+        incharge = None
+        try:
+            incharge = (
+                recharge_request.account_incharge
+                if getattr(recharge_request, "account_incharge_id", None)
+                else None
+            )
+        except Exception:
+            incharge = None
+        if incharge and getattr(incharge, "email", None):
+            recipients.append(incharge.email)
+        elif recharge_request.department_id:
+            for u in find_department_account_incharges(recharge_request.department):
+                if u.email:
+                    recipients.append(u.email)
+        if recharge_request.department_id:
+            for u in find_department_administrators(recharge_request.department):
+                if u.email:
+                    recipients.append(u.email)
+        # Deduplicate, exclude requester
+        requester = ""
+        try:
+            requester = (recharge_request.user.email or "").lower()
+        except Exception:
+            requester = ""
+        unique = []
+        seen = set()
+        for e in recipients:
+            key = (e or "").strip().lower()
+            if not key or key == requester or key in seen:
+                continue
+            seen.add(key)
+            unique.append(e.strip())
 
-    status_label = recharge_request.get_status_display()
-    subject = (
-        f"Wallet Recharge {status_label}: {recharge_request.request_id_display} "
-        f"— {recharge_request.user.name or recharge_request.user.email}"
-    )
-    reason = ""
-    if recharge_request.status == WalletRechargeRequestStatus.REJECTED:
-        reason = f"\nRejection reason: {recharge_request.response_message or '—'}"
-    body = f"""Wallet recharge request {recharge_request.request_id_display} is now {status_label}.
+        if not unique:
+            return
 
-User: {recharge_request.user.name or recharge_request.user.email}
+        status_label = recharge_request.get_status_display()
+        subject = (
+            f"Wallet Recharge {status_label}: {recharge_request.request_id_display} "
+            f"— {getattr(recharge_request.user, 'name', None) or getattr(recharge_request.user, 'email', '')}"
+        )
+        reason = ""
+        if recharge_request.status == WalletRechargeRequestStatus.REJECTED:
+            reason = f"\nRejection reason: {recharge_request.response_message or '—'}"
+        dept_name = "—"
+        try:
+            if recharge_request.department_id and recharge_request.department:
+                dept_name = recharge_request.department.name
+        except Exception:
+            dept_name = "—"
+        body = f"""Wallet recharge request {recharge_request.request_id_display} is now {status_label}.
+
+User: {getattr(recharge_request.user, 'name', None) or getattr(recharge_request.user, 'email', '')}
 Employee Number: {recharge_request.employee_number or '—'}
 Amount: ₹{recharge_request.amount}
-Department (credit): {recharge_request.department.name if recharge_request.department_id else '—'}
+Department (credit): {dept_name}
 Department Grant Code: {recharge_request.department_grant_code or '—'}
 Project Grant Code: {recharge_request.project_grant_code or '—'}
 Processed by: {recharge_request.approved_by_email or '—'}
 {reason}
 """
-    try:
-        send_mail(
-            subject=subject,
-            message=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=unique,
-            fail_silently=True,
-        )
+        try:
+            send_mail(
+                subject=subject,
+                message=body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=unique,
+                fail_silently=True,
+            )
+        except Exception:
+            logger.exception("Failed CC emails for recharge %s", recharge_request.id)
     except Exception:
-        logger.exception("Failed CC emails for recharge %s", recharge_request.id)
+        logger.exception(
+            "notify_stakeholders_of_decision failed for request %s",
+            getattr(recharge_request, "id", None),
+        )

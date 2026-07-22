@@ -123,6 +123,7 @@ from iic_booking.users.api.payment_views import (
     finance_payment_receipts_list,
     finance_payment_receipt_process,
 )
+from iic_booking.users.api.finance_reports_views import finance_report_dashboard
 from iic_booking.users.api.sric_api_views import (
     sric_transfer_requests_list,
     sric_transfer_request_detail,
@@ -547,6 +548,7 @@ urlpatterns = router.urls + [
         finance_payment_receipt_process,
         name="finance-payment-receipt-process",
     ),
+    path("finance/reports/dashboard/", finance_report_dashboard, name="finance-report-dashboard"),
 
     # SRIC office integration API
     path("integrations/sric/transfer-requests/", sric_transfer_requests_list, name="sric-transfer-requests"),

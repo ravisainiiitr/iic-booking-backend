@@ -520,11 +520,11 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     user_emp_id = serializers.SerializerMethodField()
     request_id = serializers.CharField(source="request_id_display", read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    department_id = serializers.IntegerField(source='department.id', read_only=True, allow_null=True)
-    department_name = serializers.CharField(source='department.name', read_only=True, allow_null=True)
-    project_id = serializers.IntegerField(source='project.id', read_only=True, allow_null=True)
-    project_name = serializers.CharField(source='project.name', read_only=True, allow_null=True)
-    project_code = serializers.CharField(source='project.project_code', read_only=True, allow_null=True)
+    department_id = serializers.SerializerMethodField()
+    department_name = serializers.SerializerMethodField()
+    project_id = serializers.SerializerMethodField()
+    project_name = serializers.SerializerMethodField()
+    project_code = serializers.SerializerMethodField()
     project_agency = serializers.SerializerMethodField()
     project_head_name = serializers.SerializerMethodField()
     project_head_email = serializers.SerializerMethodField()
@@ -639,37 +639,79 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             return obj.employee_number
         return (obj.user.emp_id or "").strip() if obj.user_id else ""
 
+    def get_department_id(self, obj):
+        return obj.department_id
+
+    def get_department_name(self, obj):
+        try:
+            return obj.department.name if obj.department_id else None
+        except Exception:
+            return None
+
+    def get_project_id(self, obj):
+        return obj.project_id
+
+    def get_project_name(self, obj):
+        try:
+            return obj.project.name if obj.project_id else None
+        except Exception:
+            return None
+
+    def get_project_code(self, obj):
+        try:
+            return obj.project.project_code if obj.project_id else None
+        except Exception:
+            return None
+
     def get_account_incharge_email(self, obj):
-        if obj.account_incharge_id:
-            return obj.account_incharge.email or ""
+        try:
+            if obj.account_incharge_id:
+                return obj.account_incharge.email or ""
+        except Exception:
+            return ""
         return ""
 
     def get_account_incharge_name(self, obj):
-        if obj.account_incharge_id:
-            return obj.account_incharge.name or obj.account_incharge.email or ""
+        try:
+            if obj.account_incharge_id:
+                return obj.account_incharge.name or obj.account_incharge.email or ""
+        except Exception:
+            return ""
         return ""
 
     def get_fund_receipt_verified_by_name(self, obj):
-        u = getattr(obj, "fund_receipt_verified_by", None)
-        if not u:
+        try:
+            u = getattr(obj, "fund_receipt_verified_by", None)
+            if not u:
+                return ""
+            return (u.name or "").strip() or (u.email or "")
+        except Exception:
             return ""
-        return (u.name or "").strip() or (u.email or "")
 
     def get_project_agency(self, obj):
-        p = obj.project
-        return (p.agency or "").strip() if p else ""
+        try:
+            p = obj.project
+            return (p.agency or "").strip() if p else ""
+        except Exception:
+            return ""
 
     def get_project_head_name(self, obj):
-        p = obj.project
-        fac = getattr(p, "faculty", None) if p else None
-        if not fac:
+        try:
+            p = obj.project
+            fac = getattr(p, "faculty", None) if p else None
+            if not fac:
+                return ""
+            return (fac.name or "").strip() or (fac.email or "")
+        except Exception:
             return ""
-        return (fac.name or "").strip() or (fac.email or "")
 
     def get_project_head_email(self, obj):
-        p = obj.project
-        fac = getattr(p, "faculty", None) if p else None
-        return fac.email if fac else ""
+        try:
+            p = obj.project
+            fac = getattr(p, "faculty", None) if p else None
+            return fac.email if fac else ""
+        except Exception:
+            return ""
 
 
 class WalletRechargeRequestCreateSerializer(serializers.Serializer):

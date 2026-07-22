@@ -1880,7 +1880,27 @@ def admin_api_router():
                     actor=request.user,
                     actor_email=request.user.email,
                 )
-                notify_stakeholders_of_decision(approved)
+                try:
+                    notify_stakeholders_of_decision(approved)
+                except Exception:
+                    logger.exception(
+                        "Notify after approve failed for WRR-%s (credit already applied)",
+                        pk,
+                    )
+                approved = (
+                    WalletRechargeRequest.objects.select_related(
+                        "user",
+                        "wallet",
+                        "department",
+                        "project",
+                        "project__faculty",
+                        "account_incharge",
+                        "processed_by",
+                        "fund_receipt_verified_by",
+                    )
+                    .prefetch_related("audit_logs", "audit_logs__actor")
+                    .get(pk=approved.pk)
+                )
                 return Response(
                     {
                         "message": f"Approved. ₹{approved.amount} credited.",
@@ -1897,6 +1917,23 @@ def admin_api_router():
                 )
             except ValueError as e:
                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                from django.core.exceptions import ValidationError as DjangoValidationError
+                from django.db import IntegrityError
+
+                logger.exception("Approve failed for WRR-%s", pk)
+                if isinstance(e, DjangoValidationError):
+                    msgs = getattr(e, "messages", None) or [str(e)]
+                    return Response({"error": "; ".join(str(m) for m in msgs)}, status=status.HTTP_400_BAD_REQUEST)
+                if isinstance(e, IntegrityError):
+                    return Response(
+                        {"error": "Could not credit wallet due to a data conflict. Please retry once."},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                return Response(
+                    {"error": f"Failed to approve request: {e}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
         @action(detail=True, methods=["post"], url_path="reject")
         def reject(self, request, pk=None):
