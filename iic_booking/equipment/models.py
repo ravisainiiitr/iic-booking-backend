@@ -1254,7 +1254,11 @@ class DynamicInputField(models.Model):
         max_length=1,
         blank=True,
         null=True,
-        help_text=_('For ICPMS Standard Coverage: field key (e.g. B) that provides the element list (Periodic Table type).'),
+        help_text=_(
+            'Field key link: '
+            'ICPMS Standard Coverage — Periodic Table field providing the element list; '
+            'TABLE — numeric field whose value sets the table row count (first column = S.No.).'
+        ),
     )
     editing_required = models.BooleanField(
         default=False,
