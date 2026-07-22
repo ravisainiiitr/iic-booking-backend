@@ -1828,17 +1828,6 @@ def admin_api_router():
                 notify_stakeholders_of_decision,
             )
 
-            if getattr(request.user, "user_type", None) == UserType.FINANCE:
-                return Response(
-                    {
-                        "error": (
-                            "Department Account In-charge cannot approve recharge requests. "
-                            "Use Verify Fund Receipt for financial confirmation."
-                        )
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
             recharge_request = self.get_object()
             if recharge_request.status != WalletRechargeRequestStatus.PENDING:
                 page = already_processed_page(
