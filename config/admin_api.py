@@ -46,6 +46,31 @@ class IsAdminPanelUser(permissions.BasePermission):
         return user_has_admin_panel_access(request.user)
 
 
+class IsAdminPanelUserOrReportsStaff(permissions.BasePermission):
+    """
+    Admin Panel users, or OIC / Lab In-charge with reports.view.
+
+    Lab In-charge and OIC need equipment reports without requiring Admin Panel
+    to be enabled for their department role config.
+    """
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        from iic_booking.users.rbac import user_has_admin_panel_access, user_has_permission
+
+        if user_has_admin_panel_access(request.user):
+            return True
+        ut = getattr(request.user, "user_type", None)
+        if ut in {UserType.OPERATOR, UserType.MANAGER}:
+            return user_has_permission(
+                request.user,
+                "reports.view",
+                department_id=getattr(request.user, "department_id", None),
+            )
+        return False
+
+
 class IsAdminUser(permissions.BasePermission):
     """Allow only admin user type (for Communication management)."""
 
@@ -2260,7 +2285,7 @@ def admin_api_router():
             return super().update(request, *args, **kwargs)
 
     class EquipmentViewSet(ModelViewSet):
-        permission_classes = [IsAdminPanelUser]
+        permission_classes = [IsAdminPanelUserOrReportsStaff]
         queryset = Equipment.objects.all().select_related("category", "equipment_group").order_by("code")
         serializer_class = EquipmentDetailSerializer
         lookup_url_kwarg = "pk"
@@ -2269,7 +2294,22 @@ def admin_api_router():
         def initial(self, request, *args, **kwargs):
             super().initial(request, *args, **kwargs)
             from config.admin_panel_access_api import assert_admin_section_module
+            from iic_booking.users.rbac import user_has_admin_panel_access, user_has_permission
 
+            # Lab In-charge / OIC with reports.view may list scoped equipment for the Reports filter
+            # without full Admin Panel / equipment module access.
+            ut = getattr(request.user, "user_type", None)
+            if (
+                self.action == "list"
+                and ut in {UserType.OPERATOR, UserType.MANAGER}
+                and user_has_permission(
+                    request.user,
+                    "reports.view",
+                    department_id=getattr(request.user, "department_id", None),
+                )
+                and not user_has_admin_panel_access(request.user)
+            ):
+                return
             assert_admin_section_module(request.user, "equipment")
 
         def _assert_dept_admin_equipment_access(self, payload, instance=None):
@@ -3797,7 +3837,7 @@ def admin_api_router():
     from django.http import HttpResponse
 
     class EquipmentReportViewSet(ViewSet):
-        permission_classes = [IsAdminPanelUser]
+        permission_classes = [IsAdminPanelUserOrReportsStaff]
 
         def initial(self, request, *args, **kwargs):
             super().initial(request, *args, **kwargs)

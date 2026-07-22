@@ -390,29 +390,71 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
             'operator_profile_picture',
             'created_at'
         ]
+
+    def _active_secondary_acting_operator(self, obj):
+        """
+        When OIC assigned SECONDARY_OPERATOR coverage for this equipment (active now),
+        return the acting secondary user for primary-row display overrides.
+        """
+        from django.utils import timezone
+        from iic_booking.equipment.models import EquipmentOperatorCoverage
+
+        role = getattr(obj, "role", None) or ""
+        if str(role).upper() != "PRIMARY":
+            return None
+        equipment_id = getattr(obj, "equipment_id", None)
+        if not equipment_id:
+            return None
+        cache = self.context.setdefault("_active_secondary_acting_by_equipment", {})
+        if equipment_id in cache:
+            return cache[equipment_id]
+        now = timezone.now()
+        coverage = (
+            EquipmentOperatorCoverage.objects.filter(
+                equipment_id=equipment_id,
+                mode=EquipmentOperatorCoverage.Mode.SECONDARY_OPERATOR,
+                starts_at__lte=now,
+                ends_at__gte=now,
+                acting_operator_id__isnull=False,
+            )
+            .select_related("acting_operator")
+            .order_by("-starts_at")
+            .first()
+        )
+        acting = coverage.acting_operator if coverage else None
+        cache[equipment_id] = acting
+        return acting
     
     def get_operator_name(self, obj):
-        """Return operator's display name (Prof. for faculty) or email."""
+        """Return operator's display name; during secondary coverage, show secondary name on primary row."""
+        acting = self._active_secondary_acting_operator(obj)
+        if acting:
+            return acting.get_display_name()
         if obj.operator:
             return obj.operator.get_display_name()
         return None
     
     def get_operator_email(self, obj):
-        """Return operator's email."""
+        """Always keep the primary equipment operator email (never swap to secondary)."""
         if obj.operator:
             return obj.operator.email
         return None
     
     def get_operator_phone(self, obj):
-        """Return operator's phone number."""
+        """Return phone; during secondary coverage, show secondary phone on primary row."""
+        acting = self._active_secondary_acting_operator(obj)
+        if acting:
+            return acting.phone_number
         if obj.operator:
             return obj.operator.phone_number
         return None
     
     def get_operator_profile_picture(self, obj):
         """Return operator's stable profile-picture proxy URL (does not expire)."""
-        if obj.operator:
-            return obj.operator.get_profile_picture_url_or_none(request=self.context.get("request"))
+        acting = self._active_secondary_acting_operator(obj)
+        user = acting or obj.operator
+        if user:
+            return user.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
 
 
@@ -1180,7 +1222,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     charge_profiles = serializers.SerializerMethodField()
     slot_masters = SlotMasterSerializer(many=True, read_only=True)
     slot_options = MultiParamDefinitionSerializer(many=True, read_only=True, source='param_definitions')
-    operators = EquipmentOperatorSerializer(many=True, read_only=True, source='equipment_operators')
+    operators = serializers.SerializerMethodField()
     managers = EquipmentManagerSerializer(many=True, read_only=True, source='equipment_managers')
     base_charges_by_user_type = serializers.SerializerMethodField()
     print_materials = PrintMaterialSerializer(many=True, read_only=True)
@@ -1273,7 +1315,35 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             request=self.context.get("request"),
             verify_storage=False,
         )
-    
+
+    def get_operators(self, obj):
+        """
+        Serialize assigned operators. During active SECONDARY_OPERATOR coverage,
+        only the primary row is shown (name/phone already swapped to secondary;
+        email remains the primary operator's).
+        """
+        from django.utils import timezone
+        from iic_booking.equipment.models import EquipmentOperatorCoverage
+
+        qs = obj.equipment_operators.select_related("operator").all()
+        now = timezone.now()
+        active_secondary = (
+            EquipmentOperatorCoverage.objects.filter(
+                equipment_id=obj.equipment_id,
+                mode=EquipmentOperatorCoverage.Mode.SECONDARY_OPERATOR,
+                starts_at__lte=now,
+                ends_at__gte=now,
+                acting_operator_id__isnull=False,
+            )
+            .order_by("-starts_at")
+            .first()
+        )
+        if active_secondary:
+            from iic_booking.equipment.models import EquipmentOperator
+
+            qs = qs.filter(role=EquipmentOperator.Role.PRIMARY)
+        return EquipmentOperatorSerializer(qs, many=True, context=self.context).data
+
     def get_video_url(self, obj):
         """Get video URL from storage if available."""
         if obj.video_file:
