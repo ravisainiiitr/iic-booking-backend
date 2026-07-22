@@ -37,6 +37,7 @@ def _admin_action_buttons(*html_buttons):
 from .forms import UserAdminChangeForm
 from .forms import UserAdminCreationForm
 from .models.wallet_sric_settings import WalletSricSettings
+from .models.test_account_email_settings import TestAccountEmailSettings
 from .models.wallet_credit_facility_settings import WalletCreditFacilitySettings
 from .models.wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .models.department_faculty_credit_facility import (
@@ -894,6 +895,43 @@ class WalletSricSettingsAdmin(admin.ModelAdmin):
             "show_save": True,
         }
         return TemplateResponse(request, self.change_form_template, context)
+
+
+@admin.register(TestAccountEmailSettings)
+class TestAccountEmailSettingsAdmin(admin.ModelAdmin):
+    """Singleton: redirect addresses for is_test_account outbound email."""
+
+    list_display = ["recipient_preview"]
+    fields = ("recipient_emails",)
+
+    def recipient_preview(self, obj):
+        if not obj:
+            return "-"
+        raw = (obj.recipient_emails or "").strip()
+        if not raw:
+            return _("(none — using env / default)")
+        return raw[:120] + ("…" if len(raw) > 120 else "")
+
+    recipient_preview.short_description = _("Redirect addresses")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def changelist_view(self, request, extra_context=None):
+        from django.shortcuts import redirect
+
+        obj = TestAccountEmailSettings.get_singleton()
+        return redirect("admin:users_testaccountemailsettings_change", object_id=obj.pk)
+
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        from django import forms
+
+        if db_field.name == "recipient_emails":
+            kwargs["widget"] = forms.Textarea(attrs={"rows": 6, "cols": 80})
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
 
 
 @admin.register(UserTypeInactivityTimeout)

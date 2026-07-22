@@ -242,18 +242,21 @@ class CommunicationService:
 
         from iic_booking.users.test_accounts import redirect_email_for_user
 
-        delivery_email, subject = redirect_email_for_user(
+        delivery_emails, subject = redirect_email_for_user(
             user, original_email=getattr(user, "email", "") or "", subject=subject
         )
-        if delivery_email and delivery_email.lower() != (getattr(user, "email", "") or "").lower():
-            meta["test_account_email_redirect"] = delivery_email
+        if not delivery_emails:
+            delivery_emails = [getattr(user, "email", "") or ""]
+        delivery_email = delivery_emails[0]
+        if delivery_emails and delivery_email.lower() != (getattr(user, "email", "") or "").lower():
+            meta["test_account_email_redirect"] = ", ".join(delivery_emails)
             meta["original_recipient_email"] = getattr(user, "email", "") or ""
 
         # Create communication log entry
         communication_log = CommunicationLog.objects.create(
             communication_type=CommunicationLog.CommunicationType.EMAIL,
             recipient=user,
-            recipient_email=delivery_email or (getattr(user, "email", "") or ""),
+            recipient_email=(", ".join(delivery_emails))[:255] or (getattr(user, "email", "") or ""),
             template=template_obj,
             subject=subject,
             message=message,
@@ -269,7 +272,7 @@ class CommunicationService:
                     subject=subject,
                     body=message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
-                    to=[delivery_email],
+                    to=delivery_emails,
                     cc=[e for e in cc_emails if e and str(e).strip()],
                 )
                 if html_message:
@@ -280,7 +283,7 @@ class CommunicationService:
                     subject=subject,
                     message=message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[delivery_email],
+                    recipient_list=delivery_emails,
                     html_message=html_message,
                     fail_silently=False,
                 )
@@ -291,7 +294,7 @@ class CommunicationService:
             communication_log.sent_at = timezone.now()
             communication_log.save(update_fields=['status', 'sent_at'])
             
-            logger.info(f"Email sent and logged to {delivery_email}: {subject}")
+            logger.info(f"Email sent and logged to {', '.join(delivery_emails)}: {subject}")
             return communication_log
             
         except Exception as e:
@@ -303,7 +306,7 @@ class CommunicationService:
 
             logger.error(
                 "Failed to send email to %s: %s",
-                delivery_email,
+                ", ".join(delivery_emails),
                 error_message,
                 exc_info=True,
             )
@@ -357,16 +360,19 @@ class CommunicationService:
         )
         from iic_booking.users.test_accounts import redirect_email_for_user
 
-        delivery_email, subject = redirect_email_for_user(
+        delivery_emails, subject = redirect_email_for_user(
             user, original_email=getattr(user, "email", "") or "", subject=subject
         )
-        if delivery_email and delivery_email.lower() != (getattr(user, "email", "") or "").lower():
-            meta["test_account_email_redirect"] = delivery_email
+        if not delivery_emails:
+            delivery_emails = [getattr(user, "email", "") or ""]
+        delivery_email = delivery_emails[0]
+        if delivery_emails and delivery_email.lower() != (getattr(user, "email", "") or "").lower():
+            meta["test_account_email_redirect"] = ", ".join(delivery_emails)
             meta["original_recipient_email"] = getattr(user, "email", "") or ""
         communication_log = CommunicationLog.objects.create(
             communication_type=CommunicationLog.CommunicationType.EMAIL,
             recipient=user,
-            recipient_email=delivery_email or (getattr(user, "email", "") or ""),
+            recipient_email=(", ".join(delivery_emails))[:255] or (getattr(user, "email", "") or ""),
             template=template_obj,
             subject=subject,
             message=message,
@@ -379,7 +385,7 @@ class CommunicationService:
                 subject=subject,
                 body=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                to=[delivery_email],
+                to=delivery_emails,
             )
             if html_message:
                 email.content_subtype = 'html'

@@ -40,6 +40,7 @@ from .project import Project
 from .auth_lock import UserLoginLock
 from .auth_settings import AuthSettings
 from .wallet_sric_settings import WalletSricSettings
+from .test_account_email_settings import TestAccountEmailSettings
 from .user_type_inactivity import UserTypeInactivityTimeout
 from .billing import ExternalBillingProfile
 from .payment import (
@@ -96,6 +97,7 @@ __all__ = [
     "UserLoginLock",
     "AuthSettings",
     "WalletSricSettings",
+    "TestAccountEmailSettings",
     "UserTypeInactivityTimeout",
     "ExternalBillingProfile",
     "PaymentGatewayTransaction",

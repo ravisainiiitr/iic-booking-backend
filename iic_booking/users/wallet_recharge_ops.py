@@ -229,9 +229,11 @@ def send_sric_faculty_recharge_email(
     if faculty_email and faculty_email.lower() not in {e.lower() for e in to_list}:
         from iic_booking.users.test_accounts import redirect_email_for_user
 
-        cc_addr, _ = redirect_email_for_user(user, original_email=faculty_email, subject=None)
-        if cc_addr and cc_addr.lower() not in {e.lower() for e in to_list}:
-            cc_list.append(cc_addr)
+        cc_addrs, _ = redirect_email_for_user(user, original_email=faculty_email, subject=None)
+        for cc_addr in cc_addrs:
+            if cc_addr and cc_addr.lower() not in {e.lower() for e in to_list}:
+                if cc_addr.lower() not in {e.lower() for e in cc_list}:
+                    cc_list.append(cc_addr)
 
     try:
         email_msg = EmailMultiAlternatives(

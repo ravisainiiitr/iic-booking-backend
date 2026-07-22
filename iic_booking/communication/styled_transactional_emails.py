@@ -39,12 +39,16 @@ def _shell(title: str, subtitle: str, body_html: str) -> str:
 def _send(recipient_email: str, subject: str, text_message: str, html_message: str) -> None:
     from iic_booking.users.test_accounts import redirect_email_address
 
-    delivery_email, subject = redirect_email_address(recipient_email, subject=subject)
+    delivery_emails, subject = redirect_email_address(recipient_email, subject=subject)
+    if not delivery_emails:
+        delivery_emails = [recipient_email] if recipient_email else []
+    if not delivery_emails:
+        return
     send_mail(
         subject=subject,
         message=text_message,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[delivery_email],
+        recipient_list=delivery_emails,
         html_message=html_message,
         fail_silently=False,
     )

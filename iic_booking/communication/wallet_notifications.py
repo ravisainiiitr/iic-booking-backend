@@ -373,17 +373,19 @@ Request Details:
 Thank you for using IIT Roorkee!
             """.strip()
 
-            delivery_email, fallback_subject = redirect_email_for_user(
+            delivery_emails, fallback_subject = redirect_email_for_user(
                 user, original_email=user.email, subject=fallback_subject
             )
+            if not delivery_emails:
+                delivery_emails = [user.email]
             send_mail(
                 subject=fallback_subject,
                 message=fallback_message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[delivery_email],
+                recipient_list=delivery_emails,
                 fail_silently=False,
             )
-            logger.info(f"Wallet recharge {status} fallback email sent to {delivery_email}")
+            logger.info(f"Wallet recharge {status} fallback email sent to {', '.join(delivery_emails)}")
         except Exception as fallback_error:
             logger.error(
                 f"Failed to send wallet recharge {status} fallback email to {user.email}: {str(fallback_error)}",
@@ -529,14 +531,16 @@ View request: {link}
 
 Thank you for using IIT Roorkee System.
 """
-            delivery_email, subj = redirect_email_for_user(
+            delivery_emails, subj = redirect_email_for_user(
                 user, original_email=user.email, subject=subj
             )
+            if not delivery_emails:
+                delivery_emails = [user.email]
             send_mail(
                 subject=subj,
                 message=body.strip(),
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[delivery_email],
+                recipient_list=delivery_emails,
                 fail_silently=False,
             )
         except Exception as e:

@@ -8943,12 +8943,14 @@ def send_bulk_email(request):
 
     for email in recipient_emails:
         try:
-            delivery_email, per_subject = redirect_email_address(email, subject=subject)
+            delivery_emails, per_subject = redirect_email_address(email, subject=subject)
+            if not delivery_emails:
+                delivery_emails = [email]
             send_mail(
                 subject=per_subject or subject,
                 message=body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[delivery_email],
+                recipient_list=delivery_emails,
                 fail_silently=False,
             )
             sent += 1
@@ -9030,15 +9032,17 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
 
     from iic_booking.users.test_accounts import redirect_email_for_user
 
-    delivery_email, subject = redirect_email_for_user(
+    delivery_emails, subject = redirect_email_for_user(
         user, original_email=user.email, subject=subject
     )
+    if not delivery_emails:
+        delivery_emails = [user.email]
 
     email = EmailMultiAlternatives(
         subject=subject,
         body=message,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[delivery_email],
+        to=delivery_emails,
     )
     if html_message:
         email.attach_alternative(html_message, "text/html")
@@ -10943,14 +10947,16 @@ def _send_results_available_push_and_email(booking):
     try:
         from iic_booking.users.test_accounts import redirect_email_for_user
 
-        delivery_email, subject = redirect_email_for_user(
+        delivery_emails, subject = redirect_email_for_user(
             user, original_email=user.email, subject=subject
         )
+        if not delivery_emails:
+            delivery_emails = [user.email]
         send_mail(
             subject=subject,
             message="\n".join(body_lines),
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[delivery_email],
+            recipient_list=delivery_emails,
             fail_silently=True,
         )
     except Exception as e:

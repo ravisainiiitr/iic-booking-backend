@@ -27,7 +27,7 @@ from iic_booking.users.repositories.wallet_repository import (
 )
 from iic_booking.users.test_accounts import (
     TEST_USER_PASSWORD,
-    test_email_redirect,
+    test_email_redirects,
     test_user_email_for_type,
 )
 
@@ -169,7 +169,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  Seed departments: {len(seed_depts)}")
         self.stdout.write(f"  Sub-wallets topped up: {subwallets_topped}")
         self.stdout.write(f"  Shared password: {TEST_USER_PASSWORD}")
-        self.stdout.write(f"  Email redirect target: {test_email_redirect()}")
+        self.stdout.write(f"  Email redirect target(s): {', '.join(test_email_redirects()) or '(none)'}")
         self.stdout.write("")
         self.stdout.write("Accounts:")
         for code, label in UserType.get_choices():
