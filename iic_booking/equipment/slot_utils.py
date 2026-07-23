@@ -135,7 +135,7 @@ class SlotGenerator:
 
         initial_status = SlotGenerator._get_initial_slot_status_for_equipment(equipment)
         if allow_holiday and initial_status == SlotStatus.AVAILABLE:
-            # Admin/OIC grid: weekend + table holidays are closed until staff sets e.g. AVAILABLE / reserved_for_external.
+            # Admin/OIC grid: weekend + table holidays are closed until staff sets e.g. AVAILABLE.
             is_holiday, _ = Holiday.is_holiday(target_date)
             if is_holiday:
                 initial_status = SlotStatus.NOT_AVAILABLE
@@ -324,14 +324,9 @@ class SlotAvailabilityChecker:
     def is_slot_available_for_external(daily_slot: DailySlot) -> bool:
         """
         Check if a daily slot is available for external users
-        (must be reserved for external and AVAILABLE; rejects past/started slots).
+        (AVAILABLE + not past/started; same as internal — quota is enforced separately).
         """
-        if SlotAvailabilityChecker._slot_has_started(daily_slot):
-            return False
-        return (
-            getattr(daily_slot, "reserved_for_external", False)
-            and daily_slot.status == SlotStatus.AVAILABLE
-        )
+        return SlotAvailabilityChecker.is_slot_available(daily_slot)
     
     @staticmethod
     def get_available_slots(
@@ -356,16 +351,8 @@ class SlotAvailabilityChecker:
         start_date: date,
         end_date: Optional[date] = None
     ) -> List[DailySlot]:
-        """Get slots that are available for external users (reserved_for_external=True and status=AVAILABLE)."""
-        if end_date is None:
-            end_date = start_date
-        return DailySlot.objects.filter(
-            slot_master__equipment=equipment,
-            date__gte=start_date,
-            date__lte=end_date,
-            reserved_for_external=True,
-            status=SlotStatus.AVAILABLE
-        ).order_by('date', 'start_datetime')
+        """Get AVAILABLE slots for external users (same pool as internal; quota enforced separately)."""
+        return SlotAvailabilityChecker.get_available_slots(equipment, start_date, end_date)
     
     @staticmethod
     def block_slot(daily_slot: DailySlot, reason: str = "") -> None:

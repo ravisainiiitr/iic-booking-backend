@@ -507,31 +507,18 @@ def notify_waitlist_slots_available(
         # never against earlier available slots.
         return [sid for sid in preferred_slot_ids if sid in slot_set]
 
-    # Available slot IDs by user type, only within slot window
-    internal_qs = DailySlot.objects.filter(
+    # Shared AVAILABLE pool for internal and external (quota enforced at booking time).
+    available_qs = DailySlot.objects.filter(
         slot_master__equipment=equipment,
         status=SlotStatus.AVAILABLE,
-        reserved_for_external=False,
     )
-    external_qs = DailySlot.objects.filter(
-        slot_master__equipment=equipment,
-        status=SlotStatus.AVAILABLE,
-        reserved_for_external=True,
-    )
-    internal_slots = prioritize_slots(slot_ids_within_window(internal_qs))
-    external_slots = prioritize_slots(slot_ids_within_window(external_qs))
-    if not internal_slots and internal_qs.exists():
+    available_slots = prioritize_slots(slot_ids_within_window(available_qs))
+    if not available_slots and available_qs.exists():
         logger.info(
-            "Waitlist auto-book: internal AVAILABLE slots exist but none are within configured weekly window for equipment %s.",
+            "Waitlist auto-book: AVAILABLE slots exist but none are within configured weekly window for equipment %s.",
             equipment_code,
         )
-    if not external_slots and external_qs.exists():
-        logger.info(
-            "Waitlist auto-book: external AVAILABLE slots exist but none are within configured weekly window for equipment %s.",
-            equipment_code,
-        )
-    used_internal = set()
-    used_external = set()
+    used_slots = set()
     bookings_created = 0
     # Only remove waitlist entries after we successfully auto-book them.
     # If auto-booking fails for a user (e.g. quota/wallet/other business rule),
@@ -541,13 +528,7 @@ def notify_waitlist_slots_available(
 
     for idx, entry in enumerate(entries, start=1):
         user = entry.user
-        is_external = UserType.is_external_user(getattr(user, "user_type", None) or UserType.STUDENT)
-        if is_external:
-            available_ids = [x for x in external_slots if x not in used_external]
-            used_set = used_external
-        else:
-            available_ids = [x for x in internal_slots if x not in used_internal]
-            used_set = used_internal
+        available_ids = [x for x in available_slots if x not in used_slots]
         if not available_ids:
             logger.debug("No more available slots for waitlist user %s (equipment %s).", user.email, equipment_code)
             continue
@@ -644,7 +625,7 @@ def notify_waitlist_slots_available(
         )
         if booking:
             for sid in slot_ids_to_book:
-                used_set.add(sid)
+                used_slots.add(sid)
             bookings_created += 1
             processed_entry_ids.append(entry.id)
             logger.info(

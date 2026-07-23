@@ -26,6 +26,11 @@ from .calculators import (
     TimeCalculationEngine,
     quantize_money,
 )
+from .slot_allocation import (
+    allocated_capacity_covers_analysis,
+    slot_tolerance_minutes_for,
+    slots_needed_for_analysis_time,
+)
 from .slot_utils import SlotAvailabilityChecker
 from .quota_utils import QuotaService, booking_quota_should_skip
 from .booking_events import create_booking_event
@@ -171,8 +176,8 @@ def reduce_waitlist_inputs_to_fit_available_slots(
     if max_minutes_available <= 0:
         return None
 
-    def ceil_div(a: int, b: int) -> int:
-        return (a + b - 1) // b if b > 0 else 0
+    tolerance = slot_tolerance_minutes_for(equipment)
+    max_minutes_coverable = max_minutes_available + tolerance
 
     # HOUR profile: key 'B' represents number of slots — shrink B until it fits.
     if key == "B":
@@ -193,10 +198,10 @@ def reduce_waitlist_inputs_to_fit_available_slots(
                 continue
             if effective_time <= 0:
                 continue
-            # Must fit within available slots window.
-            if effective_time > max_minutes_available:
+            # Must fit within available slots window (tolerance may cover small overruns).
+            if effective_time > max_minutes_coverable:
                 continue
-            slots_needed = ceil_div(effective_time, slot_duration)
+            slots_needed = slots_needed_for_analysis_time(effective_time, slot_duration, tolerance)
             # Never accept a 0-slot "fit" even if the time engine returns a quirky value.
             if slots_needed < 1 or slots_needed > max_slots_available:
                 continue
@@ -228,9 +233,9 @@ def reduce_waitlist_inputs_to_fit_available_slots(
             continue
         if effective_time <= 0:
             continue
-        if effective_time > max_minutes_available:
+        if effective_time > max_minutes_coverable:
             continue
-        slots_needed = ceil_div(effective_time, slot_duration)
+        slots_needed = slots_needed_for_analysis_time(effective_time, slot_duration, tolerance)
         if slots_needed < 1 or slots_needed > max_slots_available:
             continue
         return safe_inputs, effective_time, slots_needed
@@ -282,10 +287,6 @@ def create_booking_for_waitlist_user(
         "slot_master__equipment": equipment,
         "status": SlotStatus.AVAILABLE,
     }
-    if is_external:
-        base_filter["reserved_for_external"] = True
-    else:
-        base_filter["reserved_for_external"] = False
 
     checker = (
         SlotAvailabilityChecker.is_slot_available_for_external
@@ -329,7 +330,11 @@ def create_booking_for_waitlist_user(
         return None, "Invalid slot duration."
 
     total_time_minutes = int(total_time_minutes_override) if total_time_minutes_override is not None else int(total_slot_minutes)
-    if total_time_minutes <= 0 or total_time_minutes > total_slot_minutes:
+    if total_time_minutes <= 0 or not allocated_capacity_covers_analysis(
+        total_slot_minutes,
+        total_time_minutes,
+        slot_tolerance_minutes_for(equipment),
+    ):
         return None, "Requested duration does not fit within available slots."
     start_time = daily_slots.first().start_datetime
     booking_date = start_time
@@ -378,6 +383,19 @@ def create_booking_for_waitlist_user(
         )
         if not quota_allowed:
             return None, quota_error
+
+    from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
+
+    _slots_for_ext = list(daily_slots)
+    ext_quota = ExternalSlotQuotaService.validate_external_booking(
+        booking_user,
+        equipment,
+        slot_dates=[s.date for s in _slots_for_ext if getattr(s, "date", None)],
+        slots_requested=len(_slots_for_ext),
+        bypass=False,
+    )
+    if not ext_quota.allowed:
+        return None, ext_quota.message or "External weekly slot quota exceeded."
 
     booking_target, _ = WalletRepository.get_booking_wallet_target(
         booking_user, getattr(equipment, "internal_department", None)

@@ -181,6 +181,17 @@ class Equipment(models.Model):
 
     slot_duration_minutes = models.IntegerField(help_text='Duration of the slot in minutes', default=30)
     slots_per_day = models.IntegerField(help_text='Number of slots per day', default=12)
+    slot_tolerance_minutes = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],
+        verbose_name=_('Slot Tolerance (Minutes)'),
+        help_text=_(
+            'Allow analysis time to overrun allocated slot capacity by up to this many minutes '
+            'before another slot is required. Formula: slots = ceil((analysis_time − tolerance) / slot_duration), '
+            'minimum 1. 0 preserves legacy strict ceil(analysis_time / slot_duration) behaviour. '
+            'Configurable by Main Administrator and Department Administrator.'
+        ),
+    )
 
     internal_weekly_quota = models.IntegerField(help_text='Internal weekly quota', default=10)
     external_weekly_quota = models.IntegerField(help_text='External weekly quota', default=10)
@@ -397,6 +408,17 @@ class Equipment(models.Model):
         blank=True,
         verbose_name=_('Slot window reference time'),
         help_text=_('Time (24h) on that weekday when the next week opens. Used with slot window reference weekday.'),
+    )
+    external_slot_quota_percent = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        verbose_name=_('External Slot Quota (%)'),
+        help_text=_(
+            'Maximum share of a week\'s bookable slots that external users may consume (0–100). '
+            '0 means external users cannot book. The weekly limit is snapshotted 15 minutes before '
+            'the external booking window opens and is not recalculated if schedules change later. '
+            'Configurable by Main Administrator and Department Administrator.'
+        ),
     )
 
     urgent_peak_window_minutes = models.PositiveIntegerField(
@@ -1253,8 +1275,8 @@ class DynamicInputField(models.Model):
         null=True,
         help_text=_(
             'Help text for this field. '
-            'NUMERIC: line 1 = lower limit, line 2 = upper limit, line 3 = step '
-            '(e.g. 0.01). Defaults 0 / 100 / 1 when blank. '
+            'NUMERIC: line 1 = lower limit (may be negative), line 2 = upper limit, line 3 = step '
+            '(e.g. 0.01). Defaults 0 / 100 / 1 when blank. Negative defaults are allowed within limits. '
             'PERIODIC_TABLE: one element per line to disable (e.g. Fe); '
             'prefix with / to lock-preselect without charge (e.g. /C for Carbon). '
             'Also used for ICPMS Standard Coverage standards notes.'
@@ -1650,8 +1672,11 @@ class DailySlot(models.Model):
     )
     reserved_for_external = models.BooleanField(
         default=False,
-        verbose_name=_('Reserved for External Users'),
-        help_text=_('When True, this slot is shown as Available to external users; only these slots can be booked by external users. Admin and OIC can mark/unmark.')
+        verbose_name=_('Reserved for External Users (deprecated)'),
+        help_text=_(
+            'Deprecated. External booking is limited by Equipment.external_slot_quota_percent '
+            'and weekly snapshots; this flag is no longer enforced and should remain False.'
+        ),
     )
     home_department_only = models.BooleanField(
         default=False,
@@ -1703,6 +1728,58 @@ class DailySlot(models.Model):
         
         time_str = f"({self.start_datetime.strftime('%H:%M')} - {self.end_datetime.strftime('%H:%M')})" if self.start_datetime and self.end_datetime else ""
         return f"{equipment_code} - Slot {slot_number} - {self.date} {time_str}".strip()
+
+
+class ExternalWeeklySlotQuotaSnapshot(models.Model):
+    """
+    Immutable weekly cap on how many slots external users may consume for one equipment.
+
+    Created ~15 minutes before the external booking window opens for that week.
+    total_bookable_slots / percent / max are fixed at creation time.
+    """
+
+    id = models.AutoField(primary_key=True)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="external_weekly_slot_quota_snapshots",
+    )
+    week_start = models.DateField(
+        help_text=_("Monday of the booking week (Mon–Sun)."),
+    )
+    week_end = models.DateField(
+        help_text=_("Sunday of the booking week."),
+    )
+    total_bookable_slots = models.PositiveIntegerField(
+        help_text=_("Count of AVAILABLE + BOOKED slots in the week at snapshot time."),
+    )
+    external_quota_percent = models.PositiveSmallIntegerField(
+        help_text=_("Equipment external_slot_quota_percent copied at snapshot time (0–100)."),
+    )
+    max_external_slots = models.PositiveIntegerField(
+        help_text=_("floor(total_bookable_slots * external_quota_percent / 100)."),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("External Weekly Slot Quota Snapshot")
+        verbose_name_plural = _("External Weekly Slot Quota Snapshots")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["equipment", "week_start"],
+                name="uniq_ext_weekly_slot_quota_equip_week",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["equipment", "week_start"]),
+        ]
+        ordering = ["-week_start", "equipment_id"]
+
+    def __str__(self):
+        return (
+            f"{self.equipment_id} week {self.week_start}: "
+            f"max {self.max_external_slots} ({self.external_quota_percent}%)"
+        )
 
 
 # ============================================================================

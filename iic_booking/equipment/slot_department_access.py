@@ -130,7 +130,7 @@ def filter_queryset_for_home_department(
     """
     Restrict a DailySlot queryset for non-admin internal users.
 
-    External users and admins are unchanged (external uses reserved_for_external).
+    External users and admins are unchanged (external bookability uses ExternalSlotQuotaService).
     """
     if is_admin or is_external:
         return qs

@@ -777,6 +777,8 @@ class DailySlotSerializer(serializers.ModelSerializer):
     booking_user_department_name = serializers.SerializerMethodField()
     booking_user_email = serializers.SerializerMethodField()
     booking_user_phone = serializers.SerializerMethodField()
+    booking_user_type = serializers.SerializerMethodField()
+    booking_is_external = serializers.SerializerMethodField()
     available_for_external = serializers.SerializerMethodField()
     # Wall-clock open time (HH:mm:ss) from SlotMaster — aligns weekly grid rows with slot_master_times (start_datetime is TZ-aware ISO).
     slot_open_time = serializers.SerializerMethodField()
@@ -808,6 +810,8 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'booking_user_department_name',
             'booking_user_email',
             'booking_user_phone',
+            'booking_user_type',
+            'booking_is_external',
             'available_for_external',
             'created_at',
             'updated_at'
@@ -815,11 +819,8 @@ class DailySlotSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
     def get_available_for_external(self, obj):
-        """True only when slot is reserved for external and status is AVAILABLE."""
-        return (
-            getattr(obj, 'reserved_for_external', False)
-            and obj.status == SlotStatus.AVAILABLE
-        )
+        """True when status is AVAILABLE (external bookability window enforced in to_representation)."""
+        return obj.status == SlotStatus.AVAILABLE
 
     def get_booking_id(self, obj):
         return booking_display_id_for_email(getattr(obj, "booking", None)) or None
@@ -831,68 +832,38 @@ class DailySlotSerializer(serializers.ModelSerializer):
         return None
 
     def to_representation(self, instance):
-        """External users: Sat/Sun/table holidays use the same status labels as internal (for calendar colours).
-        Bookability for externals is only when reserved_for_external+AVAILABLE (available_for_external).
-        Other weekdays: non-reserved slots show as Not Available.
-        Internal users: on weekdays (not holiday/weekend), show 'Reserved for External User' when slot is AVAILABLE and reserved_for_external."""
+        """External users: grey out slots outside external_bookable_min/max_date as NOT_AVAILABLE.
+        Inside the window, any AVAILABLE slot is bookable (available_for_external=True).
+        Internal users: home_department overlays apply to all AVAILABLE slots (no reserved_for_external gate)."""
         data = super().to_representation(instance)
-        holidays_in_range = self.context.get('holidays_in_range') or set()
         if self.context.get('for_external_user'):
             ext_min = self.context.get('external_bookable_min_date')
             ext_max = self.context.get('external_bookable_max_date')
             # External view: never mask real non-AVAILABLE states (e.g. BOOKED) as NOT_AVAILABLE.
-            # We only convert *AVAILABLE but not externally bookable* slots to NOT_AVAILABLE.
+            # We only convert *AVAILABLE but outside the bookable window* slots to NOT_AVAILABLE.
             if instance.status != SlotStatus.AVAILABLE or getattr(instance, 'booking_id', None):
                 data['status'] = instance.status
                 data['status_display'] = instance.get_status_display()
                 data['available_for_external'] = False
                 return data
-            reserved_and_available = (
-                getattr(instance, 'reserved_for_external', False)
-                and instance.status == SlotStatus.AVAILABLE
-            )
-            # Rolling calendar window (today+15 … +21) greys out non-reserved days in a visible Mon–Sun week.
-            # Admin-marked "Reserved for External" + AVAILABLE must still show as bookable on those dates.
             out_of_ext_rolling_window = (
                 ext_min is not None and ext_max is not None and (
                     instance.date < ext_min or instance.date > ext_max
                 )
             )
-            if out_of_ext_rolling_window and not reserved_and_available:
+            if out_of_ext_rolling_window:
                 data['status'] = 'NOT_AVAILABLE'
                 data['status_display'] = 'Not Available'
                 data['available_for_external'] = False
-            elif instance.date in holidays_in_range:
-                # Same as weekdays: reserved+AVAILABLE must read as "Available" for external booking on Sat/Sun/holidays.
-                ext_avail = self.get_available_for_external(instance)
-                if ext_avail:
-                    data['status'] = SlotStatus.AVAILABLE
-                    data['status_display'] = 'Available'
-                    data['available_for_external'] = True
-                else:
-                    data['status'] = instance.status
-                    data['status_display'] = instance.get_status_display()
-                    data['available_for_external'] = ext_avail
-            elif getattr(instance, 'reserved_for_external', False) and instance.status == SlotStatus.AVAILABLE:
+            else:
+                # Inside bookable window: AVAILABLE slots are bookable for external users.
                 data['status'] = SlotStatus.AVAILABLE
                 data['status_display'] = 'Available'
-                data['available_for_external'] = self.get_available_for_external(instance)
-            else:
-                data['status'] = 'NOT_AVAILABLE'
-                data['status_display'] = 'Not Available'
-                data['available_for_external'] = self.get_available_for_external(instance)
+                data['available_for_external'] = True
         else:
-            # Internal user: on weekday (not in holidays_in_range), show "Reserved for External User" for AVAILABLE + reserved_for_external
             if (
                 instance.status == SlotStatus.AVAILABLE
-                and getattr(instance, 'reserved_for_external', False)
-                and instance.date not in holidays_in_range
-            ):
-                data['status_display'] = 'Reserved for External User'
-            elif (
-                instance.status == SlotStatus.AVAILABLE
                 and getattr(instance, 'home_department_only', False)
-                and not getattr(instance, 'reserved_for_external', False)
             ):
                 from .slot_department_access import non_home_reservation_released_to_all
 
@@ -908,7 +879,6 @@ class DailySlotSerializer(serializers.ModelSerializer):
             elif (
                 instance.status == SlotStatus.AVAILABLE
                 and not getattr(instance, 'home_department_only', False)
-                and not getattr(instance, 'reserved_for_external', False)
             ):
                 from .slot_department_access import equipment_department_slot_policy_active
 
@@ -1032,6 +1002,27 @@ class DailySlotSerializer(serializers.ModelSerializer):
         phone = str(phone).strip() if phone is not None else ""
         return phone or None
 
+    def get_booking_user_type(self, obj):
+        """User type of the booker (snapshot preferred) for calendar colouring."""
+        booking = getattr(obj, "booking", None)
+        if not booking:
+            return None
+        snap = (getattr(booking, "user_type_snapshot", None) or "").strip()
+        if snap:
+            return snap
+        user = self._booking_user(obj)
+        if not user:
+            return None
+        ut = getattr(user, "user_type", None)
+        return str(ut).strip() if ut is not None else None
+
+    def get_booking_is_external(self, obj):
+        """True when the booking belongs to an external user type."""
+        code = self.get_booking_user_type(obj)
+        if not code:
+            return False
+        return UserType.is_external_user(code)
+
 
 class EquipmentListSerializer(serializers.ModelSerializer):
     """Simplified serializer for listing equipment."""
@@ -1093,6 +1084,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'weekly_view_default_days',
             'slot_window_reference_weekday',
             'slot_window_reference_time',
+            'external_slot_quota_percent',
             'urgent_peak_window_minutes',
             'max_urgent_requests',
             'booking_not_utilize_window_hours',
@@ -1282,6 +1274,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'base_charges_by_user_type',
             'slot_duration_minutes',
             'slots_per_day',
+            'slot_tolerance_minutes',
             'split_booking_enabled',
             'auto_slot_selection_default',
             'repeat_sample_request_days',
@@ -1295,6 +1288,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'weekly_view_default_days',
             'slot_window_reference_weekday',
             'slot_window_reference_time',
+            'external_slot_quota_percent',
             'urgent_peak_window_minutes',
             'max_urgent_requests',
             'waitlist_queue_depth',
@@ -1521,9 +1515,11 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'istem_portal_url', 'istem_fbr_status_url',
             'profile_type', 'category', 'internal_department', 'visibility_group',
             'equipment_group', 'enable_multi_mode', 'parent_equipment', 'slot_duration_minutes', 'slots_per_day',
+            'slot_tolerance_minutes',
             'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'auto_slot_selection_default', 'weekly_view_display',
             'weekly_view_time_from', 'weekly_view_time_to', 'weekly_view_max_rows', 'weekly_view_default_days',
             'slot_window_reference_weekday', 'slot_window_reference_time',
+            'external_slot_quota_percent',
             'urgent_peak_window_minutes',
             'max_urgent_requests',
             'waitlist_queue_depth',

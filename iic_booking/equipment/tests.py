@@ -235,12 +235,19 @@ class SlotAvailabilityPastGuardTests(SimpleTestCase):
         slot = self._slot(start=None)
         self.assertFalse(SlotAvailabilityChecker.is_slot_available(slot))
 
-    def test_external_past_reserved_slot_is_not_bookable(self):
+    def test_external_past_slot_is_not_bookable(self):
         slot = self._slot(
             start=timezone.now() - timedelta(minutes=5),
-            reserved_for_external=True,
+            reserved_for_external=False,
         )
         self.assertFalse(SlotAvailabilityChecker.is_slot_available_for_external(slot))
+
+    def test_external_future_available_without_reserved_is_bookable(self):
+        slot = self._slot(
+            start=timezone.now() + timedelta(hours=1),
+            reserved_for_external=False,
+        )
+        self.assertTrue(SlotAvailabilityChecker.is_slot_available_for_external(slot))
 
 
 class WaitlistReduceBoundaryTests(SimpleTestCase):

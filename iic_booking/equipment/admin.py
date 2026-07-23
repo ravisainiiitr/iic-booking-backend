@@ -291,8 +291,9 @@ class DynamicInputFieldForm(forms.ModelForm):
                 }
             )
             self.fields['help_text'].help_text = _(
-                'NUMERIC: line 1 = lower limit, line 2 = upper limit, line 3 = step '
-                '(e.g. 0 / 100 / 0.01). Defaults 0 / 100 / 1 when blank. '
+                'NUMERIC: line 1 = lower limit (may be negative), line 2 = upper limit, line 3 = step '
+                '(e.g. -50 / 100 / 0.01). Defaults 0 / 100 / 1 when blank. '
+                'Negative default values are allowed when within these limits. '
                 'PERIODIC_TABLE: one element per line to disable; prefix with / to lock-preselect '
                 'without charge. Also used for ICPMS Standard Coverage notes.'
             )
@@ -1025,9 +1026,11 @@ class EquipmentAdmin(admin.ModelAdmin):
         }),
         (_('Slot Configuration'), {
             'fields': (
-                'slot_duration_minutes', 'slots_per_day', 'reschedule_hours_threshold', 'results_base_location',
+                'slot_duration_minutes', 'slots_per_day', 'slot_tolerance_minutes',
+                'reschedule_hours_threshold', 'results_base_location',
                 'weekly_view_time_from', 'weekly_view_time_to',
                 'slot_window_reference_weekday', 'slot_window_reference_time',
+                'external_slot_quota_percent',
                 'urgent_peak_window_minutes', 'max_urgent_requests', 'waitlist_queue_depth',
                 'booking_not_utilize_window_hours',
                 'operator_unavailable_after_booking_end_hours',

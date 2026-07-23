@@ -19,6 +19,10 @@ from .calculators import (
     quantize_money,
     safe_decimal,
 )
+from .slot_allocation import (
+    slot_tolerance_minutes_for,
+    slots_needed_for_analysis_time,
+)
 from .maintenance_policy import (
     clear_disruption_policy_fields,
     effective_slot_status_when_freeing_disruption_booking,
@@ -69,10 +73,6 @@ def partial_cancel_reduction_key(profile_type) -> str | None:
     if partial_cancel_uses_input_reduction(pt):
         return "A"
     return None
-
-
-def _ceil_div(a: int, b: int) -> int:
-    return (a + b - 1) // b if b > 0 else 0
 
 
 def _charge_profile_proxy(booking: Booking):
@@ -206,7 +206,9 @@ def compute_partial_cancel_plan(
         if new_time <= 0:
             raise CancellationValidationError("Reduced inputs require no booking time.")
 
-        slots_needed = _ceil_div(new_time, slot_dur)
+        slots_needed = slots_needed_for_analysis_time(
+            new_time, slot_dur, slot_tolerance_minutes_for(equipment)
+        )
         if slots_needed > len(all_slots):
             raise CancellationValidationError(
                 "Reduced inputs require more slots than currently booked."
@@ -406,7 +408,9 @@ def compute_partial_cancel_print_items(
     if material_code:
         new_input_values["B"] = material_code
 
-    slots_needed = _ceil_div(total_time, slot_dur)
+    slots_needed = slots_needed_for_analysis_time(
+        total_time, slot_dur, slot_tolerance_minutes_for(booking.equipment)
+    )
     if slots_needed > len(all_slots):
         raise CancellationValidationError(
             "Remaining print files require more slots than currently booked."

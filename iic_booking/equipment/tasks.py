@@ -64,6 +64,22 @@ def clear_waitlist_before_reference() -> int:
     return deleted
 
 
+@shared_task(name="equipment.generate_external_slot_quota_snapshots")
+def generate_external_slot_quota_snapshots() -> int:
+    """
+    Create weekly external slot quota snapshots in the 15-minute window before
+    each equipment's slot-window reference instant (for next-to-next week W2).
+
+    Returns:
+        Number of newly created snapshots.
+    """
+    from .external_slot_quota import ExternalSlotQuotaService
+
+    created = ExternalSlotQuotaService.generate_due_snapshots()
+    logger.info("generate_external_slot_quota_snapshots: created=%d", created)
+    return created
+
+
 @shared_task(name="equipment.send_oic_monthly_reports")
 def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     """
