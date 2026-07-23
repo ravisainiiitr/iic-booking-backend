@@ -1458,7 +1458,7 @@ class DynamicInputFieldWriteSerializer(serializers.Serializer):
     is_required = serializers.BooleanField(default=False)
     editing_required = serializers.BooleanField(default=False, required=False)
     default_value = serializers.CharField(max_length=500, allow_blank=True, required=False, default='')
-    options = serializers.ListField(child=serializers.CharField(), allow_empty=True, required=False, default=list)
+    options = serializers.JSONField(required=False, allow_null=True, default=list)
     help_text = serializers.CharField(allow_blank=True, required=False, default='')
     source_element_field_key = serializers.CharField(max_length=1, allow_blank=True, allow_null=True, required=False, default=None)
 
