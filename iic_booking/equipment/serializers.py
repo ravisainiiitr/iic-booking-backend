@@ -1448,7 +1448,8 @@ class EquipmentAdditionalAccessoryWriteSerializer(serializers.Serializer):
 class DynamicInputFieldWriteSerializer(serializers.Serializer):
     field_key = serializers.CharField(max_length=1)
     field_label = serializers.CharField(max_length=255)
-    field_type = serializers.CharField(max_length=20)
+    # Match DynamicInputField.field_type (max_length=32); ICPMS_STANDARD_COVERAGE is 23 chars.
+    field_type = serializers.CharField(max_length=32)
     is_required = serializers.BooleanField(default=False)
     editing_required = serializers.BooleanField(default=False, required=False)
     default_value = serializers.CharField(max_length=500, allow_blank=True, required=False, default='')
