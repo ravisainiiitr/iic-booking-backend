@@ -1891,11 +1891,13 @@ def equipment_calculate(request, pk):
 
         print_analysis_id = request.query_params.get("print_analysis_id")
         print_analysis_batch_id = request.query_params.get("print_analysis_batch_id")
-        print_user = booking_user if user_is_authenticated else get_charge_estimate_guest_user()
+        # Ownership is against the actor who uploaded the STL (admin/OIC), not the
+        # booking-target user selected via user_id.
+        print_owner = request.user if user_is_authenticated else get_charge_estimate_guest_user()
         input_values, pa_err = merge_print_booking_into_input_values(
             equipment,
             input_values,
-            print_user,
+            print_owner,
             print_analysis_id=print_analysis_id,
             print_analysis_batch_id=print_analysis_batch_id,
         )
@@ -2721,10 +2723,11 @@ def _book_equipment_impl(request, pk):
 
         print_analysis_id = request.data.get("print_analysis_id")
         print_analysis_batch_id = request.data.get("print_analysis_batch_id")
+        # Ownership vs uploader (request.user); booking_user may differ when admin/OIC books for someone.
         input_values, pa_err = merge_print_booking_into_input_values(
             equipment,
             input_values,
-            booking_user,
+            request.user,
             print_analysis_id=print_analysis_id,
             print_analysis_batch_id=print_analysis_batch_id,
         )

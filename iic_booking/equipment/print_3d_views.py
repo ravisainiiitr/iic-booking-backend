@@ -69,15 +69,18 @@ def user_can_access_print_resource(request, owner_user_id: int) -> bool:
     if request.user and request.user.is_authenticated:
         if owner_user_id == request.user.id:
             return True
-        if str(request.user.user_type or "").lower() == UserType.ADMIN:
+        ut = str(request.user.user_type or "").lower()
+        if ut in (UserType.ADMIN, UserType.MANAGER):
             return True
         return False
     return owner_user_id == get_charge_estimate_guest_user().id
 
 
 def print_analysis_actor_owns(actor, owner_user_id: int) -> bool:
+    """True if actor uploaded the analysis, or is Main Admin / OIC booking on behalf of a user."""
     if actor is not None and getattr(actor, "is_authenticated", False):
-        if str(getattr(actor, "user_type", "") or "").lower() == UserType.ADMIN:
+        ut = str(getattr(actor, "user_type", "") or "").lower()
+        if ut in (UserType.ADMIN, UserType.MANAGER):
             return True
         return owner_user_id == actor.id
     return owner_user_id == get_charge_estimate_guest_user().id
