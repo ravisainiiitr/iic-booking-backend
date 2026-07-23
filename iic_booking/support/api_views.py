@@ -22,6 +22,7 @@ from .ticket_service import (
     apply_create_routing_and_events,
     notify_ticket_assignee,
     record_ticket_event,
+    user_can_manage_tickets,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,7 @@ def _send_ticket_update_email(ticket: Ticket, action_summary: str, action_detail
 def _user_can_access_ticket(user, ticket: Ticket) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if getattr(user, "is_staff", False):
+    if user_can_manage_tickets(user):
         return True
     return ticket.user_id is not None and ticket.user_id == getattr(user, "id", None)
 
@@ -174,7 +175,7 @@ def ticket_list(request):
     if request.method == "GET":
         # For authenticated users, show their own tickets
         if request.user.is_authenticated:
-            if request.user.is_staff:
+            if user_can_manage_tickets(request.user):
                 # Staff can see all tickets
                 queryset = Ticket.objects.all()
                 
@@ -325,7 +326,7 @@ def ticket_detail(request, ticket_id):
             )
         
         # Users can only view their own tickets, staff can view all
-        if not request.user.is_staff and ticket.user != request.user:
+        if not user_can_manage_tickets(request.user) and ticket.user != request.user:
             return Response(
                 {"error": "You don't have permission to view this ticket."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -342,14 +343,14 @@ def ticket_detail(request, ticket_id):
         )
     
     # Staff can update any ticket, users can only update their own (limited)
-    if not request.user.is_staff and ticket.user != request.user:
+    if not user_can_manage_tickets(request.user) and ticket.user != request.user:
         return Response(
             {"error": "You don't have permission to update this ticket."},
             status=status.HTTP_403_FORBIDDEN,
         )
     
     # For non-staff users, only allow updating description
-    if not request.user.is_staff:
+    if not user_can_manage_tickets(request.user):
         if 'description' not in request.data or len(request.data) > 1:
             return Response(
                 {"error": "You can only update the description of your ticket."},
@@ -375,7 +376,7 @@ def ticket_detail(request, ticket_id):
         
         serializer.save()
         updated_ticket = serializer.instance
-        if request.user.is_staff:
+        if user_can_manage_tickets(request.user):
             action_lines = []
             status_changed_to_resolution = (
                 old_status != updated_ticket.status
@@ -491,7 +492,7 @@ def ticket_comment_create(request, ticket_id):
         )
     
     # Check permissions
-    if not request.user.is_staff and ticket.user != request.user:
+    if not user_can_manage_tickets(request.user) and ticket.user != request.user:
         return Response(
             {"error": "You don't have permission to comment on this ticket."},
             status=status.HTTP_403_FORBIDDEN,
@@ -506,7 +507,7 @@ def ticket_comment_create(request, ticket_id):
     
     is_internal = request.data.get('is_internal', False)
     # Only staff can create internal comments
-    if is_internal and not request.user.is_staff:
+    if is_internal and not user_can_manage_tickets(request.user):
         is_internal = False
     
     comment = TicketComment.objects.create(
@@ -526,7 +527,7 @@ def ticket_comment_create(request, ticket_id):
     )
 
     # Public staff comments should be sent to the ticket owner and shown as action updates.
-    if request.user.is_staff and not is_internal:
+    if user_can_manage_tickets(request.user) and not is_internal:
         _send_ticket_update_email(
             ticket,
             action_summary="A support team comment was added.",
@@ -555,14 +556,14 @@ def ticket_comments_list(request, ticket_id):
         )
     
     # Check permissions
-    if not request.user.is_staff and ticket.user != request.user:
+    if not user_can_manage_tickets(request.user) and ticket.user != request.user:
         return Response(
             {"error": "You don't have permission to view comments for this ticket."},
             status=status.HTTP_403_FORBIDDEN,
         )
     
     # Filter comments based on user role
-    if request.user.is_staff:
+    if user_can_manage_tickets(request.user):
         comments = ticket.comments.all()
     else:
         comments = ticket.comments.filter(is_internal=False)
@@ -607,7 +608,7 @@ def ticket_events_list(request, ticket_id):
         )
 
     qs = ticket.events.select_related("actor").all()
-    if not request.user.is_staff:
+    if not user_can_manage_tickets(request.user):
         qs = qs.filter(is_internal=False)
 
     serializer = TicketEventSerializer(qs, many=True)
@@ -618,7 +619,7 @@ def ticket_events_list(request, ticket_id):
 @permission_classes([IsAuthenticated])
 def ticket_assignees_search(request):
     """Searchable staff assignees: admin, manager (OIC), operator, finance."""
-    if not request.user.is_staff:
+    if not user_can_manage_tickets(request.user):
         return Response({"error": "Staff only."}, status=status.HTTP_403_FORBIDDEN)
 
     from django.db.models import Q

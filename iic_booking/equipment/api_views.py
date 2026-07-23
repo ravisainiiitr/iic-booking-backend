@@ -167,7 +167,7 @@ from .slot_department_access import (
     filter_queryset_for_home_department,
     slot_allows_internal_user,
 )
-from .quota_utils import QuotaChecker, get_quota_breakdown, booking_quota_should_skip
+from .quota_utils import QuotaService, get_quota_breakdown, booking_quota_should_skip
 from .booking_timing import BookingRequestTimer, attach_booking_performance_headers
 from .booking_events import create_booking_event
 from .booking_cancellation import (
@@ -1000,7 +1000,7 @@ def equipment_form_choices(request):
         ],
         "status_choices": [
             {"value": c[0], "label": str(c[1])}
-            for c in EquipmentStatus.choices
+            for c in EquipmentStatus.user_selectable_choices()
         ],
         "dynamic_input_field_type_choices": [
             {"value": c[0], "label": str(c[1])}
@@ -1684,6 +1684,27 @@ def equipment_detail(request, pk):
                 {"error": "Only admin-panel users can update equipment."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        # Lab In-charge (operator) may not change Operational / Under Maintenance status.
+        if "status" in request.data:
+            if request.user.user_type == UserType.OPERATOR:
+                return Response(
+                    {"error": "Lab In-charge users cannot change equipment operational status."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if request.user.user_type not in (UserType.ADMIN, UserType.MANAGER, UserType.DEPT_ADMIN):
+                return Response(
+                    {"error": "Only Admin or Officer In Charge can change equipment operational status."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            new_status = (request.data.get("status") or "").strip()
+            if new_status == EquipmentStatus.MAINTENANCE:
+                return Response(
+                    {
+                        "error": "Maintenance Scheduled is no longer available. "
+                        "Use Under Maintenance instead."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         allowed = {"name", "description", "status", "location"}
         for key in allowed:
             if key in request.data:
@@ -3224,46 +3245,26 @@ def _book_equipment_impl(request, pk):
                     {"description": "TA Reward Points", "amount": -float(reward_discount_amount)},
                 ]
         if not is_admin and not booking_quota_should_skip(equipment):
-            QUOTA_TYPE_WEEKLY = 'WEEKLY'
-            QUOTA_TYPE_MONTHLY = 'MONTHLY'
-            quota_allowed, quota_error = QuotaChecker.check_user_quota(
+            # Urgent / HOLD bookings bypass quota restrictions.
+            quota_allowed, quota_error = QuotaService.validate_booking_quota(
                 user=booking_user,
                 equipment=equipment,
-                quota_type=QUOTA_TYPE_WEEKLY,
                 additional_time_minutes=total_time_minutes,
                 additional_bookings=1,
                 additional_charge=total_charge,
                 booking_date=booking_date,
+                bypass_quota=bool(create_as_hold),
             )
             if not quota_allowed:
                 _create_booking_attempt_log(
                     request, equipment, BookingAttemptOutcome.FAILED,
-                    failure_reason=f"Weekly quota check failed: {quota_error}",
-                slots_requested=len(slot_ids),
-                number_of_samples=request.data.get("number_of_samples") or 1,
-                duration_minutes=total_time_minutes,
-                additional_info=_get_additional_info_from_request(request, equipment),
-            )
-                return Response({"error": f"Weekly quota check failed: {quota_error}"}, status=status.HTTP_400_BAD_REQUEST)
-            quota_allowed, quota_error = QuotaChecker.check_user_quota(
-                user=booking_user,
-                equipment=equipment,
-                quota_type=QUOTA_TYPE_MONTHLY,
-                additional_time_minutes=total_time_minutes,
-                additional_bookings=1,
-                additional_charge=total_charge,
-                booking_date=booking_date,
-            )
-            if not quota_allowed:
-                _create_booking_attempt_log(
-                    request, equipment, BookingAttemptOutcome.FAILED,
-                    failure_reason=f"Monthly quota check failed: {quota_error}",
-                slots_requested=len(slot_ids),
-                number_of_samples=request.data.get("number_of_samples") or 1,
-                duration_minutes=total_time_minutes,
-                additional_info=_get_additional_info_from_request(request, equipment),
-            )
-                return Response({"error": f"Monthly quota check failed: {quota_error}"}, status=status.HTTP_400_BAD_REQUEST)
+                    failure_reason=f"Quota check failed: {quota_error}",
+                    slots_requested=len(slot_ids),
+                    number_of_samples=request.data.get("number_of_samples") or 1,
+                    duration_minutes=total_time_minutes,
+                    additional_info=_get_additional_info_from_request(request, equipment),
+                )
+                return Response({"error": quota_error}, status=status.HTTP_400_BAD_REQUEST)
         perf.mark("quota_checks_done")
         status_map = {'booked': BookingStatus.BOOKED, 'hold': BookingStatus.HOLD}
         booking_status_enum = BookingStatus.HOLD if create_as_hold else status_map.get(booking_status.lower(), BookingStatus.BOOKED)
@@ -4029,53 +4030,29 @@ def _book_equipment_impl(request, pk):
             status=status.HTTP_400_BAD_REQUEST,
         )
     
-    # Check quota limits before creating booking (skip for admin)
+    # Check quota limits before creating booking (skip for admin; urgent HOLD bypasses)
     booking_date = start_time
     if not is_admin and not booking_quota_should_skip(equipment):
-        QUOTA_TYPE_WEEKLY = 'WEEKLY'
-        QUOTA_TYPE_MONTHLY = 'MONTHLY'
-        quota_allowed, quota_error = QuotaChecker.check_user_quota(
+        quota_allowed, quota_error = QuotaService.validate_booking_quota(
             user=booking_user,
             equipment=equipment,
-            quota_type=QUOTA_TYPE_WEEKLY,
             additional_time_minutes=total_time_minutes,
             additional_bookings=1,
             additional_charge=total_charge,
-            booking_date=booking_date
+            booking_date=booking_date,
+            bypass_quota=bool(create_as_hold),
         )
         if not quota_allowed:
             _create_booking_attempt_log(
                 request, equipment, BookingAttemptOutcome.FAILED,
-                failure_reason=f"Weekly quota check failed: {quota_error}",
+                failure_reason=f"Quota check failed: {quota_error}",
                 slots_requested=daily_slots.count(),
                 number_of_samples=request.data.get("number_of_samples") or 1,
                 duration_minutes=total_time_minutes,
                 additional_info=_get_additional_info_from_request(request, equipment),
             )
             return Response(
-                {"error": f"Weekly quota check failed: {quota_error}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        quota_allowed, quota_error = QuotaChecker.check_user_quota(
-            user=booking_user,
-            equipment=equipment,
-            quota_type=QUOTA_TYPE_MONTHLY,
-            additional_time_minutes=total_time_minutes,
-            additional_bookings=1,
-            additional_charge=total_charge,
-            booking_date=booking_date
-        )
-        if not quota_allowed:
-            _create_booking_attempt_log(
-                request, equipment, BookingAttemptOutcome.FAILED,
-                failure_reason=f"Monthly quota check failed: {quota_error}",
-                slots_requested=daily_slots.count(),
-                number_of_samples=request.data.get("number_of_samples") or 1,
-                duration_minutes=total_time_minutes,
-                additional_info=_get_additional_info_from_request(request, equipment),
-            )
-            return Response(
-                {"error": f"Monthly quota check failed: {quota_error}"},
+                {"error": quota_error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -10665,21 +10642,19 @@ def user_reschedule_booking(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Weekly/monthly quota on reschedule: treat as MOVE, not ADD.
-    # Exclude this booking from existing-bookings aggregation so moving across weeks/months
-    # correctly shifts usage to the new period.
+    # Reschedule: original booking already consumed quota. Treat as MOVE (exclude self),
+    # not a second consumption — same pipeline order as create (Faculty Mon→Week→Individual).
     try:
         additional_minutes = int(getattr(booking, "total_time_minutes", 0) or 0)
         additional_charge = Decimal(str(getattr(booking, "total_charge", 0) or "0"))
         quota_date = start_time
-        # Special case: reschedule from disruption-pending should remain counted in the ORIGINAL period.
+        # Disruption reschedule: keep quota against the ORIGINAL period anchor.
         if booking.status == BookingStatus.DISRUPTION_PENDING and getattr(booking, "quota_period_anchor_at", None) is not None:
             quota_date = booking.quota_period_anchor_at
         if not booking_quota_should_skip(equipment):
-            quota_allowed, quota_error = QuotaChecker.check_user_quota(
-                booking.user,
-                equipment,
-                quota_type=QUOTA_TYPE_WEEKLY,
+            quota_allowed, quota_error = QuotaService.validate_booking_quota(
+                user=booking.user,
+                equipment=equipment,
                 additional_time_minutes=additional_minutes,
                 additional_bookings=1,
                 additional_charge=additional_charge,
@@ -10687,19 +10662,7 @@ def user_reschedule_booking(request, booking_id):
                 exclude_booking_id=booking.booking_id,
             )
             if not quota_allowed:
-                return Response({"error": f"Weekly quota check failed: {quota_error}"}, status=status.HTTP_400_BAD_REQUEST)
-            quota_allowed, quota_error = QuotaChecker.check_user_quota(
-                booking.user,
-                equipment,
-                quota_type=QUOTA_TYPE_MONTHLY,
-                additional_time_minutes=additional_minutes,
-                additional_bookings=1,
-                additional_charge=additional_charge,
-                booking_date=quota_date,
-                exclude_booking_id=booking.booking_id,
-            )
-            if not quota_allowed:
-                return Response({"error": f"Monthly quota check failed: {quota_error}"}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": quota_error}, status=status.HTTP_400_BAD_REQUEST)
     except Exception:
         logger.exception("Quota check failed during user reschedule for booking %s", booking.booking_id)
         return Response({"error": "Quota check failed. Please try again or contact admin."}, status=status.HTTP_400_BAD_REQUEST)

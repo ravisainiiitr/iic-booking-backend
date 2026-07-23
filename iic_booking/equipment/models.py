@@ -106,19 +106,29 @@ class EquipmentStatus(models.TextChoices):
     and API consumers, but update the user-facing labels to the 3 required states.
     """
 
-    # User-required states (stored as legacy values to avoid a data migration):
+    # User-facing selectable states (stored as legacy codes):
     # - Operational => ACTIVE
-    # - Maintenance Scheduled => MAINTENANCE
     # - Under Maintenance => REPAIR
+    # MAINTENANCE ("Maintenance Scheduled") is deprecated and no longer offered in UI.
     ACTIVE = 'ACTIVE', _('Operational')
-    MAINTENANCE = 'MAINTENANCE', _('Maintenance Scheduled')
+    MAINTENANCE = 'MAINTENANCE', _('Under Maintenance')  # legacy; treat like REPAIR
     REPAIR = 'REPAIR', _('Under Maintenance')
 
     # Legacy/extra states. These are treated as non-operational for booking purposes.
     INACTIVE = 'INACTIVE', _('Under Maintenance')
     DISPOSED = 'DISPOSED', _('Disposed')
     OTHER = 'OTHER', _('Other')
-    
+
+    @classmethod
+    def user_selectable_choices(cls):
+        """Statuses offered in equipment card / admin forms (excludes deprecated MAINTENANCE)."""
+        return [
+            (cls.ACTIVE, cls.ACTIVE.label),
+            (cls.REPAIR, cls.REPAIR.label),
+            (cls.INACTIVE, cls.INACTIVE.label),
+            (cls.DISPOSED, cls.DISPOSED.label),
+            (cls.OTHER, cls.OTHER.label),
+        ]
 class EquipmentProfileType(models.TextChoices):
     """Charge profile types."""
     SAMPLE = 'SAMPLE', _('Sample-based')

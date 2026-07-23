@@ -27,7 +27,7 @@ from .calculators import (
     quantize_money,
 )
 from .slot_utils import SlotAvailabilityChecker
-from .quota_utils import QuotaChecker, booking_quota_should_skip
+from .quota_utils import QuotaService, booking_quota_should_skip
 from .booking_events import create_booking_event
 from .models import BookingEventType
 from iic_booking.users.models.user_type import UserType
@@ -368,18 +368,16 @@ def create_booking_for_waitlist_user(
             ]
 
     if not booking_quota_should_skip(equipment):
-        for quota_type in ("WEEKLY", "MONTHLY"):
-            quota_allowed, quota_error = QuotaChecker.check_user_quota(
-                user=booking_user,
-                equipment=equipment,
-                quota_type=quota_type,
-                additional_time_minutes=total_time_minutes,
-                additional_bookings=1,
-                additional_charge=total_charge,
-                booking_date=booking_date,
-            )
-            if not quota_allowed:
-                return None, f"{quota_type} quota: {quota_error}"
+        quota_allowed, quota_error = QuotaService.validate_booking_quota(
+            user=booking_user,
+            equipment=equipment,
+            additional_time_minutes=total_time_minutes,
+            additional_bookings=1,
+            additional_charge=total_charge,
+            booking_date=booking_date,
+        )
+        if not quota_allowed:
+            return None, quota_error
 
     booking_target, _ = WalletRepository.get_booking_wallet_target(
         booking_user, getattr(equipment, "internal_department", None)

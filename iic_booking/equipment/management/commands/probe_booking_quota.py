@@ -82,6 +82,8 @@ class Command(BaseCommand):
             f"Probe +{minutes} min / +{bookings} booking / +INR {charge} at {timezone.localtime(booking_date)}"
         ))
 
+        from iic_booking.equipment.quota_utils import QuotaService
+
         if booking_quota_should_skip(equipment):
             self.stdout.write(self.style.WARNING(
                 "Quota checks are SKIPPED for this equipment/settings — booking API will not enforce limits."
@@ -90,20 +92,19 @@ class Command(BaseCommand):
                 "Set SKIP_BOOKING_QUOTA_CHECK=0 in .env and ensure equipment.skip_quota_check=False to enforce."
             )
 
+        ok, err = QuotaService.validate_booking_quota(
+            user=user,
+            equipment=equipment,
+            additional_time_minutes=minutes,
+            additional_bookings=bookings,
+            additional_charge=charge,
+            booking_date=booking_date,
+        )
         for quota_type in (QuotaType.WEEKLY, QuotaType.MONTHLY):
-            start, end = QuotaChecker._get_quota_period(quota_type, booking_date)
-            ok, err = QuotaChecker.check_user_quota(
-                user=user,
-                equipment=equipment,
-                quota_type=quota_type,
-                additional_time_minutes=minutes,
-                additional_bookings=bookings,
-                additional_charge=charge,
-                booking_date=booking_date,
-            )
+            start, end = QuotaService._get_quota_period(quota_type, booking_date)
             period = f"{timezone.localtime(start)} → {timezone.localtime(end)}"
-            if ok:
-                self.stdout.write(self.style.SUCCESS(f"{quota_type}: ALLOW  period={period}"))
-            else:
-                self.stdout.write(self.style.ERROR(f"{quota_type}: BLOCK  {err}"))
-                self.stdout.write(f"  period={period}")
+            self.stdout.write(f"{quota_type} period={period}")
+        if ok:
+            self.stdout.write(self.style.SUCCESS("Pipeline: ALLOW"))
+        else:
+            self.stdout.write(self.style.ERROR(f"Pipeline: BLOCK  {err}"))

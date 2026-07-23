@@ -1,8 +1,7 @@
-"""Quota limit tests: period boundaries, group/equipment quotas, skip flags."""
+"""Quota limit tests: Mon–Sun week, Faculty→Individual order, exclusions, urgent bypass."""
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
@@ -25,10 +24,12 @@ from iic_booking.equipment.models import (
 )
 from iic_booking.equipment.quota_utils import (
     QuotaChecker,
+    QuotaService,
     booking_quota_should_skip,
 )
 from iic_booking.users.models import User
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.models.wallet import Wallet, WalletJoinRequest, WalletJoinRequestStatus
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -42,18 +43,26 @@ class QuotaPeriodBoundaryTests(TestCase):
     def test_monthly_period_uses_ist_not_utc(self):
         # 00:30 IST Aug 1 == 19:00 UTC Jul 31
         ref = datetime(2026, 8, 1, 0, 30, tzinfo=IST)
-        start, end = QuotaChecker._get_quota_period(QuotaType.MONTHLY, ref)
+        start, end = QuotaService._get_quota_period(QuotaType.MONTHLY, ref)
         self.assertEqual(start.date().isoformat(), "2026-08-01")
         self.assertEqual(end.date().isoformat(), "2026-08-31")
 
-    def test_weekly_sunday_start_in_ist(self):
-        # Sunday 00:30 IST (2026-08-02) is still Saturday UTC
+    def test_weekly_monday_through_sunday(self):
+        # Sunday 00:30 IST 2026-08-02 → week Mon 2026-07-27 … Sun 2026-08-02
         ref = datetime(2026, 8, 2, 0, 30, tzinfo=IST)
-        start, end = QuotaChecker._get_quota_period(QuotaType.WEEKLY, ref)
-        self.assertEqual(start.date().isoformat(), "2026-08-02")  # Sunday
-        self.assertEqual(end.date().isoformat(), "2026-08-08")  # Saturday
+        start, end = QuotaService._get_quota_period(QuotaType.WEEKLY, ref)
+        self.assertEqual(start.date().isoformat(), "2026-07-27")  # Monday
+        self.assertEqual(end.date().isoformat(), "2026-08-02")  # Sunday
+
+    def test_weekly_wednesday_same_week(self):
+        # Wed 2026-07-29 → same Mon–Sun week
+        ref = datetime(2026, 7, 29, 12, 0, tzinfo=IST)
+        start, end = QuotaService._get_quota_period(QuotaType.WEEKLY, ref)
+        self.assertEqual(start.date().isoformat(), "2026-07-27")
+        self.assertEqual(end.date().isoformat(), "2026-08-02")
 
 
+@override_settings(SKIP_BOOKING_QUOTA_CHECK=False)
 class GroupQuotaLimitTests(TestCase):
     def setUp(self):
         self.group = EquipmentGroup.objects.create(name="Quota Test Group")
@@ -71,6 +80,15 @@ class GroupQuotaLimitTests(TestCase):
             internal_faculty_quota_minutes=240,
             external_individual_quota_minutes=60,
             external_faculty_quota_minutes=120,
+            is_enforced=True,
+        )
+        EquipmentGroupQuota.objects.create(
+            equipment_group=self.group,
+            quota_type=QuotaType.MONTHLY,
+            internal_individual_quota_minutes=300,
+            internal_faculty_quota_minutes=480,
+            external_individual_quota_minutes=120,
+            external_faculty_quota_minutes=240,
             is_enforced=True,
         )
         self.charge_profile = ChargeProfile.objects.create(
@@ -98,9 +116,32 @@ class GroupQuotaLimitTests(TestCase):
             password="x",
             user_type=UserType.EXTERNAL,
         )
+        self.faculty = User.objects.create_user(
+            email="quota.faculty@test.local",
+            password="x",
+            user_type=UserType.FACULTY,
+        )
+        self.faculty_wallet = Wallet.objects.create(user=self.faculty)
+        WalletJoinRequest.objects.create(
+            student=self.student,
+            faculty=self.faculty,
+            wallet=self.faculty_wallet,
+            status=WalletJoinRequestStatus.APPROVED,
+        )
 
-    def _book(self, user, *, minutes, day, user_type):
-        start = _aware(day.year, day.month, day.day, 9, 0)
+    def _book(
+        self,
+        user,
+        *,
+        minutes,
+        day,
+        user_type,
+        status=BookingStatus.BOOKED,
+        source_booking=None,
+        slot_hour=9,
+        create_slot=True,
+    ):
+        start = _aware(day.year, day.month, day.day, slot_hour, 0)
         end = start + timedelta(minutes=minutes)
         booking = Booking.objects.create(
             user=user,
@@ -109,33 +150,184 @@ class GroupQuotaLimitTests(TestCase):
             user_type_snapshot=user_type,
             total_time_minutes=minutes,
             total_charge=Decimal("10.00"),
-            status=BookingStatus.BOOKED,
+            status=status,
             quota_period_anchor_at=start,
+            source_booking=source_booking,
         )
-        DailySlot.objects.create(
-            slot_master=self.slot_master,
-            date=day,
-            start_datetime=start,
-            end_datetime=end,
-            status=SlotStatus.BOOKED,
-            booking=booking,
-        )
+        if create_slot:
+            DailySlot.objects.create(
+                slot_master=self.slot_master,
+                date=day,
+                start_datetime=start,
+                end_datetime=end,
+                status=SlotStatus.BOOKED,
+                booking=booking,
+            )
         return booking
 
     def test_weekly_allows_within_individual_limit(self):
         day = timezone.localdate()
-        # Align to a weekday inside current IST week by using "today"
         self._book(self.student, minutes=60, day=day, user_type=UserType.STUDENT)
-        ok, err = QuotaChecker.check_user_quota(
+        ok, err = QuotaService.validate_booking_quota(
             self.student,
             self.equipment,
-            QuotaType.WEEKLY,
             additional_time_minutes=60,
             booking_date=_aware(day.year, day.month, day.day, 11),
         )
         self.assertTrue(ok, err)
 
     def test_weekly_blocks_when_individual_limit_exceeded(self):
+        day = timezone.localdate()
+        self._book(self.student, minutes=90, day=day, user_type=UserType.STUDENT)
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=60,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertFalse(ok)
+        self.assertIn("individual weekly", (err or "").lower())
+        self.assertIn("quota exceeded", (err or "").lower())
+
+    def test_external_weekly_limit(self):
+        day = timezone.localdate()
+        self._book(self.external, minutes=60, day=day, user_type=UserType.EXTERNAL)
+        ok, err = QuotaService.validate_booking_quota(
+            self.external,
+            self.equipment,
+            additional_time_minutes=30,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertFalse(ok, "60 used + 30 new should exceed external weekly 60")
+        self.assertIn("quota exceeded", (err or "").lower())
+
+    def test_unenforced_group_quota_allows(self):
+        EquipmentGroupQuota.objects.filter(equipment_group=self.group).update(is_enforced=False)
+        day = timezone.localdate()
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=9999,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertTrue(ok, err)
+
+    def test_faculty_stops_after_faculty_checks(self):
+        """Faculty users are not subject to individual quotas."""
+        day = timezone.localdate()
+        # Use most of faculty weekly (240); individual weekly is only 120
+        self._book(self.faculty, minutes=200, day=day, user_type=UserType.FACULTY)
+        ok, err = QuotaService.validate_booking_quota(
+            self.faculty,
+            self.equipment,
+            additional_time_minutes=30,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertTrue(ok, err)
+
+    def test_faculty_monthly_checked_before_weekly(self):
+        day = timezone.localdate()
+        # Exhaust faculty monthly (480) via prior bookings — weekly alone would still allow
+        self._book(self.faculty, minutes=450, day=day, user_type=UserType.FACULTY)
+        ok, err = QuotaService.validate_booking_quota(
+            self.faculty,
+            self.equipment,
+            additional_time_minutes=60,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertFalse(ok)
+        self.assertIn("faculty monthly", (err or "").lower())
+
+    def test_student_counts_toward_faculty_wallet_quota(self):
+        day = timezone.localdate()
+        self._book(self.faculty, minutes=200, day=day, user_type=UserType.FACULTY)
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=50,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        # Faculty weekly 240: 200 + 50 = 250 → fail faculty weekly before individual
+        self.assertFalse(ok)
+        self.assertIn("faculty weekly", (err or "").lower())
+
+    def test_cancelled_bookings_excluded(self):
+        day = timezone.localdate()
+        self._book(
+            self.student,
+            minutes=120,
+            day=day,
+            user_type=UserType.STUDENT,
+            status=BookingStatus.CANCELLED,
+        )
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=120,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertTrue(ok, err)
+
+    def test_refunded_and_disruption_excluded(self):
+        day = timezone.localdate()
+        self._book(
+            self.student,
+            minutes=90,
+            day=day,
+            user_type=UserType.STUDENT,
+            status=BookingStatus.REFUNDED,
+            create_slot=False,
+        )
+        self._book(
+            self.student,
+            minutes=90,
+            day=day,
+            user_type=UserType.STUDENT,
+            status=BookingStatus.DISRUPTION_PENDING,
+            create_slot=False,
+        )
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=120,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertTrue(ok, err)
+
+    def test_repeat_sample_excluded(self):
+        day = timezone.localdate()
+        original = self._book(self.student, minutes=60, day=day, user_type=UserType.STUDENT)
+        self._book(
+            self.student,
+            minutes=60,
+            day=day,
+            user_type=UserType.STUDENT,
+            source_booking=original,
+            create_slot=False,
+        )
+        # Only original 60 counts; +60 stays within individual weekly 120
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=60,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+        )
+        self.assertTrue(ok, err)
+
+    def test_urgent_bypass(self):
+        day = timezone.localdate()
+        self._book(self.student, minutes=120, day=day, user_type=UserType.STUDENT)
+        ok, err = QuotaService.validate_booking_quota(
+            self.student,
+            self.equipment,
+            additional_time_minutes=60,
+            booking_date=_aware(day.year, day.month, day.day, 11),
+            bypass_quota=True,
+        )
+        self.assertTrue(ok, err)
+        self.assertIsNone(err)
+
+    def test_check_user_quota_alias_still_works(self):
         day = timezone.localdate()
         self._book(self.student, minutes=90, day=day, user_type=UserType.STUDENT)
         ok, err = QuotaChecker.check_user_quota(
@@ -148,32 +340,8 @@ class GroupQuotaLimitTests(TestCase):
         self.assertFalse(ok)
         self.assertIn("quota exceeded", (err or "").lower())
 
-    def test_external_weekly_limit(self):
-        day = timezone.localdate()
-        self._book(self.external, minutes=60, day=day, user_type=UserType.EXTERNAL)
-        ok, err = QuotaChecker.check_user_quota(
-            self.external,
-            self.equipment,
-            QuotaType.WEEKLY,
-            additional_time_minutes=30,
-            booking_date=_aware(day.year, day.month, day.day, 11),
-        )
-        self.assertFalse(ok, "60 used + 30 new should exceed external weekly 60")
-        self.assertIn("quota exceeded", (err or "").lower())
 
-    def test_unenforced_group_quota_allows(self):
-        EquipmentGroupQuota.objects.filter(equipment_group=self.group).update(is_enforced=False)
-        day = timezone.localdate()
-        ok, err = QuotaChecker.check_user_quota(
-            self.student,
-            self.equipment,
-            QuotaType.WEEKLY,
-            additional_time_minutes=9999,
-            booking_date=_aware(day.year, day.month, day.day, 11),
-        )
-        self.assertTrue(ok, err)
-
-
+@override_settings(SKIP_BOOKING_QUOTA_CHECK=False)
 class EquipmentLevelQuotaTests(TestCase):
     def setUp(self):
         self.equipment = Equipment.objects.create(
@@ -244,10 +412,9 @@ class EquipmentLevelQuotaTests(TestCase):
     def test_monthly_hours_quota_blocks(self):
         day = timezone.localdate()
         self._book(minutes=60, day=day)
-        ok, err = QuotaChecker.check_user_quota(
+        ok, err = QuotaService.validate_booking_quota(
             self.student,
             self.equipment,
-            QuotaType.MONTHLY,
             additional_time_minutes=1,
             booking_date=_aware(day.year, day.month, day.day, 12),
         )
@@ -257,6 +424,7 @@ class EquipmentLevelQuotaTests(TestCase):
     def test_weekly_bookings_count_quota_blocks(self):
         day = timezone.localdate()
         self._book(minutes=30, day=day)
+        # Only weekly booking-count is configured to block at 1+1; monthly hours allow 30+0
         ok, err = QuotaChecker.check_user_quota(
             self.student,
             self.equipment,

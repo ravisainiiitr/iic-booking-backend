@@ -15,6 +15,15 @@ logger = logging.getLogger(__name__)
 STAFF_ASSIGNEE_TYPES = ("admin", "manager", "operator", "finance")
 
 
+def user_can_manage_tickets(user) -> bool:
+    """True for Django staff or Main Administrator (and other assignee staff types)."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_staff", False):
+        return True
+    ut = (getattr(user, "user_type", None) or "").strip().lower()
+    return ut in STAFF_ASSIGNEE_TYPES or ut == "admin"
+
 def get_equipment_primary_oic(equipment) -> Optional[Any]:
     """Return the first active EquipmentManager (OIC) for the equipment, if any."""
     if not equipment:
