@@ -73,78 +73,14 @@ def _serialize_receipt(r: DepartmentPaymentReceipt) -> dict:
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def sbiepay_initiate(request):
-    """
-    Start SBIePay payment for wallet recharge or booking shortfall.
-    Body: purpose, amount, department_id; optional booking_id for BOOKING_SHORTFALL.
-    """
-    purpose = (request.data.get("purpose") or "").strip().upper()
-    if purpose not in PaymentPurpose.values:
-        return Response({"error": "Invalid purpose."}, status=status.HTTP_400_BAD_REQUEST)
-
-    if purpose == PaymentPurpose.WALLET_RECHARGE:
-        from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
-
-        forbidden = assert_iitr_student_may_recharge(request.user)
-        if forbidden:
-            return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
-
-    try:
-        amount = Decimal(str(request.data.get("amount") or "0")).quantize(Decimal("0.01"))
-    except (InvalidOperation, TypeError):
-        return Response({"error": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
-    if amount <= 0:
-        return Response({"error": "Amount must be positive."}, status=status.HTTP_400_BAD_REQUEST)
-
-    department_id = request.data.get("department_id")
-    if not department_id:
-        return Response({"error": "department_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-    wallet = request.user.get_accessible_wallet()
-    if not wallet:
-        if request.user.can_have_wallet():
-            wallet, _ = WalletRepository.get_or_create(request.user)
-        if not wallet:
-            return Response({"error": "No wallet access."}, status=status.HTTP_403_FORBIDDEN)
-
-    department = resolve_internal_department_for_wallet_recharge(wallet, int(department_id))
-    if not department:
-        return Response({"error": "Invalid department."}, status=status.HTTP_400_BAD_REQUEST)
-
-    booking = None
-    if purpose == PaymentPurpose.BOOKING_SHORTFALL:
-        booking_id = request.data.get("booking_id")
-        if not booking_id:
-            return Response({"error": "booking_id required."}, status=status.HTTP_400_BAD_REQUEST)
-        booking = get_object_or_404(Booking, pk=int(booking_id))
-        if booking.user_id != request.user.id:
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        due = Decimal(str(booking.amount_due or 0))
-        if due <= 0:
-            return Response({"error": "No balance due on this booking."}, status=status.HTTP_400_BAD_REQUEST)
-        if amount != due:
-            return Response(
-                {"error": f"Amount must match balance due (₹{due:.2f})."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-    ref = generate_merchant_order_ref("IICW" if purpose == PaymentPurpose.WALLET_RECHARGE else "IICB")
-    try:
-        payload = build_initiate_payload(amount_inr=amount, merchant_order_ref=ref)
-    except ValueError as e:
-        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    PaymentGatewayTransaction.objects.create(
-        gateway=PaymentGateway.SBIEPAY,
-        merchant_order_ref=ref,
-        amount=amount,
-        purpose=purpose,
-        user=request.user,
-        wallet=wallet,
-        department=department,
-        booking=booking,
-        status=PaymentGatewayStatus.PENDING,
+    """Deprecated: online payments use Razorpay. Returns 410 Gone."""
+    return Response(
+        {
+            "error": "SBIePay initiate is deprecated. Use POST /api/payments/razorpay/create-order/ instead.",
+            "code": "SBIEPAY_DEPRECATED",
+        },
+        status=status.HTTP_410_GONE,
     )
-    return Response(payload, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET", "POST"])

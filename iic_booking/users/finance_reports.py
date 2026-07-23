@@ -330,6 +330,29 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
     except Exception:
         online_payments = Decimal("0.00")
 
+    # Razorpay PaymentOrder totals (base amounts settled) + pending settlements UTRs
+    razorpay_online = Decimal("0.00")
+    razorpay_pending_settlements = Decimal("0.00")
+    try:
+        from iic_booking.payments.models import PaymentOrder, PaymentOrderStatus, PaymentSettlement
+
+        razorpay_online = _dec(
+            PaymentOrder.objects.filter(
+                department_id=department_id,
+                status=PaymentOrderStatus.PAID,
+                created_at__date__gte=date_from,
+                created_at__date__lte=date_to,
+            ).aggregate(total=Sum("base_amount"))["total"]
+        )
+        online_payments = online_payments + razorpay_online
+        razorpay_pending_settlements = _dec(
+            PaymentSettlement.objects.filter(bank_utr="")
+            .filter(settled_on__gte=date_from, settled_on__lte=date_to)
+            .aggregate(total=Sum("amount"))["total"]
+        )
+    except Exception:
+        pass
+
     revenue_by_department = _sorted_revenue_rows(dept_bucket)
     revenue_by_org_category = _sorted_revenue_rows(org_bucket)
     total_revenue_f = _f(total_revenue)
@@ -421,6 +444,8 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
                 "project_grant": _f(project_grant),
                 "direct_cash_deposit": _f(direct_cash_deposit),
                 "online_payments": _f(online_payments),
+                "razorpay_online": _f(razorpay_online),
+                "razorpay_pending_settlements": _f(razorpay_pending_settlements),
             },
         },
     }

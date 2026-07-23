@@ -102,6 +102,7 @@ LOCAL_APPS = [
     "iic_booking.equipment",
     "iic_booking.support",
     "iic_booking.cms",
+    "iic_booking.payments",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -601,8 +602,9 @@ CHANNEL_LAYERS = {
 
 RAZORPAY_KEY_ID = env("RAZORPAY_KEY_ID", default="")
 RAZORPAY_KEY_SECRET = env("RAZORPAY_KEY_SECRET", default="")
+RAZORPAY_WEBHOOK_SECRET = env("RAZORPAY_WEBHOOK_SECRET", default="")
 
-# SBIePay (replaces Razorpay for online payments)
+# SBIePay (legacy — new online payments use Razorpay)
 SBIEPAY_MERCHANT_ID = env("SBIEPAY_MERCHANT_ID", default="")
 SBIEPAY_ENCRYPTION_KEY = env("SBIEPAY_ENCRYPTION_KEY", default="")
 SBIEPAY_GATEWAY_URL = env(

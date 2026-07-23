@@ -12,6 +12,7 @@ from .department import Department, DepartmentType
 
 class PaymentGateway(models.TextChoices):
     SBIEPAY = "SBIEPAY", _("SBIePay")
+    RAZORPAY = "RAZORPAY", _("Razorpay")
 
 
 class PaymentPurpose(models.TextChoices):

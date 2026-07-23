@@ -123,6 +123,7 @@ from iic_booking.users.api.payment_views import (
     finance_payment_receipts_list,
     finance_payment_receipt_process,
 )
+from iic_booking.payments.views import admin_fee_settings
 from iic_booking.users.api.finance_reports_views import finance_report_dashboard
 from iic_booking.users.api.sric_api_views import (
     sric_transfer_requests_list,
@@ -527,11 +528,19 @@ urlpatterns = router.urls + [
     path("wallet/withdrawal-requests/", get_my_withdrawal_requests, name="wallet-withdrawal-requests"),
     path("wallet/withdrawal-requests/<int:request_id>/cancel/", cancel_wallet_withdrawal_request, name="wallet-withdrawal-request-cancel"),
 
-    # Razorpay payment endpoints (legacy — prefer SBIePay)
+    # Legacy wallet Razorpay endpoints (prefer /api/payments/razorpay/)
     path("wallet/razorpay/create-order/", create_razorpay_order, name="wallet-razorpay-create-order"),
     path("wallet/razorpay/verify-payment/", verify_razorpay_payment, name="wallet-razorpay-verify-payment"),
 
-    # SBIePay payment gateway
+    # Razorpay payment module (booking shortfall + wallet recharge)
+    path("payments/", include("iic_booking.payments.urls")),
+    path(
+        "admin/payments/fee-settings/",
+        admin_fee_settings,
+        name="admin-payments-fee-settings",
+    ),
+
+    # SBIePay payment gateway (initiate deprecated — use Razorpay)
     path("payments/sbiepay/initiate/", sbiepay_initiate, name="sbiepay-initiate"),
     path("payments/sbiepay/success/", sbiepay_return_success, name="sbiepay-success"),
     path("payments/sbiepay/failure/", sbiepay_return_failure, name="sbiepay-failure"),

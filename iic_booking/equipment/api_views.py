@@ -9325,7 +9325,7 @@ def refund_booking(request, booking_id):
     serializer = BookingSerializer(booking)
     return Response(
         {
-            "message": f"Booking refunded successfully. ₹{booking.total_charge} credited to wallet.",
+            "message": f"Booking refunded successfully. ₹{booking.total_charge} credited / refunded.",
             "booking": serializer.data,
             "refund_amount": str(booking.total_charge),
             "wallet_balance": str(refund_target.balance),
@@ -9457,6 +9457,9 @@ def refund_booking_internal(booking, refund_notes, performed_by):
     Refund a booking (free slots, credit wallet, set REFUNDED, create event, send notifications).
     Used by refund_booking API and by admin slot status change when marking booked slots as Blocked/Maintenance/Operator absent.
     Raises Exception on failure.
+
+    If the booking balance was paid via Razorpay, refunds the gateway capture and credits only the
+    wallet-applied portion (avoids double-paying the shortfall).
     """
     if booking.status == BookingStatus.REFUNDED:
         raise ValueError("Booking has already been refunded.")
@@ -9476,22 +9479,55 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         booking.save(update_fields=["notes"])
 
     released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
+
+    razorpay_payment = None
+    wallet_credit = Decimal(str(booking.total_charge or 0))
+    try:
+        from iic_booking.payments.razorpay_service import get_successful_booking_payment, create_refund
+
+        razorpay_payment = get_successful_booking_payment(booking)
+        if razorpay_payment:
+            # Gateway portion returns via Razorpay; wallet portion only to sub-wallet
+            wallet_credit = Decimal(str(getattr(booking, "wallet_amount_applied", 0) or 0))
+    except Exception:
+        razorpay_payment = None
+
     with transaction.atomic():
         previous_status = booking.status
         booking.daily_slots.update(
             booking=None,
             status=released_slot_status_after_booking_freed(booking.equipment),
         )
-        refund_description = f"Refund for Booking #{booking.booking_id} - {booking.equipment.code}"
-        if refund_notes:
-            refund_description += f" - {refund_notes}"
-        refund_description += _student_booking_description_suffix(refund_target, booking.user)
-        refund_description += f" | Ref: {booking_display_id_for_email(booking)}"
-        refund_transaction = refund_target.credit(
-            amount=booking.total_charge,
-            description=refund_description,
-            related_user=booking.user,
-        )
+
+        if razorpay_payment:
+            try:
+                create_refund(
+                    razorpay_payment,
+                    amount=None,
+                    reason=refund_notes or f"Booking #{booking.booking_id} refund",
+                    initiated_by=performed_by,
+                )
+            except Exception as e:
+                logger.error(
+                    "Razorpay refund failed for booking %s: %s",
+                    booking.booking_id,
+                    e,
+                    exc_info=True,
+                )
+                raise ValueError(f"Razorpay refund failed: {e}") from e
+
+        refund_transaction = None
+        if wallet_credit > 0:
+            refund_description = f"Refund for Booking #{booking.booking_id} - {booking.equipment.code}"
+            if refund_notes:
+                refund_description += f" - {refund_notes}"
+            refund_description += _student_booking_description_suffix(refund_target, booking.user)
+            refund_description += f" | Ref: {booking_display_id_for_email(booking)}"
+            refund_transaction = refund_target.credit(
+                amount=wallet_credit,
+                description=refund_description,
+                related_user=booking.user,
+            )
         booking.status = BookingStatus.REFUNDED
         booking.save(update_fields=["status"])
 
