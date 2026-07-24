@@ -2047,6 +2047,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'field_key': f.field_key,
             'field_label': f.field_label,
             'field_type': f.field_type or '',
+            'is_required': bool(getattr(f, 'is_required', False)),
             'editing_required': getattr(f, 'editing_required', False),
             'help_text': (f.help_text or '').strip() or None,
             'source_element_field_key': (f.source_element_field_key or '').strip() or None,
