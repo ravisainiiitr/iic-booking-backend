@@ -4463,6 +4463,13 @@ def list_bookings(request):
             user_type_snapshot__in=list(UserType.get_external_user_codes()),
             status__in=[BookingStatus.BOOKED, BookingStatus.COMPLETED],
         )
+    elif request.user.user_type == UserType.DEPT_ADMIN:
+        # Department Administrator: bookings on equipment in their assigned department only.
+        dept_id = getattr(request.user, "department_id", None)
+        if not dept_id:
+            queryset = queryset.none()
+        else:
+            queryset = queryset.filter(equipment__internal_department_id=dept_id)
     elif not is_operator_or_manager:
         # Regular users see their own bookings.
         # Wallet owners (Faculty/Supervisor) also see bookings made by internal students who use their wallet.
@@ -4751,7 +4758,13 @@ def booking_stats(request):
     queryset = exclude_test_bookings(Booking.objects.all())
     is_operator_or_manager = check_operator_permission(request.user)
 
-    if not is_operator_or_manager:
+    if request.user.user_type == UserType.DEPT_ADMIN:
+        dept_id = getattr(request.user, "department_id", None)
+        if not dept_id:
+            queryset = queryset.none()
+        else:
+            queryset = queryset.filter(equipment__internal_department_id=dept_id)
+    elif not is_operator_or_manager:
         from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
 
         student_ids_using_my_wallet = list(
@@ -4820,7 +4833,7 @@ def dashboard_summary(request):
 
     from iic_booking.users.test_accounts import exclude_test_bookings
 
-    # Reuse list_bookings scope: own user, Accounts In Charge external list, or operator/manager scope
+    # Reuse list_bookings scope: own user, Accounts In Charge external list, or operator/manager/dept-admin scope
     is_operator_or_manager = check_operator_permission(request.user)
     base_qs = exclude_test_bookings(Booking.objects.all())
     if _user_is_accounts_finance_user(request.user):
@@ -4828,6 +4841,12 @@ def dashboard_summary(request):
             user_type_snapshot__in=list(UserType.get_external_user_codes()),
             status__in=[BookingStatus.BOOKED, BookingStatus.COMPLETED],
         )
+    elif request.user.user_type == UserType.DEPT_ADMIN:
+        dept_id = getattr(request.user, "department_id", None)
+        if not dept_id:
+            base_qs = base_qs.none()
+        else:
+            base_qs = base_qs.filter(equipment__internal_department_id=dept_id)
     elif not is_operator_or_manager:
         base_qs = base_qs.filter(user=request.user)
     else:
@@ -8296,12 +8315,22 @@ def _get_equipment_ids_for_log_access(user):
     """
     For list_booking_attempt_logs: admin sees all; officer in charge (manager) sees only
     equipments for which they are marked as manager or temporary OIC (until resume_at).
+    Department Administrator: equipment in their assigned internal department.
     Returns None for no filter (admin), else list of equipment_id.
     """
     if user.user_type == UserType.ADMIN:
         return None
     if user.user_type == UserType.MANAGER:
         return get_equipment_ids_managed_by_oic(user.id)
+    if user.user_type == UserType.DEPT_ADMIN:
+        dept_id = getattr(user, "department_id", None)
+        if not dept_id:
+            return []
+        return list(
+            Equipment.objects.filter(internal_department_id=dept_id).values_list(
+                "equipment_id", flat=True
+            )
+        )
     from .models import EquipmentOperator
     if user.user_type == UserType.OPERATOR:
         base_ids = set(EquipmentOperator.objects.filter(operator=user).values_list("equipment_id", flat=True))
@@ -9700,6 +9729,8 @@ def extend_booking_operator_absent_hold(request, booking_id):
 
     Body:
       { "hold_until": "<ISO datetime>" }  — required; must be after last slot end
+      { "reason_code": "<code>" }         — required when extending (not when clear=true)
+      { "reason_detail": "<text>" }       — required when reason_code is "other"
       { "clear": true }                   — optional; clears any existing hold
     """
     if request.user.user_type not in (UserType.ADMIN, UserType.MANAGER):
@@ -9753,6 +9784,29 @@ def extend_booking_operator_absent_hold(request, booking_id):
             status=status.HTTP_200_OK,
         )
 
+    HOLD_REASON_LABELS = {
+        "operator_medical_emergency": "Operator medical emergency",
+        "minor_equipment_issue": "Minor Equipment Issue",
+        "other": "Other",
+    }
+    reason_code = str((request.data or {}).get("reason_code") or "").strip().lower()
+    reason_detail = str((request.data or {}).get("reason_detail") or "").strip()
+    if reason_code not in HOLD_REASON_LABELS:
+        return Response(
+            {
+                "error": "reason_code is required. Choose operator_medical_emergency, "
+                "minor_equipment_issue, or other."
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if reason_code == "other" and not reason_detail:
+        return Response(
+            {"error": "Please specify the reason when Other is selected."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    reason_label = HOLD_REASON_LABELS[reason_code]
+    reason_display = f"{reason_label}: {reason_detail}" if reason_code == "other" else reason_label
+
     hold_raw = (request.data.get("hold_until") if request.data else None) or None
     if not hold_raw:
         return Response(
@@ -9789,22 +9843,30 @@ def extend_booking_operator_absent_hold(request, booking_id):
 
     from iic_booking.equipment.booking_events import create_booking_event
 
+    hold_local = timezone.localtime(hold_until).strftime("%Y-%m-%d %H:%M")
+    comment = (
+        f"Operator-absent grace extended until {hold_local} (no slot change). "
+        f"Reason: {reason_display}."
+    )
     create_booking_event(
         booking,
         BookingEventType.COMMENT,
         created_by=request.user,
-        comment=f"Extended operator-absent hold until {timezone.localtime(hold_until).strftime('%Y-%m-%d %H:%M')}.",
+        comment=comment,
         metadata={
             "operator_absent_hold_until": hold_until.isoformat(),
             "previous_hold_until": previous.isoformat() if previous else None,
+            "reason_code": reason_code,
+            "reason_detail": reason_detail or None,
+            "reason_display": reason_display,
         },
-        send_notification=False,
+        send_notification=True,
     )
 
     serializer = BookingSerializer(booking)
     return Response(
         {
-            "message": "Operator-absent hold extended. Slots were not changed.",
+            "message": "Operator-absent hold extended. The user has been notified. Slots were not changed.",
             "booking": serializer.data,
         },
         status=status.HTTP_200_OK,
@@ -11830,7 +11892,8 @@ def set_booking_sample_status(request, booking_id):
     if status_value == SampleTraceStatus.SAMPLE_ACCEPTED and in_analysis_folder_spec:
         payload["in_analysis_folder_path"] = in_analysis_folder_spec["suggested_full_path"]
         payload["in_analysis_folder_opened"] = False
-        payload["create_on_client"] = True
+        # Folder creation is handled by the department sync agent — do not prompt local PC creation.
+        payload["create_on_client"] = False
         payload["results_base_location"] = in_analysis_folder_spec["results_base_location"]
         payload["results_folder_segments"] = in_analysis_folder_spec["segments"]
         payload["results_folder_relative_path"] = in_analysis_folder_spec["relative_path"]

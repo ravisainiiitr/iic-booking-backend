@@ -694,13 +694,37 @@ def admin_api_router():
 
         def get_queryset(self):
             qs = super().get_queryset()
+            for_booking = str(self.request.query_params.get("for_booking", "")).lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            # Book-on-behalf picker: never offer Admin / OIC / Lab Incharge / Other.
+            book_for_excluded = {
+                UserType.ADMIN,
+                UserType.MANAGER,
+                UserType.OPERATOR,
+                UserType.OTHER,
+            }
+            if for_booking:
+                qs = qs.exclude(user_type__in=book_for_excluded)
+                # Default to currently active accounts unless caller overrides is_active.
+                if self.request.query_params.get("is_active") is None:
+                    qs = qs.filter(is_active=True)
+
             if is_organization_admin(self.request.user):
                 qs = qs.filter(department_id=self.request.user.department_id).exclude(
                     user_type__in=[UserType.ADMIN, UserType.DEPT_ADMIN, UserType.EXTERNAL_RELATIONS]
                 )
             else:
                 scope_department_id = _request_user_scope_id(self.request)
-                if scope_department_id is not None:
+                # Department Administrator book-for-user: all active end users institute-wide
+                # (equipment remains department-scoped at calculate/book time).
+                skip_dept_scope = (
+                    for_booking
+                    and getattr(self.request.user, "user_type", None) == UserType.DEPT_ADMIN
+                )
+                if scope_department_id is not None and not skip_dept_scope:
                     qs = qs.filter(department_id=scope_department_id)
             if self.action != "list":
                 return qs
@@ -733,7 +757,10 @@ def admin_api_router():
                 by_lower = {str(code).lower(): code for code, _label in UserType.get_choices()}
                 canonical = by_lower.get(user_type.lower())
                 if canonical:
-                    qs = qs.filter(user_type=canonical)
+                    if for_booking and canonical in book_for_excluded:
+                        qs = qs.none()
+                    else:
+                        qs = qs.filter(user_type=canonical)
             user_type_alias = self.request.query_params.get("user_type_alias", "").strip()
             if user_type_alias:
                 qs = qs.filter(user_type_alias=user_type_alias)
