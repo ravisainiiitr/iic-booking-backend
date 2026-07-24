@@ -487,27 +487,30 @@ def _get_charge_profile_pricing_profile_for_user(user, equipment) -> str:
     ).exists()
     return ChargeProfilePricingProfile.DISCOUNTED if overridden else ChargeProfilePricingProfile.STANDARD
 
-# Default calendar colors (used when DB has no rows) – pronounced for clear weekly view
+# Soft Navy Ocean calendar colours – professional, accessible, not oversaturated
 DEFAULT_CALENDAR_COLORS = {
     "slot_colors": {
-        "AVAILABLE": "#22c55e",      # Strong green
-        "BOOKED": "#ef4444",         # Strong red (internal bookers)
-        "BOOKED_INTERNAL": "#ef4444",
-        "BOOKED_EXTERNAL": "#0284c7",  # Sky blue for external bookers
-        "HOLD": "#f59e0b",           # Amber for hold (pending approval)
-        "BLOCKED": "#64748b",       # Slate gray
-        "UNDER_MAINTENANCE": "#f97316",  # Orange
-        "OPERATOR_ABSENT": "#eab308",     # Amber
-        "BOOKING_NOT_UTILIZED": "#a855f7",  # Purple
-        "RESERVED_FOR_EXTERNAL": "#94a3b8",  # Slate for "Reserved for External User" (internal view)
-        "HOME_DEPARTMENT_ONLY": "#c4b5fd",  # Violet — home dept only (unmarked while policy active)
-        "NON_HOME_RESERVED": "#06b6d4",  # Cyan — reserved for other departments
-        "NOT_AVAILABLE": "#e2e8f0",  # Light slate for "Not Available" (external view)
-        "COMPLETED": "#059669",  # Emerald for completed bookings (distinct from BOOKED red)
+        "AVAILABLE": "#86efac",           # Soft green
+        "BOOKED": "#60a5fa",              # Soft royal blue
+        "BOOKED_INTERNAL": "#3b82f6",     # Medium blue (internal)
+        "BOOKED_EXTERNAL": "#2dd4bf",     # Soft teal (external)
+        "HOLD": "#fdba74",                # Soft orange (running / pending)
+        "BLOCKED": "#64748b",             # Dark grey
+        "UNDER_MAINTENANCE": "#fbbf24",   # Amber
+        "OPERATOR_ABSENT": "#94a3b8",     # Slate grey (visit / absent)
+        "BOOKING_NOT_UTILIZED": "#c4b5fd",  # Soft violet
+        "RESERVED_FOR_EXTERNAL": "#94a3b8",
+        "HOME_DEPARTMENT_ONLY": "#c4b5fd",
+        "NON_HOME_RESERVED": "#67e8f9",
+        "NOT_AVAILABLE": "#e5e7eb",       # Light grey
+        "COMPLETED": "#6ee7b7",           # Soft emerald
+        "CANCELLED": "#fca5a5",           # Muted red
+        "REFUNDED": "#fca5a5",
+        "ABSENT": "#94a3b8",
     },
-    "holiday_default": "#f59e0b",   # Amber for holidays
-    "saturday_color": "#c7d2fe",     # Indigo-200 for Saturday
-    "sunday_color": "#fbcfe8",       # Pink-200 for Sunday
+    "holiday_default": "#e9d5ff",         # Light lavender
+    "saturday_color": "#e2e8f0",          # Soft slate
+    "sunday_color": "#e9d5ff",            # Soft lavender
 }
 
 
@@ -531,11 +534,14 @@ def get_calendar_colors():
                 "HOME_DEPARTMENT_ONLY",
                 "NON_HOME_RESERVED",
                 "NOT_AVAILABLE",
+                "CANCELLED",
+                "REFUNDED",
+                "ABSENT",
             }
             slot_colors = dict(DEFAULT_CALENDAR_COLORS["slot_colors"])
             holiday_default = DEFAULT_CALENDAR_COLORS["holiday_default"]
-            saturday_color = DEFAULT_CALENDAR_COLORS.get("saturday_color", "#c7d2fe")
-            sunday_color = DEFAULT_CALENDAR_COLORS.get("sunday_color", "#fbcfe8")
+            saturday_color = DEFAULT_CALENDAR_COLORS.get("saturday_color", "#e2e8f0")
+            sunday_color = DEFAULT_CALENDAR_COLORS.get("sunday_color", "#e9d5ff")
             for key, value in rows:
                 if key in slot_keys and value:
                     slot_colors[key] = value.strip()
@@ -2433,7 +2439,15 @@ def equipment_daily_slots(request, pk):
         slot_master__equipment=equipment,
         date__gte=week_start,
         date__lte=week_end
-    ).select_related('slot_master', 'slot_master__equipment', 'booking', 'booking__user', 'booking__user__department').order_by('date', 'start_datetime')
+    ).select_related(
+        'slot_master',
+        'slot_master__equipment',
+        'booking',
+        'booking__user',
+        'booking__user__department',
+    ).order_by('date', 'start_datetime')
+    if is_admin:
+        daily_slots = daily_slots.prefetch_related('booking__sample_trace_events')
 
     # External booking weekly grid: include *all* DailySlot rows in range; DailySlotSerializer maps display/bookability.
     # Internal users: include *all* DailySlot rows in range as well. Historically, AVAILABLE Sat/Sun/holiday slots were

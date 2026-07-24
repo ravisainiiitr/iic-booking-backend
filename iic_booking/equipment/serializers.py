@@ -205,11 +205,14 @@ def build_booking_lifecycle_countdown(booking):
         )
 
     # Phase 1: before Sample Accepted — submit sample countdown
+    from iic_booking.equipment.sample_submission_deadline_reminders import (
+        compute_sample_submission_deadline,
+    )
+
+    deadline = compute_sample_submission_deadline(booking)
+    if deadline is None:
+        return None
     lead_hours = int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
-    if atmosphere or lead_hours <= 0:
-        deadline = start_dt
-    else:
-        deadline = start_dt - timedelta(hours=lead_hours)
     created_at = getattr(booking, "created_at", None) or now
     return _payload(
         phase="submit_sample",
@@ -779,6 +782,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
     booking_user_phone = serializers.SerializerMethodField()
     booking_user_type = serializers.SerializerMethodField()
     booking_is_external = serializers.SerializerMethodField()
+    booking_sample_status_display = serializers.SerializerMethodField()
     available_for_external = serializers.SerializerMethodField()
     # Wall-clock open time (HH:mm:ss) from SlotMaster — aligns weekly grid rows with slot_master_times (start_datetime is TZ-aware ISO).
     slot_open_time = serializers.SerializerMethodField()
@@ -812,6 +816,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'booking_user_phone',
             'booking_user_type',
             'booking_is_external',
+            'booking_sample_status_display',
             'available_for_external',
             'created_at',
             'updated_at'
@@ -1022,6 +1027,29 @@ class DailySlotSerializer(serializers.ModelSerializer):
         if not code:
             return False
         return UserType.is_external_user(code)
+
+    def get_booking_sample_status_display(self, obj):
+        """Latest sample-trace status label for staff weekly calendars / tooltips."""
+        if not self.context.get("include_booking_user_contact"):
+            return None
+        booking = getattr(obj, "booking", None)
+        if not booking:
+            return None
+        events = getattr(booking, "_prefetched_objects_cache", {}).get("sample_trace_events")
+        if events is None:
+            qs = getattr(booking, "sample_trace_events", None)
+            if qs is None:
+                return None
+            last = qs.order_by("-created_at").first()
+        else:
+            last = max(events, key=lambda e: e.created_at) if events else None
+        if not last:
+            return None
+        display = getattr(last, "get_status_display", None)
+        if callable(display):
+            return display()
+        status = getattr(last, "status", None)
+        return str(status).replace("_", " ").title() if status else None
 
 
 class EquipmentListSerializer(serializers.ModelSerializer):

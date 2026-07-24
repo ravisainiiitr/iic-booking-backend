@@ -497,6 +497,8 @@ class Equipment(models.Model):
         verbose_name=_('Sample submission lead time (hours before slot start)'),
         help_text=_(
             'Users must submit samples this many hours before the booked slot starts. '
+            'If that deadline falls on a weekend or institute public holiday, it is moved '
+            'to the previous working day (same clock time). '
             'Atmosphere-sensitive bookings may submit up to slot start instead. Set to 0 to use slot start as the deadline.'
         ),
     )

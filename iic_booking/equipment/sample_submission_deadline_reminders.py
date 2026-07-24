@@ -30,6 +30,11 @@ def compute_sample_submission_deadline(booking: "Booking") -> Optional[datetime]
     Deadline by which the user should submit the sample:
       slot_start − sample_submission_lead_hours
     or slot_start when atmosphere-sensitive / lead hours is 0.
+
+    If that instant falls on a Saturday, Sunday, or institute public holiday,
+    the deadline is moved to the same clock time on the previous working day
+    (walking back across consecutive non-working days).
+
     Returns None if slots or equipment are missing.
     """
     from .serializers import _booking_slot_bounds
@@ -43,8 +48,32 @@ def compute_sample_submission_deadline(booking: "Booking") -> Optional[datetime]
     atmosphere = bool(getattr(booking, "atmosphere_sensitive_sample", False))
     lead_hours = int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
     if atmosphere or lead_hours <= 0:
-        return start_dt
-    return start_dt - timedelta(hours=lead_hours)
+        deadline = start_dt
+    else:
+        deadline = start_dt - timedelta(hours=lead_hours)
+    return adjust_datetime_to_previous_working_day(deadline)
+
+
+def adjust_datetime_to_previous_working_day(dt: datetime, *, max_days: int = 31) -> datetime:
+    """
+    If ``dt``'s calendar date is a weekend or institute holiday, move to the
+    previous working day while preserving local clock time and timezone.
+    """
+    from .models import Holiday
+
+    if timezone.is_naive(dt):
+        dt = timezone.make_aware(dt)
+    local_dt = timezone.localtime(dt)
+    d = local_dt.date()
+    for _ in range(max(1, int(max_days))):
+        is_non_working, _reason = Holiday.is_holiday(d)
+        if not is_non_working:
+            break
+        d = d - timedelta(days=1)
+    if d == local_dt.date():
+        return dt
+    adjusted_local = local_dt.replace(year=d.year, month=d.month, day=d.day)
+    return adjusted_local
 
 
 def sample_submission_already_accepted(booking: "Booking") -> bool:
