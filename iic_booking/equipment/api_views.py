@@ -493,20 +493,20 @@ DEFAULT_CALENDAR_COLORS = {
         "AVAILABLE": "#86efac",           # Soft green
         "BOOKED": "#60a5fa",              # Soft royal blue
         "BOOKED_INTERNAL": "#3b82f6",     # Medium blue (internal)
-        "BOOKED_EXTERNAL": "#2dd4bf",     # Soft teal (external)
+        "BOOKED_EXTERNAL": "#ea580c",     # Clear orange (distinct from internal blue)
         "HOLD": "#fdba74",                # Soft orange (running / pending)
-        "BLOCKED": "#64748b",             # Dark grey
-        "UNDER_MAINTENANCE": "#fbbf24",   # Amber
-        "OPERATOR_ABSENT": "#94a3b8",     # Slate grey (visit / absent)
+        "BLOCKED": "#9ca3af",             # Default grey
+        "UNDER_MAINTENANCE": "#9ca3af",   # Default grey
+        "OPERATOR_ABSENT": "#9ca3af",     # Default grey
         "BOOKING_NOT_UTILIZED": "#c4b5fd",  # Soft violet
         "RESERVED_FOR_EXTERNAL": "#94a3b8",
         "HOME_DEPARTMENT_ONLY": "#c4b5fd",
         "NON_HOME_RESERVED": "#67e8f9",
         "NOT_AVAILABLE": "#e5e7eb",       # Light grey
-        "COMPLETED": "#6ee7b7",           # Soft emerald
+        "COMPLETED": "#34d399",           # Soft emerald (completed bookings)
         "CANCELLED": "#fca5a5",           # Muted red
         "REFUNDED": "#fca5a5",
-        "ABSENT": "#94a3b8",
+        "ABSENT": "#9ca3af",
     },
     "holiday_default": "#e9d5ff",         # Light lavender
     "saturday_color": "#e2e8f0",          # Soft slate
