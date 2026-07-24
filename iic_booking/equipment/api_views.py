@@ -221,6 +221,29 @@ def _is_admin_panel_user(user) -> bool:
     return any(str(c).strip().lower() == u_norm for c in codes)
 
 
+def _actor_may_book_on_behalf(actor, equipment) -> str | None:
+    """
+    Allow booking/calculating for another user.
+    Main Admin / OIC: any equipment.
+    Department Administrator: only equipment in their assigned internal department.
+    Returns an error message string if not allowed, else None.
+    """
+    if not actor or not getattr(actor, "is_authenticated", False):
+        return "Authentication required."
+    ut = str(getattr(actor, "user_type", None) or "").strip().lower()
+    if ut in (UserType.ADMIN, UserType.MANAGER):
+        return None
+    if ut == UserType.DEPT_ADMIN:
+        dept_id = getattr(actor, "department_id", None)
+        if not dept_id:
+            return "Your account has no department assigned."
+        eq_dept = getattr(equipment, "internal_department_id", None)
+        if eq_dept != dept_id:
+            return "You can only book on behalf of users for equipment in your assigned department."
+        return None
+    return "You don't have permission to book on behalf of another user."
+
+
 # User-facing message when slot(s) were taken by another user (concurrent booking)
 SLOTS_ALREADY_OCCUPIED_MESSAGE = (
     "The selected slot(s) have already been booked by another user. Please choose a different slot."
@@ -1833,7 +1856,14 @@ def equipment_calculate(request, pk):
 
     user_id_param = request.query_params.get("user_id")
     actor_type = str(request.user.user_type or "").lower() if user_is_authenticated else ""
-    if user_id_param and user_is_authenticated and actor_type in (UserType.ADMIN, UserType.MANAGER):
+    if user_id_param and user_is_authenticated and actor_type in (
+        UserType.ADMIN,
+        UserType.MANAGER,
+        UserType.DEPT_ADMIN,
+    ):
+        behalf_err = _actor_may_book_on_behalf(request.user, equipment)
+        if behalf_err:
+            return Response({"error": behalf_err}, status=status.HTTP_403_FORBIDDEN)
         from iic_booking.users.models import User
         try:
             target_user = User.objects.get(pk=int(user_id_param))
@@ -2613,11 +2643,24 @@ def _book_equipment_impl(request, pk):
     # Multi-mode: reject booking when this mode is not active for the requested slot date(s).
     # (Detailed per-slot checks run after slots are resolved below.)
     
-    # Booking user: admin/OIC may pass user_id to book on behalf of another user
+    # Booking user: admin / OIC / Department Administrator may pass user_id to book on behalf
     booking_user = request.user
     user_id_body = request.data.get("user_id")
     actor_type = str(request.user.user_type or "").lower()
-    if user_id_body is not None and actor_type in (UserType.ADMIN, UserType.MANAGER):
+    if user_id_body is not None and actor_type in (
+        UserType.ADMIN,
+        UserType.MANAGER,
+        UserType.DEPT_ADMIN,
+    ):
+        behalf_err = _actor_may_book_on_behalf(request.user, equipment)
+        if behalf_err:
+            _create_booking_attempt_log(
+                request, equipment, BookingAttemptOutcome.FAILED,
+                failure_reason=behalf_err,
+                number_of_samples=request.data.get("number_of_samples") or 1,
+                additional_info=_get_additional_info_from_request(request, equipment),
+            )
+            return Response({"error": behalf_err}, status=status.HTTP_403_FORBIDDEN)
         from iic_booking.users.models import User
         try:
             booking_user = User.objects.get(pk=int(user_id_body))
