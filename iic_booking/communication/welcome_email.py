@@ -11,20 +11,24 @@ from dataclasses import dataclass
 from django.conf import settings
 from django.utils.html import escape
 
+from iic_booking.communication.email_branding import (
+    COLOR_ACCENT as _COLOR_ACCENT,
+    COLOR_BG as _COLOR_BG,
+    COLOR_BORDER as _COLOR_BORDER,
+    COLOR_CARD as _COLOR_CARD,
+    COLOR_HERO_GRADIENT as _COLOR_HERO_GRADIENT,
+    COLOR_MUTED as _COLOR_MUTED,
+    COLOR_PRIMARY as _COLOR_PRIMARY,
+    COLOR_PRIMARY_DARK as _COLOR_PRIMARY_DARK,
+    COLOR_SOFT_PANEL_BG as _COLOR_SOFT_PANEL_BG,
+    COLOR_SOFT_PANEL_BORDER as _COLOR_SOFT_PANEL_BORDER,
+    COLOR_SURFACE as _COLOR_SURFACE,
+    COLOR_TEXT as _COLOR_TEXT,
+)
+
 
 PRODUCT_NAME = "Institute Equipment Booking Portal"
 PRODUCT_SHORT = "Equipment Booking Portal"
-
-# Teal corporate palette aligned with the portal UI / IIT Roorkee institutional tone
-_COLOR_BG = "#f0f4f8"
-_COLOR_SURFACE = "#ffffff"
-_COLOR_PRIMARY = "#0f766e"
-_COLOR_PRIMARY_DARK = "#115e59"
-_COLOR_ACCENT = "#d97706"
-_COLOR_TEXT = "#0f172a"
-_COLOR_MUTED = "#64748b"
-_COLOR_BORDER = "#e2e8f0"
-_COLOR_CARD = "#f8fafc"
 
 
 @dataclass(frozen=True)
@@ -276,7 +280,7 @@ def build_welcome_email(
 
           <!-- Hero -->
           <tr>
-            <td bgcolor="{_COLOR_PRIMARY}" class="hero-pad" style="background-color:{_COLOR_PRIMARY};background-image:linear-gradient(135deg,#0f766e 0%,#0e7490 55%,#155e75 100%);padding:36px 28px 32px 28px;border-radius:18px 18px 0 0;">
+            <td bgcolor="{_COLOR_PRIMARY}" class="hero-pad" style="background-color:{_COLOR_PRIMARY};background-image:{_COLOR_HERO_GRADIENT};padding:36px 28px 32px 28px;border-radius:18px 18px 0 0;">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                 <tr>
                   <td style="font-family:Arial,Helvetica,sans-serif;">
@@ -289,7 +293,7 @@ def build_welcome_email(
                     <div style="font-size:15px;line-height:1.5;color:rgba(255,255,255,0.92);margin-top:10px;max-width:480px;">
                       You are joining a modern research facility platform built to make instrument booking at IIT Roorkee simpler, clearer, and more reliable.
                     </div>
-                    <div style="margin-top:16px;font-size:12px;font-weight:600;color:#fde68a;">
+                    <div style="margin-top:16px;font-size:12px;font-weight:600;color:#bfdbfe;">
                       {meta_html}
                     </div>
                   </td>
@@ -318,7 +322,7 @@ def build_welcome_email(
           <!-- Dashboard hub callout -->
           <tr>
             <td bgcolor="{_COLOR_SURFACE}" style="background-color:{_COLOR_SURFACE};padding:8px 28px 6px 28px;border-left:1px solid {_COLOR_BORDER};border-right:1px solid {_COLOR_BORDER};">
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:linear-gradient(135deg,#ecfdf5 0%,#f0f9ff 100%);border:1px solid #99f6e4;border-radius:14px;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:linear-gradient(135deg,{_COLOR_SOFT_PANEL_BG} 0%,#f0f9ff 100%);border:1px solid {_COLOR_SOFT_PANEL_BORDER};border-radius:14px;">
                 <tr>
                   <td style="padding:18px 18px 20px 18px;">
                     <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{_COLOR_PRIMARY};">

@@ -8,6 +8,7 @@ from django.core.mail import send_mail
 from django.utils.html import escape
 
 from iic_booking.communication.email_branding import (
+    COLOR_PRIMARY,
     format_inr,
     user_display_name,
     wrap_email_html,
@@ -74,7 +75,7 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
         f"<a href='{escape(approve_link)}' style='display:inline-block;background:#16a34a;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;margin-right:8px;'>Approve</a>"
         f"<a href='{escape(reject_link)}' style='display:inline-block;background:#dc2626;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Reject</a>"
         f"</p>"
-        f"<p style='margin:12px 0 0 0;'><a href='{escape(wallet_link)}' style='color:#0f766e;text-decoration:none;'>Open wallet request page</a></p>"
+        f"<p style='margin:12px 0 0 0;'><a href='{escape(wallet_link)}' style='color:{COLOR_PRIMARY};text-decoration:none;'>Open wallet request page</a></p>"
     )
     faculty_html = _shell("Wallet Join Request", "Action needed from faculty", faculty_body)
     faculty_text = (
@@ -103,7 +104,7 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
     student_body = (
         f"<p style='margin:0 0 12px 0;'>Your request has been sent to the faculty wallet owner.</p>"
         f"<p style='margin:0 0 8px 0;'><b>Faculty:</b> {escape(user_display_name(faculty))} ({escape(faculty.email)})</p>"
-        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet Requests</a></p>"
+        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:{COLOR_PRIMARY};color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet Requests</a></p>"
     )
     student_html = _shell("Request Submitted", "Wallet join request created successfully", student_body)
     student_text = f"Your wallet join request was submitted successfully.\nFaculty: {user_display_name(faculty)}\nView status: {wallet_link}"
@@ -121,7 +122,7 @@ def send_wallet_join_request_decision_email(join_request, action: str) -> None:
         f"<p style='margin:0 0 12px 0;'>Your wallet join request has been <b>{pretty}</b>.</p>"
         f"<p style='margin:0 0 8px 0;'><b>Faculty:</b> {escape(user_display_name(faculty))} ({escape(faculty.email)})</p>"
         f"<p style='margin:0 0 8px 0;'><b>Response:</b> {escape(join_request.faculty_response or '')}</p>"
-        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet</a></p>"
+        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:{COLOR_PRIMARY};color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet</a></p>"
     )
     html = _shell("Wallet Request Update", "Status changed", body)
     text = (
@@ -154,7 +155,7 @@ def send_booking_created_email_to_recipient(booking, recipient, booked_for_user)
         f"<p style='margin:0 0 8px 0;'><b>Booked for:</b> {escape(user_display_name(booked_for_user))} ({escape(booked_for_user.email)})</p>"
         f"<p style='margin:0 0 8px 0;'><b>Total charge:</b> {escape(format_inr(booking.total_charge))}</p>"
         + (
-            f"<p style='margin:16px 0 0 0;'><a href='{escape(link)}' style='background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>View Booking</a></p>"
+            f"<p style='margin:16px 0 0 0;'><a href='{escape(link)}' style='background:{COLOR_PRIMARY};color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>View Booking</a></p>"
             if link.startswith("http")
             else ""
         )

@@ -1,7 +1,7 @@
 """
 Shared branding, layout, and formatting for portal emails.
 
-Visual reference: welcome_email.py (teal institutional shell).
+Visual reference: Navy Ocean theme (white surfaces + navy headers/actions).
 Used by CommunicationTemplate defaults and styled transactional emails.
 """
 
@@ -20,16 +20,21 @@ PRODUCT_SHORT = "Equipment Booking Portal"
 ORG_FALLBACK = "Indian Institute of Technology Roorkee"
 CENTRE_LINE = "Institute Instrumentation Centre"
 
+# Navy Ocean — aligned with frontend hsl(215 70% 28%) / accent hsl(205 72% 40%)
 COLOR_BG = "#f0f4f8"
 COLOR_SURFACE = "#ffffff"
-COLOR_PRIMARY = "#0f766e"
-COLOR_PRIMARY_DARK = "#115e59"
-COLOR_ACCENT = "#d97706"
+COLOR_PRIMARY = "#153f79"
+COLOR_PRIMARY_DARK = "#11294a"
+COLOR_ACCENT = "#1d72af"
 COLOR_TEXT = "#0f172a"
 COLOR_MUTED = "#64748b"
 COLOR_BORDER = "#e2e8f0"
 COLOR_CARD = "#f8fafc"
 COLOR_FOOTER = "#0f172a"
+COLOR_SOFT_PANEL_BG = "#eff6ff"
+COLOR_SOFT_PANEL_BORDER = "#bfdbfe"
+COLOR_HERO_GRADIENT = "linear-gradient(135deg,#0b2146 0%,#153f79 48%,#1c679c 100%)"
+COLOR_FOOTER_LINK = "#81bbe4"
 
 
 def org_legal_name() -> str:
@@ -245,7 +250,7 @@ def optional_note_block(var_name: str, *, label: str = "Note") -> str:
     return f"""{{% if {var_name} %}}
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:12px 0 4px 0;">
   <tr>
-    <td style="padding:14px 16px;background:#ecfdf5;border:1px solid #99f6e4;border-radius:12px;">
+    <td style="padding:14px 16px;background:{COLOR_SOFT_PANEL_BG};border:1px solid {COLOR_SOFT_PANEL_BORDER};border-radius:12px;">
       <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:{COLOR_PRIMARY};margin-bottom:6px;">
         {escape(label)}
       </div>
@@ -284,7 +289,7 @@ def wrap_email_html(
     support = support_contact_line()
     portal_line = (
         f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.55;color:#94a3b8;margin-top:8px;">'
-        f'Visit: <a href="{escape(portal)}" style="color:#5eead4;text-decoration:none;">{escape(portal)}</a></div>'
+        f'Visit: <a href="{escape(portal)}" style="color:{COLOR_FOOTER_LINK};text-decoration:none;">{escape(portal)}</a></div>'
         if portal
         else ""
     )
@@ -337,7 +342,7 @@ def wrap_email_html(
             </td>
           </tr>
           <tr>
-            <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" style="background-color:{COLOR_PRIMARY};background-image:linear-gradient(135deg,#0f766e 0%,#0e7490 55%,#155e75 100%);padding:32px 28px 28px 28px;border-radius:18px 18px 0 0;">
+            <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" style="background-color:{COLOR_PRIMARY};background-image:{COLOR_HERO_GRADIENT};padding:32px 28px 28px 28px;border-radius:18px 18px 0 0;">
               <div style="display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,0.16);font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#ffffff;font-family:Arial,Helvetica,sans-serif;">
                 {escape(PRODUCT_SHORT)}
               </div>

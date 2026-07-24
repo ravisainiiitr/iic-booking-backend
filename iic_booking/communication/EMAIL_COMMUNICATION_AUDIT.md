@@ -6,7 +6,7 @@ Reference design: Welcome Email (welcome_email.py)
 ## Summary
 
 All default CommunicationTemplate email rows are redesigned to match the Welcome Email
-visual language (teal institutional shell, consistent typography, footer, responsive
+visual language (Navy Ocean institutional shell, consistent typography, footer, responsive
 table layout). Subject lines are shortened. Template rendering no longer leaves raw
 `{{ placeholders }}`. Optional sections hide when empty.
 
