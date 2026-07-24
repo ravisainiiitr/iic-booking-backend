@@ -3736,6 +3736,8 @@ def admin_api_router():
             slot_keys = {
                 "AVAILABLE",
                 "BOOKED",
+                "BOOKED_INTERNAL",
+                "BOOKED_EXTERNAL",
                 "COMPLETED",
                 "HOLD",
                 "BLOCKED",
@@ -3746,6 +3748,9 @@ def admin_api_router():
                 "HOME_DEPARTMENT_ONLY",
                 "NON_HOME_RESERVED",
                 "NOT_AVAILABLE",
+                "CANCELLED",
+                "REFUNDED",
+                "ABSENT",
             }
             updated = []
             for key, value in slot_colors.items():

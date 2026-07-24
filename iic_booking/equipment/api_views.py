@@ -564,6 +564,70 @@ def get_calendar_colors():
         return out
 
 
+# Booking status colours editable by Lab In-charge (operator) and OIC (manager) from their dashboard.
+LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
+    "BOOKED",
+    "BOOKED_INTERNAL",
+    "BOOKED_EXTERNAL",
+    "COMPLETED",
+)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def lab_dashboard_calendar_colors(request):
+    """
+    GET/PATCH booking calendar colours used on Lab In-charge and OIC weekly calendars.
+    Only Internal / External / Booked / Completed keys may be updated here.
+    """
+    ut = getattr(request.user, "user_type", None)
+    if ut not in (UserType.OPERATOR, UserType.MANAGER, UserType.ADMIN):
+        return Response(
+            {"detail": "Only Lab In-charge, Officer In Charge, or Admin can manage these colours."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    colors = get_calendar_colors()
+    slot_colors = colors.get("slot_colors") or {}
+    editable = {
+        key: slot_colors.get(key) or DEFAULT_CALENDAR_COLORS["slot_colors"].get(key)
+        for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS
+    }
+
+    if request.method == "GET":
+        return Response({"slot_colors": editable})
+
+    data = request.data or {}
+    incoming = data.get("slot_colors") or {}
+    if not isinstance(incoming, dict):
+        return Response({"detail": "slot_colors must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+
+    updated = []
+    for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS:
+        value = incoming.get(key)
+        if not value or not isinstance(value, str):
+            continue
+        value = value.strip()
+        if not value.startswith("#") or len(value) not in (4, 7):
+            continue
+        obj, _ = CalendarColorSetting.objects.get_or_create(key=key, defaults={"value": value})
+        obj.value = value
+        obj.save(update_fields=["value"])
+        updated.append(key)
+
+    colors = get_calendar_colors()
+    slot_colors = colors.get("slot_colors") or {}
+    return Response(
+        {
+            "slot_colors": {
+                key: slot_colors.get(key) or DEFAULT_CALENDAR_COLORS["slot_colors"].get(key)
+                for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS
+            },
+            "updated": updated,
+        }
+    )
+
+
 def get_external_gst_percent():
     """Return the GST percentage (0-100) for external users from BookingChargeSetting. Default 18."""
     try:
