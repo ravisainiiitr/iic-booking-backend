@@ -1037,6 +1037,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'operator_absent_disruption_after_booking_end_hours',
                 'show_lifecycle_countdowns',
                 'sample_submission_lead_hours',
+                'atmosphere_sensitive_sample_enabled',
                 'sample_collect_deadline_hours',
                 'repeat_sample_request_days', 'repeat_sample_disclaimer',
             ),
@@ -1057,6 +1058,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'Accepted, or Processing; opens disruption (refund vs reschedule). '
                 'Lifecycle countdowns: submit-sample lead time before slot start, booking timer until slot end after '
                 'Sample Accepted, and collect/discard hours after booking completion. '
+                'Atmosphere-sensitive sample option: when enabled, bookers may choose to submit at slot start. '
                 'Repeat sample: days after completion when user can request a repeat; disclaimer shown in popup. Define actual timings in Slot Masters below.'
             ),
             'classes': ('collapse',)

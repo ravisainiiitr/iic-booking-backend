@@ -500,6 +500,15 @@ class Equipment(models.Model):
             'Atmosphere-sensitive bookings may submit up to slot start instead. Set to 0 to use slot start as the deadline.'
         ),
     )
+    atmosphere_sensitive_sample_enabled = models.BooleanField(
+        default=False,
+        verbose_name=_('Allow atmosphere-sensitive sample option'),
+        help_text=_(
+            'When enabled, bookers and staff may mark a booking as atmosphere-sensitive '
+            '(sample may be submitted at slot start instead of the normal submission lead time). '
+            'When disabled, the option is hidden on booking screens.'
+        ),
+    )
     sample_collect_deadline_hours = models.PositiveIntegerField(
         default=72,
         verbose_name=_('Sample collect / discard deadline (hours after completion)'),

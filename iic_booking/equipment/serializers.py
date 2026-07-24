@@ -1092,6 +1092,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'operator_absent_disruption_after_booking_end_hours',
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
+            'atmosphere_sensitive_sample_enabled',
             'sample_collect_deadline_hours',
             'make',
             'show_make_on_card',
@@ -1297,6 +1298,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'operator_absent_disruption_after_booking_end_hours',
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
+            'atmosphere_sensitive_sample_enabled',
             'sample_collect_deadline_hours',
             'print_materials',
         ]
@@ -1533,6 +1535,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'sample_preparation_by_user',
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
+            'atmosphere_sensitive_sample_enabled',
             'sample_collect_deadline_hours',
             'repeat_sample_request_days', 'repeat_sample_disclaimer',
             'equipment_managers', 'equipment_operators',
@@ -1951,6 +1954,9 @@ class BookingSerializer(serializers.ModelSerializer):
     equipment_operator_unavailable_after_booking_end_hours = serializers.IntegerField(
         source='equipment.operator_unavailable_after_booking_end_hours', read_only=True, default=24
     )
+    equipment_atmosphere_sensitive_sample_enabled = serializers.BooleanField(
+        source='equipment.atmosphere_sensitive_sample_enabled', read_only=True, default=False
+    )
     equipment_profile_type = serializers.CharField(source='equipment.profile_type', read_only=True)
     equipment_profile_type_display = serializers.CharField(
         source='equipment.get_profile_type_display', read_only=True
@@ -2094,6 +2100,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'notes',
             'operator_absent_hold_until',
             'atmosphere_sensitive_sample',
+            'equipment_atmosphere_sensitive_sample_enabled',
             'lifecycle_countdown',
             'completion_countdown',
             'sample_return_after_analysis',

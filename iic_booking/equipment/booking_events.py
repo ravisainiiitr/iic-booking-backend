@@ -11,6 +11,13 @@ from django.contrib.auth import get_user_model
 from .models import Booking, BookingEvent, BookingEventType, BookingStatus
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
+from iic_booking.communication.email_branding import (
+    absolute_http_url,
+    format_duration_minutes,
+    format_email_datetime,
+    format_inr,
+    user_display_name,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -420,23 +427,26 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     # Prepare template context (use virtual / display id for any user-visible booking reference)
     display_booking_ref = booking_display_id_for_email(booking)
     context = {
-        "user_name": user.name or user.email,
-        "user_email": user.email,
-        "booked_for_user_name": user.name or user.email,
+        "user_name": user_display_name(user),
+        "user_email": user.email or "",
+        "booked_for_user_name": user_display_name(user),
         "booked_for_user_email": user.email or "",
         "booking_id": display_booking_ref,
         "virtual_booking_id": display_booking_ref,
-        "equipment_name": equipment.name,
-        "equipment_code": equipment.code,
+        "equipment_name": equipment.name if equipment else "",
+        "equipment_code": equipment.code if equipment else "",
         "event_type": event.get_event_type_display(),
-        "comment": event.comment or "No comment",
-        "event_date": event.created_at.strftime("%Y-%m-%d %H:%M:%S") if event.created_at else "",
+        "comment": (event.comment or "").strip(),
+        "event_date": format_email_datetime(event.created_at) if event.created_at else "",
         "user_sample_preparation_notice": "",
         "user_sample_preparation_notice_html": "",
         "equipment_booking_email_extra": "",
         "equipment_booking_email_extra_html": "",
         "equipment_completion_email_extra": "",
         "equipment_completion_email_extra_html": "",
+        "duration_display": "",
+        "wallet_balance_after": "",
+        "link": "",
     }
     
     # Add status information if available
@@ -458,22 +468,44 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             )
             if wallet_target is not None:
                 wallet_target.refresh_from_db()
-                context["wallet_balance_after"] = f"₹{wallet_target.balance:.2f}"
+                context["wallet_balance_after"] = format_inr(wallet_target.balance)
             else:
-                context["wallet_balance_after"] = "N/A"
+                context["wallet_balance_after"] = ""
         except Exception:
-            context["wallet_balance_after"] = "N/A"
+            context["wallet_balance_after"] = ""
     
-    # Add metadata to context
+    # Merge metadata carefully — never overwrite identity / core display fields with raw IDs
+    _PROTECTED_CONTEXT_KEYS = {
+        "user_name",
+        "user_email",
+        "booked_for_user_name",
+        "booked_for_user_email",
+        "booking_id",
+        "virtual_booking_id",
+        "equipment_name",
+        "equipment_code",
+        "link",
+        "total_charge",
+        "duration_display",
+        "wallet_balance_after",
+        "start_time",
+        "end_time",
+    }
     if event.metadata:
-        context.update(event.metadata)
+        for key, value in event.metadata.items():
+            if key in _PROTECTED_CONTEXT_KEYS:
+                continue
+            context[key] = value
     if email_template_code == "booking_waitlist_confirmed_email":
-        context.setdefault("waitlist_joined_at_display", "—")
-        context.setdefault("waitlist_position", "—")
+        context.setdefault("waitlist_joined_at_display", "")
+        context.setdefault("waitlist_position", "")
+    charge_fmt = format_inr(booking.total_charge)
+    duration_fmt = format_duration_minutes(booking.total_time_minutes)
     context.update({
-        "total_charge": str(booking.total_charge),
-        "total_time_minutes": str(booking.total_time_minutes),
-        "total_hours": str(round(booking.total_time_minutes / 60, 2)) if booking.total_time_minutes else "0",
+        "total_charge": charge_fmt,
+        "total_time_minutes": str(booking.total_time_minutes) if booking.total_time_minutes else "",
+        "total_hours": duration_fmt,
+        "duration_display": duration_fmt,
     })
     # Charge breakdown for recalculated emails (list of {description, amount})
     if event.event_type == BookingEventType.CHARGE_RECALCULATED and event.metadata and "charge_breakdown" in event.metadata:
@@ -488,30 +520,33 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             for line in breakdown:
                 desc = line.get("description", "")
                 amt = line.get("amount", 0)
-                try:
-                    amt = float(amt)
-                except (TypeError, ValueError):
-                    amt = 0
-                lines.append(f"  {desc}: ₹{amt:.2f}")
-            context["charge_breakdown_text"] = "\n".join(lines) if lines else "—"
+                lines.append(f"  {desc}: {format_inr(amt) or '₹0.00'}")
+            context["charge_breakdown_text"] = "\n".join(lines) if lines else ""
         else:
-            context["charge_breakdown_text"] = "—"
-        context.setdefault("refund_amount", event.metadata.get("refund_amount") if event.metadata else "")
-        context.setdefault("extra_amount", event.metadata.get("extra_amount") if event.metadata else "")
+            context["charge_breakdown_text"] = ""
+        if event.metadata:
+            if "refund_amount" in event.metadata:
+                context["refund_amount"] = format_inr(event.metadata.get("refund_amount")) or ""
+            if "extra_amount" in event.metadata:
+                context["extra_amount"] = format_inr(event.metadata.get("extra_amount")) or ""
+        context.setdefault("refund_amount", "")
+        context.setdefault("extra_amount", "")
     
     # Get start and end times from slots (for email/display)
     # When equipment has Hide time (SLOT_ID): for non-admin/OIC recipients show date only and hide duration; admin/OIC always get full time.
     daily_slots = list(booking.daily_slots.select_related('slot_master').all().order_by('start_datetime'))
     from iic_booking.users.models.user_type import UserType
 
-    def _format_local(dt, fmt):
+    def _format_local(dt, fmt=None):
         if not dt:
             return ""
-        try:
-            dt_local = timezone.localtime(dt) if timezone.is_aware(dt) else dt
-        except Exception:
-            dt_local = dt
-        return dt_local.strftime(fmt)
+        if fmt:
+            try:
+                dt_local = timezone.localtime(dt) if timezone.is_aware(dt) else dt
+            except Exception:
+                dt_local = dt
+            return dt_local.strftime(fmt)
+        return format_email_datetime(dt)
 
     def _apply_slot_times_for_recipient(ctx: dict, recipient) -> None:
         recipient_is_staff = getattr(recipient, "user_type", None) in UserType.get_admin_panel_codes()
@@ -529,7 +564,9 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         if use_slot_id_display:
             first_slot = daily_slots[0]
             booking_date_str = (
-                _format_local(first_slot.start_datetime, "%Y-%m-%d") if first_slot.start_datetime else ""
+                format_email_datetime(first_slot.start_datetime).split(",")[0]
+                if first_slot.start_datetime
+                else ""
             )
             slot_parts = []
             for ds in daily_slots:
@@ -538,21 +575,25 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     slot_parts.append(name.strip() or f"Slot {ds.slot_master.slot_number}")
                 else:
                     slot_parts.append("—")
-            slot_id_display = ", ".join(slot_parts) if slot_parts else "—"
-            ctx["start_time"] = f"Date: {booking_date_str}, Slot(s): {slot_id_display}"
+            slot_id_display = ", ".join(slot_parts) if slot_parts else ""
+            ctx["start_time"] = (
+                f"Date: {booking_date_str}, Slot(s): {slot_id_display}" if booking_date_str else slot_id_display
+            )
             ctx["end_time"] = ""
             ctx["booking_date"] = booking_date_str
             ctx["slot_id_display"] = slot_id_display
             ctx["total_time_minutes"] = ""
             ctx["total_hours"] = ""
+            ctx["duration_display"] = ""
         else:
-            ctx["start_time"] = _format_local(daily_slots[0].start_datetime, "%Y-%m-%d %H:%M:%S")
-            ctx["end_time"] = _format_local(daily_slots[-1].end_datetime, "%Y-%m-%d %H:%M:%S")
+            ctx["start_time"] = _format_local(daily_slots[0].start_datetime)
+            ctx["end_time"] = _format_local(daily_slots[-1].end_datetime)
             ctx["booking_date"] = ""
             ctx["slot_id_display"] = ""
             if booking.total_time_minutes:
                 ctx["total_time_minutes"] = str(booking.total_time_minutes)
-                ctx["total_hours"] = str(round(booking.total_time_minutes / 60, 2))
+                ctx["duration_display"] = format_duration_minutes(booking.total_time_minutes)
+                ctx["total_hours"] = ctx["duration_display"]
 
     _apply_slot_times_for_recipient(context, user)
 
@@ -565,13 +606,18 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 src = Booking.objects.filter(booking_id=booking.source_booking_id).first()
             if src:
                 orig_id = booking_display_id_for_email(src)
-        context["original_booking_id"] = orig_id or "—"
+        context["original_booking_id"] = orig_id or ""
     
-    # Absolute link for emails and in-app (relative links do not work in email clients)
-    booking_link = get_frontend_absolute_url(f"/my-bookings?booking={display_booking_ref}")
-    context["link"] = booking_link or f"/my-bookings?booking={display_booking_ref}"
-    # Ensure templates always render a meaningful note line.
-    context["comment"] = (str(context.get("comment", "")).strip() or "No comment")
+    # Absolute link only — never show empty or relative booking URLs in email
+    booking_link = absolute_http_url(
+        get_frontend_absolute_url(f"/my-bookings?booking={display_booking_ref}")
+    )
+    context["link"] = booking_link
+    # Do not force placeholder notes — empty comment hides Note section in templates
+    comment_val = str(context.get("comment", "") or "").strip()
+    if comment_val.lower() in ("no comment", "none", "null", "-"):
+        comment_val = ""
+    context["comment"] = comment_val
     
     # Metadata for communication log
     metadata = {
@@ -648,7 +694,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
                     wallet_context = context.copy()
-                    wallet_context["user_name"] = wallet_owner.name or wallet_owner.email
+                    wallet_context["user_name"] = user_display_name(wallet_owner)
                     wallet_context["user_email"] = wallet_owner.email
                     CommunicationService.send_email(
                         recipient=wallet_owner,
@@ -664,7 +710,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     )
                     if push_template_code:
                         try:
-                            booker_label = (user.name or user.email or "student").strip()
+                            booker_label = user_display_name(user, fallback="student")
                             CommunicationService.send_push_notification(
                                 recipient=wallet_owner,
                                 template=push_template_code,
@@ -700,9 +746,9 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
                     wallet_context = context.copy()
-                    wallet_context["user_name"] = wallet_owner.name or wallet_owner.email
+                    wallet_context["user_name"] = user_display_name(wallet_owner)
                     wallet_context["user_email"] = wallet_owner.email
-                    booker_label = (user.name or user.email or "student").strip()
+                    booker_label = user_display_name(user, fallback="student")
                     if email_template_code:
                         CommunicationService.send_email(
                             recipient=wallet_owner,
@@ -743,7 +789,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
                     wallet_context = context.copy()
-                    wallet_context["user_name"] = wallet_owner.name or wallet_owner.email
+                    wallet_context["user_name"] = user_display_name(wallet_owner)
                     wallet_context["user_email"] = wallet_owner.email
                     CommunicationService.send_email(
                         recipient=wallet_owner,
@@ -777,7 +823,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
                     wallet_context = context.copy()
-                    wallet_context["user_name"] = wallet_owner.name or wallet_owner.email
+                    wallet_context["user_name"] = user_display_name(wallet_owner)
                     wallet_context["user_email"] = wallet_owner.email
                     CommunicationService.send_email(
                         recipient=wallet_owner,
@@ -868,7 +914,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
 
             staff_users = get_equipment_staff_notify_users(equipment)
             skip_ids = {user.id}
-            booker_label = (user.name or user.email or "user").strip()
+            booker_label = user_display_name(user, fallback="user")
             staff_mgmt_link = (
                 get_frontend_absolute_url(f"/booking-management?expand={booking.booking_id}")
                 or f"/booking-management?expand={booking.booking_id}"
@@ -878,7 +924,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     continue
                 skip_ids.add(staff.id)
                 staff_context = dict(context)
-                staff_context["user_name"] = staff.name or staff.email
+                staff_context["user_name"] = user_display_name(staff)
                 staff_context["user_email"] = staff.email or ""
                 staff_context["booked_for_user_name"] = booker_label
                 staff_context["booked_for_user_email"] = user.email or ""

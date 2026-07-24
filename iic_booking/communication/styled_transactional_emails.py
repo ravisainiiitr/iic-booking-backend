@@ -7,6 +7,11 @@ from django.core import signing
 from django.core.mail import send_mail
 from django.utils.html import escape
 
+from iic_booking.communication.email_branding import (
+    format_inr,
+    user_display_name,
+    wrap_email_html,
+)
 from iic_booking.communication.utils import (
     get_frontend_absolute_url,
     get_backend_absolute_url,
@@ -15,26 +20,13 @@ from iic_booking.communication.utils import (
 
 
 def _shell(title: str, subtitle: str, body_html: str) -> str:
-    return f"""<!doctype html>
-<html>
-  <body style="margin:0;padding:0;background:#f4f6fb;font-family:Arial,sans-serif;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-      <tr><td align="center" style="padding:24px 12px;">
-        <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="max-width:640px;width:100%;">
-          <tr>
-            <td style="padding:24px;border-radius:16px 16px 0 0;background:#1d4ed8;color:#fff;">
-              <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.95;">IIT Roorkee</div>
-              <div style="font-size:24px;font-weight:700;margin-top:8px;">{escape(title)}</div>
-              <div style="font-size:14px;margin-top:6px;opacity:.95;">{escape(subtitle)}</div>
-            </td>
-          </tr>
-          <tr><td style="background:#fff;padding:22px;border-radius:0 0 16px 16px;">{body_html}</td></tr>
-        </table>
-      </td></tr>
-    </table>
-  </body>
-</html>"""
-
+    """Welcome-email-aligned shell (replaces legacy blue header)."""
+    return wrap_email_html(
+        title=title,
+        subtitle=subtitle or "",
+        body_inner_html=body_html,
+        preheader=subtitle or title,
+    )
 
 def _send(recipient_email: str, subject: str, text_message: str, html_message: str) -> None:
     from iic_booking.users.test_accounts import redirect_email_address
@@ -76,20 +68,20 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
 
     faculty_body = (
         f"<p style='margin:0 0 12px 0;'>A student has requested to join your wallet.</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Student:</b> {escape(student.name or student.email)} ({escape(student.email)})</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Message:</b> {escape(join_request.message or 'No message')}</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Student:</b> {escape(user_display_name(student))} ({escape(student.email)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Message:</b> {escape(join_request.message or '')}</p>"
         f"<p style='margin:16px 0 0 0;'>"
         f"<a href='{escape(approve_link)}' style='display:inline-block;background:#16a34a;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;margin-right:8px;'>Approve</a>"
         f"<a href='{escape(reject_link)}' style='display:inline-block;background:#dc2626;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Reject</a>"
         f"</p>"
-        f"<p style='margin:12px 0 0 0;'><a href='{escape(wallet_link)}' style='color:#2563eb;text-decoration:none;'>Open wallet request page</a></p>"
+        f"<p style='margin:12px 0 0 0;'><a href='{escape(wallet_link)}' style='color:#0f766e;text-decoration:none;'>Open wallet request page</a></p>"
     )
     faculty_html = _shell("Wallet Join Request", "Action needed from faculty", faculty_body)
     faculty_text = (
-        f"Wallet join request received.\nStudent: {student.name or student.email} ({student.email})\n"
-        f"Message: {join_request.message or 'No message'}\nApprove: {approve_link}\nReject: {reject_link}\nReview: {wallet_link}"
+        f"Wallet join request received.\nStudent: {user_display_name(student)} ({student.email})\n"
+        f"Message: {join_request.message or ''}\nApprove: {approve_link}\nReject: {reject_link}\nReview: {wallet_link}"
     )
-    _send(faculty.email, "[IIT Roorkee] New wallet join request", faculty_text, faculty_html)
+    _send(faculty.email, "New Wallet Join Request", faculty_text, faculty_html)
     try:
         from iic_booking.communication.service import CommunicationService
 
@@ -110,12 +102,12 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
 
     student_body = (
         f"<p style='margin:0 0 12px 0;'>Your request has been sent to the faculty wallet owner.</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Faculty:</b> {escape(faculty.name or faculty.email)} ({escape(faculty.email)})</p>"
-        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:#111827;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet Requests</a></p>"
+        f"<p style='margin:0 0 8px 0;'><b>Faculty:</b> {escape(user_display_name(faculty))} ({escape(faculty.email)})</p>"
+        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet Requests</a></p>"
     )
     student_html = _shell("Request Submitted", "Wallet join request created successfully", student_body)
-    student_text = f"Your wallet join request was submitted successfully.\nFaculty: {faculty.name or faculty.email}\nView status: {wallet_link}"
-    _send(student.email, "[IIT Roorkee] Wallet join request submitted", student_text, student_html)
+    student_text = f"Your wallet join request was submitted successfully.\nFaculty: {user_display_name(faculty)}\nView status: {wallet_link}"
+    _send(student.email, "Wallet Join Request Submitted", student_text, student_html)
 
 
 def send_wallet_join_request_decision_email(join_request, action: str) -> None:
@@ -127,16 +119,16 @@ def send_wallet_join_request_decision_email(join_request, action: str) -> None:
     pretty = "Approved" if action_label == "approved" else "Rejected" if action_label == "rejected" else "Updated"
     body = (
         f"<p style='margin:0 0 12px 0;'>Your wallet join request has been <b>{pretty}</b>.</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Faculty:</b> {escape(faculty.name or faculty.email)} ({escape(faculty.email)})</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Response:</b> {escape(join_request.faculty_response or 'No additional remarks')}</p>"
-        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:#2563eb;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet</a></p>"
+        f"<p style='margin:0 0 8px 0;'><b>Faculty:</b> {escape(user_display_name(faculty))} ({escape(faculty.email)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Response:</b> {escape(join_request.faculty_response or '')}</p>"
+        f"<p style='margin:16px 0 0 0;'><a href='{escape(wallet_link)}' style='background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Wallet</a></p>"
     )
     html = _shell("Wallet Request Update", "Status changed", body)
     text = (
-        f"Wallet request status: {pretty}\nFaculty: {faculty.name or faculty.email} ({faculty.email})\n"
-        f"Response: {join_request.faculty_response or 'No additional remarks'}\nOpen wallet: {wallet_link}"
+        f"Wallet request status: {pretty}\nFaculty: {user_display_name(faculty)} ({faculty.email})\n"
+        f"Response: {join_request.faculty_response or ''}\nOpen wallet: {wallet_link}"
     )
-    _send(student.email, f"[IIT Roorkee] Wallet request {pretty.lower()}", text, html)
+    _send(student.email, f"Wallet Join Request {pretty}", text, html)
     try:
         from iic_booking.communication.service import CommunicationService
 
@@ -154,21 +146,26 @@ def send_booking_created_email_to_recipient(booking, recipient, booked_for_user)
     """Send colorful booking-created summary email to a recipient."""
     display_id = booking_display_id_for_email(booking)
     link = get_frontend_absolute_url(f"/my-bookings?booking={display_id}")
+    eq_name = booking.equipment.name if booking.equipment_id else "Equipment"
     body = (
         f"<p style='margin:0 0 12px 0;'>A new booking has been created.</p>"
         f"<p style='margin:0 0 8px 0;'><b>Booking ID:</b> {escape(display_id)}</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Equipment:</b> {escape(booking.equipment.name)} ({escape(booking.equipment.code)})</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Booked for:</b> {escape(booked_for_user.name or booked_for_user.email)} ({escape(booked_for_user.email)})</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Total charge:</b> Rs {escape(str(booking.total_charge))}</p>"
-        f"<p style='margin:16px 0 0 0;'><a href='{escape(link)}' style='background:#111827;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>View Booking</a></p>"
+        f"<p style='margin:0 0 8px 0;'><b>Equipment:</b> {escape(eq_name)} ({escape(booking.equipment.code)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Booked for:</b> {escape(user_display_name(booked_for_user))} ({escape(booked_for_user.email)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Total charge:</b> {escape(format_inr(booking.total_charge))}</p>"
+        + (
+            f"<p style='margin:16px 0 0 0;'><a href='{escape(link)}' style='background:#0f766e;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>View Booking</a></p>"
+            if link.startswith("http")
+            else ""
+        )
     )
     html = _shell("Booking Confirmed", "Your booking details are ready", body)
     text = (
-        f"Booking confirmed.\nBooking ID: {display_id}\nEquipment: {booking.equipment.name} ({booking.equipment.code})\n"
-        f"Booked for: {booked_for_user.name or booked_for_user.email} ({booked_for_user.email})\n"
-        f"Total charge: Rs {booking.total_charge}\nView: {link}"
+        f"Booking confirmed.\nBooking ID: {display_id}\nEquipment: {eq_name} ({booking.equipment.code})\n"
+        f"Booked for: {user_display_name(booked_for_user)} ({booked_for_user.email})\n"
+        f"Total charge: {format_inr(booking.total_charge)}\nView: {link}"
     )
-    _send(recipient.email, f"[IIT Roorkee] Booking confirmed #{display_id}", text, html)
+    _send(recipient.email, f"Booking Confirmed – {eq_name}", text, html)
 
 
 def send_return_shipping_tracking_email(*, booking, carrier: str, tracking_number: str) -> None:

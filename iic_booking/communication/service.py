@@ -99,60 +99,97 @@ class CommunicationService:
     ) -> Dict[str, str]:
         """
         Render a communication template with variable substitution.
-        
-        Supports {{ variable_name }} syntax for variable substitution.
-        
+
+        Supports:
+        - ``{{ variable_name }}`` substitution (missing/empty → empty string, never leaves raw braces)
+        - ``{% if variable %}...{% endif %}`` blocks (truthy context values only; non-nested)
+
         Args:
             template: CommunicationTemplate instance
             context: Dictionary of variables to substitute in the template
-            
+
         Returns:
             Dictionary with rendered 'subject', 'message', 'html_message', etc.
         """
-        context = context or {}
-        
+        from .email_branding import sanitize_template_context
+
+        context = sanitize_template_context(context or {})
+
+        def _truthy(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return bool(value.strip())
+            if isinstance(value, (list, dict, tuple, set)):
+                return bool(value)
+            return bool(value)
+
         def render_text(text: str) -> str:
-            """Render template text with variable substitution."""
+            """Render template text with conditionals then variable substitution."""
             if not text:
                 return ""
-            
-            # Replace {{ variable_name }} with context values
-            def replace_var(match):
+
+            # Non-nested {% if var %}...{% endif %} (repeat until stable for sequential blocks)
+            if_pattern = re.compile(
+                r"\{%\s*if\s+(\w+)\s*%\}(.*?)\{%\s*endif\s*%\}",
+                re.DOTALL | re.IGNORECASE,
+            )
+
+            def replace_if(match: re.Match) -> str:
                 var_name = match.group(1).strip()
-                return str(context.get(var_name, match.group(0)))
-            
-            # Pattern to match {{ variable_name }} or {{variable_name}}
-            pattern = r'\{\{\s*(\w+)\s*\}\}'
-            return re.sub(pattern, replace_var, text)
-        
+                inner = match.group(2)
+                return inner if _truthy(context.get(var_name)) else ""
+
+            rendered = text
+            for _ in range(20):
+                new_rendered, n = if_pattern.subn(replace_if, rendered)
+                rendered = new_rendered
+                if n == 0:
+                    break
+
+            def replace_var(match: re.Match) -> str:
+                var_name = match.group(1).strip()
+                value = context.get(var_name, "")
+                if value is None:
+                    return ""
+                return str(value)
+
+            # {{ variable_name }} — unresolved placeholders become empty (never leave braces)
+            pattern = r"\{\{\s*(\w+)\s*\}\}"
+            rendered = re.sub(pattern, replace_var, rendered)
+            # Strip any residual unmatched template tags defensively
+            rendered = re.sub(r"\{\{[^}]*\}\}", "", rendered)
+            rendered = re.sub(r"\{%[^%]*%\}", "", rendered)
+            return rendered
+
         result = {}
-        
+
         # Render subject
         if template.subject:
-            result['subject'] = render_text(template.subject)
-        
+            result["subject"] = render_text(template.subject).strip()
+
         # Render body_text
         if template.body_text:
-            result['message'] = render_text(template.body_text)
-        
+            result["message"] = render_text(template.body_text)
+
         # Render body_html
         if template.body_html:
-            result['html_message'] = render_text(template.body_html)
-        
+            result["html_message"] = render_text(template.body_html)
+
         # Render SMS body
         if template.communication_type == CommunicationTemplate.CommunicationType.SMS:
             if template.sms_body:
-                result['message'] = render_text(template.sms_body)
+                result["message"] = render_text(template.sms_body)
             elif template.body_text:
-                result['message'] = render_text(template.body_text)
-        
+                result["message"] = render_text(template.body_text)
+
         # For push notifications, subject is title
         if template.communication_type == CommunicationTemplate.CommunicationType.PUSH_NOTIFICATION:
             if template.subject:
-                result['title'] = render_text(template.subject)
+                result["title"] = render_text(template.subject).strip()
             if template.body_text:
-                result['message'] = render_text(template.body_text)
-        
+                result["message"] = render_text(template.body_text)
+
         return result
 
     @staticmethod

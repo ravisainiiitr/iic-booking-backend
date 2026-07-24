@@ -7,6 +7,12 @@ from typing import Optional
 from django.conf import settings
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import (
+    absolute_http_url,
+    format_email_datetime,
+    format_inr,
+    user_display_name,
+)
 from iic_booking.users.models import WalletRechargeRequest
 from .service import CommunicationService
 from .utils import get_frontend_absolute_url, booking_display_id_for_email
@@ -78,22 +84,24 @@ def send_sub_wallet_transaction_notifications(
         equipment_code = None
     
     # Absolute link for emails and in-app (relative links do not work in email clients)
-    link = get_frontend_absolute_url("/wallet")
-    if is_booking_related and booking_id:
-        link = get_frontend_absolute_url(f"/my-bookings?booking={booking_id}")
+    link = absolute_http_url(get_frontend_absolute_url("/wallet"))
+    if is_booking_related and booking_display_ref:
+        link = absolute_http_url(
+            get_frontend_absolute_url(f"/my-bookings?booking={booking_display_ref}")
+        )
     
     # Prepare context for Supervisor
     wallet_context = {
-        "user_name": wallet_owner.name or wallet_owner.email,
+        "user_name": user_display_name(wallet_owner),
         "user_email": wallet_owner.email,
         "transaction_type": transaction_type,
         "transaction_type_display": "Credit" if transaction_type == "credit" else "Debit",
-        "amount": f"{amount:.2f}",
+        "amount": format_inr(amount).replace("₹", "") if format_inr(amount) else f"{amount:.2f}",
         "description": description,
-        "balance": f"{sub_wallet.balance:.2f}",
-        "department_name": sub_wallet.department.name if sub_wallet.department else "No Department",
+        "balance": format_inr(sub_wallet.balance).replace("₹", "") if format_inr(sub_wallet.balance) else f"{sub_wallet.balance:.2f}",
+        "department_name": sub_wallet.department.name if sub_wallet.department else "",
         "department_code": sub_wallet.department.code if sub_wallet.department and sub_wallet.department.code else "",
-        "transaction_date": transaction.created_at.strftime("%Y-%m-%d %H:%M:%S") if hasattr(transaction, "created_at") and transaction.created_at else "",
+        "transaction_date": format_email_datetime(getattr(transaction, "created_at", None)),
         "link": link,
     }
     
@@ -160,7 +168,7 @@ def send_sub_wallet_transaction_notifications(
     if is_booking_related and booking_user and booking_user != wallet_owner:
         booking_context = wallet_context.copy()
         booking_context.update({
-            "user_name": booking_user.name or booking_user.email,
+            "user_name": user_display_name(booking_user),
             "user_email": booking_user.email,
         })
         
@@ -205,7 +213,7 @@ def send_wallet_low_balance_notification(
     link = get_frontend_absolute_url("/wallet")
     
     context = {
-        "user_name": user.name or user.email,
+        "user_name": user_display_name(user),
         "user_email": user.email,
         "balance": f"{balance:.2f}",
         "threshold": f"{threshold:.2f}",
@@ -283,7 +291,7 @@ def send_wallet_recharge_request_notifications(
     link = get_frontend_absolute_url(f"/wallet/recharge-requests/{recharge_request.id}")
     
     context = {
-        "user_name": user.name or user.email,
+        "user_name": user_display_name(user),
         "user_email": user.email,
         "amount": f"{amount:.2f}",
         "balance": f"{balance:.2f}",
@@ -476,7 +484,7 @@ def send_wallet_credit_facility_activated_user_email(recharge_request: WalletRec
     credit_window_days = int(get_credit_settings().credit_window_days)
 
     context = {
-        "user_name": user.name or user.email,
+        "user_name": user_display_name(user),
         "user_email": user.email,
         "amount": f"{amount:.2f}",
         "request_id": str(req.id),

@@ -876,6 +876,22 @@ def user_can_see_equipment(user, equipment):
     return is_equipment_visible_on_date(equipment, timezone.localdate())
 
 
+def equipment_visibility_denied_response(user):
+    """
+    Authenticated users get an explicit forbidden response so the SPA can stop retrying
+    and redirect once. Anonymous callers still receive a generic 404.
+    """
+    if user and getattr(user, "is_authenticated", False):
+        return Response(
+            {
+                "error": "You are not authorized to access the requested equipment.",
+                "code": "equipment_forbidden",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
 def user_can_see_equipment_image(user, equipment):
     """
     Equipment photos are public (no login required).
@@ -1405,7 +1421,7 @@ def equipment_ratings(request, equipment_id: int):
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
     if not user_can_see_equipment(request.user, equipment):
-        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+        return equipment_visibility_denied_response(request.user)
 
     offset_raw = request.query_params.get("offset", "0")
     limit_raw = request.query_params.get("limit", "20")
@@ -1695,10 +1711,7 @@ def equipment_detail(request, pk):
         )
 
     if not user_can_see_equipment(request.user, equipment):
-        return Response(
-            {"error": "Equipment not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return equipment_visibility_denied_response(request.user)
 
     if request.method == "PATCH":
         if not request.user or not request.user.is_authenticated:
@@ -1821,10 +1834,7 @@ def equipment_calculate(request, pk):
         )
 
     if not user_can_see_equipment(request.user, equipment):
-        return Response(
-            {"error": "Equipment not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return equipment_visibility_denied_response(request.user)
     
     # Get user_type: optional user_type query param = estimate for that profile (standard pricing);
     # for admin, optional user_id = calculate for that user's type and discount rules.
@@ -2255,10 +2265,7 @@ def equipment_daily_slots(request, pk):
     user_type = getattr(user, 'user_type', None) if user else None
     is_admin = _is_admin_panel_user(user)
     if not user_can_see_equipment(user, equipment):
-        return Response(
-            {"error": "Equipment not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return equipment_visibility_denied_response(user)
     
     # Get date range from query params or use current week
     start_date_param = request.query_params.get('start_date')
@@ -2614,10 +2621,7 @@ def _book_equipment_impl(request, pk):
         )
 
     if not user_can_see_equipment(request.user, equipment):
-        return Response(
-            {"error": "Equipment not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return equipment_visibility_denied_response(request.user)
 
     # Booking is allowed only when equipment is Operational.
     # This is enforced server-side so maintenance statuses are always visible but not bookable.
@@ -3256,6 +3260,15 @@ def _book_equipment_impl(request, pk):
             atmosphere_sensitive_sample = bool(atmosphere_raw)
         else:
             atmosphere_sensitive_sample = str(atmosphere_raw).strip().lower() in ("1", "true", "yes", "y")
+        if atmosphere_sensitive_sample and not getattr(
+            equipment, "atmosphere_sensitive_sample_enabled", False
+        ):
+            return Response(
+                {
+                    "error": "Atmosphere-sensitive sample is not enabled for this equipment.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if UserType.is_external_user(user_type):
             # External option: return samples after analysis => add return shipping fee BEFORE GST.
             raw = request.data.get("sample_return_after_analysis")
@@ -12457,6 +12470,12 @@ def update_booking_atmosphere_sensitive_sample(request, booking_id):
             {
                 "error": "Atmosphere-sensitive sample cannot be changed after Sample Accepted."
             },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not getattr(booking.equipment, "atmosphere_sensitive_sample_enabled", False):
+        return Response(
+            {"error": "Atmosphere-sensitive sample is not enabled for this equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
