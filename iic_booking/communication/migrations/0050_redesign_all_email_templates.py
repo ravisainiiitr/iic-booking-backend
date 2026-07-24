@@ -11,8 +11,16 @@ def sync_branded_email_templates(apps, schema_editor):
 
     for spec in get_default_email_templates():
         code = spec["code"]
+        # Prefer unique code-derived names; fall back if a colliding name already exists.
+        desired_name = spec.get("name") or code
+        if (
+            CommunicationTemplate.objects.filter(name=desired_name)
+            .exclude(code=code)
+            .exists()
+        ):
+            desired_name = f"{desired_name} ({code})"
         defaults = {
-            "name": spec.get("name") or code,
+            "name": desired_name,
             "subject": spec["subject"],
             "body_text": spec["body_text"],
             "body_html": spec["body_html"],
@@ -23,6 +31,9 @@ def sync_branded_email_templates(apps, schema_editor):
         }
         obj = CommunicationTemplate.objects.filter(code=code, communication_type="email").first()
         if obj is None:
+            # Another row may already own this display name from a prior seed.
+            if CommunicationTemplate.objects.filter(name=defaults["name"]).exists():
+                defaults["name"] = f"{defaults['name']} ({code})"
             CommunicationTemplate.objects.create(code=code, **defaults)
             continue
         for key, value in defaults.items():

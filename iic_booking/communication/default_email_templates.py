@@ -92,6 +92,11 @@ _BOOKING_COMMON_HELP = (
 )
 
 
+def _unique_template_name(code: str) -> str:
+    """DB ``name`` is unique — derive from code so hero titles can repeat safely."""
+    return code.replace("_", " ").title()
+
+
 def _pack(
     code: str,
     built: dict[str, str],
@@ -103,7 +108,8 @@ def _pack(
     """Merge build_standard_email output into a CommunicationTemplate-shaped dict."""
     return {
         "code": code,
-        "name": name or built.get("name") or code,
+        # Never use hero title here — titles like "Booking Confirmed" can collide.
+        "name": name or _unique_template_name(code),
         "communication_type": "email",
         "subject": built["subject"],
         "body_text": built["body_text"],
@@ -156,7 +162,7 @@ def _booking_email(
         description=description,
         variable_help=variable_help or _BOOKING_COMMON_HELP,
     )
-    return _pack(code, built, name=title, description=description, variable_help=variable_help)
+    return _pack(code, built, description=description, variable_help=variable_help)
 
 
 def _wallet_detail_rows(*, include_booking: bool = True) -> list[str]:
@@ -215,7 +221,7 @@ def _wallet_email(
         description=description,
         variable_help=variable_help,
     )
-    return _pack(code, built, name=title, description=description, variable_help=variable_help)
+    return _pack(code, built, description=description, variable_help=variable_help)
 
 
 def _simple_email(
@@ -250,7 +256,7 @@ def _simple_email(
         description=description,
         variable_help=variable_help,
     )
-    return _pack(code, built, name=title, description=description, variable_help=variable_help)
+    return _pack(code, built, description=description, variable_help=variable_help)
 
 
 def _custom_branded_email(
@@ -1385,6 +1391,13 @@ def get_default_email_templates() -> list[dict]:
     extras = [c for c in by_code if c not in DEFAULT_EMAIL_TEMPLATE_CODES]
     if extras:
         raise RuntimeError(f"Unexpected default email template codes: {extras}")
+
+    names = [t["name"] for t in templates]
+    if len(names) != len(set(names)):
+        from collections import Counter
+
+        dups = [n for n, c in Counter(names).items() if c > 1]
+        raise RuntimeError(f"Duplicate CommunicationTemplate names in catalog: {dups}")
 
     # Stable order matching DEFAULT_EMAIL_TEMPLATE_CODES
     return [by_code[code] for code in DEFAULT_EMAIL_TEMPLATE_CODES]
