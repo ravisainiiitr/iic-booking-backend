@@ -566,7 +566,7 @@ def get_calendar_colors():
 
 # Booking status colours editable by Lab In-charge (operator) and OIC (manager) from their dashboard.
 LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
-    "BOOKED",
+    "AVAILABLE",
     "BOOKED_INTERNAL",
     "BOOKED_EXTERNAL",
     "COMPLETED",
@@ -578,7 +578,7 @@ LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
 def lab_dashboard_calendar_colors(request):
     """
     GET/PATCH booking calendar colours used on Lab In-charge and OIC weekly calendars.
-    Only Internal / External / Booked / Completed keys may be updated here.
+    Only Internal / External / Available / Completed keys may be updated here.
     """
     ut = getattr(request.user, "user_type", None)
     if ut not in (UserType.OPERATOR, UserType.MANAGER, UserType.ADMIN):
