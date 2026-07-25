@@ -77,6 +77,7 @@ from .models import (
     OperatorLeaveRequest,
     EquipmentOperatorCoverage,
     CalendarColorSetting,
+    LabUserCalendarColorPreference,
     InternalUserSlotWindowSetting,
     BookingChargeSetting,
     UrgentHoldExpiryConfig,
@@ -565,6 +566,7 @@ def get_calendar_colors():
 
 
 # Booking status colours editable by Lab In-charge (operator) and OIC (manager) from their dashboard.
+# Stored per-user + per-equipment; never writes admin CalendarColorSetting.
 LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
     "AVAILABLE",
     "BOOKED_INTERNAL",
@@ -573,12 +575,44 @@ LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
 )
 
 
+def _lab_dashboard_editable_defaults() -> dict:
+    admin_colors = (get_calendar_colors() or {}).get("slot_colors") or {}
+    return {
+        key: admin_colors.get(key) or DEFAULT_CALENDAR_COLORS["slot_colors"].get(key)
+        for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS
+    }
+
+
+def _sanitize_lab_slot_colors(incoming) -> dict:
+    out = {}
+    if not isinstance(incoming, dict):
+        return out
+    for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS:
+        value = incoming.get(key)
+        if not value or not isinstance(value, str):
+            continue
+        value = value.strip()
+        if value.startswith("#") and len(value) in (4, 7):
+            out[key] = value
+    return out
+
+
+def _lab_user_may_configure_equipment(user, equipment_id: int) -> bool:
+    """True if operator/manager/admin may set personal calendar colours for this equipment."""
+    allowed = _get_equipment_ids_for_log_access(user)
+    if allowed is None:
+        return Equipment.objects.filter(pk=equipment_id).exists()
+    return int(equipment_id) in {int(x) for x in allowed}
+
+
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def lab_dashboard_calendar_colors(request):
     """
-    GET/PATCH booking calendar colours used on Lab In-charge and OIC weekly calendars.
-    Only Internal / External / Available / Completed keys may be updated here.
+    GET/PATCH personal Lab/OIC calendar colour prefs (per user + equipment).
+
+    These prefs only affect that user's lab dashboard view for that equipment.
+    Students / faculty / external users continue to use main-admin CalendarColorSetting.
     """
     ut = getattr(request.user, "user_type", None)
     if ut not in (UserType.OPERATOR, UserType.MANAGER, UserType.ADMIN):
@@ -587,43 +621,70 @@ def lab_dashboard_calendar_colors(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    colors = get_calendar_colors()
-    slot_colors = colors.get("slot_colors") or {}
-    editable = {
-        key: slot_colors.get(key) or DEFAULT_CALENDAR_COLORS["slot_colors"].get(key)
-        for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS
-    }
+    defaults = _lab_dashboard_editable_defaults()
 
     if request.method == "GET":
-        return Response({"slot_colors": editable})
+        equipment_id_raw = request.query_params.get("equipment_id")
+        if equipment_id_raw not in (None, ""):
+            try:
+                equipment_id = int(equipment_id_raw)
+            except (TypeError, ValueError):
+                return Response({"detail": "equipment_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if not _lab_user_may_configure_equipment(request.user, equipment_id):
+                return Response({"detail": "You cannot configure colours for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+            pref = LabUserCalendarColorPreference.objects.filter(
+                user=request.user, equipment_id=equipment_id
+            ).first()
+            saved = (pref.slot_colors if pref and isinstance(pref.slot_colors, dict) else {}) or {}
+            return Response(
+                {
+                    "equipment_id": equipment_id,
+                    "slot_colors": {**defaults, **{k: saved[k] for k in LAB_DASHBOARD_EDITABLE_SLOT_COLORS if k in saved}},
+                    "has_overrides": bool(saved),
+                }
+            )
+
+        # All prefs for this user (for merging into multiple week calendars).
+        rows = LabUserCalendarColorPreference.objects.filter(user=request.user).values(
+            "equipment_id", "slot_colors"
+        )
+        by_equipment = {}
+        for row in rows:
+            raw = row.get("slot_colors") if isinstance(row.get("slot_colors"), dict) else {}
+            cleaned = {k: raw[k] for k in LAB_DASHBOARD_EDITABLE_SLOT_COLORS if k in raw and isinstance(raw[k], str)}
+            if cleaned:
+                by_equipment[str(row["equipment_id"])] = cleaned
+        return Response({"defaults": defaults, "by_equipment": by_equipment})
 
     data = request.data or {}
-    incoming = data.get("slot_colors") or {}
-    if not isinstance(incoming, dict):
-        return Response({"detail": "slot_colors must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        equipment_id = int(data.get("equipment_id"))
+    except (TypeError, ValueError):
+        return Response({"detail": "equipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-    updated = []
-    for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS:
-        value = incoming.get(key)
-        if not value or not isinstance(value, str):
-            continue
-        value = value.strip()
-        if not value.startswith("#") or len(value) not in (4, 7):
-            continue
-        obj, _ = CalendarColorSetting.objects.get_or_create(key=key, defaults={"value": value})
-        obj.value = value
-        obj.save(update_fields=["value"])
-        updated.append(key)
+    if not _lab_user_may_configure_equipment(request.user, equipment_id):
+        return Response({"detail": "You cannot configure colours for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+    if not Equipment.objects.filter(pk=equipment_id).exists():
+        return Response({"detail": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    colors = get_calendar_colors()
-    slot_colors = colors.get("slot_colors") or {}
+    cleaned = _sanitize_lab_slot_colors(data.get("slot_colors") or {})
+    if not cleaned:
+        return Response({"detail": "No valid slot_colors provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+    pref, _ = LabUserCalendarColorPreference.objects.get_or_create(
+        user=request.user,
+        equipment_id=equipment_id,
+        defaults={"slot_colors": cleaned},
+    )
+    if pref.slot_colors != cleaned:
+        pref.slot_colors = cleaned
+        pref.save(update_fields=["slot_colors", "updated_at"])
+
     return Response(
         {
-            "slot_colors": {
-                key: slot_colors.get(key) or DEFAULT_CALENDAR_COLORS["slot_colors"].get(key)
-                for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS
-            },
-            "updated": updated,
+            "equipment_id": equipment_id,
+            "slot_colors": {**defaults, **cleaned},
+            "updated": list(cleaned.keys()),
         }
     )
 

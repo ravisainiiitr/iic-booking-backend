@@ -3688,6 +3688,45 @@ class CalendarColorSetting(models.Model):
         return f'{self.key}: {self.value}'
 
 
+class LabUserCalendarColorPreference(models.Model):
+    """
+    Per-user, per-equipment calendar colour overrides for Lab In-charge / OIC dashboards only.
+    Does not affect admin CalendarColorSetting or booking calendars for other users.
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="lab_calendar_color_prefs",
+        verbose_name=_("User"),
+    )
+    equipment = models.ForeignKey(
+        "equipment.Equipment",
+        on_delete=models.CASCADE,
+        related_name="lab_user_calendar_color_prefs",
+        verbose_name=_("Equipment"),
+    )
+    slot_colors = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_("Slot colours"),
+        help_text=_("Partial map of slot status keys to hex colours (e.g. AVAILABLE, BOOKED_INTERNAL)."),
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Lab user calendar colour preference")
+        verbose_name_plural = _("Lab user calendar colour preferences")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "equipment"],
+                name="uniq_lab_user_calendar_color_pref",
+            ),
+        ]
+
+    def __str__(self):
+        return f"user={self.user_id} equipment={self.equipment_id}"
+
+
 class BookingChargeSetting(models.Model):
     """
     Admin-configurable booking charge settings (e.g. GST for external users).
