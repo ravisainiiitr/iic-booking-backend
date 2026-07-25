@@ -1463,8 +1463,8 @@ class BookingBufferConfigAdmin(admin.ModelAdmin):
                 "fields": ("sample_retention_days", "auto_archive_enabled"),
                 "description": _(
                     "Daily, samples that are in 'Analyzed' for longer than the configured retention "
-                    "are automatically marked as 'Archived' in Sample Lifecycle. Set sample_retention_days to 0 or "
-                    "disable to turn off auto-archive."
+                    "are automatically marked as 'Disposed' in Sample Lifecycle. Set sample_retention_days to 0 or "
+                    "disable to turn off auto-dispose."
                 ),
             },
         ),

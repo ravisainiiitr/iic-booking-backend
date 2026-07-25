@@ -231,16 +231,18 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
 @shared_task(name="equipment.archive_expired_samples")
 def archive_expired_samples() -> int:
     """
-    Daily task: auto-mark sample lifecycle as ARCHIVED after retention period.
+    Daily task: auto-mark sample lifecycle as DISPOSED after retention period.
+
+    (Task name kept for existing Celery beat schedule.)
 
     Rule:
     - If the latest sample trace status is COMPLETED (Analyzed)
       and its timestamp is older than (now - retention_days),
-      and the booking is not already RETURNED / ARCHIVED / DISPOSED,
-      then create a new BookingSampleTrace event with status ARCHIVED.
+      and the booking is not already DISPOSED,
+      then create a BookingSampleTrace event with status DISPOSED.
 
     Returns:
-        Number of bookings archived (events created).
+        Number of bookings disposed (events created).
     """
     from .models import BookingBufferConfig, BookingSampleTrace, SampleTraceStatus
 
@@ -267,40 +269,76 @@ def archive_expired_samples() -> int:
         .values("created_at")[:1]
     )
 
+    # Analyzed (COMPLETED trace) past retention, not yet disposed.
+    # Also pick up legacy ARCHIVED rows so they move to DISPOSED after retention.
     candidates = (
         Booking.objects.filter(status=BookingStatus.COMPLETED)
         .annotate(_latest_sample_status=latest_status_sq, _latest_sample_time=latest_created_sq)
-        .filter(_latest_sample_status=SampleTraceStatus.COMPLETED, _latest_sample_time__lt=cutoff)
+        .filter(
+            _latest_sample_status__in=[SampleTraceStatus.COMPLETED, SampleTraceStatus.ARCHIVED],
+            _latest_sample_time__lt=cutoff,
+        )
+        .exclude(
+            sample_trace_events__status=SampleTraceStatus.DISPOSED,
+        )
+        .distinct()
         .select_related("user", "equipment")
     )
 
-    archived = 0
+    disposed = 0
     for b in candidates.iterator():
-        # Safety: don't archive if something changed since annotate (race) or there are newer events.
         latest = (
             BookingSampleTrace.objects.filter(booking_id=b.booking_id)
             .order_by("-created_at")
             .values_list("status", flat=True)
             .first()
         )
-        if latest != SampleTraceStatus.COMPLETED:
+        if latest not in (SampleTraceStatus.COMPLETED, SampleTraceStatus.ARCHIVED):
+            continue
+        if BookingSampleTrace.objects.filter(booking_id=b.booking_id, status=SampleTraceStatus.DISPOSED).exists():
             continue
         with transaction.atomic():
-            BookingSampleTrace.objects.create(
+            event = BookingSampleTrace.objects.create(
                 booking_id=b.booking_id,
-                status=SampleTraceStatus.ARCHIVED,
-                reason="Auto-archived after retention period.",
+                status=SampleTraceStatus.DISPOSED,
+                reason="Auto-disposed after sample retention period.",
                 created_by=None,
             )
-        archived += 1
+            try:
+                from iic_booking.communication.service import CommunicationService
+                from iic_booking.communication.utils import booking_display_id_for_email
+
+                equipment = getattr(b, "equipment", None)
+                ctx = {
+                    "user_name": getattr(b.user, "name", None) or getattr(b.user, "email", None) or "User",
+                    "user_email": getattr(b.user, "email", "") or "",
+                    "equipment_name": (
+                        (getattr(equipment, "name", None) or getattr(equipment, "code", None) or "Equipment")
+                        if equipment
+                        else "Equipment"
+                    ),
+                    "booking_id": booking_display_id_for_email(b),
+                    "disposed_at": timezone.localtime(event.created_at).strftime("%d %b %Y, %I:%M %p"),
+                    "remarks": event.reason or "",
+                }
+                CommunicationService.send_email(
+                    recipient=b.user,
+                    template="sample_disposed_email",
+                    template_context=ctx,
+                    created_by=None,
+                    metadata={"booking_id": int(b.booking_id), "sample_trace_event_id": int(event.id), "auto": True},
+                )
+            except Exception as e:
+                logger.warning("Auto-dispose email failed for booking %s: %s", b.booking_id, e)
+        disposed += 1
 
     logger.info(
-        "archive_expired_samples: retention_days=%d, cutoff=%s, archived=%d",
+        "archive_expired_samples: retention_days=%d, cutoff=%s, disposed=%d",
         retention_days,
         cutoff.isoformat(),
-        archived,
+        disposed,
     )
-    return archived
+    return disposed
 
 
 @shared_task(name="equipment.send_booking_reminders")

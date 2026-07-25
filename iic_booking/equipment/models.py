@@ -3801,13 +3801,13 @@ class BookingBufferConfig(models.Model):
         verbose_name=_('Sample retention (days)'),
         help_text=_(
             'After the sample is marked "Analyzed" (COMPLETED in trace), wait this many days '
-            'before auto-archiving the sample in Sample Lifecycle. Set to 0 to disable auto-archive.'
+            'before auto-marking the sample as Disposed in Sample Lifecycle. Set to 0 to disable auto-dispose.'
         ),
     )
     auto_archive_enabled = models.BooleanField(
         default=True,
-        verbose_name=_('Auto-archive enabled'),
-        help_text=_('When unchecked, the daily auto-archive task is skipped.'),
+        verbose_name=_('Auto-dispose enabled'),
+        help_text=_('When unchecked, the daily auto-dispose task is skipped.'),
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

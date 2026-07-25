@@ -15,14 +15,61 @@ logger = logging.getLogger(__name__)
 STAFF_ASSIGNEE_TYPES = ("admin", "manager", "operator", "finance")
 
 
-def user_can_manage_tickets(user) -> bool:
-    """True for Django staff or Main Administrator (and other assignee staff types)."""
+def _user_type(user) -> str:
+    return (getattr(user, "user_type", None) or "").strip().lower()
+
+
+def user_is_main_admin(user) -> bool:
+    """Main Administrator (or Django is_staff)."""
     if not user or not getattr(user, "is_authenticated", False):
         return False
     if getattr(user, "is_staff", False):
         return True
-    ut = (getattr(user, "user_type", None) or "").strip().lower()
-    return ut in STAFF_ASSIGNEE_TYPES or ut == "admin"
+    return _user_type(user) == "admin"
+
+
+def user_is_dept_admin(user) -> bool:
+    return bool(user and getattr(user, "is_authenticated", False) and _user_type(user) == "dept_admin")
+
+
+def user_can_manage_tickets(user) -> bool:
+    """
+    True for staff who may manage (assign/resolve) tickets in their visibility scope.
+    Main Administrator and Department Administrator only — not OIC / Lab In-charge / Finance.
+    """
+    return user_is_main_admin(user) or user_is_dept_admin(user)
+
+
+def tickets_queryset_for(user):
+    """
+    Tickets visible to the user:
+    - Main admin: all tickets
+    - Department admin: own tickets + tickets for equipment in their department
+    - Everyone else: only tickets they raised
+    """
+    from django.db.models import Q
+
+    if not user or not getattr(user, "is_authenticated", False):
+        return Ticket.objects.none()
+
+    if user_is_main_admin(user):
+        return Ticket.objects.all()
+
+    if user_is_dept_admin(user):
+        dept_id = getattr(user, "department_id", None)
+        q = Q(user=user)
+        if dept_id:
+            q |= Q(related_equipment__internal_department_id=dept_id)
+        return Ticket.objects.filter(q).distinct()
+
+    return Ticket.objects.filter(user=user)
+
+
+def user_can_access_ticket(user, ticket: Ticket) -> bool:
+    if not user or not getattr(user, "is_authenticated", False) or ticket is None:
+        return False
+    return tickets_queryset_for(user).filter(pk=ticket.pk).exists()
+
 
 def get_equipment_primary_oic(equipment) -> Optional[Any]:
     """Return the first active EquipmentManager (OIC) for the equipment, if any."""

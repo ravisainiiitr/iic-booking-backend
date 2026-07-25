@@ -5170,10 +5170,10 @@ def lab_operator_dashboard(request):
             BookingStatus.BOOKING_NOT_UTILIZED,
         ]
     )
-    no_return = ~Exists(Trace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.RETURNED))
-    no_arch = ~Exists(Trace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.ARCHIVED))
     no_disp = ~Exists(Trace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.DISPOSED))
-    has_arch = Exists(Trace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.ARCHIVED))
+    has_analyzed_trace = Exists(
+        Trace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.COMPLETED)
+    )
     has_not_utilized_trace = Exists(
         Trace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.NOT_UTILIZED)
     )
@@ -5189,19 +5189,12 @@ def lab_operator_dashboard(request):
     )
     week_bookings = list(week_qs[:500])
 
-    # Sample pickup / return queue: **completed** bookings only; exclude any trace marked NOT_UTILIZED
-    # (timeline label "Booking Not Utilized" even if booking row stayed COMPLETED).
-    sample_return_qs = (
-        base.filter(status=BookingStatus.COMPLETED)
-        .filter(exclude_life & no_return & no_arch & no_disp & ~has_not_utilized_trace)
-        .distinct()
-        .select_related("user", "equipment")
-        .prefetch_related(
-            Prefetch("daily_slots", queryset=DailySlot.objects.order_by("start_datetime")),
-        )
-    )
+    # Sample pickup / return queue removed from lifecycle — keep empty-compatible querysets.
+    sample_return_qs = base.none()
+    # Dispose after Analyzed (COMPLETED trace or completed booking), without Archive/Returned.
     dispose_qs = (
-        base.filter(post_life & exclude_life & has_arch & no_return & no_disp)
+        base.filter(post_life & exclude_life & no_disp & ~has_not_utilized_trace)
+        .filter(Q(status=BookingStatus.COMPLETED) | has_analyzed_trace)
         .distinct()
         .select_related("user", "equipment")
         .prefetch_related(
@@ -11824,7 +11817,13 @@ def set_booking_sample_status(request, booking_id):
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
     status_value = (request.data.get('status') or '').strip().upper()
-    disallowed_manual = {SampleTraceStatus.NOT_UTILIZED, SampleTraceStatus.OP_UNAVAILABLE}
+    # Sample Returned and Archived removed from lifecycle; only Disposed remains after Analyzed.
+    disallowed_manual = {
+        SampleTraceStatus.NOT_UTILIZED,
+        SampleTraceStatus.OP_UNAVAILABLE,
+        SampleTraceStatus.RETURNED,
+        SampleTraceStatus.ARCHIVED,
+    }
     valid = [s[0] for s in SampleTraceStatus.choices if s[0] not in disallowed_manual]
     if status_value not in valid:
         return Response(

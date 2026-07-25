@@ -22,6 +22,8 @@ from .ticket_service import (
     apply_create_routing_and_events,
     notify_ticket_assignee,
     record_ticket_event,
+    tickets_queryset_for,
+    user_can_access_ticket,
     user_can_manage_tickets,
 )
 
@@ -141,11 +143,7 @@ def _send_ticket_update_email(ticket: Ticket, action_summary: str, action_detail
 
 
 def _user_can_access_ticket(user, ticket: Ticket) -> bool:
-    if not user or not getattr(user, "is_authenticated", False):
-        return False
-    if user_can_manage_tickets(user):
-        return True
-    return ticket.user_id is not None and ticket.user_id == getattr(user, "id", None)
+    return user_can_access_ticket(user, ticket)
 
 
 @api_view(["GET", "POST"])
@@ -156,8 +154,9 @@ def ticket_list(request):
     Get list of tickets (GET) or create a new ticket (POST).
     
     GET: 
-        - Authenticated users: Get their own tickets
-        - Staff: Get all tickets (can filter with query params)
+        - Authenticated users: tickets they raised
+        - Main Administrator: all tickets
+        - Department Administrator: own tickets + tickets for equipment in their department
         - Public: Not allowed (returns empty list)
     
     POST:
@@ -173,24 +172,19 @@ def ticket_list(request):
         - assigned_to: Filter by assigned staff member (staff only)
     """
     if request.method == "GET":
-        # For authenticated users, show their own tickets
+        # Scoped visibility: own tickets; main admin all; dept admin by department equipment
         if request.user.is_authenticated:
+            queryset = tickets_queryset_for(request.user)
+
             if user_can_manage_tickets(request.user):
-                # Staff can see all tickets
-                queryset = Ticket.objects.all()
-                
-                # Filter by user_id if provided (staff only)
+                # Admin / dept admin may further filter within their visible set
                 user_id = request.query_params.get('user_id')
                 if user_id:
                     queryset = queryset.filter(user_id=user_id)
-                
-                # Filter by assigned_to if provided (staff only)
+
                 assigned_to = request.query_params.get('assigned_to')
                 if assigned_to:
                     queryset = queryset.filter(assigned_to_id=assigned_to)
-            else:
-                # Regular users see only their own tickets
-                queryset = Ticket.objects.filter(user=request.user)
         else:
             # Public users cannot see tickets
             return Response(
@@ -325,8 +319,8 @@ def ticket_detail(request, ticket_id):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         
-        # Users can only view their own tickets, staff can view all
-        if not user_can_manage_tickets(request.user) and ticket.user != request.user:
+        # Users can only view tickets in their visibility scope
+        if not _user_can_access_ticket(request.user, ticket):
             return Response(
                 {"error": "You don't have permission to view this ticket."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -342,8 +336,8 @@ def ticket_detail(request, ticket_id):
             status=status.HTTP_401_UNAUTHORIZED,
         )
     
-    # Staff can update any ticket, users can only update their own (limited)
-    if not user_can_manage_tickets(request.user) and ticket.user != request.user:
+    # Staff can update tickets in scope; owners can update their own (limited fields)
+    if not _user_can_access_ticket(request.user, ticket):
         return Response(
             {"error": "You don't have permission to update this ticket."},
             status=status.HTTP_403_FORBIDDEN,
@@ -492,7 +486,7 @@ def ticket_comment_create(request, ticket_id):
         )
     
     # Check permissions
-    if not user_can_manage_tickets(request.user) and ticket.user != request.user:
+    if not _user_can_access_ticket(request.user, ticket):
         return Response(
             {"error": "You don't have permission to comment on this ticket."},
             status=status.HTTP_403_FORBIDDEN,
@@ -556,7 +550,7 @@ def ticket_comments_list(request, ticket_id):
         )
     
     # Check permissions
-    if not user_can_manage_tickets(request.user) and ticket.user != request.user:
+    if not _user_can_access_ticket(request.user, ticket):
         return Response(
             {"error": "You don't have permission to view comments for this ticket."},
             status=status.HTTP_403_FORBIDDEN,
