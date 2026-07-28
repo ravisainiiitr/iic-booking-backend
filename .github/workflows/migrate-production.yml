@@ -11,29 +11,77 @@ jobs:
         id: find
         run: |
           set -euo pipefail
+          echo "=== Running containers ==="
           docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' || true
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django|iic_booking_production_django' | head -n 1 || true)"
+          echo "=== All django-related containers ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep -iE 'django|NAMES' || true
+
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           if [ -z "$CID" ]; then
-            CID="$(docker ps --format '{{.ID}} {{.Image}}' | grep -i 'django' | head -n 1 | awk '{print $1}' || true)"
+            # Prefer a recently exited django container so we can start/migrate it
+            CID="$(docker ps -a --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ]; then
+              echo "Django not running; recent logs for $CID:"
+              docker logs --tail 80 "$CID" || true
+              echo "Attempting to start $CID..."
+              docker start "$CID" || true
+              sleep 5
+              if ! docker ps --format '{{.Names}}' | grep -qx "$CID"; then
+                echo "Django still not running after start attempt."
+                docker logs --tail 120 "$CID" || true
+                # Fall back to one-shot compose migrate if compose project is present
+                COMPOSE_DIR=""
+                for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+                  if [ -f "$d/docker-compose.production.yml" ]; then
+                    COMPOSE_DIR="$d"
+                    break
+                  fi
+                done
+                if [ -n "$COMPOSE_DIR" ]; then
+                  echo "Running one-shot migrate via compose in $COMPOSE_DIR"
+                  cd "$COMPOSE_DIR"
+                  docker compose -f docker-compose.production.yml run --rm --no-deps django python manage.py migrate --noinput
+                  echo "mode=compose" >> "$GITHUB_OUTPUT"
+                  echo "container=" >> "$GITHUB_OUTPUT"
+                  exit 0
+                fi
+                exit 1
+              fi
+            fi
           fi
           if [ -z "$CID" ]; then
-            echo "Could not find a running Django container."
+            echo "Could not find a Django container."
             exit 1
           fi
           echo "Using container: $CID"
           echo "container=$CID" >> "$GITHUB_OUTPUT"
+          echo "mode=exec" >> "$GITHUB_OUTPUT"
 
       - name: Show migration status (before)
+        if: steps.find.outputs.mode == 'exec'
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
-            python manage.py showmigrations communication cms
+            python manage.py showmigrations equipment communication remote_analysis sync | tail -n 80
 
       - name: Run all pending migrations on production
+        if: steps.find.outputs.mode == 'exec'
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
             python manage.py migrate --noinput
 
       - name: Show migration status (after)
+        if: steps.find.outputs.mode == 'exec'
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
-            python manage.py showmigrations communication cms
+            python manage.py showmigrations equipment communication remote_analysis sync | tail -n 80
+
+      - name: Ensure Django is up after migrate
+        if: steps.find.outputs.mode == 'exec'
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          if [ -n "$CID" ]; then
+            docker start "$CID" || true
+            sleep 3
+            docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -i django || true
+          fi
