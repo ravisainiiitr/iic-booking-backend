@@ -245,6 +245,8 @@ def _simple_email(
     name_var: str = "user_name",
     variable_help: str = "",
     extra_html: str = "",
+    post_details_html: str = "",
+    post_details_text: str = "",
     subtitle: str = "",
 ) -> dict[str, Any]:
     built = build_standard_email(
@@ -258,6 +260,8 @@ def _simple_email(
         cta_var=cta_var,
         name_var=name_var,
         extra_html=extra_html,
+        post_details_html=post_details_html,
+        post_details_text=post_details_text,
         subtitle=subtitle,
         description=description,
         variable_help=variable_help,
