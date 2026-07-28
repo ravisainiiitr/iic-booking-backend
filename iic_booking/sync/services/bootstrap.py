@@ -39,7 +39,7 @@ class BootstrapService:
             raise DisabledAgentError()
 
         agent = (
-            DepartmentSyncAgent.objects.select_related("department", "laboratory")
+            DepartmentSyncAgent.objects.select_related("department", "equipment")
             .prefetch_related(
                 Prefetch(
                     "assignments",
@@ -86,7 +86,7 @@ class BootstrapService:
             )
 
         department = agent.department
-        laboratory = agent.laboratory
+        equipment = agent.equipment
 
         payload = {
             "bootstrap_schema_version": portal_schema,
@@ -101,12 +101,13 @@ class BootstrapService:
                 "name": department.name if department else None,
                 "code": department.code if department else None,
             },
-            "laboratory": {
-                "name": laboratory.name if laboratory else None,
-                "code": laboratory.code if laboratory else None,
-                "location": laboratory.location if laboratory else None,
+            "equipment": {
+                "equipment_id": equipment.equipment_id if equipment else None,
+                "name": equipment.name if equipment else None,
+                "code": equipment.code if equipment else None,
+                "location": equipment.location if equipment else None,
             }
-            if laboratory
+            if equipment
             else None,
             "agent": {
                 "agent_uuid": str(agent.agent_uuid),

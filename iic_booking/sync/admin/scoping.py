@@ -5,7 +5,7 @@ Milestone 3 prepares the structure only — no RBAC is enforced yet.
 Intended roles:
 - Main Administrator → full access
 - Department Administrator → own department only
-- Lab In-Charge → own laboratory only
+- Equipment operator / OIC → own equipment only
 """
 
 from __future__ import annotations
@@ -21,11 +21,11 @@ class SyncAdminScope:
         *,
         is_full_access: bool = True,
         department_id: int | None = None,
-        laboratory_id=None,
+        equipment_id=None,
     ):
         self.is_full_access = is_full_access
         self.department_id = department_id
-        self.laboratory_id = laboratory_id
+        self.equipment_id = equipment_id
 
 
 def resolve_sync_admin_scope(request) -> SyncAdminScope:
@@ -42,7 +42,7 @@ def resolve_sync_admin_scope(request) -> SyncAdminScope:
     # Future:
     # - Main Admin / superuser → full access
     # - Dept Admin → department_id = user.department_id
-    # - Lab In-Charge → laboratory_id from assignment
+    # - Equipment OIC → equipment_id from operator assignment
     return SyncAdminScope(is_full_access=True)
 
 
@@ -52,8 +52,8 @@ def scope_agents(queryset: QuerySet, scope: SyncAdminScope) -> QuerySet:
     qs = queryset
     if scope.department_id is not None:
         qs = qs.filter(department_id=scope.department_id)
-    if scope.laboratory_id is not None:
-        qs = qs.filter(laboratory_id=scope.laboratory_id)
+    if scope.equipment_id is not None:
+        qs = qs.filter(equipment_id=scope.equipment_id)
     return qs
 
 
@@ -63,11 +63,8 @@ def scope_profiles(queryset: QuerySet, scope: SyncAdminScope) -> QuerySet:
     qs = queryset
     if scope.department_id is not None:
         qs = qs.filter(equipment__internal_department_id=scope.department_id)
-    if scope.laboratory_id is not None:
-        qs = qs.filter(
-            assignments__is_active=True,
-            assignments__sync_agent__laboratory_id=scope.laboratory_id,
-        ).distinct()
+    if scope.equipment_id is not None:
+        qs = qs.filter(equipment_id=scope.equipment_id)
     return qs
 
 
@@ -77,6 +74,6 @@ def scope_by_agent_department(queryset: QuerySet, scope: SyncAdminScope, *, agen
     qs = queryset
     if scope.department_id is not None:
         qs = qs.filter(**{f"{agent_lookup}__department_id": scope.department_id})
-    if scope.laboratory_id is not None:
-        qs = qs.filter(**{f"{agent_lookup}__laboratory_id": scope.laboratory_id})
+    if scope.equipment_id is not None:
+        qs = qs.filter(**{f"{agent_lookup}__equipment_id": scope.equipment_id})
     return qs

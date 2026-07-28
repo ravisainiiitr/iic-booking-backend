@@ -25,7 +25,7 @@
     <tr><th>{% trans "Machine" %}</th><td>{{ agent.machine_name|default:"-" }}</td></tr>
     <tr><th>{% trans "OS" %}</th><td>{{ agent.operating_system|default:"-" }}</td></tr>
     <tr><th>{% trans "Department" %}</th><td>{{ agent.department }}</td></tr>
-    <tr><th>{% trans "Laboratory" %}</th><td>{{ agent.laboratory|default:"-" }}</td></tr>
+    <tr><th>{% trans "Equipment" %}</th><td>{{ agent.equipment|default:"-" }}</td></tr>
     <tr><th>{% trans "Last heartbeat" %}</th><td>{{ agent.last_heartbeat_at|default:"-" }}</td></tr>
     <tr><th>{% trans "Config version (reported)" %}</th><td>{{ agent.last_reported_configuration_version|default:"-" }}</td></tr>
     <tr><th>{% trans "Schema version (reported)" %}</th><td>{{ agent.last_reported_schema_version|default:"-" }}</td></tr>

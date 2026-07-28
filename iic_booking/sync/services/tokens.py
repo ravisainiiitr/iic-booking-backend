@@ -80,7 +80,7 @@ def agent_expected_versions(agent: DepartmentSyncAgent) -> tuple[int, int]:
 
 def load_agent_with_assignments(agent_uuid) -> DepartmentSyncAgent | None:
     return (
-        DepartmentSyncAgent.objects.select_related("department", "laboratory")
+        DepartmentSyncAgent.objects.select_related("department", "equipment")
         .prefetch_related(
             Prefetch(
                 "assignments",

@@ -55,10 +55,10 @@ def _serialize_agent(agent: DepartmentSyncAgent, latest: AgentHeartbeat | None) 
     current_upload = details.get("current_upload") or {}
     current_processing = details.get("current_processing") or {}
 
-    lab = agent.laboratory
+    eq = agent.equipment
     building = ""
-    if lab is not None:
-        building = (lab.location or lab.name or lab.code or "").strip()
+    if eq is not None:
+        building = (eq.location or eq.name or eq.code or "").strip()
 
     return {
         "id": str(agent.id),
@@ -69,7 +69,10 @@ def _serialize_agent(agent: DepartmentSyncAgent, latest: AgentHeartbeat | None) 
         "department": agent.department.name if agent.department_id else "",
         "department_code": getattr(agent.department, "code", "") or "",
         "building": building,
-        "laboratory": lab.name if lab is not None else "",
+        "equipment_id": eq.equipment_id if eq is not None else None,
+        "equipment_code": eq.code if eq is not None else "",
+        "equipment_name": eq.name if eq is not None else "",
+        "laboratory": eq.name if eq is not None else "",
         "computer": agent.machine_name or "",
         "hostname": (latest.hostname if latest else "") or agent.machine_name or "",
         "agent_version": agent.version or (latest.service_version if latest else "") or "",
@@ -114,7 +117,7 @@ def _latest_heartbeat_map(agent_ids: list) -> dict:
 @permission_classes([IsAdminUser])
 def admin_agents_list(request):
     """GET /api/v1/sync/admin/agents/ — Agent Management Dashboard rows."""
-    qs = DepartmentSyncAgent.objects.select_related("department", "laboratory").order_by(
+    qs = DepartmentSyncAgent.objects.select_related("department", "equipment").order_by(
         "department__name",
         "machine_name",
         "agent_name",
@@ -151,7 +154,7 @@ def admin_agents_list(request):
 def admin_agent_detail(request, agent_id):
     """GET /api/v1/sync/admin/agents/{id}/ — single agent dashboard + recent activity."""
     try:
-        agent = DepartmentSyncAgent.objects.select_related("department", "laboratory").get(pk=agent_id)
+        agent = DepartmentSyncAgent.objects.select_related("department", "equipment").get(pk=agent_id)
     except (DepartmentSyncAgent.DoesNotExist, ValueError):
         return Response({"detail": _("Agent not found.")}, status=status.HTTP_404_NOT_FOUND)
 

@@ -1,18 +1,17 @@
 """
 Department Sync Agent persistence models.
 
-Lab-centric design:
-- Equipment remains the permanent portal asset.
-- DepartmentSyncAgent is a replaceable laboratory workstation node.
+Equipment-centric design:
+- Equipment is the permanent portal asset (booking / sync target).
+- DepartmentSyncAgent is a replaceable Support PC / workstation node.
+- An agent may optionally declare a primary Equipment (department-scoped).
+- Additional instruments bind via AgentAssignment → EquipmentSyncProfile.
 - EquipmentSyncProfile stores long-lived sync configuration only.
 - AgentHeartbeat stores runtime telemetry.
-- Bootstrap (later milestone) is the control-plane source of truth;
+- Bootstrap is the control-plane source of truth;
   heartbeat returns operational commands only.
 
-Laboratory decision:
-No existing portal entity models a physical laboratory (EquipmentGroup is quota
-grouping; Equipment.location is free text; "lab in charge" is an EquipmentOperator
-role). Therefore sync.Laboratory is retained as a first-class sync-domain entity.
+sync.Laboratory remains for enterprise topology / historical assignment rows only.
 """
 
 from __future__ import annotations
@@ -294,14 +293,17 @@ class DepartmentSyncAgent(models.Model):
         related_name="department_sync_agents",
         verbose_name=_("Department"),
     )
-    laboratory = models.ForeignKey(
-        Laboratory,
+    equipment = models.ForeignKey(
+        "equipment.Equipment",
         on_delete=models.PROTECT,
-        related_name="sync_agents",
+        related_name="primary_sync_agents",
         null=True,
         blank=True,
-        verbose_name=_("Laboratory"),
-        help_text=_("Laboratory workstation location. Prefer setting this for lab-centric ops."),
+        verbose_name=_("Equipment"),
+        help_text=_(
+            "Primary equipment for this agent. Choices are limited to the selected department. "
+            "Additional instruments can still be assigned via Equipment Sync Profiles."
+        ),
     )
     building = models.ForeignKey(
         Building,
@@ -519,7 +521,7 @@ class DepartmentSyncAgent(models.Model):
         ordering = ["-registered_at"]
         indexes = [
             models.Index(fields=["department", "is_active"]),
-            models.Index(fields=["laboratory", "is_active"]),
+            models.Index(fields=["equipment", "is_active"]),
             models.Index(fields=["status", "last_heartbeat_at"]),
             models.Index(fields=["certificate_thumbprint"]),
             models.Index(fields=["device_id"]),

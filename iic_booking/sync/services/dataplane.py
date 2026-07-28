@@ -105,9 +105,9 @@ class EquipmentSyncService:
         for profile in qs:
             equipment = profile.equipment
             assignment = next(iter(profile.assignments.all()), None)
-            lab = None
-            if assignment and assignment.sync_agent.laboratory_id:
-                lab = assignment.sync_agent.laboratory
+            primary_eq = None
+            if assignment and assignment.sync_agent.equipment_id:
+                primary_eq = assignment.sync_agent.equipment
             dept = equipment.internal_department
             items.append(
                 {
@@ -118,11 +118,12 @@ class EquipmentSyncService:
                         "name": dept.name if dept else None,
                         "code": dept.code if dept else None,
                     },
-                    "laboratory": {
-                        "name": lab.name if lab else None,
-                        "code": lab.code if lab else None,
+                    "primary_equipment": {
+                        "equipment_id": primary_eq.equipment_id if primary_eq else None,
+                        "name": primary_eq.name if primary_eq else None,
+                        "code": primary_eq.code if primary_eq else None,
                     }
-                    if lab
+                    if primary_eq
                     else None,
                     "sync_profile": {
                         "watch_folder": profile.watch_folder,

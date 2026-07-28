@@ -4,26 +4,31 @@ from __future__ import annotations
 
 import json
 import secrets
+import uuid
 
+from django import forms
 from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
 from django.db.models import Count, Prefetch, Q
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.urls import path, reverse
 from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 
+from iic_booking.equipment.models import Equipment
 from iic_booking.sync.models import (
     AgentAssignment,
     AgentHeartbeat,
     AgentLifecycleStatus,
     DepartmentSyncAgent,
+    EquipmentSyncProfile,
     SyncLog,
     SyncLogSeverity,
 )
 
-from .filters import DepartmentFilter, LaboratoryFilter, LifecycleFilter, OnlineStatusFilter
+from .filters import DepartmentFilter, EquipmentFilter, LifecycleFilter, OnlineStatusFilter
 from .helpers import (
     action_button,
     admin_action_buttons,
@@ -37,13 +42,59 @@ from .scoping import resolve_sync_admin_scope, scope_agents
 from .validation import validate_agent
 
 
+class DepartmentSyncAgentAdminForm(forms.ModelForm):
+    """Scope Equipment choices to the selected department."""
+
+    class Meta:
+        model = DepartmentSyncAgent
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        dept_id = None
+        if self.data.get("department"):
+            dept_id = self.data.get("department")
+        elif self.instance.pk and self.instance.department_id:
+            dept_id = self.instance.department_id
+
+        equipment_qs = Equipment.objects.order_by("code", "name")
+        if dept_id:
+            equipment_qs = equipment_qs.filter(internal_department_id=dept_id)
+        else:
+            equipment_qs = equipment_qs.none()
+        if "equipment" in self.fields:
+            self.fields["equipment"].queryset = equipment_qs
+            self.fields["equipment"].help_text = _(
+                "Shows equipment mapped to the selected department (internal_department). "
+                "Select a department first."
+            )
+        if "machine_guid" in self.fields and not (self.instance.pk and self.instance.machine_guid):
+            if not self.data.get("machine_guid"):
+                self.fields["machine_guid"].initial = uuid.uuid4()
+
+    def clean(self):
+        cleaned = super().clean()
+        department = cleaned.get("department")
+        equipment = cleaned.get("equipment")
+        if equipment and department and equipment.internal_department_id != department.pk:
+            raise ValidationError(
+                {
+                    "equipment": _(
+                        "Selected equipment does not belong to the selected department."
+                    )
+                }
+            )
+        return cleaned
+
+
 @admin.register(DepartmentSyncAgent)
 class DepartmentSyncAgentAdmin(admin.ModelAdmin):
+    form = DepartmentSyncAgentAdminForm
     change_form_template = "admin/sync/departmentsyncagent/change_form.html"
     list_display = (
         "agent_name",
         "department",
-        "laboratory",
+        "equipment",
         "machine_name",
         "version",
         "lifecycle_badge_col",
@@ -54,7 +105,7 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
         "assigned_equipment_count",
         "ops_links",
     )
-    list_filter = (DepartmentFilter, LaboratoryFilter, LifecycleFilter, OnlineStatusFilter, "version")
+    list_filter = (DepartmentFilter, EquipmentFilter, LifecycleFilter, OnlineStatusFilter, "version")
     search_fields = (
         "agent_name",
         "machine_name",
@@ -62,9 +113,10 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
         "id",
         "machine_guid",
         "department__name",
-        "laboratory__name",
+        "equipment__name",
+        "equipment__code",
     )
-    autocomplete_fields = ("department", "laboratory")
+    autocomplete_fields = ("department",)
     readonly_fields = (
         "id",
         "agent_uuid",
@@ -102,7 +154,7 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
                 "fields": (
                     "agent_name",
                     "department",
-                    "laboratory",
+                    "equipment",
                     "machine_name",
                     "machine_guid",
                     "version",
@@ -156,7 +208,7 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
         qs = (
             super()
             .get_queryset(request)
-            .select_related("department", "laboratory")
+            .select_related("department", "equipment")
             .annotate(
                 _assigned_count=Count(
                     "assignments",
@@ -170,6 +222,11 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
     def get_urls(self):
         info = self.model._meta.app_label, self.model._meta.model_name
         custom = [
+            path(
+                "equipment-for-department/",
+                self.admin_site.admin_view(self.equipment_for_department_view),
+                name="%s_%s_equipment_for_department" % info,
+            ),
             path(
                 "<uuid:agent_id>/diagnostics/",
                 self.admin_site.admin_view(self.diagnostics_view),
@@ -202,6 +259,41 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
             ),
         ]
         return custom + super().get_urls()
+
+    def equipment_for_department_view(self, request):
+        """JSON list of equipment for the selected department (admin change form)."""
+        department_id = request.GET.get("department")
+        if not department_id:
+            return JsonResponse({"results": []})
+        rows = (
+            Equipment.objects.filter(internal_department_id=department_id)
+            .order_by("code", "name")
+            .values_list("equipment_id", "code", "name")
+        )
+        return JsonResponse(
+            {
+                "results": [
+                    {"id": eid, "label": f"{code} — {name}"}
+                    for eid, code, name in rows
+                ]
+            }
+        )
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if obj.equipment_id:
+            profile = EquipmentSyncProfile.objects.filter(equipment_id=obj.equipment_id).first()
+            if profile is not None:
+                AgentAssignment.objects.filter(
+                    sync_profile=profile, is_active=True
+                ).exclude(sync_agent=obj).update(
+                    is_active=False, unassigned_at=timezone.now()
+                )
+                AgentAssignment.objects.update_or_create(
+                    sync_agent=obj,
+                    sync_profile=profile,
+                    defaults={"is_active": True, "unassigned_at": None},
+                )
 
     @admin.display(description=_("Lifecycle"), ordering="status")
     def lifecycle_badge_col(self, obj):
@@ -250,7 +342,7 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
 
     def diagnostics_view(self, request, agent_id):
         agent = get_object_or_404(
-            DepartmentSyncAgent.objects.select_related("department", "laboratory"),
+            DepartmentSyncAgent.objects.select_related("department", "equipment"),
             pk=agent_id,
         )
         latest_hb = (
@@ -286,18 +378,27 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
 
     def export_configuration_view(self, request, agent_id):
         agent = get_object_or_404(
-            DepartmentSyncAgent.objects.select_related("department", "laboratory"),
+            DepartmentSyncAgent.objects.select_related("department", "equipment"),
             pk=agent_id,
         )
         assignments = (
             AgentAssignment.objects.filter(sync_agent=agent, is_active=True)
             .select_related("sync_profile", "sync_profile__equipment")
         )
+        primary = agent.equipment
         payload = {
             "agent_uuid": str(agent.agent_uuid),
             "agent_name": agent.agent_name,
             "department": agent.department.name if agent.department_id else None,
-            "laboratory": agent.laboratory.name if agent.laboratory_id else None,
+            "primary_equipment": (
+                {
+                    "equipment_id": primary.equipment_id,
+                    "code": primary.code,
+                    "name": primary.name,
+                }
+                if primary
+                else None
+            ),
             "status": agent.status,
             "version": agent.version,
             "last_reported_configuration_version": agent.last_reported_configuration_version,

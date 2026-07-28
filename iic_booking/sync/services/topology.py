@@ -73,7 +73,7 @@ class TopologyService:
         agents = list(
             DepartmentSyncAgent.objects.filter(department=department)
             .exclude(status="DELETED")
-            .select_related("building", "laboratory")
+            .select_related("building", "equipment")
         )
         profile_count = EquipmentSyncProfile.objects.filter(
             primary_agent__department=department

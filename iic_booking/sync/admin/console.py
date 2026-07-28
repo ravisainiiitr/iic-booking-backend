@@ -58,6 +58,5 @@ class SyncOperationsConsoleAdmin(admin.ModelAdmin):
             "assignment_changelist": reverse("admin:sync_agentassignment_changelist"),
             "heartbeat_changelist": reverse("admin:sync_agentheartbeat_changelist"),
             "log_changelist": reverse("admin:sync_synclog_changelist"),
-            "laboratory_changelist": reverse("admin:sync_laboratory_changelist"),
         }
         return render(request, "admin/sync/operations_dashboard.html", context)

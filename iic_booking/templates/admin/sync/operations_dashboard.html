@@ -45,7 +45,6 @@
     <a href="{{ assignment_changelist }}">{% trans "Assignments" %}</a>
     <a href="{{ heartbeat_changelist }}">{% trans "Heartbeats" %}</a>
     <a href="{{ log_changelist }}">{% trans "Logs" %}</a>
-    <a href="{{ laboratory_changelist }}">{% trans "Laboratories" %}</a>
   </span>
 </p>
 
@@ -92,13 +91,13 @@
 <div class="dsa-section">
   <h2>{% trans "Recent registrations" %}</h2>
   <table class="dsa-table">
-    <thead><tr><th>{% trans "Agent" %}</th><th>{% trans "Department" %}</th><th>{% trans "Lab" %}</th><th>{% trans "Status" %}</th><th>{% trans "Registered" %}</th></tr></thead>
+    <thead><tr><th>{% trans "Agent" %}</th><th>{% trans "Department" %}</th><th>{% trans "Equipment" %}</th><th>{% trans "Status" %}</th><th>{% trans "Registered" %}</th></tr></thead>
     <tbody>
     {% for agent in recent_registrations %}
       <tr>
         <td><a href="{% url 'admin:sync_departmentsyncagent_change' agent.pk %}">{{ agent.agent_name }}</a></td>
         <td>{{ agent.department }}</td>
-        <td>{{ agent.laboratory|default:"-" }}</td>
+        <td>{{ agent.equipment|default:"-" }}</td>
         <td>{{ agent.get_status_display }}</td>
         <td>{{ agent.registered_at }}</td>
       </tr>

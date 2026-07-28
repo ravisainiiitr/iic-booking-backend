@@ -43,7 +43,7 @@ class EnrollmentService:
         portal_version = (payload.get("portal_version") or "").strip()
 
         agent = (
-            DepartmentSyncAgent.objects.select_related("department", "laboratory")
+            DepartmentSyncAgent.objects.select_related("department", "equipment")
             .filter(agent_uuid=agent_uuid)
             .first()
         )

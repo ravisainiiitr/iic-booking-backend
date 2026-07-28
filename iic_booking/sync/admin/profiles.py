@@ -119,7 +119,7 @@ class EquipmentSyncProfileAdmin(admin.ModelAdmin):
                     "assignments",
                     queryset=AgentAssignment.objects.filter(is_active=True).select_related(
                         "sync_agent",
-                        "sync_agent__laboratory",
+                        "sync_agent__equipment",
                     ),
                 )
             )

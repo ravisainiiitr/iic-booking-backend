@@ -8,7 +8,7 @@ from django.contrib import admin
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from iic_booking.sync.models import AgentLifecycleStatus, Laboratory
+from iic_booking.sync.models import AgentLifecycleStatus
 from iic_booking.users.models.department import Department, DepartmentType
 
 from .constants import heartbeat_timeout_seconds
@@ -65,16 +65,20 @@ class ProfileDepartmentFilter(admin.SimpleListFilter):
         return queryset
 
 
-class LaboratoryFilter(admin.SimpleListFilter):
-    title = _("Laboratory")
-    parameter_name = "laboratory"
+class EquipmentFilter(admin.SimpleListFilter):
+    title = _("Equipment")
+    parameter_name = "equipment"
 
     def lookups(self, request, model_admin):
-        return list(Laboratory.objects.order_by("name").values_list("id", "name"))
+        from iic_booking.equipment.models import Equipment
+
+        return list(
+            Equipment.objects.order_by("name").values_list("equipment_id", "name")[:500]
+        )
 
     def queryset(self, request, queryset):
         if self.value():
-            return queryset.filter(laboratory_id=self.value())
+            return queryset.filter(equipment_id=self.value())
         return queryset
 
 

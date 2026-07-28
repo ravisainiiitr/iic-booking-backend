@@ -10,13 +10,11 @@ from .assignments import AgentAssignmentAdmin
 from .commands import AgentCommandAdmin, BookingWorkspaceAdmin
 from .console import SyncOperationsConsoleAdmin
 from .heartbeats import AgentHeartbeatAdmin
-from .laboratory import LaboratoryAdmin
 from .logs import SyncLogAdmin
 from .profiles import EquipmentSyncProfileAdmin
 
 __all__ = [
     "SyncOperationsConsoleAdmin",
-    "LaboratoryAdmin",
     "DepartmentSyncAgentAdmin",
     "EquipmentSyncProfileAdmin",
     "AgentAssignmentAdmin",

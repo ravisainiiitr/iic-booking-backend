@@ -39,7 +39,7 @@ class AgentRegistryService:
         include_deleted: bool = False,
     ) -> QuerySet[DepartmentSyncAgent]:
         qs = DepartmentSyncAgent.objects.select_related(
-            "department", "laboratory", "building"
+            "department", "equipment", "building"
         ).all()
         if department_id:
             qs = qs.filter(department_id=department_id)
@@ -62,8 +62,9 @@ class AgentRegistryService:
             "department": agent.department.name if agent.department_id else "",
             "building_id": str(agent.building_id) if agent.building_id else None,
             "building": agent.building.name if agent.building_id else "",
-            "laboratory_id": str(agent.laboratory_id) if agent.laboratory_id else None,
-            "laboratory": agent.laboratory.name if agent.laboratory_id else "",
+            "equipment_id": agent.equipment_id,
+            "equipment_code": agent.equipment.code if agent.equipment_id else "",
+            "equipment_name": agent.equipment.name if agent.equipment_id else "",
             "machine_name": agent.machine_name,
             "operating_system": agent.operating_system,
             "version": agent.version,

@@ -33,7 +33,7 @@ def ensure_department_sync_agent(
         raise ValueError("SyncAgent has no department; cannot bridge control-plane identity.")
 
     agent = (
-        DepartmentSyncAgent.objects.select_related("department", "laboratory")
+        DepartmentSyncAgent.objects.select_related("department", "equipment")
         .filter(machine_guid=machine_guid)
         .first()
     )

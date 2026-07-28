@@ -24,7 +24,7 @@ def assigned_profile_queryset(agent: DepartmentSyncAgent) -> QuerySet[EquipmentS
                 queryset=AgentAssignment.objects.filter(
                     sync_agent=agent,
                     is_active=True,
-                ).select_related("sync_agent", "sync_agent__laboratory"),
+                ).select_related("sync_agent", "sync_agent__equipment"),
             )
         )
         .distinct()

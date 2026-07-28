@@ -84,12 +84,12 @@ def validate_sync_profile(profile: EquipmentSyncProfile) -> list[ValidationIssue
 
 def validate_agent(agent: DepartmentSyncAgent) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    if agent.laboratory_id is None:
+    if agent.equipment_id is None:
         issues.append(
             ValidationIssue(
-                code="AGENT_WITHOUT_LABORATORY",
+                code="AGENT_WITHOUT_EQUIPMENT",
                 severity="warning",
-                message=str(_("Agent has no laboratory assigned.")),
+                message=str(_("Agent has no primary equipment assigned.")),
                 object_repr=str(agent),
             )
         )
@@ -139,7 +139,7 @@ def collect_system_validation_issues(*, limit: int = 50) -> list[ValidationIssue
     for profile in profiles:
         issues.extend(validate_sync_profile(profile))
 
-    agents = DepartmentSyncAgent.objects.select_related("department", "laboratory")[:limit]
+    agents = DepartmentSyncAgent.objects.select_related("department", "equipment")[:limit]
     for agent in agents:
         issues.extend(validate_agent(agent))
 

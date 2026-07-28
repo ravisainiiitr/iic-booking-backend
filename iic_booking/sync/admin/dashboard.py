@@ -78,7 +78,7 @@ def build_operations_dashboard_context(*, limit_recent: int = 12) -> dict:
         .order_by("-created_at")[:limit_recent]
     )
     recent_registrations = list(
-        DepartmentSyncAgent.objects.select_related("department", "laboratory")
+        DepartmentSyncAgent.objects.select_related("department", "equipment")
         .order_by("-registered_at")[:limit_recent]
     )
 

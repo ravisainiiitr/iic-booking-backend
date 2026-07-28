@@ -1,5 +1,5 @@
 {% extends "admin/change_form.html" %}
-{% load i18n %}
+{% load i18n static %}
 
 {% block object-tools-items %}
   {% if sync_agent_ops_links %}
@@ -8,4 +8,53 @@
     {% endfor %}
   {% endif %}
   {{ block.super }}
+{% endblock %}
+
+{% block admin_change_form_document_ready %}
+{{ block.super }}
+<script>
+(function($) {
+  function equipmentUrl() {
+    return "{% url 'admin:sync_departmentsyncagent_equipment_for_department' %}";
+  }
+
+  function reloadEquipmentOptions() {
+    var $dept = $("#id_department");
+    var $eq = $("#id_equipment");
+    if (!$dept.length || !$eq.length) {
+      return;
+    }
+    var departmentId = $dept.val();
+    var selected = $eq.val();
+    $eq.empty().append($("<option></option>").attr("value", "").text("---------"));
+    if (!departmentId) {
+      return;
+    }
+    $.getJSON(equipmentUrl(), { department: departmentId })
+      .done(function(data) {
+        (data.results || []).forEach(function(item) {
+          var $opt = $("<option></option>")
+            .attr("value", item.id)
+            .text(item.label);
+          if (String(item.id) === String(selected)) {
+            $opt.prop("selected", true);
+          }
+          $eq.append($opt);
+        });
+      });
+  }
+
+  $(document).ready(function() {
+    var $dept = $("#id_department");
+    if (!$dept.length) {
+      return;
+    }
+    $dept.on("change", reloadEquipmentOptions);
+    // Select2 / autocomplete also fires change; reload once on load when department set.
+    if ($dept.val()) {
+      reloadEquipmentOptions();
+    }
+  });
+})(django.jQuery);
+</script>
 {% endblock %}

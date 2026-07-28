@@ -46,7 +46,8 @@ class AgentAssignmentAdmin(admin.ModelAdmin):
         "sync_profile__equipment__name",
         "sync_profile__equipment__code",
         "sync_agent__agent_name",
-        "sync_agent__laboratory__name",
+        "sync_agent__equipment__name",
+        "sync_agent__equipment__code",
     )
     autocomplete_fields = ("sync_agent", "sync_profile")
     readonly_fields = ("id", "assigned_at", "unassigned_at", "created_at", "updated_at")
@@ -75,7 +76,7 @@ class AgentAssignmentAdmin(admin.ModelAdmin):
             .get_queryset(request)
             .select_related(
                 "sync_agent",
-                "sync_agent__laboratory",
+                "sync_agent__equipment",
                 "sync_agent__department",
                 "sync_profile",
                 "sync_profile__equipment",
@@ -102,10 +103,10 @@ class AgentAssignmentAdmin(admin.ModelAdmin):
     def equipment_col(self, obj):
         return obj.sync_profile.equipment
 
-    @admin.display(description=_("Laboratory"))
+    @admin.display(description=_("Primary equipment"))
     def laboratory_col(self, obj):
-        lab = obj.sync_agent.laboratory
-        return lab.name if lab else "-"
+        eq = obj.sync_agent.equipment
+        return f"{eq.code} — {eq.name}" if eq else "-"
 
     @admin.display(description=_("Status"))
     def status_badge(self, obj):
