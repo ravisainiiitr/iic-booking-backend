@@ -491,13 +491,13 @@ def wrap_email_html(
         else ""
     )
     logo_html = (
-        f'<img src="{escape(logo)}" width="64" height="64" alt="IIT Roorkee Logo" '
-        f'style="display:block;margin:0 auto;width:64px;max-width:64px;height:auto;border:0;" />'
+        f'<img src="{escape(logo)}" width="72" height="72" alt="IIT Roorkee Logo" '
+        f'style="display:block;width:72px;max-width:72px;height:auto;border:0;" />'
         if logo
         else (
-            f'<div style="width:64px;height:64px;margin:0 auto;border-radius:14px;'
+            f'<div style="width:72px;height:72px;border-radius:14px;'
             f'background:rgba(255,255,255,0.14);font-family:Arial,Helvetica,sans-serif;'
-            f'font-size:18px;font-weight:800;line-height:64px;text-align:center;color:#ffffff;">IITR</div>'
+            f'font-size:18px;font-weight:800;line-height:72px;text-align:center;color:#ffffff;">IITR</div>'
         )
     )
     return f"""<!doctype html>
@@ -524,12 +524,15 @@ def wrap_email_html(
     body {{ margin: 0 !important; padding: 0 !important; width: 100% !important; }}
     a[x-apple-data-detectors] {{ color: inherit !important; text-decoration: none !important; }}
     .org-name-en {{ white-space: nowrap; }}
-    @media only screen and (max-width: 620px) {{
+    .org-name-hi {{ white-space: nowrap; }}
+    @media only screen and (max-width: 740px) {{
       .email-container {{ width: 100% !important; max-width: 100% !important; }}
       .hero-pad {{ padding: 26px 18px 24px 18px !important; }}
       .body-pad {{ padding: 22px 18px !important; }}
       .org-name-en {{ white-space: normal !important; font-size: 15px !important; line-height: 1.3 !important; }}
+      .org-name-hi {{ white-space: normal !important; font-size: 14px !important; line-height: 1.4 !important; }}
       .email-title {{ font-size: 22px !important; }}
+      .brand-logo-cell {{ padding-right: 12px !important; }}
     }}
   </style>
 </head>
@@ -540,30 +543,34 @@ def wrap_email_html(
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:{COLOR_BG};">
     <tr>
       <td align="center" style="padding:28px 12px;">
-        <table role="presentation" class="email-container" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;">
+        <table role="presentation" class="email-container" width="720" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:720px;">
           <tr>
-            <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" align="center" style="background-color:{COLOR_PRIMARY};background-image:{COLOR_HERO_GRADIENT};padding:30px 28px 28px 28px;border-radius:18px 18px 0 0;text-align:center;">
+            <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" align="center" style="background-color:{COLOR_PRIMARY};background-image:{COLOR_HERO_GRADIENT};padding:30px 32px 28px 32px;border-radius:18px 18px 0 0;text-align:center;">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                 <tr>
-                  <td align="center" style="padding:0 0 14px 0;">
-                    {logo_html}
-                  </td>
-                </tr>
-                <tr>
-                  <td align="center" style="padding:0;">
-                    <div class="org-name-en" style="font-family:Arial,Helvetica,sans-serif;font-size:17px;line-height:1.25;font-weight:800;color:#ffffff;letter-spacing:0.01em;">
-                      {escape(org)}
-                    </div>
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45;font-weight:600;color:rgba(255,255,255,0.92);margin-top:6px;">
-                      {escape(ORG_HINDI)}
-                    </div>
-                  </td>
-                </tr>
-                <tr>
-                  <td align="center" style="padding:14px 0 0 0;">
+                  <td align="center" style="padding:0 0 16px 0;">
                     <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:0 auto;">
                       <tr>
-                        <td align="center" style="padding:7px 14px;border-radius:999px;background:rgba(255,255,255,0.16);font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.10em;text-transform:uppercase;color:#ffffff;">
+                        <td class="brand-logo-cell" valign="middle" style="padding:0 16px 0 0;vertical-align:middle;">
+                          {logo_html}
+                        </td>
+                        <td valign="middle" align="left" style="padding:0;vertical-align:middle;text-align:left;">
+                          <div class="org-name-en" style="font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:1.25;font-weight:800;color:#ffffff;letter-spacing:0.01em;">
+                            {escape(org)}
+                          </div>
+                          <div class="org-name-hi" style="font-family:'Noto Sans Devanagari',Arial,Helvetica,sans-serif;font-size:16px;line-height:1.4;font-weight:600;color:rgba(255,255,255,0.95);margin-top:6px;">
+                            {escape(ORG_HINDI)}
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding:4px 0 0 0;text-align:center;">
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:0 auto;">
+                      <tr>
+                        <td align="center" style="padding:8px 16px;border-radius:999px;background:rgba(255,255,255,0.16);font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.10em;text-transform:uppercase;color:#ffffff;text-align:center;">
                           {escape(PORTAL_LABEL)}
                         </td>
                       </tr>
@@ -576,8 +583,8 @@ def wrap_email_html(
                   </td>
                 </tr>
                 <tr>
-                  <td align="center" style="padding:16px 0 0 0;">
-                    <div class="email-title" style="font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.3;font-weight:800;color:#ffffff;">
+                  <td align="center" style="padding:16px 0 0 0;text-align:center;">
+                    <div class="email-title" style="font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.3;font-weight:800;color:#ffffff;text-align:center;">
                       {escape(title)}
                     </div>
                     {subtitle_html}
@@ -587,7 +594,7 @@ def wrap_email_html(
             </td>
           </tr>
           <tr>
-            <td bgcolor="{COLOR_SURFACE}" class="body-pad" style="background-color:{COLOR_SURFACE};padding:28px 28px 24px 28px;border-left:1px solid {COLOR_BORDER};border-right:1px solid {COLOR_BORDER};font-family:Arial,Helvetica,sans-serif;color:{COLOR_TEXT};">
+            <td bgcolor="{COLOR_SURFACE}" class="body-pad" style="background-color:{COLOR_SURFACE};padding:28px 32px 24px 32px;border-left:1px solid {COLOR_BORDER};border-right:1px solid {COLOR_BORDER};font-family:Arial,Helvetica,sans-serif;color:{COLOR_TEXT};">
               {body_inner_html}
             </td>
           </tr>
@@ -595,7 +602,7 @@ def wrap_email_html(
             <td bgcolor="{COLOR_ACCENT}" style="background-color:{COLOR_ACCENT};height:4px;font-size:0;line-height:0;">&nbsp;</td>
           </tr>
           <tr>
-            <td bgcolor="{COLOR_FOOTER}" style="background-color:{COLOR_FOOTER};padding:22px 28px;border-radius:0 0 18px 18px;">
+            <td bgcolor="{COLOR_FOOTER}" style="background-color:{COLOR_FOOTER};padding:22px 32px;border-radius:0 0 18px 18px;">
               <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#ffffff;">
                 Thank you for using the {escape(PRODUCT_NAME)}.
               </div>

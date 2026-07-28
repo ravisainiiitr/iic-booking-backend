@@ -148,4 +148,10 @@ class RenderTemplateConditionalsTests(SimpleTestCase):
         self.assertIn("Equipment Booking Portal", html)
         self.assertIn("Sample Disposed", html)
         self.assertIn("org-name-en", html)
+        self.assertIn("org-name-hi", html)
         self.assertIn("white-space: nowrap", html)
+        self.assertIn("max-width:720px", html)
+        self.assertIn("font-size:16px", html)
+        # Portal badge + title are centered in the hero
+        self.assertIn('align="center"', html)
+        self.assertIn("margin:0 auto", html)

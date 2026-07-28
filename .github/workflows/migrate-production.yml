@@ -69,6 +69,12 @@ jobs:
           docker exec "${{ steps.find.outputs.container }}" \
             python manage.py migrate --noinput
 
+      - name: Sync default email templates
+        if: steps.find.outputs.mode == 'exec'
+        run: |
+          docker exec "${{ steps.find.outputs.container }}" \
+            python manage.py sync_default_email_templates
+
       - name: Show migration status (after)
         if: steps.find.outputs.mode == 'exec'
         run: |
