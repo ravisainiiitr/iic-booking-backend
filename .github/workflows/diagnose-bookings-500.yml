@@ -17,16 +17,20 @@ jobs:
             docker ps -a | head -n 30
             exit 1
           fi
-          docker exec "$CID" python - <<'PY'
+          cat > /tmp/diagnose_bookings.py <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
           import traceback
           from django.contrib.auth import get_user_model
-          from iic_booking.equipment.models import Booking
-          from iic_booking.equipment.serializers import BookingListSerializer
           from django.db.models import Exists, OuterRef, Prefetch
-          from iic_booking.equipment.models import BookingResultFile, DailySlot
+          from iic_booking.equipment.models import Booking, BookingResultFile, DailySlot
+          from iic_booking.equipment.serializers import BookingListSerializer
 
           User = get_user_model()
-          print("users", User.objects.filter(user_type="admin").count())
+          print("admin_count", User.objects.filter(user_type="admin").count())
+          print("booked_count", Booking.objects.filter(status="BOOKED").count())
           qs = Booking.objects.filter(status="BOOKED").order_by("-created_at")
           qs = qs.annotate(has_results=Exists(BookingResultFile.objects.filter(booking_id=OuterRef("pk"))))
           qs = qs.select_related(
@@ -35,37 +39,45 @@ jobs:
           qs = qs.prefetch_related(
               Prefetch(
                   "daily_slots",
-                  queryset=DailySlot.objects.select_related("slot_master", "slot_master__equipment", "booking", "booking__equipment"),
+                  queryset=DailySlot.objects.select_related(
+                      "slot_master", "slot_master__equipment", "booking", "booking__equipment"
+                  ),
               ),
               "repeat_sample_requests",
               "equipment__equipment_operators__operator",
               "equipment__equipment_managers__manager",
           )[:10]
-          print("count query", Booking.objects.filter(status="BOOKED").count())
           try:
               data = BookingListSerializer(qs, many=True).data
               print("OK serialized", len(data))
-              if data:
-                  print("keys", sorted(data[0].keys())[:20])
           except Exception:
+              print("SERIALIZER_FAIL")
               traceback.print_exc()
-              raise
 
-          # Also hit view helper path if possible
           try:
               from rest_framework.test import APIRequestFactory, force_authenticate
               from iic_booking.equipment.api_views import list_bookings
               admin = User.objects.filter(user_type="admin", is_active=True).first()
-              print("admin", getattr(admin, "email", None))
+              print("admin", getattr(admin, "email", None), "id", getattr(admin, "id", None))
               if admin:
                   factory = APIRequestFactory()
-                  request = factory.get("/api/bookings/", {"status": "BOOKED", "limit": 10, "offset": 0, "list_view": "1"})
+                  request = factory.get(
+                      "/api/bookings/",
+                      {"status": "BOOKED", "limit": "10", "offset": "0", "list_view": "1"},
+                  )
                   force_authenticate(request, user=admin)
                   response = list_bookings(request)
-                  print("view status", response.status_code)
-                  if response.status_code >= 400:
-                      print("view data", response.data)
+                  print("view_status", response.status_code)
+                  if getattr(response, "status_code", 200) >= 400:
+                      print("view_data", getattr(response, "data", None))
+                  else:
+                      payload = response.data if hasattr(response, "data") else None
+                      print("view_count", (payload or {}).get("count"), "total", (payload or {}).get("total_count"))
           except Exception:
+              print("VIEW_FAIL")
               traceback.print_exc()
-              raise
           PY
+          docker cp /tmp/diagnose_bookings.py "$CID":/tmp/diagnose_bookings.py
+          docker exec "$CID" python /tmp/diagnose_bookings.py
+          echo "--- curl from host via container loopback ---"
+          docker exec "$CID" python -c "import urllib.request; print('skip')" || true
