@@ -2594,7 +2594,7 @@ class BookingListSerializer(serializers.ModelSerializer):
         fields = [
             'booking_id', 'real_booking_id', 'virtual_booking_id', 'user', 'user_email', 'user_name', 'user_phone', 'user_department',
             'equipment', 'equipment_code', 'equipment_name', 'equipment_reschedule_hours_threshold',
-            'equipment_user_rating_enabled', 'equipment_status', 'equipment_is_operational',
+            'equipment_user_rating_enabled', 'equipment_enable_remote_analysis', 'equipment_status', 'equipment_is_operational',
             'maintenance_disruption_flag', 'maintenance_decision_deadline_at', 'maintenance_reschedule_extra_week',
             'maintenance_operational_marked_at', 'disruption_kind', 'disruption_release_slot_status',
             'charge_profile', 'user_type_snapshot', 'total_time_minutes', 'total_hours',
