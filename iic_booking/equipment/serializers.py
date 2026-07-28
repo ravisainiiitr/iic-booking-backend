@@ -1260,6 +1260,9 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'status',
             'status_display',
             'location',
+            'latitude',
+            'longitude',
+            'google_maps_url',
             'important_instruction',
             'make',
             'show_make_on_card',
@@ -1308,6 +1311,16 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'auto_slot_selection_default',
             'repeat_sample_request_days',
             'repeat_sample_disclaimer',
+            'enable_remote_analysis',
+            'remote_analysis_enabled_from_status',
+            'analysis_workspace_retention_days',
+            'analysis_session_limit',
+            'analysis_access_duration',
+            'analysis_auto_archive',
+            'analysis_profile',
+            'analysis_requires_sample_acceptance',
+            'analysis_requires_experiment_completion',
+            'analysis_notes',
             'enable_charge_recalculation',
             'user_rating_enabled',
             'weekly_view_display',
@@ -1540,7 +1553,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Equipment
         fields = [
-            'name', 'code', 'description', 'status', 'location', 'important_instruction',
+            'name', 'code', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url', 'important_instruction',
             'make', 'show_make_on_card', 'model_information', 'show_model_on_card',
             'booking_email_extra_text', 'completion_email_extra_text', 'print_3d_stl_notification_email',
             'istem_portal_url', 'istem_fbr_status_url',
@@ -1566,6 +1579,11 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'atmosphere_sensitive_sample_enabled',
             'sample_collect_deadline_hours',
             'repeat_sample_request_days', 'repeat_sample_disclaimer',
+            'enable_remote_analysis', 'remote_analysis_enabled_from_status',
+            'analysis_workspace_retention_days', 'analysis_session_limit',
+            'analysis_access_duration', 'analysis_auto_archive', 'analysis_profile',
+            'analysis_requires_sample_acceptance', 'analysis_requires_experiment_completion',
+            'analysis_notes',
             'equipment_managers', 'equipment_operators',
             'equipment_specifications', 'equipment_accessories',
             'equipment_additional_accessories', 'input_fields',
@@ -1976,6 +1994,9 @@ class BookingSerializer(serializers.ModelSerializer):
     equipment_repeat_sample_disclaimer = serializers.CharField(source='equipment.repeat_sample_disclaimer', read_only=True, allow_blank=True)
     equipment_enable_charge_recalculation = serializers.BooleanField(source='equipment.enable_charge_recalculation', read_only=True, default=False)
     equipment_user_rating_enabled = serializers.BooleanField(source='equipment.user_rating_enabled', read_only=True, default=True)
+    equipment_enable_remote_analysis = serializers.BooleanField(
+        source='equipment.enable_remote_analysis', read_only=True, default=False
+    )
     equipment_booking_not_utilize_window_hours = serializers.IntegerField(
         source='equipment.booking_not_utilize_window_hours', read_only=True, default=24
     )
@@ -2150,6 +2171,12 @@ class BookingSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
             'completed_at',
+            'analysis_available',
+            'analysis_available_from',
+            'analysis_expiry',
+            'analysis_session_count',
+            'analysis_last_session',
+            'equipment_enable_remote_analysis',
             'rating_on_time_operator_availability',
             'rating_laboratory_cleanliness_organization',
             'rating_sample_handling_care',
@@ -2531,6 +2558,9 @@ class BookingListSerializer(serializers.ModelSerializer):
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
     equipment_reschedule_hours_threshold = serializers.IntegerField(source='equipment.reschedule_hours_threshold', read_only=True, allow_null=True)
     equipment_user_rating_enabled = serializers.BooleanField(source='equipment.user_rating_enabled', read_only=True, default=True)
+    equipment_enable_remote_analysis = serializers.BooleanField(
+        source='equipment.enable_remote_analysis', read_only=True, default=False
+    )
     user_email = serializers.CharField(source='user.email', read_only=True)
     user_name = serializers.SerializerMethodField()
     user_phone = serializers.SerializerMethodField()

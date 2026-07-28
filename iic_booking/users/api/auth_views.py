@@ -1190,7 +1190,7 @@ def request_login_otp(request):
     cache_key = f"{LOGIN_OTP_CACHE_PREFIX}{email_raw}"
     cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
     try:
-        subject = "Your IIC Booking login OTP"
+        subject = "Your IIT Roorkee login OTP"
         body_plain = f"Your one-time password (OTP) for login is: {otp}\n\nThis OTP expires in 10 minutes. Do not share it with anyone."
         html_body = f"""
         <p>Your one-time password (OTP) for login is:</p>
@@ -1306,7 +1306,7 @@ def request_forgot_password_otp(request):
     cache_key = f"{FORGOT_OTP_CACHE_PREFIX}{email}"
     cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
     try:
-        subject = "Your IIC Booking password reset OTP"
+        subject = "Your IIT Roorkee password reset OTP"
         body_plain = f"Your one-time password (OTP) for resetting your password is: {otp}\n\nThis OTP expires in 10 minutes. Do not share it with anyone."
         html_body = f"""
         <p>Your one-time password (OTP) for resetting your password is:</p>
@@ -1668,15 +1668,15 @@ def register(request):
         logger.exception("Failed to send verification email via template: %s", e)
         # Fallback: send a plain email so verification still works even if the template isn't created/migrated.
         try:
-            subject = "Verify your IIC Booking registration"
+            subject = "Verify your IIT Roorkee registration"
             body_plain = (
                 f"Hello {user.name or user.email},\n\n"
-                "Thank you for registering with IIC Booking.\n\n"
+                "Thank you for registering with IIT Roorkee.\n\n"
                 "To complete your registration, please verify your email by clicking the link below:\n\n"
                 f"{verification_url}\n\n"
                 "This verification link is valid for 10 minutes. If no action is taken, the registration will be cancelled and your entry will be deleted.\n\n"
                 "If you did not request this registration, you can safely ignore this email.\n\n"
-                "— IIC Booking"
+                "— IIT Roorkee"
             )
             send_mail(
                 subject=subject,
@@ -2146,14 +2146,14 @@ def resend_verification_email(request):
         logger.exception("Failed to resend verification email via template: %s", e)
         # Fallback: send plain email
         try:
-            subject = "Verify your IIC Booking registration"
+            subject = "Verify your IIT Roorkee registration"
             body_plain = (
                 f"Hello {user.name or user.email},\n\n"
                 "To complete your registration, please verify your email by clicking the link below:\n\n"
                 f"{verification_url}\n\n"
                 "This verification link is valid for 10 minutes. If no action is taken, the registration will be cancelled and your entry will be deleted.\n\n"
                 "If you did not request this registration, you can safely ignore this email.\n\n"
-                "— IIC Booking"
+                "— IIT Roorkee"
             )
             send_mail(
                 subject=subject,

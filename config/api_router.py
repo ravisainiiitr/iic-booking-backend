@@ -135,6 +135,8 @@ from iic_booking.users.api.sync_agent_views import (
     sync_agent_register,
     sync_agent_authenticate,
     sync_agent_refresh,
+    sync_agent_ping,
+    sync_agent_instruments,
 )
 from iic_booking.equipment.print_3d_views import (
     equipment_analyze_stl,
@@ -147,6 +149,7 @@ from iic_booking.equipment.print_3d_views import (
     presign_print_analysis_stl,
     update_booking_print_actuals,
 )
+from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
@@ -423,6 +426,76 @@ urlpatterns = router.urls + [
     path("sync-agent/authenticate/", sync_agent_authenticate, name="sync-agent-authenticate-slash"),
     path("sync-agent/refresh", sync_agent_refresh, name="sync-agent-refresh"),
     path("sync-agent/refresh/", sync_agent_refresh, name="sync-agent-refresh-slash"),
+    path("sync-agent/ping", sync_agent_ping, name="sync-agent-ping"),
+    path("sync-agent/ping/", sync_agent_ping, name="sync-agent-ping-slash"),
+    path("sync-agent/instruments", sync_agent_instruments, name="sync-agent-instruments"),
+    path("sync-agent/instruments/", sync_agent_instruments, name="sync-agent-instruments-slash"),
+    # Department Sync control plane (Milestone 4) — /api/v1/sync/
+    path("v1/sync/", include("iic_booking.sync.urls")),
+    # Remote Analysis Agent control plane (Milestone 2) — /api/v1/analysis/
+    path("v1/analysis/", include("iic_booking.remote_analysis.urls")),
+    # Booking ↔ Remote Analysis integration
+    path(
+        "v1/bookings/analysis/dashboard/",
+        booking_ra_views.booking_analysis_dashboard,
+        name="booking-analysis-dashboard",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/",
+        booking_ra_views.booking_analysis_detail,
+        name="booking-analysis-detail",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/create/",
+        booking_ra_views.booking_analysis_create,
+        name="booking-analysis-create",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/launch/",
+        booking_ra_views.booking_analysis_launch,
+        name="booking-analysis-launch",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/files/",
+        booking_ra_views.booking_analysis_files,
+        name="booking-analysis-files",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/archive/",
+        booking_ra_views.booking_analysis_archive,
+        name="booking-analysis-archive",
+    ),
+    # Also expose under legacy /api/bookings/… for existing clients
+    path(
+        "bookings/analysis/dashboard/",
+        booking_ra_views.booking_analysis_dashboard,
+        name="booking-analysis-dashboard-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/",
+        booking_ra_views.booking_analysis_detail,
+        name="booking-analysis-detail-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/create/",
+        booking_ra_views.booking_analysis_create,
+        name="booking-analysis-create-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/launch/",
+        booking_ra_views.booking_analysis_launch,
+        name="booking-analysis-launch-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/files/",
+        booking_ra_views.booking_analysis_files,
+        name="booking-analysis-files-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/archive/",
+        booking_ra_views.booking_analysis_archive,
+        name="booking-analysis-archive-legacy",
+    ),
     path("auth/logout/", logout, name="logout"),
     path("auth/register/", register, name="register"),
     path("auth/register/user-types/", get_register_user_types, name="register-user-types"),

@@ -112,12 +112,7 @@ def redirect_email_for_user(
     redirects = test_email_redirects()
     if not redirects:
         return ([email] if email else [], subject)
-    new_subject = subject
-    if subject is not None:
-        tag = f"[TEST:{email or 'unknown'}] "
-        if not str(subject).startswith("[TEST:"):
-            new_subject = tag + str(subject)
-    return redirects, new_subject
+    return redirects, subject
 
 
 def redirect_email_address(email: str, *, subject: Optional[str] = None) -> tuple[list[str], Optional[str]]:

@@ -129,7 +129,7 @@ def _send_ticket_update_email(ticket: Ticket, action_summary: str, action_detail
         lines.extend(["", "Details:", action_details])
     if link:
         lines.extend(["", f"View ticket: {link}"])
-    lines.extend(["", "Thank you,", "IIC Booking Team"])
+    lines.extend(["", "Thank you,", "IIT Roorkee"])
     try:
         send_mail(
             subject=f"Support ticket #{ticket.ticket_id} updated",
@@ -343,8 +343,15 @@ def ticket_detail(request, ticket_id):
             status=status.HTTP_403_FORBIDDEN,
         )
     
-    # For non-staff users, only allow updating description
-    if not user_can_manage_tickets(request.user):
+    is_requester = bool(ticket.user_id and ticket.user_id == getattr(request.user, "id", None))
+    is_resolve_by_requester = (
+        is_requester
+        and request.data.get("status") == Ticket.TicketStatus.RESOLVED
+        and set(request.data.keys()).issubset({"status", "resolution_notes"})
+    )
+
+    # For non-staff users, only allow updating description, except requester may mark resolved.
+    if not user_can_manage_tickets(request.user) and not is_resolve_by_requester:
         if 'description' not in request.data or len(request.data) > 1:
             return Response(
                 {"error": "You can only update the description of your ticket."},
@@ -370,7 +377,7 @@ def ticket_detail(request, ticket_id):
         
         serializer.save()
         updated_ticket = serializer.instance
-        if user_can_manage_tickets(request.user):
+        if user_can_manage_tickets(request.user) or is_resolve_by_requester:
             action_lines = []
             status_changed_to_resolution = (
                 old_status != updated_ticket.status

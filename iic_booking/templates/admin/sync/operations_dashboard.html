@@ -1,0 +1,174 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .dsa-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; margin:16px 0 24px; }
+  .dsa-card { background:var(--body-bg,#fff); border:1px solid var(--border-color,#ddd); border-radius:6px; padding:14px 16px; }
+  .dsa-card .label { font-size:12px; color:#666; text-transform:uppercase; letter-spacing:.03em; }
+  .dsa-card .value { font-size:28px; font-weight:700; margin-top:6px; line-height:1.1; }
+  .dsa-card.warn .value { color:#856404; }
+  .dsa-card.danger .value { color:#dc3545; }
+  .dsa-card.ok .value { color:#28a745; }
+  .dsa-card.info .value { color:#17a2b8; }
+  .dsa-section { margin:24px 0; }
+  .dsa-section h2 { margin-bottom:8px; }
+  .dsa-table { width:100%; border-collapse:collapse; }
+  .dsa-table th, .dsa-table td { border-bottom:1px solid var(--border-color,#eee); padding:8px 10px; text-align:left; font-size:13px; }
+  .dsa-table th { background:var(--darkened-bg,#f8f8f8); }
+  .dsa-links a { margin-right:12px; }
+  .dsa-issue { background:#fff3cd; border-left:4px solid #ffc107; padding:8px 12px; margin:6px 0; }
+  .dsa-issue.error { background:#f8d7da; border-left-color:#dc3545; }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label='sync' %}">{% trans 'Department Sync' %}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+<p class="help">
+  {% blocktrans with timeout=heartbeat_timeout_seconds %}
+  Operations console for laboratory Department Sync Agents. Online status is calculated from last heartbeat within {{ timeout }} seconds.
+  {% endblocktrans %}
+  <span class="dsa-links">
+    <a href="{{ agent_changelist }}">{% trans "Agents" %}</a>
+    <a href="{{ profile_changelist }}">{% trans "Sync Profiles" %}</a>
+    <a href="{{ assignment_changelist }}">{% trans "Assignments" %}</a>
+    <a href="{{ heartbeat_changelist }}">{% trans "Heartbeats" %}</a>
+    <a href="{{ log_changelist }}">{% trans "Logs" %}</a>
+    <a href="{{ laboratory_changelist }}">{% trans "Laboratories" %}</a>
+  </span>
+</p>
+
+<h2>{% trans "Agent fleet" %}</h2>
+<div class="dsa-grid">
+  <div class="dsa-card"><div class="label">{% trans "Registered" %}</div><div class="value">{{ cards.registered_agents }}</div></div>
+  <div class="dsa-card ok"><div class="label">{% trans "Enrolled" %}</div><div class="value">{{ cards.enrolled_agents }}</div></div>
+  <div class="dsa-card warn"><div class="label">{% trans "Disabled" %}</div><div class="value">{{ cards.disabled_agents }}</div></div>
+  <div class="dsa-card info"><div class="label">{% trans "Reporting" %}</div><div class="value">{{ cards.agents_reporting }}</div></div>
+  <div class="dsa-card danger"><div class="label">{% trans "Not reporting" %}</div><div class="value">{{ cards.agents_not_reporting }}</div></div>
+</div>
+
+<h2>{% trans "Configuration health" %}</h2>
+<div class="dsa-grid">
+  <div class="dsa-card"><div class="label">{% trans "Sync enabled" %}</div><div class="value">{{ cards.equipment_sync_enabled }}</div></div>
+  <div class="dsa-card warn"><div class="label">{% trans "Without agent" %}</div><div class="value">{{ cards.equipment_without_agent }}</div></div>
+  <div class="dsa-card warn"><div class="label">{% trans "Config mismatch" %}</div><div class="value">{{ cards.configuration_mismatch }}</div></div>
+  <div class="dsa-card danger"><div class="label">{% trans "Heartbeat alerts" %}</div><div class="value">{{ cards.heartbeat_alerts }}</div></div>
+</div>
+
+<h2>{% trans "Today" %}</h2>
+<div class="dsa-grid">
+  <div class="dsa-card info"><div class="label">{% trans "Uploads today" %}</div><div class="value">{{ cards.uploads_today }}</div></div>
+  <div class="dsa-card danger"><div class="label">{% trans "Errors today" %}</div><div class="value">{{ cards.errors_today }}</div></div>
+  <div class="dsa-card warn"><div class="label">{% trans "Warnings" %}</div><div class="value">{{ cards.warning_events }}</div></div>
+  <div class="dsa-card danger"><div class="label">{% trans "Critical" %}</div><div class="value">{{ cards.critical_events }}</div></div>
+</div>
+
+<div class="dsa-section">
+  <h2>{% trans "Validation warnings" %}</h2>
+  {% if validation_issues %}
+    {% for issue in validation_issues %}
+      <div class="dsa-issue {% if issue.severity == 'error' %}error{% endif %}">
+        <strong>{{ issue.code }}</strong>
+        — {{ issue.message }}
+        {% if issue.object_repr %}<em>({{ issue.object_repr }})</em>{% endif %}
+      </div>
+    {% endfor %}
+  {% else %}
+    <p>{% trans "No validation issues detected." %}</p>
+  {% endif %}
+</div>
+
+<div class="dsa-section">
+  <h2>{% trans "Recent registrations" %}</h2>
+  <table class="dsa-table">
+    <thead><tr><th>{% trans "Agent" %}</th><th>{% trans "Department" %}</th><th>{% trans "Lab" %}</th><th>{% trans "Status" %}</th><th>{% trans "Registered" %}</th></tr></thead>
+    <tbody>
+    {% for agent in recent_registrations %}
+      <tr>
+        <td><a href="{% url 'admin:sync_departmentsyncagent_change' agent.pk %}">{{ agent.agent_name }}</a></td>
+        <td>{{ agent.department }}</td>
+        <td>{{ agent.laboratory|default:"-" }}</td>
+        <td>{{ agent.get_status_display }}</td>
+        <td>{{ agent.registered_at }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5">{% trans "No agents yet." %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="dsa-section">
+  <h2>{% trans "Recent heartbeats" %}</h2>
+  <table class="dsa-table">
+    <thead><tr><th>{% trans "Agent" %}</th><th>{% trans "Time" %}</th><th>{% trans "CPU" %}</th><th>{% trans "Mem" %}</th><th>{% trans "Host" %}</th><th>{% trans "Config" %}</th></tr></thead>
+    <tbody>
+    {% for hb in recent_heartbeats %}
+      <tr>
+        <td>{{ hb.sync_agent.agent_name }}</td>
+        <td>{{ hb.reported_at }}</td>
+        <td>{{ hb.cpu_percent|default:"-" }}</td>
+        <td>{{ hb.memory_percent|default:"-" }}</td>
+        <td>{{ hb.hostname|default:"-" }}</td>
+        <td>{{ hb.reported_configuration_version|default:"-" }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6">{% trans "No heartbeats yet." %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="dsa-section">
+  <h2>{% trans "Recent errors" %}</h2>
+  <table class="dsa-table">
+    <thead><tr><th>{% trans "Time" %}</th><th>{% trans "Code" %}</th><th>{% trans "Severity" %}</th><th>{% trans "Agent" %}</th><th>{% trans "Message" %}</th></tr></thead>
+    <tbody>
+    {% for log in recent_errors %}
+      <tr>
+        <td>{{ log.created_at }}</td>
+        <td>{{ log.event_code }}</td>
+        <td>{{ log.get_severity_display }}</td>
+        <td>{{ log.sync_agent.agent_name }}</td>
+        <td>{{ log.message|truncatechars:100 }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5">{% trans "No recent errors." %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="dsa-section">
+  <h2>{% trans "Recent activity" %}</h2>
+  <table class="dsa-table">
+    <thead><tr><th>{% trans "Time" %}</th><th>{% trans "Code" %}</th><th>{% trans "Category" %}</th><th>{% trans "Agent" %}</th><th>{% trans "Message" %}</th></tr></thead>
+    <tbody>
+    {% for log in recent_activity %}
+      <tr>
+        <td>{{ log.created_at }}</td>
+        <td>{{ log.event_code }}</td>
+        <td>{{ log.get_category_display }}</td>
+        <td>{{ log.sync_agent.agent_name }}</td>
+        <td>{{ log.message|truncatechars:100 }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="5">{% trans "No activity yet." %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p class="help">{% trans "Generated at" %}: {{ generated_at }}</p>
+{% endblock %}

@@ -1666,7 +1666,7 @@ def send_user_otp_for_recharge(request):
                     ''' if project else ''}
                 </div>
                 <div class="footer">
-                    <p>This is an automated email from IIC Booking System.</p>
+                    <p>This is an automated email from IIT Roorkee.</p>
                     <p>Please do not reply to this email.</p>
                 </div>
             </div>
@@ -1694,7 +1694,7 @@ Project Details:
 
 ⚠️ Important: Enter this OTP in the application to complete your recharge request. Do not share this OTP with anyone.
 
-This is an automated email from IIC Booking System.
+This is an automated email from IIT Roorkee.
 Please do not reply to this email.
         """
         

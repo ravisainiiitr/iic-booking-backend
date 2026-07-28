@@ -7,6 +7,7 @@ from django.test import SimpleTestCase
 from iic_booking.communication.email_branding import (
     format_duration_minutes,
     format_inr,
+    wrap_email_html,
     user_display_name,
 )
 from iic_booking.communication.service import CommunicationService
@@ -82,3 +83,9 @@ class RenderTemplateConditionalsTests(SimpleTestCase):
         )
         self.assertEqual(out["subject"], "Booking Confirmed – MALDI-TOF")
         self.assertNotIn("IIC-1", out["subject"])
+
+    def test_shared_email_wrapper_uses_iit_roorkee_branding(self):
+        html = wrap_email_html(title="Sample Disposed", body_inner_html="<p>Done</p>")
+        self.assertIn("Indian Institute of Technology Roorkee", html)
+        self.assertIn("Equipment Booking Portal", html)
+        self.assertIn("Sample Disposed", html)

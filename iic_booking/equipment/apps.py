@@ -8,3 +8,4 @@ class EquipmentConfig(AppConfig):
 
     def ready(self):
         import iic_booking.equipment.signals  # noqa: F401
+        import iic_booking.equipment.remote_analysis_integration.signals  # noqa: F401

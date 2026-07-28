@@ -11234,7 +11234,7 @@ def _send_results_available_push_and_email(booking):
         "",
         sample_notice_ctx["sample_collection_notice"],
         "",
-        "— IIC Booking",
+        "— IIT Roorkee",
     ]
     if sample_notice_ctx["is_external_user"]:
         body_lines = body_lines[:-1] + [
@@ -12438,7 +12438,9 @@ def update_booking_input_values(request, booking_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if booking.user != request.user and not check_operator_permission(request.user):
+    is_staff_editor = check_operator_permission(request.user)
+
+    if booking.user != request.user and not is_staff_editor:
         return Response(
             {"error": "You don't have permission to update this booking."},
             status=status.HTTP_403_FORBIDDEN,
@@ -12451,23 +12453,27 @@ def update_booking_input_values(request, booking_id):
         )
 
     # For internal/external users: allow editing only when booking is BOOKED and not yet processed
-    if not check_operator_permission(request.user):
+    latest_trace = (
+        BookingSampleTrace.objects.filter(booking=booking).order_by("-created_at").first()
+    )
+
+    if not is_staff_editor:
         if booking.status != BookingStatus.BOOKED:
             return Response(
                 {"error": "User input editing is only available for bookings in Booked status."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        latest_trace = (
-            BookingSampleTrace.objects.filter(booking=booking).order_by("-created_at").first()
-        )
-        if latest_trace and latest_trace.status in (
-            SampleTraceStatus.PROCESSING,
-            SampleTraceStatus.COMPLETED,
-        ):
+        if latest_trace and latest_trace.status == SampleTraceStatus.COMPLETED:
             return Response(
-                {"error": "User input editing is not allowed once the sample is marked as processed (Processing or Completed)."},
+                {"error": "User input editing is not allowed once the sample is marked as analyzed."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+    if latest_trace and latest_trace.status == SampleTraceStatus.COMPLETED:
+        return Response(
+            {"error": "Cannot edit user inputs after the sample is analyzed."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if booking.status == BookingStatus.COMPLETED:
         return Response(

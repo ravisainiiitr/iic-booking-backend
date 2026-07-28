@@ -20,24 +20,49 @@ def _iso(dt):
     return dt.isoformat()
 
 
-def _registration_payload(agent: SyncAgent, *, success: bool, message: str) -> dict:
-    return {
+def _registration_payload(agent: SyncAgent, *, success: bool, message: str, control_plane: dict | None = None) -> dict:
+    payload = {
         "agentId": str(agent.id),
         "registrationToken": agent.registration_token,
         "registeredAt": _iso(agent.registered_at),
         "success": success,
         "message": message,
     }
+    if control_plane:
+        payload.update(control_plane)
+    return payload
 
 
-def _login_payload(agent: SyncAgent, *, success: bool, message: str) -> dict:
-    return {
+def _login_payload(agent: SyncAgent, *, success: bool, message: str, control_plane: dict | None = None) -> dict:
+    payload = {
         "accessToken": agent.access_token if success else "",
         "refreshToken": agent.refresh_token if success else None,
         "expiresAt": _iso(agent.access_token_expires_at) if success else None,
         "success": success,
         "message": message,
     }
+    if control_plane:
+        payload.update(control_plane)
+    return payload
+
+
+def _bridge_control_plane(agent: SyncAgent, *, issue_token: bool = False) -> dict:
+    """Milestone 11 — expose Track B identity alongside Track A credentials."""
+    try:
+        from iic_booking.sync.services.agent_identity_bridge import ensure_department_sync_agent
+
+        dsa, sync_token = ensure_department_sync_agent(agent, issue_token=issue_token)
+        result = {
+            "agentUuid": str(dsa.agent_uuid),
+            "controlPlaneAgentId": str(dsa.id),
+        }
+        if sync_token:
+            result["syncAccessToken"] = sync_token
+            if dsa.access_token_expires_at:
+                result["syncAccessTokenExpiresAt"] = _iso(dsa.access_token_expires_at)
+        return result
+    except Exception:
+        return {}
 
 
 @api_view(["POST"])
@@ -49,15 +74,6 @@ def sync_agent_register(request):
     Expected body (camelCase, from DSA):
       agentName, departmentCode, machineName, machineGuid, version, operatingSystem
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-    logger.warning(
-        "sync_agent_register content_type=%s body=%r data=%r",
-        request.content_type,
-        request.body[:2000] if request.body else b"",
-        request.data,
-    )
     data = request.data if isinstance(request.data, dict) else {}
     agent_name = (data.get("agentName") or data.get("agent_name") or "").strip()
     department_code = (data.get("departmentCode") or data.get("department_code") or "").strip()
@@ -123,6 +139,7 @@ def sync_agent_register(request):
                 existing,
                 success=True,
                 message="Agent already registered. Returning existing credentials.",
+                control_plane=_bridge_control_plane(existing, issue_token=False),
             )
         )
 
@@ -138,7 +155,12 @@ def sync_agent_register(request):
         registered_at=timezone.now(),
     )
     return Response(
-        _registration_payload(agent, success=True, message="Agent registered successfully."),
+        _registration_payload(
+            agent,
+            success=True,
+            message="Agent registered successfully.",
+            control_plane=_bridge_control_plane(agent, issue_token=False),
+        ),
         status=status.HTTP_201_CREATED,
     )
 
@@ -176,7 +198,14 @@ def sync_agent_authenticate(request):
             "updated_at",
         ]
     )
-    return Response(_login_payload(agent, success=True, message="Authenticated."))
+    return Response(
+        _login_payload(
+            agent,
+            success=True,
+            message="Authenticated.",
+            control_plane=_bridge_control_plane(agent, issue_token=True),
+        )
+    )
 
 
 @api_view(["POST"])
@@ -210,8 +239,14 @@ def sync_agent_refresh(request):
             "updated_at",
         ]
     )
-    return Response(_login_payload(agent, success=True, message="Token refreshed."))
-
+    return Response(
+        _login_payload(
+            agent,
+            success=True,
+            message="Token refreshed.",
+            control_plane=_bridge_control_plane(agent, issue_token=True),
+        )
+    )
 
 def _login_payload_empty(message: str) -> dict:
     return {
@@ -221,3 +256,98 @@ def _login_payload_empty(message: str) -> dict:
         "success": False,
         "message": message,
     }
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def sync_agent_ping(request):
+    """Lightweight liveness check for Department Sync Agent connectivity."""
+    return Response(
+        {
+            "status": "ok",
+            "server_time": _iso(timezone.now()),
+            "version": "1.0.0",
+        }
+    )
+
+
+def _authenticate_sync_agent(request):
+    """Validate Bearer access token issued by sync_agent_authenticate."""
+    auth = request.META.get("HTTP_AUTHORIZATION") or ""
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth[7:].strip()
+    if not token:
+        return None
+    agent = (
+        SyncAgent.objects.filter(access_token=token, is_active=True)
+        .select_related("department")
+        .first()
+    )
+    if agent is None:
+        return None
+    if agent.access_token_expires_at and agent.access_token_expires_at < timezone.now():
+        return None
+    return agent
+
+
+def _build_unc_path(*, unc_path: str, ip_address: str, share_name: str) -> str:
+    unc = (unc_path or "").strip()
+    if unc:
+        return unc
+    ip = (ip_address or "").strip()
+    share = (share_name or "").strip()
+    if ip and share:
+        return f"\\\\{ip}\\{share}"
+    return ""
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def sync_agent_instruments(request):
+    """
+    Instruments assigned to the authenticated Sync Agent's department.
+
+    Authorization: Bearer <access_token>
+    """
+    agent = _authenticate_sync_agent(request)
+    if agent is None:
+        return Response(
+            {"detail": "Authentication credentials were not provided or are invalid."},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    from iic_booking.equipment.models import Equipment
+
+    qs = Equipment.objects.filter(dsa_enabled=True).order_by("code")
+    department = agent.department
+    if department is not None:
+        qs = qs.filter(internal_department_id=department.id)
+    elif agent.department_code:
+        qs = qs.filter(internal_department__code__iexact=agent.department_code)
+    else:
+        qs = qs.none()
+
+    payload = []
+    for eq in qs:
+        unc = _build_unc_path(
+            unc_path=eq.dsa_unc_path,
+            ip_address=eq.dsa_ip_address,
+            share_name=eq.dsa_share_name,
+        )
+        payload.append(
+            {
+                "id": eq.equipment_id,
+                "equipment_code": eq.code,
+                "name": eq.name,
+                "hostname": (eq.dsa_hostname or "").strip(),
+                "ip_address": (eq.dsa_ip_address or "").strip(),
+                "share_name": (eq.dsa_share_name or "").strip(),
+                "unc_path": unc,
+                "enabled": bool(eq.dsa_enabled),
+                "watch_folder_enabled": bool(eq.dsa_watch_folder_enabled),
+                "department_id": eq.internal_department_id,
+            }
+        )
+
+    return Response(payload)

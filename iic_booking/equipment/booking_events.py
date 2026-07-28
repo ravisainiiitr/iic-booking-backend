@@ -129,6 +129,65 @@ def apply_user_sample_preparation_notice_to_context(
     return context
 
 
+def _format_contact_block(name: str, email: str, phone: str) -> str:
+    lines = [part for part in [name.strip(), email.strip(), phone.strip()] if part]
+    return "\n".join(lines).strip()
+
+
+def apply_lab_visit_details_to_context(context: dict, equipment) -> dict:
+    if not isinstance(context, dict):
+        return context
+
+    context.setdefault("lab_location", "")
+    context.setdefault("lab_google_maps_url", "")
+    context.setdefault("lab_incharge_contact", "")
+    context.setdefault("oic_contact", "")
+    context.setdefault("has_lab_incharge_contact", "")
+    context.setdefault("has_oic_contact", "")
+    context.setdefault("has_lab_assistance_contacts", "")
+
+    if not equipment:
+        return context
+
+    location = str(getattr(equipment, "location", "") or "").strip()
+    maps_url = str(getattr(equipment, "google_maps_url", "") or "").strip()
+    context["lab_location"] = location
+    context["lab_google_maps_url"] = absolute_http_url(maps_url)
+
+    operator_link = (
+        equipment.equipment_operators.select_related("operator")
+        .order_by("role", "equipment_operator_id")
+        .first()
+        if hasattr(equipment, "equipment_operators")
+        else None
+    )
+    operator = getattr(operator_link, "operator", None)
+    operator_name = user_display_name(operator, fallback="") if operator else ""
+    operator_email = str(getattr(operator, "email", "") or "").strip() if operator else ""
+    operator_phone = str(getattr(operator, "phone_number", "") or "").strip() if operator else ""
+    lab_contact = _format_contact_block(operator_name, operator_email, operator_phone)
+
+    manager_link = (
+        equipment.equipment_managers.select_related("manager")
+        .order_by("equipment_manager_id")
+        .first()
+        if hasattr(equipment, "equipment_managers")
+        else None
+    )
+    manager = getattr(manager_link, "manager", None)
+    manager_name = user_display_name(manager, fallback="") if manager else ""
+    manager_email = str(getattr(manager, "email", "") or "").strip() if manager else ""
+    manager_phone = str(getattr(manager, "phone_number", "") or "").strip() if manager else ""
+    oic_contact = _format_contact_block(manager_name, manager_email, manager_phone)
+
+    context["lab_incharge_contact"] = lab_contact
+    context["oic_contact"] = oic_contact
+    context["has_lab_incharge_contact"] = "1" if lab_contact else ""
+    context["has_oic_contact"] = "1" if oic_contact else ""
+    context["has_lab_assistance_contacts"] = "1" if (lab_contact or oic_contact) else ""
+    return context
+
+
 def apply_equipment_booking_email_extra_to_context(
     context: dict,
     equipment,
@@ -596,6 +655,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 ctx["total_hours"] = ctx["duration_display"]
 
     _apply_slot_times_for_recipient(context, user)
+    apply_lab_visit_details_to_context(context, equipment)
 
     # Repeat sample emails: original booking reference (admin-approved request passes this in metadata)
     if email_template_code == "repeat_sample_booking_confirmed_email" and not context.get("original_booking_id"):

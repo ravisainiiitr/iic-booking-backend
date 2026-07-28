@@ -1,0 +1,95 @@
+# Remote Analysis Scheduler (Milestone 3)
+
+Intelligent workstation reservation and allocation inside the Equipment Booking Portal.
+
+**Does not** implement Apache Guacamole, browser sessions, RDP launch, or session streaming.
+The scheduler only decides *which* workstation is assigned and *when*.
+
+## Architecture
+
+```
+Equipment Booking Portal
+│
+├── Reservation Engine
+├── SchedulerService
+├── AvailabilityEngine
+├── AllocationService (candidate scoring)
+├── ConflictResolver
+├── ReservationQueue
+└── Remote Analysis Agents
+```
+
+Portal remains the single orchestrator. Agents stay nearly cache-only.
+
+## Reservation lifecycle
+
+```
+REQUESTED → VALIDATING → QUEUED|RESERVED → PREPARING → READY → ACTIVE
+                ↓
+         COMPLETED | EXPIRED | CANCELLED | FAILED
+```
+
+Full history persisted in `ReservationHistory`.
+
+## Allocation algorithm
+
+1. Validate reservation (window, booking linkage, no duplicate active reservation).
+2. Find candidates via `AvailabilityEngine`.
+3. Score with configurable weights (health, CPU, memory, recent usage, software match, capability match, department affinity, idle time).
+4. Reserve highest-scoring eligible workstation.
+5. On no candidate → enqueue (priority + FIFO).
+
+## Availability (never allocate)
+
+- Offline / disabled / maintenance / error / registering
+- Health score below threshold (default 50)
+- Missed heartbeats / expired agent tokens
+- Maintenance windows
+- Overlapping active reservations
+- Missing required software / capabilities / licenses
+- Extreme current CPU load
+
+## Conflict resolution
+
+Detects double booking, maintenance overlap, offline workstation, extension conflicts, priority overrides. All decisions audited.
+
+## APIs
+
+| Method | Path |
+|--------|------|
+| POST/GET | `/api/v1/analysis/reservations/` |
+| GET | `/api/v1/analysis/reservations/{id}/` |
+| POST | `/api/v1/analysis/reservations/{id}/cancel/` |
+| POST | `/api/v1/analysis/reservations/{id}/extend/` |
+| GET | `/api/v1/analysis/availability/` |
+| GET | `/api/v1/analysis/candidates/` |
+| GET | `/api/v1/analysis/scheduler/status/` |
+| GET | `/api/v1/analysis/scheduler/dashboard/` |
+| GET | `/api/v1/analysis/queue/` |
+
+Reservations may reference `equipment.Booking` — no duplicate booking logic.
+
+## Background jobs (Celery)
+
+- `remote_analysis.expire_reservations`
+- `remote_analysis.process_reservation_queue`
+- `remote_analysis.refresh_workstation_health`
+- `remote_analysis.monitor_maintenance_windows`
+- `remote_analysis.detect_reservation_conflicts`
+- `remote_analysis.refresh_availability_snapshot`
+
+Seeded as PeriodicTasks on migrate.
+
+## Dashboard (UI)
+
+`/remote-analysis` tabs: Scheduler · Reservations · Queue · Availability  
+(+ existing workstation management tabs)
+
+## Future session launch (not implemented)
+
+Authenticate → allocate (this milestone) → create Guacamole connection → notify agent to prepare → Portal launches browser session → end → cleanup.
+
+## Permissions
+
+Manual reservations: System Admin, Department Admin, Officer In Charge (`remote_analysis.manage`).  
+Students do not allocate workstations directly.

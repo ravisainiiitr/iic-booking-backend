@@ -1,0 +1,41 @@
+from iic_booking.remote_analysis.selectors.workstations import (
+    dashboard_metrics,
+    installed_software,
+    recent_commands,
+    recent_events,
+    recent_heartbeats,
+    telemetry_for_workstation,
+    workstation_by_agent_id,
+    workstation_by_id,
+    workstations_queryset,
+)
+from iic_booking.remote_analysis.selectors.reservations import (
+    allocation_statistics,
+    calendar_events,
+    expired_reservations,
+    maintenance_windows,
+    queue_entries,
+    reservation_by_id,
+    reservations_queryset,
+    upcoming_reservations,
+)
+
+__all__ = [
+    "dashboard_metrics",
+    "installed_software",
+    "recent_commands",
+    "recent_events",
+    "recent_heartbeats",
+    "telemetry_for_workstation",
+    "workstation_by_agent_id",
+    "workstation_by_id",
+    "workstations_queryset",
+    "allocation_statistics",
+    "calendar_events",
+    "expired_reservations",
+    "maintenance_windows",
+    "queue_entries",
+    "reservation_by_id",
+    "reservations_queryset",
+    "upcoming_reservations",
+]

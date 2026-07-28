@@ -18,7 +18,8 @@ from django.utils.html import escape
 PRODUCT_NAME = "Institute Equipment Booking Portal"
 PRODUCT_SHORT = "Equipment Booking Portal"
 ORG_FALLBACK = "Indian Institute of Technology Roorkee"
-CENTRE_LINE = "Institute Instrumentation Centre"
+ORG_HINDI = "भारतीय प्रौद्योगिकी संस्थान रुड़की"
+PORTAL_LABEL = "Equipment Booking Portal"
 
 # Navy Ocean — aligned with frontend hsl(215 70% 28%) / accent hsl(205 72% 40%)
 COLOR_BG = "#f0f4f8"
@@ -60,6 +61,13 @@ def portal_url() -> str:
         return (getattr(settings, "FRONTEND_URL", "") or "").strip().rstrip("/")
     except Exception:
         return ""
+
+
+def logo_url() -> str:
+    portal = portal_url()
+    if not portal:
+        return ""
+    return f"{portal}/IITR_Logo.svg"
 
 
 def user_display_name(user: Any, *, fallback: str = "User") -> str:
@@ -276,6 +284,88 @@ def optional_cta_block(var_name: str = "link", *, label: str = "View details") -
 {{% endif %}}"""
 
 
+def booking_location_contact_html() -> str:
+    return f"""
+{{% if lab_location %}}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+       style="background:{COLOR_CARD};border:1px solid {COLOR_BORDER};border-radius:14px;margin:16px 0;">
+  <tr>
+    <td style="padding:16px 18px 6px 18px;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{COLOR_PRIMARY};">
+      Laboratory Location
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:0 18px 18px 18px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.65;color:{COLOR_TEXT};white-space:pre-line;">
+      {{{{ lab_location }}}}
+    </td>
+  </tr>
+</table>
+{{% endif %}}
+{{% if lab_google_maps_url %}}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+       style="background:{COLOR_SOFT_PANEL_BG};border:1px solid {COLOR_SOFT_PANEL_BORDER};border-radius:14px;margin:16px 0;">
+  <tr>
+    <td style="padding:16px 18px;font-family:Arial,Helvetica,sans-serif;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{COLOR_PRIMARY};margin-bottom:8px;">
+        Open in Google Maps
+      </div>
+      <a href="{{{{ lab_google_maps_url }}}}" target="_blank" rel="noreferrer"
+         style="font-size:14px;line-height:1.6;color:{COLOR_ACCENT};font-weight:700;text-decoration:none;">
+        Click here to navigate
+      </a>
+    </td>
+  </tr>
+</table>
+{{% endif %}}
+{{% if has_lab_assistance_contacts %}}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+       style="background:{COLOR_CARD};border:1px solid {COLOR_BORDER};border-radius:14px;margin:16px 0;">
+  <tr>
+    <td style="padding:16px 18px 6px 18px;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:{COLOR_PRIMARY};">
+      Need Assistance?
+    </td>
+  </tr>
+  <tr>
+    <td style="padding:0 18px 18px 18px;">
+      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+        <tr>
+          {{% if has_lab_incharge_contact %}}
+          <td style="width:50%;padding:8px 10px 0 0;vertical-align:top;">
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:{COLOR_TEXT};margin-bottom:6px;">Lab In-charge</div>
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{COLOR_TEXT};white-space:pre-line;">{{{{ lab_incharge_contact }}}}</div>
+          </td>
+          {{% endif %}}
+          {{% if has_oic_contact %}}
+          <td style="width:50%;padding:8px 0 0 0;vertical-align:top;">
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:{COLOR_TEXT};margin-bottom:6px;">Officer In-charge</div>
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{COLOR_TEXT};white-space:pre-line;">{{{{ oic_contact }}}}</div>
+          </td>
+          {{% endif %}}
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+{{% endif %}}"""
+
+
+def booking_location_contact_text() -> str:
+    return """
+{% if lab_location %}Laboratory Location:
+{{ lab_location }}
+
+{% endif %}{% if lab_google_maps_url %}Open in Google Maps:
+{{ lab_google_maps_url }}
+
+{% endif %}{% if has_lab_incharge_contact %}Lab In-charge:
+{{ lab_incharge_contact }}
+
+{% endif %}{% if has_oic_contact %}Officer In-charge:
+{{ oic_contact }}
+
+{% endif %}"""
+
+
 def wrap_email_html(
     *,
     title: str,
@@ -286,6 +376,7 @@ def wrap_email_html(
     """Full HTML document matching the Welcome Email visual language."""
     org = org_legal_name()
     portal = portal_url()
+    logo = logo_url()
     support = support_contact_line()
     portal_line = (
         f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.55;color:#94a3b8;margin-top:8px;">'
@@ -337,14 +428,24 @@ def wrap_email_html(
       <td align="center" style="padding:28px 12px;">
         <table role="presentation" class="email-container" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;">
           <tr>
-            <td align="center" style="padding:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:{COLOR_MUTED};">
-              {escape(org)}
-            </td>
-          </tr>
-          <tr>
             <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" style="background-color:{COLOR_PRIMARY};background-image:{COLOR_HERO_GRADIENT};padding:32px 28px 28px 28px;border-radius:18px 18px 0 0;">
-              <div style="display:inline-block;padding:5px 10px;border-radius:999px;background:rgba(255,255,255,0.16);font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#ffffff;font-family:Arial,Helvetica,sans-serif;">
-                {escape(PRODUCT_SHORT)}
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                <tr>
+                  <td style="vertical-align:top;padding:0 14px 14px 0;" width="76">
+                    {f'<img src="{escape(logo)}" width="60" alt="IIT Roorkee Logo" style="display:block;width:60px;max-width:60px;height:auto;border:0;" />' if logo else f'<div style="width:60px;height:60px;border-radius:12px;background:rgba(255,255,255,0.14);font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:800;line-height:60px;text-align:center;color:#ffffff;">IITR</div>'}
+                  </td>
+                  <td style="vertical-align:top;padding:0 0 14px 0;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.2;font-weight:800;color:#ffffff;">
+                      {escape(org)}
+                    </div>
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:rgba(255,255,255,0.82);margin-top:4px;">
+                      {escape(ORG_HINDI)}
+                    </div>
+                  </td>
+                </tr>
+              </table>
+              <div style="display:inline-block;padding:6px 11px;border-radius:999px;background:rgba(255,255,255,0.16);font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#ffffff;font-family:Arial,Helvetica,sans-serif;">
+                {escape(PORTAL_LABEL)}
               </div>
               <div style="font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.25;font-weight:800;color:#ffffff;margin-top:14px;">
                 {escape(title)}
@@ -366,7 +467,7 @@ def wrap_email_html(
                 Thank you for using the {escape(PRODUCT_NAME)}.
               </div>
               <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.55;color:#94a3b8;margin-top:8px;">
-                {escape(CENTRE_LINE)}<br/>{escape(org)}
+                {escape(org)}<br/>{escape(PORTAL_LABEL)}
               </div>
               <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.55;color:#94a3b8;margin-top:10px;">
                 Need assistance?<br/>{escape(support)}
@@ -393,8 +494,8 @@ def branded_plain_footer() -> str:
     lines = [
         "",
         f"Thank you for using the {PRODUCT_NAME}.",
-        CENTRE_LINE,
         org,
+        PORTAL_LABEL,
         "",
         "Need assistance?",
         support_contact_line(),
@@ -460,6 +561,8 @@ def build_standard_email(
     detail_rows: Optional[Sequence[str]] = None,
     details_heading: str = "Details",
     note_vars: Optional[Sequence[tuple[str, str]]] = None,
+    post_details_html: str = "",
+    post_details_text: str = "",
     cta_label: str = "View details",
     cta_var: str = "link",
     extra_html: str = "",
@@ -477,6 +580,8 @@ def build_standard_email(
     parts = [greeting_html(name_var), paragraph_html(intro)]
     if detail_rows:
         parts.append(details_card_html(detail_rows, heading=details_heading))
+    if post_details_html:
+        parts.append(post_details_html)
     for var_name, label in note_vars or ():
         parts.append(optional_note_block(var_name, label=label))
     if extra_html:
@@ -511,6 +616,8 @@ def build_standard_email(
         ):
             text_lines.append(f"{{% if {var} %}}- {label}: {{{{ {var} }}}}{{% endif %}}")
         text_lines.append("")
+    if post_details_text:
+        text_lines.append(post_details_text)
     for var_name, label in note_vars or ():
         text_lines.append(f"{{% if {var_name} %}}{label}:\n{{{{ {var_name} }}}}\n{{% endif %}}")
     text_lines.append(f"{{% if {cta_var} %}}{cta_label}: {{{{ {cta_var} }}}}{{% endif %}}")

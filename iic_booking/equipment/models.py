@@ -159,6 +159,26 @@ class Equipment(models.Model):
     description = models.TextField(help_text='Description of the equipment', blank=True, null=True)
     status = models.CharField(max_length=255, help_text='Status of the equipment', blank=True, null=True, choices=EquipmentStatus.choices)
     location = models.TextField(help_text='Location of the equipment', blank=True, null=True)
+    latitude = models.DecimalField(
+        max_digits=10,
+        decimal_places=7,
+        blank=True,
+        null=True,
+        help_text=_("Optional GPS latitude for the laboratory location"),
+    )
+    longitude = models.DecimalField(
+        max_digits=10,
+        decimal_places=7,
+        blank=True,
+        null=True,
+        help_text=_("Optional GPS longitude for the laboratory location"),
+    )
+    google_maps_url = models.URLField(
+        help_text='Optional Google Maps URL for opening the exact lab location',
+        blank=True,
+        null=True,
+        max_length=500,
+    )
     image = models.ImageField(
         storage=get_equipment_image_storage,
         upload_to=equipment_image_upload_to,
@@ -607,6 +627,108 @@ class Equipment(models.Model):
     commissioning_date = models.DateField(null=True, blank=True, verbose_name=_('Commissioning date'))
     asset_serial_number = models.CharField(max_length=120, blank=True, default='', verbose_name=_('Asset / manufacturer serial'))
     lifecycle_notes = models.TextField(blank=True, default='', verbose_name=_('Lifecycle notes'))
+
+    # -------------------------------------------------------------------------
+    # Department Sync Agent (instrument PC network identity for DSA)
+    # -------------------------------------------------------------------------
+    dsa_hostname = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        verbose_name=_("DSA hostname"),
+        help_text=_("Instrument PC hostname published to the Department Sync Agent."),
+    )
+    dsa_ip_address = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        verbose_name=_("DSA IP address"),
+        help_text=_("Instrument PC LAN IP published to the Department Sync Agent."),
+    )
+    dsa_share_name = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        verbose_name=_("DSA share name"),
+        help_text=_("SMB share name on the instrument PC (e.g. Results)."),
+    )
+    dsa_unc_path = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        verbose_name=_("DSA UNC path"),
+        help_text=_(r"Full UNC path, e.g. \\192.168.1.2\Results. Auto-built from IP + share when blank."),
+    )
+    dsa_enabled = models.BooleanField(
+        default=True,
+        verbose_name=_("DSA enabled"),
+        help_text=_("When unchecked, this equipment is not published to the Department Sync Agent."),
+    )
+    dsa_watch_folder_enabled = models.BooleanField(
+        default=True,
+        verbose_name=_("DSA watch folder enabled"),
+        help_text=_("When enabled, the Sync Agent may attach file watchers for this instrument."),
+    )
+
+    # -------------------------------------------------------------------------
+    # Remote Analysis Platform (browser desktop / analysis workspace)
+    # -------------------------------------------------------------------------
+    enable_remote_analysis = models.BooleanField(
+        default=False,
+        verbose_name=_("Enable Remote Analysis"),
+        help_text=_("When enabled, eligible completed bookings may create analysis reservations."),
+    )
+    remote_analysis_enabled_from_status = models.CharField(
+        max_length=30,
+        blank=True,
+        default="COMPLETED",
+        verbose_name=_("Remote Analysis eligibility rule"),
+        help_text=_("Booking status from which Remote Analysis becomes available (default COMPLETED)."),
+    )
+    analysis_workspace_retention_days = models.PositiveIntegerField(
+        default=90,
+        verbose_name=_("Analysis workspace retention (days)"),
+        help_text=_("Hint for workspace retention; Portal Remote Analysis settings remain authoritative for purge."),
+    )
+    analysis_session_limit = models.PositiveIntegerField(
+        default=5,
+        verbose_name=_("Maximum analysis sessions"),
+        help_text=_("Maximum remote desktop sessions allowed per booking (0 = unlimited)."),
+    )
+    analysis_access_duration = models.PositiveIntegerField(
+        default=72,
+        verbose_name=_("Analysis access duration (hours)"),
+        help_text=_("Hours after availability before analysis access expires."),
+    )
+    analysis_auto_archive = models.BooleanField(
+        default=True,
+        verbose_name=_("Workspace auto archive"),
+        help_text=_("Prefer automatic archive when analysis access expires."),
+    )
+    analysis_profile = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        null=True,
+        verbose_name=_("Analysis profile"),
+        help_text=_("Optional software/capability profile name for scheduler matching."),
+    )
+    analysis_requires_sample_acceptance = models.BooleanField(
+        default=False,
+        verbose_name=_("Requires sample acceptance"),
+        help_text=_("When True, sample lifecycle must include Sample Accepted before analysis."),
+    )
+    analysis_requires_experiment_completion = models.BooleanField(
+        default=True,
+        verbose_name=_("Requires experiment completion"),
+        help_text=_("When True, booking must be Completed before analysis."),
+    )
+    analysis_notes = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Remote Analysis notes"),
+        help_text=_("Operator-facing notes for Remote Analysis on this equipment."),
+    )
 
     created_at = models.DateTimeField(auto_now_add=True, help_text='Date and time the equipment was created')
     updated_at = models.DateTimeField(auto_now=True, help_text='Date and time the equipment was updated')
@@ -1918,6 +2040,7 @@ class BookingStatus(models.TextChoices):
     UNDER_MAINTENANCE = 'UNDER_MAINTENANCE', _('Under Maintenance')
     OTHER_DISRUPTION = 'OTHER_DISRUPTION', _('Other Disruption')
     HOLD = 'HOLD', _('Hold')
+    PROCESSING = 'PROCESSING', _('Processing results')
     COMPLETED = 'COMPLETED', _('Completed')
     CANCELLED = 'CANCELLED', _('Cancelled')
     ABSENT = 'ABSENT', _('Operator Unavailable')
@@ -2146,6 +2269,50 @@ class Booking(models.Model):
         blank=True,
         help_text=_('When the booking was marked as completed. Used for repeat-sample request time limit.'),
         verbose_name=_('Completed at')
+    )
+
+    # -------------------------------------------------------------------------
+    # Remote Analysis integration (lightweight pointers; RA owns lifecycle)
+    # -------------------------------------------------------------------------
+    analysis_available = models.BooleanField(
+        default=False,
+        verbose_name=_("Remote Analysis available"),
+        help_text=_("True when this booking is eligible for Remote Analysis (does not change booking status)."),
+    )
+    analysis_available_from = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Analysis available from"),
+    )
+    analysis_expiry = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Analysis access expiry"),
+    )
+    analysis_session_count = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Analysis session count"),
+    )
+    analysis_last_session = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Last analysis session at"),
+    )
+    analysis_reservation = models.ForeignKey(
+        "remote_analysis.AnalysisReservation",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="primary_for_bookings",
+        verbose_name=_("Primary analysis reservation"),
+    )
+    analysis_workspace = models.ForeignKey(
+        "remote_analysis.AnalysisWorkspace",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="primary_for_bookings",
+        verbose_name=_("Primary analysis workspace"),
     )
 
     # Repeat sample: when True, the booking user can create a replica booking (same params, discount = original amount).

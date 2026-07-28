@@ -399,7 +399,7 @@ def _send_credit_expired_hold_email(req: WalletRechargeRequest) -> None:
         f"realized and your balance is no longer in default.\n\n"
         f"If the recharge is credited later, your wallet will be updated and bookings can resume when the balance allows.\n\n"
         f"Wallet: {link}\n\n"
-        f"— IIC Booking System\n"
+        f"— IIT Roorkee\n"
     )
     try:
         send_mail(

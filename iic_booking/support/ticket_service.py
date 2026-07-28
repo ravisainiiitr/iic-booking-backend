@@ -152,7 +152,7 @@ def notify_ticket_assignee(ticket: Ticket, *, assigned_by=None, previous_assigne
         lines.append(f"Assigned by: {by_name}")
     if link:
         lines.extend(["", f"Open Support: {link}"])
-    lines.extend(["", "— IIT Roorkee IIC Booking"])
+    lines.extend(["", "— IIT Roorkee"])
 
     try:
         send_mail(

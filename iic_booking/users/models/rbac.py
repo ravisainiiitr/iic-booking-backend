@@ -22,6 +22,8 @@ DEFAULT_PERMISSION_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("admin_settings.equipment", "Admin Settings: Equipment", "Access Equipment admin-settings modules for the department."),
     ("admin_settings.wallet", "Admin Settings: Wallet", "Access wallet-related Admin Settings modules for the department."),
     ("admin_settings.reports", "Admin Settings: Reports", "Access report tools from Admin Settings for the department."),
+    ("remote_analysis.manage", "Manage remote analysis", "Manage remote analysis workstations, commands, and maintenance."),
+    ("remote_analysis.view", "View remote analysis", "View remote analysis dashboards, inventory, and health."),
 )
 
 

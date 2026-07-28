@@ -1829,7 +1829,7 @@ To reject this request, use the API endpoint: {reject_url}
 
 Note: You will need to provide the OTP code when calling the API endpoints. Please contact the system administrator for the OTP code.
 
-This is an automated email from IIC Booking System.
+This is an automated email from IIT Roorkee.
 Please do not reply to this email.
             """.strip()
             
@@ -1905,7 +1905,7 @@ To reject this request, use the API endpoint: {reject_url}
 
 Note: You will need to provide the OTP code when calling the API endpoints. Please contact the system administrator for the OTP code.
 
-This is an automated email from IIC Booking System.
+This is an automated email from IIT Roorkee.
 Please do not reply to this email.
                 """.strip()
                 

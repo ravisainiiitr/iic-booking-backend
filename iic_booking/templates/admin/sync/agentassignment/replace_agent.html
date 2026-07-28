@@ -1,0 +1,35 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:sync_agentassignment_changelist' %}">{% trans 'Agent Assignments' %}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+<div class="module">
+  <ul>
+    {% for a in assignments %}
+      <li>{{ a.sync_profile.equipment }} ← {{ a.sync_agent.agent_name }}</li>
+    {% empty %}
+      <li>{% trans "No assignments selected." %}</li>
+    {% endfor %}
+  </ul>
+</div>
+<form method="post">
+  {% csrf_token %}
+  <fieldset class="module aligned">
+    {% for field in form %}
+      <div class="form-row">{{ field.label_tag }} {{ field }} {{ field.errors }}</div>
+    {% endfor %}
+  </fieldset>
+  <div class="submit-row">
+    <input type="submit" class="default" value="{% trans 'Replace agent' %}">
+    <a href="{% url 'admin:sync_agentassignment_changelist' %}" class="button cancel-link">{% trans "Cancel" %}</a>
+  </div>
+</form>
+{% endblock %}

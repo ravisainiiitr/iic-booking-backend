@@ -1,0 +1,97 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label='sync' %}">{% trans 'Department Sync' %}</a>
+  &rsaquo; <a href="{% url 'admin:sync_departmentsyncagent_changelist' %}">{% trans 'Department Sync Agents' %}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+<p>
+  {{ lifecycle_badge }} {{ online_badge }}
+  &nbsp; {% trans "Heartbeat age" %}: <strong>{{ heartbeat_age }}</strong>
+</p>
+
+<div class="module">
+  <h2>{% trans "Identity" %}</h2>
+  <table>
+    <tr><th>{% trans "UUID" %}</th><td><code>{{ agent.agent_uuid }}</code></td></tr>
+    <tr><th>{% trans "Version" %}</th><td>{{ agent.version|default:"-" }}</td></tr>
+    <tr><th>{% trans "Machine" %}</th><td>{{ agent.machine_name|default:"-" }}</td></tr>
+    <tr><th>{% trans "OS" %}</th><td>{{ agent.operating_system|default:"-" }}</td></tr>
+    <tr><th>{% trans "Department" %}</th><td>{{ agent.department }}</td></tr>
+    <tr><th>{% trans "Laboratory" %}</th><td>{{ agent.laboratory|default:"-" }}</td></tr>
+    <tr><th>{% trans "Last heartbeat" %}</th><td>{{ agent.last_heartbeat_at|default:"-" }}</td></tr>
+    <tr><th>{% trans "Config version (reported)" %}</th><td>{{ agent.last_reported_configuration_version|default:"-" }}</td></tr>
+    <tr><th>{% trans "Schema version (reported)" %}</th><td>{{ agent.last_reported_schema_version|default:"-" }}</td></tr>
+    <tr><th>{% trans "Assigned equipment" %}</th><td>{{ assigned_count }}</td></tr>
+  </table>
+</div>
+
+{% if latest_heartbeat %}
+<div class="module">
+  <h2>{% trans "Latest heartbeat diagnostics" %}</h2>
+  <table>
+    <tr><th>{% trans "Hostname" %}</th><td>{{ latest_heartbeat.hostname|default:"-" }}</td></tr>
+    <tr><th>{% trans "Windows build" %}</th><td>{{ latest_heartbeat.windows_build|default:"-" }}</td></tr>
+    <tr><th>{% trans "Service version" %}</th><td>{{ latest_heartbeat.service_version|default:"-" }}</td></tr>
+    <tr><th>{% trans "SQLite schema version" %}</th><td>{{ latest_heartbeat.sqlite_schema_version|default:"-" }}</td></tr>
+    <tr><th>{% trans "Agent uptime (s)" %}</th><td>{{ latest_heartbeat.agent_uptime_seconds|default:"-" }}</td></tr>
+    <tr><th>{% trans "CPU / Memory / Disk" %}</th>
+      <td>{{ latest_heartbeat.cpu_percent|default:"-" }} / {{ latest_heartbeat.memory_percent|default:"-" }} / {{ latest_heartbeat.disk_percent|default:"-" }}</td>
+    </tr>
+    <tr><th>{% trans "Workers / Queue" %}</th>
+      <td>{{ latest_heartbeat.active_workers|default:"-" }} / {{ latest_heartbeat.queue_size|default:"-" }}</td>
+    </tr>
+  </table>
+</div>
+{% endif %}
+
+<div class="module">
+  <h2>{% trans "Assigned equipment" %}</h2>
+  <table>
+    <thead><tr><th>{% trans "Equipment" %}</th><th>{% trans "Watch" %}</th><th>{% trans "Config v" %}</th><th>{% trans "Schema v" %}</th></tr></thead>
+    <tbody>
+    {% for a in assigned %}
+      <tr>
+        <td>{{ a.sync_profile.equipment }}</td>
+        <td>{{ a.sync_profile.watch_folder|default:"-" }}</td>
+        <td>{{ a.sync_profile.configuration_version }}</td>
+        <td>{{ a.sync_profile.schema_version }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4">{% trans "No active assignments." %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="module">
+  <h2>{% trans "Recent errors" %}</h2>
+  <table>
+    <thead><tr><th>{% trans "Time" %}</th><th>{% trans "Code" %}</th><th>{% trans "Severity" %}</th><th>{% trans "Message" %}</th></tr></thead>
+    <tbody>
+    {% for log in recent_errors %}
+      <tr>
+        <td>{{ log.created_at }}</td>
+        <td>{{ log.event_code }}</td>
+        <td>{{ log.get_severity_display }}</td>
+        <td>{{ log.message|truncatechars:120 }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4">{% trans "No recent errors." %}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <a class="button" href="{% url 'admin:sync_departmentsyncagent_change' agent.pk %}">{% trans "Back to agent" %}</a>
+  <a class="button" href="{% url 'admin:sync_departmentsyncagent_export_config' agent.pk %}">{% trans "Export configuration" %}</a>
+</p>
+{% endblock %}

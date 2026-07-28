@@ -103,6 +103,8 @@ LOCAL_APPS = [
     "iic_booking.support",
     "iic_booking.cms",
     "iic_booking.payments",
+    "iic_booking.sync",
+    "iic_booking.remote_analysis.apps.RemoteAnalysisConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -331,7 +333,7 @@ EMAIL_HOST_PASSWORD = env("AWS_SES_SMTP_PASSWORD", default="")
 # https://docs.djangoproject.com/en/dev/ref/settings/#default-from-email
 DEFAULT_FROM_EMAIL = env(
     "DJANGO_DEFAULT_FROM_EMAIL",
-    default="IIC Booking <iicbooking@iitr.ac.in>",
+    default="IIT Roorkee <iicbooking@iitr.ac.in>",
 )
 # https://docs.djangoproject.com/en/dev/ref/settings/#server-email
 SERVER_EMAIL = env("DJANGO_SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
@@ -339,7 +341,7 @@ SERVER_EMAIL = env("DJANGO_SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 # DOCUMENTS (Invoice / Shipping label)
 # ------------------------------------------------------------------------------
 # Organization "From" details used in generated invoices and shipping labels.
-ORG_LEGAL_NAME = env("ORG_LEGAL_NAME", default="IIC Booking, IIT Roorkee")
+ORG_LEGAL_NAME = env("ORG_LEGAL_NAME", default="Indian Institute of Technology Roorkee")
 ORG_GSTIN = env("ORG_GSTIN", default="")
 ORG_ADDRESS = env("ORG_ADDRESS", default="Indian Institute of Technology Roorkee, Roorkee, Uttarakhand, India")
 ORG_CONTACT_EMAIL = env("ORG_CONTACT_EMAIL", default="")  # optional
@@ -518,6 +520,15 @@ REST_FRAMEWORK = {
 # Inactivity logout disabled: tokens do not expire due to inactivity.
 # AUTH_INACTIVITY_TIMEOUT_SECONDS is kept for backwards compatibility but not used.
 AUTH_INACTIVITY_TIMEOUT_SECONDS = env.int("AUTH_INACTIVITY_TIMEOUT_SECONDS", default=1800)
+
+# Department Sync Agent control plane
+# ------------------------------------------------------------------------------
+DSA_HEARTBEAT_TIMEOUT_SECONDS = env.int("DSA_HEARTBEAT_TIMEOUT_SECONDS", default=180)
+DSA_HEARTBEAT_INTERVAL_SECONDS = env.int("DSA_HEARTBEAT_INTERVAL_SECONDS", default=60)
+DSA_ACCESS_TOKEN_LIFETIME_HOURS = env.int("DSA_ACCESS_TOKEN_LIFETIME_HOURS", default=24 * 30)
+DSA_BOOTSTRAP_SCHEMA_VERSION = env.int("DSA_BOOTSTRAP_SCHEMA_VERSION", default=1)
+DSA_UPLOAD_CHUNK_SIZE_BYTES = env.int("DSA_UPLOAD_CHUNK_SIZE_BYTES", default=1024 * 1024)
+DSA_UPLOAD_SESSION_TTL_HOURS = env.int("DSA_UPLOAD_SESSION_TTL_HOURS", default=24)
 
 # django-cors-headers - https://github.com/adamchainz/django-cors-headers#setup
 CORS_URLS_REGEX = r"^/api/.*$"

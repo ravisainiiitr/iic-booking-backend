@@ -12,6 +12,8 @@ from typing import Any, Optional, Sequence
 from iic_booking.communication.email_branding import (
     PRODUCT_NAME,
     booking_details_rows,
+    booking_location_contact_html,
+    booking_location_contact_text,
     branded_plain_footer,
     build_standard_email,
     details_card_html,
@@ -134,6 +136,8 @@ def _booking_email(
     include_charges: bool = True,
     note_vars: Optional[Sequence[tuple[str, str]]] = None,
     extra_html: str = "",
+    post_details_html: str = "",
+    post_details_text: str = "",
     extra_detail_rows: Optional[Sequence[str]] = None,
     cta_label: str = "View booking",
     variable_help: Optional[str] = None,
@@ -156,6 +160,8 @@ def _booking_email(
         detail_rows=rows,
         details_heading="Booking details",
         note_vars=notes,
+        post_details_html=post_details_html,
+        post_details_text=post_details_text,
         cta_label=cta_label,
         extra_html=extra_html,
         name_var=name_var,
@@ -308,6 +314,8 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Email sent when a new booking is created.",
             include_wallet=True,
             note_vars=booking_notes,
+            post_details_html=booking_location_contact_html(),
+            post_details_text=booking_location_contact_text(),
             variable_help=_BOOKING_COMMON_HELP + ", {{ wallet_balance_after }}",
         ),
         _booking_email(
@@ -318,6 +326,8 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Email sent when a booking is confirmed (BOOKED).",
             include_wallet=True,
             note_vars=booking_notes,
+            post_details_html=booking_location_contact_html(),
+            post_details_text=booking_location_contact_text(),
             variable_help=_BOOKING_COMMON_HELP + ", {{ wallet_balance_after }}",
         ),
         _booking_email(
@@ -507,6 +517,8 @@ def _booking_templates() -> list[dict[str, Any]]:
                 optional_detail_row("Queue position when joined", "waitlist_position"),
                 *booking_details_rows(include_wallet=True),
             ],
+            post_details_html=booking_location_contact_html(),
+            post_details_text=booking_location_contact_text(),
             cta_label="Open booking",
             variable_help=(
                 "{{ user_name }}, {{ user_email }}, {{ booked_for_user_name }}, {{ booked_for_user_email }}, "
@@ -631,6 +643,8 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Sent when a repeat sample booking is created (admin-approved or user repeat flow).",
             include_wallet=True,
             note_vars=booking_notes,
+            post_details_html=booking_location_contact_html(),
+            post_details_text=booking_location_contact_text(),
             extra_detail_rows=[optional_detail_row("Original booking", "original_booking_id")],
             variable_help=_BOOKING_COMMON_HELP + ", {{ original_booking_id }}, {{ wallet_balance_after }}",
         ),
@@ -713,6 +727,8 @@ def _urgent_templates() -> list[dict[str, Any]]:
             description="Sent when an urgent request is approved and HOLD converts to BOOKED.",
             include_status=True,
             note_vars=(("comment", "Note"),),
+            post_details_html=booking_location_contact_html(),
+            post_details_text=booking_location_contact_text(),
             variable_help=_BOOKING_COMMON_HELP + ", {{ previous_status }}, {{ new_status }}",
         ),
         _booking_email(

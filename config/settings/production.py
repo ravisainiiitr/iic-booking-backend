@@ -94,7 +94,7 @@ SECURE_CONTENT_TYPE_NOSNIFF = env.bool(
 # https://docs.djangoproject.com/en/dev/ref/settings/#default-from-email
 DEFAULT_FROM_EMAIL = env(
     "DJANGO_DEFAULT_FROM_EMAIL",
-    default="IIC Booking <no-reply@iicbooking.iitr.ac.in>",
+    default="IIT Roorkee <no-reply@iicbooking.iitr.ac.in>",
 )
 # https://docs.djangoproject.com/en/dev/ref/settings/#server-email
 SERVER_EMAIL = env("DJANGO_SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
