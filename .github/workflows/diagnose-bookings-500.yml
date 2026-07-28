@@ -14,21 +14,53 @@ jobs:
           echo "container=$CID"
           docker exec -w /app "$CID" python manage.py shell -c "
           import traceback
-          from django.test import Client
+          from django.test import Client, RequestFactory
           from django.contrib.auth import get_user_model
           from rest_framework.authtoken.models import Token
+          from rest_framework.request import Request
+          from rest_framework.test import force_authenticate, APIRequestFactory
           from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.api_views import list_bookings
+          from iic_booking.equipment.serializers import BookingListSerializer
+          from django.db.models import Exists, OuterRef, Prefetch
+          from iic_booking.equipment.models import BookingResultFile, DailySlot
           User = get_user_model()
           print('booked_count', Booking.objects.filter(status='BOOKED').count())
           admin = User.objects.filter(user_type='admin', is_active=True).order_by('id').first()
           print('admin', admin and admin.email, admin and admin.id)
-          token, _ = Token.objects.get_or_create(user=admin)
-          c = Client()
+          # serialize first
+          qs = Booking.objects.filter(status='BOOKED').order_by('-created_at')
+          qs = qs.annotate(has_results=Exists(BookingResultFile.objects.filter(booking_id=OuterRef('pk'))))
+          qs = qs.select_related('user','user__department','created_by','equipment','equipment__internal_department','charge_profile')
+          qs = qs.prefetch_related(Prefetch('daily_slots', queryset=DailySlot.objects.select_related('slot_master','slot_master__equipment','booking','booking__equipment')),'repeat_sample_requests','equipment__equipment_operators__operator','equipment__equipment_managers__manager')[:10]
           try:
-              r = c.get('/api/bookings/?status=BOOKED&limit=10&offset=0&list_view=1', HTTP_AUTHORIZATION='Token ' + token.key)
-              print('status', r.status_code)
-              print('body', r.content[:1000])
+              data = BookingListSerializer(qs, many=True).data
+              print('serialize_ok', len(data))
           except Exception:
-              print('CLIENT_FAIL')
+              print('SERIALIZER_FAIL')
+              traceback.print_exc()
+          # call view
+          try:
+              factory = APIRequestFactory()
+              django_request = factory.get('/api/bookings/', {'status':'BOOKED','limit':'10','offset':'0','list_view':'1'}, HTTP_HOST='equip.iitr.ac.in')
+              force_authenticate(django_request, user=admin)
+              response = list_bookings(django_request)
+              print('view_status', response.status_code)
+              if response.status_code >= 400:
+                  print('view_data', getattr(response, 'data', None))
+              else:
+                  print('view_count', response.data.get('count'), 'total', response.data.get('total_count'))
+          except Exception:
+              print('VIEW_FAIL')
+              traceback.print_exc()
+          # HTTP client with allowed host
+          try:
+              token, _ = Token.objects.get_or_create(user=admin)
+              c = Client(HTTP_HOST='equip.iitr.ac.in')
+              r = c.get('/api/bookings/?status=BOOKED&limit=10&offset=0&list_view=1', HTTP_AUTHORIZATION='Token ' + token.key)
+              print('http_status', r.status_code)
+              print('http_body', r.content[:1500])
+          except Exception:
+              print('HTTP_FAIL')
               traceback.print_exc()
           "
