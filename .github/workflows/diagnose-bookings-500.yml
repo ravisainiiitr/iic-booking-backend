@@ -14,14 +14,12 @@ jobs:
           echo "container=$CID"
           if [ -z "$CID" ]; then
             echo "Django not running"
-            docker ps -a | head -n 30
             exit 1
           fi
-          cat > /tmp/diagnose_bookings.py <<'PY'
-          import os
-          import django
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
-          django.setup()
+          # write script without YAML indentation issues
+          python3 - <<'HOST'
+          from pathlib import Path
+          Path("/tmp/diagnose_bookings.py").write_text(r'''
           import traceback
           from django.contrib.auth import get_user_model
           from django.db.models import Exists, OuterRef, Prefetch
@@ -57,8 +55,8 @@ jobs:
           try:
               from rest_framework.test import APIRequestFactory, force_authenticate
               from iic_booking.equipment.api_views import list_bookings
-              admin = User.objects.filter(user_type="admin", is_active=True).first()
-              print("admin", getattr(admin, "email", None), "id", getattr(admin, "id", None))
+              admin = User.objects.filter(user_type="admin", is_active=True).order_by("id").first()
+              print("admin", getattr(admin, "email", None), "id", getattr(admin, "id", None), "type", getattr(admin, "user_type", None))
               if admin:
                   factory = APIRequestFactory()
                   request = factory.get(
@@ -71,13 +69,13 @@ jobs:
                   if getattr(response, "status_code", 200) >= 400:
                       print("view_data", getattr(response, "data", None))
                   else:
-                      payload = response.data if hasattr(response, "data") else None
-                      print("view_count", (payload or {}).get("count"), "total", (payload or {}).get("total_count"))
+                      payload = response.data if hasattr(response, "data") else {}
+                      print("view_count", payload.get("count"), "total", payload.get("total_count"))
           except Exception:
               print("VIEW_FAIL")
               traceback.print_exc()
-          PY
+          ''')
+          print("wrote /tmp/diagnose_bookings.py")
+          HOST
           docker cp /tmp/diagnose_bookings.py "$CID":/tmp/diagnose_bookings.py
-          docker exec "$CID" python /tmp/diagnose_bookings.py
-          echo "--- curl from host via container loopback ---"
-          docker exec "$CID" python -c "import urllib.request; print('skip')" || true
+          docker exec -w /app "$CID" python manage.py shell < /tmp/diagnose_bookings.py
