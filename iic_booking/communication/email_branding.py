@@ -7,6 +7,7 @@ Used by CommunicationTemplate defaults and styled transactional emails.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
@@ -86,6 +87,106 @@ def user_display_name(user: Any, *, fallback: str = "User") -> str:
     if email:
         return email
     return fallback
+
+
+def user_department_name(user: Any) -> str:
+    """Department display name for a user, if available."""
+    if user is None:
+        return ""
+    department = getattr(user, "department", None)
+    if department is None:
+        return ""
+    return (getattr(department, "name", None) or "").strip()
+
+
+def format_on_behalf_of_user(user: Any) -> str:
+    """
+    Human-readable 'on behalf of' block for emails and booking notes.
+    Never includes internal database IDs.
+    """
+    name = user_display_name(user, fallback="")
+    email = (getattr(user, "email", None) or "").strip() if user is not None else ""
+    department = user_department_name(user)
+    if not name and not email:
+        return ""
+
+    lines = ["This booking was created on behalf of:", ""]
+    lines.append(name or email)
+    if department:
+        lines.append(department)
+        lines.append(org_legal_name())
+    elif email and name and email.lower() not in name.lower():
+        lines.append(email)
+    return "\n".join(lines)
+
+
+def build_booking_created_event_comment(
+    *,
+    equipment_name: str,
+    total_time_minutes: Any,
+    total_charge: Any,
+    booking_user: Any = None,
+    created_by: Any = None,
+    is_hold: bool = False,
+    amount_due: Any = 0,
+    atmosphere_sensitive_sample: bool = False,
+) -> str:
+    """
+    Structured booking-created note for event history and confirmation emails.
+    Uses display names instead of internal user primary keys.
+    """
+    action = "Hold created" if is_hold else "Booking created"
+    duration = format_duration_minutes(total_time_minutes) or f"{total_time_minutes} minutes"
+    charges = format_inr(total_charge) or f"₹{total_charge}"
+
+    lines = [
+        f"{action} for",
+        (equipment_name or "").strip() or "equipment",
+        "",
+        f"Duration: {duration}",
+        f"Charges: {charges}",
+    ]
+
+    try:
+        due = float(amount_due or 0)
+    except (TypeError, ValueError):
+        due = 0.0
+    if due > 0:
+        lines.extend(["", f"Payment pending: {format_inr(due) or f'₹{due:.2f}'}"])
+
+    if booking_user is not None and created_by is not None:
+        booking_uid = getattr(booking_user, "id", None)
+        creator_uid = getattr(created_by, "id", None)
+        if booking_uid is not None and creator_uid is not None and booking_uid != creator_uid:
+            behalf = format_on_behalf_of_user(booking_user)
+            if behalf:
+                lines.extend(["", behalf])
+
+    if atmosphere_sensitive_sample:
+        lines.extend(
+            [
+                "",
+                "Atmosphere-sensitive sample:",
+                "• Submit the sample at slot start.",
+                "• Do not mark Not Utilized before the slot begins.",
+            ]
+        )
+
+    return "\n".join(lines).strip()
+
+
+def scrub_internal_user_ids_from_text(text: Any) -> str:
+    """Replace legacy 'on behalf of user <pk>' phrases in stored comments."""
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    value = re.sub(
+        r"\bon behalf of user\s+\d+\b",
+        "on behalf of another user",
+        value,
+        flags=re.IGNORECASE,
+    )
+    return value
 
 
 def format_inr(amount: Any) -> str:
@@ -217,10 +318,10 @@ def detail_row_html(label: str, value_placeholder: str) -> str:
     """One detail row; value_placeholder may be literal HTML or {{ var }} / {% if %} blocks."""
     return f"""
 <tr>
-  <td style="padding:10px 0;border-bottom:1px solid {COLOR_BORDER};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:{COLOR_MUTED};width:38%;vertical-align:top;">
+  <td style="padding:11px 0;border-bottom:1px solid {COLOR_BORDER};font-family:Arial,Helvetica,sans-serif;font-size:12px;color:{COLOR_MUTED};width:38%;vertical-align:top;">
     {escape(label)}
   </td>
-  <td style="padding:10px 0;border-bottom:1px solid {COLOR_BORDER};font-family:Arial,Helvetica,sans-serif;font-size:14px;color:{COLOR_TEXT};font-weight:600;vertical-align:top;">
+  <td style="padding:11px 0;border-bottom:1px solid {COLOR_BORDER};font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.45;color:{COLOR_TEXT};font-weight:600;vertical-align:top;word-break:break-word;">
     {value_placeholder}
   </td>
 </tr>"""
@@ -256,13 +357,13 @@ def details_card_html(rows: Sequence[str], *, heading: str = "Details") -> str:
 
 def optional_note_block(var_name: str, *, label: str = "Note") -> str:
     return f"""{{% if {var_name} %}}
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:12px 0 4px 0;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:16px 0 8px 0;">
   <tr>
-    <td style="padding:14px 16px;background:{COLOR_SOFT_PANEL_BG};border:1px solid {COLOR_SOFT_PANEL_BORDER};border-radius:12px;">
-      <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:{COLOR_PRIMARY};margin-bottom:6px;">
+    <td style="padding:16px 18px;background:{COLOR_SOFT_PANEL_BG};border:1px solid {COLOR_SOFT_PANEL_BORDER};border-radius:12px;">
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:{COLOR_PRIMARY};margin:0 0 10px 0;">
         {escape(label)}
       </div>
-      <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{COLOR_TEXT};white-space:pre-wrap;">{{{{ {var_name} }}}}</div>
+      <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.7;color:{COLOR_TEXT};white-space:pre-wrap;">{{{{ {var_name} }}}}</div>
     </td>
   </tr>
 </table>
@@ -271,11 +372,11 @@ def optional_note_block(var_name: str, *, label: str = "Note") -> str:
 
 def optional_cta_block(var_name: str = "link", *, label: str = "View details") -> str:
     return f"""{{% if {var_name} %}}
-<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:18px 0 6px 0;">
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:22px 0 8px 0;">
   <tr>
     <td bgcolor="{COLOR_PRIMARY}" style="border-radius:10px;">
       <a href="{{{{ {var_name} }}}}"
-         style="display:inline-block;padding:12px 18px;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
+         style="display:inline-block;padding:13px 22px;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
         {escape(label)}
       </a>
     </td>
@@ -373,7 +474,7 @@ def wrap_email_html(
     preheader: str = "",
     subtitle: str = "",
 ) -> str:
-    """Full HTML document matching the Welcome Email visual language."""
+    """Full HTML document with official IIT Roorkee communication branding."""
     org = org_legal_name()
     portal = portal_url()
     logo = logo_url()
@@ -385,9 +486,19 @@ def wrap_email_html(
         else ""
     )
     subtitle_html = (
-        f'<div style="font-size:14px;line-height:1.5;color:rgba(255,255,255,0.92);margin-top:10px;">{escape(subtitle)}</div>'
+        f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:rgba(255,255,255,0.92);margin-top:10px;">{escape(subtitle)}</div>'
         if subtitle
         else ""
+    )
+    logo_html = (
+        f'<img src="{escape(logo)}" width="64" height="64" alt="IIT Roorkee Logo" '
+        f'style="display:block;margin:0 auto;width:64px;max-width:64px;height:auto;border:0;" />'
+        if logo
+        else (
+            f'<div style="width:64px;height:64px;margin:0 auto;border-radius:14px;'
+            f'background:rgba(255,255,255,0.14);font-family:Arial,Helvetica,sans-serif;'
+            f'font-size:18px;font-weight:800;line-height:64px;text-align:center;color:#ffffff;">IITR</div>'
+        )
     )
     return f"""<!doctype html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
@@ -412,10 +523,13 @@ def wrap_email_html(
     img {{ -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }}
     body {{ margin: 0 !important; padding: 0 !important; width: 100% !important; }}
     a[x-apple-data-detectors] {{ color: inherit !important; text-decoration: none !important; }}
+    .org-name-en {{ white-space: nowrap; }}
     @media only screen and (max-width: 620px) {{
       .email-container {{ width: 100% !important; max-width: 100% !important; }}
-      .hero-pad {{ padding: 28px 20px !important; }}
+      .hero-pad {{ padding: 26px 18px 24px 18px !important; }}
       .body-pad {{ padding: 22px 18px !important; }}
+      .org-name-en {{ white-space: normal !important; font-size: 15px !important; line-height: 1.3 !important; }}
+      .email-title {{ font-size: 22px !important; }}
     }}
   </style>
 </head>
@@ -428,29 +542,48 @@ def wrap_email_html(
       <td align="center" style="padding:28px 12px;">
         <table role="presentation" class="email-container" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;">
           <tr>
-            <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" style="background-color:{COLOR_PRIMARY};background-image:{COLOR_HERO_GRADIENT};padding:32px 28px 28px 28px;border-radius:18px 18px 0 0;">
+            <td bgcolor="{COLOR_PRIMARY}" class="hero-pad" align="center" style="background-color:{COLOR_PRIMARY};background-image:{COLOR_HERO_GRADIENT};padding:30px 28px 28px 28px;border-radius:18px 18px 0 0;text-align:center;">
               <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                 <tr>
-                  <td style="vertical-align:top;padding:0 14px 14px 0;" width="76">
-                    {f'<img src="{escape(logo)}" width="60" alt="IIT Roorkee Logo" style="display:block;width:60px;max-width:60px;height:auto;border:0;" />' if logo else f'<div style="width:60px;height:60px;border-radius:12px;background:rgba(255,255,255,0.14);font-family:Arial,Helvetica,sans-serif;font-size:20px;font-weight:800;line-height:60px;text-align:center;color:#ffffff;">IITR</div>'}
+                  <td align="center" style="padding:0 0 14px 0;">
+                    {logo_html}
                   </td>
-                  <td style="vertical-align:top;padding:0 0 14px 0;">
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:22px;line-height:1.2;font-weight:800;color:#ffffff;">
+                </tr>
+                <tr>
+                  <td align="center" style="padding:0;">
+                    <div class="org-name-en" style="font-family:Arial,Helvetica,sans-serif;font-size:17px;line-height:1.25;font-weight:800;color:#ffffff;letter-spacing:0.01em;">
                       {escape(org)}
                     </div>
-                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:rgba(255,255,255,0.82);margin-top:4px;">
+                    <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.45;font-weight:600;color:rgba(255,255,255,0.92);margin-top:6px;">
                       {escape(ORG_HINDI)}
                     </div>
                   </td>
                 </tr>
+                <tr>
+                  <td align="center" style="padding:14px 0 0 0;">
+                    <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:0 auto;">
+                      <tr>
+                        <td align="center" style="padding:7px 14px;border-radius:999px;background:rgba(255,255,255,0.16);font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.10em;text-transform:uppercase;color:#ffffff;">
+                          {escape(PORTAL_LABEL)}
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding:18px 0 0 0;">
+                    <div style="height:1px;line-height:1px;font-size:0;background:rgba(255,255,255,0.28);">&nbsp;</div>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding:16px 0 0 0;">
+                    <div class="email-title" style="font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.3;font-weight:800;color:#ffffff;">
+                      {escape(title)}
+                    </div>
+                    {subtitle_html}
+                  </td>
+                </tr>
               </table>
-              <div style="display:inline-block;padding:6px 11px;border-radius:999px;background:rgba(255,255,255,0.16);font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#ffffff;font-family:Arial,Helvetica,sans-serif;">
-                {escape(PORTAL_LABEL)}
-              </div>
-              <div style="font-family:Arial,Helvetica,sans-serif;font-size:24px;line-height:1.25;font-weight:800;color:#ffffff;margin-top:14px;">
-                {escape(title)}
-              </div>
-              {subtitle_html}
             </td>
           </tr>
           <tr>
@@ -643,10 +776,24 @@ def sanitize_template_context(context: Optional[Mapping[str, Any]]) -> dict[str,
             if not ctx[key]:
                 ctx[key] = ""
     if "comment" in ctx:
-        comment = str(ctx.get("comment") or "").strip()
+        comment = scrub_internal_user_ids_from_text(ctx.get("comment"))
         if comment.lower() in ("no comment", "none", "null", "-"):
             comment = ""
         ctx["comment"] = comment
+    for note_key in (
+        "remarks",
+        "admin_notes",
+        "resolution_notes",
+        "rejection_reason",
+        "failure_reason",
+        "response_message",
+        "message",
+        "reason",
+        "allocation_notes",
+        "next_steps",
+    ):
+        if note_key in ctx and ctx.get(note_key) not in (None, ""):
+            ctx[note_key] = scrub_internal_user_ids_from_text(ctx.get(note_key))
     if "link" in ctx:
         ctx["link"] = absolute_http_url(ctx.get("link"))
     # Friendly aliases

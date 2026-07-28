@@ -470,8 +470,16 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
 
     @admin.action(description=_("Disable selected agents"))
     def action_disable_agents(self, request, queryset):
-        updated = queryset.update(status=AgentLifecycleStatus.DISABLED, is_active=False)
-        self.message_user(request, _("Disabled %(n)s agent(s).") % {"n": updated})
+        from iic_booking.sync.services.tokens import revoke_access_token
+
+        count = 0
+        for agent in queryset:
+            agent.status = AgentLifecycleStatus.DISABLED
+            agent.is_active = False
+            agent.save(update_fields=["status", "is_active", "updated_at"])
+            revoke_access_token(agent)
+            count += 1
+        self.message_user(request, _("Disabled %(n)s agent(s); credentials revoked.") % {"n": count})
 
     @admin.action(description=_("Enable selected agents"))
     def action_enable_agents(self, request, queryset):
@@ -479,12 +487,36 @@ class DepartmentSyncAgentAdmin(admin.ModelAdmin):
             status=AgentLifecycleStatus.ENROLLED,
             is_active=True,
         )
-        self.message_user(request, _("Enabled %(n)s agent(s).") % {"n": updated})
+        self.message_user(
+            request,
+            _("Enabled %(n)s agent(s). Re-enrollment required if tokens were revoked.") % {"n": updated},
+        )
 
     @admin.action(description=_("Revoke selected agents"))
     def action_revoke_agents(self, request, queryset):
-        updated = queryset.update(status=AgentLifecycleStatus.REVOKED, is_active=False)
-        self.message_user(request, _("Revoked %(n)s agent(s).") % {"n": updated})
+        from iic_booking.sync.services.tokens import revoke_access_token
+
+        count = 0
+        for agent in queryset:
+            agent.status = AgentLifecycleStatus.REVOKED
+            agent.is_active = False
+            agent.save(update_fields=["status", "is_active", "updated_at"])
+            revoke_access_token(agent)
+            count += 1
+        self.message_user(request, _("Revoked %(n)s agent(s); credentials invalidated.") % {"n": count})
+
+    def delete_model(self, request, obj):
+        from iic_booking.sync.services.tokens import revoke_access_token
+
+        revoke_access_token(obj)
+        super().delete_model(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        from iic_booking.sync.services.tokens import revoke_access_token
+
+        for agent in queryset:
+            revoke_access_token(agent)
+        super().delete_queryset(request, queryset)
 
     @admin.action(description=_("Force Bootstrap Required (bump assigned config versions)"))
     def action_force_bootstrap_required(self, request, queryset):

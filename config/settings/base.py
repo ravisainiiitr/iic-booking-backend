@@ -516,7 +516,11 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_RATES": {
+        "sync_enroll": "10/hour",
+    },
 }
+
 # Inactivity logout disabled: tokens do not expire due to inactivity.
 # AUTH_INACTIVITY_TIMEOUT_SECONDS is kept for backwards compatibility but not used.
 AUTH_INACTIVITY_TIMEOUT_SECONDS = env.int("AUTH_INACTIVITY_TIMEOUT_SECONDS", default=1800)
@@ -529,6 +533,8 @@ DSA_ACCESS_TOKEN_LIFETIME_HOURS = env.int("DSA_ACCESS_TOKEN_LIFETIME_HOURS", def
 DSA_BOOTSTRAP_SCHEMA_VERSION = env.int("DSA_BOOTSTRAP_SCHEMA_VERSION", default=1)
 DSA_UPLOAD_CHUNK_SIZE_BYTES = env.int("DSA_UPLOAD_CHUNK_SIZE_BYTES", default=1024 * 1024)
 DSA_UPLOAD_SESSION_TTL_HOURS = env.int("DSA_UPLOAD_SESSION_TTL_HOURS", default=24)
+DSA_ALLOW_TRACK_A_AUTH_BRIDGE = env.bool("DSA_ALLOW_TRACK_A_AUTH_BRIDGE", default=False)
+DSA_REQUEST_SIGNING_REQUIRED = env.bool("DSA_REQUEST_SIGNING_REQUIRED", default=False)
 
 # django-cors-headers - https://github.com/adamchainz/django-cors-headers#setup
 CORS_URLS_REGEX = r"^/api/.*$"

@@ -42,17 +42,36 @@ def issue_access_token(agent: DepartmentSyncAgent) -> str:
 
 
 def revoke_access_token(agent: DepartmentSyncAgent) -> None:
+    """Invalidate access token and enrollment secret; require re-enrollment."""
+    from iic_booking.sync.models import SyncLogCategory, SyncLogSeverity
+    from iic_booking.sync.services.logging import EVENT_TOKEN_REVOKED, write_sync_log
+
     agent.access_token_hash = ""
     agent.access_token_expires_at = None
     agent.access_token_issued_at = None
+    agent.enrollment_token_hash = ""
     agent.save(
         update_fields=[
             "access_token_hash",
             "access_token_expires_at",
             "access_token_issued_at",
+            "enrollment_token_hash",
             "updated_at",
         ]
     )
+    write_sync_log(
+        event_code=EVENT_TOKEN_REVOKED,
+        message="Token Revoked",
+        category=SyncLogCategory.AUTH,
+        severity=SyncLogSeverity.WARNING,
+        sync_agent=agent,
+        durable=True,
+    )
+
+
+def invalidate_agent_credentials(agent: DepartmentSyncAgent) -> None:
+    """Alias used by admin/lifecycle paths."""
+    revoke_access_token(agent)
 
 
 def agent_expected_versions(agent: DepartmentSyncAgent) -> tuple[int, int]:

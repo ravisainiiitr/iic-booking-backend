@@ -101,6 +101,9 @@ class AgentRegistryService:
             AgentLifecycleStatus.DELETED,
         }:
             agent.is_active = False
+            from iic_booking.sync.services.tokens import revoke_access_token
+
+            revoke_access_token(agent)
         elif new_status in {
             AgentLifecycleStatus.ACTIVE,
             AgentLifecycleStatus.ENROLLED,

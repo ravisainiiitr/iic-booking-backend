@@ -60,12 +60,16 @@ class DepartmentSyncAgentAuthentication(authentication.BaseAuthentication):
         token = parts[1].strip()
         agent_uuid_raw = request.META.get(self.header_agent_uuid) or request.headers.get("X-Agent-UUID")
 
-        # Milestone 11: allow Track A SyncAgent JWT to authenticate the control plane
-        # when X-Agent-UUID is absent (bridges to DepartmentSyncAgent by machine_guid).
+        # Track-A plaintext SyncAgent token bridge is permanently disabled.
+        # Control-plane auth requires X-Agent-UUID + hashed DSA access token only.
         if not agent_uuid_raw:
-            bridged = self._authenticate_via_sync_agent_jwt(request, token)
-            if bridged is not None:
-                return bridged
+            write_sync_log(
+                event_code=EVENT_AUTH_FAILED,
+                message="Unauthorized Access: missing X-Agent-UUID",
+                category=SyncLogCategory.AUTH,
+                severity=SyncLogSeverity.WARNING,
+                durable=True,
+            )
             raise exceptions.AuthenticationFailed(_("X-Agent-UUID header is required."))
 
         try:
@@ -88,28 +92,15 @@ class DepartmentSyncAgentAuthentication(authentication.BaseAuthentication):
         return (SyncAgentUser(agent), token)
 
     def _authenticate_via_sync_agent_jwt(self, request, token: str):
-        from iic_booking.sync.services.agent_identity_bridge import ensure_department_sync_agent
-        from iic_booking.users.models.sync_agent import SyncAgent
-
-        sync_agent = (
-            SyncAgent.objects.filter(access_token=token, is_active=True)
-            .select_related("department")
-            .first()
+        """Removed Track-A bridge — retained as a hard failure for callers/tests."""
+        write_sync_log(
+            event_code=EVENT_AUTH_FAILED,
+            message="Authentication failed: Track-A token bridge disabled",
+            category=SyncLogCategory.AUTH,
+            severity=SyncLogSeverity.WARNING,
+            durable=True,
         )
-        if sync_agent is None:
-            return None
-        if sync_agent.access_token_expires_at and sync_agent.access_token_expires_at < timezone.now():
-            return None
-
-        try:
-            agent, _ = ensure_department_sync_agent(sync_agent, issue_token=False)
-        except ValueError as exc:
-            raise exceptions.AuthenticationFailed(str(exc)) from exc
-
-        self._assert_agent_allowed(agent)
-        self._assert_request_signature(request, agent)
-        request.sync_agent = agent
-        return (SyncAgentUser(agent), token)
+        raise exceptions.AuthenticationFailed(_("Legacy SyncAgent token authentication is disabled."))
 
     def _assert_request_signature(self, request, agent: DepartmentSyncAgent) -> None:
         from iic_booking.sync.services.security import RequestSigningService
@@ -145,7 +136,7 @@ class DepartmentSyncAgentAuthentication(authentication.BaseAuthentication):
         if not agent.access_token_hash or not verify_hash(token, agent.access_token_hash):
             write_sync_log(
                 event_code=EVENT_AUTH_FAILED,
-                message="Authentication failed: invalid token",
+                message="Unauthorized Access: invalid token",
                 category=SyncLogCategory.AUTH,
                 severity=SyncLogSeverity.WARNING,
                 sync_agent=agent,

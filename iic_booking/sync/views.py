@@ -10,13 +10,14 @@ import logging
 import uuid
 
 from rest_framework import status
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from iic_booking.sync.authentication import DepartmentSyncAgentAuthentication
 from iic_booking.sync.exceptions import SyncControlPlaneError
 from iic_booking.sync.permissions import IsDepartmentSyncAgent
+from iic_booking.sync.throttles import SyncEnrollRateThrottle
 from iic_booking.sync.serializers import (
     BootstrapRequestSerializer,
     CommandCompleteSerializer,
@@ -72,6 +73,7 @@ def _truthy(value) -> bool:
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
+@throttle_classes([SyncEnrollRateThrottle])
 def enroll(request):
     """POST /api/v1/sync/enroll/ — first-time agent enrollment."""
     serializer = EnrollRequestSerializer(data=request.data)
@@ -80,7 +82,11 @@ def enroll(request):
     try:
         result = EnrollmentService().enroll(serializer.validated_data, correlation_id=correlation_id)
     except SyncControlPlaneError as exc:
-        return _error_response(exc)
+        # Uniform failure surface — never leak which check failed.
+        return Response(
+            {"error": {"code": "ENROLLMENT_FAILED", "message": "Enrollment failed."}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     except Exception:
         logger.exception("Unexpected enrollment failure")
         return Response(

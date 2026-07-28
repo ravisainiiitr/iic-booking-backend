@@ -40,11 +40,15 @@ Welcome Email remains a dedicated builder in `welcome_email.py` (not a DB templa
 | Area | Change |
 |------|--------|
 | Design shell | `email_branding.py` — Welcome-aligned layout, footer, CTA, detail cards |
+| Header (2026-07) | Centered logo → English name (single line) → Hindi → portal badge → divider → title |
 | Defaults catalog | `default_email_templates.py` — 57 branded templates + subjects |
 | DB sync | Migration `0050_redesign_all_email_templates.py` + `sync_default_email_templates` |
 | Renderer | `{% if var %}…{% endif %}`; missing vars → empty; strip residual braces |
 | Booking context | Protected keys; `user_display_name`; formatted date/duration/INR; absolute links only; empty comments |
+| On-behalf notes | `build_booking_created_event_comment` uses display name + department (never user PK) |
+| Legacy scrub | `scrub_internal_user_ids_from_text` cleans stored "on behalf of user N" comments |
 | Wallet / styled | Same shell; cleaner subjects; display-name helpers |
+| Welcome email | Uses shared `wrap_email_html` header/footer |
 | Currency/date/duration | Shared formatters applied in context + sanitize_template_context |
 
 ## Subject line policy

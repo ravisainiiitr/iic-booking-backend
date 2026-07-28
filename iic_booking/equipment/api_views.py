@@ -201,6 +201,7 @@ from iic_booking.users.models.equipment_supply_chain_role import (
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
 from iic_booking.communication.styled_transactional_emails import send_return_shipping_tracking_email
+from iic_booking.communication.email_branding import build_booking_created_event_comment
 
 logger = logging.getLogger(__name__)
 
@@ -3786,16 +3787,15 @@ def _book_equipment_impl(request, pk):
                     booking=booking,
                     event_type=BookingEventType.CREATED,
                     created_by=request.user,
-                    comment=(
-                        f"{'Hold created' if create_as_hold else 'Booking created'} for {equipment.name} "
-                        f"({total_time_minutes} minutes, ₹{total_charge:.2f})"
-                        + (f" on behalf of user {booking_user.id}" if booking_user != request.user else "")
-                        + (f"; ₹{amount_due:.2f} payment pending" if amount_due > 0 else "")
-                        + (
-                            "; Atmosphere-sensitive sample — submit at slot start; do not mark Not Utilized before slot start"
-                            if atmosphere_sensitive_sample
-                            else ""
-                        )
+                    comment=build_booking_created_event_comment(
+                        equipment_name=equipment.name,
+                        total_time_minutes=total_time_minutes,
+                        total_charge=total_charge,
+                        booking_user=booking_user,
+                        created_by=request.user,
+                        is_hold=create_as_hold,
+                        amount_due=amount_due,
+                        atmosphere_sensitive_sample=atmosphere_sensitive_sample,
                     ),
                     new_status=booking.status,
                     metadata={"atmosphere_sensitive_sample": True} if atmosphere_sensitive_sample else None,
@@ -4408,10 +4408,13 @@ def _book_equipment_impl(request, pk):
                 booking=booking,
                 event_type=BookingEventType.CREATED,
                 created_by=request.user,
-                comment=(
-                    f"{'Hold created' if create_as_hold else 'Booking created'} for {equipment.name} "
-                    f"({total_time_minutes} minutes, ₹{total_charge:.2f})"
-                    + (f" on behalf of user {booking_user.id}" if booking_user != request.user else "")
+                comment=build_booking_created_event_comment(
+                    equipment_name=equipment.name,
+                    total_time_minutes=total_time_minutes,
+                    total_charge=total_charge,
+                    booking_user=booking_user,
+                    created_by=request.user,
+                    is_hold=create_as_hold,
                 ),
                 new_status=booking.status,
                 # HOLD is part of urgent-review queueing; do not send booking-confirmed notifications yet.

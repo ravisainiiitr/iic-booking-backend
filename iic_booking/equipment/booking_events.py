@@ -24,56 +24,45 @@ User = get_user_model()
 
 # Booking confirmation instruction appended to confirmation emails.
 BOOKING_CONFIRMATION_INSTRUCTIONS = (
-    "Sample Submission and Collection time is from 10:00 to 10:30 in morning and "
-    "5:00 to 5:30 in the evening.\n"
-    "No need to visit for the results as they will be available on you booking details "
-    "Section when ready. You will be intimated via email regarding the same."
+    "Sample submission and collection:\n"
+    "• Morning: 10:00–10:30\n"
+    "• Evening: 17:00–17:30\n\n"
+    "You do not need to visit the laboratory to collect results. "
+    "Reports will appear in your booking details when ready, and you will be notified by email."
 )
 
 # Shown only when Equipment.sample_preparation_by_user is True and the recipient is an internal user.
 USER_SAMPLE_PREPARATION_NOTICE_PLAIN = (
-    "We would like to inform all internal users that, wherever feasible, sample preparation should be "
-    "carried out by the student/researcher themselves, under the guidance and assistance of the "
-    "laboratory operators. This helps in ensuring proper handling, safety, and optimal utilization of "
-    "the equipment.\n\n"
-    "Kindly note the following:\n\n"
-    "- Users are encouraged to prepare their samples themselves, with support from laboratory operators "
-    "wherever possible.\n"
-    "- Laboratory operators will provide necessary guidance and supervision during the preparation process.\n"
-    "- Improperly prepared samples may lead to inaccurate results or may not be accepted for analysis.\n"
-    "- Users are requested to be present in the laboratory/office at 10:00 AM on the day of their booking.\n"
-    "- Please plan your visit accordingly to allow sufficient time for sample preparation before your "
-    "scheduled slot.\n"
-    "- This approach is followed to help ensure timely delivery of analysis results and to minimize delays "
-    "for other users.\n\n"
-    "Your cooperation in adhering to these guidelines will help maintain efficiency and ensure "
-    "high-quality results for all users.\n\n"
-    "For any clarification, please feel free to contact the facility staff."
+    "Wherever feasible, please prepare samples yourself under the guidance of laboratory operators. "
+    "This supports safe handling and efficient use of the equipment.\n\n"
+    "Please note:\n"
+    "• Prepare samples yourself with operator support where needed.\n"
+    "• Operators will guide and supervise preparation as required.\n"
+    "• Improperly prepared samples may produce inaccurate results or may not be accepted.\n"
+    "• Be present in the laboratory/office at 10:00 AM on your booking day.\n"
+    "• Allow enough time for preparation before your scheduled slot.\n"
+    "• This practice helps deliver results on time and reduces delays for other users.\n\n"
+    "For clarification, please contact the facility staff."
 )
 
 USER_SAMPLE_PREPARATION_NOTICE_HTML = (
-    '<div style="margin-top:16px;padding:14px 16px;background:#f9f9f9;border-left:4px solid #4CAF50;">'
-    "<p style=\"margin:0 0 12px 0;\">We would like to inform all internal users that, wherever feasible, "
-    "sample preparation should be carried out by the student/researcher themselves, under the guidance "
-    "and assistance of the laboratory operators. This helps in ensuring proper handling, safety, and optimal "
-    "utilization of the equipment.</p>"
-    "<p style=\"margin:0 0 8px 0;\"><strong>Kindly note the following:</strong></p>"
-    "<ul style=\"margin:8px 0 16px 0;padding-left:20px;\">"
-    "<li>Users are encouraged to prepare their samples themselves, with support from laboratory operators "
-    "wherever possible.</li>"
-    "<li>Laboratory operators will provide necessary guidance and supervision during the preparation process."
-    "</li>"
-    "<li>Improperly prepared samples may lead to inaccurate results or may not be accepted for analysis.</li>"
-    "<li>Users are requested to be present in the laboratory/office at 10:00 AM on the day of their booking."
-    "</li>"
-    "<li>Please plan your visit accordingly to allow sufficient time for sample preparation before your "
-    "scheduled slot.</li>"
-    "<li>This approach is followed to help ensure timely delivery of analysis results and to minimize delays "
-    "for other users.</li>"
+    '<div style="margin-top:16px;padding:16px 18px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;">'
+    "<p style=\"margin:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.65;color:#0f172a;\">"
+    "Wherever feasible, please prepare samples yourself under the guidance of laboratory operators. "
+    "This supports safe handling and efficient use of the equipment.</p>"
+    "<p style=\"margin:0 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:#153f79;\">"
+    "Please note:</p>"
+    "<ul style=\"margin:0 0 12px 0;padding-left:20px;font-family:Arial,Helvetica,sans-serif;font-size:13px;"
+    "line-height:1.65;color:#0f172a;\">"
+    "<li>Prepare samples yourself with operator support where needed.</li>"
+    "<li>Operators will guide and supervise preparation as required.</li>"
+    "<li>Improperly prepared samples may produce inaccurate results or may not be accepted.</li>"
+    "<li>Be present in the laboratory/office at 10:00 AM on your booking day.</li>"
+    "<li>Allow enough time for preparation before your scheduled slot.</li>"
+    "<li>This practice helps deliver results on time and reduces delays for other users.</li>"
     "</ul>"
-    "<p style=\"margin:0 0 12px 0;\">Your cooperation in adhering to these guidelines will help maintain "
-    "efficiency and ensure high-quality results for all users.</p>"
-    "<p style=\"margin:0;\">For any clarification, please feel free to contact the facility staff.</p>"
+    "<p style=\"margin:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.65;color:#0f172a;\">"
+    "For clarification, please contact the facility staff.</p>"
     "</div>"
 )
 
@@ -122,7 +111,7 @@ def apply_user_sample_preparation_notice_to_context(
     context["user_sample_preparation_notice"] = USER_SAMPLE_PREPARATION_NOTICE_PLAIN
     context["user_sample_preparation_notice_html"] = USER_SAMPLE_PREPARATION_NOTICE_HTML
     if also_append_to_comment:
-        marker = "We would like to inform all internal users that"
+        marker = "Wherever feasible, please prepare samples yourself"
         base = (str(context.get("comment", "") or "")).strip()
         if marker not in base:
             context["comment"] = (base + ("\n\n" if base else "") + USER_SAMPLE_PREPARATION_NOTICE_PLAIN).strip()
@@ -550,9 +539,25 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         "start_time",
         "end_time",
     }
+    _INTERNAL_METADATA_KEYS = {
+        "user_id",
+        "booked_for_user_id",
+        "created_by_id",
+        "staff_user_id",
+        "wallet_id",
+        "sub_wallet_id",
+        "department_id",
+        "equipment_id",
+        "booking_pk",
+        "pk",
+        "id",
+    }
     if event.metadata:
         for key, value in event.metadata.items():
-            if key in _PROTECTED_CONTEXT_KEYS:
+            if key in _PROTECTED_CONTEXT_KEYS or key in _INTERNAL_METADATA_KEYS:
+                continue
+            # Skip opaque foreign-key style fields in user-facing email context.
+            if key.endswith("_id") and key not in ("booking_id", "virtual_booking_id", "slot_id"):
                 continue
             context[key] = value
     if email_template_code == "booking_waitlist_confirmed_email":

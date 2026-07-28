@@ -127,9 +127,7 @@ class RequestSigningService:
             ]
         )
 
-        # Prefer explicit plaintext secret from registration rollover; otherwise cannot verify HMAC
-        # without the portal storing plaintext (by design). When only hash exists, accept presence
-        # of headers + valid timestamp/nonce for soft mode, reject in strict mode.
+        # Prefer explicit plaintext secret from registration; never soft-accept with only a hash.
         if signing_secret_plaintext:
             expected = hmac.new(
                 force_bytes(signing_secret_plaintext),
@@ -146,19 +144,16 @@ class RequestSigningService:
                 return False, "Invalid signature."
             return True, None
 
-        if agent.signing_secret_hash:
-            # Soft verification path: headers present + anti-replay OK.
-            # Full HMAC verification requires agent to re-register signing secret on portal.
-            return True, None
-
-        if self.required_for(agent):
+        # Fail closed: hash-only agents cannot complete HMAC verification.
+        if agent.signing_secret_hash or self.required_for(agent) or self._has_signature_headers(request):
             self._audit.write(
                 event_code=EVENT_SIGNATURE_INVALID,
-                message="Signing required but no secret registered",
+                message="Signing required but HMAC secret unavailable (fail closed)",
                 sync_agent=agent,
                 durable=True,
             )
-            return False, "Signing secret not registered."
+            return False, "Signing secret not available for verification."
+
         return True, None
 
     def _has_signature_headers(self, request) -> bool:

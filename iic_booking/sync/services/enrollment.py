@@ -9,22 +9,24 @@ from django.db import transaction
 from django.utils import timezone
 
 from iic_booking.sync.constants import heartbeat_interval_seconds
-from iic_booking.sync.exceptions import (
-    EnrollmentFailedError,
-    InvalidEnrollmentSecretError,
-    InvalidLifecycleStateError,
-    UnknownAgentError,
-)
+from iic_booking.sync.exceptions import EnrollmentFailedError
 from iic_booking.sync.models import AgentLifecycleStatus, DepartmentSyncAgent, SyncLogCategory, SyncLogSeverity
 from iic_booking.sync.services.logging import (
     EVENT_AGENT_ENROLLED,
     EVENT_ENROLLMENT_FAILED,
+    EVENT_ENROLLMENT_STARTED,
     write_sync_log,
 )
 from iic_booking.sync.services.tokens import (
     agent_expected_versions,
     issue_access_token,
     verify_hash,
+)
+
+# Uniform client-facing failure (do not leak UUID existence / lifecycle / secret validity).
+_UNIFORM_ENROLL_FAILURE = EnrollmentFailedError(
+    "Enrollment failed.",
+    code="ENROLLMENT_FAILED",
 )
 
 
@@ -42,49 +44,67 @@ class EnrollmentService:
         sqlite_schema_version = (payload.get("sqlite_schema_version") or "").strip()
         portal_version = (payload.get("portal_version") or "").strip()
 
+        write_sync_log(
+            event_code=EVENT_ENROLLMENT_STARTED,
+            message="Enrollment Started",
+            category=SyncLogCategory.AUTH,
+            severity=SyncLogSeverity.INFO,
+            correlation_id=correlation_id,
+            json_payload={"agent_uuid": str(agent_uuid) if agent_uuid else None},
+        )
+
+        # Lock the agent row to prevent concurrent enrollment with the same secret.
         agent = (
             DepartmentSyncAgent.objects.select_related("department", "equipment")
+            .select_for_update()
             .filter(agent_uuid=agent_uuid)
             .first()
         )
         if agent is None:
-            raise UnknownAgentError("Unknown agent UUID.")
+            write_sync_log(
+                event_code=EVENT_ENROLLMENT_FAILED,
+                message="Enrollment Failed: unknown agent",
+                category=SyncLogCategory.AUTH,
+                severity=SyncLogSeverity.WARNING,
+                correlation_id=correlation_id,
+            )
+            raise _UNIFORM_ENROLL_FAILURE
 
         if agent.status in {AgentLifecycleStatus.DISABLED, AgentLifecycleStatus.REVOKED}:
             write_sync_log(
                 event_code=EVENT_ENROLLMENT_FAILED,
-                message=f"Enrollment rejected: lifecycle={agent.status}",
+                message=f"Enrollment Failed: lifecycle={agent.status}",
                 category=SyncLogCategory.AUTH,
                 severity=SyncLogSeverity.WARNING,
                 sync_agent=agent,
                 correlation_id=correlation_id,
                 json_payload={"status": agent.status},
             )
-            raise InvalidLifecycleStateError(
-                f"Agent lifecycle status '{agent.status}' does not allow enrollment."
-            )
+            raise _UNIFORM_ENROLL_FAILURE
 
         if agent.status not in {AgentLifecycleStatus.REGISTERED, AgentLifecycleStatus.ENROLLED}:
             write_sync_log(
                 event_code=EVENT_ENROLLMENT_FAILED,
-                message=f"Enrollment rejected: unexpected lifecycle={agent.status}",
+                message=f"Enrollment Failed: unexpected lifecycle={agent.status}",
                 category=SyncLogCategory.AUTH,
                 severity=SyncLogSeverity.WARNING,
                 sync_agent=agent,
                 correlation_id=correlation_id,
             )
-            raise InvalidLifecycleStateError()
+            raise _UNIFORM_ENROLL_FAILURE
 
-        if not verify_hash(enrollment_secret, agent.enrollment_token_hash):
+        if not agent.enrollment_token_hash or not verify_hash(
+            enrollment_secret, agent.enrollment_token_hash
+        ):
             write_sync_log(
                 event_code=EVENT_ENROLLMENT_FAILED,
-                message="Enrollment failed: invalid enrollment secret",
+                message="Enrollment Failed: invalid enrollment secret",
                 category=SyncLogCategory.AUTH,
                 severity=SyncLogSeverity.WARNING,
                 sync_agent=agent,
                 correlation_id=correlation_id,
             )
-            raise InvalidEnrollmentSecretError()
+            raise _UNIFORM_ENROLL_FAILURE
 
         # Update machine metadata from the agent host.
         agent.machine_name = machine_name or hostname or agent.machine_name
@@ -94,7 +114,7 @@ class EnrollmentService:
         agent.is_active = True
         agent.bootstrap_required = True
         agent.last_seen_at = timezone.now()
-        # One-time enrollment secret is consumed on success.
+        # One-time enrollment secret is consumed on success (replay protection).
         agent.enrollment_token_hash = ""
         agent.save(
             update_fields=[
@@ -115,7 +135,7 @@ class EnrollmentService:
 
         write_sync_log(
             event_code=EVENT_AGENT_ENROLLED,
-            message="Agent enrolled",
+            message="Enrollment Success",
             category=SyncLogCategory.AUTH,
             severity=SyncLogSeverity.INFO,
             sync_agent=agent,
