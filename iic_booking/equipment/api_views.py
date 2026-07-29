@@ -6555,15 +6555,20 @@ def oic_leave_request_resume(request, leave_id: int):
 @permission_classes([IsAuthenticated])
 def team_calendar_department_leaves(request):
     """
-    OIC/Admin: Team calendar data for lab operators in the same Department as the requester.
+    Team calendar: department roster + leave windows for staffing visibility.
+
+    Access: Main Admin, Department Admin, Officer In-charge (manager), Lab In-charge (operator).
 
     Query params:
       - month: "YYYY-MM" (optional; default = current local month)
-      - department_id: int (optional; admin only; else ignored)
+      - department_id: int or "all" (Main Admin only; others are locked to their department)
     """
     utype = getattr(request.user, "user_type", None)
-    if utype not in (UserType.MANAGER, UserType.ADMIN, UserType.OPERATOR):
-        return Response({"error": "Only OIC, Admin, and Lab operators can access team calendar."}, status=status.HTTP_403_FORBIDDEN)
+    if utype not in (UserType.MANAGER, UserType.ADMIN, UserType.OPERATOR, UserType.DEPT_ADMIN):
+        return Response(
+            {"error": "Only Admin, Department Administrator, OIC, and Lab In-charge can access team calendar."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
     month_raw = (request.query_params.get("month") or "").strip()
     today = timezone.localdate()
@@ -6587,18 +6592,33 @@ def team_calendar_department_leaves(request):
     end = date_cls(year, month, monthrange(year, month)[1])
 
     dept_id = None
+    all_departments = False
     if utype == UserType.ADMIN:
-        dept_raw = (request.query_params.get("department_id") or "").strip()
-        if dept_raw:
+        dept_raw = (request.query_params.get("department_id") or "").strip().lower()
+        if not dept_raw or dept_raw == "all":
+            all_departments = True
+        else:
             try:
                 dept_id = int(dept_raw)
             except ValueError:
-                dept_id = None
-    if dept_id is None:
+                all_departments = True
+    else:
+        # Department Admin / OIC / Lab In-charge: always their linked department.
         dept_id = getattr(getattr(request.user, "department", None), "id", None)
-    if not dept_id:
+
+    if not all_departments and not dept_id:
         return Response(
-            {"month": f"{year:04d}-{month:02d}", "operators": [], "leaves": []},
+            {
+                "month": f"{year:04d}-{month:02d}",
+                "date_start": start.isoformat(),
+                "date_end": end.isoformat(),
+                "department_id": None,
+                "department_name": None,
+                "all_departments": False,
+                "members": [],
+                "leaves": [],
+                "holidays": {},
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -6610,19 +6630,52 @@ def team_calendar_department_leaves(request):
         UserType.STUDENT,
         UserType.INDIVIDUAL_STUDENT,
     }
-    members = list(
-        UserModel.objects.filter(
-            is_active=True,
-            department_id=dept_id,
-        )
+    member_qs = (
+        UserModel.objects.filter(is_active=True)
         .exclude(user_type__in=list(excluded))
-        .order_by("name", "email")
-        .values("id", "name", "email", "user_type")
+        .select_related("department")
+        .order_by("department__name", "name", "email")
     )
+    if not all_departments:
+        member_qs = member_qs.filter(department_id=dept_id)
+
+    members = [
+        {
+            "id": m.id,
+            "name": m.name or "",
+            "email": m.email or "",
+            "user_type": m.user_type or "",
+            "department_id": getattr(m.department, "id", None),
+            "department_name": getattr(m.department, "name", None) or "",
+        }
+        for m in member_qs
+    ]
     member_ids = [m["id"] for m in members]
+
+    dept_name = None
+    if not all_departments and dept_id:
+        try:
+            from iic_booking.users.models.department import Department
+
+            dept_name = (
+                Department.objects.filter(id=dept_id).values_list("name", flat=True).first()
+            )
+        except Exception:
+            dept_name = members[0]["department_name"] if members else None
+
     if not member_ids:
         return Response(
-            {"month": f"{year:04d}-{month:02d}", "members": [], "leaves": []},
+            {
+                "month": f"{year:04d}-{month:02d}",
+                "date_start": start.isoformat(),
+                "date_end": end.isoformat(),
+                "department_id": None if all_departments else dept_id,
+                "department_name": None if all_departments else dept_name,
+                "all_departments": all_departments,
+                "members": [],
+                "leaves": [],
+                "holidays": {},
+            },
             status=status.HTTP_200_OK,
         )
 
@@ -6632,11 +6685,13 @@ def team_calendar_department_leaves(request):
             start_date__lte=end,
             end_date__gte=start,
         )
-        .select_related("operator")
+        .select_related("operator", "reviewed_by")
         .order_by("start_date", "id")
     )
     leaves = []
     for r in qs:
+        reviewer = getattr(r, "reviewed_by", None)
+        reviewer_type = getattr(reviewer, "user_type", None) if reviewer else None
         leaves.append(
             {
                 "id": r.id,
@@ -6649,6 +6704,12 @@ def team_calendar_department_leaves(request):
                 "status": r.status,
                 "reason": r.reason,
                 "rejection_reason": r.rejection_reason,
+                "reviewed_by_name": (
+                    (getattr(reviewer, "name", None) or getattr(reviewer, "email", "") or "").strip()
+                    if reviewer
+                    else ""
+                ),
+                "reviewed_by_role": reviewer_type or "",
             }
         )
 
@@ -6669,6 +6730,7 @@ def team_calendar_department_leaves(request):
             holiday_map[d] = {
                 "reason": reason or "Holiday",
                 "color": (color or holiday_default).strip() or holiday_default,
+                "kind": "holiday",
             }
 
         # Add Saturdays/Sundays for the remaining dates
@@ -6678,9 +6740,9 @@ def team_calendar_department_leaves(request):
         while cur <= end:
             wd = cur.weekday()
             if wd == 5:
-                holiday_map.setdefault(cur, {"reason": "Saturday", "color": saturday_color})
+                holiday_map.setdefault(cur, {"reason": "Saturday", "color": saturday_color, "kind": "weekend"})
             elif wd == 6:
-                holiday_map.setdefault(cur, {"reason": "Sunday", "color": sunday_color})
+                holiday_map.setdefault(cur, {"reason": "Sunday", "color": sunday_color, "kind": "weekend"})
             cur += timedelta(days=1)
     except Exception:
         holiday_map = {}
@@ -6690,10 +6752,17 @@ def team_calendar_department_leaves(request):
             "month": f"{year:04d}-{month:02d}",
             "date_start": start.isoformat(),
             "date_end": end.isoformat(),
+            "department_id": None if all_departments else dept_id,
+            "department_name": None if all_departments else dept_name,
+            "all_departments": all_departments,
             "members": members,
             "leaves": leaves,
             "holidays": {
-                d.isoformat(): {"reason": v.get("reason") or "Holiday", "color": v.get("color") or "#e5e7eb"}
+                d.isoformat(): {
+                    "reason": v.get("reason") or "Holiday",
+                    "color": v.get("color") or "#e5e7eb",
+                    "kind": v.get("kind") or "holiday",
+                }
                 for d, v in holiday_map.items()
             },
         },
