@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("equipment", "0179_equipment_google_maps_url"),
+        ("equipment", "0180_equipment_gps_coordinates"),
     ]
 
     operations = [
