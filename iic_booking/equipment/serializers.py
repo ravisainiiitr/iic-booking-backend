@@ -1342,6 +1342,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'atmosphere_sensitive_sample_enabled',
             'sample_collect_deadline_hours',
             'print_materials',
+            'skip_quota_check',
+            'sample_preparation_by_user',
         ]
         read_only_fields = ['equipment_id']
 
@@ -1489,6 +1491,7 @@ class EquipmentAdditionalAccessoryWriteSerializer(serializers.Serializer):
 
 
 class DynamicInputFieldWriteSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False, allow_null=True)
     field_key = serializers.CharField(max_length=1)
     field_label = serializers.CharField(max_length=255)
     # Match DynamicInputField.field_type (max_length=32); ICPMS_STANDARD_COVERAGE is 23 chars.
@@ -1513,6 +1516,7 @@ class ChargeProfileWriteSerializer(serializers.Serializer):
 
 
 class SlotMasterWriteSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False, allow_null=True)
     slot_number = serializers.IntegerField()
     slot_name = serializers.CharField(max_length=100, allow_blank=True, required=False, default='')
     open_time = serializers.TimeField()
@@ -1523,6 +1527,7 @@ class SlotMasterWriteSerializer(serializers.Serializer):
 class MultiParamDefinitionWriteSerializer(serializers.Serializer):
     """Slot option rows for MULTI_PARAM equipment (Django MultiParamDefinitionInline)."""
 
+    id = serializers.IntegerField(required=False, allow_null=True)
     user_type = serializers.CharField(max_length=50, allow_blank=True, allow_null=True, required=False)
     param_name = serializers.CharField(max_length=255)
     param_code = serializers.CharField(max_length=50)
@@ -1860,16 +1865,32 @@ def _sync_related(equipment, inlines):
                 is_enabled=item.get('is_enabled', prev_add_enabled.get(name, True)),
             )
     if inlines.get('input_fields') is not None:
-        DynamicInputField.objects.filter(equipment=equipment).delete()
+        # Upsert by field_key (A-Z only). Never persist the synthetic booking "comments" field.
+        keep_keys = set()
         for item in inlines['input_fields']:
-            DynamicInputField.objects.create(
-                equipment=equipment, field_key=item['field_key'], field_label=item['field_label'],
-                field_type=item['field_type'], is_required=item.get('is_required', False),
-                editing_required=item.get('editing_required', False),
-                default_value=item.get('default_value') or '', options=item.get('options', []) or [],
-                help_text=item.get('help_text') or '',
-                source_element_field_key=(item.get('source_element_field_key') or '').strip() or None,
+            key = str(item.get('field_key') or '').strip().upper()
+            if len(key) != 1 or not key.isalpha() or key == 'C' and str(item.get('field_label') or '').lower().startswith('any other'):
+                # Skip invalid keys; also skip labels that match the universal comments schema if mis-sent as C.
+                if key != 'C' or 'any other requirements' not in str(item.get('field_label') or '').lower():
+                    if len(key) != 1 or not key.isalpha():
+                        continue
+            keep_keys.add(key)
+            defaults = {
+                'field_label': item['field_label'],
+                'field_type': item['field_type'],
+                'is_required': item.get('is_required', False),
+                'editing_required': item.get('editing_required', False),
+                'default_value': item.get('default_value') or '',
+                'options': item.get('options', []) or [],
+                'help_text': item.get('help_text') or '',
+                'source_element_field_key': (item.get('source_element_field_key') or '').strip() or None,
+            }
+            DynamicInputField.objects.update_or_create(
+                equipment=equipment,
+                field_key=key,
+                defaults=defaults,
             )
+        DynamicInputField.objects.filter(equipment=equipment).exclude(field_key__in=keep_keys).delete()
     if inlines.get('charge_profiles') is not None:
         from django.db.models import Count
         payload_user_types = {item['user_type'] for item in inlines['charge_profiles']}
