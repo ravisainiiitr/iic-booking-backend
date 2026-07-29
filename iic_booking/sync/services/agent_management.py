@@ -10,9 +10,7 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers, status
-from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
-from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
 from iic_booking.sync.admin.constants import heartbeat_timeout_seconds
@@ -28,6 +26,7 @@ from iic_booking.sync.models import (
     ResultProcessingQueue,
     ResultProcessingStatus,
 )
+from iic_booking.sync.portal_auth import PORTAL_ADMIN_AUTH, PORTAL_ADMIN_PERM
 from iic_booking.sync.services.dataplane import CommandService
 
 
@@ -113,8 +112,8 @@ def _latest_heartbeat_map(agent_ids: list) -> dict:
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def admin_agents_list(request):
     """GET /api/v1/sync/admin/agents/ — Agent Management Dashboard rows."""
     qs = DepartmentSyncAgent.objects.select_related("department", "equipment").order_by(
@@ -149,8 +148,8 @@ def admin_agents_list(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def admin_agent_detail(request, agent_id):
     """GET /api/v1/sync/admin/agents/{id}/ — single agent dashboard + recent activity."""
     try:
@@ -231,8 +230,8 @@ def admin_agent_detail(request, agent_id):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def admin_agent_create_command(request, agent_id):
     """POST /api/v1/sync/admin/agents/{id}/commands/ — enqueue remote admin command."""
     try:

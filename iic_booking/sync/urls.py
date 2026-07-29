@@ -38,6 +38,15 @@ urlpatterns = [
         views.admin_agent_create_command,
         name="admin-agent-create-command",
     ),
+    # Main Admin portal console (dashboard hub)
+    path("admin/console/", views.portal_console_overview, name="portal-console-overview"),
+    path("admin/profiles/", views.portal_profiles_list, name="portal-profiles-list"),
+    path("admin/assignments/", views.portal_assignments_list, name="portal-assignments-list"),
+    path("admin/heartbeats/", views.portal_heartbeats_list, name="portal-heartbeats-list"),
+    path("admin/commands/", views.portal_commands_list, name="portal-commands-list"),
+    path("admin/workspaces/", views.portal_workspaces_list, name="portal-workspaces-list"),
+    path("admin/logs/", views.portal_logs_list, name="portal-logs-list"),
+    path("admin/django-links/", views.portal_admin_base, name="portal-django-links"),
     # Security (Milestone 12)
     path("security/device/register/", views.security_device_register, name="security-device-register"),
     path("security/device/", views.security_device_identity, name="security-device-identity"),

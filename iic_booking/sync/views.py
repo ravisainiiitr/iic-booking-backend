@@ -17,6 +17,7 @@ from rest_framework.response import Response
 from iic_booking.sync.authentication import DepartmentSyncAgentAuthentication
 from iic_booking.sync.exceptions import SyncControlPlaneError
 from iic_booking.sync.permissions import IsDepartmentSyncAgent
+from iic_booking.sync.portal_auth import PORTAL_ADMIN_AUTH, PORTAL_ADMIN_PERM
 from iic_booking.sync.throttles import SyncEnrollRateThrottle
 from iic_booking.sync.serializers import (
     BootstrapRequestSerializer,
@@ -425,6 +426,16 @@ from iic_booking.sync.services.agent_management import (  # noqa: E402
     admin_agent_detail,
     admin_agents_list,
 )
+from iic_booking.sync.services.portal_console import (  # noqa: E402
+    portal_admin_base,
+    portal_assignments_list,
+    portal_commands_list,
+    portal_console_overview,
+    portal_heartbeats_list,
+    portal_logs_list,
+    portal_profiles_list,
+    portal_workspaces_list,
+)
 
 # Milestone 12 — Security endpoints
 from iic_booking.sync.serializers import (  # noqa: E402
@@ -620,9 +631,6 @@ def recovery_conflict(request):
 
 
 # Milestone 14 — Enterprise multi-agent / multi-department
-from rest_framework.authentication import SessionAuthentication  # noqa: E402
-from rest_framework.permissions import IsAdminUser  # noqa: E402
-
 from iic_booking.sync.models import AgentLifecycleStatus, DepartmentSyncAgent  # noqa: E402
 from iic_booking.sync.serializers import (  # noqa: E402
     EnterpriseAssignSerializer,
@@ -642,8 +650,8 @@ def _department_scope(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_departments(request):
     """GET /api/v1/sync/enterprise/departments/"""
     return Response(
@@ -652,8 +660,8 @@ def enterprise_departments(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_buildings(request):
     """GET /api/v1/sync/enterprise/buildings/"""
     return Response(
@@ -662,8 +670,8 @@ def enterprise_buildings(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_agents(request):
     """GET /api/v1/sync/enterprise/agents/"""
     agents = AgentRegistryService().list_agents(
@@ -675,8 +683,8 @@ def enterprise_agents(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_topology(request):
     """GET /api/v1/sync/enterprise/topology/"""
     dept_id = _department_scope(request)
@@ -695,8 +703,8 @@ def enterprise_topology(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_dashboard(request):
     """GET /api/v1/sync/enterprise/dashboard/"""
     return Response(
@@ -705,8 +713,8 @@ def enterprise_dashboard(request):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_assign(request):
     """POST /api/v1/sync/enterprise/assign/"""
     serializer = EnterpriseAssignSerializer(data=request.data or {})
@@ -752,24 +760,24 @@ def _lifecycle_action(request, new_status: str):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_maintenance(request):
     """POST /api/v1/sync/enterprise/maintenance/"""
     return _lifecycle_action(request, AgentLifecycleStatus.MAINTENANCE)
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_drain(request):
     """POST /api/v1/sync/enterprise/drain/"""
     return _lifecycle_action(request, AgentLifecycleStatus.DRAINING)
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def enterprise_retire(request):
     """POST /api/v1/sync/enterprise/retire/"""
     return _lifecycle_action(request, AgentLifecycleStatus.RETIRED)
@@ -802,16 +810,16 @@ from iic_booking.sync.services.monitoring import MonitoringService  # noqa: E402
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_overview(request):
     """GET /api/v1/sync/monitoring/overview/"""
     return Response(MonitoringService().overview(department_id=_department_scope(request)))
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_agents(request):
     """GET /api/v1/sync/monitoring/agents/"""
     agents = MonitoringService().agents(
@@ -822,8 +830,8 @@ def monitoring_agents(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_history(request):
     """GET /api/v1/sync/monitoring/history/"""
     days = int(request.query_params.get("days") or 7)
@@ -840,8 +848,8 @@ def monitoring_history(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_alerts(request):
     """GET /api/v1/sync/monitoring/alerts/"""
     rows = AlertService().list_alerts(
@@ -861,8 +869,8 @@ def monitoring_alerts(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_capacity(request):
     """GET /api/v1/sync/monitoring/capacity/"""
     days = int(request.query_params.get("days") or 30)
@@ -879,8 +887,8 @@ def monitoring_capacity(request):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_alert_acknowledge(request, alert_id):
     """POST /api/v1/sync/monitoring/alerts/{id}/acknowledge/"""
     try:
@@ -894,8 +902,8 @@ def monitoring_alert_acknowledge(request, alert_id):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def monitoring_alert_resolve(request, alert_id):
     """POST /api/v1/sync/monitoring/alerts/{id}/resolve/"""
     serializer = AlertResolveSerializer(data=request.data or {})
@@ -940,8 +948,8 @@ from iic_booking.sync.services.update_manager import UpdateManagerService  # noq
 
 
 @api_view(["GET", "POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def releases_list(request):
     """GET/POST /api/v1/sync/releases/"""
     if request.method == "GET":
@@ -964,8 +972,8 @@ def releases_list(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def releases_detail(request, release_id):
     """GET /api/v1/sync/releases/{id}/"""
     data = ReleaseService().get(release_id)
@@ -975,8 +983,8 @@ def releases_detail(request, release_id):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def releases_publish(request):
     """POST /api/v1/sync/releases/publish/"""
     serializer = ReleasePublishSerializer(data=request.data or {})
@@ -993,8 +1001,8 @@ def releases_publish(request):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def releases_deploy(request):
     """POST /api/v1/sync/releases/deploy/"""
     serializer = ReleaseDeploySerializer(data=request.data or {})
@@ -1034,8 +1042,8 @@ def releases_deploy(request):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def releases_rollback(request):
     """POST /api/v1/sync/releases/rollback/"""
     serializer = ReleaseRollbackSerializer(data=request.data or {})
@@ -1053,8 +1061,8 @@ def releases_rollback(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def updates_history(request):
     """GET /api/v1/sync/updates/history/"""
     rows = UpdateManagerService().history(
@@ -1066,8 +1074,8 @@ def updates_history(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def updates_status(request):
     """GET /api/v1/sync/updates/status/ — release dashboard."""
     return Response(UpdateManagerService().status_dashboard(department_id=_department_scope(request)))
@@ -1108,8 +1116,8 @@ from iic_booking.sync.services.experiments import ExperimentService, InstrumentC
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def experiments_list(request):
     """GET /api/v1/sync/experiments/"""
     rows = ExperimentService().list_sessions(
@@ -1129,8 +1137,8 @@ def experiments_list(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def experiments_detail(request, experiment_id):
     """GET /api/v1/sync/experiments/{id}/"""
     data = ExperimentService().get(experiment_id)
@@ -1166,8 +1174,8 @@ def experiments_telemetry(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def instruments_list(request):
     """GET /api/v1/sync/instruments/"""
     rows = InstrumentCatalogService().list_instruments(department_id=_department_scope(request))
@@ -1175,8 +1183,8 @@ def instruments_list(request):
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def plugins_list(request):
     """GET /api/v1/sync/plugins/"""
     active_only = (request.query_params.get("active") or "1") not in ("0", "false", "False")
@@ -1190,24 +1198,24 @@ from iic_booking.sync.services.maintenance import MaintenanceService  # noqa: E4
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def operations_diagnostics(request):
     """GET /api/v1/sync/operations/diagnostics/"""
     return Response(PortalDiagnosticsService().summary(department_id=_department_scope(request)))
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def operations_table_sizes(request):
     """GET /api/v1/sync/operations/table-sizes/"""
     return Response(PortalDiagnosticsService().table_sizes())
 
 
 @api_view(["GET"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def operations_top_events(request):
     """GET /api/v1/sync/operations/top-events/"""
     rows = PortalDiagnosticsService().top_event_codes(
@@ -1218,8 +1226,8 @@ def operations_top_events(request):
 
 
 @api_view(["POST"])
-@authentication_classes([SessionAuthentication])
-@permission_classes([IsAdminUser])
+@authentication_classes(PORTAL_ADMIN_AUTH)
+@permission_classes(PORTAL_ADMIN_PERM)
 def operations_maintenance(request):
     """POST /api/v1/sync/operations/maintenance/ — prune retention windows."""
     body = request.data or {}
