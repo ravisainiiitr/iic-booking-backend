@@ -2852,7 +2852,14 @@ class WaitlistEntry(models.Model):
     """
     Waitlist queue entry per equipment. When a booking attempt fails, the user may be added here
     (if equipment has waitlist_queue_depth > 0). Order is by created_at (FIFO).
-    Admin/OIC can view and clear the queue. When slots become available, all waitlisted users are notified.
+
+    Statuses:
+      ACTIVE          – eligible for automatic confirmation (FCFS promotion)
+      CANNOT_FULFILL  – auto-book failed (kept for audit; not in ACTIVE queue)
+      OPT_OUT         – user voluntarily left the queue; kept for audit; never promoted
+
+    Waitlisted users may submit a sample while ACTIVE so the lab already has it if they
+    are promoted shortly before the slot.
     """
     id = models.AutoField(primary_key=True)
     user = models.ForeignKey(
@@ -2870,7 +2877,11 @@ class WaitlistEntry(models.Model):
     status = models.CharField(
         max_length=32,
         default="ACTIVE",
-        help_text=_("ACTIVE: eligible for auto-booking. CANNOT_FULFILL: removed from queue but kept for audit/visibility."),
+        help_text=_(
+            "ACTIVE: eligible for auto-booking. "
+            "CANNOT_FULFILL: removed from queue but kept for audit. "
+            "OPT_OUT: user withdrew; kept for audit; never auto-confirmed."
+        ),
     )
     cannot_fulfill_remark = models.TextField(
         blank=True,
@@ -2881,6 +2892,32 @@ class WaitlistEntry(models.Model):
         blank=True,
         null=True,
         help_text=_("When this waitlist entry was marked as cannot fulfill."),
+    )
+    opted_out_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text=_("When the user voluntarily opted out of the waitlist."),
+    )
+    sample_submitted = models.BooleanField(
+        default=False,
+        help_text=_("True when the waitlisted user has submitted a sample while awaiting confirmation."),
+    )
+    sample_identifiers = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_("Sample identifiers provided while waitlisted."),
+    )
+    sample_tracking_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_("Courier/tracking id for sample submitted while waitlisted."),
+    )
+    sample_submitted_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text=_("When the waitlisted user submitted their sample."),
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -2896,6 +2933,14 @@ class WaitlistEntry(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.equipment.code} @ {self.created_at}"
+
+    @property
+    def is_active_queue(self) -> bool:
+        return (self.status or "").strip().upper() == "ACTIVE"
+
+    @property
+    def is_opted_out(self) -> bool:
+        return (self.status or "").strip().upper() == "OPT_OUT"
 
 
 class BookingAttemptOutcome(models.TextChoices):

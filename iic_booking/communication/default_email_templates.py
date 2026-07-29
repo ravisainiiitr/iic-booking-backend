@@ -41,6 +41,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_not_utilized_wallet_owner_email",
     "booking_unsuccessful_waitlist_email",
     "booking_waitlist_confirmed_email",
+    "waitlist_opt_out_email",
     "waitlist_slots_available_email",
     "waitlist_short_notice_slot_available_email",
     "operator_unavailable_email",
@@ -530,6 +531,21 @@ def _booking_templates() -> list[dict[str, Any]]:
                 "{{ virtual_booking_id }}, {{ equipment_name }}, {{ equipment_code }}, {{ start_time }}, "
                 "{{ end_time }}, {{ total_charge }}, {{ wallet_balance_after }}, {{ link }}"
             ),
+        ),
+        _simple_email(
+            code="waitlist_opt_out_email",
+            title="Waitlist Opt-Out",
+            subject="Withdrawn from Waitlist – {{ equipment_name }}",
+            intro=(
+                "You have successfully withdrawn from the waitlist. "
+                "You will no longer be considered for automatic confirmation for this equipment."
+            ),
+            description="Sent when a user voluntarily opts out of an equipment waitlist.",
+            detail_rows=[
+                optional_detail_row("Equipment", "equipment_name"),
+                optional_detail_row("Equipment code", "equipment_code"),
+            ],
+            variable_help="{{ user_name }}, {{ user_email }}, {{ equipment_name }}, {{ equipment_code }}",
         ),
         _simple_email(
             code="waitlist_slots_available_email",

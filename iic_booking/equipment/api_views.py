@@ -2652,7 +2652,9 @@ def equipment_daily_slots(request, pk):
     waitlist_depth = getattr(equipment, "waitlist_queue_depth", None) or 0
     try:
         from .models import WaitlistEntry
-        waitlist_current_count = WaitlistEntry.objects.filter(equipment=equipment).count()
+        waitlist_current_count = WaitlistEntry.objects.filter(
+            equipment=equipment, status="ACTIVE"
+        ).count()
     except Exception:
         waitlist_current_count = 0
     waitlist_has_room = waitlist_depth > 0 and waitlist_current_count < waitlist_depth
@@ -7037,18 +7039,48 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
         "input_values": input_values,
         "selected_parameters": selected_parameters,
         "charge_breakdown": [],
-        "status": "WAITLISTED",
-        "status_display": "Waitlisted",
-        "notes": f"Current position in queue: WL{int(position)}",
+        "status": "WAITLISTED" if (getattr(entry, "status", "ACTIVE") or "ACTIVE").upper() == "ACTIVE" else (getattr(entry, "status", "") or "WAITLISTED"),
+        "status_display": (
+            "Waitlisted"
+            if (getattr(entry, "status", "ACTIVE") or "ACTIVE").upper() == "ACTIVE"
+            else (
+                "Opted Out of Waitlist"
+                if (getattr(entry, "status", "") or "").upper() == "OPT_OUT"
+                else "Waitlist — Cannot Fulfill"
+            )
+        ),
+        "notes": (
+            f"Current position in queue: WL{int(position)}"
+            if position and (getattr(entry, "status", "ACTIVE") or "ACTIVE").upper() == "ACTIVE"
+            else (
+                "Opted out of waitlist — will not receive automatic confirmation."
+                if (getattr(entry, "status", "") or "").upper() == "OPT_OUT"
+                else (getattr(entry, "cannot_fulfill_remark", None) or "Not eligible for automatic confirmation.")
+            )
+        ),
         "start_time": "",
         "end_time": "",
         "daily_slots": [],
         "created_at": entry.created_at.isoformat() if getattr(entry, "created_at", None) else None,
         "updated_at": entry.created_at.isoformat() if getattr(entry, "created_at", None) else None,
         "waitlist_entry_id": int(entry.id),
-        "waitlist_position": int(position),
-        "waitlist_code": f"WL{int(position)}",
+        "waitlist_position": int(position) if position else None,
+        "waitlist_code": f"WL{int(position)}" if position else None,
         "is_waitlist_entry": True,
+        "waitlist_status": (getattr(entry, "status", None) or "ACTIVE"),
+        "waitlist_opted_out": (getattr(entry, "status", "") or "").upper() == "OPT_OUT",
+        "waitlist_opted_out_at": (
+            entry.opted_out_at.isoformat() if getattr(entry, "opted_out_at", None) else None
+        ),
+        "waitlist_sample_submitted": bool(getattr(entry, "sample_submitted", False)),
+        "waitlist_sample_identifiers": getattr(entry, "sample_identifiers", "") or "",
+        "waitlist_sample_tracking_id": getattr(entry, "sample_tracking_id", "") or "",
+        "waitlist_sample_submitted_at": (
+            entry.sample_submitted_at.isoformat()
+            if getattr(entry, "sample_submitted_at", None)
+            else None
+        ),
+        "awaiting_confirmation": (getattr(entry, "status", "ACTIVE") or "ACTIVE").upper() == "ACTIVE",
         "accounts_in_charge": accounts_in_charge,
         "lab_in_charge": lab_in_charge,
         "oic_contacts": oic_contacts,
@@ -7991,23 +8023,18 @@ def get_my_unsuccessful_booking_attempts(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_my_waitlist_entries(request):
-    """List active waitlist entries for the logged-in user."""
+    """List waitlist entries for the logged-in user (ACTIVE + OPT_OUT + CANNOT_FULFILL for history)."""
+    from iic_booking.equipment.waitlist import active_waitlist_position
+
     entries = (
         WaitlistEntry.objects.filter(user=request.user)
         .select_related("equipment", "user")
         .order_by("-created_at")
     )
     results = []
-    entries_by_equipment = {}
     for entry in entries:
-        entries_by_equipment.setdefault(entry.equipment_id, []).append(entry)
-    position_by_entry_id = {}
-    for _, eq_entries in entries_by_equipment.items():
-        eq_entries_sorted = sorted(eq_entries, key=lambda e: (e.created_at, e.id))
-        for idx, eq_entry in enumerate(eq_entries_sorted, start=1):
-            position_by_entry_id[eq_entry.id] = idx
-    for entry in entries:
-        position = position_by_entry_id.get(entry.id, 0)
+        # True ACTIVE-queue rank across all users on this equipment (not per-user index).
+        position = active_waitlist_position(entry) or 0
         results.append(_serialize_waitlist_entry_for_history(entry, position))
     return Response({"entries": results, "count": len(results)}, status=status.HTTP_200_OK)
 
@@ -8015,16 +8042,104 @@ def list_my_waitlist_entries(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cancel_my_waitlist_entry(request, entry_id):
-    """Cancel own waitlist entry (allowed at any time)."""
+    """
+    Opt out of the waitlist (soft). The row is kept for audit; the user is excluded from
+    automatic confirmation; the ACTIVE queue compresses immediately.
+    """
+    from iic_booking.equipment.waitlist import opt_out_of_waitlist, send_waitlist_opt_out_email
+
     try:
-        entry = WaitlistEntry.objects.select_related("equipment").get(pk=entry_id, user=request.user)
+        entry = WaitlistEntry.objects.select_related("equipment", "user").get(
+            pk=entry_id, user=request.user
+        )
     except WaitlistEntry.DoesNotExist:
         return Response({"error": "Waitlist entry not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    equipment_name = getattr(entry.equipment, "name", None) or getattr(entry.equipment, "code", "Equipment")
-    entry.delete()
+    status_now = (getattr(entry, "status", None) or "ACTIVE").strip().upper()
+    if status_now == "OPT_OUT":
+        return Response(
+            {
+                "message": "You have already opted out of this waitlist.",
+                "waitlist_entry_id": entry.id,
+                "status": "OPT_OUT",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    equipment_name = getattr(entry.equipment, "name", None) or getattr(
+        entry.equipment, "code", "Equipment"
+    )
+    opt_out_of_waitlist(entry)
+    send_waitlist_opt_out_email(request.user, entry.equipment)
     return Response(
-        {"message": f"Waitlist booking for {equipment_name} cancelled successfully."},
+        {
+            "message": (
+                f"You have successfully withdrawn from the waitlist for {equipment_name}. "
+                "You will no longer be considered for automatic confirmation."
+            ),
+            "waitlist_entry_id": entry.id,
+            "status": "OPT_OUT",
+            "opted_out": True,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def submit_waitlist_sample(request, entry_id):
+    """
+    Allow an ACTIVE waitlisted user to submit a sample before confirmation.
+
+    Body: sample_identifiers (optional), tracking_id (optional).
+    Sample remains associated with the waitlist entry and is copied onto the booking
+    when the entry is promoted to a confirmed booking.
+    """
+    try:
+        entry = WaitlistEntry.objects.select_related("equipment", "user").get(
+            pk=entry_id, user=request.user
+        )
+    except WaitlistEntry.DoesNotExist:
+        return Response({"error": "Waitlist entry not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    status_now = (getattr(entry, "status", None) or "ACTIVE").strip().upper()
+    if status_now != "ACTIVE":
+        return Response(
+            {
+                "error": (
+                    "Sample submission is only allowed while you are actively waitlisted "
+                    "and awaiting confirmation."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    sample_identifiers = (request.data.get("sample_identifiers") or "").strip()
+    tracking_id = (request.data.get("tracking_id") or "").strip()
+    entry.sample_submitted = True
+    entry.sample_identifiers = sample_identifiers
+    entry.sample_tracking_id = tracking_id
+    entry.sample_submitted_at = timezone.now()
+    entry.save(
+        update_fields=[
+            "sample_submitted",
+            "sample_identifiers",
+            "sample_tracking_id",
+            "sample_submitted_at",
+        ]
+    )
+    return Response(
+        {
+            "message": "Sample submitted while waitlisted. Waiting for confirmation.",
+            "waitlist_entry_id": entry.id,
+            "sample_submitted": True,
+            "sample_identifiers": entry.sample_identifiers,
+            "sample_tracking_id": entry.sample_tracking_id,
+            "sample_submitted_at": entry.sample_submitted_at.isoformat()
+            if entry.sample_submitted_at
+            else None,
+            "awaiting_confirmation": True,
+        },
         status=status.HTTP_200_OK,
     )
 

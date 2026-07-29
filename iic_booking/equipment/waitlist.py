@@ -112,6 +112,56 @@ def _format_waitlist_code(position: int) -> str:
     return f"WL{int(position)}"
 
 
+def active_waitlist_position(entry: WaitlistEntry) -> int | None:
+    """
+    1-based ACTIVE-queue position for an entry, or None if not ACTIVE.
+    Positions are computed only over ACTIVE rows (OPT_OUT / CANNOT_FULFILL excluded).
+    """
+    status = (getattr(entry, "status", None) or "ACTIVE").strip().upper()
+    if status != "ACTIVE":
+        return None
+    return max(
+        1,
+        WaitlistEntry.objects.filter(
+            equipment_id=entry.equipment_id,
+            status="ACTIVE",
+            created_at__lte=entry.created_at,
+        ).count(),
+    )
+
+
+def opt_out_of_waitlist(entry: WaitlistEntry) -> WaitlistEntry:
+    """
+    Soft-opt-out: keep the row for audit, exclude from promotion, compress ACTIVE queue.
+    Does not delete the entry.
+    """
+    entry.status = "OPT_OUT"
+    entry.opted_out_at = timezone.now()
+    entry.save(update_fields=["status", "opted_out_at"])
+    return entry
+
+
+def send_waitlist_opt_out_email(user, equipment: Equipment) -> None:
+    """Notify the user that they successfully withdrew from the waitlist."""
+    try:
+        CommunicationService.send_email(
+            recipient=user,
+            template="waitlist_opt_out_email",
+            template_context={
+                "user_name": getattr(user, "name", None) or getattr(user, "email", "User"),
+                "user_email": getattr(user, "email", ""),
+                "equipment_name": getattr(equipment, "name", None) or getattr(equipment, "code", "Equipment"),
+                "equipment_code": getattr(equipment, "code", ""),
+            },
+        )
+    except Exception as e:
+        logger.exception(
+            "Failed to send waitlist opt-out email to %s: %s",
+            getattr(user, "email", ""),
+            e,
+        )
+
+
 def waitlist_virtual_booking_id(
     equipment_code: str,
     position: int,
@@ -213,40 +263,42 @@ def add_user_to_waitlist(equipment: Equipment, user) -> Tuple[bool, Optional[int
     with transaction.atomic():
         existing = WaitlistEntry.objects.filter(equipment=equipment, user=user).first()
         if existing:
-            # If the user was previously marked CANNOT_FULFILL, allow rejoining by re-activating
-            # and moving them to the end of the ACTIVE queue (so WL position is never WL0).
-            if (getattr(existing, "status", None) or "ACTIVE").strip().upper() != "ACTIVE":
-                existing.status = "ACTIVE"
-                existing.cannot_fulfill_remark = None
-                existing.marked_cannot_fulfill_at = None
-                # Move to end of queue for fairness on rejoin.
-                existing.created_at = timezone.now()
-                existing.save(
-                    update_fields=[
-                        "status",
-                        "cannot_fulfill_remark",
-                        "marked_cannot_fulfill_at",
-                        "created_at",
-                    ]
-                )
-            position = (
-                WaitlistEntry.objects.filter(
-                    equipment=equipment, status="ACTIVE", created_at__lte=existing.created_at
-                ).count()
+            status = (getattr(existing, "status", None) or "ACTIVE").strip().upper()
+            # Already ACTIVE — return current position (idempotent).
+            if status == "ACTIVE":
+                return False, active_waitlist_position(existing)
+
+            # Rejoin from CANNOT_FULFILL / OPT_OUT only when there is room in the ACTIVE queue.
+            current_count = WaitlistEntry.objects.filter(
+                equipment=equipment, status="ACTIVE"
+            ).count()
+            if current_count >= depth:
+                return False, None
+
+            existing.status = "ACTIVE"
+            existing.cannot_fulfill_remark = None
+            existing.marked_cannot_fulfill_at = None
+            existing.opted_out_at = None
+            # Move to end of ACTIVE queue for fairness on rejoin.
+            existing.created_at = timezone.now()
+            existing.save(
+                update_fields=[
+                    "status",
+                    "cannot_fulfill_remark",
+                    "marked_cannot_fulfill_at",
+                    "opted_out_at",
+                    "created_at",
+                ]
             )
-            return False, max(1, int(position or 0))
+            return True, active_waitlist_position(existing)
 
         current_count = WaitlistEntry.objects.filter(equipment=equipment, status="ACTIVE").count()
         if current_count >= depth:
             return False, None
 
         entry = WaitlistEntry.objects.create(equipment=equipment, user=user, status="ACTIVE")
-        position = (
-            WaitlistEntry.objects.filter(
-                equipment=equipment, status="ACTIVE", created_at__lte=entry.created_at
-            ).count()
-        )
-        return True, max(1, int(position or 0))
+        position = active_waitlist_position(entry)
+        return True, position
 
 
 def send_unsuccessful_booking_waitlist_email(user, equipment: Equipment, position: int, failure_reason: str = ""):
@@ -628,6 +680,25 @@ def notify_waitlist_slots_available(
                 used_slots.add(sid)
             bookings_created += 1
             processed_entry_ids.append(entry.id)
+            # Carry over sample submitted while waitlisted onto the confirmed booking.
+            if getattr(entry, "sample_submitted", False):
+                try:
+                    from iic_booking.equipment.models import BookingSampleTrace, SampleTraceStatus
+
+                    BookingSampleTrace.objects.create(
+                        booking=booking,
+                        status=SampleTraceStatus.SAMPLE_SENT,
+                        sample_identifiers=(getattr(entry, "sample_identifiers", None) or "")[:2000],
+                        tracking_id=(getattr(entry, "sample_tracking_id", None) or "")[:2000],
+                        reason="Sample submitted while waitlisted (awaiting confirmation at the time).",
+                        created_by=user,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to copy waitlist sample onto booking %s for user %s",
+                        getattr(booking, "booking_id", None),
+                        getattr(user, "email", user.pk),
+                    )
             logger.info(
                 "Waitlist auto-booking: created booking %s for user %s (equipment %s).",
                 booking.booking_id,

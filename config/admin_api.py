@@ -2986,7 +2986,14 @@ def admin_api_router():
             position = 0
             result = []
             for e in entries:
-                position += 1
+                status_e = (getattr(e, "status", None) or "ACTIVE").strip().upper()
+                # Only ACTIVE entries get WL1..WLn positions; others keep null position.
+                wl_position = None
+                wl_code = None
+                if status_e == "ACTIVE":
+                    position += 1
+                    wl_position = position
+                    wl_code = f"WL{position}"
                 user_logs = failed_logs_by_user.get(getattr(e, "user_id", None), [])
                 # Prefer a log that happened before the waitlist entry was created.
                 matched_log = None
@@ -3007,7 +3014,8 @@ def admin_api_router():
 
                 result.append({
                     "id": e.id,
-                    "position": position,
+                    "position": wl_position,
+                    "waitlist_code": wl_code,
                     "user_id": e.user_id,
                     "user_email": getattr(e.user, "email", ""),
                     "user_name": getattr(e.user, "name", None) or getattr(e.user, "email", ""),
@@ -3019,6 +3027,21 @@ def admin_api_router():
                         if getattr(e, "marked_cannot_fulfill_at", None)
                         else None
                     ),
+                    "opted_out": status_e == "OPT_OUT",
+                    "opted_out_at": (
+                        e.opted_out_at.isoformat()
+                        if getattr(e, "opted_out_at", None)
+                        else None
+                    ),
+                    "sample_submitted": bool(getattr(e, "sample_submitted", False)),
+                    "sample_identifiers": getattr(e, "sample_identifiers", "") or "",
+                    "sample_tracking_id": getattr(e, "sample_tracking_id", "") or "",
+                    "sample_submitted_at": (
+                        e.sample_submitted_at.isoformat()
+                        if getattr(e, "sample_submitted_at", None)
+                        else None
+                    ),
+                    "awaiting_confirmation": status_e == "ACTIVE",
                     "booking_attempt_requested_at": requested_at.isoformat() if requested_at else None,
                     "booking_attempt_failure_reason": failure_reason or "",
                     "booking_attempt_number_of_samples": number_of_samples,
@@ -3026,6 +3049,7 @@ def admin_api_router():
                     "booking_attempt_duration_minutes": duration_minutes,
                     "booking_attempt_additional_info": additional_info,
                 })
+            opted_out_count = WaitlistEntry.objects.filter(equipment=equipment, status="OPT_OUT").count()
             return Response({
                 "equipment_id": equipment.equipment_id,
                 "equipment_code": equipment.code,
@@ -3035,6 +3059,7 @@ def admin_api_router():
                 "count": len(result),
                 "active_count": active_count,
                 "cannot_fulfill_count": cannot_fulfill_count,
+                "opted_out_count": opted_out_count,
             })
 
         @action(detail=True, methods=["get"], url_path="booking-requesters")
