@@ -12,7 +12,17 @@ from iic_booking.sync.services.logging import (
 
 
 class SyncEnrollRateThrottle(SimpleRateThrottle):
-    """Brute-force mitigation for POST /api/v1/sync/enroll/."""
+    """Brute-force mitigation for POST /api/v1/sync/enroll/.
+
+    Scope: ``sync_enroll`` (rate from REST_FRAMEWORK['DEFAULT_THROTTLE_RATES']).
+
+    Cache key: client IP (``get_ident``) + ``agent_uuid`` from the request body.
+    Every request that is allowed through consumes quota — both failed (400) and
+    successful (200) enrollments. 429 responses do not add another history entry.
+
+    Retry-After is computed by DRF as remaining seconds in the current rate window
+    until the oldest request in history falls outside ``duration``.
+    """
 
     scope = "sync_enroll"
 

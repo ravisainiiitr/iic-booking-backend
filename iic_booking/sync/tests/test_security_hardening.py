@@ -116,6 +116,48 @@ def test_revoke_invalidates_access_and_enrollment():
 
 
 @pytest.mark.django_db
+@override_settings(DSA_REQUEST_SIGNING_REQUIRED=False)
+def test_hash_only_registered_secret_does_not_fail_bearer_auth():
+    """After device registration portal only has a hash — must not 401 valid Bearer tokens."""
+    agent = _agent(signing_required=False, signing_secret_hash=hash_value("registered-secret"))
+    request = MagicMock()
+    request.method = "POST"
+    request.get_full_path.return_value = "/api/v1/sync/bootstrap/"
+    request.body = b"{}"
+    request.META = {
+        "HTTP_X_DSA_SIGNATURE": hmac.new(b"registered-secret", b"canonical", hashlib.sha256).hexdigest(),
+        "HTTP_X_DSA_TIMESTAMP": str(int(time.time())),
+        "HTTP_X_DSA_NONCE": "nonce-hash-only",
+        "HTTP_X_DSA_DEVICE_ID": str(agent.machine_guid),
+    }
+    request.headers = {}
+    ok, reason = RequestSigningService().verify_request(request, agent)
+    assert ok is True
+    assert reason is None
+
+
+@pytest.mark.django_db
+@override_settings(DSA_REQUEST_SIGNING_REQUIRED=False)
+def test_optional_signature_headers_ignored_when_signing_not_required():
+    """Local HMAC headers before device registration must not fail Bearer auth."""
+    agent = _agent(signing_required=False, signing_secret_hash="")
+    request = MagicMock()
+    request.method = "POST"
+    request.get_full_path.return_value = "/api/v1/sync/bootstrap/"
+    request.body = b"{}"
+    request.META = {
+        "HTTP_X_DSA_SIGNATURE": hmac.new(b"local-only", b"canonical", hashlib.sha256).hexdigest(),
+        "HTTP_X_DSA_TIMESTAMP": str(int(time.time())),
+        "HTTP_X_DSA_NONCE": "nonce-optional",
+        "HTTP_X_DSA_DEVICE_ID": str(agent.machine_guid),
+    }
+    request.headers = {}
+    ok, reason = RequestSigningService().verify_request(request, agent)
+    assert ok is True
+    assert reason is None
+
+
+@pytest.mark.django_db
 @override_settings(DSA_REQUEST_SIGNING_REQUIRED=True)
 def test_invalid_hmac_rejected_fail_closed():
     agent = _agent(signing_required=True, signing_secret_hash=hash_value("real-secret"))

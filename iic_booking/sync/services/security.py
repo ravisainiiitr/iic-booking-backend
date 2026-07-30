@@ -144,8 +144,10 @@ class RequestSigningService:
                 return False, "Invalid signature."
             return True, None
 
-        # Fail closed: hash-only agents cannot complete HMAC verification.
-        if agent.signing_secret_hash or self.required_for(agent) or self._has_signature_headers(request):
+        # Hash-only registration cannot verify HMAC (plaintext is never retained).
+        # Fail closed ONLY when signing is mandatory; otherwise ignore signature headers
+        # so Bearer auth is not destroyed after device registration.
+        if self.required_for(agent):
             self._audit.write(
                 event_code=EVENT_SIGNATURE_INVALID,
                 message="Signing required but HMAC secret unavailable (fail closed)",
@@ -153,6 +155,14 @@ class RequestSigningService:
                 durable=True,
             )
             return False, "Signing secret not available for verification."
+
+        if agent.signing_secret_hash or self._has_signature_headers(request):
+            self._audit.write(
+                event_code=EVENT_SIGNATURE_INVALID,
+                message="HMAC signature headers present but plaintext signing secret unavailable; ignoring (signing not required)",
+                sync_agent=agent,
+                durable=True,
+            )
 
         return True, None
 

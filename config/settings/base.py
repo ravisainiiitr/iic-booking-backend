@@ -509,6 +509,10 @@ SOCIALACCOUNT_FORMS = {"signup": "iic_booking.users.forms.UserSocialSignupForm"}
 # django-rest-framework
 # -------------------------------------------------------------------------------
 # django-rest-framework - https://www.django-rest-framework.org/api-guide/settings/
+# Department Sync Agent enrollment brute-force throttle (SyncEnrollRateThrottle).
+# Production default is intentionally strict. In local dev, config/settings/local.py
+# overrides this to allow repeated enrollment testing without hitting 429.
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework.authentication.SessionAuthentication",
@@ -517,7 +521,8 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_THROTTLE_RATES": {
-        "sync_enroll": "10/hour",
+        # DRF throttle format example: "5/min", "1/hour"
+        "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
     },
 }
 

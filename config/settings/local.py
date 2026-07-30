@@ -108,3 +108,14 @@ if not env.bool("USE_S3_MEDIA", default=False):
 # Set SKIP_BOOKING_QUOTA_CHECK=0 in .env to enforce quotas locally.
 SKIP_BOOKING_QUOTA_CHECK = env.bool("SKIP_BOOKING_QUOTA_CHECK", default=True)
 BOOKING_PERFORMANCE_TIMINGS = env.bool("BOOKING_PERFORMANCE_TIMINGS", default=True)
+
+# Department Sync Agent — allow repeated enroll testing without hitting 429.
+# Production keeps the strict rate from base.py (10/hour by default).
+# Local always forces a high development/testing rate here.
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    "DEFAULT_THROTTLE_RATES": {
+        **REST_FRAMEWORK.get("DEFAULT_THROTTLE_RATES", {}),
+        "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="100/min"),
+    },
+}

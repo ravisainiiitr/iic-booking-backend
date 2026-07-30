@@ -53,10 +53,11 @@ class EnrollmentService:
             json_payload={"agent_uuid": str(agent_uuid) if agent_uuid else None},
         )
 
-        # Lock the agent row to prevent concurrent enrollment with the same secret.
+        # Lock only the agent row. select_related(equipment) is a LEFT OUTER JOIN;
+        # PostgreSQL rejects FOR UPDATE on the nullable side of an outer join.
         agent = (
             DepartmentSyncAgent.objects.select_related("department", "equipment")
-            .select_for_update()
+            .select_for_update(of=("self",))
             .filter(agent_uuid=agent_uuid)
             .first()
         )
@@ -67,6 +68,8 @@ class EnrollmentService:
                 category=SyncLogCategory.AUTH,
                 severity=SyncLogSeverity.WARNING,
                 correlation_id=correlation_id,
+                # Survive ATOMIC_REQUESTS / @transaction.atomic rollback.
+                durable=True,
             )
             raise _UNIFORM_ENROLL_FAILURE
 
@@ -79,6 +82,7 @@ class EnrollmentService:
                 sync_agent=agent,
                 correlation_id=correlation_id,
                 json_payload={"status": agent.status},
+                durable=True,
             )
             raise _UNIFORM_ENROLL_FAILURE
 
@@ -90,6 +94,7 @@ class EnrollmentService:
                 severity=SyncLogSeverity.WARNING,
                 sync_agent=agent,
                 correlation_id=correlation_id,
+                durable=True,
             )
             raise _UNIFORM_ENROLL_FAILURE
 
@@ -103,6 +108,7 @@ class EnrollmentService:
                 severity=SyncLogSeverity.WARNING,
                 sync_agent=agent,
                 correlation_id=correlation_id,
+                durable=True,
             )
             raise _UNIFORM_ENROLL_FAILURE
 

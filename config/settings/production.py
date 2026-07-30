@@ -228,6 +228,19 @@ CORS_ALLOW_CREDENTIALS = True
 SPECTACULAR_SETTINGS["SERVERS"] = [
     {"url": "https://iicbooking.iitr.ac.in", "description": "Production server"},
 ]
+
+# Pin enrollment throttle for production. Do not inherit a loose DEBUG default.
+# Operators may still raise/lower via DSA_SYNC_ENROLL_THROTTLE_RATE.
+from .base import REST_FRAMEWORK  # noqa: E402
+
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    "DEFAULT_THROTTLE_RATES": {
+        **REST_FRAMEWORK.get("DEFAULT_THROTTLE_RATES", {}),
+        "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="3/hour"),
+    },
+}
+
 # Your stuff...
 # ------------------------------------------------------------------------------
 # Equipment images must live in S3 (or another durable store). Never treat
