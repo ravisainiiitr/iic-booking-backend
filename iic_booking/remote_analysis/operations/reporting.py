@@ -25,6 +25,7 @@ from iic_booking.remote_analysis.operations.capacity import AvailabilityEngine, 
 from iic_booking.remote_analysis.operations.performance import PerformanceMonitor
 from iic_booking.remote_analysis.operations.utilization import UtilizationEngine
 from iic_booking.remote_analysis.operations_models import AnalysisReport, UsageTrend
+from iic_booking.remote_analysis.production_hardening import json_safe
 from iic_booking.remote_analysis.services.audit import record_event
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,9 @@ class ReportingEngine:
             generated_by=actor if actor is not None and getattr(actor, "pk", None) else None,
         )
         try:
-            payload = self.build_payload(report_type, period_start=period_start, period_end=period_end)
+            payload = json_safe(
+                self.build_payload(report_type, period_start=period_start, period_end=period_end)
+            )
             report.payload = payload
             relpath = ""
             if fmt != ReportFormat.JSON:

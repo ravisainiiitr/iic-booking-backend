@@ -90,6 +90,16 @@ class SessionOrchestrator:
         session.status = to_status
         session.save(update_fields=["status", "updated_at"])
         ConnectionHistory.objects.create(session=session, event="state", detail=f"{from_status}->{to_status}: {reason}"[:512])
+        if to_status in {SessionStatus.ACTIVE, SessionStatus.CONNECTED, SessionStatus.LAUNCHED}:
+            try:
+                from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+                from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+                ws_obj = AnalysisWorkspace.objects.filter(reservation_id=session.reservation_id).first()
+                if ws_obj:
+                    WorkspaceSyncService().mark_session_active(ws_obj)
+            except Exception:
+                logger.debug("mark_session_active skipped", exc_info=True)
         return session
 
     def _apply_policies(self, session: RemoteDesktopSession) -> None:
@@ -170,16 +180,34 @@ class SessionOrchestrator:
         except Exception:
             pass
 
-        # Milestone 5: ensure isolated analysis workspace before prepare
+        # Milestone 5+: ensure isolated analysis workspace, seed booking results, prepare with input sync
         try:
             from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 
-            workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user)
+            sync_svc = WorkspaceSyncService()
+            workspace = sync_svc.ensure_for_reservation(reservation, actor=user)
+            if workspace.workstation_id is None:
+                workspace.workstation = ws
+                workspace.save(update_fields=["workstation", "updated_at"])
             workspace_id = str(workspace.id)
             local_path = workspace.local_agent_path
+            prepare_payload = sync_svc.prepare_payload(workspace, session_id=str(session.id))
+            sync_svc.set_sync_phase(
+                workspace,
+                "DownloadingInput",
+                percent=25,
+                message="Preparing workstation and downloading input",
+            )
         except Exception:
+            logger.exception("Workspace ensure/ingest failed during session create")
             workspace_id = ""
             local_path = ""
+            prepare_payload = {
+                "session_id": str(session.id),
+                "reservation_id": str(reservation.id),
+                "workspace_id": workspace_id,
+                "local_path": local_path,
+            }
 
         ReservationHistory.objects.create(
             reservation=reservation,
@@ -204,12 +232,7 @@ class SessionOrchestrator:
         cmd = CommandService().create_command(
             ws,
             CommandType.PREPARE_WORKSTATION,
-            payload={
-                "session_id": str(session.id),
-                "reservation_id": str(reservation.id),
-                "workspace_id": workspace_id,
-                "local_path": local_path,
-            },
+            payload=prepare_payload,
             created_by=user if getattr(user, "pk", None) else None,
         )
         session.prepare_command = cmd
@@ -259,9 +282,43 @@ class SessionOrchestrator:
         if cmd and cmd.status == CommandStatus.COMPLETED:
             prepare_ok = True
         if cmd and cmd.status == CommandStatus.FAILED:
+            try:
+                from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+                from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+                ws_obj = AnalysisWorkspace.objects.filter(reservation=session.reservation).first()
+                if ws_obj:
+                    WorkspaceSyncService().mark_prepared(
+                        ws_obj, success=False, message=cmd.error_message or "Prepare failed"
+                    )
+            except Exception:
+                pass
             self.fail_session(session, cmd.error_message or "Prepare failed")
             return False
         if not prepare_ok:
+            return False
+
+        # Gate RDP: workspace must reach InputReady after verified input sync
+        try:
+            from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+            from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+            ws_obj = AnalysisWorkspace.objects.filter(reservation=session.reservation).first()
+            if ws_obj:
+                sync_svc = WorkspaceSyncService()
+                if self.settings.mock_guacamole and not sync_svc.is_input_ready(ws_obj):
+                    sync_svc.mark_prepared(ws_obj, success=True, message="Mock prepare ready")
+                    ws_obj.refresh_from_db()
+                if not sync_svc.is_input_ready(ws_obj):
+                    if cmd and cmd.status == CommandStatus.COMPLETED:
+                        # Agent reported prepare complete with verified input — promote
+                        sync_svc.mark_prepared(ws_obj, success=True, message="Prepare completed")
+                        ws_obj.refresh_from_db()
+                    if not sync_svc.is_input_ready(ws_obj):
+                        return False
+                sync_svc.mark_session_starting(ws_obj)
+        except Exception:
+            logger.exception("Workspace InputReady gate check failed")
             return False
 
         prepare_latency = None
@@ -280,16 +337,7 @@ class SessionOrchestrator:
             reservation.status = ReservationStatus.READY
             reservation.save(update_fields=["status", "updated_at"])
 
-        # Milestone 5: sync workspace files to agent after prepare
-        try:
-            from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
-            from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
-
-            ws_obj = AnalysisWorkspace.objects.filter(reservation=reservation).first()
-            if ws_obj:
-                WorkspaceSyncService().issue_sync_command(ws_obj)
-        except Exception:
-            logger.exception("Workspace sync command failed after prepare")
+        # Input sync is part of PREPARE; do not issue a second SYNC that races Guacamole launch
 
         try:
             self._provision_guacamole(session)

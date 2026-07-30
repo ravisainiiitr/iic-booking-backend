@@ -11,20 +11,24 @@ logger = logging.getLogger(__name__)
 
 @ra_periodic_task(name="remote_analysis.expire_reservations")
 def expire_reservations() -> dict:
+    from iic_booking.remote_analysis.production_hardening import correlation_scope, structured_log
     from iic_booking.remote_analysis.services.scheduler import SchedulerService
 
-    result = SchedulerService().expire_stale()
-    logger.info("expire_reservations: %s", result)
-    return result
+    with correlation_scope():
+        result = SchedulerService().expire_stale()
+        structured_log(logging.INFO, "expire_reservations", **result)
+        return result
 
 
 @ra_periodic_task(name="remote_analysis.process_reservation_queue")
 def process_reservation_queue(limit: int = 20) -> dict:
+    from iic_booking.remote_analysis.production_hardening import correlation_scope, structured_log
     from iic_booking.remote_analysis.services.scheduler import SchedulerService
 
-    result = SchedulerService().process_queue(limit=limit)
-    logger.info("process_reservation_queue: %s", result)
-    return result
+    with correlation_scope():
+        result = SchedulerService().process_queue(limit=limit)
+        structured_log(logging.INFO, "process_reservation_queue", **result)
+        return result
 
 
 @ra_periodic_task(name="remote_analysis.refresh_workstation_health")
@@ -254,6 +258,65 @@ def archive_old_metrics(days: int = 90) -> dict:
     cutoff = timezone.now() - timedelta(days=days)
     deleted, _ = PerformanceMetric.objects.filter(recorded_at__lt=cutoff).delete()
     return {"deleted": deleted}
+
+
+@ra_periodic_task(name="remote_analysis.retry_failed_workspace_collects")
+def retry_failed_workspace_collects(limit: int = 20) -> dict:
+    """Re-issue COLLECT for workspaces stuck in FAILED/RETRYING with deferred Output."""
+    from iic_booking.remote_analysis.constants import TransferDirection, TransferStatus, WorkspaceSyncPhase
+    from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+    from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+    qs = AnalysisWorkspace.objects.filter(
+        sync_phase__in=[
+            WorkspaceSyncPhase.PREPARATION_FAILED,
+            WorkspaceSyncPhase.UPLOAD_FAILED,
+            WorkspaceSyncPhase.RETRY_PENDING,
+            WorkspaceSyncPhase.UPLOADING_OUTPUT,
+            # legacy rows before migration
+            "FAILED",
+            "RETRYING",
+            "UPLOADING",
+        ]
+    ).order_by("updated_at")[:limit]
+    retried = 0
+    svc = WorkspaceSyncService()
+    for ws in qs:
+        last = ws.transfers.filter(direction=TransferDirection.AGENT_PUSH).order_by("-created_at").first()
+        if last and last.status in {TransferStatus.FAILED, TransferStatus.RETRYING} and ws.workstation_id:
+            try:
+                svc.retry_failed_transfers(ws)
+                retried += 1
+            except Exception:
+                logger.exception("retry collect failed for workspace %s", ws.id)
+    return {"retried": retried}
+
+
+@ra_periodic_task(name="remote_analysis.interval_workspace_collect")
+def interval_workspace_collect(limit: int = 50) -> dict:
+    """Mode 2: periodic COLLECT when workspace_sync_mode=interval."""
+    from iic_booking.remote_analysis.constants import WorkspaceStatus
+    from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+    from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+    from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+    settings_obj = RemoteAnalysisSettings.get_solo()
+    if (getattr(settings_obj, "workspace_sync_mode", "") or "").lower() != "interval":
+        return {"skipped": True, "reason": "mode_not_interval"}
+
+    qs = AnalysisWorkspace.objects.filter(
+        status__in=[WorkspaceStatus.ACTIVE, WorkspaceStatus.READY],
+        workstation__isnull=False,
+    ).order_by("last_synced_at")[:limit]
+    issued = 0
+    svc = WorkspaceSyncService()
+    for ws in qs:
+        try:
+            svc.issue_collect_command(ws)
+            issued += 1
+        except Exception:
+            logger.exception("interval collect failed for workspace %s", ws.id)
+    return {"issued": issued}
 
 
 @ra_periodic_task(name="remote_analysis.expire_invitations")

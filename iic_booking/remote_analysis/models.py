@@ -70,6 +70,9 @@ class AnalysisWorkstation(models.Model):
         ordering = ["hostname", "agent_id"]
         verbose_name = _("Analysis workstation")
         verbose_name_plural = _("Analysis workstations")
+        indexes = [
+            models.Index(fields=["status", "last_heartbeat"], name="ra_ws_status_hb_idx"),
+        ]
 
     def __str__(self) -> str:
         return self.display_name or self.hostname or self.agent_id

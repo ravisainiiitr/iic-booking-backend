@@ -43,7 +43,7 @@ The Remote Analysis Platform is **feature complete** through Milestones 1–7 an
 
 ## Configuration Guide
 
-See `iic_booking/remote_analysis/configuration_catalog.py` and ProductionReadiness.md. Critical flags: `mock_guacamole`, session/idle timeouts, workspace quota/retention, Celery Redis, Agent PortalUrl/heartbeat.
+See `iic_booking/remote_analysis/configuration_catalog.py` and ProductionReadiness.md. Critical flags: `mock_guacamole`, session/idle timeouts, workspace quota/retention, Celery Redis, Agent `PortalBaseUrl` / `EnrollmentKey` / heartbeat.
 
 ## API Summary
 

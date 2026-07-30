@@ -63,11 +63,11 @@ class SessionCleanupService:
             revoked_at=timezone.now()
         )
 
-        # Milestone 5: collect outputs and archive workspace
+        # Milestone 5+: collect outputs; never delete Output until UploadVerified
         workspace_id = ""
         local_path = ""
+        defer_output = True
         try:
-            from iic_booking.remote_analysis.workspace.storage import StorageManager
             from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
             from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
 
@@ -75,16 +75,24 @@ class SessionCleanupService:
             if ws_obj:
                 workspace_id = str(ws_obj.id)
                 local_path = ws_obj.local_agent_path
+                sync_svc = WorkspaceSyncService()
                 try:
-                    WorkspaceSyncService().issue_collect_command(ws_obj, actor=actor)
+                    sync_svc.issue_collect_command(ws_obj, actor=actor)
                 except Exception:
                     logger.exception("COLLECT_WORKSPACE failed for session %s", session.id)
-                try:
-                    StorageManager().archive(ws_obj, actor=actor, note=f"Session end: {reason}"[:500])
-                except Exception:
-                    logger.exception("Workspace archive failed for session %s", session.id)
+                ws_obj.refresh_from_db()
+                # Always defer Output at session end; verified cleanup runs after COLLECT succeeds.
+                defer_output = sync_svc.defer_output_cleanup(ws_obj)
+                if not defer_output:
+                    try:
+                        from iic_booking.remote_analysis.workspace.storage import StorageManager
+
+                        StorageManager().archive(ws_obj, actor=actor, note=f"Session end: {reason}"[:500])
+                    except Exception:
+                        logger.exception("Workspace archive failed for session %s", session.id)
         except Exception:
             logger.exception("Workspace cleanup hook failed for session %s", session.id)
+            defer_output = True
 
         try:
             cmd = CommandService().create_command(
@@ -95,6 +103,11 @@ class SessionCleanupService:
                     "reason": reason,
                     "workspace_id": workspace_id,
                     "local_path": local_path,
+                    "defer_output_cleanup": defer_output,
+                    # Always strip Input/Working/Temp; retain Output (+ Logs until verified)
+                    "delete_folders": ["Input", "Working", "Temp"]
+                    if defer_output
+                    else ["Input", "Working", "Output", "Temp", "Logs"],
                 },
                 created_by=actor if actor is not None and getattr(actor, "pk", None) else None,
             )

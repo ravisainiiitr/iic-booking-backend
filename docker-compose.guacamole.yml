@@ -1,0 +1,54 @@
+# Optional Apache Guacamole stack for Remote Analysis (Workstream 2).
+# Does not replace the booking portal compose file — run alongside production Django.
+#
+# Usage:
+#   docker compose -f docker-compose.guacamole.yml up -d
+#
+# Then set portal env / RemoteAnalysisSettings:
+#   RA_MOCK_GUACAMOLE=false
+#   RA_GUACAMOLE_BASE_URL=https://guac.example.com/guacamole
+#   RA_GUACAMOLE_API_URL=http://guacamole:8080/guacamole
+#   RA_GUACAMOLE_ADMIN_USERNAME=guacadmin
+#   RA_GUACAMOLE_ADMIN_PASSWORD=<rotated>
+#   RA_GUACAMOLE_DATA_SOURCE=postgresql
+#
+# And run: python manage.py sync_remote_analysis_settings
+
+services:
+  guacd:
+    image: guacamole/guacd:1.5.5
+    restart: unless-stopped
+    volumes:
+      - guac_drive:/drive
+      - guac_record:/record
+
+  guacamole-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-change-me}
+    volumes:
+      - guac_db:/var/lib/postgresql/data
+
+  guacamole:
+    image: guacamole/guacamole:1.5.5
+    restart: unless-stopped
+    depends_on:
+      - guacd
+      - guacamole-db
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_HOSTNAME: guacamole-db
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USER: guacamole_user
+      POSTGRESQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-change-me}
+      # Terminate TLS at Traefik / reverse proxy in front of this service.
+    ports:
+      - "8085:8080"
+
+volumes:
+  guac_db:
+  guac_drive:
+  guac_record:

@@ -73,6 +73,8 @@ def ensure_scheduler_periodic_tasks(sender, **kwargs):
             ("RAA Archive Old Metrics", "remote_analysis.archive_old_metrics", interval_1d),
             ("RAA Expire Invitations", "remote_analysis.expire_invitations", interval_5m),
             ("RAA Send Reservation Reminders", "remote_analysis.send_reservation_reminders", interval_5m),
+            ("RAA Retry Failed Workspace Collects", "remote_analysis.retry_failed_workspace_collects", interval_5m),
+            ("RAA Interval Workspace Collect", "remote_analysis.interval_workspace_collect", interval_5m),
         ]
         for name, task, schedule in tasks:
             PeriodicTask.objects.update_or_create(

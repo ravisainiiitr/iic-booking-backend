@@ -56,10 +56,23 @@ Create `MaintenanceWindow` rows; monitor task applies `MAINTENANCE` status. Anno
 
 ## Log locations
 
-- Portal: application stdout / aggregated logging (include correlation IDs when instrumented)
-- Celery worker/beat logs
-- Agent: Windows Event Log / configured file sink
+- Portal: application stdout / aggregated logging — `/api/v1/analysis/*` responses echo `X-Correlation-ID`
+- Celery worker/beat logs (periodic jobs include correlation payloads via `structured_log`)
+- Agent: `C:\ProgramData\RemoteAnalysisAgent\Logs\` (+ Windows Event Log when running as service)
 - Guacamole: Guacamole server logs
+
+## Troubleshooting quick hits
+
+| Symptom | Check |
+|---------|--------|
+| Agent offline | Heartbeats, PC network, agent service status, `http://127.0.0.1:5088/api/health` |
+| Reservation stuck QUEUED | Available workstations, maintenance windows, `process_reservation_queue` beat |
+| Session fails to launch | `mock_guacamole`, Guacamole readiness check, RDP secrets on workstation |
+| Workspace sync fail | Agent auth token, disk quota, command `WORKSPACE_SYNC`/`COLLECT_WORKSPACE` status, `sync_phase` on workspace detail |
+| Collect failed / Output retained | `defer_output_cleanup` on CLEAN; use `POST .../retry-transfer/`; check Celery `retry_failed_workspace_collects` |
+| Compose django unhealthy | `/api/v1/analysis/health/ready/` — DB / Redis / Guacamole / enrollment checks |
+| Pre-deploy validation | `Documentation/DeploymentValidationReport.md`, `scripts/HealthCheck.ps1|.sh`, `VerifyPortal.ps1`, `VerifyAgent.ps1`, diagnostics `…/operations/diagnostics/?view=html` |
+| Incident runbook | `Documentation/TroubleshootingGuide.md`, `PilotDeploymentChecklist.md` |
 
 ## Escalation
 

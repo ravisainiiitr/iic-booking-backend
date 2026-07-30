@@ -58,7 +58,33 @@ def _department_scope(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def register(request):
-    """POST /api/v1/analysis/register/"""
+    """POST /api/v1/analysis/register/
+
+    When RA_AGENT_ENROLLMENT_KEY is set, require matching X-Enrollment-Key
+    (or body enrollmentKey) — production gate for open registration.
+    """
+    import hmac
+    import os
+
+    expected = (os.environ.get("RA_AGENT_ENROLLMENT_KEY") or "").strip()
+    if expected:
+        provided = (
+            request.META.get("HTTP_X_ENROLLMENT_KEY")
+            or request.headers.get("X-Enrollment-Key")
+            or ""
+        ).strip()
+        if not provided:
+            try:
+                data = request.data if isinstance(request.data, dict) else {}
+                provided = str(data.get("enrollmentKey") or data.get("enrollment_key") or "").strip()
+            except Exception:
+                provided = ""
+        if not provided or not hmac.compare_digest(provided, expected):
+            return Response(
+                {"accepted": False, "message": "Invalid or missing enrollment key."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
     try:
         result = RegistrationService().register(request.data if isinstance(request.data, dict) else {})
     except ValueError as exc:

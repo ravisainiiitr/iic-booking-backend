@@ -24,6 +24,12 @@ CONFIGURATION_CATALOG: list[dict[str, str]] = [
     {"key": "maximum_download_size", "source": "RemoteAnalysisSettings", "default": "2GB", "description": "Max download size"},
     {"key": "version_history_limit", "source": "RemoteAnalysisSettings", "default": "20", "description": "File version history depth"},
     {"key": "virus_scanner", "source": "RemoteAnalysisSettings", "default": "noop", "description": "Scanner backend (noop|clamav future)"},
+    {"key": "workspace_sync_mode", "source": "RemoteAnalysisSettings", "default": "end_of_session", "description": "end_of_session | interval automatic output sync"},
+    {"key": "workspace_sync_interval_seconds", "source": "RemoteAnalysisSettings", "default": "300", "description": "Interval mode collect cadence"},
+    {"key": "transfer_max_retries", "source": "RemoteAnalysisSettings", "default": "3", "description": "Agent transfer retry count"},
+    {"key": "compression_enabled", "source": "RemoteAnalysisSettings", "default": "False", "description": "Optional gzip for large agent uploads"},
+    {"key": "compression_min_bytes", "source": "RemoteAnalysisSettings", "default": "5MB", "description": "Compress uploads at or above this size"},
+    {"key": "bandwidth_limit_kbps", "source": "RemoteAnalysisSettings", "default": "0", "description": "Advisory agent bandwidth cap; 0 unlimited"},
     # Code constants
     {"key": "HEARTBEAT_OFFLINE_SECONDS", "source": "constants.py", "default": "90", "description": "Mark agent offline after missed heartbeats"},
     {"key": "HEARTBEAT_STALE_SECONDS", "source": "constants.py", "default": "120", "description": "Stale heartbeat threshold"},
@@ -33,12 +39,25 @@ CONFIGURATION_CATALOG: list[dict[str, str]] = [
     {"key": "CELERY_TASK_TIME_LIMIT", "source": "settings", "default": "300s", "description": "Hard task time limit"},
     {"key": "CELERY_TASK_SOFT_TIME_LIMIT", "source": "settings", "default": "60s", "description": "Soft task time limit"},
     {"key": "CACHES", "source": "settings local|production", "default": "LocMem|Redis", "description": "Django cache backend"},
-    # Agent
-    {"key": "PortalUrl", "source": "AgentOptions", "default": "(required)", "description": "Portal base URL for agent"},
-    {"key": "HeartbeatSeconds", "source": "AgentOptions", "default": "30", "description": "Agent heartbeat interval"},
-    {"key": "CommandPollSeconds", "source": "AgentOptions", "default": "15", "description": "Command poll interval"},
-    {"key": "WorkspaceRoot", "source": "AgentOptions", "default": "(local path)", "description": "Agent local workspace root"},
-    {"key": "LocalApiPort", "source": "AgentOptions", "default": "5088", "description": "Agent local diagnostic API port"},
+    # Phase 2 Guacamole env overlays (applied via settings_env / sync_remote_analysis_settings)
+    {"key": "RA_MOCK_GUACAMOLE", "source": "environ", "default": "", "description": "Override mock_guacamole (true|false); empty = use DB setting"},
+    {"key": "RA_GUACAMOLE_BASE_URL", "source": "environ", "default": "", "description": "Override public Guacamole base URL"},
+    {"key": "RA_GUACAMOLE_API_URL", "source": "environ", "default": "", "description": "Override internal Guacamole REST API URL"},
+    {"key": "RA_GUACAMOLE_ADMIN_USERNAME", "source": "environ", "default": "", "description": "Override Guacamole admin username"},
+    {"key": "RA_GUACAMOLE_ADMIN_PASSWORD", "source": "environ", "default": "", "description": "Override Guacamole admin password"},
+    {"key": "RA_GUACAMOLE_DATA_SOURCE", "source": "environ", "default": "", "description": "Override Guacamole data source name"},
+    {"key": "RA_GUACAMOLE_VERIFY_TLS", "source": "environ", "default": "", "description": "Override verify_tls for Guacamole REST (true|false)"},
+    {"key": "RA_AGENT_ENROLLMENT_KEY", "source": "environ", "default": "", "description": "Shared secret required on POST /register/ when set; required for readiness when DEBUG=False"},
+    {"key": "RA_APPLY_ENV_SETTINGS", "source": "environ", "default": "false", "description": "Persist RA_* overlays into DB on process start"},
+    {"key": "DEFAULT_TOKEN_LIFETIME_DAYS", "source": "constants.py", "default": "90", "description": "Agent bearer token lifetime"},
+    # Agent (RemoteAnalysisAgentOptions)
+    {"key": "PortalBaseUrl", "source": "RemoteAnalysisAgentOptions", "default": "(required)", "description": "Portal origin for agent HTTPS calls"},
+    {"key": "HeartbeatIntervalSeconds", "source": "RemoteAnalysisAgentOptions", "default": "30", "description": "Agent heartbeat interval"},
+    {"key": "CommandPollIntervalSeconds", "source": "RemoteAnalysisAgentOptions", "default": "10", "description": "Command poll interval"},
+    {"key": "HttpTimeoutSeconds", "source": "RemoteAnalysisAgentOptions", "default": "30", "description": "HTTP timeout to portal"},
+    {"key": "MaxRetryAttempts", "source": "RemoteAnalysisAgentOptions", "default": "6", "description": "Transient portal HTTP retries"},
+    {"key": "SessionWorkspaceRoot", "source": "RemoteAnalysisAgentOptions", "default": "ProgramData/.../Sessions", "description": "Agent local session workspace root"},
+    {"key": "LocalHealthPort", "source": "RemoteAnalysisAgentOptions", "default": "5088", "description": "Loopback diagnostic health port (127.0.0.1 only); 0 disables"},
 ]
 
 

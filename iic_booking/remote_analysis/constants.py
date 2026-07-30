@@ -254,9 +254,108 @@ class TransferDirection(models.TextChoices):
 class TransferStatus(models.TextChoices):
     PENDING = "PENDING", _("Pending")
     IN_PROGRESS = "IN_PROGRESS", _("In progress")
+    RETRYING = "RETRYING", _("Retrying")
     COMPLETED = "COMPLETED", _("Completed")
     FAILED = "FAILED", _("Failed")
     CANCELLED = "CANCELLED", _("Cancelled")
+
+
+class WorkspaceSyncPhase(models.TextChoices):
+    """Explicit workspace lifecycle for automatic data synchronization.
+
+    Success path:
+      Preparing → DownloadingInput → VerifyingInput → InputReady →
+      SessionStarting → SessionActive → CollectingOutput → UploadingOutput →
+      UploadVerified → Cleanup → Completed
+
+    Failure / control:
+      PreparationFailed | UploadFailed | RetryPending | CleanupFailed | Cancelled
+    """
+
+    PREPARING = "Preparing", _("Preparing Workspace")
+    DOWNLOADING_INPUT = "DownloadingInput", _("Downloading Input")
+    VERIFYING_INPUT = "VerifyingInput", _("Verifying Input")
+    INPUT_READY = "InputReady", _("Input Ready")
+    SESSION_STARTING = "SessionStarting", _("Session Starting")
+    SESSION_ACTIVE = "SessionActive", _("Session Active")
+    COLLECTING_OUTPUT = "CollectingOutput", _("Collecting Output")
+    UPLOADING_OUTPUT = "UploadingOutput", _("Uploading Output")
+    UPLOAD_VERIFIED = "UploadVerified", _("Upload Verified")
+    CLEANUP = "Cleanup", _("Cleanup")
+    COMPLETED = "Completed", _("Completed")
+    PREPARATION_FAILED = "PreparationFailed", _("Preparation Failed")
+    UPLOAD_FAILED = "UploadFailed", _("Upload Failed")
+    RETRY_PENDING = "RetryPending", _("Retry Pending")
+    CLEANUP_FAILED = "CleanupFailed", _("Cleanup Failed")
+    CANCELLED = "Cancelled", _("Cancelled")
+
+
+# Map legacy sync_phase DB values → canonical lifecycle (migration + normalize)
+LEGACY_SYNC_PHASE_MAP = {
+    "QUEUED": "Preparing",
+    "PREPARING": "Preparing",
+    "DOWNLOADING": "DownloadingInput",
+    "READY": "InputReady",
+    "UPLOADING": "UploadingOutput",
+    "RETRYING": "RetryPending",
+    "COMPLETED": "Completed",
+    "FAILED": "PreparationFailed",
+    "CANCELLED": "Cancelled",
+}
+
+
+def normalize_sync_phase(value: str | None) -> str:
+    if not value:
+        return WorkspaceSyncPhase.PREPARING
+    if value in WorkspaceSyncPhase.values:
+        return value
+    return LEGACY_SYNC_PHASE_MAP.get(value, value)
+
+
+# Phases that allow Guacamole / RDP launch
+WORKSPACE_INPUT_READY_PHASES = frozenset(
+    {
+        WorkspaceSyncPhase.INPUT_READY,
+        WorkspaceSyncPhase.SESSION_STARTING,
+        WorkspaceSyncPhase.SESSION_ACTIVE,
+        WorkspaceSyncPhase.COLLECTING_OUTPUT,
+        WorkspaceSyncPhase.UPLOADING_OUTPUT,
+        WorkspaceSyncPhase.UPLOAD_VERIFIED,
+        WorkspaceSyncPhase.CLEANUP,
+        WorkspaceSyncPhase.COMPLETED,
+    }
+)
+
+# Output may be deleted on the agent only after these phases
+WORKSPACE_UPLOAD_VERIFIED_PHASES = frozenset(
+    {
+        WorkspaceSyncPhase.UPLOAD_VERIFIED,
+        WorkspaceSyncPhase.CLEANUP,
+        WorkspaceSyncPhase.COMPLETED,
+    }
+)
+
+
+# Agent PC layout ↔ portal folder mapping (keep portal RawData/Processed for compat)
+AGENT_LAYOUT_FOLDERS = ("Input", "Working", "Output", "Logs", "Temp")
+AGENT_INPUT_PORTAL_FOLDERS = ("RawData", "Metadata")
+AGENT_OUTPUT_PORTAL_FOLDERS = ("Processed", "Reports", "Exports", "Logs")
+AGENT_TO_PORTAL_FOLDER = {
+    "Input": "RawData",
+    "Working": "Temp",
+    "Output": "Processed",
+    "Logs": "Logs",
+    "Temp": "Temp",
+}
+PORTAL_TO_AGENT_FOLDER = {
+    "RawData": "Input",
+    "Metadata": "Input",
+    "Processed": "Output",
+    "Reports": "Output",
+    "Exports": "Output",
+    "Logs": "Logs",
+    "Temp": "Temp",
+}
 
 
 class WorkspaceAuditAction(models.TextChoices):
@@ -354,6 +453,10 @@ class NotificationType(models.TextChoices):
     SESSION_STARTING = "SESSION_STARTING", _("Session starting")
     SESSION_ENDING = "SESSION_ENDING", _("Session ending")
     WORKSPACE_SYNCED = "WORKSPACE_SYNCED", _("Workspace synchronized")
+    WORKSPACE_READY = "WORKSPACE_READY", _("Workspace ready")
+    WORKSPACE_SYNC_STARTED = "WORKSPACE_SYNC_STARTED", _("Synchronization started")
+    WORKSPACE_SYNC_FAILED = "WORKSPACE_SYNC_FAILED", _("Synchronization failed")
+    FILES_AVAILABLE = "FILES_AVAILABLE", _("Files available")
     UPLOAD_COMPLETE = "UPLOAD_COMPLETE", _("Upload complete")
     DOWNLOAD_COMPLETE = "DOWNLOAD_COMPLETE", _("Download complete")
     AGENT_OFFLINE = "AGENT_OFFLINE", _("Agent offline")

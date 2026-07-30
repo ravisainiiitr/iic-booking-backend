@@ -54,6 +54,51 @@ def test_configuration_catalog_nonempty():
     assert len(CONFIGURATION_CATALOG) >= 20
     md = catalog_as_markdown()
     assert "mock_guacamole" in md
+    keys = {row["key"] for row in CONFIGURATION_CATALOG}
+    assert "PortalBaseUrl" in keys
+    assert "LocalHealthPort" in keys
+    assert "RA_MOCK_GUACAMOLE" in keys
+    assert "PortalUrl" not in keys
+    assert "LocalApiPort" not in keys
+
+
+@pytest.mark.django_db
+def test_correlation_middleware_echoes_header(client):
+    response = client.get(
+        "/api/v1/analysis/health/live/",
+        HTTP_X_CORRELATION_ID="ws4-test-cid-001",
+    )
+    assert response.status_code == 200
+    assert response["X-Correlation-ID"] == "ws4-test-cid-001"
+
+
+@pytest.mark.django_db
+def test_correlation_middleware_generates_when_missing(client):
+    response = client.get("/api/v1/analysis/health/live/")
+    assert response.status_code == 200
+    assert response["X-Correlation-ID"]
+    assert len(response["X-Correlation-ID"]) >= 16
+
+
+@pytest.mark.django_db
+def test_register_requires_enrollment_key_when_configured(settings, monkeypatch):
+    monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "pilot-secret")
+    api = APIClient()
+    denied = api.post(
+        "/api/v1/analysis/register/",
+        {"agentId": "enroll-deny-1", "hostname": "PC-DENY"},
+        format="json",
+    )
+    assert denied.status_code == 403
+
+    ok = api.post(
+        "/api/v1/analysis/register/",
+        {"agentId": "enroll-ok-1", "hostname": "PC-OK"},
+        format="json",
+        HTTP_X_ENROLLMENT_KEY="pilot-secret",
+    )
+    assert ok.status_code in (200, 201)
+    assert ok.json().get("accepted") is True
 
 
 @pytest.mark.django_db

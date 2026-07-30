@@ -15,6 +15,7 @@ from iic_booking.remote_analysis.constants import (
     TransferStatus,
     VirusStatus,
     WorkspaceStatus,
+    WorkspaceSyncPhase,
 )
 
 
@@ -78,6 +79,20 @@ class AnalysisWorkspace(models.Model):
         help_text=_("Agent-local relative path hint (not a Portal filesystem path)."),
     )
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    sync_phase = models.CharField(
+        max_length=32,
+        choices=WorkspaceSyncPhase.choices,
+        default=WorkspaceSyncPhase.PREPARING,
+        db_index=True,
+        help_text=_("Automatic data sync lifecycle phase shown to users."),
+    )
+    sync_progress_percent = models.PositiveSmallIntegerField(default=0)
+    sync_message = models.CharField(max_length=512, blank=True, default="")
+    upload_verified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("Set when collect upload checksums are verified on the portal."),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -86,6 +101,7 @@ class AnalysisWorkspace(models.Model):
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["user", "status"]),
             models.Index(fields=["status", "retention_until"]),
+            models.Index(fields=["sync_phase", "updated_at"]),
         ]
 
     def __str__(self) -> str:

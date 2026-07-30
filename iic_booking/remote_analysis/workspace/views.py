@@ -5,12 +5,15 @@ from __future__ import annotations
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, parser_classes
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
+from iic_booking.remote_analysis.authentication import (
+    RemoteAnalysisAgentAuthentication,
+    RemoteAnalysisAgentUser,
+)
 from iic_booking.remote_analysis.permissions import CanManageRemoteAnalysis, CanViewRemoteAnalysis, IsRemoteAnalysisAgent
 from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
 from iic_booking.remote_analysis.workspace.permissions import can_access_workspace, can_write_workspace
@@ -37,6 +40,7 @@ from iic_booking.remote_analysis.workspace_models import (
 _AUTH = [IsAuthenticated]
 _VIEW = [IsAuthenticated, CanViewRemoteAnalysis]
 _AGENT = [IsRemoteAnalysisAgent]
+_AGENT_AUTH = [RemoteAnalysisAgentAuthentication]
 
 
 @api_view(["GET", "POST"])
@@ -53,7 +57,10 @@ def workspaces_collection(request):
         archived = request.query_params.get("archived")
         if archived == "1":
             qs = qs.filter(archive_status="ARCHIVED")
-        return Response(AnalysisWorkspaceSerializer(qs[:200], many=True).data)
+        from iic_booking.remote_analysis.production_hardening import parse_pagination
+
+        offset, limit = parse_pagination(request)
+        return Response(AnalysisWorkspaceSerializer(qs[offset : offset + limit], many=True).data)
 
     ser = CreateWorkspaceSerializer(data=request.data)
     ser.is_valid(raise_exception=True)
@@ -81,6 +88,26 @@ def workspace_detail(request, workspace_id):
     data["recent_transfers"] = WorkspaceTransferSerializer(
         workspace.transfers.order_by("-created_at")[:20], many=True
     ).data
+    from django.db.models import Q
+
+    files = WorkspaceFile.objects.filter(workspace=workspace, deleted=False, is_current=True)
+    data["input_files"] = WorkspaceFileSerializer(
+        files.filter(relative_path__startswith="RawData/")[:200], many=True
+    ).data
+    data["output_files"] = WorkspaceFileSerializer(
+        files.filter(
+            Q(relative_path__startswith="Processed/")
+            | Q(relative_path__startswith="Reports/")
+            | Q(relative_path__startswith="Exports/")
+        )[:200],
+        many=True,
+    ).data
+    data["sync"] = {
+        "phase": workspace.sync_phase,
+        "progress_percent": workspace.sync_progress_percent,
+        "message": workspace.sync_message,
+        "last_synced_at": workspace.last_synced_at.isoformat() if workspace.last_synced_at else None,
+    }
     return Response(data)
 
 
@@ -182,7 +209,7 @@ def workspace_files(request, workspace_id):
 @api_view(["POST"])
 @permission_classes(_AUTH)
 def workspace_sync(request, workspace_id):
-    """POST /api/v1/analysis/workspaces/{id}/sync/"""
+    """POST /api/v1/analysis/workspaces/{id}/sync/ — pull input to agent."""
     workspace = get_object_or_404(AnalysisWorkspace, pk=workspace_id)
     if not can_write_workspace(request.user, workspace) and not CanManageRemoteAnalysis().has_permission(request, None):
         return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
@@ -190,7 +217,45 @@ def workspace_sync(request, workspace_id):
         cmd = WorkspaceSyncService().issue_sync_command(workspace, actor=request.user)
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    workspace.refresh_from_db()
     return Response({"command_id": str(cmd.id), "workspace": AnalysisWorkspaceSerializer(workspace).data})
+
+
+@api_view(["POST"])
+@permission_classes(_AUTH)
+def workspace_retry_transfer(request, workspace_id):
+    """POST /api/v1/analysis/workspaces/{id}/retry-transfer/ — retry failed collect/sync."""
+    workspace = get_object_or_404(AnalysisWorkspace, pk=workspace_id)
+    if not can_write_workspace(request.user, workspace) and not CanManageRemoteAnalysis().has_permission(request, None):
+        return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        cmd = WorkspaceSyncService().retry_failed_transfers(workspace, actor=request.user)
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    workspace.refresh_from_db()
+    return Response(
+        {
+            "command_id": str(cmd.id) if cmd else None,
+            "workspace": AnalysisWorkspaceSerializer(workspace).data,
+            "sync_phase": workspace.sync_phase,
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, CanManageRemoteAnalysis])
+def workspace_cancel_transfer(request, workspace_id):
+    """POST /api/v1/analysis/workspaces/{id}/cancel-transfer/"""
+    from iic_booking.remote_analysis.constants import TransferStatus, WorkspaceSyncPhase
+
+    workspace = get_object_or_404(AnalysisWorkspace, pk=workspace_id)
+    updated = workspace.transfers.filter(
+        status__in=[TransferStatus.PENDING, TransferStatus.IN_PROGRESS, TransferStatus.RETRYING]
+    ).update(status=TransferStatus.CANCELLED, completed_at=timezone.now())
+    WorkspaceSyncService().set_sync_phase(
+        workspace, WorkspaceSyncPhase.CANCELLED, percent=workspace.sync_progress_percent, message="Transfer cancelled"
+    )
+    return Response({"cancelled": updated, "sync_phase": workspace.sync_phase})
 
 
 @api_view(["GET"])
@@ -243,6 +308,7 @@ def workspace_dashboard(request):
 
 
 @api_view(["GET"])
+@authentication_classes(_AGENT_AUTH)
 @permission_classes(_AGENT)
 def agent_workspace_manifest(request, workspace_id):
     """Agent pulls sync manifest for its assigned workstation only."""
@@ -254,6 +320,7 @@ def agent_workspace_manifest(request, workspace_id):
 
 
 @api_view(["GET"])
+@authentication_classes(_AGENT_AUTH)
 @permission_classes(_AGENT)
 def agent_file_content(request, workspace_id, file_id):
     workspace = get_object_or_404(AnalysisWorkspace, pk=workspace_id)
@@ -268,6 +335,7 @@ def agent_file_content(request, workspace_id, file_id):
 
 
 @api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
 @permission_classes(_AGENT)
 @parser_classes([MultiPartParser, FormParser])
 def agent_workspace_upload(request, workspace_id):
@@ -280,6 +348,7 @@ def agent_workspace_upload(request, workspace_id):
         return Response({"detail": "Missing file"}, status=status.HTTP_400_BAD_REQUEST)
     folder = request.data.get("folder") or "Processed"
     sha = request.data.get("sha256") or ""
+    relative_name = request.data.get("relative_path") or request.data.get("relative_name") or ""
     try:
         file_row = TransferManager().upload(
             workspace,
@@ -288,8 +357,14 @@ def agent_workspace_upload(request, workspace_id):
             actor=None,
             expected_sha256=sha,
             source="agent",
+            relative_name=relative_name,
         )
     except (TransferError, StorageError) as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-    WorkspaceSyncService().mark_synced(workspace, success=True, message="agent upload")
+    if getattr(file_row, "_skipped_unchanged", False):
+        return Response(
+            {**WorkspaceFileSerializer(file_row).data, "skipped": True},
+            status=status.HTTP_409_CONFLICT,
+        )
+    # Per-file upload must not finalize COLLECT lifecycle — command complete does that.
     return Response(WorkspaceFileSerializer(file_row).data, status=status.HTTP_201_CREATED)

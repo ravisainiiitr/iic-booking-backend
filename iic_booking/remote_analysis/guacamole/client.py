@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -79,6 +80,65 @@ class GuacamoleClient:
             self.authenticate()
         return {"Guacamole-Token": self._auth_token or ""}
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        authenticated: bool = True,
+        allow_statuses: tuple[int, ...] = (),
+        **kwargs: Any,
+    ) -> requests.Response:
+        """
+        One transient retry on connection/5xx errors; re-auth once on 401 when authenticated.
+        """
+        kwargs.setdefault("timeout", self._timeout())
+        kwargs.setdefault("verify", self._verify())
+        extra_headers = dict(kwargs.pop("headers", None) or {})
+        last_exc: Exception | None = None
+
+        for attempt in range(2):
+            try:
+                headers = dict(extra_headers)
+                if authenticated:
+                    headers = {**headers, **self._headers()}
+                resp = requests.request(method, url, headers=headers, **kwargs)
+                if resp.status_code == 401 and authenticated and attempt == 0:
+                    self._auth_token = None
+                    logger.warning("Guacamole 401 — re-authenticating once")
+                    continue
+                if resp.status_code >= 500 and attempt == 0:
+                    logger.warning(
+                        "Guacamole %s %s returned %s — retrying once",
+                        method,
+                        url,
+                        resp.status_code,
+                    )
+                    time.sleep(0.25)
+                    continue
+                if allow_statuses and resp.status_code in allow_statuses:
+                    return resp
+                resp.raise_for_status()
+                return resp
+            except requests.HTTPError as exc:
+                raise GuacamoleClientError(str(exc)) from exc
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt == 0:
+                    logger.warning(
+                        "Guacamole %s %s failed (%s) — retrying once",
+                        method,
+                        url,
+                        exc,
+                    )
+                    time.sleep(0.25)
+                    continue
+                raise GuacamoleClientError(str(exc)) from exc
+
+        if last_exc:
+            raise GuacamoleClientError(str(last_exc)) from last_exc
+        raise GuacamoleClientError("Guacamole request failed")
+
     def health_check(self) -> bool:
         if self.mock:
             return True
@@ -93,7 +153,6 @@ class GuacamoleClient:
             conn_id = f"mock-conn-{uuid.uuid4().hex[:12]}"
             return {"identifier": conn_id, "name": name, "protocol": "rdp", "mock": True}
 
-        self.authenticate()
         url = self._api(f"api/session/data/{self._data_source}/connections")
         body = {
             "name": name,
@@ -106,24 +165,16 @@ class GuacamoleClient:
             },
         }
         try:
-            resp = requests.post(
-                url,
-                json=body,
-                headers=self._headers(),
-                timeout=self._timeout(),
-                verify=self._verify(),
-            )
-            resp.raise_for_status()
+            resp = self._request("POST", url, json=body)
             return resp.json() if resp.content else {"identifier": resp.headers.get("Location", name)}
-        except requests.RequestException as exc:
+        except GuacamoleClientError:
             logger.exception("Guacamole create_connection failed")
-            raise GuacamoleClientError(str(exc)) from exc
+            raise
 
     def create_user(self, username: str, password: str) -> dict[str, Any]:
         if self.mock:
             return {"username": username, "mock": True}
 
-        self.authenticate()
         url = self._api(f"api/session/data/{self._data_source}/users")
         body = {
             "username": username,
@@ -139,24 +190,15 @@ class GuacamoleClient:
             },
         }
         try:
-            resp = requests.post(
-                url,
-                json=body,
-                headers=self._headers(),
-                timeout=self._timeout(),
-                verify=self._verify(),
-            )
-            if resp.status_code not in (200, 201, 204):
-                resp.raise_for_status()
+            self._request("POST", url, json=body, allow_statuses=(200, 201, 204))
             return {"username": username}
-        except requests.RequestException as exc:
+        except GuacamoleClientError:
             logger.exception("Guacamole create_user failed")
-            raise GuacamoleClientError(str(exc)) from exc
+            raise
 
     def grant_connection(self, username: str, connection_id: str) -> None:
         if self.mock:
             return
-        self.authenticate()
         url = self._api(
             f"api/session/data/{self._data_source}/users/{username}/permissions"
         )
@@ -168,50 +210,27 @@ class GuacamoleClient:
             }
         ]
         try:
-            resp = requests.patch(
-                url,
-                json=patch,
-                headers=self._headers(),
-                timeout=self._timeout(),
-                verify=self._verify(),
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
+            self._request("PATCH", url, json=patch)
+        except GuacamoleClientError:
             logger.exception("Guacamole grant_connection failed")
-            raise GuacamoleClientError(str(exc)) from exc
+            raise
 
     def delete_connection(self, connection_id: str) -> None:
         if self.mock or not connection_id:
             return
-        self.authenticate()
         url = self._api(f"api/session/data/{self._data_source}/connections/{connection_id}")
         try:
-            resp = requests.delete(
-                url,
-                headers=self._headers(),
-                timeout=self._timeout(),
-                verify=self._verify(),
-            )
-            if resp.status_code not in (200, 204, 404):
-                resp.raise_for_status()
-        except requests.RequestException as exc:
+            self._request("DELETE", url, allow_statuses=(200, 204, 404))
+        except GuacamoleClientError as exc:
             logger.warning("Guacamole delete_connection failed: %s", exc)
 
     def delete_user(self, username: str) -> None:
         if self.mock or not username:
             return
-        self.authenticate()
         url = self._api(f"api/session/data/{self._data_source}/users/{username}")
         try:
-            resp = requests.delete(
-                url,
-                headers=self._headers(),
-                timeout=self._timeout(),
-                verify=self._verify(),
-            )
-            if resp.status_code not in (200, 204, 404):
-                resp.raise_for_status()
-        except requests.RequestException as exc:
+            self._request("DELETE", url, allow_statuses=(200, 204, 404))
+        except GuacamoleClientError as exc:
             logger.warning("Guacamole delete_user failed: %s", exc)
 
     def create_user_token(self, username: str, password: str) -> str:
@@ -221,17 +240,16 @@ class GuacamoleClient:
 
         url = self._api("api/tokens")
         try:
-            resp = requests.post(
+            resp = self._request(
+                "POST",
                 url,
+                authenticated=False,
                 data={"username": username, "password": password},
-                timeout=self._timeout(),
-                verify=self._verify(),
             )
-            resp.raise_for_status()
             payload = resp.json()
             token = payload.get("authToken") or payload.get("auth_token")
             if not token:
                 raise GuacamoleClientError("Missing user authToken")
             return token
-        except requests.RequestException as exc:
-            raise GuacamoleClientError(str(exc)) from exc
+        except GuacamoleClientError:
+            raise

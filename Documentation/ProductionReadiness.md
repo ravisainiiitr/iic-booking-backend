@@ -43,12 +43,13 @@ Report artifact: `Documentation/ArchitectureValidation.md`.
 | Activity / assistance queues | Composite indexes on feed/verb/status |
 | Invitations expiry | Indexes `(status, expires_at)` |
 | Operations dashboard | `DashboardSnapshot` 60s cache (unchanged) |
-| List APIs | Prefer `select_related` / `limit` already used; `parse_pagination` helper available |
+| List APIs | `parse_pagination` on reservations / sessions / workspaces (`limit`/`offset`, max 200) |
+| Workstation offline sweep | Index `(status, last_heartbeat)` (`0008_*`) |
 | Celery | Autoretry + backoff + `acks_late` on RA periodic tasks |
 
 ## Database
 
-Migration `0007_production_hardening_indexes` (additive indexes only — **no schema redesign**).
+Migrations `0007_production_hardening_indexes` and `0008_workstation_status_heartbeat_index` (additive indexes only — **no schema redesign**).
 
 Guidance: nightly `VACUUM`/reindex on PostgreSQL where applicable; retain archived workspaces per `retention_days`; purge ops fine-grained metrics via `archive_old_metrics`.
 
@@ -68,15 +69,15 @@ Operations Center KPIs + alert rules remain source of truth. Health probes:
 - `GET /api/v1/analysis/health/ready/`
 - `GET /api/v1/analysis/health/`
 
-Agent: `GET /api/health` on local diagnostic port.
+Agent: `GET http://127.0.0.1:{LocalHealthPort}/api/health` (default **5088**, loopback only; `0` disables).
 
 ## Logging
 
-`production_hardening.correlation_scope` / `structured_log` / `mask_secret` for correlation IDs and secret masking. Prefer including `session_id`, `reservation_id`, `workspace_id` in operational logs.
+`RemoteAnalysisCorrelationMiddleware` assigns / echoes `X-Correlation-ID` on `/api/v1/analysis/*`. Celery beat jobs use `correlation_scope` + `structured_log`. Prefer including `session_id`, `reservation_id`, `workspace_id` in operational logs. Secrets via `mask_secret`.
 
 ## Configuration
 
-Catalog: `remote_analysis/configuration_catalog.py` and Configuration Guide in Release Notes. Critical: `mock_guacamole`, storage roots, quotas, Celery Redis URL, Agent `PortalUrl`.
+Catalog: `remote_analysis/configuration_catalog.py`. Critical: `mock_guacamole`, `RA_*` Guacamole overlays, storage roots, quotas, Celery Redis URL, Agent `PortalBaseUrl` / `LocalHealthPort`.
 
 ## Testing
 

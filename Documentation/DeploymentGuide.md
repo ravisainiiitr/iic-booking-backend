@@ -24,13 +24,13 @@ Remote Analysis Platform — Release Candidate 1.
 | `WEB_CONCURRENCY` | Gunicorn workers (default 4) |
 | `GUNICORN_TIMEOUT` | Default 120s (large uploads) |
 
-Agent (`appsettings` / env): `PortalUrl`, agent token after registration, `WorkspaceRoot`, heartbeat/poll intervals.
+Agent (`appsettings`): `PortalBaseUrl`, `SessionWorkspaceRoot`, `LocalHealthPort` (default 5088), heartbeat/poll intervals, HTTP retries. Token persisted under `ProgramData/.../State` after registration.
 
 ## Deployment sequence
 
 1. **Backup** database and workspace/archive volumes (see DisasterRecovery.md).
 2. **Pull** Portal image / Agent installer for the RC tag.
-3. **Migrate:** `python manage.py migrate --noinput` (includes `remote_analysis.0007_*` when present).
+3. **Migrate:** `python manage.py migrate --noinput` (includes `remote_analysis.0007_*` / `0008_*` / `0009_auto_data_sync_fields` / `0010_workspace_lifecycle_phases` when present).
 4. **Collect static:** `collectstatic --noinput` (production start script does this).
 5. **Seed beat:** `post_migrate` registers RA PeriodicTasks — verify in Django Admin → Periodic tasks.
 6. **Configure** `RemoteAnalysisSettings` singleton: set Guacamole URLs, **`mock_guacamole=False`**, storage roots, quotas.
@@ -48,7 +48,7 @@ Agent (`appsettings` / env): `PortalUrl`, agent token after registration, `Works
 - Local: `docker-compose.local.yml` — django, redis, celeryworker, celerybeat, flower  
 - Production: `docker-compose.production.yml` + Traefik  
 
-Recommended Compose healthcheck target: `/api/v1/analysis/health/ready/` on the django service (interval 30s, retries 3).
+Production Compose includes a django `healthcheck` hitting `/api/v1/analysis/health/ready/` (interval 30s, retries 3, start_period 60s).
 
 ## Rollback
 

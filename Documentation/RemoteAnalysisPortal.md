@@ -112,9 +112,11 @@ Tabs: Dashboard · Workstations · Installed Software · Heartbeat History · Co
 ## Security
 
 - Agent tokens hashed at rest; rotation + revocation supported.
-- No Guacamole configuration, RDP passwords, or end-user credentials stored.
-- Portal remains the only orchestrator for future browser sessions.
+- When `RA_AGENT_ENROLLMENT_KEY` is set, agent registration requires `X-Enrollment-Key`.
+- Guacamole admin credentials and RDP secrets are server-side only (not returned to browsers).
+- Portal remains the sole orchestrator for browser remote sessions.
 
-## Future scheduler (not implemented)
+## Session orchestration (implemented)
 
-Authenticate → allocate workstation → create Guacamole connection → notify agent → prepare → browser session → end → cleanup.
+Authenticate → allocate workstation → seed booking/DSA results into workspace → prepare workstation (agent downloads Input) → browser session → end → collect Output → cleanup.  
+See `BrowserRemoteDesktop.md`, `AnalysisScheduler.md`, and **`AutomaticDataSynchronization.md`** (manifest sync + workspace lifecycle: Preparing → InputReady → UploadVerified → Completed).

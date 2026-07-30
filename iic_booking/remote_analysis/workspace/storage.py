@@ -272,7 +272,7 @@ class StorageManager:
 
         dest = self.absolute_path(workspace)
         if dest.exists():
-            shutil.rmtree(dest)
+            shutil.rmtree(dest, ignore_errors=True)
         dest.mkdir(parents=True, exist_ok=True)
         shutil.unpack_archive(str(zip_path), extract_dir=str(dest))
 

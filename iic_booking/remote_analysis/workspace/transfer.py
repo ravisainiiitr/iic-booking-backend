@@ -109,12 +109,19 @@ class TransferManager:
         expected_sha256: str = "",
         source: str = "portal",
         override_quota: bool = False,
+        relative_name: str = "",
     ) -> WorkspaceFile:
         if workspace.status in {WorkspaceStatus.ARCHIVED, WorkspaceStatus.DELETED}:
             raise TransferError("Workspace not writable", code="workspace_closed")
 
         original_name = getattr(uploaded_file, "name", "upload.bin") or "upload.bin"
-        self._extension_allowed(original_name, workspace)
+        # Allow nested relative paths from agent (Output/a/b.csv → Processed/a/b.csv)
+        if relative_name:
+            safe_rel = relative_name.replace("\\", "/").lstrip("/")
+            if ".." in safe_rel.split("/"):
+                raise TransferError("Invalid relative path", code="path_traversal")
+            original_name = safe_rel
+        self._extension_allowed(Path(original_name).name, workspace)
         folder = (folder or "RawData").replace("\\", "/").strip("/")
         ws_folder = self._folder_writable(workspace, folder.split("/")[0])
 
@@ -125,6 +132,39 @@ class TransferManager:
         policy = TransferPolicy.objects.filter(is_active=True, workstation=workspace.workstation).first()
         if policy and policy.max_file_size and size_hint and size_hint > policy.max_file_size:
             raise TransferError("File exceeds policy max size", code="policy_size")
+
+        relative_path = f"{folder}/{original_name}".replace("//", "/")
+        # Manifest resume: skip rewrite when current file already matches expected sha256
+        if expected_sha256:
+            existing_match = (
+                WorkspaceFile.objects.filter(
+                    workspace=workspace,
+                    relative_path=relative_path,
+                    deleted=False,
+                    is_current=True,
+                    sha256__iexact=expected_sha256,
+                )
+                .first()
+            )
+            if existing_match:
+                transfer = WorkspaceTransfer.objects.create(
+                    workspace=workspace,
+                    file=existing_match,
+                    direction=TransferDirection.PORTAL_TO_WORKSPACE
+                    if source == "portal"
+                    else TransferDirection.AGENT_PUSH,
+                    status=TransferStatus.COMPLETED,
+                    bytes_total=existing_match.size,
+                    bytes_transferred=existing_match.size,
+                    checksum_expected=expected_sha256,
+                    checksum_actual=existing_match.sha256,
+                    created_by=actor if actor is not None and getattr(actor, "pk", None) else None,
+                    started_at=timezone.now(),
+                    completed_at=timezone.now(),
+                )
+                TransferHistory.objects.create(transfer=transfer, event="skipped", detail="checksum_match")
+                existing_match._skipped_unchanged = True  # type: ignore[attr-defined]
+                return existing_match
 
         self.storage.check_quota(workspace, size_hint or 0, override=override_quota)
 
@@ -142,7 +182,6 @@ class TransferManager:
 
         t0 = time.time()
         stored_name = f"{uuid.uuid4().hex}_{Path(original_name).name}"
-        relative_path = f"{folder}/{Path(original_name).name}"
         storage_relpath = f"{folder}/{stored_name}"
 
         try:
@@ -177,15 +216,17 @@ class TransferManager:
         mime, _ = mimetypes.guess_type(original_name)
 
         if existing:
-            # Version previous content
-            WorkspaceVersion.objects.create(
+            # Snapshot current content under its version (idempotent if already recorded)
+            WorkspaceVersion.objects.update_or_create(
                 file=existing,
                 version=existing.version,
-                size=existing.size,
-                sha256=existing.sha256,
-                storage_relpath=existing.storage_relpath,
-                created_by=actor if actor is not None and getattr(actor, "pk", None) else None,
-                note="Superseded by upload",
+                defaults={
+                    "size": existing.size,
+                    "sha256": existing.sha256,
+                    "storage_relpath": existing.storage_relpath,
+                    "created_by": actor if actor is not None and getattr(actor, "pk", None) else None,
+                    "note": "Superseded by upload",
+                },
             )
             # Prune history
             limit = self.settings.version_history_limit or 20

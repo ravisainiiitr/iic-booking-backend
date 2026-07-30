@@ -102,6 +102,25 @@ class RemoteAnalysisSettings(models.Model):
         blank=True,
         help_text=_("Folder names created for each workspace. Empty = default template."),
     )
+    # Automatic data sync policies
+    workspace_sync_mode = models.CharField(
+        max_length=32,
+        default="end_of_session",
+        help_text=_("end_of_session | interval"),
+    )
+    workspace_sync_interval_seconds = models.PositiveIntegerField(
+        default=300,
+        help_text=_("Used when workspace_sync_mode=interval."),
+    )
+    transfer_max_retries = models.PositiveSmallIntegerField(default=3)
+    compression_min_bytes = models.BigIntegerField(
+        default=5 * 1024 * 1024,
+        help_text=_("Compress agent uploads at or above this size when compression_enabled."),
+    )
+    bandwidth_limit_kbps = models.PositiveIntegerField(
+        default=0,
+        help_text=_("Advisory agent bandwidth cap; 0 = unlimited."),
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -114,7 +133,10 @@ class RemoteAnalysisSettings(models.Model):
     @classmethod
     def get_solo(cls) -> "RemoteAnalysisSettings":
         obj, _ = cls.objects.get_or_create(pk=1)
-        return obj
+        # Production: allow env secrets/URLs to override DB without code changes.
+        from iic_booking.remote_analysis.guacamole.settings_env import overlay_from_environ
+
+        return overlay_from_environ(obj)
 
 
 class WorkstationRdpSecret(models.Model):

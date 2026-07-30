@@ -223,12 +223,35 @@ class BookingRemoteAnalysisService:
     def _serialize_workspace(self, workspace) -> dict | None:
         if not workspace:
             return None
+        from iic_booking.remote_analysis.workspace_models import WorkspaceFile
+
+        output_files = list(
+            WorkspaceFile.objects.filter(
+                workspace=workspace,
+                deleted=False,
+                is_current=True,
+                relative_path__startswith="Processed/",
+            ).values("id", "original_name", "relative_path", "size", "sha256")[:50]
+        )
         return {
             "id": str(workspace.id),
             "status": workspace.status,
+            "sync_phase": getattr(workspace, "sync_phase", None),
+            "sync_progress_percent": getattr(workspace, "sync_progress_percent", 0),
+            "sync_message": getattr(workspace, "sync_message", ""),
             "usage_bytes": workspace.current_usage_bytes,
             "quota_gb": workspace.quota_gb,
             "archived_at": workspace.archived_at.isoformat() if workspace.archived_at else None,
+            "output_files": [
+                {
+                    "id": str(f["id"]),
+                    "name": f["original_name"],
+                    "relative_path": f["relative_path"],
+                    "size": f["size"],
+                    "sha256": f["sha256"],
+                }
+                for f in output_files
+            ],
         }
 
     def _serialize_session(self, session) -> dict | None:

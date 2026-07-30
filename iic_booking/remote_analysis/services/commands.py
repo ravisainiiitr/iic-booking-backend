@@ -131,11 +131,19 @@ class CommandService:
             correlation_id=str(command.id),
         )
 
-        # Milestone 4: advance remote desktop session after PREPARE_WORKSTATION
+        # Milestone 4/5+: advance remote desktop session after PREPARE_WORKSTATION (+ input sync)
         if command.command_type == CommandType.PREPARE_WORKSTATION:
             try:
                 from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
                 from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+                from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+                from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+                workspace_id = (command.payload or {}).get("workspace_id")
+                if workspace_id:
+                    ws_obj = AnalysisWorkspace.objects.filter(pk=workspace_id).first()
+                    if ws_obj:
+                        WorkspaceSyncService().mark_prepared(ws_obj, success=success, message=message)
 
                 for session in RemoteDesktopSession.objects.filter(prepare_command=command):
                     GuacamoleIntegrationService().retry_prepare(session)

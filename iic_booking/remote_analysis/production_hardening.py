@@ -57,6 +57,27 @@ def mask_secret(value: str | None, *, visible: int = 4) -> str:
     return f"{'*' * (len(value) - visible)}{value[-visible:]}"
 
 
+def json_safe(value: Any) -> Any:
+    """Recursively convert UUID / datetime / Path / set for JSONField storage."""
+    from datetime import date, datetime
+    from pathlib import Path
+    from uuid import UUID
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(v) for v in value]
+    return str(value)
+
+
 def structured_log(level: int, message: str, **fields: Any) -> None:
     payload = {"correlation_id": get_correlation_id(), **{k: v for k, v in fields.items() if v is not None}}
     logger.log(level, "%s | %s", message, payload)

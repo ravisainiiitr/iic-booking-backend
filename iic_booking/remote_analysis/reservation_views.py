@@ -49,7 +49,10 @@ def reservations_collection(request):
         status_filter = request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter.upper())
-        return Response(AnalysisReservationSerializer(qs[:200], many=True).data)
+        from iic_booking.remote_analysis.production_hardening import parse_pagination
+
+        offset, limit = parse_pagination(request)
+        return Response(AnalysisReservationSerializer(qs[offset : offset + limit], many=True).data)
 
     # POST — managers only
     if not CanManageRemoteAnalysis().has_permission(request, None):

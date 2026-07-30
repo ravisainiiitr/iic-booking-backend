@@ -74,6 +74,42 @@ Package: `iic_booking.remote_analysis.guacamole`
 
 `mock_guacamole=True` (default) runs without a live Guacamole server for development.
 
+## Production Guacamole (Phase 2 / Workstream 2)
+
+Existing session APIs are unchanged. Production turns off mock mode and points at a real gateway.
+
+### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `RA_MOCK_GUACAMOLE` | `false` in production |
+| `RA_GUACAMOLE_BASE_URL` | Public Guacamole URL (server-side redirects only) |
+| `RA_GUACAMOLE_API_URL` | Internal REST API base (never returned to browsers) |
+| `RA_GUACAMOLE_ADMIN_USERNAME` | Guacamole admin user |
+| `RA_GUACAMOLE_ADMIN_PASSWORD` | Guacamole admin password |
+| `RA_GUACAMOLE_DATA_SOURCE` | Usually `postgresql` |
+| `RA_GUACAMOLE_VERIFY_TLS` | `true`/`false` for API TLS verify |
+| `RA_APPLY_ENV_SETTINGS` | When `true`, persist env into `RemoteAnalysisSettings` on app ready |
+
+`RemoteAnalysisSettings.get_solo()` applies env overlays automatically.
+
+Bootstrap:
+
+```bash
+export RA_MOCK_GUACAMOLE=false
+export RA_GUACAMOLE_API_URL=http://guacamole:8080/guacamole
+export RA_GUACAMOLE_BASE_URL=https://guac.example.com/guacamole
+export RA_GUACAMOLE_ADMIN_USERNAME=guacadmin
+export RA_GUACAMOLE_ADMIN_PASSWORD='…'
+python manage.py sync_remote_analysis_settings
+```
+
+Optional compose stack: `docker-compose.guacamole.yml` (guacd + guacamole + postgres).
+
+Readiness probe `/api/v1/analysis/health/ready/` reports `checks.guacamole` as `ok` | `mock` | `unreachable` | `misconfigured…`.
+
+Portal Guacamole REST client retries once on connection/5xx failures and re-authenticates once on HTTP 401.
+
 ## Security
 
 Never returned to browsers:

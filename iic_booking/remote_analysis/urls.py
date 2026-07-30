@@ -94,6 +94,16 @@ urlpatterns = [
     path("workspaces/<uuid:workspace_id>/files/", workspace_views.workspace_files, name="workspace-files"),
     path("workspaces/<uuid:workspace_id>/sync/", workspace_views.workspace_sync, name="workspace-sync"),
     path(
+        "workspaces/<uuid:workspace_id>/retry-transfer/",
+        workspace_views.workspace_retry_transfer,
+        name="workspace-retry-transfer",
+    ),
+    path(
+        "workspaces/<uuid:workspace_id>/cancel-transfer/",
+        workspace_views.workspace_cancel_transfer,
+        name="workspace-cancel-transfer",
+    ),
+    path(
         "workspaces/<uuid:workspace_id>/files/<uuid:file_id>/versions/",
         workspace_views.workspace_file_versions,
         name="workspace-file-versions",
@@ -115,6 +125,7 @@ urlpatterns = [
     ),
     # Milestone 6 — Operations Center
     path("operations/dashboard/", ops_views.operations_dashboard, name="operations-dashboard"),
+    path("operations/diagnostics/", ops_views.deployment_diagnostics, name="operations-diagnostics"),
     path("analytics/", ops_views.analytics_view, name="analytics"),
     path("utilization/", ops_views.utilization_view, name="utilization"),
     path("performance/", ops_views.performance_view, name="performance"),

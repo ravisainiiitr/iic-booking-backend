@@ -13,6 +13,7 @@ from iic_booking.remote_analysis.operations.performance import PerformanceMonito
 from iic_booking.remote_analysis.operations.reporting import ReportingEngine
 from iic_booking.remote_analysis.operations.utilization import UtilizationEngine
 from iic_booking.remote_analysis.operations_models import DashboardSnapshot, UsageTrend
+from iic_booking.remote_analysis.production_hardening import json_safe
 from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
 from iic_booking.remote_analysis.services.audit import record_event
 from iic_booking.remote_analysis.session_models import RemoteDesktopSession
@@ -91,6 +92,7 @@ class OperationsDashboardService:
             },
             "generated_at": timezone.now().isoformat(),
         }
+        payload = json_safe(payload)
         DashboardSnapshot.objects.create(dashboard_key="operations", payload=payload)
         return payload
 

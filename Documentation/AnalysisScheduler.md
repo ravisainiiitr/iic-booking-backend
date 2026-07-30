@@ -85,9 +85,10 @@ Seeded as PeriodicTasks on migrate.
 `/remote-analysis` tabs: Scheduler · Reservations · Queue · Availability  
 (+ existing workstation management tabs)
 
-## Future session launch (not implemented)
+## Session launch (implemented — Milestone 4+)
 
-Authenticate → allocate (this milestone) → create Guacamole connection → notify agent to prepare → Portal launches browser session → end → cleanup.
+Flow is live: authenticate → allocate (scheduler) → create Guacamole connection → agent prepare → browser launch → end → cleanup.  
+See `Documentation/BrowserRemoteDesktop.md`. Mock Guacamole remains available for CI only (`mock_guacamole`); production must use live Guacamole.
 
 ## Permissions
 
