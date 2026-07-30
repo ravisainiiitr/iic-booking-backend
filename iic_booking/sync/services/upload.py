@@ -131,7 +131,8 @@ class UploadTransportService:
 
         resume_token = secrets.token_urlsafe(24)
         session_id = uuid.uuid4()
-        relative_server = Path(str(agent.uuid)) / str(session_id) / (file_name or "upload.bin")
+        agent_key = getattr(agent, "agent_uuid", None) or agent.id
+        relative_server = Path(str(agent_key)) / str(session_id) / (file_name or "upload.bin")
         absolute = _storage_root() / relative_server
         absolute.parent.mkdir(parents=True, exist_ok=True)
         absolute.touch(exist_ok=True)
