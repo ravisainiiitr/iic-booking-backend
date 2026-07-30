@@ -315,6 +315,15 @@ def upload_start(request):
         )
     except SyncControlPlaneError as exc:
         return _error_response(exc)
+    except Exception as exc:
+        logger.exception("upload_start failed unexpectedly")
+        return Response(
+            {
+                "error": str(exc) or "Upload start failed.",
+                "code": "UPLOAD_START_FAILED",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
     return Response(result, status=status.HTTP_200_OK)
 
 
