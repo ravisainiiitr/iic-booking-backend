@@ -126,6 +126,12 @@ urlpatterns = [
     # Milestone 6 — Operations Center
     path("operations/dashboard/", ops_views.operations_dashboard, name="operations-dashboard"),
     path("operations/diagnostics/", ops_views.deployment_diagnostics, name="operations-diagnostics"),
+    path("operations/commissioning/", ops_views.commissioning_console, name="operations-commissioning"),
+    path(
+        "operations/commissioning/action/",
+        ops_views.commissioning_action,
+        name="operations-commissioning-action",
+    ),
     path("analytics/", ops_views.analytics_view, name="analytics"),
     path("utilization/", ops_views.utilization_view, name="utilization"),
     path("performance/", ops_views.performance_view, name="performance"),

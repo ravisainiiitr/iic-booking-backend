@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -12,6 +13,7 @@ from iic_booking.remote_analysis.constants import AuditCategory, CommandStatus, 
 from iic_booking.remote_analysis.models import AnalysisWorkstation, CommandExecution, RemoteCommand
 from iic_booking.remote_analysis.services.audit import record_event
 
+logger = logging.getLogger(__name__)
 
 SUPPORTED_COMMANDS = {c.value for c in CommandType}
 
@@ -148,7 +150,10 @@ class CommandService:
                 for session in RemoteDesktopSession.objects.filter(prepare_command=command):
                     GuacamoleIntegrationService().retry_prepare(session)
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to advance workspace/session after PREPARE_WORKSTATION complete (%s)",
+                    command.id,
+                )
 
         # Milestone 5: mark workspace synced after SYNC/COLLECT
         if command.command_type in {CommandType.SYNC_WORKSPACE, CommandType.COLLECT_WORKSPACE}:
@@ -166,6 +171,10 @@ class CommandService:
                             message=message,
                         )
             except Exception:
-                pass
+                logger.exception(
+                    "Failed to mark workspace synced after %s complete (%s)",
+                    command.command_type,
+                    command.id,
+                )
 
         return command

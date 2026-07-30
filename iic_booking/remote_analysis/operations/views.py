@@ -19,6 +19,10 @@ from iic_booking.remote_analysis.operations.analytics import AnalyticsEngine
 from iic_booking.remote_analysis.operations.capacity import CapacityPlanner
 from iic_booking.remote_analysis.operations.dashboards import OperationsDashboardService
 from iic_booking.remote_analysis.operations.diagnostics import deployment_diagnostics
+from iic_booking.remote_analysis.operations.commissioning import (
+    commissioning_action,
+    commissioning_console,
+)
 from iic_booking.remote_analysis.operations.performance import PerformanceMonitor
 from iic_booking.remote_analysis.operations.reporting import ReportingEngine
 from iic_booking.remote_analysis.operations.utilization import UtilizationEngine

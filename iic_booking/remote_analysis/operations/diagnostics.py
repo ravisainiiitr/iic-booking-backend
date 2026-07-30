@@ -241,7 +241,8 @@ table{{border-collapse:collapse;width:100%}} th,td{{border:1px solid #ccc;paddin
 .warn{{color:#8a1f11}} pre{{white-space:pre-wrap;font-size:0.8rem}}
 </style></head><body>
 <h1>Remote Analysis — Deployment Diagnostics</h1>
-<p>Generated: {escape(payload.get('generated_at',''))} · Manage permission required</p>
+<p>Generated: {escape(payload.get('generated_at',''))} · Manage permission required
+ · <a href="/api/v1/analysis/operations/commissioning/?view=html">Sync Commissioning Console</a></p>
 <section><h2>Warnings</h2><ul class="warn">{warnings}</ul></section>
 <section><h2>Django / Guacamole</h2>
 <pre>DEBUG={escape(str(payload['django']['DEBUG']))}
