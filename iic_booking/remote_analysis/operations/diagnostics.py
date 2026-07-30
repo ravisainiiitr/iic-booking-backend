@@ -242,6 +242,7 @@ table{{border-collapse:collapse;width:100%}} th,td{{border:1px solid #ccc;paddin
 </style></head><body>
 <h1>Remote Analysis — Deployment Diagnostics</h1>
 <p>Generated: {escape(payload.get('generated_at',''))} · Manage permission required
+ · <a href="/api/v1/analysis/operations/toolkit/?view=html">Commissioning Toolkit</a>
  · <a href="/api/v1/analysis/operations/commissioning/?view=html">Sync Commissioning Console</a></p>
 <section><h2>Warnings</h2><ul class="warn">{warnings}</ul></section>
 <section><h2>Django / Guacamole</h2>

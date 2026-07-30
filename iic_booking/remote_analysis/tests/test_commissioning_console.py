@@ -137,15 +137,101 @@ def test_commissioning_action_requires_workstation(api):
 
 
 @pytest.mark.django_db
-def test_commissioning_unauthenticated_forbidden():
+def test_commissioning_unauthenticated_json_keeps_drf_auth_error():
     client = APIClient()
-    assert client.get("/api/v1/analysis/operations/commissioning/").status_code in {401, 403}
-    assert client.get("/api/v1/analysis/operations/commissioning/?view=html").status_code in {401, 403}
+    res = client.get("/api/v1/analysis/operations/commissioning/")
+    assert res.status_code in {401, 403}
+    body = res.json()
+    assert "credentials" in body["detail"].lower() or "authentication" in body["detail"].lower()
     assert client.post(
         "/api/v1/analysis/operations/commissioning/action/",
         {"action": "refresh"},
         format="json",
     ).status_code in {401, 403}
+
+
+@pytest.mark.django_db
+def test_commissioning_anonymous_html_redirects_to_portal_login(settings):
+    settings.FRONTEND_URL = "https://portal.example"
+    client = APIClient()
+
+    by_query = client.get("/api/v1/analysis/operations/commissioning/?view=html")
+    assert by_query.status_code == 302
+    loc = by_query["Location"]
+    assert loc.startswith("https://portal.example/login?")
+    assert "next=" in loc
+    assert "token=" not in loc
+
+    by_accept = client.get(
+        "/api/v1/analysis/operations/commissioning/",
+        HTTP_ACCEPT="text/html",
+    )
+    assert by_accept.status_code == 302
+    assert by_accept["Location"].startswith("https://portal.example/login?")
+
+
+@pytest.mark.django_db
+def test_commissioning_session_admin_opens_html_without_token(ra_user, eligible_workstation):
+    """Authenticated admin with a Django session can open the console directly."""
+    client = APIClient()
+    client.force_login(ra_user)
+    res = client.get("/api/v1/analysis/operations/commissioning/?view=html")
+    assert res.status_code == 200
+    assert b"Sync Commissioning Console" in res.content
+    assert str(eligible_workstation.hostname).encode() in res.content or b"Prepare Workspace" in res.content
+
+
+@pytest.mark.django_db
+def test_commissioning_portal_token_query_handoff_to_session(ra_user, eligible_workstation):
+    """Portal UI can open ?view=html&token=… without pasting an Authorization header."""
+    from rest_framework.authtoken.models import Token
+
+    token, _ = Token.objects.get_or_create(user=ra_user)
+    client = APIClient()
+
+    first = client.get(
+        f"/api/v1/analysis/operations/commissioning/?view=html&token={token.key}",
+    )
+    assert first.status_code == 302
+    location = first["Location"]
+    assert "token=" not in location.lower()
+    assert "view=html" in location
+
+    # Session established — subsequent HTML load works without token or Authorization.
+    second = client.get("/api/v1/analysis/operations/commissioning/?view=html")
+    assert second.status_code == 200
+    assert b"Sync Commissioning Console" in second.content
+
+    # JSON poll via session also works (credentials: same-origin).
+    poll = client.get(
+        "/api/v1/analysis/operations/commissioning/",
+        HTTP_ACCEPT="application/json",
+    )
+    assert poll.status_code == 200
+    assert "workstations" in poll.json()
+
+
+@pytest.mark.django_db
+def test_commissioning_json_ignores_query_token(ra_user):
+    """Query-string tokens must not authenticate JSON/API requests."""
+    from rest_framework.authtoken.models import Token
+
+    token, _ = Token.objects.get_or_create(user=ra_user)
+    client = APIClient()
+    res = client.get(f"/api/v1/analysis/operations/commissioning/?token={token.key}")
+    assert res.status_code in {401, 403}
+
+
+@pytest.mark.django_db
+def test_commissioning_header_token_still_works_for_json(ra_user, eligible_workstation):
+    from rest_framework.authtoken.models import Token
+
+    token, _ = Token.objects.get_or_create(user=ra_user)
+    client = APIClient()
+    client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+    res = client.get("/api/v1/analysis/operations/commissioning/")
+    assert res.status_code == 200
+    assert "workstations" in res.json()
 
 
 @pytest.mark.django_db

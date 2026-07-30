@@ -10,17 +10,25 @@ import json
 import logging
 from datetime import timedelta
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings as django_settings
-from django.http import Http404, HttpResponse
+from django.contrib.auth import login as django_login
+from django.http import Http404, HttpResponse, HttpResponseRedirect
+from django.middleware.csrf import get_token as get_csrf_token
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.html import escape
-from rest_framework import status
-from rest_framework.decorators import api_view, parser_classes, permission_classes
+from rest_framework import authentication, exceptions, status
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.authtoken.models import Token
+from rest_framework.decorators import api_view, authentication_classes, parser_classes, permission_classes
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from iic_booking.remote_analysis.constants import (
     AGENT_INPUT_PORTAL_FOLDERS,
@@ -38,6 +46,7 @@ from iic_booking.remote_analysis.workspace.audit import audit_workspace
 from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 from iic_booking.remote_analysis.workspace.transfer import TransferError, TransferManager
 from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceAudit, WorkspaceFile
+from iic_booking.users.api.token_auth import TokenAuthenticationWithInactivity
 
 logger = logging.getLogger(__name__)
 
@@ -522,6 +531,81 @@ def annotate_phase_milestones(workspace: AnalysisWorkspace) -> None:
 # ---------------------------------------------------------------------------
 
 
+def wants_interactive_html(request) -> bool:
+    """True for browser HTML console requests (not JSON API clients)."""
+    if (request.query_params.get("view") or request.query_params.get("render") or "").lower() == "html":
+        return True
+    accept = (request.META.get("HTTP_ACCEPT") or "").strip().lower()
+    if not accept:
+        return False
+    parts = [p.split(";")[0].strip() for p in accept.split(",") if p.strip()]
+    if "application/json" in parts:
+        return False
+    return "text/html" in parts or "application/xhtml+xml" in parts
+
+
+class QueryParamTokenAuthentication(authentication.BaseAuthentication):
+    """
+    One-shot browser handoff for portal UI: authenticate GET HTML via ``?token=``.
+
+    JSON/API requests never authenticate from the query string (header Token or
+    session only), so API auth is not weakened.
+    """
+
+    def authenticate(self, request):
+        if getattr(request, "method", "GET").upper() != "GET":
+            return None
+        if not wants_interactive_html(request):
+            return None
+        key = (request.query_params.get("token") or "").strip()
+        if not key:
+            return None
+        try:
+            token = Token.objects.select_related("user").get(key=key)
+        except Token.DoesNotExist as exc:
+            raise exceptions.AuthenticationFailed("Invalid token.") from exc
+        if not token.user.is_active:
+            raise exceptions.AuthenticationFailed("User inactive or deleted.")
+        return (token.user, token)
+
+
+# Token header first so API clients with a leftover session cookie are not forced through CSRF.
+_BROWSER_AUTH = [
+    TokenAuthenticationWithInactivity,
+    SessionAuthentication,
+    QueryParamTokenAuthentication,
+]
+
+
+def portal_login_redirect_url(request) -> str:
+    """Send anonymous browser users to the portal login, then back here."""
+    next_url = request.build_absolute_uri()
+    # Never echo a raw token back through the login next URL.
+    parts = urlsplit(next_url)
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != "token"]
+    next_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+    frontend = (getattr(django_settings, "FRONTEND_URL", "") or "").rstrip("/")
+    if frontend:
+        return f"{frontend}/login?{urlencode({'next': next_url})}"
+    try:
+        login_path = reverse(django_settings.LOGIN_URL)
+    except Exception:  # noqa: BLE001
+        login_path = "/accounts/login/"
+    return f"{login_path}?{urlencode({'next': request.get_full_path()})}"
+
+
+def _strip_token_and_redirect(request) -> HttpResponseRedirect:
+    """After query-token auth, persist Django session and drop token from the URL."""
+    django_login(request, request.user, backend="django.contrib.auth.backends.ModelBackend")
+    parts = urlsplit(request.build_absolute_uri())
+    query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k.lower() != "token"]
+    if not any(k == "view" for k, _ in query):
+        query.append(("view", "html"))
+    target = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    return HttpResponseRedirect(target)
+
+
 def _error_hint(exc: BaseException) -> str:
     msg = str(exc)
     if "upload_verified_at" in msg or "does not exist" in msg.lower():
@@ -555,45 +639,76 @@ a{{color:#93c5fd}}
 <p class="hint">{hint}</p>
 <p><strong>{detail}</strong></p>
 {tb_block}
-<p><a href="/api/v1/analysis/operations/diagnostics/?view=html">Deployment diagnostics</a></p>
+<p><a href="/api/v1/analysis/operations/toolkit/?view=html">Commissioning Toolkit</a>
+ · <a href="/api/v1/analysis/operations/diagnostics/?view=html">Deployment diagnostics</a></p>
 </body></html>"""
     return HttpResponse(html, status=500, content_type="text/html; charset=utf-8")
 
 
-@api_view(["GET"])
-@permission_classes(_MANAGE)
-def commissioning_console(request):
-    """GET /api/v1/analysis/operations/commissioning/ — JSON or ``?view=html``."""
-    want_html = (request.query_params.get("view") or request.query_params.get("render") or "").lower() == "html"
-    workspace_id = request.query_params.get("workspace_id") or None
-    booking_id = request.query_params.get("booking_id") or None
-    try:
-        payload = build_commissioning_payload(workspace_id=workspace_id, booking_id=booking_id)
-        if want_html:
-            return HttpResponse(render_commissioning_html(payload), content_type="text/html; charset=utf-8")
-        return Response(payload)
-    except Exception as exc:  # noqa: BLE001
-        import traceback
+class CommissioningConsoleView(APIView):
+    """
+    Admin commissioning console.
 
-        if isinstance(exc, Http404):
-            raise
+    Permissions unchanged: IsAuthenticated + CanManageRemoteAnalysis.
+    Browser HTML (?view=html / Accept: text/html) redirects anonymous users to portal login.
+    JSON/API clients still receive the standard DRF authentication error.
+    """
 
-        tb = traceback.format_exc()
-        logger.exception("Commissioning console failed")
-        if want_html:
-            return _render_error_page(exc, traceback_text=tb)
-        return Response(
-            {
-                "detail": str(exc),
-                "error_type": type(exc).__name__,
-                "hint": _error_hint(exc),
-                "traceback": tb if django_settings.DEBUG else None,
-            },
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    authentication_classes = _BROWSER_AUTH
+    permission_classes = _MANAGE
+
+    def handle_exception(self, exc):
+        request = self.request
+        if isinstance(exc, NotAuthenticated) and wants_interactive_html(request):
+            return HttpResponseRedirect(portal_login_redirect_url(request))
+        if isinstance(exc, PermissionDenied) and wants_interactive_html(request):
+            return HttpResponse(
+                "<h1>Forbidden</h1><p>You are signed in but lack Remote Analysis manage permission.</p>",
+                status=403,
+                content_type="text/html; charset=utf-8",
+            )
+        return super().handle_exception(exc)
+
+    def get(self, request, *args, **kwargs):
+        want_html = wants_interactive_html(request)
+        # Portal UI may open this URL with ?token=<drf_token>&view=html once; convert to session.
+        if want_html and request.query_params.get("token") and request.user.is_authenticated:
+            return _strip_token_and_redirect(request)
+
+        workspace_id = request.query_params.get("workspace_id") or None
+        booking_id = request.query_params.get("booking_id") or None
+        try:
+            payload = build_commissioning_payload(workspace_id=workspace_id, booking_id=booking_id)
+            if want_html or (request.query_params.get("view") or "").lower() == "html":
+                get_csrf_token(request)  # ensure csrftoken cookie for SessionAuthentication POSTs
+                return HttpResponse(render_commissioning_html(payload), content_type="text/html; charset=utf-8")
+            return Response(payload)
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            if isinstance(exc, Http404):
+                raise
+
+            tb = traceback.format_exc()
+            logger.exception("Commissioning console failed")
+            if want_html or (request.query_params.get("view") or "").lower() == "html":
+                return _render_error_page(exc, traceback_text=tb)
+            return Response(
+                {
+                    "detail": str(exc),
+                    "error_type": type(exc).__name__,
+                    "hint": _error_hint(exc),
+                    "traceback": tb if django_settings.DEBUG else None,
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+
+commissioning_console = CommissioningConsoleView.as_view()
 
 
 @api_view(["POST"])
+@authentication_classes(_BROWSER_AUTH)
 @permission_classes(_MANAGE)
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def commissioning_action(request):
@@ -930,7 +1045,10 @@ function render() {{
 async function refresh(forceSelect) {{
   const q = new URLSearchParams();
   if (selectedId) q.set("workspace_id", selectedId);
-  const res = await fetch(API_BASE + "?" + q.toString(), {{ headers: {{ "Accept": "application/json" }} }});
+  const res = await fetch(API_BASE + "?" + q.toString(), {{
+    headers: {{ "Accept": "application/json" }},
+    credentials: "same-origin",
+  }});
   if (!res.ok) {{ flash("Refresh failed: " + res.status, false); return; }}
   state = await res.json();
   if (forceSelect && state.selected) selectedId = state.selected.id;

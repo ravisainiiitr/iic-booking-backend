@@ -23,6 +23,17 @@ from iic_booking.remote_analysis.operations.commissioning import (
     commissioning_action,
     commissioning_console,
 )
+from iic_booking.remote_analysis.operations.toolkit_views import (
+    toolkit_agent,
+    toolkit_commissioning_report,
+    toolkit_connectivity,
+    toolkit_console,
+    toolkit_dashboard,
+    toolkit_health_report,
+    toolkit_logs,
+    toolkit_monitoring_recommendations,
+    toolkit_self_test,
+)
 from iic_booking.remote_analysis.operations.performance import PerformanceMonitor
 from iic_booking.remote_analysis.operations.reporting import ReportingEngine
 from iic_booking.remote_analysis.operations.utilization import UtilizationEngine

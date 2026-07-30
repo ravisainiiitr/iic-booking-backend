@@ -16,7 +16,14 @@ from iic_booking.users.tests.factories import UserFactory
 
 @pytest.fixture
 def ra_user(db):
-    return UserFactory(user_type="admin", is_staff=True, is_superuser=True)
+    # admin_approved drives is_active on save; Session/Token auth require an active user.
+    return UserFactory(
+        user_type="admin",
+        is_staff=True,
+        is_superuser=True,
+        admin_approved=True,
+        email_verified=True,
+    )
 
 
 @pytest.fixture

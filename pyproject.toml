@@ -6,6 +6,11 @@ python_files = [
     "tests.py",
     "test_*.py",
 ]
+markers = [
+    "sat: System Acceptance Test (automated portal-side)",
+    "sat_lab: System Acceptance Test requiring live agent / lab infra (skipped unless SAT_LAB=1)",
+    "sat_perf: Performance SAT (skipped unless SAT_PERF=1)",
+]
 
 # ==== Coverage ====
 [tool.coverage.run]

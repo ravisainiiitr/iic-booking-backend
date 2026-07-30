@@ -5,8 +5,16 @@ one workspace, one input file, and one output file. No Guacamole. No analysis so
 
 ## Access
 
+Permissions: `IsAuthenticated` + `CanManageRemoteAnalysis` (unchanged).
+
 - HTML console (admin / manage permission):  
   `https://<portal>/api/v1/analysis/operations/commissioning/?view=html`
+- Anonymous browser HTML (`?view=html` or `Accept: text/html`) redirects to the portal login
+  (`FRONTEND_URL/login?next=...`), not a DRF JSON auth error.
+- Portal UI may open `...?view=html&token=<drf_token>` once; the console establishes a
+  Django session and redirects to a token-free URL (no manual Authorization header needed).
+- Session cookies and `Authorization: Token …` both work; JSON/API clients still get the
+  normal DRF authentication response when anonymous.
 - JSON status (5s poll source):  
   `GET /api/v1/analysis/operations/commissioning/?workspace_id=<uuid>`
 - Actions:  
