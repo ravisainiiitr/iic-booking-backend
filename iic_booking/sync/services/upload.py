@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import tempfile
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -83,7 +84,7 @@ def _storage_root() -> Path:
     media_root = getattr(settings, "MEDIA_ROOT", None)
     if media_root:
         candidates.append(Path(media_root) / "sync_uploads")
-    candidates.append(Path("/tmp") / "dsa_sync_uploads")
+    candidates.append(Path(tempfile.gettempdir()) / "dsa_sync_uploads")
 
     last_error: OSError | None = None
     for root in candidates:
