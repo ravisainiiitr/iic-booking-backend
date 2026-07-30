@@ -284,10 +284,10 @@ def _send_other_disruption_email(booking, deadline_at, reason: str) -> None:
     bid = booking_display_id_for_email(booking)
     dl = timezone.localtime(deadline_at).strftime("%Y-%m-%d %H:%M %Z") if deadline_at else "—"
     reason_clean = (reason or "").strip()
-    subject = f"Disruption — {eq_name} (booking {bid})"
+    subject = f"Analysis Not Possible — {eq_name} (booking {bid})"
     body = (
         f"Dear {getattr(user, 'name', None) or 'user'},\n\n"
-        f"Your slot could not be completed as scheduled for {eq_name}.\n\n"
+        f"Analysis could not be completed for your booking on {eq_name}.\n\n"
         f"Reason: {reason_clean or '—'}\n\n"
         f"Please choose one of the following in My Bookings (Actions):\n"
         f"(a) Cancel booking — full refund to your wallet.\n"
@@ -482,18 +482,18 @@ def apply_operator_disruption_pending_from_staff(booking, *, notes: str = "") ->
 
 def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None:
     """
-    Admin/OIC: put a BOOKED/PENDING booking into disruption-pending with kind OTHER_DISRUPTION.
-    Reason is required and is emailed to the user. Policy matches operator-absent disruption.
+    Staff action "Analysis Not Possible": put a BOOKED/PENDING booking into disruption-pending
+    with kind OTHER_DISRUPTION. Reason is required and is emailed to the user.
     """
     from .models import BookingDisruptionKind, BookingStatus, SlotStatus
 
     reason_clean = (reason or "").strip()
     if not reason_clean:
-        raise ValueError("Reason is required for Other Disruption.")
+        raise ValueError("Reason is required for Analysis Not Possible.")
 
     if booking.status not in (BookingStatus.BOOKED, BookingStatus.PENDING):
         raise ValueError(
-            f"Cannot flag booking for other disruption with status '{booking.status}'. "
+            f"Cannot flag booking as Analysis Not Possible with status '{booking.status}'. "
             "Only BOOKED or PENDING bookings are allowed."
         )
     if booking.status == BookingStatus.DISRUPTION_PENDING or booking.maintenance_disruption_flag:

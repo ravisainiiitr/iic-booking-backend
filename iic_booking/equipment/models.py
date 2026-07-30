@@ -1985,7 +1985,7 @@ class BookingDisruptionKind(models.TextChoices):
     """Why the booking entered the disruption (awaiting user refund vs reschedule choice)."""
     MAINTENANCE = "MAINTENANCE", _("Maintenance / equipment")
     OPERATOR_ABSENT = "OPERATOR_ABSENT", _("Operator unavailable")
-    OTHER_DISRUPTION = "OTHER_DISRUPTION", _("Other disruption")
+    OTHER_DISRUPTION = "OTHER_DISRUPTION", _("Analysis Not Possible")
 
 
 class IstemFbrStatus(models.TextChoices):
@@ -2038,7 +2038,7 @@ class BookingStatus(models.TextChoices):
     BOOKED = 'BOOKED', _('Booked')
     DISRUPTION_PENDING = 'DISRUPTION_PENDING', _('Awaiting your choice (disruption)')
     UNDER_MAINTENANCE = 'UNDER_MAINTENANCE', _('Under Maintenance')
-    OTHER_DISRUPTION = 'OTHER_DISRUPTION', _('Other Disruption')
+    OTHER_DISRUPTION = 'OTHER_DISRUPTION', _('Analysis Not Possible')
     HOLD = 'HOLD', _('Hold')
     PROCESSING = 'PROCESSING', _('Processing results')
     COMPLETED = 'COMPLETED', _('Completed')

@@ -10325,13 +10325,19 @@ def booking_maintenance_disruption(request, booking_id):
 @permission_classes([IsAuthenticated])
 def booking_other_disruption(request, booking_id):
     """
-    Admin or Officer in charge only: flag a booking for "Other Disruption" policy.
-    Staff must provide a reason; the same reason is emailed to the user. All other behavior
-    matches existing disruption policy (awaiting user choice: cancel/refund or reschedule).
+    Flag a booking as "Analysis Not Possible" (disruption policy).
+
+    Allowed: Main Admin, Department Administrator, Officer in Charge, Lab In Charge.
+    Staff must provide a reason; the same reason is emailed to the user. Behavior matches
+    existing disruption policy (awaiting user choice: cancel/refund or reschedule).
     """
-    if request.user.user_type not in (UserType.ADMIN, UserType.MANAGER):
+    ut = getattr(request.user, "user_type", None)
+    if ut not in (UserType.ADMIN, UserType.DEPT_ADMIN, UserType.MANAGER, UserType.OPERATOR):
         return Response(
-            {"error": "Only Admin and Officer in charge can flag a booking as Other Disruption."},
+            {
+                "error": "Only Admin, Department Administrator, Officer in Charge, or Lab In Charge "
+                "can flag a booking as Analysis Not Possible."
+            },
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -10340,10 +10346,24 @@ def booking_other_disruption(request, booking_id):
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if request.user.user_type == UserType.MANAGER:
+    if ut == UserType.MANAGER:
         allowed_ids = set(get_equipment_ids_managed_by_oic(request.user.id))
         if booking.equipment_id not in allowed_ids:
             return Response({"error": "You do not manage this equipment."}, status=status.HTTP_403_FORBIDDEN)
+    elif ut == UserType.DEPT_ADMIN:
+        allowed_ids = set(_get_equipment_ids_for_log_access(request.user) or [])
+        if booking.equipment_id not in allowed_ids:
+            return Response(
+                {"error": "This booking is outside your department."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    elif ut == UserType.OPERATOR:
+        allowed_ids = set(_get_equipment_ids_for_log_access(request.user) or [])
+        if booking.equipment_id not in allowed_ids:
+            return Response(
+                {"error": "You are not assigned to this equipment."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
     reason = (request.data.get("reason") or "") if request.data else ""
 
@@ -10355,7 +10375,7 @@ def booking_other_disruption(request, booking_id):
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     booking.refresh_from_db()
-    ev_comment = "Booking flagged for Other Disruption (Admin/OIC). User notified by email."
+    ev_comment = "Booking flagged as Analysis Not Possible. User notified by email."
     if str(reason).strip():
         ev_comment += f" Reason: {str(reason).strip()}"
     create_booking_event(
@@ -10369,7 +10389,7 @@ def booking_other_disruption(request, booking_id):
     serializer = BookingSerializer(booking)
     return Response(
         {
-            "message": "Booking flagged for Other Disruption. The user has been emailed with options and the decision deadline.",
+            "message": "Booking flagged as Analysis Not Possible. The user has been emailed with options and the decision deadline.",
             "booking": serializer.data,
         },
         status=status.HTTP_200_OK,
