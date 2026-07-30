@@ -60,6 +60,7 @@ pre.log {{ background:#0b1016; border:1px solid var(--line); border-radius:6px; 
   <button class="tab active" data-tab="overview">Overview</button>
   <button class="tab" data-tab="agent">Agent</button>
   <button class="tab" data-tab="connect">Connectivity</button>
+  <button class="tab" data-tab="guac">Guacamole</button>
   <button class="tab" data-tab="logs">Logs</button>
   <button class="tab" data-tab="health">Health report</button>
   <button class="tab" data-tab="selftest">Self-test</button>
@@ -91,10 +92,20 @@ pre.log {{ background:#0b1016; border:1px solid var(--line); border-radius:6px; 
   <section class="panel" id="panel-connect">
     <div class="card">
       <h2>Connectivity tests</h2>
-      <p class="hint">Portal API · Auth · DB · Redis · Storage · Heartbeat · Workspace · Upload · Download · Cleanup</p>
+      <p class="hint">Portal API · Auth · DB · Redis · Storage · Guacamole · Heartbeat · Workspace · Upload · Download · Cleanup</p>
       <select id="connectWs"></select>
       <button class="action" id="btnConnect" onclick="runConnect()">Run connectivity suite</button>
+      <p class="hint mono" id="connectRunMeta"></p>
       <pre class="log mono" id="connectBox"></pre>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-guac">
+    <div class="card">
+      <h2>Guacamole diagnostics</h2>
+      <p class="hint">Connectivity, active sessions, tunnel health, API latency (does not alter production workflows).</p>
+      <button class="action" onclick="loadGuac()">Refresh Guacamole status</button>
+      <pre class="log mono" id="guacBox"></pre>
     </div>
   </section>
 
@@ -127,6 +138,7 @@ pre.log {{ background:#0b1016; border:1px solid var(--line); border-radius:6px; 
       <p class="hint">Creates a disposable workspace, uploads/downloads a probe file, verifies checksum, writes dummy Processed output, cleans up. Does not change production booking workflows.</p>
       <select id="selfWs"></select>
       <button class="action" id="btnSelf" onclick="runSelfTest()">Run Full Self Test</button>
+      <p class="hint mono" id="selfRunMeta"></p>
       <pre class="log mono" id="selfBox"></pre>
     </div>
   </section>
@@ -218,8 +230,20 @@ function renderOverview(data) {{
     database: o.database,
     redis: o.redis,
     storage: o.storage,
+    guacamole: o.guacamole || data.guacamole,
   }}, null, 2);
   fillWsSelects(data.workstations);
+  if (data.guacamole) {{
+    document.getElementById("guacBox").textContent = JSON.stringify(data.guacamole, null, 2);
+  }}
+}}
+
+async function loadGuac() {{
+  try {{
+    const data = await api("/dashboard/");
+    document.getElementById("guacBox").textContent = JSON.stringify(data.guacamole || data.overview?.guacamole || {{}}, null, 2);
+    flash("Guacamole status refreshed", true);
+  }} catch (e) {{ flash(String(e), false); }}
 }}
 
 async function api(path, opts={{}}) {{
@@ -246,6 +270,15 @@ async function loadAgent() {{
   }} catch (e) {{ flash(String(e), false); }}
 }}
 
+function showRunMeta(elId, data) {{
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!data || !data.commissioning_run_id) {{ el.textContent = ""; return; }}
+  const url = data.evidence_url || (BASE + "/runs/" + data.commissioning_run_id + "/evidence/");
+  el.innerHTML = "Run ID: <code>" + escapeHtml(data.commissioning_run_id) + "</code> · "
+    + "<a href=\\"" + escapeHtml(url) + "\\">Download evidence ZIP</a>";
+}}
+
 async function runConnect() {{
   const btn = document.getElementById("btnConnect");
   btn.disabled = true;
@@ -256,6 +289,7 @@ async function runConnect() {{
       body: JSON.stringify({{ workstation_id: id || null }}),
     }});
     document.getElementById("connectBox").textContent = JSON.stringify(data, null, 2);
+    showRunMeta("connectRunMeta", data);
     flash("Connectivity: " + data.overall, data.overall === "PASS");
   }} catch (e) {{ flash(String(e), false); }}
   finally {{ btn.disabled = false; }}
@@ -314,6 +348,7 @@ async function runSelfTest() {{
       body: JSON.stringify({{ workstation_id: id || null }}),
     }});
     document.getElementById("selfBox").textContent = JSON.stringify(data, null, 2);
+    showRunMeta("selfRunMeta", data);
     flash("Self-test: " + data.overall, data.overall === "PASS");
   }} catch (e) {{ flash(String(e), false); }}
   finally {{ btn.disabled = false; }}

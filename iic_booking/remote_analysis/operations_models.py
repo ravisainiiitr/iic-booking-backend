@@ -305,3 +305,94 @@ class WorkstationAvailability(models.Model):
     class Meta:
         ordering = ["-period_start"]
         unique_together = [("workstation", "period", "period_start")]
+
+
+class CommissioningRunStatus(models.TextChoices):
+    RUNNING = "RUNNING", _("Running")
+    COMPLETED = "COMPLETED", _("Completed")
+    FAILED = "FAILED", _("Failed")
+    ABORTED = "ABORTED", _("Aborted")
+
+
+class CommissioningRun(models.Model):
+    """
+    Lightweight observability record for a live commissioning execution.
+    Engineering support only — does not alter the commissioning workflow.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    status = models.CharField(
+        max_length=16,
+        choices=CommissioningRunStatus.choices,
+        default=CommissioningRunStatus.RUNNING,
+        db_index=True,
+    )
+    operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ra_commissioning_runs",
+    )
+    workstation = models.ForeignKey(
+        "remote_analysis.AnalysisWorkstation",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="commissioning_runs",
+    )
+    workspace = models.ForeignKey(
+        "remote_analysis.AnalysisWorkspace",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="commissioning_runs",
+    )
+    booking_id = models.PositiveIntegerField(null=True, blank=True)
+    started_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+    evidence_path = models.CharField(max_length=512, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-started_at"]
+        verbose_name = _("Commissioning run")
+        verbose_name_plural = _("Commissioning runs")
+
+    def __str__(self) -> str:
+        return f"CommissioningRun {self.id}"
+
+
+class CommissioningRunStep(models.Model):
+    """Timeline / performance row for one commissioning step."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(CommissioningRun, on_delete=models.CASCADE, related_name="steps")
+    name = models.CharField(max_length=64, db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    success = models.BooleanField(null=True, blank=True)
+    retry_count = models.PositiveIntegerField(default=0)
+    error = models.TextField(blank=True, default="")
+    meta = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [models.Index(fields=["run", "name"])]
+        unique_together = [("run", "name")]
+
+
+class CommissioningFailureSnapshot(models.Model):
+    """Frozen context when a commissioning step fails (linked to Run ID)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    run = models.ForeignKey(CommissioningRun, on_delete=models.CASCADE, related_name="failure_snapshots")
+    step_name = models.CharField(max_length=64, blank=True, default="")
+    captured_at = models.DateTimeField(auto_now_add=True)
+    payload = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-captured_at"]

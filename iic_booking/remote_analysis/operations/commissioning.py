@@ -66,6 +66,9 @@ EVT_PAUSE_WAITING = "WaitingForAnalysis"
 
 
 def _commissioning_event(workspace: AnalysisWorkspace | None, event: str, *, details: str = "", actor=None, success: bool = True) -> None:
+    from iic_booking.remote_analysis.operations.commissioning_observability import annotate_details, get_commissioning_run_id
+
+    details = annotate_details(details)
     audit_workspace(
         workspace,
         WorkspaceAuditAction.SYNC,
@@ -73,7 +76,13 @@ def _commissioning_event(workspace: AnalysisWorkspace | None, event: str, *, det
         actor=actor,
         success=success,
     )
-    logger.info("Commissioning %s | workspace=%s | %s", event, getattr(workspace, "id", None), details)
+    logger.info(
+        "Commissioning %s | run=%s | workspace=%s | %s",
+        event,
+        get_commissioning_run_id(),
+        getattr(workspace, "id", None),
+        details,
+    )
 
 
 def build_commissioning_payload(*, workspace_id: str | None = None, booking_id: str | None = None) -> dict[str, Any]:
@@ -717,104 +726,188 @@ def commissioning_action(request):
 
     Body JSON: {\"action\": \"create|prepare|collect|cleanup|refresh|pause\", ...}
     Or multipart for action=upload with file field.
+
+    Optional observability (does not change workflow):
+    ``commissioning_run_id`` — attach timeline / audit correlation.
     """
+    from iic_booking.remote_analysis.operations.commissioning_observability import (
+        STEP_BOOKING_SELECTED,
+        STEP_CLEANUP_FINISHED,
+        STEP_CLEANUP_STARTED,
+        STEP_INPUT_UPLOAD_FINISHED,
+        STEP_INPUT_UPLOAD_STARTED,
+        STEP_OUTPUT_COLLECTION_FINISHED,
+        STEP_OUTPUT_COLLECTION_STARTED,
+        STEP_WORKSPACE_CREATED,
+        bind_run_context,
+        begin_step,
+        end_step,
+        get_run,
+        link_workspace,
+    )
+
     action = (request.data.get("action") or "").strip().lower()
     actor = request.user
+    run = get_run(str(request.data.get("commissioning_run_id") or "").strip() or "")
 
-    try:
-        if action in {"create", "create_workspace"}:
-            booking_id = int(request.data.get("booking_id"))
-            workstation_id = str(request.data.get("workstation_id") or "")
-            if not workstation_id:
-                return Response({"detail": "workstation_id required"}, status=status.HTTP_400_BAD_REQUEST)
-            ingest = str(request.data.get("ingest") or "").lower() in {"1", "true", "yes"}
-            workspace = create_workspace(
-                booking_id=booking_id,
-                workstation_id=workstation_id,
-                actor=actor,
-                ingest=ingest,
-            )
-            annotate_phase_milestones(workspace)
+    def _attach(payload: dict) -> dict:
+        if run:
+            payload = {**payload, "commissioning_run_id": str(run.id)}
+        return payload
+
+    with bind_run_context(run):
+        try:
+            if action in {"create", "create_workspace"}:
+                booking_id = int(request.data.get("booking_id"))
+                workstation_id = str(request.data.get("workstation_id") or "")
+                if not workstation_id:
+                    return Response({"detail": "workstation_id required"}, status=status.HTTP_400_BAD_REQUEST)
+                if run:
+                    begin_step(run, STEP_BOOKING_SELECTED, meta={"booking_id": booking_id})
+                    end_step(run, STEP_BOOKING_SELECTED, success=True)
+                    begin_step(run, STEP_WORKSPACE_CREATED)
+                ingest = str(request.data.get("ingest") or "").lower() in {"1", "true", "yes"}
+                workspace = create_workspace(
+                    booking_id=booking_id,
+                    workstation_id=workstation_id,
+                    actor=actor,
+                    ingest=ingest,
+                )
+                annotate_phase_milestones(workspace)
+                if run:
+                    link_workspace(run, workspace, booking_id=booking_id)
+                    end_step(run, STEP_WORKSPACE_CREATED, success=True, meta={"workspace_id": str(workspace.id)})
+                return Response(
+                    _attach({"ok": True, "workspace": _serialize_workspace_detail(workspace, full=True)}),
+                    status=status.HTTP_201_CREATED,
+                )
+
+            if action in {"prepare", "prepare_workspace"}:
+                workspace_id = str(request.data.get("workspace_id") or "")
+                cmd = prepare_workspace(workspace_id=workspace_id, actor=actor)
+                return Response(
+                    _attach({"ok": True, "command_id": str(cmd.id), "command_type": cmd.command_type})
+                )
+
+            if action in {"collect", "collect_output", "collect_workspace"}:
+                workspace_id = str(request.data.get("workspace_id") or "")
+                if run:
+                    begin_step(run, STEP_OUTPUT_COLLECTION_STARTED)
+                cmd = collect_workspace(workspace_id=workspace_id, actor=actor)
+                if run:
+                    end_step(run, STEP_OUTPUT_COLLECTION_STARTED, success=True)
+                    end_step(
+                        run,
+                        STEP_OUTPUT_COLLECTION_FINISHED,
+                        success=True,
+                        meta={"command_id": str(cmd.id)},
+                    )
+                return Response(
+                    _attach({"ok": True, "command_id": str(cmd.id), "command_type": cmd.command_type})
+                )
+
+            if action in {"cleanup", "cleanup_workspace"}:
+                workspace_id = str(request.data.get("workspace_id") or "")
+                if run:
+                    begin_step(run, STEP_CLEANUP_STARTED)
+                cmd = cleanup_workspace(workspace_id=workspace_id, actor=actor)
+                if run:
+                    end_step(run, STEP_CLEANUP_STARTED, success=True)
+                    end_step(
+                        run,
+                        STEP_CLEANUP_FINISHED,
+                        success=True,
+                        meta={"command_id": str(cmd.id) if cmd else None},
+                    )
+                return Response(
+                    _attach(
+                        {
+                            "ok": True,
+                            "command_id": str(cmd.id) if cmd else None,
+                            "command_type": CommandType.CLEAN_WORKSTATION,
+                        }
+                    )
+                )
+
+            if action in {"pause", "waiting"}:
+                mark_pause_waiting(workspace_id=str(request.data.get("workspace_id") or ""), actor=actor)
+                return Response(_attach({"ok": True, "paused": True}))
+
+            if action == "upload":
+                workspace_id = str(request.data.get("workspace_id") or "")
+                uploaded = request.FILES.get("file") or request.FILES.get("upload")
+                if not uploaded:
+                    return Response({"detail": "Missing file"}, status=status.HTTP_400_BAD_REQUEST)
+                folder = request.data.get("folder") or "RawData"
+                if run:
+                    begin_step(run, STEP_INPUT_UPLOAD_STARTED)
+                row = upload_sample_input(
+                    workspace_id=workspace_id,
+                    uploaded_file=uploaded,
+                    actor=actor,
+                    folder=folder,
+                )
+                if run:
+                    end_step(run, STEP_INPUT_UPLOAD_STARTED, success=True)
+                    end_step(
+                        run,
+                        STEP_INPUT_UPLOAD_FINISHED,
+                        success=True,
+                        meta={"sha256": row.sha256, "path": row.relative_path},
+                    )
+                return Response(
+                    _attach(
+                        {
+                            "ok": True,
+                            "file": {
+                                "id": str(row.id),
+                                "relative_path": row.relative_path,
+                                "sha256": row.sha256,
+                                "size": row.size,
+                            },
+                        }
+                    ),
+                    status=status.HTTP_201_CREATED,
+                )
+
+            if action == "refresh":
+                workspace_id = request.data.get("workspace_id") or None
+                return Response(_attach(build_commissioning_payload(workspace_id=workspace_id)))
+
+            return Response({"detail": f"Unknown action: {action}"}, status=status.HTTP_400_BAD_REQUEST)
+        except (ValueError, TransferError, TypeError) as exc:
+            logger.warning("Commissioning action %s rejected: %s", action, exc)
+            if run:
+                from iic_booking.remote_analysis.operations.commissioning_observability import capture_failure_snapshot
+
+                capture_failure_snapshot(run, step_name=action, error=str(exc))
             return Response(
-                {"ok": True, "workspace": _serialize_workspace_detail(workspace, full=True)},
-                status=status.HTTP_201_CREATED,
+                _attach({"detail": str(exc), "hint": _error_hint(exc)}),
+                status=status.HTTP_400_BAD_REQUEST,
             )
+        except Exception as exc:  # noqa: BLE001
+            import traceback
 
-        if action in {"prepare", "prepare_workspace"}:
-            workspace_id = str(request.data.get("workspace_id") or "")
-            cmd = prepare_workspace(workspace_id=workspace_id, actor=actor)
-            return Response({"ok": True, "command_id": str(cmd.id), "command_type": cmd.command_type})
+            if isinstance(exc, Http404):
+                raise
 
-        if action in {"collect", "collect_output", "collect_workspace"}:
-            workspace_id = str(request.data.get("workspace_id") or "")
-            cmd = collect_workspace(workspace_id=workspace_id, actor=actor)
-            return Response({"ok": True, "command_id": str(cmd.id), "command_type": cmd.command_type})
+            tb = traceback.format_exc()
+            logger.exception("Commissioning action %s failed", action)
+            if run:
+                from iic_booking.remote_analysis.operations.commissioning_observability import capture_failure_snapshot
 
-        if action in {"cleanup", "cleanup_workspace"}:
-            workspace_id = str(request.data.get("workspace_id") or "")
-            cmd = cleanup_workspace(workspace_id=workspace_id, actor=actor)
+                capture_failure_snapshot(run, step_name=action, error=str(exc))
             return Response(
-                {
-                    "ok": True,
-                    "command_id": str(cmd.id) if cmd else None,
-                    "command_type": CommandType.CLEAN_WORKSTATION,
-                }
+                _attach(
+                    {
+                        "detail": str(exc),
+                        "error_type": type(exc).__name__,
+                        "hint": _error_hint(exc),
+                        "traceback": tb if django_settings.DEBUG else None,
+                    }
+                ),
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-
-        if action in {"pause", "waiting"}:
-            mark_pause_waiting(workspace_id=str(request.data.get("workspace_id") or ""), actor=actor)
-            return Response({"ok": True, "paused": True})
-
-        if action == "upload":
-            workspace_id = str(request.data.get("workspace_id") or "")
-            uploaded = request.FILES.get("file") or request.FILES.get("upload")
-            if not uploaded:
-                return Response({"detail": "Missing file"}, status=status.HTTP_400_BAD_REQUEST)
-            folder = request.data.get("folder") or "RawData"
-            row = upload_sample_input(
-                workspace_id=workspace_id,
-                uploaded_file=uploaded,
-                actor=actor,
-                folder=folder,
-            )
-            return Response(
-                {
-                    "ok": True,
-                    "file": {
-                        "id": str(row.id),
-                        "relative_path": row.relative_path,
-                        "sha256": row.sha256,
-                        "size": row.size,
-                    },
-                },
-                status=status.HTTP_201_CREATED,
-            )
-
-        if action == "refresh":
-            workspace_id = request.data.get("workspace_id") or None
-            return Response(build_commissioning_payload(workspace_id=workspace_id))
-
-        return Response({"detail": f"Unknown action: {action}"}, status=status.HTTP_400_BAD_REQUEST)
-    except (ValueError, TransferError, TypeError) as exc:
-        logger.warning("Commissioning action %s rejected: %s", action, exc)
-        return Response({"detail": str(exc), "hint": _error_hint(exc)}, status=status.HTTP_400_BAD_REQUEST)
-    except Exception as exc:  # noqa: BLE001
-        import traceback
-
-        if isinstance(exc, Http404):
-            raise
-
-        tb = traceback.format_exc()
-        logger.exception("Commissioning action %s failed", action)
-        return Response(
-            {
-                "detail": str(exc),
-                "error_type": type(exc).__name__,
-                "hint": _error_hint(exc),
-                "traceback": tb if django_settings.DEBUG else None,
-            },
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
 
 
 def render_commissioning_html(payload: dict[str, Any]) -> str:

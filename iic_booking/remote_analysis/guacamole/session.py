@@ -22,6 +22,12 @@ from iic_booking.remote_analysis.constants import (
     WorkstationStatus,
 )
 from iic_booking.remote_analysis.guacamole.audit import audit_session
+from iic_booking.remote_analysis.guacamole.authorization import (
+    OPEN_SESSION_STATUSES,
+    evaluate_session_create_gates,
+    evaluate_session_launch_gates,
+    find_reusable_open_session,
+)
 from iic_booking.remote_analysis.guacamole.client import GuacamoleClientError
 from iic_booking.remote_analysis.guacamole.connection import ConnectionManager
 from iic_booking.remote_analysis.guacamole.health import refresh_session_health, workstation_healthy_for_session
@@ -48,18 +54,6 @@ ACTIVE_RESERVATION_STATUSES = {
     ReservationStatus.PREPARING,
     ReservationStatus.READY,
     ReservationStatus.ACTIVE,
-}
-
-OPEN_SESSION_STATUSES = {
-    SessionStatus.CREATED,
-    SessionStatus.PREPARING,
-    SessionStatus.READY,
-    SessionStatus.TOKEN_GENERATED,
-    SessionStatus.LAUNCHED,
-    SessionStatus.CONNECTING,
-    SessionStatus.CONNECTED,
-    SessionStatus.ACTIVE,
-    SessionStatus.IDLE,
 }
 
 
@@ -130,31 +124,33 @@ class SessionOrchestrator:
         if not can_create_for_reservation(user, reservation):
             raise SessionError("Not authorized for this reservation", code="forbidden")
 
-        if reservation.status not in ACTIVE_RESERVATION_STATUSES:
-            raise SessionError("Reservation is not active", code="reservation_inactive")
-
-        if reservation.requested_end and reservation.requested_end < timezone.now():
-            raise SessionError("Reservation has ended", code="reservation_expired")
-
-        if not reservation.workstation_id:
-            raise SessionError("Reservation has no allocated workstation", code="no_workstation")
+        gate = evaluate_session_create_gates(
+            reservation=reservation,
+            user=user,
+            client_ip=client_ip,
+            settings_obj=self.settings,
+        )
+        if not gate.ok:
+            gate.raise_session_error()
 
         ws = reservation.workstation
         if not workstation_healthy_for_session(ws):
+            record_event(
+                category=AuditCategory.SESSION,
+                action="SessionAuthzRejected",
+                details=f"workstation_unhealthy ip={client_ip or ''}",
+                success=False,
+                workstation=ws,
+                actor=user,
+                correlation_id=str(reservation.id),
+            )
             raise SessionError("Workstation is not healthy or agent is offline", code="workstation_unhealthy")
 
         open_count = RemoteDesktopSession.objects.filter(status__in=OPEN_SESSION_STATUSES).count()
         if open_count >= self.settings.max_concurrent_sessions:
             raise SessionError("Maximum concurrent sessions reached", code="capacity")
 
-        existing = (
-            RemoteDesktopSession.objects.filter(
-                reservation=reservation,
-                status__in=OPEN_SESSION_STATUSES,
-            )
-            .order_by("-created_at")
-            .first()
-        )
+        existing = find_reusable_open_session(reservation, settings_obj=self.settings)
         if existing:
             return existing
 
@@ -373,6 +369,16 @@ class SessionOrchestrator:
     def issue_launch_token(self, session: RemoteDesktopSession, *, user, client_ip: str | None = None) -> tuple[SessionToken, str]:
         if not can_launch_session(user, session):
             raise SessionError("Only the reservation owner may launch this session", code="forbidden")
+
+        gate = evaluate_session_launch_gates(
+            session=session,
+            user=user,
+            client_ip=client_ip,
+            settings_obj=self.settings,
+        )
+        if not gate.ok:
+            gate.raise_session_error()
+
         if session.status not in {
             SessionStatus.TOKEN_GENERATED,
             SessionStatus.READY,
@@ -522,14 +528,11 @@ class SessionOrchestrator:
             from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
 
             client = GuacamoleClient(self.settings)
-            # Password was not persisted — recreate ephemeral password is not available.
-            # Instead authenticate as admin and return connection identifier + admin-proxied approach
-            # is insecure. Store ephemeral password encrypted on GuacamoleConnection.metadata at create.
-            temp_password = (conn.metadata or {}).get("temp_password", "")
+            temp_password = ConnectionManager(self.settings).ephemeral_password(conn)
             if not temp_password:
                 raise SessionError("Ephemeral Guacamole credentials missing — recreate session", code="guac_creds")
             user_token = client.create_user_token(conn.guacamole_username, temp_password)
-            # Public base URL only (no admin credentials). Client uses Guacamole JS or iframe.
+            # Public base URL only (no admin credentials). Client uses Guacamole redirect.
             public_base = (self.settings.guacamole_base_url or "").rstrip("/")
             result["client"] = {
                 "guacamole_token": user_token,
@@ -539,6 +542,7 @@ class SessionOrchestrator:
             self.mark_connected(session)
             result["status"] = session.status
             # Do not include guacamole_base_url separately if empty; never include API URL
+            result["redirect_url"] = result["client"].get("client_url") or ""
         except Exception as exc:
             logger.exception("connect_with_token Guacamole error")
             raise SessionError(str(exc), code="guac_connect_failed") from exc

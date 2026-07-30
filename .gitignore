@@ -281,3 +281,7 @@ iic_booking/media/
 .envs/.local/.django
 .envs/.local/.postgres
 .envs/.production/
+
+# Deploy automation local state / backups
+backups/deploy/
+.deploy-state/

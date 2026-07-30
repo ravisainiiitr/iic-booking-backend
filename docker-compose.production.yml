@@ -1,3 +1,5 @@
+# Harden existing production compose (additive — does not change app logic).
+# Prefer docker-compose.ra-production.yml for a full fresh-server RA stack (includes Postgres + Guacamole).
 services:
   django: &django
     build:
@@ -5,8 +7,10 @@ services:
       dockerfile: ./compose/production/django/Dockerfile
 
     image: iic_booking_production_django
+    restart: unless-stopped
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     env_file:
       - ./.envs/.production/.django
     environment:
@@ -20,6 +24,13 @@ services:
     ports:
       - '8080:5000'
     command: /start
+    networks:
+      - default
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
     healthcheck:
       test:
         [
@@ -33,37 +44,40 @@ services:
       retries: 3
       start_period: 60s
 
-  # traefik:
-  #   build:
-  #     context: .
-  #     dockerfile: ./compose/production/traefik/Dockerfile
-  #   image: iic_booking_production_traefik
-  #   env_file:
-  #     - ./.envs/.production/.traefik
-  #   depends_on:
-  #     - django
-  #   volumes:
-  #     - production_traefik:/etc/traefik/acme
-  #   ports:
-  #     - '0.0.0.0:80:80'
-  #     - '0.0.0.0:443:443'
-  #     - '0.0.0.0:5555:5555'
-
   redis:
     image: docker.io/redis:7.2
     container_name: iic_booking_production_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - production_redis:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   celeryworker:
     <<: *django
     image: iic_booking_production_celeryworker
     command: /start-celeryworker
     ports: []
+    healthcheck:
+      disable: true
 
   celerybeat:
     <<: *django
     image: iic_booking_production_celerybeat
     command: /start-celerybeat
     ports: []
+    healthcheck:
+      disable: true
 
   flower:
     <<: *django
@@ -71,8 +85,11 @@ services:
     command: /start-flower
     ports:
       - '5555:5555'
-
+    healthcheck:
+      disable: true
+    profiles: ["flower"]
 
 volumes:
   production_traefik:
   production_media:
+  production_redis:

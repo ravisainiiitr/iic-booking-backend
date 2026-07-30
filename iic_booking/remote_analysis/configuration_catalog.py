@@ -12,6 +12,7 @@ CONFIGURATION_CATALOG: list[dict[str, str]] = [
     {"key": "session_timeout", "source": "RemoteAnalysisSettings", "default": "120m", "description": "Absolute session lifetime"},
     {"key": "idle_timeout", "source": "RemoteAnalysisSettings", "default": "15m", "description": "Idle disconnect threshold"},
     {"key": "max_concurrent_sessions", "source": "RemoteAnalysisSettings", "default": "50", "description": "Global concurrent session cap"},
+    {"key": "single_active_session_per_booking", "source": "RemoteAnalysisSettings", "default": "True", "description": "One open remote desktop session per booking"},
     {"key": "prepare_timeout_seconds", "source": "RemoteAnalysisSettings", "default": "120", "description": "Prepare workstation timeout"},
     {"key": "launch_token_lifetime_seconds", "source": "RemoteAnalysisSettings", "default": "90", "description": "One-time launch token TTL"},
     {"key": "bind_token_to_ip", "source": "RemoteAnalysisSettings", "default": "False", "description": "Bind launch tokens to client IP"},

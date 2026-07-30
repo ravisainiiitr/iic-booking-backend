@@ -48,6 +48,11 @@ class Command(BaseCommand):
             "0005_operations_center",
             "0006_collaboration_center",
             "0007_production_hardening_indexes",
+            "0008_workstation_status_heartbeat_index",
+            "0009_auto_data_sync_fields",
+            "0010_workspace_lifecycle_phases",
+            "0011_commissioning_run_observability",
+            "0012_single_active_session_per_booking",
         ]
         for name in expected:
             report.append(f"[{'OK' if name in ra_migs else 'WARN'}] expected migration {name}")

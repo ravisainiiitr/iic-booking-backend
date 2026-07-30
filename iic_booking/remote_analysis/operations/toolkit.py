@@ -150,6 +150,77 @@ def probe_storage_usage() -> dict[str, Any]:
     return info
 
 
+def probe_guacamole() -> dict[str, Any]:
+    """Guacamole connectivity, session counts, tunnel/health, API latency (toolkit)."""
+
+    def _run():
+        from django.db.models import Count
+
+        from iic_booking.remote_analysis.constants import SessionStatus
+        from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
+        from iic_booking.remote_analysis.guacamole.settings_env import production_guacamole_configured
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession, SessionHealth
+
+        settings_obj = RemoteAnalysisSettings.get_solo()
+        configured, problems = production_guacamole_configured(settings_obj)
+        client = GuacamoleClient(settings_obj)
+        probe = client.health_probe()
+        open_statuses = {
+            SessionStatus.CREATED,
+            SessionStatus.PREPARING,
+            SessionStatus.READY,
+            SessionStatus.TOKEN_GENERATED,
+            SessionStatus.LAUNCHED,
+            SessionStatus.CONNECTING,
+            SessionStatus.CONNECTED,
+            SessionStatus.ACTIVE,
+            SessionStatus.IDLE,
+        }
+        active = RemoteDesktopSession.objects.filter(status__in=open_statuses).count()
+        by_status = {
+            row["status"]: row["c"]
+            for row in RemoteDesktopSession.objects.values("status").annotate(c=Count("id"))
+        }
+        health_rows = SessionHealth.objects.order_by("-last_check_at")[:20]
+        tunnel = {
+            "recent_checks": [
+                {
+                    "session_id": str(h.session_id),
+                    "guacamole_reachable": h.guacamole_reachable,
+                    "agent_online": h.agent_online,
+                    "score": h.score,
+                    "detail": h.detail,
+                    "last_check_at": h.last_check_at.isoformat() if h.last_check_at else None,
+                }
+                for h in health_rows
+            ]
+        }
+        status_val = "PASS"
+        if settings_obj.mock_guacamole:
+            detail = "mock_guacamole=True"
+        elif not configured:
+            status_val = "FAIL"
+            detail = "misconfigured: " + ", ".join(problems or [])
+        elif not probe.get("ok"):
+            status_val = "FAIL"
+            detail = probe.get("error") or probe.get("status") or "unreachable"
+        else:
+            detail = f"ok latency_ms={probe.get('latency_ms')}"
+        return {
+            "status": status_val,
+            "detail": detail,
+            "mock": bool(settings_obj.mock_guacamole),
+            "configured": configured,
+            "probe": probe,
+            "active_sessions": active,
+            "sessions_by_status": by_status,
+            "tunnel_health": tunnel,
+            "connection_latency_ms": probe.get("latency_ms"),
+        }
+
+    return _timed(_run)
+
+
 # ---------------------------------------------------------------------------
 # 1. Portal diagnostics dashboard
 # ---------------------------------------------------------------------------
@@ -163,6 +234,7 @@ def build_toolkit_dashboard() -> dict[str, Any]:
     db = probe_database_latency_ms()
     redis_info = probe_redis()
     storage = probe_storage_usage()
+    guacamole = probe_guacamole()
 
     online_statuses = {
         WorkstationStatus.ONLINE,
@@ -264,6 +336,7 @@ def build_toolkit_dashboard() -> dict[str, Any]:
         "database": db,
         "redis": redis_info,
         "storage": storage,
+        "guacamole": guacamole,
     }
 
     return {
@@ -271,6 +344,7 @@ def build_toolkit_dashboard() -> dict[str, Any]:
         "overview": overview,
         "workstations": enriched,
         "diagnostics": base,
+        "guacamole": guacamole,
         "links": {
             "commissioning": "/api/v1/analysis/operations/commissioning/?view=html",
             "legacy_diagnostics": "/api/v1/analysis/operations/diagnostics/?view=html",
@@ -393,7 +467,32 @@ def build_agent_diagnostics(workstation_id: str | None = None, agent_id: str | N
 # ---------------------------------------------------------------------------
 
 
-def run_connectivity_tests(*, actor=None, workstation_id: str | None = None) -> dict[str, Any]:
+def run_connectivity_tests(
+    *,
+    actor=None,
+    workstation_id: str | None = None,
+    commissioning_run_id: str | None = None,
+) -> dict[str, Any]:
+    from iic_booking.remote_analysis.operations.commissioning_observability import (
+        STEP_CONNECTIVITY,
+        STEP_TOOLKIT_STARTED,
+        bind_run_context,
+        complete_run,
+        end_step,
+        begin_step,
+        get_run,
+        link_workspace,
+        persist_evidence_bundle,
+        start_commissioning_run,
+    )
+
+    run = get_run(commissioning_run_id) if commissioning_run_id else None
+    if run is None:
+        run = start_commissioning_run(actor=actor, workstation_id=workstation_id)
+    begin_step(run, STEP_TOOLKIT_STARTED)
+    end_step(run, STEP_TOOLKIT_STARTED, success=True)
+    begin_step(run, STEP_CONNECTIVITY)
+
     results: dict[str, Any] = {}
     ws = None
     if workstation_id:
@@ -406,148 +505,159 @@ def run_connectivity_tests(*, actor=None, workstation_id: str | None = None) -> 
             .first()
         )
 
-    results["portal_api"] = _timed(
-        lambda: {
-            "status": "PASS",
-            "detail": "Toolkit reachable",
-        }
-    )
-
-    results["authentication"] = _timed(
-        lambda: {
-            "status": "PASS" if actor and getattr(actor, "is_authenticated", False) else "FAIL",
-            "detail": f"user={getattr(actor, 'email', None) or getattr(actor, 'pk', None)}",
-        }
-    )
-
-    results["database"] = probe_database_latency_ms()
-    results["redis"] = probe_redis()
-
-    def _storage():
-        info = probe_storage_usage()
-        return {**info, "status": info.get("status") or "FAIL"}
-
-    results["storage"] = _timed(_storage)
-
-    # Heartbeat freshness as proxy for live agent heartbeat path
-    def _hb():
-        if ws is None:
-            return {"status": "FAIL", "detail": "No workstation"}
-        if not ws.last_heartbeat:
-            return {"status": "FAIL", "detail": "Never heartbeated"}
-        age = int((timezone.now() - ws.last_heartbeat).total_seconds())
-        ok = age <= HEARTBEAT_OFFLINE_SECONDS
-        return {
-            "status": "PASS" if ok else "FAIL",
-            "detail": f"age={age}s workstation={ws.hostname}",
-            "workstation_id": str(ws.id),
-        }
-
-    results["heartbeat"] = _timed(_hb)
-
-    # File upload/download/checksum on portal storage (does not require agent)
-    workspace = None
-    uploaded = None
-
-    def _workspace_create():
-        nonlocal workspace
-        if ws is None:
-            return {"status": "FAIL", "detail": "No workstation for workspace create"}
-        from iic_booking.remote_analysis.services.reservation import ReservationService
-        from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
-
-        start = timezone.now()
-        end = start + timedelta(hours=1)
-        reservation = ReservationService().create_reservation(
-            user=actor,
-            requested_start=start,
-            requested_end=end,
-            created_by=actor,
-            auto_allocate=False,
+    with bind_run_context(run):
+        results["portal_api"] = _timed(lambda: {"status": "PASS", "detail": "Toolkit reachable"})
+        results["authentication"] = _timed(
+            lambda: {
+                "status": "PASS" if actor and getattr(actor, "is_authenticated", False) else "FAIL",
+                "detail": f"user={getattr(actor, 'email', None) or getattr(actor, 'pk', None)}",
+            }
         )
-        reservation.workstation = ws
-        reservation.save(update_fields=["workstation", "updated_at"])
-        workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=actor, ingest=False)
-        workspace.workstation = ws
-        workspace.save(update_fields=["workstation", "updated_at"])
-        return {
-            "status": "PASS",
-            "detail": f"workspace={workspace.id}",
-            "workspace_id": str(workspace.id),
-        }
+        results["database"] = probe_database_latency_ms()
+        results["redis"] = probe_redis()
 
-    results["workspace_creation"] = _timed(_workspace_create)
+        def _storage():
+            info = probe_storage_usage()
+            return {**info, "status": info.get("status") or "FAIL"}
 
-    def _upload():
-        nonlocal uploaded
-        from django.core.files.uploadedfile import SimpleUploadedFile
+        results["storage"] = _timed(_storage)
 
-        from iic_booking.remote_analysis.workspace.transfer import TransferManager
+        results["guacamole"] = probe_guacamole()
 
-        if workspace is None:
-            return {"status": "FAIL", "detail": "No workspace"}
-        payload = b"toolkit-connectivity-" + uuid4().hex.encode()
-        uploaded = TransferManager().upload(
-            workspace,
-            SimpleUploadedFile("toolkit-probe.txt", payload, content_type="text/plain"),
-            folder="RawData",
-            actor=actor,
-        )
-        return {
-            "status": "PASS",
-            "detail": f"file={uploaded.relative_path} sha={uploaded.sha256[:12]}…",
-            "sha256": uploaded.sha256,
-            "file_id": str(uploaded.id),
-        }
+        def _hb():
+            if ws is None:
+                return {"status": "FAIL", "detail": "No workstation"}
+            if not ws.last_heartbeat:
+                return {"status": "FAIL", "detail": "Never heartbeated"}
+            age = int((timezone.now() - ws.last_heartbeat).total_seconds())
+            ok = age <= HEARTBEAT_OFFLINE_SECONDS
+            return {
+                "status": "PASS" if ok else "FAIL",
+                "detail": f"age={age}s workstation={ws.hostname}",
+                "workstation_id": str(ws.id),
+            }
 
-    results["file_upload"] = _timed(_upload)
+        results["heartbeat"] = _timed(_hb)
 
-    def _download():
-        from iic_booking.remote_analysis.workspace.transfer import TransferManager
+        workspace = None
+        uploaded = None
 
-        if workspace is None or uploaded is None:
-            return {"status": "FAIL", "detail": "Missing workspace/file"}
-        resp = TransferManager().download_file(workspace, uploaded, actor=actor)
-        # FileResponse — read content
-        content = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
-        digest = hashlib.sha256(content).hexdigest()
-        ok = digest == uploaded.sha256
-        return {
-            "status": "PASS" if ok else "FAIL",
-            "detail": f"bytes={len(content)} checksum_match={ok}",
-            "sha256": digest,
-        }
+        def _workspace_create():
+            nonlocal workspace
+            if ws is None:
+                return {"status": "FAIL", "detail": "No workstation for workspace create"}
+            from iic_booking.remote_analysis.services.reservation import ReservationService
+            from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 
-    results["file_download"] = _timed(_download)
+            start = timezone.now()
+            reservation = ReservationService().create_reservation(
+                user=actor,
+                requested_start=start,
+                requested_end=start + timedelta(hours=1),
+                created_by=actor,
+                auto_allocate=False,
+            )
+            reservation.workstation = ws
+            reservation.save(update_fields=["workstation", "updated_at"])
+            workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=actor, ingest=False)
+            workspace.workstation = ws
+            workspace.save(update_fields=["workstation", "updated_at"])
+            link_workspace(run, workspace)
+            return {
+                "status": "PASS",
+                "detail": f"workspace={workspace.id}",
+                "workspace_id": str(workspace.id),
+            }
 
-    def _cleanup():
-        from iic_booking.remote_analysis.operations.commissioning import cleanup_workspace
-        from iic_booking.remote_analysis.workspace.transfer import TransferManager
+        results["workspace_creation"] = _timed(_workspace_create)
 
-        if workspace is None:
-            return {"status": "FAIL", "detail": "No workspace"}
-        if uploaded is not None:
-            try:
-                TransferManager().soft_delete(workspace, uploaded, actor=actor)
-            except Exception:  # noqa: BLE001
-                pass
-        cmd = cleanup_workspace(workspace_id=str(workspace.id), actor=actor)
-        return {
-            "status": "PASS",
-            "detail": f"cleanup_command={getattr(cmd, 'id', None)}",
-            "command_id": str(cmd.id) if cmd else None,
-        }
+        def _upload():
+            nonlocal uploaded
+            from django.core.files.uploadedfile import SimpleUploadedFile
 
-    results["cleanup"] = _timed(_cleanup)
+            from iic_booking.remote_analysis.workspace.transfer import TransferManager
+
+            if workspace is None:
+                return {"status": "FAIL", "detail": "No workspace"}
+            payload = b"toolkit-connectivity-" + uuid4().hex.encode()
+            uploaded = TransferManager().upload(
+                workspace,
+                SimpleUploadedFile("toolkit-probe.txt", payload, content_type="text/plain"),
+                folder="RawData",
+                actor=actor,
+            )
+            return {
+                "status": "PASS",
+                "detail": f"file={uploaded.relative_path} sha={uploaded.sha256[:12]}…",
+                "sha256": uploaded.sha256,
+                "file_id": str(uploaded.id),
+            }
+
+        results["file_upload"] = _timed(_upload)
+
+        def _download():
+            from iic_booking.remote_analysis.workspace.transfer import TransferManager
+
+            if workspace is None or uploaded is None:
+                return {"status": "FAIL", "detail": "Missing workspace/file"}
+            resp = TransferManager().download_file(workspace, uploaded, actor=actor)
+            content = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+            digest = hashlib.sha256(content).hexdigest()
+            ok = digest == uploaded.sha256
+            return {
+                "status": "PASS" if ok else "FAIL",
+                "detail": f"bytes={len(content)} checksum_match={ok}",
+                "sha256": digest,
+            }
+
+        results["file_download"] = _timed(_download)
+
+        def _cleanup():
+            from iic_booking.remote_analysis.operations.commissioning import cleanup_workspace
+            from iic_booking.remote_analysis.workspace.transfer import TransferManager
+
+            if workspace is None:
+                return {"status": "FAIL", "detail": "No workspace"}
+            if uploaded is not None:
+                try:
+                    TransferManager().soft_delete(workspace, uploaded, actor=actor)
+                except Exception:  # noqa: BLE001
+                    pass
+            cmd = cleanup_workspace(workspace_id=str(workspace.id), actor=actor)
+            return {
+                "status": "PASS",
+                "detail": f"cleanup_command={getattr(cmd, 'id', None)}",
+                "command_id": str(cmd.id) if cmd else None,
+            }
+
+        results["cleanup"] = _timed(_cleanup)
 
     passed = sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "PASS")
     failed = sum(1 for r in results.values() if isinstance(r, dict) and r.get("status") == "FAIL")
+    overall = "PASS" if failed == 0 else "FAIL"
+    end_step(
+        run,
+        STEP_CONNECTIVITY,
+        success=failed == 0,
+        error="" if failed == 0 else f"{failed} checks failed",
+        meta={"summary": {"pass": passed, "fail": failed}},
+    )
+    complete_run(run, success=failed == 0, summary={"connectivity": overall})
+    evidence_path = ""
+    try:
+        evidence_path = persist_evidence_bundle(run)
+    except Exception:  # noqa: BLE001
+        evidence_path = ""
+
     return {
         "generated_at": timezone.now().isoformat(),
+        "commissioning_run_id": str(run.id),
+        "evidence_path": evidence_path,
+        "evidence_url": f"/api/v1/analysis/operations/toolkit/runs/{run.id}/evidence/",
         "workstation_id": str(ws.id) if ws else None,
         "summary": {"pass": passed, "fail": failed, "total": passed + failed},
         "results": results,
-        "overall": "PASS" if failed == 0 else "FAIL",
+        "overall": overall,
     }
 
 
@@ -717,7 +827,12 @@ def build_health_report() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def run_full_self_test(*, actor=None, workstation_id: str | None = None) -> dict[str, Any]:
+def run_full_self_test(
+    *,
+    actor=None,
+    workstation_id: str | None = None,
+    commissioning_run_id: str | None = None,
+) -> dict[str, Any]:
     """
     Portal-side end-to-end probe (admin-only).
 
@@ -728,146 +843,204 @@ def run_full_self_test(*, actor=None, workstation_id: str | None = None) -> dict
     from django.core.files.uploadedfile import SimpleUploadedFile
 
     from iic_booking.remote_analysis.operations.commissioning import cleanup_workspace
+    from iic_booking.remote_analysis.operations.commissioning_observability import (
+        STEP_CHECKSUM_VERIFICATION,
+        STEP_CLEANUP_FINISHED,
+        STEP_CLEANUP_STARTED,
+        STEP_INPUT_UPLOAD_FINISHED,
+        STEP_INPUT_UPLOAD_STARTED,
+        STEP_OUTPUT_COLLECTION_FINISHED,
+        STEP_OUTPUT_COLLECTION_STARTED,
+        STEP_SELF_TEST,
+        STEP_TOOLKIT_STARTED,
+        STEP_WORKSPACE_CREATED,
+        bind_run_context,
+        complete_run,
+        begin_step,
+        end_step,
+        get_run,
+        link_workspace,
+        persist_evidence_bundle,
+        start_commissioning_run,
+    )
     from iic_booking.remote_analysis.services.reservation import ReservationService
     from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
     from iic_booking.remote_analysis.workspace.transfer import TransferManager
+
+    run = get_run(commissioning_run_id) if commissioning_run_id else None
+    if run is None:
+        run = start_commissioning_run(actor=actor, workstation_id=workstation_id)
+    begin_step(run, STEP_TOOLKIT_STARTED)
+    end_step(run, STEP_TOOLKIT_STARTED, success=True)
+    begin_step(run, STEP_SELF_TEST)
 
     steps: list[dict[str, Any]] = []
     report: dict[str, Any] = {
         "generated_at": timezone.now().isoformat(),
         "operator": getattr(actor, "email", None) or str(getattr(actor, "pk", "")),
+        "commissioning_run_id": str(run.id),
         "steps": steps,
     }
 
     def add(name: str, result: dict[str, Any]):
         steps.append({"name": name, **result})
 
-    add("portal_api", _timed(lambda: {"status": "PASS", "detail": "ok"}))
-    add(
-        "authentication",
-        _timed(
-            lambda: {
-                "status": "PASS" if actor and actor.is_authenticated else "FAIL",
-                "detail": str(getattr(actor, "email", "")),
-            }
-        ),
-    )
-
-    ws = None
-    if workstation_id:
-        ws = AnalysisWorkstation.objects.filter(pk=workstation_id).first()
-    if ws is None:
-        ws = (
-            AnalysisWorkstation.objects.filter(enabled=True)
-            .order_by("-last_heartbeat")
-            .first()
+    with bind_run_context(run):
+        add("portal_api", _timed(lambda: {"status": "PASS", "detail": "ok"}))
+        add(
+            "authentication",
+            _timed(
+                lambda: {
+                    "status": "PASS" if actor and actor.is_authenticated else "FAIL",
+                    "detail": str(getattr(actor, "email", "")),
+                }
+            ),
         )
 
-    workspace = None
-    input_file = None
-    output_file = None
-    mgr = TransferManager()
-    payload = b"ra-self-test-" + uuid4().hex.encode()
-    expected_sha = hashlib.sha256(payload).hexdigest()
-
-    def _create():
-        nonlocal workspace
+        ws = None
+        if workstation_id:
+            ws = AnalysisWorkstation.objects.filter(pk=workstation_id).first()
         if ws is None:
-            return {"status": "FAIL", "detail": "No workstation registered"}
-        start = timezone.now()
-        reservation = ReservationService().create_reservation(
-            user=actor,
-            requested_start=start,
-            requested_end=start + timedelta(hours=1),
-            created_by=actor,
-            auto_allocate=False,
+            ws = AnalysisWorkstation.objects.filter(enabled=True).order_by("-last_heartbeat").first()
+
+        workspace = None
+        input_file = None
+        output_file = None
+        mgr = TransferManager()
+        payload = b"ra-self-test-" + uuid4().hex.encode()
+        expected_sha = hashlib.sha256(payload).hexdigest()
+
+        def _create():
+            nonlocal workspace
+            if ws is None:
+                return {"status": "FAIL", "detail": "No workstation registered"}
+            start = timezone.now()
+            reservation = ReservationService().create_reservation(
+                user=actor,
+                requested_start=start,
+                requested_end=start + timedelta(hours=1),
+                created_by=actor,
+                auto_allocate=False,
+            )
+            reservation.workstation = ws
+            reservation.save(update_fields=["workstation", "updated_at"])
+            workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=actor, ingest=False)
+            workspace.workstation = ws
+            workspace.save(update_fields=["workstation", "updated_at"])
+            link_workspace(run, workspace)
+            end_step(run, STEP_WORKSPACE_CREATED, success=True, meta={"workspace_id": str(workspace.id)})
+            return {"status": "PASS", "detail": f"workspace={workspace.id}", "workspace_id": str(workspace.id)}
+
+        begin_step(run, STEP_WORKSPACE_CREATED)
+        add("create_test_workspace", _timed(_create))
+
+        def _upload_in():
+            nonlocal input_file
+            if workspace is None:
+                return {"status": "FAIL", "detail": "no workspace"}
+            begin_step(run, STEP_INPUT_UPLOAD_STARTED)
+            input_file = mgr.upload(
+                workspace,
+                SimpleUploadedFile("self-test-input.txt", payload, content_type="text/plain"),
+                folder="RawData",
+                actor=actor,
+            )
+            end_step(run, STEP_INPUT_UPLOAD_STARTED, success=True)
+            end_step(
+                run,
+                STEP_INPUT_UPLOAD_FINISHED,
+                success=True,
+                meta={"sha256": input_file.sha256, "path": input_file.relative_path},
+            )
+            return {"status": "PASS", "sha256": input_file.sha256, "path": input_file.relative_path}
+
+        add("upload_test_file", _timed(_upload_in))
+
+        def _download_in():
+            if workspace is None or input_file is None:
+                return {"status": "FAIL", "detail": "missing"}
+            resp = mgr.download_file(workspace, input_file, actor=actor)
+            content = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
+            digest = hashlib.sha256(content).hexdigest()
+            ok = digest == expected_sha == input_file.sha256
+            return {"status": "PASS" if ok else "FAIL", "sha256": digest, "match": ok}
+
+        add("download_test_file", _timed(_download_in))
+        checksum_ok = bool(input_file and input_file.sha256 == expected_sha)
+        end_step(run, STEP_CHECKSUM_VERIFICATION, success=checksum_ok, meta={"expected": expected_sha})
+        add(
+            "verify_checksum",
+            {
+                "status": "PASS" if checksum_ok else "FAIL",
+                "duration_ms": 0,
+                "expected": expected_sha,
+                "actual": input_file.sha256 if input_file else None,
+            },
         )
-        reservation.workstation = ws
-        reservation.save(update_fields=["workstation", "updated_at"])
-        workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=actor, ingest=False)
-        workspace.workstation = ws
-        workspace.save(update_fields=["workstation", "updated_at"])
-        return {"status": "PASS", "detail": f"workspace={workspace.id}", "workspace_id": str(workspace.id)}
 
-    add("create_test_workspace", _timed(_create))
+        def _dummy_out():
+            nonlocal output_file
+            if workspace is None:
+                return {"status": "FAIL", "detail": "no workspace"}
+            begin_step(run, STEP_OUTPUT_COLLECTION_STARTED)
+            out = b"self-test-output-" + uuid4().hex.encode()
+            output_file = mgr.upload(
+                workspace,
+                SimpleUploadedFile("self-test-output.txt", out, content_type="text/plain"),
+                folder="Processed",
+                actor=actor,
+            )
+            end_step(run, STEP_OUTPUT_COLLECTION_STARTED, success=True)
+            end_step(
+                run,
+                STEP_OUTPUT_COLLECTION_FINISHED,
+                success=True,
+                meta={"path": output_file.relative_path, "sha256": output_file.sha256},
+            )
+            return {"status": "PASS", "path": output_file.relative_path, "sha256": output_file.sha256}
 
-    def _upload_in():
-        nonlocal input_file
-        if workspace is None:
-            return {"status": "FAIL", "detail": "no workspace"}
-        input_file = mgr.upload(
-            workspace,
-            SimpleUploadedFile("self-test-input.txt", payload, content_type="text/plain"),
-            folder="RawData",
-            actor=actor,
+        add("generate_dummy_output", _timed(_dummy_out))
+        add(
+            "upload_output",
+            {
+                "status": "PASS" if output_file else "FAIL",
+                "duration_ms": 0,
+                "detail": "Portal Processed/ upload (agent collect not required for toolkit self-test)",
+                "file_id": str(output_file.id) if output_file else None,
+            },
         )
-        return {"status": "PASS", "sha256": input_file.sha256, "path": input_file.relative_path}
 
-    add("upload_test_file", _timed(_upload_in))
+        def _cleanup():
+            if workspace is None:
+                return {"status": "FAIL", "detail": "no workspace"}
+            begin_step(run, STEP_CLEANUP_STARTED)
+            for f in (input_file, output_file):
+                if f is not None:
+                    try:
+                        mgr.soft_delete(workspace, f, actor=actor)
+                    except Exception:  # noqa: BLE001
+                        pass
+            cmd = cleanup_workspace(workspace_id=str(workspace.id), actor=actor)
+            workspace.sync_phase = WorkspaceSyncPhase.COMPLETED
+            workspace.status = WorkspaceStatus.READY
+            workspace.save(update_fields=["sync_phase", "status", "updated_at"])
+            end_step(run, STEP_CLEANUP_STARTED, success=True)
+            end_step(run, STEP_CLEANUP_FINISHED, success=True, meta={"command_id": str(cmd.id) if cmd else None})
+            return {"status": "PASS", "command_id": str(cmd.id) if cmd else None}
 
-    def _download_in():
-        if workspace is None or input_file is None:
-            return {"status": "FAIL", "detail": "missing"}
-        resp = mgr.download_file(workspace, input_file, actor=actor)
-        content = b"".join(resp.streaming_content) if hasattr(resp, "streaming_content") else resp.content
-        digest = hashlib.sha256(content).hexdigest()
-        ok = digest == expected_sha == input_file.sha256
-        return {"status": "PASS" if ok else "FAIL", "sha256": digest, "match": ok}
-
-    add("download_test_file", _timed(_download_in))
-    add(
-        "verify_checksum",
-        {
-            "status": "PASS" if input_file and input_file.sha256 == expected_sha else "FAIL",
-            "duration_ms": 0,
-            "expected": expected_sha,
-            "actual": input_file.sha256 if input_file else None,
-        },
-    )
-
-    def _dummy_out():
-        nonlocal output_file
-        if workspace is None:
-            return {"status": "FAIL", "detail": "no workspace"}
-        out = b"self-test-output-" + uuid4().hex.encode()
-        output_file = mgr.upload(
-            workspace,
-            SimpleUploadedFile("self-test-output.txt", out, content_type="text/plain"),
-            folder="Processed",
-            actor=actor,
-        )
-        return {"status": "PASS", "path": output_file.relative_path, "sha256": output_file.sha256}
-
-    add("generate_dummy_output", _timed(_dummy_out))
-    add(
-        "upload_output",
-        {
-            "status": "PASS" if output_file else "FAIL",
-            "duration_ms": 0,
-            "detail": "Portal Processed/ upload (agent collect not required for toolkit self-test)",
-            "file_id": str(output_file.id) if output_file else None,
-        },
-    )
-
-    def _cleanup():
-        if workspace is None:
-            return {"status": "FAIL", "detail": "no workspace"}
-        for f in (input_file, output_file):
-            if f is not None:
-                try:
-                    mgr.soft_delete(workspace, f, actor=actor)
-                except Exception:  # noqa: BLE001
-                    pass
-        cmd = cleanup_workspace(workspace_id=str(workspace.id), actor=actor)
-        workspace.sync_phase = WorkspaceSyncPhase.COMPLETED
-        workspace.status = WorkspaceStatus.READY
-        workspace.save(update_fields=["sync_phase", "status", "updated_at"])
-        return {"status": "PASS", "command_id": str(cmd.id) if cmd else None}
-
-    add("cleanup", _timed(_cleanup))
+        add("cleanup", _timed(_cleanup))
 
     failed = [s for s in steps if s.get("status") == "FAIL"]
-    report["overall"] = "FAIL" if failed else "PASS"
+    ok = not failed
+    end_step(run, STEP_SELF_TEST, success=ok, error="" if ok else f"{len(failed)} steps failed")
+    complete_run(run, success=ok, summary={"self_test": "PASS" if ok else "FAIL"})
+    evidence_path = ""
+    try:
+        evidence_path = persist_evidence_bundle(run)
+    except Exception:  # noqa: BLE001
+        evidence_path = ""
+
+    report["overall"] = "PASS" if ok else "FAIL"
     report["summary"] = {
         "pass": sum(1 for s in steps if s.get("status") == "PASS"),
         "fail": len(failed),
@@ -876,6 +1049,8 @@ def run_full_self_test(*, actor=None, workstation_id: str | None = None) -> dict
     report["workstation_id"] = str(ws.id) if ws else None
     report["workspace_id"] = str(workspace.id) if workspace else None
     report["health"] = build_health_report()
+    report["evidence_path"] = evidence_path
+    report["evidence_url"] = f"/api/v1/analysis/operations/toolkit/runs/{run.id}/evidence/"
     return report
 
 

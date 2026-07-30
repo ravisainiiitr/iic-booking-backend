@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -103,6 +104,7 @@ def session_connect(request, session_id):
     """
     GET/POST /api/v1/analysis/session/{id}/connect/?t=<one-time-token>
     Consumes the launch token and returns connection payload (no secrets to user beyond ephemeral client token).
+    With ?redirect=1 or Accept: text/html, redirects to Guacamole client_url (live) or shows mock HTML.
     """
     session = get_object_or_404(RemoteDesktopSession, pk=session_id)
     token = request.query_params.get("t") or request.data.get("token") or ""
@@ -120,6 +122,31 @@ def session_connect(request, session_id):
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden", "token_user_mismatch", "token_ip_mismatch"} else status.HTTP_400_BAD_REQUEST
         return Response({"detail": str(exc), "code": exc.code}, status=http)
+
+    wants_redirect = (request.query_params.get("redirect") or "").lower() in {"1", "true", "yes"}
+    accept = (request.META.get("HTTP_ACCEPT") or "").lower()
+    wants_html = wants_redirect or ("text/html" in accept and "application/json" not in accept.split(",")[0])
+
+    if wants_html:
+        client_url = (payload.get("client") or {}).get("client_url") or payload.get("redirect_url") or ""
+        if client_url:
+            from django.shortcuts import redirect as django_redirect
+
+            return django_redirect(client_url)
+        if payload.get("mock"):
+            html = (
+                "<!DOCTYPE html><html><head><title>Mock Remote Desktop</title></head>"
+                "<body style='font-family:sans-serif;padding:2rem'>"
+                "<h1>Mock Guacamole Session</h1>"
+                f"<p>Session {session_id} connected (mock mode — no remote host contacted).</p>"
+                "<p>Disable mock_guacamole and configure Guacamole for live RDP.</p>"
+                "</body></html>"
+            )
+            return HttpResponse(html, content_type="text/html; charset=utf-8")
+        return Response(
+            {"detail": "No Guacamole client_url configured (set guacamole_base_url)", "code": "guac_url_missing"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     return Response(payload)
 
 

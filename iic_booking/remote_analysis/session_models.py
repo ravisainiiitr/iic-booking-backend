@@ -38,6 +38,10 @@ class RemoteAnalysisSettings(models.Model):
     idle_timeout = models.PositiveIntegerField(default=15, help_text=_("Minutes"))
     idle_warning_seconds = models.PositiveIntegerField(default=60)
     max_concurrent_sessions = models.PositiveIntegerField(default=50)
+    single_active_session_per_booking = models.BooleanField(
+        default=True,
+        help_text=_("When True, only one open remote desktop session is allowed per booking (or reservation)."),
+    )
     clipboard_enabled = models.BooleanField(default=True)
     clipboard_policy = models.CharField(
         max_length=32, choices=ClipboardPolicy.choices, default=ClipboardPolicy.TEXT_ONLY
@@ -120,6 +124,24 @@ class RemoteAnalysisSettings(models.Model):
     bandwidth_limit_kbps = models.PositiveIntegerField(
         default=0,
         help_text=_("Advisory agent bandwidth cap; 0 = unlimited."),
+    )
+    # Analyze Data (booking-facing post-analysis CTA)
+    analyze_data_button_label = models.CharField(
+        max_length=128,
+        default="Analyze Data",
+        help_text=_("Default user-facing CTA label on completed bookings."),
+    )
+    analyze_data_require_s3_files = models.BooleanField(
+        default=True,
+        help_text=_("When True, Analyze Data requires RAW/results files (S3/DSA/operator) to be present."),
+    )
+    analyze_data_stage_raw_on_launch = models.BooleanField(
+        default=True,
+        help_text=_("When True, stage booking RAW files into workspace RawData before desktop launch."),
+    )
+    analyze_data_prefer_workflow = models.BooleanField(
+        default=True,
+        help_text=_("When True, Analyze Data prefers Equipment→Workflow mappings over legacy single-software."),
     )
     updated_at = models.DateTimeField(auto_now=True)
 

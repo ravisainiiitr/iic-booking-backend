@@ -70,4 +70,5 @@ Wire these to your existing alert stack (Prometheus/Grafana, cloud watch, or por
 ## Related
 
 - [RemoteAnalysisCommissioning.md](RemoteAnalysisCommissioning.md) — sync E2E operator guide  
+- [RemoteAnalysisCommissioningObservability.md](RemoteAnalysisCommissioningObservability.md) — Run ID, timeline, evidence ZIP  
 - [docs/sat/](sat/README.md) — System Acceptance Testing  

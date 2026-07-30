@@ -6,7 +6,7 @@ Mounted at /api/v1/analysis/
 
 from django.urls import path
 
-from iic_booking.remote_analysis import reservation_views, views
+from iic_booking.remote_analysis import reservation_views, views, workflow_views
 from iic_booking.remote_analysis.guacamole import views as session_views
 from iic_booking.remote_analysis.workspace import views as workspace_views
 from iic_booking.remote_analysis.operations import views as ops_views
@@ -146,6 +146,27 @@ urlpatterns = [
         ops_views.toolkit_monitoring_recommendations,
         name="operations-toolkit-monitoring",
     ),
+    path("operations/toolkit/runs/", ops_views.toolkit_runs, name="operations-toolkit-runs"),
+    path(
+        "operations/toolkit/runs/<uuid:run_id>/",
+        ops_views.toolkit_run_detail,
+        name="operations-toolkit-run-detail",
+    ),
+    path(
+        "operations/toolkit/runs/<uuid:run_id>/timeline/",
+        ops_views.toolkit_run_timeline,
+        name="operations-toolkit-run-timeline",
+    ),
+    path(
+        "operations/toolkit/runs/<uuid:run_id>/evidence/",
+        ops_views.toolkit_run_evidence,
+        name="operations-toolkit-run-evidence",
+    ),
+    path(
+        "operations/toolkit/runs/<uuid:run_id>/failures/",
+        ops_views.toolkit_run_failure_snapshots,
+        name="operations-toolkit-run-failures",
+    ),
     path("analytics/", ops_views.analytics_view, name="analytics"),
     path("utilization/", ops_views.utilization_view, name="utilization"),
     path("performance/", ops_views.performance_view, name="performance"),
@@ -170,4 +191,13 @@ urlpatterns = [
     path("bookmarks/", collab_views.bookmarks_collection, name="bookmarks"),
     path("favorites/", collab_views.favorites_collection, name="favorites"),
     path("recent-workspaces/", collab_views.recent_workspace_touch, name="recent-workspaces"),
+    # Analysis Workflow Designer + ops
+    path("workflows/", workflow_views.workflow_collection, name="workflows"),
+    path("workflows/ops/", workflow_views.workflow_ops_dashboard, name="workflows-ops"),
+    path("workflows/capabilities/", workflow_views.capability_list, name="workflow-capabilities"),
+    path("workflows/<uuid:workflow_id>/", workflow_views.workflow_detail, name="workflow-detail"),
+    path("workflows/<uuid:workflow_id>/clone/", workflow_views.workflow_clone, name="workflow-clone"),
+    path("workflows/<uuid:workflow_id>/publish/", workflow_views.workflow_publish, name="workflow-publish"),
+    path("workflows/<uuid:workflow_id>/steps/", workflow_views.workflow_steps, name="workflow-steps"),
+    path("workflows/<uuid:workflow_id>/map-equipment/", workflow_views.workflow_map_equipment, name="workflow-map-equipment"),
 ]

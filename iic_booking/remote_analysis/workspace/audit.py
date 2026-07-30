@@ -15,6 +15,12 @@ def audit_workspace(
     actor=None,
     success: bool = True,
 ) -> WorkspaceAudit:
+    from iic_booking.remote_analysis.operations.commissioning_observability import (
+        annotate_details,
+        get_commissioning_run_id,
+    )
+
+    details = annotate_details(details)
     row = WorkspaceAudit.objects.create(
         workspace=workspace,
         action=action,
@@ -22,6 +28,7 @@ def audit_workspace(
         actor=actor if actor is not None and getattr(actor, "pk", None) else None,
         success=success,
     )
+    rid = get_commissioning_run_id()
     record_event(
         category=AuditCategory.WORKSPACE,
         action=f"Workspace.{action}",
@@ -29,7 +36,7 @@ def audit_workspace(
         workstation=workspace.workstation if workspace else None,
         actor=actor if actor is not None and getattr(actor, "is_authenticated", False) else None,
         success=success,
-        correlation_id=str(workspace.id) if workspace else "",
+        correlation_id=rid or (str(workspace.id) if workspace else ""),
     )
     return row
 

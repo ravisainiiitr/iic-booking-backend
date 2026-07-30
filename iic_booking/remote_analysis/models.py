@@ -413,6 +413,23 @@ from iic_booking.remote_analysis.scheduler_models import (  # noqa: E402,F401
     SoftwareRequirement,
 )
 
+from iic_booking.remote_analysis.catalog_models import (  # noqa: E402,F401
+    AnalysisSoftwareCatalog,
+    EquipmentAnalysisPool,
+    EquipmentAnalysisSoftware,
+)
+
+from iic_booking.remote_analysis.workflow_models import (  # noqa: E402,F401
+    AnalysisCapability,
+    AnalysisJob,
+    AnalysisJobCollaborator,
+    AnalysisJobStep,
+    AnalysisWorkflow,
+    AnalysisWorkflowStep,
+    AnalysisWorkflowVersion,
+    EquipmentAnalysisWorkflow,
+)
+
 # Milestone 4 browser remote desktop / Guacamole models
 from iic_booking.remote_analysis.session_models import (  # noqa: E402,F401
     ConnectionHistory,
@@ -454,6 +471,9 @@ from iic_booking.remote_analysis.operations_models import (  # noqa: E402,F401
     AlertRule,
     AnalysisReport,
     CapacitySnapshot,
+    CommissioningFailureSnapshot,
+    CommissioningRun,
+    CommissioningRunStep,
     DashboardSnapshot,
     OperationalKPI,
     PeakUsageWindow,

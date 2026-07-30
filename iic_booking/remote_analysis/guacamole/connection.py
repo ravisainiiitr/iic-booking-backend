@@ -10,7 +10,7 @@ from typing import Any
 from django.utils import timezone
 
 from iic_booking.remote_analysis.guacamole.client import GuacamoleClient, GuacamoleClientError
-from iic_booking.remote_analysis.guacamole.secrets import decrypt_password
+from iic_booking.remote_analysis.guacamole.secrets import decrypt_password, encrypt_password
 from iic_booking.remote_analysis.session_models import (
     GuacamoleConnection,
     RemoteAnalysisSettings,
@@ -55,6 +55,8 @@ def build_rdp_parameters(session: RemoteDesktopSession, settings_obj: RemoteAnal
         "disable-audio": _disable_flag(enable_audio),
         "disable-copy": "true" if disable_clipboard else "",
         "disable-paste": "true" if disable_clipboard else "",
+        "enable-printing": "false",
+        "disable-print": "true",
         "resize-method": "display-update",
     }
     if session.file_transfer_policy == "UPLOAD_ONLY":
@@ -105,12 +107,21 @@ class ConnectionManager:
                 "metadata": {
                     "mock": bool(created.get("mock")),
                     "connection_name": conn_name,
-                    # Server-side only — never expose via serializers
-                    "temp_password": temp_password,
+                    # Server-side only — Fernet ciphertext; never expose via serializers
+                    "temp_password_encrypted": encrypt_password(temp_password),
                 },
             },
         )
         return row, temp_user, temp_password
+
+    def ephemeral_password(self, conn: GuacamoleConnection) -> str:
+        meta = conn.metadata or {}
+        enc = meta.get("temp_password_encrypted") or ""
+        if enc:
+            return decrypt_password(enc)
+        # Legacy plaintext (pre-Phase-3) — migrate in-memory and re-encrypt when possible
+        legacy = meta.get("temp_password") or ""
+        return legacy
 
     def destroy(self, session: RemoteDesktopSession) -> bool:
         try:

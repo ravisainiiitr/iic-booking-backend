@@ -174,6 +174,15 @@ Portal **Sessions** tab: active/idle/browser counts, connection health, timeline
 
 ## Configuration
 
-Admin singleton `RemoteAnalysisSettings`: Guacamole URLs, timeouts, clipboard/file/audio policies, display defaults, `mock_guacamole`.
+Admin singleton `RemoteAnalysisSettings`: Guacamole URLs, timeouts, clipboard/file/audio policies, display defaults, `mock_guacamole`, `single_active_session_per_booking`.
 
-Migration: `0003_browser_remote_desktop_guacamole`.
+Migration: `0003_browser_remote_desktop_guacamole` (+ Phase 3 `0012_single_active_session_per_booking`).
+
+Phase 3 operator docs:
+
+- [docs/RemoteAnalysisGuacamoleArchitecture.md](../docs/RemoteAnalysisGuacamoleArchitecture.md)
+- [docs/RemoteAnalysisGuacamoleDeployment.md](../docs/RemoteAnalysisGuacamoleDeployment.md)
+- [docs/RemoteAnalysisGuacamoleConfiguration.md](../docs/RemoteAnalysisGuacamoleConfiguration.md)
+- [docs/RemoteAnalysisGuacamoleSecurity.md](../docs/RemoteAnalysisGuacamoleSecurity.md)
+- [docs/RemoteAnalysisGuacamoleRunbook.md](../docs/RemoteAnalysisGuacamoleRunbook.md)
+- [docs/sat/13-Guacamole-Session-SAT.md](../docs/sat/13-Guacamole-Session-SAT.md)

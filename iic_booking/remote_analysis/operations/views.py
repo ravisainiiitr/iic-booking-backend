@@ -32,6 +32,11 @@ from iic_booking.remote_analysis.operations.toolkit_views import (
     toolkit_health_report,
     toolkit_logs,
     toolkit_monitoring_recommendations,
+    toolkit_run_detail,
+    toolkit_run_evidence,
+    toolkit_run_failure_snapshots,
+    toolkit_run_timeline,
+    toolkit_runs,
     toolkit_self_test,
 )
 from iic_booking.remote_analysis.operations.performance import PerformanceMonitor

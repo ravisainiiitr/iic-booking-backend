@@ -51,17 +51,36 @@ class SchedulerService:
             reservation, ReservationStatus.VALIDATING, reason="Allocation started", actor=actor
         )
 
+        equipment = getattr(reservation.booking, "equipment", None) if reservation.booking_id else None
+        catalog_max = 0
+        software_name = ""
+        if reservation.software_profile_id:
+            software_name = reservation.software_profile.software or ""
+            catalog = getattr(reservation.software_profile, "catalog_entry", None)
+            if catalog is not None:
+                catalog_max = int(catalog.max_concurrent or 0)
+                software_name = catalog.name or software_name
+
+        caps = dict(reservation.requested_capabilities or {})
+        required_software_names = caps.pop("required_software_names", None) or None
+        prefer_workstation_id = caps.pop("prefer_workstation_id", None) or None
+
         candidate = self.allocation.select_best(
             start=reservation.requested_start,
             end=reservation.requested_end,
             department_id=reservation.department_id,
             requirement=reservation.software_profile,
             requested_capabilities={
-                **(reservation.requested_capabilities or {}),
+                **caps,
                 "resources": reservation.requested_resources or {},
             },
             user=reservation.user,
             exclude_reservation_id=reservation.id,
+            equipment=equipment,
+            catalog_max_concurrent=catalog_max,
+            software_name=software_name,
+            required_software_names=required_software_names,
+            prefer_workstation_id=prefer_workstation_id,
         )
 
         if candidate is None:

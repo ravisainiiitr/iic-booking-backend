@@ -118,6 +118,8 @@ def toolkit_connectivity(request):
         run_connectivity_tests(
             actor=request.user,
             workstation_id=request.data.get("workstation_id") or request.query_params.get("workstation_id"),
+            commissioning_run_id=request.data.get("commissioning_run_id")
+            or request.query_params.get("commissioning_run_id"),
         )
     )
 
@@ -153,6 +155,8 @@ def toolkit_self_test(request):
     result = run_full_self_test(
         actor=request.user,
         workstation_id=request.data.get("workstation_id") or request.query_params.get("workstation_id"),
+        commissioning_run_id=request.data.get("commissioning_run_id")
+        or request.query_params.get("commissioning_run_id"),
     )
     return Response(result)
 
@@ -197,4 +201,111 @@ def toolkit_monitoring_recommendations(request):
             "recommendations": MONITORING_RECOMMENDATIONS,
             "docs": "/docs/RemoteAnalysisCommissioningToolkit.md",
         }
+    )
+
+
+@api_view(["GET", "POST"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_runs(request):
+    """List recent commissioning runs, or POST to start a new run (observability only)."""
+    from iic_booking.remote_analysis.operations.commissioning_observability import (
+        start_commissioning_run,
+        summary_payload,
+    )
+    from iic_booking.remote_analysis.operations_models import CommissioningRun
+
+    if request.method == "POST":
+        run = start_commissioning_run(
+            actor=request.user,
+            workstation_id=request.data.get("workstation_id"),
+            notes=str(request.data.get("notes") or ""),
+        )
+        return Response(summary_payload(run), status=201)
+
+    limit = max(1, min(int(request.query_params.get("limit") or 50), 200))
+    qs = CommissioningRun.objects.order_by("-started_at")[:limit]
+    return Response([summary_payload(r) for r in qs])
+
+
+@api_view(["GET"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_run_detail(request, run_id):
+    from django.shortcuts import get_object_or_404
+
+    from iic_booking.remote_analysis.operations.commissioning_observability import summary_payload, timeline_payload
+    from iic_booking.remote_analysis.operations_models import CommissioningRun
+
+    run = get_object_or_404(CommissioningRun, pk=run_id)
+    return Response({**summary_payload(run), "timeline": timeline_payload(run)})
+
+
+@api_view(["GET"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_run_timeline(request, run_id):
+    from django.shortcuts import get_object_or_404
+
+    from iic_booking.remote_analysis.operations.commissioning_observability import timeline_payload
+    from iic_booking.remote_analysis.operations_models import CommissioningRun
+
+    run = get_object_or_404(CommissioningRun, pk=run_id)
+    return Response(timeline_payload(run))
+
+
+@api_view(["GET", "POST"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_run_evidence(request, run_id):
+    """Download (or rebuild) the evidence ZIP for a commissioning run. Admin/manage only."""
+    from django.core.files.storage import default_storage
+    from django.shortcuts import get_object_or_404
+
+    from iic_booking.remote_analysis.operations.commissioning_observability import (
+        build_evidence_bundle_bytes,
+        persist_evidence_bundle,
+    )
+    from iic_booking.remote_analysis.operations_models import CommissioningRun
+
+    run = get_object_or_404(CommissioningRun, pk=run_id)
+    rebuild = request.method == "POST" or (request.query_params.get("rebuild") or "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if rebuild or not run.evidence_path or not default_storage.exists(run.evidence_path):
+        persist_evidence_bundle(run)
+        run.refresh_from_db()
+
+    if run.evidence_path and default_storage.exists(run.evidence_path):
+        with default_storage.open(run.evidence_path, "rb") as fh:
+            data = fh.read()
+    else:
+        data = build_evidence_bundle_bytes(run)
+
+    resp = HttpResponse(data, content_type="application/zip")
+    resp["Content-Disposition"] = f'attachment; filename="commissioning-run-{run.id}-evidence.zip"'
+    return resp
+
+
+@api_view(["GET"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_run_failure_snapshots(request, run_id):
+    from django.shortcuts import get_object_or_404
+
+    from iic_booking.remote_analysis.operations_models import CommissioningRun
+
+    run = get_object_or_404(CommissioningRun, pk=run_id)
+    return Response(
+        [
+            {
+                "id": str(s.id),
+                "step_name": s.step_name,
+                "captured_at": s.captured_at.isoformat(),
+                "payload": s.payload,
+            }
+            for s in run.failure_snapshots.all()
+        ]
     )

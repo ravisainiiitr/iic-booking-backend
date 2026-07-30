@@ -81,10 +81,17 @@ class WorkspaceSyncService:
         update_fields = ["sync_phase", "sync_progress_percent", "sync_message", "updated_at"]
         workspace.save(update_fields=update_fields)
         if previous != phase:
+            from iic_booking.remote_analysis.operations.commissioning_observability import (
+                annotate_details,
+                observe_sync_phase,
+            )
+
             audit_workspace(
                 workspace,
                 "SYNC",
-                details=f"lifecycle {previous} → {phase}" + (f": {message}" if message else ""),
+                details=annotate_details(
+                    f"lifecycle {previous} → {phase}" + (f": {message}" if message else "")
+                ),
                 actor=actor,
                 success=phase
                 not in {
@@ -94,6 +101,7 @@ class WorkspaceSyncService:
                     WorkspaceSyncPhase.CANCELLED,
                 },
             )
+            observe_sync_phase(workspace, phase, message=message)
 
     def build_manifest(
         self,

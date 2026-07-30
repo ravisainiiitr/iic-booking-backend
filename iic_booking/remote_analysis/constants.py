@@ -137,14 +137,17 @@ class AllocationRuleType(models.TextChoices):
 
 
 DEFAULT_SCORING_WEIGHTS = {
-    "health_score": 25.0,
-    "cpu_load": 10.0,
-    "memory_usage": 10.0,
+    "health_score": 20.0,
+    "cpu_load": 8.0,
+    "memory_usage": 8.0,
     "recent_usage": 5.0,
-    "software_match": 20.0,
-    "capability_match": 15.0,
-    "department_affinity": 10.0,
-    "idle_time": 5.0,
+    "software_match": 18.0,
+    "capability_match": 12.0,
+    "department_affinity": 8.0,
+    "idle_time": 4.0,
+    "gpu_score": 7.0,
+    "historical_performance": 5.0,
+    "multi_software_coverage": 5.0,
 }
 # --- Milestone 4: Browser remote desktop / Guacamole ---
 
@@ -190,12 +193,58 @@ class ClipboardPolicy(models.TextChoices):
 DEFAULT_WORKSPACE_FOLDERS = (
     "RawData",
     "Processed",
+    "FinalOutput",
+    "Scratch",
     "Reports",
     "Exports",
     "Temp",
     "Logs",
     "Metadata",
 )
+
+# Additive workflow step folders are created dynamically as Step01, Step02, …
+
+
+class WorkflowJobStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    PREPARING = "PREPARING", _("Preparing Analysis Workspace")
+    ACTIVE = "ACTIVE", _("Analysis Session Active")
+    PAUSED = "PAUSED", _("Paused")
+    NEEDS_REVIEW = "NEEDS_REVIEW", _("Needs Operator Review")
+    COMPLETED = "COMPLETED", _("Analysis Completed")
+    FAILED = "FAILED", _("Failed")
+    CANCELLED = "CANCELLED", _("Cancelled")
+
+
+class WorkflowJobStepStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    READY = "READY", _("Ready")
+    ACTIVE = "ACTIVE", _("Active")
+    COMPLETED = "COMPLETED", _("Completed")
+    SKIPPED = "SKIPPED", _("Skipped")
+    FAILED = "FAILED", _("Failed")
+    NEEDS_REVIEW = "NEEDS_REVIEW", _("Needs Operator Review")
+
+
+class AnalysisJobCollaboratorRole(models.TextChoices):
+    """Reserved for v2 multi-user collaboration — do not expose in Portal UX yet."""
+
+    OWNER = "OWNER", _("Owner")
+    COLLABORATOR = "COLLABORATOR", _("Collaborator")
+    VIEWER = "VIEWER", _("Viewer")
+    OBSERVER = "OBSERVER", _("Observer")
+
+
+UX_STATUS_LABELS = {
+    WorkflowJobStatus.PENDING: "Preparing Analysis Workspace",
+    WorkflowJobStatus.PREPARING: "Preparing Analysis Workspace",
+    WorkflowJobStatus.ACTIVE: "Analysis Session Active",
+    WorkflowJobStatus.PAUSED: "Analysis Session Paused",
+    WorkflowJobStatus.NEEDS_REVIEW: "Needs Operator Review",
+    WorkflowJobStatus.COMPLETED: "Analysis Completed",
+    WorkflowJobStatus.FAILED: "Analysis Failed",
+    WorkflowJobStatus.CANCELLED: "Analysis Cancelled",
+}
 DEFAULT_WORKSPACE_QUOTA_GB = 50.0
 DEFAULT_WORKSPACE_RETENTION_DAYS = 90
 DEFAULT_CHUNK_SIZE_BYTES = 5 * 1024 * 1024

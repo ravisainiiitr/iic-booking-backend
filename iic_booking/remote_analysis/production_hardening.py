@@ -79,7 +79,13 @@ def json_safe(value: Any) -> Any:
 
 
 def structured_log(level: int, message: str, **fields: Any) -> None:
-    payload = {"correlation_id": get_correlation_id(), **{k: v for k, v in fields.items() if v is not None}}
+    from iic_booking.remote_analysis.operations.commissioning_observability import get_commissioning_run_id
+
+    payload = {
+        "correlation_id": get_correlation_id(),
+        "commissioning_run_id": get_commissioning_run_id(),
+        **{k: v for k, v in fields.items() if v is not None},
+    }
     logger.log(level, "%s | %s", message, payload)
 
 

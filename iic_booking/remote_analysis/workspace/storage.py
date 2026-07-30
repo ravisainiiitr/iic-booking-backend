@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 FOLDER_CATEGORY = {
     "RawData": FileCategory.RAW,
     "Processed": FileCategory.PROCESSED,
+    "FinalOutput": FileCategory.PROCESSED,
+    "Scratch": FileCategory.TEMP,
     "Reports": FileCategory.REPORT,
     "Exports": FileCategory.EXPORT,
     "Temp": FileCategory.TEMP,
@@ -145,6 +147,32 @@ class StorageManager:
         audit_workspace(workspace, "CREATE", details=storage_key, actor=actor)
         record_metric("workspace_created", 1, workspace=workspace)
         return workspace
+
+    def ensure_folders(self, workspace: AnalysisWorkspace, folder_names: list[str]) -> list[str]:
+        """Create any missing workspace folders (idempotent). Returns created names."""
+        root = self.absolute_path(workspace)
+        root.mkdir(parents=True, exist_ok=True)
+        created: list[str] = []
+        for name in folder_names:
+            safe = str(name).strip().replace("\\", "/").split("/")[0]
+            if not safe or safe in {".", ".."} or "/" in safe:
+                continue
+            folder_path = root / safe
+            if not folder_path.exists():
+                folder_path.mkdir(parents=True, exist_ok=True)
+                created.append(safe)
+            WorkspaceFolder.objects.get_or_create(
+                workspace=workspace,
+                name=safe,
+                defaults={
+                    "relative_path": safe,
+                    "read_only": safe in {"Metadata"},
+                    "category": FOLDER_CATEGORY.get(safe, FileCategory.OTHER)
+                    if not safe.startswith("Step")
+                    else FileCategory.PROCESSED,
+                },
+            )
+        return created
 
     def recalculate_usage(self, workspace: AnalysisWorkspace) -> int:
         total = 0

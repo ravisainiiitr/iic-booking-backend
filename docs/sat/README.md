@@ -19,8 +19,11 @@
 | 9 | Performance baseline | [08-Performance-Baseline.md](08-Performance-Baseline.md) |
 | 10 | Known limitations | [09-Known-Limitations.md](09-Known-Limitations.md) |
 | — | Production Readiness Report (after all SAT pass) | [10-Production-Readiness-Report.md](10-Production-Readiness-Report.md) |
+| — | Live first-workstation commissioning (Phase 2) | [../RemoteAnalysisLiveCommissioning.md](../RemoteAnalysisLiveCommissioning.md) · [12-Live-Commissioning-Report.md](12-Live-Commissioning-Report.md) |
+| — | Guacamole Session SAT (Phase 3) | [13-Guacamole-Session-SAT.md](13-Guacamole-Session-SAT.md) |
 
-Related operator guide: [../RemoteAnalysisCommissioning.md](../RemoteAnalysisCommissioning.md)
+Related operator guide: [../RemoteAnalysisCommissioning.md](../RemoteAnalysisCommissioning.md)  
+Guacamole architecture: [../RemoteAnalysisGuacamoleArchitecture.md](../RemoteAnalysisGuacamoleArchitecture.md)
 
 ## Suites
 
@@ -36,6 +39,7 @@ Related operator guide: [../RemoteAnalysisCommissioning.md](../RemoteAnalysisCom
 | SAT-08 | Performance | — | ✓ (`SAT_PERF=1`) |
 | SAT-09 | Database Integrity | ✓ | ✓ |
 | SAT-10 | Audit | ✓ | ✓ |
+| SAT-11 | Guacamole Session | ✓ (mock) | ✓ (`SAT_GUAC=1`) |
 
 ## How to run
 

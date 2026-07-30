@@ -205,6 +205,156 @@ class AllocationRuleAdmin(admin.ModelAdmin):
 @admin.register(SoftwareRequirement)
 class SoftwareRequirementAdmin(admin.ModelAdmin):
     list_display = ("name", "software", "minimum_version", "required", "gpu_required", "license_required")
+    search_fields = ("name", "software", "minimum_version")
+
+
+from iic_booking.remote_analysis.catalog_models import (  # noqa: E402
+    AnalysisSoftwareCatalog,
+    EquipmentAnalysisPool,
+    EquipmentAnalysisSoftware,
+)
+
+
+@admin.register(AnalysisSoftwareCatalog)
+class AnalysisSoftwareCatalogAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "vendor", "version_constraint", "max_concurrent", "is_active", "updated_at")
+    list_filter = ("is_active", "license_type")
+    search_fields = ("name", "slug", "vendor")
+    filter_horizontal = ("supported_departments", "capabilities")
+    autocomplete_fields = ("software_requirement",)
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(EquipmentAnalysisSoftware)
+class EquipmentAnalysisSoftwareAdmin(admin.ModelAdmin):
+    list_display = ("equipment", "catalog", "is_default", "sort_order", "button_label_override")
+    list_filter = ("is_default",)
+    search_fields = ("equipment__code", "equipment__name", "catalog__name")
+    autocomplete_fields = ("equipment", "catalog")
+
+
+@admin.register(EquipmentAnalysisPool)
+class EquipmentAnalysisPoolAdmin(admin.ModelAdmin):
+    list_display = ("equipment", "workstation", "priority_boost", "created_at")
+    search_fields = ("equipment__code", "workstation__hostname", "workstation__display_name")
+    autocomplete_fields = ("equipment", "workstation")
+
+
+from iic_booking.remote_analysis.workflow_models import (  # noqa: E402
+    AnalysisCapability,
+    AnalysisJob,
+    AnalysisJobCollaborator,
+    AnalysisJobStep,
+    AnalysisWorkflow,
+    AnalysisWorkflowStep,
+    AnalysisWorkflowVersion,
+    EquipmentAnalysisWorkflow,
+)
+
+
+class AnalysisWorkflowStepInline(admin.TabularInline):
+    model = AnalysisWorkflowStep
+    extra = 0
+    ordering = ("step_number",)
+    autocomplete_fields = ("software", "capability")
+
+
+class AnalysisWorkflowVersionInline(admin.TabularInline):
+    model = AnalysisWorkflowVersion
+    extra = 0
+    show_change_link = True
+
+
+@admin.register(AnalysisCapability)
+class AnalysisCapabilityAdmin(admin.ModelAdmin):
+    list_display = ("name", "slug", "is_active", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "slug")
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(AnalysisWorkflow)
+class AnalysisWorkflowAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "slug",
+        "is_active",
+        "is_template",
+        "estimated_duration_minutes",
+        "require_raw_data",
+        "updated_at",
+    )
+    list_filter = ("is_active", "is_template", "require_calibration", "require_reference_files")
+    search_fields = ("name", "slug", "description")
+    prepopulated_fields = {"slug": ("name",)}
+    inlines = [AnalysisWorkflowVersionInline]
+    fieldsets = (
+        (None, {"fields": ("name", "slug", "description", "is_active", "is_template", "cloned_from", "estimated_duration_minutes")}),
+        (
+            "Input requirements",
+            {"fields": ("require_raw_data", "require_calibration", "require_reference_files", "optional_input_types", "input_requirements", "variables_schema")},
+        ),
+        (
+            "Reserved (AI / collaboration)",
+            {
+                "classes": ("collapse",),
+                "fields": (
+                    "ai_assistance_enabled",
+                    "ai_suggested_parameters",
+                    "ai_auto_classification",
+                    "ai_quality_score_schema",
+                    "ai_analysis_notes_prompt",
+                    "collaboration_enabled",
+                ),
+            },
+        ),
+    )
+
+
+@admin.register(AnalysisWorkflowVersion)
+class AnalysisWorkflowVersionAdmin(admin.ModelAdmin):
+    list_display = ("workflow", "version_number", "label", "is_published", "published_at")
+    list_filter = ("is_published",)
+    search_fields = ("workflow__name", "label")
+    inlines = [AnalysisWorkflowStepInline]
+
+
+@admin.register(AnalysisWorkflowStep)
+class AnalysisWorkflowStepAdmin(admin.ModelAdmin):
+    list_display = ("version", "step_number", "title", "software", "capability", "mandatory")
+    list_filter = ("mandatory",)
+    search_fields = ("title", "software__name", "capability__name")
+    autocomplete_fields = ("version", "software", "capability")
+
+
+@admin.register(EquipmentAnalysisWorkflow)
+class EquipmentAnalysisWorkflowAdmin(admin.ModelAdmin):
+    list_display = ("equipment", "workflow", "is_default", "sort_order", "button_label_override")
+    list_filter = ("is_default",)
+    search_fields = ("equipment__code", "workflow__name")
+    autocomplete_fields = ("equipment", "workflow")
+
+
+@admin.register(AnalysisJob)
+class AnalysisJobAdmin(admin.ModelAdmin):
+    list_display = ("id", "booking", "status", "current_step_number", "owner", "updated_at")
+    list_filter = ("status",)
+    search_fields = ("booking__booking_id", "owner__email")
+    raw_id_fields = ("booking", "workflow_version", "workspace", "reservation", "owner", "preferred_workstation")
+    readonly_fields = ("created_at", "updated_at", "started_at", "completed_at")
+
+
+@admin.register(AnalysisJobStep)
+class AnalysisJobStepAdmin(admin.ModelAdmin):
+    list_display = ("job", "step_number", "status", "environment_label", "checkpoint_at")
+    list_filter = ("status",)
+    raw_id_fields = ("job", "workflow_step", "session", "workstation")
+
+
+@admin.register(AnalysisJobCollaborator)
+class AnalysisJobCollaboratorAdmin(admin.ModelAdmin):
+    list_display = ("job", "user", "role", "created_at")
+    list_filter = ("role",)
 
 
 @admin.register(ReservationHistory)
@@ -257,7 +407,15 @@ from iic_booking.remote_analysis.session_models import (  # noqa: E402
 
 @admin.register(RemoteAnalysisSettings)
 class RemoteAnalysisSettingsAdmin(admin.ModelAdmin):
-    list_display = ("id", "mock_guacamole", "session_timeout", "idle_timeout", "max_concurrent_sessions", "updated_at")
+    list_display = (
+        "id",
+        "mock_guacamole",
+        "session_timeout",
+        "idle_timeout",
+        "max_concurrent_sessions",
+        "analyze_data_button_label",
+        "updated_at",
+    )
     fieldsets = (
         (
             "Guacamole (internal)",
@@ -282,9 +440,21 @@ class RemoteAnalysisSettingsAdmin(admin.ModelAdmin):
                     "idle_timeout",
                     "idle_warning_seconds",
                     "max_concurrent_sessions",
+                    "single_active_session_per_booking",
                     "prepare_timeout_seconds",
                     "launch_token_lifetime_seconds",
                     "bind_token_to_ip",
+                )
+            },
+        ),
+        (
+            "Analyze Data (booking CTA)",
+            {
+                "fields": (
+                    "analyze_data_button_label",
+                    "analyze_data_require_s3_files",
+                    "analyze_data_stage_raw_on_launch",
+                    "analyze_data_prefer_workflow",
                 )
             },
         ),
@@ -477,6 +647,9 @@ from iic_booking.remote_analysis.operations_models import (  # noqa: E402
     AlertRule,
     AnalysisReport,
     CapacitySnapshot,
+    CommissioningFailureSnapshot,
+    CommissioningRun,
+    CommissioningRunStep,
     DashboardSnapshot,
     OperationalKPI,
     PerformanceMetric,
@@ -547,6 +720,26 @@ class WorkstationAvailabilityAdmin(admin.ModelAdmin):
 @admin.register(DashboardSnapshot)
 class DashboardSnapshotAdmin(admin.ModelAdmin):
     list_display = ("dashboard_key", "generated_at")
+    readonly_fields = ("payload",)
+
+
+@admin.register(CommissioningRun)
+class CommissioningRunAdmin(admin.ModelAdmin):
+    list_display = ("id", "status", "workstation", "workspace", "booking_id", "started_at", "completed_at")
+    list_filter = ("status",)
+    search_fields = ("id", "notes", "evidence_path")
+    readonly_fields = ("id", "started_at", "completed_at", "summary", "evidence_path")
+
+
+@admin.register(CommissioningRunStep)
+class CommissioningRunStepAdmin(admin.ModelAdmin):
+    list_display = ("run", "name", "started_at", "ended_at", "duration_ms", "success", "retry_count")
+    list_filter = ("success", "name")
+
+
+@admin.register(CommissioningFailureSnapshot)
+class CommissioningFailureSnapshotAdmin(admin.ModelAdmin):
+    list_display = ("run", "step_name", "captured_at")
     readonly_fields = ("payload",)
 
 

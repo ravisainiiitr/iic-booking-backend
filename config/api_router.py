@@ -449,6 +449,41 @@ urlpatterns = router.urls + [
         name="booking-analysis-detail",
     ),
     path(
+        "v1/bookings/<int:booking_id>/analysis/software/",
+        booking_ra_views.booking_analysis_software,
+        name="booking-analysis-software",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/workflows/",
+        booking_ra_views.booking_analysis_workflows,
+        name="booking-analysis-workflows",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/analyze/",
+        booking_ra_views.booking_analysis_analyze,
+        name="booking-analysis-analyze",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/job/",
+        booking_ra_views.booking_analysis_job,
+        name="booking-analysis-job",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/job/steps/<int:step_number>/complete/",
+        booking_ra_views.booking_analysis_job_complete_step,
+        name="booking-analysis-job-complete-step",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/job/pause/",
+        booking_ra_views.booking_analysis_job_pause,
+        name="booking-analysis-job-pause",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/job/resume/",
+        booking_ra_views.booking_analysis_job_resume,
+        name="booking-analysis-job-resume",
+    ),
+    path(
         "v1/bookings/<int:booking_id>/analysis/create/",
         booking_ra_views.booking_analysis_create,
         name="booking-analysis-create",
@@ -457,6 +492,11 @@ urlpatterns = router.urls + [
         "v1/bookings/<int:booking_id>/analysis/launch/",
         booking_ra_views.booking_analysis_launch,
         name="booking-analysis-launch",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/desktop/",
+        booking_ra_views.booking_analysis_desktop,
+        name="booking-analysis-desktop",
     ),
     path(
         "v1/bookings/<int:booking_id>/analysis/files/",
@@ -480,6 +520,41 @@ urlpatterns = router.urls + [
         name="booking-analysis-detail-legacy",
     ),
     path(
+        "bookings/<int:booking_id>/analysis/software/",
+        booking_ra_views.booking_analysis_software,
+        name="booking-analysis-software-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/workflows/",
+        booking_ra_views.booking_analysis_workflows,
+        name="booking-analysis-workflows-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/analyze/",
+        booking_ra_views.booking_analysis_analyze,
+        name="booking-analysis-analyze-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/job/",
+        booking_ra_views.booking_analysis_job,
+        name="booking-analysis-job-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/job/steps/<int:step_number>/complete/",
+        booking_ra_views.booking_analysis_job_complete_step,
+        name="booking-analysis-job-complete-step-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/job/pause/",
+        booking_ra_views.booking_analysis_job_pause,
+        name="booking-analysis-job-pause-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/job/resume/",
+        booking_ra_views.booking_analysis_job_resume,
+        name="booking-analysis-job-resume-legacy",
+    ),
+    path(
         "bookings/<int:booking_id>/analysis/create/",
         booking_ra_views.booking_analysis_create,
         name="booking-analysis-create-legacy",
@@ -488,6 +563,11 @@ urlpatterns = router.urls + [
         "bookings/<int:booking_id>/analysis/launch/",
         booking_ra_views.booking_analysis_launch,
         name="booking-analysis-launch-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/desktop/",
+        booking_ra_views.booking_analysis_desktop,
+        name="booking-analysis-desktop-legacy",
     ),
     path(
         "bookings/<int:booking_id>/analysis/files/",

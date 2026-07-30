@@ -140,13 +140,34 @@ class GuacamoleClient:
         raise GuacamoleClientError("Guacamole request failed")
 
     def health_check(self) -> bool:
+        return self.health_probe().get("ok", False)
+
+    def health_probe(self) -> dict[str, Any]:
+        """Timed Guacamole connectivity probe for diagnostics / toolkit."""
+        t0 = time.perf_counter()
         if self.mock:
-            return True
+            return {
+                "ok": True,
+                "status": "mock",
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+                "mock": True,
+            }
         try:
             self.authenticate()
-            return True
-        except GuacamoleClientError:
-            return False
+            return {
+                "ok": True,
+                "status": "ok",
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+                "mock": False,
+            }
+        except GuacamoleClientError as exc:
+            return {
+                "ok": False,
+                "status": "unreachable",
+                "latency_ms": int((time.perf_counter() - t0) * 1000),
+                "mock": False,
+                "error": str(exc)[:200],
+            }
 
     def create_connection(self, *, name: str, parameters: dict[str, Any], attributes: dict[str, Any] | None = None) -> dict[str, Any]:
         if self.mock:

@@ -1,0 +1,229 @@
+# Remote Analysis — full production stack for fresh-server deployment (≤30 min target).
+#
+# Includes: Portal (Django), PostgreSQL, Redis, Celery worker/beat, optional Flower,
+# Guacamole + guacd + Guacamole DB.
+#
+# Windows Analysis Agents are NOT containerized — see docs/release/rc1 and
+# docs/deploy/AGENT_INSTALL.md (referenced from Production Deployment Guide).
+#
+# Usage (from repo root):
+#   cp docs/release/rc1/sample.env.production .envs/.production/.django   # edit secrets
+#   export COMPOSE_FILE=docker-compose.ra-production.yml
+#   ./scripts/deploy/deploy.sh
+#
+# Profiles:
+#   flower     — Celery Flower UI (port 5555)
+#   guacamole  — Guacamole stack (default on; disable with --profile '' if sync-only)
+
+name: iic-ra-production
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+x-django: &django
+  build:
+    context: .
+    dockerfile: ./compose/production/django/Dockerfile
+  image: iic_booking_production_django
+  restart: unless-stopped
+  env_file:
+    - ./.envs/.production/.django
+  environment:
+    TZ: Asia/Kolkata
+  volumes:
+    - production_media:/app/iic_booking/media
+    - production_static:/app/staticfiles
+  networks:
+    - ra_backend
+    - ra_frontend
+  logging: *default-logging
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: docker.io/postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - ./.envs/.production/.django
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-iic_booking}
+      POSTGRES_USER: ${POSTGRES_USER:-iic_booking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      TZ: Asia/Kolkata
+    volumes:
+      - production_postgres:/var/lib/postgresql/data
+    networks:
+      - ra_backend
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-iic_booking} -d $${POSTGRES_DB:-iic_booking}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: docker.io/redis:7.2
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - production_redis:/data
+    networks:
+      - ra_backend
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  django:
+    <<: *django
+    ports:
+      - "${PORTAL_HOST_PORT:-8080}:5000"
+    command: /start
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/v1/analysis/health/ready/', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  celeryworker:
+    <<: *django
+    image: iic_booking_production_celeryworker
+    command: /start-celeryworker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_started
+
+  celerybeat:
+    <<: *django
+    image: iic_booking_production_celerybeat
+    command: /start-celerybeat
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_started
+
+  flower:
+    <<: *django
+    profiles: ["flower"]
+    image: iic_booking_production_flower
+    command: /start-flower
+    ports:
+      - "${FLOWER_HOST_PORT:-5555}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_started
+
+  # --- Guacamole (browser RDP gateway) ---
+  guacd:
+    profiles: ["guacamole"]
+    image: guacamole/guacd:1.5.5
+    restart: unless-stopped
+    volumes:
+      - guac_drive:/drive
+      - guac_record:/record
+    networks:
+      - ra_backend
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  guacamole-db:
+    profiles: ["guacamole"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-change-me}
+      TZ: Asia/Kolkata
+    volumes:
+      - guac_db:/var/lib/postgresql/data
+    networks:
+      - ra_backend
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  guacamole:
+    profiles: ["guacamole"]
+    image: guacamole/guacamole:1.5.5
+    restart: unless-stopped
+    depends_on:
+      guacd:
+        condition: service_healthy
+      guacamole-db:
+        condition: service_healthy
+    environment:
+      GUACD_HOSTNAME: guacd
+      POSTGRESQL_HOSTNAME: guacamole-db
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USER: guacamole_user
+      POSTGRESQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-change-me}
+    ports:
+      - "${GUACAMOLE_HOST_PORT:-8085}:8080"
+    networks:
+      - ra_backend
+      - ra_frontend
+    logging: *default-logging
+    # Image may lack curl; TCP open on Tomcat port is enough for compose health.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080'",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+networks:
+  ra_backend:
+    driver: bridge
+    internal: false
+  ra_frontend:
+    driver: bridge
+
+volumes:
+  production_postgres:
+  production_redis:
+  production_media:
+  production_static:
+  guac_db:
+  guac_drive:
+  guac_record:

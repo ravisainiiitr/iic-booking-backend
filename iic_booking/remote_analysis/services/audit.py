@@ -17,6 +17,20 @@ def record_event(
     actor: Any = None,
     correlation_id: str = "",
 ) -> WorkstationEvent:
+    if not correlation_id:
+        try:
+            from iic_booking.remote_analysis.operations.commissioning_observability import (
+                active_run_id_for_workstation,
+                get_commissioning_run_id,
+            )
+
+            correlation_id = get_commissioning_run_id() or active_run_id_for_workstation(workstation) or ""
+        except Exception:  # noqa: BLE001
+            correlation_id = ""
+    if correlation_id:
+        tag = f"[commissioning_run={correlation_id}]"
+        if tag not in (details or ""):
+            details = f"{tag} {details}" if details else tag
     return WorkstationEvent.objects.create(
         workstation=workstation,
         category=category,
