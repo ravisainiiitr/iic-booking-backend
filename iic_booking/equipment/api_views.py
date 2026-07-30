@@ -9408,6 +9408,8 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
         "total_time_minutes": str(booking.total_time_minutes),
         "sample_collection_notice": sample_notice_ctx["sample_collection_notice"],
         "sample_collection_deadline_hours": sample_notice_ctx["sample_collection_deadline_hours"],
+        "sample_collection_deadline_at": sample_notice_ctx.get("sample_collection_deadline_at"),
+        "sample_collection_deadline_display": sample_notice_ctx.get("sample_collection_deadline_display"),
         "is_external_user": sample_notice_ctx["is_external_user"],
         "sample_preserve_yes_url": sample_notice_ctx["sample_preserve_yes_url"],
         "sample_preserve_no_url": sample_notice_ctx["sample_preserve_no_url"],
@@ -9503,7 +9505,10 @@ def _try_complete_booking_on_sample_analyzed(booking, acting_user) -> bool:
 
 def _build_sample_notice_context(booking):
     """Build common sample notice context for completion/results emails."""
+    from datetime import timedelta
+
     user = booking.user
+    equipment = getattr(booking, "equipment", None)
     is_external = UserType.is_external_user(getattr(user, "user_type", None))
     booking_display_id = booking_display_id_for_email(booking) or str(booking.booking_id)
     yes_url = get_frontend_absolute_url(
@@ -9512,12 +9517,24 @@ def _build_sample_notice_context(booking):
     no_url = get_frontend_absolute_url(
         f"/my-bookings?booking={booking_display_id}&sample_preservation=NO"
     )
+    hours = int(getattr(equipment, "sample_collect_deadline_hours", 0) or 0) if equipment else 0
+    if hours <= 0:
+        hours = 72
+    completed_at = getattr(booking, "completed_at", None) or timezone.now()
+    if timezone.is_naive(completed_at):
+        completed_at = timezone.make_aware(completed_at)
+    deadline = completed_at + timedelta(hours=hours)
+    deadline_display = deadline.strftime("%d %B %Y")
     notice = (
-        "Please collect the analyzed sample within 24 hours from this email; "
-        "otherwise it will be discarded."
+        "Your analysis has been completed successfully. "
+        "Your sample is now ready for collection. "
+        f"Please collect your sample before {deadline_display}. "
+        "Samples not collected before this date will be discarded as per laboratory policy."
     )
     return {
-        "sample_collection_deadline_hours": 24,
+        "sample_collection_deadline_hours": hours,
+        "sample_collection_deadline_at": deadline.isoformat(),
+        "sample_collection_deadline_display": deadline_display,
         "sample_collection_notice": notice,
         "is_external_user": is_external,
         "sample_preserve_yes_url": yes_url,
@@ -9529,7 +9546,17 @@ def _append_sample_notice_plaintext(message, sample_notice_ctx):
     """Append sample collection notice and external-user action links to plain text email."""
     if not message:
         message = ""
-    lines = ["", sample_notice_ctx["sample_collection_notice"]]
+    deadline = sample_notice_ctx.get("sample_collection_deadline_display") or ""
+    lines = [
+        "",
+        "Sample Collection Information",
+        "Your analysis has been completed successfully.",
+        "Your sample is now ready for collection.",
+        "",
+        "Sample Collection Deadline",
+        f"Please collect your sample before: {deadline}" if deadline else sample_notice_ctx["sample_collection_notice"],
+        "Samples not collected before this date will be discarded as per laboratory policy.",
+    ]
     if sample_notice_ctx["is_external_user"]:
         lines.extend(
             [
@@ -9545,9 +9572,16 @@ def _append_sample_notice_plaintext(message, sample_notice_ctx):
 
 def _append_sample_notice_html(html_message, sample_notice_ctx):
     """Append sample collection notice and external-user action buttons to HTML email."""
+    deadline = html.escape(sample_notice_ctx.get("sample_collection_deadline_display") or "")
     notice_html = (
         "<hr style='margin:16px 0;border:none;border-top:1px solid #ddd;'/>"
-        f"<p><strong>{html.escape(sample_notice_ctx['sample_collection_notice'])}</strong></p>"
+        "<h3 style='margin:0 0 8px;font-size:16px;'>Sample Collection Information</h3>"
+        "<p style='margin:0 0 8px;'>Your analysis has been completed successfully.</p>"
+        "<p style='margin:0 0 8px;'>Your sample is now ready for collection.</p>"
+        "<p style='margin:12px 0 4px;'><strong>Sample Collection Deadline</strong></p>"
+        f"<p style='margin:0 0 8px;'>Please collect your sample before:</p>"
+        f"<p style='margin:0 0 8px;font-size:18px;font-weight:600;'>{deadline}</p>"
+        "<p style='margin:0 0 8px;'>Samples not collected before this date will be discarded as per laboratory policy.</p>"
     )
     if sample_notice_ctx["is_external_user"]:
         yes_url = html.escape(sample_notice_ctx["sample_preserve_yes_url"], quote=True)
@@ -9569,6 +9603,9 @@ def _append_sample_notice_html(html_message, sample_notice_ctx):
 def complete_booking(request, booking_id):
     """Mark a booking as completed. Optionally accept result files (multipart); they are saved and sent to the user email with the completion message.
 
+    Also records Sample Lifecycle COMPLETED (same milestone formerly labeled Analyzed) when missing,
+    so lifecycle UI and retention jobs stay consistent.
+
     Request: multipart/form-data with optional "results" or "results[]" file fields.
     Returns: message, booking, uploaded_files (list of original filenames).
     """
@@ -9579,7 +9616,7 @@ def complete_booking(request, booking_id):
         )
 
     try:
-        booking = Booking.objects.get(booking_id=booking_id)
+        booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response(
             {"error": "Booking not found."},
@@ -9600,6 +9637,24 @@ def complete_booking(request, booking_id):
         booking.status = BookingStatus.COMPLETED
         booking.completed_at = timezone.now()
         booking.save()
+
+        # Mirror former Sample Lifecycle "Analyzed" milestone on Complete
+        try:
+            has_completed_trace = booking.sample_trace_events.filter(
+                status=SampleTraceStatus.COMPLETED
+            ).exists()
+            if not has_completed_trace:
+                BookingSampleTrace.objects.create(
+                    booking=booking,
+                    status=SampleTraceStatus.COMPLETED,
+                    created_by=request.user,
+                    reason="Recorded automatically when booking was marked Complete.",
+                )
+        except Exception:
+            logger.exception(
+                "Failed to write COMPLETED sample trace on complete_booking for booking %s",
+                booking.booking_id,
+            )
 
         # Collect uploaded result files (multiple); do not fail the request if this fails
         result_file_list = []
@@ -12065,12 +12120,15 @@ def set_booking_sample_status(request, booking_id):
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
     status_value = (request.data.get('status') or '').strip().upper()
-    # Sample Returned and Archived removed from lifecycle; only Disposed remains after Analyzed.
+    # Sample Returned / Archived removed; Analyzed (COMPLETED) and Disposed are no longer
+    # manual UI actions — Complete covers analysis completion; disposal is out of portal workflow.
     disallowed_manual = {
         SampleTraceStatus.NOT_UTILIZED,
         SampleTraceStatus.OP_UNAVAILABLE,
         SampleTraceStatus.RETURNED,
         SampleTraceStatus.ARCHIVED,
+        SampleTraceStatus.COMPLETED,
+        SampleTraceStatus.DISPOSED,
     }
     valid = [s[0] for s in SampleTraceStatus.choices if s[0] not in disallowed_manual]
     if status_value not in valid:

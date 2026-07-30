@@ -3206,7 +3206,7 @@ class SampleTraceStatus(models.TextChoices):
     SAMPLE_ACCEPTED = 'SAMPLE_ACCEPTED', _('Sample Accepted')
     SAMPLE_REJECTED = 'SAMPLE_REJECTED', _('Sample Rejected')
     PROCESSING = 'PROCESSING', _('Processing')
-    COMPLETED = 'COMPLETED', _('Analyzed')
+    COMPLETED = 'COMPLETED', _('Completed')
     RETURNED = 'RETURNED', _('Returned')
     ARCHIVED = 'ARCHIVED', _('Archived')
     DISPOSED = 'DISPOSED', _('Disposed')

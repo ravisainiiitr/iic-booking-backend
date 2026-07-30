@@ -101,6 +101,31 @@ def _booking_sample_trace_events(booking):
     return events
 
 
+def compute_sample_collection_deadline(booking):
+    """
+    Absolute deadline for sample collection after booking completion.
+    Uses equipment.sample_collect_deadline_hours from completed_at.
+    Returns (deadline_aware_dt | None, hours | None).
+    """
+    from datetime import timedelta
+
+    equipment = getattr(booking, "equipment", None)
+    if not equipment:
+        return None, None
+    status_u = (getattr(booking, "status", None) or "").upper()
+    if status_u != BookingStatus.COMPLETED:
+        return None, None
+    collect_hours = int(getattr(equipment, "sample_collect_deadline_hours", 0) or 0)
+    if collect_hours <= 0:
+        return None, None
+    completed_at = getattr(booking, "completed_at", None)
+    if not completed_at:
+        return None, None
+    if timezone.is_naive(completed_at):
+        completed_at = timezone.make_aware(completed_at)
+    return completed_at + timedelta(hours=collect_hours), collect_hours
+
+
 def build_booking_lifecycle_countdown(booking):
     """
     Sample-lifecycle countdown for booking details:
@@ -129,7 +154,6 @@ def build_booking_lifecycle_countdown(booking):
     terminal_done = {
         SampleTraceStatus.RETURNED,
         SampleTraceStatus.ARCHIVED,
-        SampleTraceStatus.DISPOSED,
         SampleTraceStatus.NOT_UTILIZED,
         SampleTraceStatus.OP_UNAVAILABLE,
     }
@@ -159,19 +183,14 @@ def build_booking_lifecycle_countdown(booking):
             **extra,
         }
 
-    # Phase 3: after booking completed — collect / discard window
+    # Phase 3: after booking completed — collect / discard window (keep visible when overdue)
     if status_u == BookingStatus.COMPLETED:
-        collect_hours = int(getattr(equipment, "sample_collect_deadline_hours", 0) or 0)
-        if collect_hours <= 0:
+        deadline, collect_hours = compute_sample_collection_deadline(booking)
+        if deadline is None or collect_hours is None:
             return None
         completed_at = getattr(booking, "completed_at", None)
-        if not completed_at:
-            return None
         if timezone.is_naive(completed_at):
             completed_at = timezone.make_aware(completed_at)
-        deadline = completed_at + timedelta(hours=collect_hours)
-        if now >= deadline:
-            return None
         return _payload(
             phase="collect_sample",
             title="Time remaining to collect sample",
@@ -2062,6 +2081,8 @@ class BookingSerializer(serializers.ModelSerializer):
     settlement_department_name = serializers.SerializerMethodField()
     lifecycle_countdown = serializers.SerializerMethodField()
     completion_countdown = serializers.SerializerMethodField()
+    sample_collection_deadline_at = serializers.SerializerMethodField()
+    sample_collection_deadline_hours = serializers.SerializerMethodField()
     print_analysis = PrintAnalysisSerializer(read_only=True)
     print_analysis_batch = PrintAnalysisBatchSerializer(read_only=True)
     print_analyses = serializers.SerializerMethodField()
@@ -2088,6 +2109,14 @@ class BookingSerializer(serializers.ModelSerializer):
 
     def get_lifecycle_countdown(self, obj):
         return build_booking_lifecycle_countdown(obj)
+
+    def get_sample_collection_deadline_at(self, obj):
+        deadline, _hours = compute_sample_collection_deadline(obj)
+        return deadline.isoformat() if deadline else None
+
+    def get_sample_collection_deadline_hours(self, obj):
+        _deadline, hours = compute_sample_collection_deadline(obj)
+        return hours
 
     def _get_input_fields_cache(self):
         return self.context.setdefault("_booking_input_fields_cache", {})
@@ -2174,6 +2203,8 @@ class BookingSerializer(serializers.ModelSerializer):
             'equipment_atmosphere_sensitive_sample_enabled',
             'lifecycle_countdown',
             'completion_countdown',
+            'sample_collection_deadline_at',
+            'sample_collection_deadline_hours',
             'sample_return_after_analysis',
             'return_shipping_fee_amount',
             'return_shipping_company',

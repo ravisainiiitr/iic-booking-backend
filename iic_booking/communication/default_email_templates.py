@@ -357,13 +357,15 @@ def _booking_templates() -> list[dict[str, Any]]:
             code="booking_completed_email",
             title="Booking Completed",
             subject="Booking Completed – {{ equipment_name }}",
-            intro="Your booking has been marked as completed.",
-            description="Email sent when a booking is marked as completed.",
+            intro="Your analysis has been completed successfully. Your sample is now ready for collection.",
+            description="Email sent when a booking is marked as completed. Includes sample collection deadline.",
             note_vars=(
                 ("comment", "Note"),
                 ("equipment_booking_email_extra", "Additional information"),
+                ("sample_collection_deadline_display", "Sample collection deadline"),
             ),
-            variable_help=_BOOKING_COMMON_HELP + ", {{ equipment_booking_email_extra }}",
+            variable_help=_BOOKING_COMMON_HELP
+            + ", {{ equipment_booking_email_extra }}, {{ sample_collection_deadline_display }}, {{ sample_collection_deadline_hours }}",
         ),
         _booking_email(
             code="booking_refunded_email",
