@@ -70,13 +70,36 @@ class UploadRejectedError(UploadTransportError):
 
 
 def _storage_root() -> Path:
+    """Return a writable directory for resumable DSA upload bytes.
+
+    Prefer DSA_UPLOAD_STORAGE_ROOT, then MEDIA_ROOT/sync_uploads. Fall back to
+    /tmp when the media volume is not writable by the container user (common
+    when production_media is root-owned).
+    """
+    candidates: list[Path] = []
     configured = getattr(settings, "DSA_UPLOAD_STORAGE_ROOT", None)
     if configured:
-        root = Path(configured)
-    else:
-        root = Path(settings.MEDIA_ROOT) / "sync_uploads"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+        candidates.append(Path(configured))
+    media_root = getattr(settings, "MEDIA_ROOT", None)
+    if media_root:
+        candidates.append(Path(media_root) / "sync_uploads")
+    candidates.append(Path("/tmp") / "dsa_sync_uploads")
+
+    last_error: OSError | None = None
+    for root in candidates:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".dsa_write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            if "dsa_sync_uploads" in str(root):
+                logger.warning("Using DSA upload storage fallback at %s", root)
+            return root
+        except OSError as exc:
+            last_error = exc
+            logger.warning("DSA upload storage not writable at %s: %s", root, exc)
+
+    raise OSError(f"No writable DSA upload storage path available: {last_error}")
 
 
 class UploadTransportService:
