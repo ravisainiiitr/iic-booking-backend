@@ -11452,14 +11452,18 @@ def _apply_results_available_event_and_completed_status(booking):
 
 
 def _send_results_available_push_and_email(booking):
-    """Push + email only (slow I/O). Run after DB commit so list/download APIs return immediately."""
-    from django.conf import settings
-    from django.core.mail import send_mail
-
+    """Push + branded results-available email (same layout family as booking confirmation)."""
+    from iic_booking.communication.email_branding import (
+        format_duration_minutes,
+        format_email_datetime,
+        format_inr,
+        user_display_name,
+    )
     from iic_booking.communication.service import CommunicationService
     from iic_booking.communication.utils import get_frontend_absolute_url
 
     user = booking.user
+    equipment = booking.equipment
     sample_notice_ctx = _build_sample_notice_context(booking)
     virtual_id = booking_display_id_for_email(booking) or f"#{booking.booking_id}"
     my_bookings_link = get_frontend_absolute_url(f"/my-bookings?booking={virtual_id}")
@@ -11480,45 +11484,59 @@ def _send_results_available_push_and_email(booking):
     except Exception as e:
         logger.warning("Results-available push notification failed for booking %s: %s", booking.booking_id, e)
 
-    subject = f"Results available for Booking ID- {virtual_id}"
-    body_lines = [
-        f"Hello {user.name or user.email},",
-        "",
-        f"Result files for your booking (Booking ID- {virtual_id}) are now available.",
-        "",
-        "You can download them from your account:",
-        "",
-        my_bookings_link or "(Log in to the booking portal and go to My Bookings)",
-        "",
-        "Click the link above to open My Bookings. Find this booking and click the green 'Results' button to download the folder as a ZIP or open individual files.",
-        "",
-        sample_notice_ctx["sample_collection_notice"],
-        "",
-        "— IIT Roorkee",
-    ]
-    if sample_notice_ctx["is_external_user"]:
-        body_lines = body_lines[:-1] + [
-            "External users: confirm if sample is to be preserved and sent back",
-            "(courier charges to be paid extra):",
-            f"Yes: {sample_notice_ctx['sample_preserve_yes_url']}",
-            f"No: {sample_notice_ctx['sample_preserve_no_url']}",
-            "",
-            body_lines[-1],
-        ]
+    start_time = ""
+    end_time = ""
     try:
-        from iic_booking.users.test_accounts import redirect_email_for_user
+        daily_slots = list(booking.daily_slots.all().order_by("start_datetime"))
+        if daily_slots:
+            start_time = format_email_datetime(daily_slots[0].start_datetime)
+            end_time = format_email_datetime(daily_slots[-1].end_datetime)
+    except Exception:
+        logger.exception("Failed to resolve slot times for results email booking %s", booking.booking_id)
 
-        delivery_emails, subject = redirect_email_for_user(
-            user, original_email=user.email, subject=subject
-        )
-        if not delivery_emails:
-            delivery_emails = [user.email]
-        send_mail(
-            subject=subject,
-            message="\n".join(body_lines),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=delivery_emails,
-            fail_silently=True,
+    duration_display = ""
+    try:
+        if getattr(booking, "total_time_minutes", None):
+            duration_display = format_duration_minutes(booking.total_time_minutes)
+    except Exception:
+        duration_display = ""
+
+    context = {
+        "user_name": user_display_name(user, fallback=user.email or "User"),
+        "user_email": user.email or "",
+        "booking_id": virtual_id,
+        "virtual_booking_id": virtual_id,
+        "equipment_name": getattr(equipment, "name", None) or "",
+        "equipment_code": getattr(equipment, "code", None) or "",
+        "start_time": start_time,
+        "end_time": end_time,
+        "total_charge": format_inr(booking.total_charge) if booking.total_charge is not None else "",
+        "duration_display": duration_display,
+        "new_status": "Completed",
+        "link": my_bookings_link or "",
+        "comment": (
+            "Open My Bookings from the button below, find this booking, and click the green "
+            "Results button to download the folder as a ZIP or open individual files."
+        ),
+        "sample_collection_notice": sample_notice_ctx.get("sample_collection_notice") or "",
+        "sample_collection_deadline_hours": sample_notice_ctx.get("sample_collection_deadline_hours") or "",
+        "sample_collection_deadline_display": sample_notice_ctx.get("sample_collection_deadline_display") or "",
+        "sample_collection_deadline_at": sample_notice_ctx.get("sample_collection_deadline_at") or "",
+        "is_external_user": bool(sample_notice_ctx.get("is_external_user")),
+        "sample_preserve_yes_url": sample_notice_ctx.get("sample_preserve_yes_url") or "",
+        "sample_preserve_no_url": sample_notice_ctx.get("sample_preserve_no_url") or "",
+    }
+
+    try:
+        CommunicationService.send_email(
+            recipient=user,
+            template="booking_results_available_email",
+            template_context=context,
+            metadata={
+                "notification_type": "results_available",
+                "booking_id": virtual_id,
+                "real_booking_id": booking.booking_id,
+            },
         )
     except Exception as e:
         logger.warning("Results-available email failed for booking %s: %s", booking.booking_id, e)

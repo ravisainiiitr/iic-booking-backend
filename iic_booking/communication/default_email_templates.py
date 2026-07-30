@@ -31,6 +31,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_cancelled_email",
     "booking_rescheduled_email",
     "booking_completed_email",
+    "booking_results_available_email",
     "booking_refunded_email",
     "booking_absent_email",
     "booking_status_changed_email",
@@ -366,6 +367,72 @@ def _booking_templates() -> list[dict[str, Any]]:
             ),
             variable_help=_BOOKING_COMMON_HELP
             + ", {{ equipment_booking_email_extra }}, {{ sample_collection_deadline_display }}, {{ sample_collection_deadline_hours }}",
+        ),
+        _booking_email(
+            code="booking_results_available_email",
+            title="Results Available",
+            subject="Results Available – Booking ID {{ booking_id }}",
+            intro=(
+                "Result files for your booking are now available. "
+                "Open My Bookings and use the green <strong>Results</strong> button "
+                "to download the folder as a ZIP or open individual files."
+            ),
+            description=(
+                "Email sent when result files become available for a booking. "
+                "Uses the standard branded layout (same family as booking confirmation)."
+            ),
+            include_charges=True,
+            include_duration=True,
+            cta_label="Open My Bookings",
+            note_vars=(("comment", "How to download"),),
+            post_details_html=(
+                "{% if sample_collection_deadline_display %}"
+                "<div style='margin:16px 0 0;padding:14px 16px;background:#eff6ff;border:1px solid #bfdbfe;"
+                "border-radius:10px;'>"
+                "<p style='margin:0 0 8px;font-size:15px;font-weight:700;color:#153f79;'>"
+                "Sample Collection Information</p>"
+                "<p style='margin:0 0 8px;color:#0f172a;'>Your analysis has been completed successfully.</p>"
+                "<p style='margin:0 0 8px;color:#0f172a;'>Your sample is now ready for collection.</p>"
+                "<p style='margin:12px 0 4px;font-weight:600;color:#0f172a;'>Sample Collection Deadline</p>"
+                "<p style='margin:0 0 4px;color:#64748b;'>Please collect your sample before:</p>"
+                "<p style='margin:0 0 8px;font-size:18px;font-weight:700;color:#153f79;'>"
+                "{{ sample_collection_deadline_display }}</p>"
+                "<p style='margin:0;color:#0f172a;'>Samples not collected before this date will be discarded "
+                "as per laboratory policy.</p>"
+                "</div>"
+                "{% endif %}"
+                "{% if is_external_user %}"
+                "<div style='margin:16px 0 0;padding:14px 16px;background:#f8fafc;border:1px solid #e2e8f0;"
+                "border-radius:10px;'>"
+                "<p style='margin:0 0 10px;color:#0f172a;'>External users: please confirm whether the sample "
+                "should be preserved and sent back (courier charges apply):</p>"
+                "<p style='margin:0;'>"
+                "<a href='{{ sample_preserve_yes_url }}' style='display:inline-block;padding:8px 14px;"
+                "background:#198754;color:#fff;text-decoration:none;border-radius:6px;margin-right:8px;"
+                "font-weight:600;'>Yes</a>"
+                "<a href='{{ sample_preserve_no_url }}' style='display:inline-block;padding:8px 14px;"
+                "background:#dc3545;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;'>No</a>"
+                "</p></div>"
+                "{% endif %}"
+            ),
+            post_details_text=(
+                "{% if sample_collection_deadline_display %}\n"
+                "Sample Collection Information\n"
+                "Your analysis has been completed successfully.\n"
+                "Your sample is now ready for collection.\n"
+                "Please collect your sample before: {{ sample_collection_deadline_display }}\n"
+                "Samples not collected before this date will be discarded as per laboratory policy.\n"
+                "{% endif %}"
+                "{% if is_external_user %}\n"
+                "External users: confirm if the sample should be preserved and sent back "
+                "(courier charges apply):\n"
+                "Yes: {{ sample_preserve_yes_url }}\n"
+                "No: {{ sample_preserve_no_url }}\n"
+                "{% endif %}"
+            ),
+            variable_help=_BOOKING_COMMON_HELP
+            + ", {{ sample_collection_deadline_display }}, {{ sample_collection_deadline_hours }}, "
+            "{{ sample_preserve_yes_url }}, {{ sample_preserve_no_url }}, {{ is_external_user }}",
         ),
         _booking_email(
             code="booking_refunded_email",
