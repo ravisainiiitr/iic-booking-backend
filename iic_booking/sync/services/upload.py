@@ -136,11 +136,12 @@ class UploadTransportService:
         safe_name = Path(file_name or "upload.bin").name or "upload.bin"
         relative_server = Path(str(agent_key)) / str(session_id) / safe_name
         try:
-            absolute = _storage_root() / relative_server
+            storage_root = _storage_root()
+            absolute = storage_root / relative_server
             absolute.parent.mkdir(parents=True, exist_ok=True)
             absolute.touch(exist_ok=True)
         except OSError as exc:
-            logger.exception("Upload storage path not writable: %s", absolute)
+            logger.exception("Upload storage path not writable for %s", relative_server)
             raise UploadTransportError(
                 f"Upload storage is not writable: {exc}",
                 code="UPLOAD_STORAGE_ERROR",
