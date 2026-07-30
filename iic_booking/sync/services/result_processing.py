@@ -26,7 +26,7 @@ from iic_booking.sync.services.result_notifications import (
     ResultNotificationHooks,
 )
 from iic_booking.sync.services.result_validation import (
-    ATTACHMENT_ONLY_EXTENSIONS,
+    is_attachment_only_extension,
     normalize_extension,
     validate_import_payload,
 )
@@ -206,9 +206,10 @@ class ResultProcessingService:
 
         file_name = data.get("file_name") or (upload_session.file_name if upload_session else "result.bin")
         ext = normalize_extension(file_name)
-        kind = "pdf" if ext == ".pdf" else "zip" if ext == ".zip" else "primary"
-        if ext in ATTACHMENT_ONLY_EXTENSIONS:
-            kind = ext.lstrip(".")
+        if is_attachment_only_extension(ext):
+            kind = (ext.lstrip(".") or "bin")[:32]
+        else:
+            kind = "primary"
 
         attachment = ResultAttachment.objects.create(
             result=result,
