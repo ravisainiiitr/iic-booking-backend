@@ -32,6 +32,47 @@ from iic_booking.sync.services.result_validation import (
 )
 
 
+def _publish_attachment_to_s3_and_cleanup(attachment_id, booking_id: int) -> None:
+    """Upload local sync_uploads file to S3 Results/{vid}/ then delete the portal temp copy."""
+    from iic_booking.equipment.booking_results_service import resolve_dsa_attachment_path
+    from iic_booking.sync.services.results_s3 import (
+        delete_local_upload_copy,
+        upload_local_file_to_results_s3,
+    )
+
+    attachment = (
+        ResultAttachment.objects.select_related("result__booking", "upload_session")
+        .filter(id=attachment_id, result__booking_id=booking_id)
+        .first()
+    )
+    if attachment is None:
+        return
+    if (attachment.s3_key or "").strip():
+        return
+
+    booking = attachment.result.booking
+    virtual_id = (booking.virtual_booking_id or "").strip() or f"booking-{booking.pk}"
+    local_path = resolve_dsa_attachment_path(attachment)
+    if local_path is None:
+        return
+
+    s3_key = upload_local_file_to_results_s3(
+        virtual_booking_id=virtual_id,
+        local_path=local_path,
+        file_name=attachment.file_name or local_path.name,
+        content_type=attachment.content_type or "",
+    )
+    if not s3_key:
+        return
+
+    attachment.s3_key = s3_key
+    # Keep storage_path for audit but mark local gone after delete.
+    attachment.save(update_fields=["s3_key"])
+    if delete_local_upload_copy(local_path):
+        attachment.storage_path = ""
+        attachment.save(update_fields=["storage_path"])
+
+
 class ResultImportError(SyncControlPlaneError):
     code = "RESULT_IMPORT_FAILED"
     status_code = 400
@@ -179,6 +220,13 @@ class ResultProcessingService:
             sha256=data.get("sha256") or "",
             storage_path=(upload_session.server_path if upload_session else "") or data.get("storage_path") or "",
             attachment_kind=kind,
+        )
+
+        # After DB commit: publish to S3 Results/{virtual_booking_id}/ and remove portal temp copy.
+        attachment_id = attachment.id
+        booking_pk = booking.pk
+        transaction.on_commit(
+            lambda aid=attachment_id, bid=booking_pk: _publish_attachment_to_s3_and_cleanup(aid, bid)
         )
 
         job.version = (job.version or 0) + 1

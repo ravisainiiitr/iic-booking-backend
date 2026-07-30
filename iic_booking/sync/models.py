@@ -2721,6 +2721,13 @@ class ResultAttachment(models.Model):
     size_bytes = models.BigIntegerField(_("Size (bytes)"), default=0)
     sha256 = models.CharField(_("SHA-256"), max_length=64, blank=True, default="")
     storage_path = models.CharField(_("Storage path"), max_length=1000, blank=True, default="")
+    s3_key = models.CharField(
+        _("S3 object key"),
+        max_length=1000,
+        blank=True,
+        default="",
+        help_text=_("When set, file bytes live in S3 (Results/{virtual_booking_id}/...). Local sync_uploads copy may be removed."),
+    )
     attachment_kind = models.CharField(
         _("Attachment kind"),
         max_length=32,
