@@ -54,6 +54,8 @@ pre.log {{ background:#0b1016; border:1px solid var(--line); border-radius:6px; 
   <h1>Remote Analysis — Commissioning &amp; Diagnostics Toolkit</h1>
   <span class="hint" id="clock"></span>
   <a href="/api/v1/analysis/operations/commissioning/?view=html">Commissioning console</a>
+  <a href="/api/v1/analysis/operations/toolkit/live/?view=html">Live Commissioning</a>
+  <a href="/api/v1/analysis/operations/toolkit/faults/?view=html">Fault injection</a>
   <a href="/api/v1/analysis/operations/diagnostics/?view=html">Legacy diagnostics</a>
 </header>
 <nav class="tabs" id="tabs">
@@ -61,6 +63,7 @@ pre.log {{ background:#0b1016; border:1px solid var(--line); border-radius:6px; 
   <button class="tab" data-tab="agent">Agent</button>
   <button class="tab" data-tab="connect">Connectivity</button>
   <button class="tab" data-tab="guac">Guacamole</button>
+  <button class="tab" data-tab="tunnel">Reverse Tunnel</button>
   <button class="tab" data-tab="logs">Logs</button>
   <button class="tab" data-tab="health">Health report</button>
   <button class="tab" data-tab="selftest">Self-test</button>
@@ -106,6 +109,15 @@ pre.log {{ background:#0b1016; border:1px solid var(--line); border-radius:6px; 
       <p class="hint">Connectivity, active sessions, tunnel health, API latency (does not alter production workflows).</p>
       <button class="action" onclick="loadGuac()">Refresh Guacamole status</button>
       <pre class="log mono" id="guacBox"></pre>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-tunnel">
+    <div class="card">
+      <h2>Reverse Tunnel Gateway</h2>
+      <p class="hint">Transport mode, gateway health, active tunnels, bandwidth counters.</p>
+      <button class="action" onclick="loadTunnel()">Refresh tunnel dashboard</button>
+      <pre class="log mono" id="tunnelBox"></pre>
     </div>
   </section>
 
@@ -243,6 +255,14 @@ async function loadGuac() {{
     const data = await api("/dashboard/");
     document.getElementById("guacBox").textContent = JSON.stringify(data.guacamole || data.overview?.guacamole || {{}}, null, 2);
     flash("Guacamole status refreshed", true);
+  }} catch (e) {{ flash(String(e), false); }}
+}}
+
+async function loadTunnel() {{
+  try {{
+    const data = await api("/dashboard/");
+    document.getElementById("tunnelBox").textContent = JSON.stringify(data.reverse_tunnel || data.overview?.reverse_tunnel || {{}}, null, 2);
+    flash("Tunnel dashboard refreshed", true);
   }} catch (e) {{ flash(String(e), false); }}
 }}
 

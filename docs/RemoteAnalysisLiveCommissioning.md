@@ -4,6 +4,8 @@
 **Rule:** No speculative features. Fix only defects found during this live run.  
 **Goal:** One complete Portal → Agent → Portal cycle on a real Analysis PC.
 
+For **Phase 4 production commissioning** (Live dashboard, fault injection, readiness checklists), see [RemoteAnalysisPhase4LiveCommissioning.md](RemoteAnalysisPhase4LiveCommissioning.md).
+
 Portal commit baseline: Phase 1 (`ba9a053` or later on `main`).
 
 ---

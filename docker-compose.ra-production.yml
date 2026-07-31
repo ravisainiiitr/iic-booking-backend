@@ -212,6 +212,37 @@ services:
       retries: 5
       start_period: 60s
 
+  reverse-tunnel-gateway:
+    profiles: ["guacamole"]
+    build:
+      context: ../ReverseTunnelGateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      RA_TUNNEL_TOKEN_SECRET: ${RA_TUNNEL_TOKEN_SECRET:-change-me-tunnel-secret}
+      RA_TUNNEL_GATEWAY_ADMIN_KEY: ${RA_TUNNEL_GATEWAY_ADMIN_KEY:-}
+      RA_TUNNEL_ADAPTER_HOSTNAME: reverse-tunnel-gateway
+      Tunnel__TokenSecret: ${RA_TUNNEL_TOKEN_SECRET:-change-me-tunnel-secret}
+      Tunnel__AdminKey: ${RA_TUNNEL_GATEWAY_ADMIN_KEY:-}
+      Tunnel__AdapterHostname: reverse-tunnel-gateway
+      ASPNETCORE_URLS: http://0.0.0.0:7090
+    ports:
+      - "${TUNNEL_GATEWAY_HOST_PORT:-7090}:7090"
+    networks:
+      - ra_backend
+      - ra_frontend
+    logging: *default-logging
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -c 'exec 3<>/dev/tcp/127.0.0.1/7090'",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
 networks:
   ra_backend:
     driver: bridge

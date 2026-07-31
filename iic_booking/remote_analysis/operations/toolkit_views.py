@@ -309,3 +309,69 @@ def toolkit_run_failure_snapshots(request, run_id):
             for s in run.failure_snapshots.all()
         ]
     )
+
+
+@api_view(["GET"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_live(request):
+    """Phase 4 Live Commissioning color dashboard (HTML or JSON)."""
+    from iic_booking.remote_analysis.operations.live_commissioning import build_live_commissioning_dashboard
+    from iic_booking.remote_analysis.operations.live_commissioning_html import render_live_commissioning_html
+
+    ws_id = request.query_params.get("workstation_id") or None
+    payload = build_live_commissioning_dashboard(workstation_id=ws_id)
+    if _wants_html(request):
+        get_csrf_token(request)
+        return HttpResponse(render_live_commissioning_html(payload), content_type="text/html; charset=utf-8")
+    return Response(payload)
+
+
+@api_view(["GET"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_live_timeline(request):
+    from iic_booking.remote_analysis.operations.live_commissioning import build_live_session_timeline
+
+    booking_id = request.query_params.get("booking_id")
+    booking_id_int = int(booking_id) if booking_id and str(booking_id).isdigit() else None
+    return Response(
+        build_live_session_timeline(
+            booking_id=booking_id_int,
+            run_id=request.query_params.get("run_id") or None,
+        )
+    )
+
+
+@api_view(["GET"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_faults(request):
+    from iic_booking.remote_analysis.operations.fault_injection import list_faults, recovery_checklist
+    from iic_booking.remote_analysis.operations.live_commissioning_html import render_fault_injection_html
+
+    payload = {"faults": list_faults(), "recovery": recovery_checklist()}
+    if _wants_html(request):
+        get_csrf_token(request)
+        return HttpResponse(render_fault_injection_html(payload), content_type="text/html; charset=utf-8")
+    return Response(payload)
+
+
+@api_view(["POST"])
+@authentication_classes(_AUTH)
+@permission_classes(_MANAGE)
+def toolkit_fault_inject(request):
+    from iic_booking.remote_analysis.operations.fault_injection import inject_fault
+
+    booking_raw = request.data.get("booking_id")
+    booking_id = int(booking_raw) if booking_raw not in (None, "") else None
+    result = inject_fault(
+        fault_id=str(request.data.get("fault_id") or ""),
+        actor=request.user,
+        workstation_id=request.data.get("workstation_id") or None,
+        booking_id=booking_id,
+        run_id=request.data.get("run_id") or None,
+        dry_run=bool(request.data.get("dry_run")),
+    )
+    status = 200 if result.get("ok") else 400
+    return Response(result, status=status)

@@ -410,6 +410,7 @@ class RemoteAnalysisSettingsAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "mock_guacamole",
+        "transport_mode",
         "session_timeout",
         "idle_timeout",
         "max_concurrent_sessions",
@@ -428,6 +429,13 @@ class RemoteAnalysisSettingsAdmin(admin.ModelAdmin):
                     "guacamole_data_source",
                     "verify_tls",
                     "mock_guacamole",
+                    "transport_mode",
+                    "tunnel_gateway_admin_url",
+                    "tunnel_gateway_wss_url",
+                    "tunnel_adapter_hostname",
+                    "tunnel_token_lifetime_seconds",
+                    "tunnel_idle_timeout_seconds",
+                    "tunnel_max_lifetime_seconds",
                 )
             },
         ),
@@ -564,6 +572,36 @@ class SessionRecordingAdmin(admin.ModelAdmin):
 class WorkstationRdpSecretAdmin(admin.ModelAdmin):
     list_display = ("workstation", "username", "domain", "port", "updated_at")
     readonly_fields = ("password_encrypted", "updated_at")
+
+
+from iic_booking.remote_analysis.tunnel_models import TunnelEvent, TunnelMetric, TunnelSession  # noqa: E402
+
+
+@admin.register(TunnelSession)
+class TunnelSessionAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "status",
+        "workstation",
+        "adapter_hostname",
+        "adapter_port",
+        "created_at",
+        "closed_at",
+    )
+    list_filter = ("status",)
+    search_fields = ("id", "nonce", "workstation__hostname")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(TunnelEvent)
+class TunnelEventAdmin(admin.ModelAdmin):
+    list_display = ("tunnel", "event_type", "created_at")
+    list_filter = ("event_type",)
+
+
+@admin.register(TunnelMetric)
+class TunnelMetricAdmin(admin.ModelAdmin):
+    list_display = ("tunnel", "latency_ms", "bytes_sent", "bytes_received", "recorded_at")
 
 
 # --- Milestone 5 ---

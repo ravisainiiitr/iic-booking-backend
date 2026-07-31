@@ -21,6 +21,10 @@ ENV_GUACAMOLE_DATA_SOURCE = "RA_GUACAMOLE_DATA_SOURCE"
 ENV_MOCK_GUACAMOLE = "RA_MOCK_GUACAMOLE"
 ENV_VERIFY_TLS = "RA_GUACAMOLE_VERIFY_TLS"
 ENV_APPLY_TO_DB = "RA_APPLY_ENV_SETTINGS"
+ENV_TRANSPORT = "RA_TRANSPORT"
+ENV_TUNNEL_GATEWAY_ADMIN_URL = "RA_TUNNEL_GATEWAY_ADMIN_URL"
+ENV_TUNNEL_GATEWAY_WSS_URL = "RA_TUNNEL_GATEWAY_WSS_URL"
+ENV_TUNNEL_ADAPTER_HOSTNAME = "RA_TUNNEL_ADAPTER_HOSTNAME"
 
 
 def _truthy(value: str) -> bool:
@@ -50,6 +54,20 @@ def overlay_from_environ(settings_obj: RemoteAnalysisSettings) -> RemoteAnalysis
 
     if ENV_VERIFY_TLS in os.environ:
         settings_obj.verify_tls = _truthy(os.environ[ENV_VERIFY_TLS])
+
+    if ENV_TRANSPORT in os.environ and os.environ[ENV_TRANSPORT].strip():
+        mode = os.environ[ENV_TRANSPORT].strip().lower().replace("-", "_")
+        if mode in {"direct_rdp", "reverse_tunnel"}:
+            settings_obj.transport_mode = mode
+
+    for env_key, attr in (
+        (ENV_TUNNEL_GATEWAY_ADMIN_URL, "tunnel_gateway_admin_url"),
+        (ENV_TUNNEL_GATEWAY_WSS_URL, "tunnel_gateway_wss_url"),
+        (ENV_TUNNEL_ADAPTER_HOSTNAME, "tunnel_adapter_hostname"),
+    ):
+        value = os.environ.get(env_key)
+        if value is not None and value != "":
+            setattr(settings_obj, attr, value.strip())
 
     return settings_obj
 

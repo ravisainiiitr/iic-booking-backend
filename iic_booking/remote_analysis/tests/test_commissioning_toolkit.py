@@ -113,3 +113,64 @@ def test_toolkit_anonymous_html_redirects(settings):
     res = client.get("/api/v1/analysis/operations/toolkit/?view=html")
     assert res.status_code == 302
     assert res["Location"].startswith("https://portal.example/login?")
+
+
+@pytest.mark.django_db
+def test_live_commissioning_dashboard_and_timeline(api, eligible_workstation):
+    live = api.get("/api/v1/analysis/operations/toolkit/live/")
+    assert live.status_code == 200
+    body = live.json()
+    assert body["overall"] in {"GREEN", "AMBER", "RED"}
+    assert len(body["cards"]) >= 8
+    names = {c["name"] for c in body["cards"]}
+    assert "Gateway Status" in names
+    assert "Connected Agents" in names
+    assert "Guacamole Session State" in names
+
+    html = api.get("/api/v1/analysis/operations/toolkit/live/?view=html")
+    assert html.status_code == 200
+    assert b"Live Commissioning" in html.content
+    assert b"GREEN" in html.content or b"AMBER" in html.content or b"RED" in html.content
+
+    tl = api.get("/api/v1/analysis/operations/toolkit/live/timeline/")
+    assert tl.status_code == 200
+    assert "events" in tl.json()
+
+
+@pytest.mark.django_db
+def test_fault_injection_dry_run_and_heartbeat(api, eligible_workstation):
+    catalog = api.get("/api/v1/analysis/operations/toolkit/faults/")
+    assert catalog.status_code == 200
+    assert any(f["id"] == "heartbeat_loss" for f in catalog.json()["faults"])
+
+    dry = api.post(
+        "/api/v1/analysis/operations/toolkit/faults/inject/",
+        {"fault_id": "heartbeat_loss", "workstation_id": str(eligible_workstation.id), "dry_run": True},
+        format="json",
+    )
+    assert dry.status_code == 200
+    assert dry.json()["dry_run"] is True
+
+    inj = api.post(
+        "/api/v1/analysis/operations/toolkit/faults/inject/",
+        {"fault_id": "heartbeat_loss", "workstation_id": str(eligible_workstation.id)},
+        format="json",
+    )
+    assert inj.status_code == 200, inj.content
+    assert inj.json()["ok"] is True
+    assert inj.json()["commissioning_run_id"]
+
+    eligible_workstation.refresh_from_db()
+    assert eligible_workstation.last_heartbeat is not None
+
+    hint = api.post(
+        "/api/v1/analysis/operations/toolkit/faults/inject/",
+        {"fault_id": "gateway_restart_hint"},
+        format="json",
+    )
+    assert hint.status_code == 200
+    assert hint.json().get("operator_action_required") is True
+
+    html = api.get("/api/v1/analysis/operations/toolkit/faults/?view=html")
+    assert html.status_code == 200
+    assert b"Fault Injection" in html.content

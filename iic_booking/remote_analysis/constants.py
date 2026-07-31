@@ -39,6 +39,25 @@ class CommandType(models.TextChoices):
     CLEAN_WORKSTATION = "CLEAN_WORKSTATION", _("Clean workstation")
     SYNC_WORKSPACE = "SYNC_WORKSPACE", _("Synchronize analysis workspace")
     COLLECT_WORKSPACE = "COLLECT_WORKSPACE", _("Collect workspace outputs")
+    JOIN_TUNNEL = "JOIN_TUNNEL", _("Join reverse tunnel")
+    CLOSE_TUNNEL = "CLOSE_TUNNEL", _("Close reverse tunnel")
+
+
+class TransportMode(models.TextChoices):
+    """How guacd reaches the Analysis PC RDP endpoint."""
+
+    DIRECT_RDP = "direct_rdp", _("Direct RDP")
+    REVERSE_TUNNEL = "reverse_tunnel", _("Reverse tunnel")
+
+
+class TunnelSessionStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    WAITING_AGENT = "WAITING_AGENT", _("Waiting for agent")
+    ACTIVE = "ACTIVE", _("Active")
+    RECONNECTING = "RECONNECTING", _("Reconnecting")
+    CLOSED = "CLOSED", _("Closed")
+    FAILED = "FAILED", _("Failed")
+    EXPIRED = "EXPIRED", _("Expired")
 
 
 class CommandStatus(models.TextChoices):

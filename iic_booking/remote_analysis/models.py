@@ -448,6 +448,13 @@ from iic_booking.remote_analysis.session_models import (  # noqa: E402,F401
     WorkstationRdpSecret,
 )
 
+# Reverse tunnel lifecycle metadata
+from iic_booking.remote_analysis.tunnel_models import (  # noqa: E402,F401
+    TunnelEvent,
+    TunnelMetric,
+    TunnelSession,
+)
+
 # Milestone 5 analysis workspace models
 from iic_booking.remote_analysis.workspace_models import (  # noqa: E402,F401
     AnalysisWorkspace,

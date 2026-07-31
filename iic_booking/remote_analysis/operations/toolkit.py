@@ -221,6 +221,75 @@ def probe_guacamole() -> dict[str, Any]:
     return _timed(_run)
 
 
+def probe_reverse_tunnel() -> dict[str, Any]:
+    """Gateway health, transport mode, recent tunnel sessions (toolkit)."""
+
+    def _run():
+        from iic_booking.remote_analysis.constants import TransportMode, TunnelSessionStatus
+        from iic_booking.remote_analysis.tunnel import TunnelGatewayClient
+        from iic_booking.remote_analysis.tunnel_models import TunnelSession
+
+        settings_obj = RemoteAnalysisSettings.get_solo()
+        gw = TunnelGatewayClient(settings_obj)
+        health = gw.health()
+        metrics = gw.metrics() if health.get("ok") else {"ok": False}
+        recent = list(
+            TunnelSession.objects.order_by("-created_at")[:25].values(
+                "id",
+                "status",
+                "adapter_hostname",
+                "adapter_port",
+                "bytes_sent",
+                "bytes_received",
+                "reconnect_count",
+                "created_at",
+                "closed_at",
+                "close_reason",
+            )
+        )
+        for row in recent:
+            row["id"] = str(row["id"])
+            if row.get("created_at"):
+                row["created_at"] = row["created_at"].isoformat()
+            if row.get("closed_at"):
+                row["closed_at"] = row["closed_at"].isoformat()
+
+        active = TunnelSession.objects.filter(
+            status__in={
+                TunnelSessionStatus.PENDING,
+                TunnelSessionStatus.WAITING_AGENT,
+                TunnelSessionStatus.ACTIVE,
+                TunnelSessionStatus.RECONNECTING,
+            }
+        ).count()
+
+        status_val = "PASS"
+        detail = "ok"
+        if settings_obj.transport_mode == TransportMode.DIRECT_RDP:
+            status_val = "INFO"
+            detail = "transport_mode=direct_rdp (reverse tunnel idle)"
+        elif not (settings_obj.tunnel_gateway_admin_url or "").strip():
+            status_val = "WARN"
+            detail = "reverse_tunnel enabled but tunnel_gateway_admin_url empty"
+        elif not health.get("ok"):
+            status_val = "FAIL"
+            detail = str(health.get("detail") or "gateway unhealthy")
+
+        return {
+            "status": status_val,
+            "detail": detail,
+            "transport_mode": settings_obj.transport_mode,
+            "gateway_wss_url": settings_obj.tunnel_gateway_wss_url,
+            "adapter_hostname": settings_obj.tunnel_adapter_hostname,
+            "gateway_health": health,
+            "gateway_metrics": metrics,
+            "active_tunnels": active,
+            "recent_tunnels": recent,
+        }
+
+    return _timed(_run)
+
+
 # ---------------------------------------------------------------------------
 # 1. Portal diagnostics dashboard
 # ---------------------------------------------------------------------------
@@ -235,6 +304,7 @@ def build_toolkit_dashboard() -> dict[str, Any]:
     redis_info = probe_redis()
     storage = probe_storage_usage()
     guacamole = probe_guacamole()
+    reverse_tunnel = probe_reverse_tunnel()
 
     online_statuses = {
         WorkstationStatus.ONLINE,
@@ -337,6 +407,7 @@ def build_toolkit_dashboard() -> dict[str, Any]:
         "redis": redis_info,
         "storage": storage,
         "guacamole": guacamole,
+        "reverse_tunnel": reverse_tunnel,
     }
 
     return {
@@ -345,6 +416,7 @@ def build_toolkit_dashboard() -> dict[str, Any]:
         "workstations": enriched,
         "diagnostics": base,
         "guacamole": guacamole,
+        "reverse_tunnel": reverse_tunnel,
         "links": {
             "commissioning": "/api/v1/analysis/operations/commissioning/?view=html",
             "legacy_diagnostics": "/api/v1/analysis/operations/diagnostics/?view=html",

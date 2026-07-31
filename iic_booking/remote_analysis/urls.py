@@ -167,6 +167,18 @@ urlpatterns = [
         ops_views.toolkit_run_failure_snapshots,
         name="operations-toolkit-run-failures",
     ),
+    path("operations/toolkit/live/", ops_views.toolkit_live, name="operations-toolkit-live"),
+    path(
+        "operations/toolkit/live/timeline/",
+        ops_views.toolkit_live_timeline,
+        name="operations-toolkit-live-timeline",
+    ),
+    path("operations/toolkit/faults/", ops_views.toolkit_faults, name="operations-toolkit-faults"),
+    path(
+        "operations/toolkit/faults/inject/",
+        ops_views.toolkit_fault_inject,
+        name="operations-toolkit-fault-inject",
+    ),
     path("analytics/", ops_views.analytics_view, name="analytics"),
     path("utilization/", ops_views.utilization_view, name="utilization"),
     path("performance/", ops_views.performance_view, name="performance"),

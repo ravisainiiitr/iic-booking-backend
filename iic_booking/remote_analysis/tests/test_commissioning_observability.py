@@ -101,6 +101,13 @@ def test_evidence_bundle_generation(ra_user):
     assert "api_summary.json" in names
     assert "checksum_results.json" in names
     assert "performance_metrics.json" in names
+    assert "commands.json" in names
+    assert "tunnel_metrics.json" in names
+    assert "health_metrics.json" in names
+    assert "configuration_snapshot.json" in names
+    assert "booking_analysis_job.json" in names
+    assert "gateway_logs.json" in names
+    assert "guacamole_logs.json" in names
     assert "commissioning_report.pdf" in names or "commissioning_report_error.txt" in names
 
     path = persist_evidence_bundle(run)

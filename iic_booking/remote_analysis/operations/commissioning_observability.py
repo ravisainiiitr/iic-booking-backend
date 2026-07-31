@@ -40,7 +40,15 @@ STEP_TOOLKIT_STARTED = "ToolkitStarted"
 STEP_CONNECTIVITY = "ConnectivityTests"
 STEP_SELF_TEST = "SelfTest"
 STEP_BOOKING_SELECTED = "BookingSelected"
+STEP_ALLOCATE_WORKSTATION = "AllocateWorkstation"
 STEP_WORKSPACE_CREATED = "WorkspaceCreated"
+STEP_RAW_AVAILABLE = "RAWAvailable"
+STEP_TUNNEL_REQUESTED = "TunnelRequested"
+STEP_AGENT_ACCEPTED = "AgentAccepted"
+STEP_TUNNEL_CONNECTED = "TunnelConnected"
+STEP_GUACAMOLE_CONNECTED = "GuacamoleConnected"
+STEP_USER_CONNECTED = "UserConnected"
+STEP_DESKTOP_READY = "DesktopReady"
 STEP_INPUT_UPLOAD_STARTED = "InputUploadStarted"
 STEP_INPUT_UPLOAD_FINISHED = "InputUploadFinished"
 STEP_AGENT_DOWNLOAD_STARTED = "AgentDownloadStarted"
@@ -48,11 +56,16 @@ STEP_AGENT_DOWNLOAD_FINISHED = "AgentDownloadFinished"
 STEP_INPUT_VERIFICATION = "InputVerification"
 STEP_ANALYSIS_STARTED = "AnalysisStarted"
 STEP_ANALYSIS_FINISHED = "AnalysisFinished"
+STEP_OUTPUT_GENERATED = "OutputGenerated"
 STEP_OUTPUT_COLLECTION_STARTED = "OutputCollectionStarted"
 STEP_OUTPUT_COLLECTION_FINISHED = "OutputCollectionFinished"
+STEP_UPLOAD_STARTED = "UploadStarted"
+STEP_UPLOAD_COMPLETED = "UploadCompleted"
 STEP_CHECKSUM_VERIFICATION = "ChecksumVerification"
 STEP_CLEANUP_STARTED = "CleanupStarted"
 STEP_CLEANUP_FINISHED = "CleanupFinished"
+STEP_WORKSTATION_RELEASED = "WorkstationReleased"
+STEP_FAULT_INJECTED = "FaultInjected"
 STEP_RUN_COMPLETED = "RunCompleted"
 
 
@@ -427,13 +440,179 @@ def _checksum_results(run: CommissioningRun) -> dict[str, Any]:
     return {"files": json_safe(files), "note": "Portal-stored SHA-256; agent-side match verified during live run."}
 
 
+def _commands_for_run(run: CommissioningRun) -> list[dict]:
+    qs = RemoteCommand.objects.all()
+    if run.workstation_id:
+        qs = qs.filter(workstation_id=run.workstation_id)
+    since = run.started_at - timedelta(minutes=5) if run.started_at else timezone.now() - timedelta(hours=24)
+    rows = []
+    for c in qs.filter(created_at__gte=since).order_by("-created_at")[:100]:
+        rows.append(
+            {
+                "id": str(c.id),
+                "command_type": c.command_type,
+                "status": c.status,
+                "workstation_id": str(c.workstation_id),
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "payload": json_safe(c.payload or {}),
+                "error_message": (c.error_message or "")[:500],
+            }
+        )
+    return rows
+
+
+def _tunnel_metrics_for_run(run: CommissioningRun) -> dict[str, Any]:
+    try:
+        from iic_booking.remote_analysis.tunnel_models import TunnelMetric, TunnelSession
+
+        qs = TunnelSession.objects.all()
+        if run.workstation_id:
+            qs = qs.filter(workstation_id=run.workstation_id)
+        if run.booking_id:
+            qs = qs.filter(booking_id=run.booking_id)
+        tunnels = list(
+            qs.order_by("-created_at")[:20].values(
+                "id",
+                "status",
+                "adapter_port",
+                "bytes_sent",
+                "bytes_received",
+                "reconnect_count",
+                "created_at",
+                "closed_at",
+                "close_reason",
+            )
+        )
+        for t in tunnels:
+            t["id"] = str(t["id"])
+            if t.get("created_at"):
+                t["created_at"] = t["created_at"].isoformat()
+            if t.get("closed_at"):
+                t["closed_at"] = t["closed_at"].isoformat()
+        metrics = []
+        if tunnels:
+            metrics = list(
+                TunnelMetric.objects.filter(tunnel_id__in=[t["id"] for t in tunnels])
+                .order_by("-recorded_at")[:50]
+                .values(
+                    "id",
+                    "tunnel_id",
+                    "latency_ms",
+                    "bytes_sent",
+                    "bytes_received",
+                    "packet_loss",
+                    "bandwidth_kbps",
+                    "heartbeat_rtt_ms",
+                    "recorded_at",
+                )
+            )
+            for m in metrics:
+                m["id"] = str(m["id"])
+                m["tunnel_id"] = str(m["tunnel_id"])
+                if m.get("recorded_at"):
+                    m["recorded_at"] = m["recorded_at"].isoformat()
+        return {"tunnels": tunnels, "metrics": json_safe(metrics)}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _config_snapshot() -> dict[str, Any]:
+    """Non-secret configuration snapshot for offline troubleshooting."""
+    secret_keys = {
+        "SECRET_KEY",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "AWS_SECRET_ACCESS_KEY",
+        "RA_TUNNEL_TOKEN_SECRET",
+        "GUACAMOLE_ADMIN_PASSWORD",
+        "PASSWORD",
+        "TOKEN",
+        "PRIVATE_KEY",
+    }
+    env_safe = {}
+    import os
+
+    for k, v in sorted(os.environ.items()):
+        ku = k.upper()
+        if any(s in ku for s in secret_keys) or "SECRET" in ku or "PASSWORD" in ku or "KEY" in ku:
+            env_safe[k] = "***REDACTED***"
+        else:
+            env_safe[k] = v[:500] if isinstance(v, str) else v
+
+    from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+
+    s = RemoteAnalysisSettings.get_solo()
+    return {
+        "versions": {
+            "portal_git_sha": getattr(django_settings, "GIT_SHA", "") or "",
+            "django": getattr(django_settings, "DJANGO_VERSION", ""),
+        },
+        "remote_analysis_settings": {
+            "transport_mode": getattr(s, "transport_mode", None),
+            "mock_guacamole": getattr(s, "mock_guacamole", None),
+            "tunnel_gateway_admin_url": getattr(s, "tunnel_gateway_admin_url", None),
+            "tunnel_gateway_wss_url": getattr(s, "tunnel_gateway_wss_url", None),
+            "tunnel_adapter_hostname": getattr(s, "tunnel_adapter_hostname", None),
+        },
+        "env": env_safe,
+    }
+
+
+def _health_metrics_snapshot() -> dict[str, Any]:
+    try:
+        from iic_booking.remote_analysis.operations.live_commissioning import build_live_commissioning_dashboard
+
+        return build_live_commissioning_dashboard()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
+def _booking_and_job(run: CommissioningRun) -> dict[str, Any]:
+    out: dict[str, Any] = {"booking_id": run.booking_id}
+    if run.booking_id:
+        try:
+            from iic_booking.equipment.models import Booking
+
+            b = Booking.objects.filter(pk=run.booking_id).first()
+            if b:
+                out["booking"] = {
+                    "booking_id": b.booking_id,
+                    "status": getattr(b, "status", None),
+                    "user_id": getattr(b, "user_id", None),
+                    "equipment_id": getattr(b, "equipment_id", None),
+                    "virtual_booking_id": getattr(b, "virtual_booking_id", None),
+                }
+        except Exception as exc:  # noqa: BLE001
+            out["booking_error"] = str(exc)
+    return out
+
+
 def build_evidence_bundle_bytes(run: CommissioningRun, *, include_pdf: bool = True) -> bytes:
-    """Build admin-only evidence ZIP in memory."""
+    """Build admin-only evidence ZIP in memory (Phase 4 offline troubleshooting package)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("commissioning_summary.json", json.dumps(summary_payload(run), indent=2, default=str))
         zf.writestr("execution_timeline.json", json.dumps(timeline_payload(run), indent=2, default=str))
         zf.writestr("portal_logs.json", json.dumps(_portal_logs_for_run(run), indent=2, default=str))
+        zf.writestr(
+            "gateway_logs.json",
+            json.dumps(
+                {
+                    "note": "Collect reverse-tunnel-gateway container/service logs on the host and attach here.",
+                    "suggested": "docker logs reverse-tunnel-gateway --since 2h",
+                },
+                indent=2,
+            ),
+        )
+        zf.writestr(
+            "guacamole_logs.json",
+            json.dumps(
+                {
+                    "note": "Collect guacd/guacamole logs from the Guacamole host and attach here.",
+                },
+                indent=2,
+            ),
+        )
         zf.writestr(
             "agent_logs.json",
             json.dumps(
@@ -449,6 +628,11 @@ def build_evidence_bundle_bytes(run: CommissioningRun, *, include_pdf: bool = Tr
             ),
         )
         zf.writestr("workspace_metadata.json", json.dumps(_workspace_metadata(run), indent=2, default=str))
+        zf.writestr("commands.json", json.dumps(_commands_for_run(run), indent=2, default=str))
+        zf.writestr("tunnel_metrics.json", json.dumps(_tunnel_metrics_for_run(run), indent=2, default=str))
+        zf.writestr("health_metrics.json", json.dumps(_health_metrics_snapshot(), indent=2, default=str))
+        zf.writestr("booking_analysis_job.json", json.dumps(_booking_and_job(run), indent=2, default=str))
+        zf.writestr("configuration_snapshot.json", json.dumps(_config_snapshot(), indent=2, default=str))
         zf.writestr(
             "api_summary.json",
             json.dumps(
