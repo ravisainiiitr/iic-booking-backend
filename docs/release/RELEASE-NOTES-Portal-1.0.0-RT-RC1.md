@@ -16,8 +16,19 @@ Portal Release Candidate for the Remote Analysis **Reverse Tunnel** transport. A
 ## Security
 
 - Short-lived HMAC tunnel tokens (`RA_TUNNEL_TOKEN_SECRET`)
+- When `DEBUG=False`, Portal requires explicit `RA_TUNNEL_TOKEN_SECRET` (no Django `SECRET_KEY` fallback)
 - Admin toolkit/fault endpoints remain manage-permission gated
 - Evidence ZIP redacts secrets in env snapshot
+- Gateway Production refuses empty AdminKey and insecure TokenSecret
+- Compose: Gateway internal-only by default; optional host publish via `docker-compose.ra-gateway-host-publish.yml`
+
+## Pins
+
+| Component | Commit |
+|-----------|--------|
+| Portal | `e61fed97937b7a6df0379b3e79afc4727979fbf4` |
+| Gateway | `a41ded0557b82eae01f1e741b7548806fa724dd2` |
+| Agent | `f9a1bc02930c9b48dafe2f2ed72f09543a6ac275` |
 
 ## Operational changes
 

@@ -36,3 +36,8 @@ TEMPLATES[0]["OPTIONS"]["debug"] = True  # type: ignore[index]
 MEDIA_URL = "http://media.testserver/"
 # Your stuff...
 # ------------------------------------------------------------------------------
+# Explicit tunnel HMAC secret for tests (DEBUG=False here; no SECRET_KEY fallback).
+RA_TUNNEL_TOKEN_SECRET = env(
+    "RA_TUNNEL_TOKEN_SECRET",
+    default="test-only-tunnel-token-secret",
+)

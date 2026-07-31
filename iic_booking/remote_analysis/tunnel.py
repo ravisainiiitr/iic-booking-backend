@@ -41,12 +41,24 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def tunnel_token_secret() -> bytes:
-    raw = (
-        getattr(django_settings, "RA_TUNNEL_TOKEN_SECRET", None)
-        or __import__("os").environ.get("RA_TUNNEL_TOKEN_SECRET")
-        or getattr(django_settings, "SECRET_KEY", "")
+    """Resolve HMAC secret for tunnel tokens.
+
+    Production (DEBUG=False) requires an explicit RA_TUNNEL_TOKEN_SECRET.
+    DEBUG may still fall back to Django SECRET_KEY for local loops only.
+    """
+    raw = getattr(django_settings, "RA_TUNNEL_TOKEN_SECRET", None) or __import__(
+        "os"
+    ).environ.get("RA_TUNNEL_TOKEN_SECRET")
+    if raw:
+        return str(raw).encode("utf-8")
+    if getattr(django_settings, "DEBUG", False):
+        return str(getattr(django_settings, "SECRET_KEY", "")).encode("utf-8")
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "RA_TUNNEL_TOKEN_SECRET must be set when DEBUG is False "
+        "(Django SECRET_KEY fallback is disabled outside DEBUG)."
     )
-    return str(raw).encode("utf-8")
 
 
 @dataclass

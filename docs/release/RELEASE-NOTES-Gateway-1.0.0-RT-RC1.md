@@ -12,7 +12,17 @@ Allocate/close APIs · ephemeral TCP adapter · HMAC token auth · RDP byte brid
 
 ## Security
 
-Shared `RA_TUNNEL_TOKEN_SECRET`; optional admin key; do not expose admin HTTP publicly.
+- Shared `RA_TUNNEL_TOKEN_SECRET` **required** in Production (no `change-me` / empty defaults; fail-fast at startup)
+- `RA_TUNNEL_GATEWAY_ADMIN_KEY` **required** in Production (empty AdminKey refused at startup; Development may leave empty for local loops)
+- Default Portal compose does **not** publish `:7090` to the host; use `docker-compose.ra-gateway-host-publish.yml` only when explicitly needed
+
+## Pins
+
+| Component | Commit |
+|-----------|--------|
+| Portal | `e61fed97937b7a6df0379b3e79afc4727979fbf4` |
+| Gateway | `a41ded0557b82eae01f1e741b7548806fa724dd2` |
+| Agent | `f9a1bc02930c9b48dafe2f2ed72f09543a6ac275` |
 
 ## Operational changes
 

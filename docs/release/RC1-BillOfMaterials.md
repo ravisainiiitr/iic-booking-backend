@@ -1,14 +1,14 @@
 # RC1 Bill of Materials — Platform `1.0.0-RT-RC1`
 
-**Prepared:** 2026-07-31 · **Commits:** not created (awaiting approval)
+**Prepared:** 2026-07-31 · **Local commits created — not pushed**
 
 ## Portal — `iic-booking-backend`
 
 | Item | Value |
 |------|-------|
 | Version | `1.0.0-RT-RC1` (`VERSION`) |
-| Branch (planned) | `release/reverse-tunnel-rc1` |
-| Commit | `_PORTAL_RC1_SHA_` |
+| Branch | `release/reverse-tunnel-rc1` |
+| Commit | `e61fed97937b7a6df0379b3e79afc4727979fbf4` |
 | Migration | `0015_reverse_tunnel_transport` |
 | Compose | `docker-compose.ra-production.yml` |
 | Image | `iic_booking_production_django:1.0.0-RT-RC1` |
@@ -18,9 +18,8 @@
 | Item | Value |
 |------|-------|
 | Version | `1.0.0-RT-RC1` (`VERSION` + csproj) |
-| Git | Initialized; **0 commits** |
-| Branch (planned) | `release/reverse-tunnel-rc1` |
-| Commit | `_GATEWAY_RC1_SHA_` |
+| Branch | `release/reverse-tunnel-rc1` |
+| Commit | `a41ded0557b82eae01f1e741b7548806fa724dd2` |
 | Image | `reverse-tunnel-gateway:1.0.0-RT-RC1` |
 | Dockerfile | repo root |
 
@@ -29,8 +28,8 @@
 | Item | Value |
 |------|-------|
 | Version | `1.0.0-RT-RC1` (`VERSION` + csproj) |
-| Branch (planned) | `release/reverse-tunnel-rc1` |
-| Commit | `_AGENT_RC1_SHA_` |
+| Branch | `release/reverse-tunnel-rc1` |
+| Commit | `f9a1bc02930c9b48dafe2f2ed72f09543a6ac275` |
 | Package | Windows service / MSI (not Docker) |
 | Include list | `docs/RC1-IncludeList.md` |
 
@@ -43,7 +42,7 @@
 
 ## Environment variables
 
-`RA_TRANSPORT`, `RA_TUNNEL_TOKEN_SECRET`, `RA_TUNNEL_GATEWAY_ADMIN_KEY`, `RA_TUNNEL_GATEWAY_ADMIN_URL`, `RA_TUNNEL_GATEWAY_WSS_URL`, `RA_TUNNEL_ADAPTER_HOSTNAME`, `TUNNEL_GATEWAY_HOST_PORT` — see `docs/release/rc1/sample.env.production`.
+`RA_TRANSPORT`, `RA_TUNNEL_TOKEN_SECRET` (**required** if Gateway/Portal issue tokens; no production defaults), `RA_TUNNEL_GATEWAY_ADMIN_KEY` (**required** for Production Gateway), `RA_TUNNEL_GATEWAY_ADMIN_URL`, `RA_TUNNEL_GATEWAY_WSS_URL`, `RA_TUNNEL_ADAPTER_HOSTNAME`, `TUNNEL_GATEWAY_HOST_PORT` (**only** with `docker-compose.ra-gateway-host-publish.yml`) — see `docs/release/rc1/sample.env.production`.
 
 ## Health endpoints
 

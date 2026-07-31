@@ -138,7 +138,7 @@ RA_TRANSPORT=direct_rdp
 
 # Shared HMAC Portal ↔ Gateway (required even if transport stays direct_rdp, so gateway can start)
 RA_TUNNEL_TOKEN_SECRET=<set-strong-secret>
-RA_TUNNEL_GATEWAY_ADMIN_KEY=<set-admin-key-or-empty>
+RA_TUNNEL_GATEWAY_ADMIN_KEY=<set-strong-admin-key-required>
 
 # Internal compose DNS (Portal → Gateway admin HTTP)
 RA_TUNNEL_GATEWAY_ADMIN_URL=http://reverse-tunnel-gateway:7090/
@@ -153,7 +153,15 @@ RA_MOCK_GUACAMOLE=false
 # …existing RA_GUACAMOLE_* remain as already configured…
 ```
 
-Optional host publish: `TUNNEL_GATEWAY_HOST_PORT=7090` (compose default).
+Host publish is **not** the default. Gateway stays on internal Docker networks only.
+Optional host publish requires an explicit override file and port:
+
+```bash
+export TUNNEL_GATEWAY_HOST_PORT=7090
+docker compose -f docker-compose.ra-production.yml \
+  -f docker-compose.ra-gateway-host-publish.yml \
+  --profile guacamole up -d reverse-tunnel-gateway
+```
 
 ### Deployment scripts (present in repo)
 

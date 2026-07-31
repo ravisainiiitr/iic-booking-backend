@@ -1,15 +1,15 @@
 # Compatibility Matrix — Remote Analysis Platform `1.0.0-RT-RC1`
 
-**Status:** Pre-commit (placeholders until you approve commits)  
+**Status:** Local RC1 commits created — **not pushed**  
 **Updated:** 2026-07-31  
 **Commissioning package version:** `1.0.0-RT-RC1` (`docs/release/LiveCommissioningChecklist.md`)
 
-| Component | Version | Repository | Branch (planned) | Commit pin |
-|-----------|---------|------------|------------------|------------|
+| Component | Version | Repository | Branch | Commit pin |
+|-----------|---------|------------|--------|------------|
 | Platform | `1.0.0-RT-RC1` | — | — | — |
-| Portal | `1.0.0-RT-RC1` | `iic-booking-backend` | `release/reverse-tunnel-rc1` | `_PORTAL_RC1_SHA_` (base today `ac70cfa61deb3554d4932be461db3ef77a5ea0c9`) |
-| Gateway | `1.0.0-RT-RC1` | `ReverseTunnelGateway` | `release/reverse-tunnel-rc1` | `_GATEWAY_RC1_SHA_` (git **initialized**, **0 commits**) |
-| Agent | `1.0.0-RT-RC1` | `RemoteAnalysisAgent` | `release/reverse-tunnel-rc1` | `_AGENT_RC1_SHA_` (HEAD today `3c48c16c4f2ef60a08e36dc63aad17810e371acd` + dirty) |
+| Portal | `1.0.0-RT-RC1` | `iic-booking-backend` | `release/reverse-tunnel-rc1` | `e61fed97937b7a6df0379b3e79afc4727979fbf4` |
+| Gateway | `1.0.0-RT-RC1` | `ReverseTunnelGateway` | `release/reverse-tunnel-rc1` | `a41ded0557b82eae01f1e741b7548806fa724dd2` |
+| Agent | `1.0.0-RT-RC1` | `RemoteAnalysisAgent` | `release/reverse-tunnel-rc1` | `f9a1bc02930c9b48dafe2f2ed72f09543a6ac275` |
 | Migration | `0015` | Portal | with Portal RC1 | `remote_analysis.0015_reverse_tunnel_transport` |
 
 ## Compose / Docker

@@ -1,0 +1,15 @@
+# Explicit override: publish Reverse Tunnel Gateway to the host.
+# Use ONLY when required (e.g. agent WSS via host edge). Prefer edge TLS termination
+# on an internal-only gateway whenever possible.
+#
+#   export TUNNEL_GATEWAY_HOST_PORT=7090
+#   docker compose -f docker-compose.ra-production.yml \
+#     -f docker-compose.ra-gateway-host-publish.yml \
+#     --profile guacamole up -d reverse-tunnel-gateway
+#
+# Still requires strong RA_TUNNEL_TOKEN_SECRET and RA_TUNNEL_GATEWAY_ADMIN_KEY.
+
+services:
+  reverse-tunnel-gateway:
+    ports:
+      - "${TUNNEL_GATEWAY_HOST_PORT:?Set TUNNEL_GATEWAY_HOST_PORT explicitly}:7090"

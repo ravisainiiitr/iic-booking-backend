@@ -1,9 +1,11 @@
 # Reverse Tunnel RC1 — Bill of Materials (BOM)
 
-**Document status:** Audit / planning only — no commit executed  
+**Document status:** Local RC1 commits created — not pushed  
 **Date:** 2026-07-31  
-**Base Portal tip:** `ac70cfa61deb3554d4932be461db3ef77a5ea0c9` (`origin/master`)  
-**RC commit:** `_PLACEHOLDER_`
+**Base Portal tip (pre-RC1):** `ac70cfa61deb3554d4932be461db3ef77a5ea0c9`  
+**RC commit:** `e61fed97937b7a6df0379b3e79afc4727979fbf4`  
+**Gateway commit:** `a41ded0557b82eae01f1e741b7548806fa724dd2`  
+**Agent commit:** `f9a1bc02930c9b48dafe2f2ed72f09543a6ac275`
 
 ---
 
@@ -12,9 +14,9 @@
 | Field | Value |
 |-------|-------|
 | Repository | `iic-booking-backend` (`ravisainiiitr/iic-booking-backend`) |
-| Recommended branch | `release/reverse-tunnel-rc1` |
-| Version / tag | `ReverseTunnel-RC1` (tag after commit) |
-| Commit | `_PLACEHOLDER_` |
+| Branch | `release/reverse-tunnel-rc1` |
+| Version / tag | `1.0.0-RT-RC1` (tag only when ordered) |
+| Commit | `e61fed97937b7a6df0379b3e79afc4727979fbf4` |
 | Compose file | `docker-compose.ra-production.yml` |
 | Django image | `iic_booking_production_django` (rebuild) |
 | Migration | `remote_analysis.0015_reverse_tunnel_transport` |
@@ -88,7 +90,7 @@ reverse-tunnel-gateway:
 | `RA_TUNNEL_GATEWAY_ADMIN_URL` | Yes if toolkit/gateway probes used |
 | `RA_TUNNEL_GATEWAY_WSS_URL` | Set for later enable; unused while direct_rdp |
 | `RA_TUNNEL_ADAPTER_HOSTNAME` | Default `reverse-tunnel-gateway` |
-| `TUNNEL_GATEWAY_HOST_PORT` | Optional host publish (default 7090) |
+| `TUNNEL_GATEWAY_HOST_PORT` | Only with explicit `docker-compose.ra-gateway-host-publish.yml` (not published by default) |
 
 ## Compatibility matrix
 

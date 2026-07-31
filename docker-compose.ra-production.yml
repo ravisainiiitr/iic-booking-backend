@@ -219,15 +219,18 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      RA_TUNNEL_TOKEN_SECRET: ${RA_TUNNEL_TOKEN_SECRET:-change-me-tunnel-secret}
-      RA_TUNNEL_GATEWAY_ADMIN_KEY: ${RA_TUNNEL_GATEWAY_ADMIN_KEY:-}
+      # Required in Production (Gateway fails fast if missing/insecure). No change-me defaults.
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      RA_TUNNEL_TOKEN_SECRET: ${RA_TUNNEL_TOKEN_SECRET:?Set RA_TUNNEL_TOKEN_SECRET to a strong secret}
+      RA_TUNNEL_GATEWAY_ADMIN_KEY: ${RA_TUNNEL_GATEWAY_ADMIN_KEY:?Set RA_TUNNEL_GATEWAY_ADMIN_KEY}
       RA_TUNNEL_ADAPTER_HOSTNAME: reverse-tunnel-gateway
-      Tunnel__TokenSecret: ${RA_TUNNEL_TOKEN_SECRET:-change-me-tunnel-secret}
-      Tunnel__AdminKey: ${RA_TUNNEL_GATEWAY_ADMIN_KEY:-}
+      Tunnel__TokenSecret: ${RA_TUNNEL_TOKEN_SECRET}
+      Tunnel__AdminKey: ${RA_TUNNEL_GATEWAY_ADMIN_KEY}
       Tunnel__AdapterHostname: reverse-tunnel-gateway
       ASPNETCORE_URLS: http://0.0.0.0:7090
-    ports:
-      - "${TUNNEL_GATEWAY_HOST_PORT:-7090}:7090"
+    # H3: do NOT publish admin/WSS to the host by default — internal Docker networks only.
+    # Optional host publish requires explicit override file:
+    #   docker compose -f docker-compose.ra-production.yml -f docker-compose.ra-gateway-host-publish.yml --profile guacamole up -d
     networks:
       - ra_backend
       - ra_frontend

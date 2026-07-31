@@ -1,10 +1,12 @@
 # Reverse Tunnel — Release Candidate Manifest (RC1)
 
 **Release version:** `ReverseTunnel-RC1`  
-**Status:** **NOT READY TO COMMIT** until exclusions are applied and Gateway/Agent packaging is decided  
-**Base commit (current origin tip):** `ac70cfa61deb3554d4932be461db3ef77a5ea0c9`  
-**RC commit SHA:** `_PLACEHOLDER — replace after commit_`  
-**Prepared:** 2026-07-31 (local audit; no push/deploy)
+**Status:** Local RC1 commits created — ready for manual review before push  
+**Base commit (pre-RC1 origin tip):** `ac70cfa61deb3554d4932be461db3ef77a5ea0c9`  
+**RC commit SHA:** `e61fed97937b7a6df0379b3e79afc4727979fbf4`  
+**Gateway SHA:** `a41ded0557b82eae01f1e741b7548806fa724dd2`  
+**Agent SHA:** `f9a1bc02930c9b48dafe2f2ed72f09543a6ac275`  
+**Prepared:** 2026-07-31 (local commits — not pushed)
 
 **Default feature flag for first production deploy of this RC:** `RA_TRANSPORT=direct_rdp`  
 (Gateway may ship idle. Do not enable `reverse_tunnel` until commissioning.)
