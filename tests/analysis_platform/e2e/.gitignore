@@ -1,0 +1,6 @@
+# Analysis Platform E2E artifacts / node_modules
+node_modules/
+test-results/
+../report/playwright-html/
+../report/playwright-junit.xml
+../report/playwright-results.json

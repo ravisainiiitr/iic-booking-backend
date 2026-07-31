@@ -10,6 +10,9 @@ markers = [
     "sat: System Acceptance Test (automated portal-side)",
     "sat_lab: System Acceptance Test requiring live agent / lab infra (skipped unless SAT_LAB=1)",
     "sat_perf: Performance SAT (skipped unless SAT_PERF=1)",
+    "analysis_platform: Analysis Platform Test Harness (API/security/mock-agent)",
+    "analysis_perf: Analysis Platform performance harness (ANALYSIS_PERF=1)",
+    "analysis_lab: Analysis Platform real-agent smoke (ANALYSIS_LAB=1)",
 ]
 
 # ==== Coverage ====
