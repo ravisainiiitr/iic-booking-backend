@@ -1,0 +1,171 @@
+# One-shot / ops: Portal-only deploy of release/reverse-tunnel-rc1 (B1–B5).
+# Does NOT enable reverse_tunnel. Does NOT restart Redis / Gateway / Guacamole.
+name: Deploy Portal RC1 (portal-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Expected git SHA (short or full)"
+        required: true
+        default: "a8ec11b"
+      branch:
+        description: "Branch to fast-forward"
+        required: true
+        default: "release/reverse-tunnel-rc1"
+
+jobs:
+  deploy-portal:
+    runs-on: self-hosted
+    steps:
+      - name: Locate compose project and report current git
+        id: loc
+        run: |
+          set -euo pipefail
+          COMPOSE_DIR=""
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+            if [ -f "$d/docker-compose.production.yml" ]; then
+              COMPOSE_DIR="$d"
+              break
+            fi
+          done
+          if [ -z "$COMPOSE_DIR" ]; then
+            echo "Could not find docker-compose.production.yml under /home/ubuntu"
+            ls -la /home/ubuntu || true
+            exit 1
+          fi
+          echo "compose_dir=$COMPOSE_DIR" >> "$GITHUB_OUTPUT"
+          cd "$COMPOSE_DIR"
+          echo "=== BEFORE ==="
+          echo "pwd=$(pwd)"
+          echo "branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+          echo "HEAD=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          echo "expected=${{ inputs.expected_sha }}"
+
+      - name: Fast-forward to release branch / expected SHA
+        run: |
+          set -euo pipefail
+          cd "${{ steps.loc.outputs.compose_dir }}"
+          EXPECTED="${{ inputs.expected_sha }}"
+          BRANCH="${{ inputs.branch }}"
+          echo "=== git fetch / checkout / pull ==="
+          git fetch origin
+          git checkout "$BRANCH"
+          git pull --ff-only origin "$BRANCH"
+          HEAD="$(git rev-parse HEAD)"
+          SHORT="$(git rev-parse --short=7 HEAD)"
+          echo "AFTER branch=$(git rev-parse --abbrev-ref HEAD)"
+          echo "AFTER HEAD=$HEAD"
+          echo "AFTER short=$SHORT"
+          case "$HEAD" in
+            "$EXPECTED"*|"$EXPECTED") echo "HEAD matches expected prefix $EXPECTED" ;;
+            *)
+              # also allow short sha match
+              if [ "$SHORT" = "$EXPECTED" ] || [ "${HEAD:0:${#EXPECTED}}" = "$EXPECTED" ]; then
+                echo "HEAD matches expected $EXPECTED"
+              else
+                echo "FAIL: HEAD=$HEAD does not match expected $EXPECTED"
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Restart Portal containers only
+        run: |
+          set -euo pipefail
+          cd "${{ steps.loc.outputs.compose_dir }}"
+          echo "=== compose ps (before) ==="
+          docker compose -f docker-compose.production.yml ps || true
+          echo "=== up -d --no-deps --build django celeryworker celerybeat ==="
+          docker compose -f docker-compose.production.yml up -d --no-deps --build django celeryworker celerybeat
+          echo "=== compose ps (after) ==="
+          docker compose -f docker-compose.production.yml ps django celeryworker celerybeat || \
+            docker compose -f docker-compose.production.yml ps
+
+      - name: Wait for Django health endpoints
+        run: |
+          set -euo pipefail
+          READY=0
+          for i in $(seq 1 60); do
+            live="$(curl -sS -o /tmp/ra_live.json -w '%{http_code}' --max-time 5 \
+              https://equip.iitr.ac.in/api/v1/analysis/health/live/ || true)"
+            ready="$(curl -sS -o /tmp/ra_ready.json -w '%{http_code}' --max-time 5 \
+              https://equip.iitr.ac.in/api/v1/analysis/health/ready/ || true)"
+            echo "attempt=$i live_http=$live ready_http=$ready"
+            if [ "$live" = "200" ] && [ "$ready" = "200" ]; then
+              READY=1
+              break
+            fi
+            sleep 5
+          done
+          echo "=== live body ==="
+          cat /tmp/ra_live.json || true
+          echo
+          echo "=== ready body ==="
+          cat /tmp/ra_ready.json || true
+          echo
+          if [ "$READY" -ne 1 ]; then
+            echo "Django health did not become ready in time"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          ready=json.load(open("/tmp/ra_ready.json"))
+          assert ready.get("status")=="ready", ready
+          checks=ready.get("checks") or {}
+          assert checks.get("transport_mode")=="direct_rdp", checks
+          assert checks.get("database")=="ok", checks
+          assert checks.get("cache")=="ok", checks
+          print("ready_probe_ok", checks)
+          PY
+
+      - name: validate_deployment_startup
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec "$CID" python manage.py validate_deployment_startup
+
+      - name: verify_reverse_tunnel_production
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec "$CID" python manage.py verify_reverse_tunnel_production
+
+      - name: Gateway health and metrics (no secrets)
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "=== Gateway health ==="
+          docker exec "$CID" python -c "import urllib.request;print(urllib.request.urlopen('http://reverse-tunnel-gateway:7090/api/v1/health').read().decode())"
+          echo "=== Gateway metrics (admin key from env; value not printed) ==="
+          docker exec "$CID" python - <<'PY'
+          import json, os, urllib.request
+          key = os.environ.get("RA_TUNNEL_GATEWAY_ADMIN_KEY") or ""
+          print("admin_key_configured=", bool(key.strip()))
+          req = urllib.request.Request(
+              "http://reverse-tunnel-gateway:7090/api/v1/metrics",
+              headers={"X-Tunnel-Admin-Key": key},
+          )
+          raw = urllib.request.urlopen(req, timeout=10).read().decode()
+          data = json.loads(raw)
+          # Print summary only — never dump unexpected secret-bearing fields
+          print(json.dumps({
+              "ok": data.get("ok"),
+              "connected_agents": data.get("connected_agents"),
+              "active_tunnels": data.get("active_tunnels"),
+              "bytes_sent": data.get("bytes_sent"),
+              "bytes_received": data.get("bytes_received"),
+              "tunnel_count": len(data.get("tunnels") or []),
+          }, indent=2))
+          PY
+
+      - name: Final Portal ready snapshot
+        run: |
+          set -euo pipefail
+          curl -sS https://equip.iitr.ac.in/api/v1/analysis/health/ready/
+          echo
+          cd "${{ steps.loc.outputs.compose_dir }}"
+          echo "final_branch=$(git rev-parse --abbrev-ref HEAD)"
+          echo "final_HEAD=$(git rev-parse HEAD)"
