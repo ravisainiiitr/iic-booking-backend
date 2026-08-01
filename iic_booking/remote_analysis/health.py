@@ -70,8 +70,36 @@ def _readiness_payload() -> tuple[dict, int]:
                 from iic_booking.remote_analysis.guacamole.settings_env import (
                     production_guacamole_configured,
                 )
+                from iic_booking.remote_analysis.tunnel import (
+                    TunnelGatewayClient,
+                    reverse_tunnel_config_status,
+                )
 
-                # Guacamole readiness (production): fail when mock is off but gateway is unreachable.
+                # Presence-only tunnel config (never emit secret values).
+                cfg = reverse_tunnel_config_status(settings_obj)
+                for key, status in cfg.items():
+                    check_key = {
+                        "RA_TUNNEL_TOKEN_SECRET": "tunnel_token_secret",
+                        "RA_TUNNEL_GATEWAY_ADMIN_KEY": "tunnel_gateway_admin_key",
+                        "RA_TUNNEL_GATEWAY_ADMIN_URL": "tunnel_gateway_admin_url",
+                        "RA_TUNNEL_GATEWAY_WSS_URL": "tunnel_gateway_wss_url",
+                        "RA_TUNNEL_ADAPTER_HOSTNAME": "tunnel_adapter_hostname",
+                    }[key]
+                    checks[check_key] = status
+                    if status != "configured":
+                        ok = False
+
+                # Gateway health is required under reverse_tunnel (not Guacamole-only).
+                gateway = TunnelGatewayClient(settings_obj).health()
+                if gateway.get("ok"):
+                    checks["gateway"] = "ok"
+                else:
+                    checks["gateway"] = (
+                        f"unreachable:{gateway.get('detail') or gateway.get('status') or 'error'}"
+                    )
+                    ok = False
+
+                # Guacamole readiness (production): fail when mock is off but unreachable.
                 # When DEBUG is False, mock Guacamole is never "ready" (pilot/production gate).
                 configured, problems = production_guacamole_configured(settings_obj)
                 if settings_obj.mock_guacamole:
@@ -89,6 +117,7 @@ def _readiness_payload() -> tuple[dict, int]:
                     ok = False
             except Exception as exc:  # noqa: BLE001
                 checks["guacamole"] = f"error:{type(exc).__name__}"
+                ok = False
     except Exception as exc:  # noqa: BLE001 — enrollment / settings probe must not raise
         checks["agent_enrollment"] = f"error:{type(exc).__name__}"
         ok = False

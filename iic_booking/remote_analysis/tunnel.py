@@ -135,6 +135,52 @@ class TunnelTokenService:
         )
 
 
+def tunnel_admin_key() -> str:
+    """Resolve Gateway admin key (never log the value)."""
+    return (
+        getattr(django_settings, "RA_TUNNEL_GATEWAY_ADMIN_KEY", None)
+        or __import__("os").environ.get("RA_TUNNEL_GATEWAY_ADMIN_KEY")
+        or ""
+    )
+
+
+def tunnel_token_secret_configured() -> bool:
+    """True when an explicit tunnel HMAC secret is available (no DEBUG fallback)."""
+    raw = getattr(django_settings, "RA_TUNNEL_TOKEN_SECRET", None) or __import__("os").environ.get(
+        "RA_TUNNEL_TOKEN_SECRET"
+    )
+    return bool(raw and str(raw).strip())
+
+
+def reverse_tunnel_config_status(settings_obj: RemoteAnalysisSettings | None = None) -> dict[str, str]:
+    """
+    Presence-only checks for reverse-tunnel cutover config.
+    Values are never included — only configured / missing.
+    """
+    import os
+
+    settings_obj = settings_obj or RemoteAnalysisSettings.get_solo()
+    admin_url = (
+        (settings_obj.tunnel_gateway_admin_url or "").strip()
+        or (os.environ.get("RA_TUNNEL_GATEWAY_ADMIN_URL") or "").strip()
+    )
+    wss_url = (
+        (settings_obj.tunnel_gateway_wss_url or "").strip()
+        or (os.environ.get("RA_TUNNEL_GATEWAY_WSS_URL") or "").strip()
+    )
+    adapter = (
+        (settings_obj.tunnel_adapter_hostname or "").strip()
+        or (os.environ.get("RA_TUNNEL_ADAPTER_HOSTNAME") or "").strip()
+    )
+    return {
+        "RA_TUNNEL_TOKEN_SECRET": "configured" if tunnel_token_secret_configured() else "missing",
+        "RA_TUNNEL_GATEWAY_ADMIN_KEY": "configured" if bool(tunnel_admin_key().strip()) else "missing",
+        "RA_TUNNEL_GATEWAY_ADMIN_URL": "configured" if admin_url else "missing",
+        "RA_TUNNEL_GATEWAY_WSS_URL": "configured" if wss_url else "missing",
+        "RA_TUNNEL_ADAPTER_HOSTNAME": "configured" if adapter else "missing",
+    }
+
+
 class TunnelGatewayClient:
     """Portal → Gateway admin HTTP (allocate adapter port, register pending tunnel)."""
 
@@ -148,10 +194,20 @@ class TunnelGatewayClient:
     def allocate(self, tunnel: TunnelSession, *, token: str) -> dict[str, Any]:
         """
         Register pending tunnel and allocate adapter TCP port for guacd.
-        Mock/local: when admin URL empty, allocate a synthetic port for tests.
+        Mock/local: when admin URL empty, allocate a synthetic port for DEBUG only.
+        Production reverse_tunnel must never use the mock allocator.
         """
         if not (self.settings.tunnel_gateway_admin_url or "").strip():
-            # Dev fallback — real Gateway required for live reverse_tunnel.
+            is_rt = self.settings.transport_mode == TransportMode.REVERSE_TUNNEL
+            if is_rt and not getattr(django_settings, "DEBUG", False):
+                from django.core.exceptions import ImproperlyConfigured
+
+                raise ImproperlyConfigured(
+                    "RA_TUNNEL_GATEWAY_ADMIN_URL (tunnel_gateway_admin_url) is required "
+                    "when transport_mode=reverse_tunnel and DEBUG=False; "
+                    "local mock allocation is disabled in production."
+                )
+            # Dev/test fallback only.
             port = 40000 + (abs(hash(str(tunnel.id))) % 10000)
             return {
                 "adapter_hostname": self.settings.tunnel_adapter_hostname or "127.0.0.1",
@@ -211,11 +267,7 @@ class TunnelGatewayClient:
             return {"ok": False, "detail": str(exc)}
 
     def _admin_key(self) -> str:
-        return (
-            getattr(django_settings, "RA_TUNNEL_GATEWAY_ADMIN_KEY", None)
-            or __import__("os").environ.get("RA_TUNNEL_GATEWAY_ADMIN_KEY")
-            or ""
-        )
+        return tunnel_admin_key()
 
 
 class TunnelOrchestrator:
@@ -228,6 +280,60 @@ class TunnelOrchestrator:
 
     def is_reverse_tunnel(self) -> bool:
         return self.settings.transport_mode == TransportMode.REVERSE_TUNNEL
+
+    def apply_join_result(
+        self,
+        tunnel: TunnelSession,
+        *,
+        success: bool,
+        message: str = "",
+    ) -> TunnelSession:
+        """
+        Drive TunnelSession lifecycle from JOIN_TUNNEL command completion.
+
+        WAITING_AGENT → ACTIVE (success) or FAILED (failure).
+        Terminal CLOSED/EXPIRED rows are left unchanged.
+        """
+        if tunnel.status in {
+            TunnelSessionStatus.CLOSED,
+            TunnelSessionStatus.EXPIRED,
+        }:
+            return tunnel
+
+        now = timezone.now()
+        if success:
+            tunnel.status = TunnelSessionStatus.ACTIVE
+            tunnel.agent_joined_at = now
+            tunnel.activated_at = now
+            tunnel.save(
+                update_fields=[
+                    "status",
+                    "agent_joined_at",
+                    "activated_at",
+                    "updated_at",
+                ]
+            )
+            TunnelEvent.objects.create(
+                tunnel=tunnel,
+                event_type="JOINED",
+                detail=message or "agent joined",
+            )
+            TunnelEvent.objects.create(
+                tunnel=tunnel,
+                event_type="ACTIVE",
+                detail=message or "tunnel active",
+            )
+            return tunnel
+
+        tunnel.status = TunnelSessionStatus.FAILED
+        tunnel.close_reason = (message or "JOIN_TUNNEL failed")[:255]
+        tunnel.save(update_fields=["status", "close_reason", "updated_at"])
+        TunnelEvent.objects.create(
+            tunnel=tunnel,
+            event_type="JOIN_FAILED",
+            detail=message or "JOIN_TUNNEL failed",
+        )
+        return tunnel
 
     def provision_for_session(self, desktop_session, *, analysis_job=None) -> TunnelSession:
         """Create TunnelSession, allocate adapter port, command agent to join."""

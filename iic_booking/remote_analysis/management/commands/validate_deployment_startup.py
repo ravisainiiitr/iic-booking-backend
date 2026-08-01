@@ -178,15 +178,25 @@ class Command(BaseCommand):
                 bad("storage.writable", f"{type(exc).__name__}/{type(exc2).__name__}: {exc2}")
 
         # --- Guacamole ---
+        settings_obj = None
+        try:
+            from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+
+            settings_obj = RemoteAnalysisSettings.get_solo()
+        except Exception as exc:  # noqa: BLE001
+            soft("remote_analysis.settings", f"{type(exc).__name__}: {exc}")
+
         if skip_guac:
             ok("guacamole", "skipped (--skip-guacamole)")
         else:
             try:
                 from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
                 from iic_booking.remote_analysis.guacamole.settings_env import production_guacamole_configured
-                from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
 
-                settings_obj = RemoteAnalysisSettings.get_solo()
+                if settings_obj is None:
+                    from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+
+                    settings_obj = RemoteAnalysisSettings.get_solo()
                 if settings_obj.mock_guacamole:
                     soft("guacamole", "mock_guacamole=True — set RA_MOCK_GUACAMOLE=false for live desktop")
                 else:
@@ -201,6 +211,29 @@ class Command(BaseCommand):
                             bad("guacamole.reachable", probe.get("error") or probe.get("status") or "unreachable")
             except Exception as exc:  # noqa: BLE001
                 bad("guacamole", f"{type(exc).__name__}: {exc}")
+
+        # --- Reverse tunnel (hard fail when enabled) ---
+        try:
+            from iic_booking.remote_analysis.constants import TransportMode
+            from iic_booking.remote_analysis.tunnel import reverse_tunnel_config_status
+
+            if settings_obj is None:
+                from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+
+                settings_obj = RemoteAnalysisSettings.get_solo()
+            if settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL:
+                ok("transport_mode", "reverse_tunnel")
+                cfg = reverse_tunnel_config_status(settings_obj)
+                for name, status in cfg.items():
+                    if status == "configured":
+                        ok(f"env.{name}", "configured")
+                    else:
+                        # Hard failure — stop deployment when reverse_tunnel is enabled.
+                        bad(f"env.{name}", "missing (required when transport_mode=reverse_tunnel)")
+            else:
+                ok("transport_mode", str(settings_obj.transport_mode))
+        except Exception as exc:  # noqa: BLE001
+            bad("transport_mode", f"{type(exc).__name__}: {exc}")
 
         # --- Report ---
         self.stdout.write("=== Deployment Startup Validation ===")

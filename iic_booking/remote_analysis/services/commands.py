@@ -177,4 +177,25 @@ class CommandService:
                     command.id,
                 )
 
+        # Phase 4 RC1: JOIN_TUNNEL completion drives TunnelSession ACTIVE / FAILED
+        if command.command_type == CommandType.JOIN_TUNNEL:
+            try:
+                from iic_booking.remote_analysis.tunnel import TunnelOrchestrator
+                from iic_booking.remote_analysis.tunnel_models import TunnelSession
+
+                tunnel_id = (command.payload or {}).get("tunnel_id")
+                if tunnel_id:
+                    tunnel = TunnelSession.objects.filter(pk=tunnel_id).first()
+                    if tunnel:
+                        TunnelOrchestrator().apply_join_result(
+                            tunnel,
+                            success=success,
+                            message=message,
+                        )
+            except Exception:
+                logger.exception(
+                    "Failed to update TunnelSession after JOIN_TUNNEL complete (%s)",
+                    command.id,
+                )
+
         return command
