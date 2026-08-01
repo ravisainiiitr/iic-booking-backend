@@ -62,11 +62,18 @@ def register(request):
 
     When RA_AGENT_ENROLLMENT_KEY is set, require matching X-Enrollment-Key
     (or body enrollmentKey) — production gate for open registration.
+
+    Enrollment-authenticated requests without a valid Bearer rotate the agent
+    token and return new plaintext (stale-state recovery). Valid Bearer keeps
+    the existing token (plaintext may be omitted).
     """
     import hmac
     import os
 
+    from iic_booking.remote_analysis.services.registration import request_has_valid_agent_bearer
+
     expected = (os.environ.get("RA_AGENT_ENROLLMENT_KEY") or "").strip()
+    enrollment_authenticated = False
     if expected:
         provided = (
             request.META.get("HTTP_X_ENROLLMENT_KEY")
@@ -84,9 +91,21 @@ def register(request):
                 {"accepted": False, "message": "Invalid or missing enrollment key."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        enrollment_authenticated = True
+    else:
+        # Open registration (DEBUG / unset key): treat as enrollment-authenticated
+        # for recovery rotation when Bearer is absent.
+        enrollment_authenticated = True
+
+    payload = request.data if isinstance(request.data, dict) else {}
+    has_valid_bearer = request_has_valid_agent_bearer(request)
 
     try:
-        result = RegistrationService().register(request.data if isinstance(request.data, dict) else {})
+        result = RegistrationService().register(
+            payload,
+            has_valid_bearer=has_valid_bearer,
+            enrollment_authenticated=enrollment_authenticated,
+        )
     except ValueError as exc:
         return Response({"accepted": False, "message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(result, status=status.HTTP_201_CREATED if result.get("created") else status.HTTP_200_OK)

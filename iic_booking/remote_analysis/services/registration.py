@@ -16,7 +16,12 @@ from iic_booking.remote_analysis.models import (
 )
 from iic_booking.remote_analysis.services.audit import record_event
 from iic_booking.remote_analysis.services.health import update_workstation_health
-from iic_booking.remote_analysis.services.tokens import issue_agent_token, revoke_all_tokens
+from iic_booking.remote_analysis.services.tokens import (
+    find_active_token,
+    issue_agent_token,
+    revoke_all_tokens,
+    rotate_agent_token,
+)
 
 
 def _transition(workstation: AnalysisWorkstation, to_status: str, reason: str = "") -> None:
@@ -91,7 +96,21 @@ class RegistrationService:
     """Register workstation, validate AgentId, issue token, prevent duplicates."""
 
     @transaction.atomic
-    def register(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def register(
+        self,
+        payload: dict[str, Any],
+        *,
+        has_valid_bearer: bool = False,
+        enrollment_authenticated: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Register / update a workstation.
+
+        When ``enrollment_authenticated`` and the request has no valid Bearer
+        agent token, re-registration **rotates** the agent token and returns a
+        new plaintext (recovery from stale Agent state). With a valid Bearer,
+        metadata is refreshed and the existing token is kept (plaintext omitted).
+        """
         workstation_data = payload.get("workstation") or payload
         agent_id = (
             workstation_data.get("agentId")
@@ -130,15 +149,24 @@ class RegistrationService:
                 correlation_id=agent_id,
             )
         else:
-            # Prevent duplicate registration — refresh metadata, rotate token optionally
+            # Prevent duplicate registration — refresh metadata; rotate when recovering
             _apply_workstation_payload(workstation, workstation_data)
             if workstation.status in {WorkstationStatus.OFFLINE, WorkstationStatus.ERROR, WorkstationStatus.UNKNOWN}:
                 _transition(workstation, WorkstationStatus.ONLINE, "Re-registration contact")
             workstation.save()
             _upsert_capabilities(workstation)
-            # Keep existing active token; issue new only if none active
             active = workstation.tokens.filter(is_active=True).first()
-            if active is None:
+            if enrollment_authenticated and not has_valid_bearer:
+                # Enrollment-only re-register: issue fresh plaintext; revoke previous hashes.
+                token_row, plaintext = rotate_agent_token(workstation)
+                record_event(
+                    category=AuditCategory.REGISTRATION,
+                    action="TokenRotated",
+                    details=f"Enrollment re-register rotated token for {agent_id}",
+                    workstation=workstation,
+                    correlation_id=agent_id,
+                )
+            elif active is None:
                 token_row, plaintext = issue_agent_token(workstation)
             else:
                 token_row, plaintext = active, ""
@@ -161,3 +189,38 @@ class RegistrationService:
             "token_expires_at": token_row.expires_at.isoformat() if token_row and token_row.expires_at else None,
             "message": "Registered" if created else "Already registered; metadata updated",
         }
+
+
+def request_has_valid_agent_bearer(request, agent_id: str | None = None) -> bool:
+    """True when Authorization Bearer matches an active token for the agent."""
+    from rest_framework.authentication import get_authorization_header
+
+    auth_header = get_authorization_header(request).decode("utf-8")
+    if not auth_header:
+        return False
+    parts = auth_header.split()
+    if len(parts) != 2 or parts[0] != "Bearer":
+        return False
+    token = parts[1].strip()
+    if not token:
+        return False
+
+    resolved_id = (
+        agent_id
+        or request.META.get("HTTP_X_AGENT_ID")
+        or request.headers.get("X-Agent-Id")
+        or ""
+    )
+    if not resolved_id:
+        try:
+            data = request.data if isinstance(request.data, dict) else {}
+            resolved_id = str(data.get("agentId") or data.get("agent_id") or "").strip()
+        except Exception:
+            resolved_id = ""
+    if not resolved_id:
+        return False
+
+    workstation = AnalysisWorkstation.objects.filter(agent_id=str(resolved_id).strip()).first()
+    if workstation is None:
+        return False
+    return find_active_token(workstation, token) is not None

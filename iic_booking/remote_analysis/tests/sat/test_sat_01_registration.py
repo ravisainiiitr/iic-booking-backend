@@ -56,8 +56,10 @@ def test_sat_01_02_reregistration_same_agent_no_duplicate_row():
     assert AnalysisWorkstation.objects.filter(agent_id="sat-reg-002").count() == 1
     ws = AnalysisWorkstation.objects.get(agent_id="sat-reg-002")
     assert ws.hostname == "SAT-PC-02-RENAMED"
-    # Product policy: re-register updates metadata; token may be omitted (agent keeps existing).
+    # Product policy: enrollment re-register without Bearer rotates token (plaintext returned).
     assert body.get("created") is False
+    assert body.get("token")
+    assert body["token"] != first.json()["token"]
     assert "Already registered" in (body.get("message") or "") or body.get("token") is not None
 
 

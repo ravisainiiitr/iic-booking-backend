@@ -28,6 +28,7 @@ def test_reregister_updates_workstation_keeps_or_issues_token(api):
     )
     assert first.status_code in (200, 201)
     assert first.json()["token"]
+    old_token = first.json()["token"]
 
     second = api.post(
         "/api/v1/analysis/register/",
@@ -37,11 +38,90 @@ def test_reregister_updates_workstation_keeps_or_issues_token(api):
     assert second.status_code in (200, 201)
     body = second.json()
     assert body["accepted"] is True
-    # Re-register keeps existing token (plaintext may be omitted)
-    assert "token" in body
+    # Enrollment-only re-register rotates and returns new plaintext
+    assert body.get("token")
+    assert body["token"] != old_token
     ws = AnalysisWorkstation.objects.get(agent_id="raa-rereg-1")
     assert ws.cpu_cores == 8
-    assert ws.tokens.filter(is_active=True).exists()
+    assert ws.tokens.filter(is_active=True).count() == 1
+
+
+@pytest.mark.django_db
+def test_enrollment_reregister_rotates_token_when_no_bearer(api, monkeypatch):
+    monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "phase3-enroll-secret")
+    first = api.post(
+        "/api/v1/analysis/register/",
+        {"agentId": "raa-rot-1", "hostname": "ROT-PC", "cpuCores": 4, "memoryGB": 16},
+        format="json",
+        HTTP_X_ENROLLMENT_KEY="phase3-enroll-secret",
+    )
+    assert first.status_code in (200, 201)
+    old_token = first.json()["token"]
+    assert old_token
+
+    second = api.post(
+        "/api/v1/analysis/register/",
+        {"agentId": "raa-rot-1", "hostname": "ROT-PC", "cpuCores": 4, "memoryGB": 16},
+        format="json",
+        HTTP_X_ENROLLMENT_KEY="phase3-enroll-secret",
+    )
+    assert second.status_code == 200
+    new_token = second.json()["token"]
+    assert new_token
+    assert new_token != old_token
+
+    # Old token invalid for heartbeat
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {old_token}", HTTP_X_AGENT_ID="raa-rot-1")
+    bad = api.post(
+        "/api/v1/analysis/heartbeat/",
+        {"CPU": 10, "Memory": 10, "Disk": 10, "CurrentStatus": "AVAILABLE", "Online": True},
+        format="json",
+    )
+    assert bad.status_code == 401
+
+    # New token works
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {new_token}", HTTP_X_AGENT_ID="raa-rot-1")
+    good = api.post(
+        "/api/v1/analysis/heartbeat/",
+        {"CPU": 10, "Memory": 10, "Disk": 10, "CurrentStatus": "AVAILABLE", "Online": True},
+        format="json",
+    )
+    assert good.status_code == 200
+    assert good.json()["accepted"] is True
+
+
+@pytest.mark.django_db
+def test_reregister_with_valid_bearer_keeps_token(api, monkeypatch):
+    monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "phase3-enroll-secret")
+    first = api.post(
+        "/api/v1/analysis/register/",
+        {"agentId": "raa-keep-1", "hostname": "KEEP-PC", "cpuCores": 4, "memoryGB": 16},
+        format="json",
+        HTTP_X_ENROLLMENT_KEY="phase3-enroll-secret",
+    )
+    token = first.json()["token"]
+
+    second = api.post(
+        "/api/v1/analysis/register/",
+        {"agentId": "raa-keep-1", "hostname": "KEEP-PC-2", "cpuCores": 8, "memoryGB": 16},
+        format="json",
+        HTTP_X_ENROLLMENT_KEY="phase3-enroll-secret",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+        HTTP_X_AGENT_ID="raa-keep-1",
+    )
+    assert second.status_code == 200
+    body = second.json()
+    # Valid Bearer: plaintext may be omitted; old token still valid
+    assert body.get("token") in (None, "", token)
+    api.credentials(HTTP_AUTHORIZATION=f"Bearer {token}", HTTP_X_AGENT_ID="raa-keep-1")
+    hb = api.post(
+        "/api/v1/analysis/heartbeat/",
+        {"CPU": 1, "Memory": 1, "Disk": 1, "CurrentStatus": "AVAILABLE", "Online": True},
+        format="json",
+    )
+    assert hb.status_code == 200
+    ws = AnalysisWorkstation.objects.get(agent_id="raa-keep-1")
+    assert ws.hostname == "KEEP-PC-2"
 
 
 @pytest.mark.django_db
