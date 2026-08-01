@@ -4,8 +4,11 @@
 **Mode:** Manual deploy only — this document is prepared offline.  
 **This guide does not deploy anything.** Copy-paste commands on the server yourself.
 
-**Compose file used by RA scripts:** `docker-compose.ra-production.yml`  
-(Do **not** use `docker-compose.production.yml` for the Reverse Tunnel Gateway service — that file does not define it.)
+**Compose file used by live production (AWS RDS):** `docker-compose.production.yml`  
+**Compose file for fresh-server RA stack (local Postgres + Guacamole):** `docker-compose.ra-production.yml`  
+
+Gateway commissioning on live production uses **`docker-compose.production.yml`** only.  
+Do **not** introduce a local PostgreSQL container. Do **not** assume `ra-production` is the live entry point.
 
 **Transport policy for this deploy:** leave `RA_TRANSPORT=direct_rdp` (or unset → settings default).  
 **Do not** set `RA_TRANSPORT=reverse_tunnel` in this phase. Gateway may be deployed idle.
@@ -153,12 +156,12 @@ RA_MOCK_GUACAMOLE=false
 # …existing RA_GUACAMOLE_* remain as already configured…
 ```
 
-Host publish is **not** the default. Gateway stays on internal Docker networks only.
+Host publish is **not** the default. Gateway stays on the production compose **default** Docker network only.
 Optional host publish requires an explicit override file and port:
 
 ```bash
 export TUNNEL_GATEWAY_HOST_PORT=7090
-docker compose -f docker-compose.ra-production.yml \
+docker compose -f docker-compose.production.yml \
   -f docker-compose.ra-gateway-host-publish.yml \
   --profile guacamole up -d reverse-tunnel-gateway
 ```
@@ -172,7 +175,7 @@ docker compose -f docker-compose.ra-production.yml \
 | `scripts/deploy/verify-production.sh` | Live/ready/health + optional toolkit |
 | `scripts/deploy/validate-startup.sh` | Wrapper around `validate_deployment_startup` |
 | `scripts/deploy/backup.sh` | DB/config backup |
-| `scripts/deploy/lib.sh` | `COMPOSE_FILE=docker-compose.ra-production.yml`, profile `guacamole` |
+| `scripts/deploy/lib.sh` | Default `COMPOSE_FILE` may still point at `ra-production` for automation; **override** with `COMPOSE_FILE=docker-compose.production.yml` on live AWS hosts |
 
 ### Health endpoints (use after deploy)
 
@@ -410,37 +413,47 @@ docker compose -f docker-compose.ra-production.yml --profile guacamole up -d dja
 
 ---
 
-## Step 8 — Start Reverse Tunnel Gateway
+## Step 8 — Start Reverse Tunnel Gateway (live production compose)
 
-**Purpose:** Deploy gateway container idle (Portal still `direct_rdp`).
+**Purpose:** Deploy gateway container idle on AWS production (Portal still `direct_rdp`). Does not restart Portal/Redis/Celery.
 
 **Command:**
 
 ```bash
-cd ~/iic-booking-backend
-docker compose -f docker-compose.ra-production.yml --profile guacamole up -d reverse-tunnel-gateway
-docker compose -f docker-compose.ra-production.yml --profile guacamole ps reverse-tunnel-gateway
-docker compose -f docker-compose.ra-production.yml logs reverse-tunnel-gateway --tail=100
+cd ~/iic-booking-backend   # real path
+# Secrets must be in the shell environment (compose ${VAR:?} — not only Django env_file)
+export RA_TUNNEL_TOKEN_SECRET  # already set — do not echo
+export RA_TUNNEL_GATEWAY_ADMIN_KEY
+
+docker compose -f docker-compose.production.yml --profile guacamole \
+  build reverse-tunnel-gateway
+
+docker compose -f docker-compose.production.yml --profile guacamole \
+  up -d reverse-tunnel-gateway
+
+docker compose -f docker-compose.production.yml --profile guacamole \
+  ps reverse-tunnel-gateway
+docker compose -f docker-compose.production.yml logs reverse-tunnel-gateway --tail=100
 ```
 
-**Expected Output:** Container running; healthcheck passing; no crash loop.
+**Expected Output:** Container running; healthcheck passing; no crash loop; Ports column empty / no host `7090`.
 
-**Success Criteria:** Port `7090` listening inside container/network.
+**Success Criteria:** Port `7090` listening inside container/network only.
 
 ```bash
-docker compose -f docker-compose.ra-production.yml --profile guacamole exec reverse-tunnel-gateway \
-  bash -c 'exec 3<>/dev/tcp/127.0.0.1/7090 && echo TCP_OK'
-# Or from host if published:
-curl -sS -o /tmp/gw_health.txt -w "%{http_code}\n" --max-time 5 http://127.0.0.1:7090/health || true
-curl -sS -o /tmp/gw_metrics.txt -w "%{http_code}\n" --max-time 5 http://127.0.0.1:7090/metrics || true
-cat /tmp/gw_health.txt /tmp/gw_metrics.txt
+docker compose -f docker-compose.production.yml --profile guacamole \
+  exec reverse-tunnel-gateway bash -c 'exec 3<>/dev/tcp/127.0.0.1/7090 && echo TCP_OK'
+
+docker compose -f docker-compose.production.yml exec django \
+  python -c "import urllib.request; r=urllib.request.urlopen('http://reverse-tunnel-gateway:7090/api/v1/health', timeout=5); print(r.status)"
 ```
 
 **Rollback:**
 
 ```bash
-docker compose -f docker-compose.ra-production.yml --profile guacamole stop reverse-tunnel-gateway
-# or: docker compose … rm -sf reverse-tunnel-gateway
+docker compose -f docker-compose.production.yml --profile guacamole \
+  stop reverse-tunnel-gateway
+# or: docker compose -f docker-compose.production.yml --profile guacamole rm -sf reverse-tunnel-gateway
 ```
 
 ---
@@ -596,20 +609,18 @@ export PORTAL_BASE_URL=https://equip.iitr.ac.in
 
 ```bash
 cd ~/iic-booking-backend
-export COMPOSE_FILE=docker-compose.ra-production.yml
+export COMPOSE_FILE=docker-compose.production.yml
 export COMPOSE_PROFILES=guacamole
 export SKIP_GIT_PULL=1
 
 # Stop gateway (safe — not used while direct_rdp)
-docker compose -f docker-compose.ra-production.yml --profile guacamole stop reverse-tunnel-gateway
+docker compose -f docker-compose.production.yml --profile guacamole stop reverse-tunnel-gateway
 
 # Scripted rollback to previous ref
 ROLLBACK_REF=PREVIOUS_SHA ./scripts/deploy/rollback.sh
 
-# If schema 0015 must be removed: restore DB dump from pre-tunnel backup, then:
-# gunzip -c backups/deploy/<label>/db/portal.sql.gz | \
-#   docker compose -f docker-compose.ra-production.yml exec -T postgres \
-#   sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+# If schema 0015 must be removed: restore from pre-tunnel RDS/DB backup per DR guide.
+# (Live production uses AWS RDS — not a compose postgres service.)
 ```
 
 **Expected Output:** Previous SHA running; RA liveness 200; booking root 200.

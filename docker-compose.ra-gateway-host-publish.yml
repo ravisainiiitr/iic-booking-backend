@@ -2,12 +2,19 @@
 # Use ONLY when required (e.g. agent WSS via host edge). Prefer edge TLS termination
 # on an internal-only gateway whenever possible.
 #
+# Live production (AWS RDS stack):
 #   export TUNNEL_GATEWAY_HOST_PORT=7090
+#   docker compose -f docker-compose.production.yml \
+#     -f docker-compose.ra-gateway-host-publish.yml \
+#     --profile guacamole up -d reverse-tunnel-gateway
+#
+# Fresh-server RA stack (local Postgres):
 #   docker compose -f docker-compose.ra-production.yml \
 #     -f docker-compose.ra-gateway-host-publish.yml \
 #     --profile guacamole up -d reverse-tunnel-gateway
 #
 # Still requires strong RA_TUNNEL_TOKEN_SECRET and RA_TUNNEL_GATEWAY_ADMIN_KEY.
+# Do not set RA_TRANSPORT=reverse_tunnel until Phase 4 commissioning PASS.
 
 services:
   reverse-tunnel-gateway:

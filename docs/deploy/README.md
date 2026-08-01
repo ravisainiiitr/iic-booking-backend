@@ -13,4 +13,5 @@
 **Scripts (repo root):** `deploy.sh`, `rollback.sh`, `verify-production.sh`  
 **Scripts (`scripts/deploy/`):** `backup.sh`, `restore-verify.sh`, `validate-startup.sh`, `lib.sh`
 
-**Compose:** `docker-compose.ra-production.yml`
+**Compose (live AWS production):** `docker-compose.production.yml` (RDS + Redis; Gateway under `--profile guacamole`)  
+**Compose (fresh-server RA stack):** `docker-compose.ra-production.yml`

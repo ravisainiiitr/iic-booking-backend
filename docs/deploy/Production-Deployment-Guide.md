@@ -8,17 +8,33 @@ This guide covers **deployment automation only**. Business logic, APIs, and work
 
 ## Architecture (compose)
 
+### Live production (IIT Roorkee AWS — current)
+
+Primary file: [`docker-compose.production.yml`](../../docker-compose.production.yml)
+
+| Service | Role |
+|---------|------|
+| `django` | Portal (Gunicorn) — AWS **RDS** via `DATABASE_URL` |
+| `redis` | Cache + Celery broker |
+| `celeryworker` / `celerybeat` | Async / scheduled work |
+| `flower` | Optional (`--profile flower`) |
+| `reverse-tunnel-gateway` | Optional idle Gateway (`--profile guacamole`); **no host port** by default |
+
+No local PostgreSQL container. Guacamole may run via separate compose (`docker-compose.guacamole.yml`) if used.
+
+### Fresh-server RA stack (local Postgres)
+
 Primary file: [`docker-compose.ra-production.yml`](../../docker-compose.ra-production.yml)
 
 | Service | Role |
 |---------|------|
-| `django` | Portal (Gunicorn/ASGI) |
+| `django` | Portal |
 | `postgres` | Application database |
 | `redis` | Cache + Celery broker |
-| `celeryworker` | Async / RA periodic work |
-| `celerybeat` | Schedules RA tasks |
+| `celeryworker` / `celerybeat` | Async / RA periodic work |
 | `flower` | Optional (`--profile flower`) |
 | `guacamole` + `guacd` + `guacamole-db` | Desktop gateway (`--profile guacamole`) |
+| `reverse-tunnel-gateway` | Tunnel gateway (`--profile guacamole`) |
 
 Windows **Agent** is installed on Analysis PCs — see [AGENT_INSTALL.md](AGENT_INSTALL.md).
 
@@ -116,14 +132,31 @@ Uses pre-deploy DB backup unless `SKIP_DB_BACKUP=1`.
 
 ## Rollback
 
+### Live production (`docker-compose.production.yml`)
+
 ```bash
+# Gateway-only rollback (preferred for Phase 2)
+docker compose -f docker-compose.production.yml --profile guacamole \
+  stop reverse-tunnel-gateway
+
+# Full Portal rollback (when authorized)
+export COMPOSE_FILE=docker-compose.production.yml
+./rollback.sh
+# or
+ROLLBACK_REF=<previous-sha> ./rollback.sh
+```
+
+### Fresh-server RA stack
+
+```bash
+export COMPOSE_FILE=docker-compose.ra-production.yml
 ./rollback.sh
 # or
 ROLLBACK_REF=<previous-sha> ./rollback.sh
 ```
 
 Restores previous git tree, rebuilds, migrates forward-compatible schema, verifies health.  
-If code is older than DB in an incompatible way, restore DB from `backups/deploy/<label>/db/portal.sql.gz` (see DR).
+If code is older than DB in an incompatible way, restore DB from `backups/deploy/<label>/db/portal.sql.gz` (see DR). For AWS RDS, use your RDS snapshot / dump restore procedure instead of a compose `postgres` exec.
 
 ## Disaster recovery
 
@@ -188,6 +221,7 @@ See [MONITORING.md](MONITORING.md).
 | File | Notes |
 |------|-------|
 | `docker-compose.ra-production.yml` | Full RA stack + profiles, healthchecks, volumes, logging, restart |
-| `docker-compose.production.yml` | Hardened redis/django restart + health + logging |
+| `docker-compose.production.yml` | Live AWS stack: django/redis/celery + idle `reverse-tunnel-gateway` (`guacamole` profile) |
 | `docker-compose.guacamole.yml` | Standalone Guac with healthchecks/logging/network |
+| `docker-compose.ra-gateway-host-publish.yml` | Optional host publish for Gateway (explicit override) |
 | `docker-compose.local.yml` | Dev only — not for production |
