@@ -1,0 +1,23 @@
+name: Probe Installer Releases
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: List RA and DSA installer releases
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.remote_analysis.installer.models import AgentInstallerRelease
+          from iic_booking.sync.installer.models import DsaInstallerRelease
+          print('RA releases', AgentInstallerRelease.objects.count())
+          for r in AgentInstallerRelease.objects.order_by('-created_at')[:5]:
+              print(' RA', r.id, getattr(r, 'version', None), getattr(r, 'is_latest', None), bool(getattr(r, 'file', None) and r.file.name), getattr(r, 'file', None) and r.file.name)
+          print('DSA releases', DsaInstallerRelease.objects.count())
+          for r in DsaInstallerRelease.objects.order_by('-created_at')[:5]:
+              print(' DSA', r.id, getattr(r, 'version', None), getattr(r, 'is_latest', None), bool(getattr(r, 'file', None) and r.file.name), getattr(r, 'file', None) and r.file.name)
+          "
