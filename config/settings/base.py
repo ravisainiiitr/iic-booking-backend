@@ -515,9 +515,11 @@ SOCIALACCOUNT_FORMS = {"signup": "iic_booking.users.forms.UserSocialSignupForm"}
 # overrides this to allow repeated enrollment testing without hitting 429.
 
 REST_FRAMEWORK = {
+    # Token header first so API clients holding a leftover session cookie (e.g. after
+    # the remote-analysis desktop handoff) are not forced through CSRF checks.
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework.authentication.SessionAuthentication",
         "iic_booking.users.api.token_auth.TokenAuthenticationWithInactivity",
+        "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
