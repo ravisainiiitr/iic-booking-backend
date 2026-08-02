@@ -7,77 +7,106 @@ jobs:
   fix:
     runs-on: self-hosted
     steps:
-      - name: Remove orphan 0016 and redeploy Django
+      - name: Remove orphan 0016 and force-rebuild Django
         run: |
           set -euo pipefail
           echo "=== Before: django containers ==="
           docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep -iE 'django|NAMES' || true
 
-          echo "=== Locate orphan migration files on host ==="
-          find /home/ubuntu -type f -name '0016_agent_installer_release.py' 2>/dev/null | tee /tmp/orphan-migs.txt || true
-          find /home/ubuntu -type f -name '0015_reverse_tunnel_transport.py' 2>/dev/null | tee -a /tmp/orphan-migs.txt || true
-
-          if [ -s /tmp/orphan-migs.txt ]; then
-            while IFS= read -r f; do
-              echo "Removing $f"
-              rm -f "$f"
-            done < /tmp/orphan-migs.txt
-          else
-            echo "No orphan migration files found under /home/ubuntu (may be image-only)."
-          fi
-
-          # Prefer the known backend checkout used by deploy.sh
+          BACKEND_DIR=""
           for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
             if [ -d "$d/.git" ]; then
-              echo "=== git status in $d ==="
-              cd "$d"
-              git fetch origin master || true
-              git checkout -f master || true
-              git reset --hard origin/master || true
-              git clean -fd -- iic_booking/remote_analysis/migrations || true
-              echo "migrations now:"
-              ls -1 iic_booking/remote_analysis/migrations || true
+              BACKEND_DIR="$d"
               break
             fi
           done
-
-          echo "=== Redeploy ==="
-          if [ -x /home/ubuntu/deploy.sh ]; then
-            /home/ubuntu/deploy.sh
-          else
-            COMPOSE_DIR=""
-            for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
-              if [ -f "$d/docker-compose.production.yml" ]; then
-                COMPOSE_DIR="$d"
-                break
-              fi
-            done
-            if [ -z "$COMPOSE_DIR" ]; then
-              echo "No deploy.sh or compose file found"
-              exit 1
-            fi
-            cd "$COMPOSE_DIR"
-            docker compose -f docker-compose.production.yml build --no-cache django
-            docker compose -f docker-compose.production.yml up -d django celeryworker celerybeat
+          if [ -z "$BACKEND_DIR" ]; then
+            echo "Backend checkout not found"
+            exit 1
           fi
 
-          sleep 8
+          echo "=== Reset checkout to origin/master in $BACKEND_DIR ==="
+          cd "$BACKEND_DIR"
+          git fetch origin master
+          git checkout -f master
+          git reset --hard origin/master
+          git clean -fdx -- iic_booking/remote_analysis/migrations
+
+          echo "=== Explicitly delete any leftover installer migrations ==="
+          rm -fv iic_booking/remote_analysis/migrations/0015_reverse_tunnel_transport.py \
+                 iic_booking/remote_analysis/migrations/0016_agent_installer_release.py \
+                 iic_booking/remote_analysis/migrations/0016_*.py || true
+
+          echo "migrations now:"
+          ls -1 iic_booking/remote_analysis/migrations
+
+          if ls iic_booking/remote_analysis/migrations/0016* >/dev/null 2>&1; then
+            echo "ERROR: 0016 still present after clean"
+            exit 1
+          fi
+
+          COMPOSE_FILE=""
+          for f in docker-compose.production.yml production.yml compose.production.yml; do
+            if [ -f "$BACKEND_DIR/$f" ]; then
+              COMPOSE_FILE="$f"
+              break
+            fi
+          done
+          if [ -z "$COMPOSE_FILE" ]; then
+            # fall back to deploy.sh but still force image rebuild afterward
+            echo "No compose file found; will use deploy.sh then force recreate"
+          fi
+
+          echo "=== Force rebuild django image without cache ==="
+          cd "$BACKEND_DIR"
+          if [ -n "$COMPOSE_FILE" ]; then
+            docker compose -f "$COMPOSE_FILE" build --no-cache --pull django
+            docker compose -f "$COMPOSE_FILE" up -d --force-recreate --no-deps django celeryworker celerybeat || \
+              docker compose -f "$COMPOSE_FILE" up -d --force-recreate django
+          else
+            /home/ubuntu/deploy.sh
+            # Bust any remaining stale image by rebuilding from compose discovery
+            docker compose build --no-cache django || true
+            docker compose up -d --force-recreate django || true
+          fi
+
+          # Also remove the orphan file from inside any still-running/old container filesystem
+          # (in case of bind-mount). Safe no-op if missing.
+          CID="$(docker ps -a --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          if [ -n "$CID" ]; then
+            docker exec "$CID" rm -fv \
+              /app/iic_booking/remote_analysis/migrations/0015_reverse_tunnel_transport.py \
+              /app/iic_booking/remote_analysis/migrations/0016_agent_installer_release.py 2>/dev/null || true
+            docker restart "$CID" || true
+          fi
+
+          sleep 12
           echo "=== After: django containers ==="
           docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep -iE 'django|NAMES' || true
 
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           if [ -z "$CID" ]; then
-            echo "Django container not running"
-            docker ps -a --format '{{.Names}}' | grep -E 'django' | head -n 1 | xargs -r -I{} docker logs --tail 80 {}
+            echo "Django not running"
+            docker ps -a --format '{{.Names}}' | grep -E 'django' | head -n 1 | xargs -r -I{} docker logs --tail 120 {}
             exit 1
           fi
 
-          echo "=== Recent django logs ==="
-          docker logs --tail 80 "$CID" 2>&1 || true
+          echo "=== migrations inside container ==="
+          docker exec "$CID" ls -1 /app/iic_booking/remote_analysis/migrations || true
 
-          echo "=== Local health probe ==="
-          docker exec "$CID" python -c "import django; django.setup(); print('django_ok')" 2>&1 || true
-          curl -sS -o /tmp/api_out.txt -w 'http_code=%{http_code}\n' http://127.0.0.1:8000/api/v1/site-stats/ || \
-            curl -sS -o /tmp/api_out.txt -w 'http_code=%{http_code}\n' http://127.0.0.1/api/v1/site-stats/ || true
-          head -c 300 /tmp/api_out.txt || true
+          echo "=== Recent django logs ==="
+          docker logs --tail 60 "$CID" 2>&1 || true
+
+          echo "=== django check ==="
+          docker exec "$CID" python manage.py check 2>&1 | tail -n 40
+
+          echo "=== API probe via container network ==="
+          # Prefer probing through the reverse proxy path if available
+          code="$(curl -sS -o /tmp/api_out.txt -w '%{http_code}' https://equip.iitr.ac.in/api/v1/site-stats/ || true)"
+          echo "public_http_code=$code"
+          head -c 200 /tmp/api_out.txt || true
           echo
+          if [ "$code" != "200" ]; then
+            echo "Public API still unhealthy"
+            exit 1
+          fi
