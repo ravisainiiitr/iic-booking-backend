@@ -415,7 +415,7 @@ class SessionOrchestrator:
     def consume_token(self, session: RemoteDesktopSession, plaintext: str, *, user, client_ip: str | None = None) -> SessionToken:
         now = timezone.now()
         token_hash = hash_session_token(plaintext)
-        token = SessionToken.objects.filter(session=session, token_hash=token_hash).first()
+        token = SessionToken.objects.select_related("bound_user").filter(session=session, token_hash=token_hash).first()
         if not token:
             raise SessionError("Invalid session token", code="invalid_token")
         if token.revoked_at:
@@ -424,8 +424,13 @@ class SessionOrchestrator:
             raise SessionError("Token already used", code="token_replay")
         if token.expires_at < now:
             raise SessionError("Token expired", code="token_expired")
-        if token.bound_user_id != getattr(user, "pk", None):
-            raise SessionError("Token bound to another user", code="token_user_mismatch")
+        # Prefer bound_user when caller is anonymous (iframe / AllowAny connect).
+        # If an authenticated user is present, it must match the token binding.
+        if user is not None and getattr(user, "is_authenticated", False):
+            if token.bound_user_id != getattr(user, "pk", None):
+                raise SessionError("Token bound to another user", code="token_user_mismatch")
+        elif not token.bound_user_id:
+            raise SessionError("Token has no bound user", code="invalid_token")
         if token.bound_ip and client_ip and token.bound_ip != client_ip:
             raise SessionError("Token IP mismatch", code="token_ip_mismatch")
 
@@ -494,7 +499,8 @@ class SessionOrchestrator:
         short-lived client auth token + connection id when not in mock mode.
         """
         with transaction.atomic():
-            self.consume_token(session, plaintext, user=user, client_ip=client_ip)
+            token_row = self.consume_token(session, plaintext, user=user, client_ip=client_ip)
+            acting_user = user if (user is not None and getattr(user, "is_authenticated", False)) else token_row.bound_user
             self.transition(session, SessionStatus.CONNECTING, reason="Token consumed")
 
         session.browser = (user_agent or "")[:255]
@@ -525,7 +531,7 @@ class SessionOrchestrator:
         # Live Guacamole: mint user token server-side for the ephemeral user
         try:
             conn = session.guacamole_connection
-            from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
+            from iic_booking.remote_analysis.guacamole.client import GuacamoleClient, encode_client_identifier
 
             client = GuacamoleClient(self.settings)
             temp_password = ConnectionManager(self.settings).ephemeral_password(conn)
@@ -534,15 +540,28 @@ class SessionOrchestrator:
             user_token = client.create_user_token(conn.guacamole_username, temp_password)
             # Public base URL only (no admin credentials). Client uses Guacamole redirect.
             public_base = (self.settings.guacamole_base_url or "").rstrip("/")
+            client_id = encode_client_identifier(
+                str(conn.guacamole_connection_id),
+                data_source=self.settings.guacamole_data_source or "postgresql",
+            )
             result["client"] = {
                 "guacamole_token": user_token,
                 "connection_id": conn.guacamole_connection_id,
-                "client_url": f"{public_base}/#/client/{conn.guacamole_connection_id}?token={user_token}" if public_base else "",
+                "client_url": f"{public_base}/#/client/{client_id}?token={user_token}" if public_base else "",
             }
             self.mark_connected(session)
             result["status"] = session.status
             # Do not include guacamole_base_url separately if empty; never include API URL
             result["redirect_url"] = result["client"].get("client_url") or ""
+            meta = getattr(conn, "metadata", None) or {}
+            logger.info(
+                "Guacamole client URL issued session=%s rdp_username_injected=%s rdp_password_injected=%s client_url_set=%s actor=%s",
+                session.id,
+                meta.get("rdp_username_injected"),
+                meta.get("rdp_password_injected"),
+                bool(result["redirect_url"]),
+                getattr(acting_user, "pk", None),
+            )
         except Exception as exc:
             logger.exception("connect_with_token Guacamole error")
             raise SessionError(str(exc), code="guac_connect_failed") from exc

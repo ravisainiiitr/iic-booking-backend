@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 import uuid
@@ -16,6 +17,23 @@ logger = logging.getLogger(__name__)
 
 class GuacamoleClientError(Exception):
     pass
+
+
+def encode_client_identifier(
+    connection_id: str,
+    *,
+    data_source: str = "postgresql",
+    object_type: str = "c",
+) -> str:
+    """
+    Build the Guacamole UI client identifier.
+
+    Guacamole's ``#/client/<id>`` route expects base64(id + NUL + type + NUL + dataSource),
+    where type is ``c`` (connection) or ``g`` (group). Passing a raw numeric id causes
+    ``Illegal identifier - unknown type`` and guacd never starts the RDP tunnel.
+    """
+    raw = f"{connection_id}\0{object_type}\0{data_source}".encode("utf-8")
+    return base64.b64encode(raw).decode("ascii")
 
 
 class GuacamoleClient:
@@ -190,6 +208,54 @@ class GuacamoleClient:
             return resp.json() if resp.content else {"identifier": resp.headers.get("Location", name)}
         except GuacamoleClientError:
             logger.exception("Guacamole create_connection failed")
+            raise
+
+    def get_connection_parameters(self, connection_id: str) -> dict[str, Any]:
+        """Fetch stored connection parameters (admin token). Used for diagnostics only."""
+        if self.mock or not connection_id:
+            return {"username": "mock", "password": "mock", "hostname": "mock-host"}
+        url = self._api(
+            f"api/session/data/{self._data_source}/connections/{connection_id}/parameters"
+        )
+        try:
+            resp = self._request("GET", url)
+            return resp.json() if resp.content else {}
+        except GuacamoleClientError:
+            logger.exception("Guacamole get_connection_parameters failed id=%s", connection_id)
+            raise
+
+    def update_connection_parameters(
+        self,
+        connection_id: str,
+        *,
+        parameters: dict[str, Any],
+        name: str,
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
+        """
+        Full-replace connection config via PUT so username/password are reliably stored.
+        Guacamole requires identifier + activeConnections on update.
+        """
+        if self.mock or not connection_id:
+            return
+        url = self._api(f"api/session/data/{self._data_source}/connections/{connection_id}")
+        body = {
+            "name": name,
+            "identifier": str(connection_id),
+            "parentIdentifier": "ROOT",
+            "protocol": "rdp",
+            "parameters": parameters,
+            "attributes": attributes
+            or {
+                "max-connections": "1",
+                "max-connections-per-user": "1",
+            },
+            "activeConnections": 0,
+        }
+        try:
+            self._request("PUT", url, json=body, allow_statuses=(200, 204))
+        except GuacamoleClientError:
+            logger.exception("Guacamole update_connection_parameters failed id=%s", connection_id)
             raise
 
     def create_user(self, username: str, password: str) -> dict[str, Any]:

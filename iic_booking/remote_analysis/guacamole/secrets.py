@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _fernet() -> Fernet:
@@ -27,4 +30,8 @@ def decrypt_password(ciphertext: str) -> str:
     try:
         return _fernet().decrypt(ciphertext.encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError):
+        logger.error(
+            "Failed to decrypt WorkstationRdpSecret password (InvalidToken/ValueError). "
+            "SECRET_KEY may have changed since credentials were stored — re-link via installer."
+        )
         return ""

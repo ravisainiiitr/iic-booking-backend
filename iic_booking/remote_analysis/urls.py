@@ -12,6 +12,7 @@ from iic_booking.remote_analysis.workspace import views as workspace_views
 from iic_booking.remote_analysis.operations import views as ops_views
 from iic_booking.remote_analysis.collaboration import views as collab_views
 from iic_booking.remote_analysis import health as health_views
+from iic_booking.remote_analysis.installer import views as installer_views
 
 app_name = "remote_analysis"
 
@@ -200,4 +201,6 @@ urlpatterns = [
     path("workflows/<uuid:workflow_id>/publish/", workflow_views.workflow_publish, name="workflow-publish"),
     path("workflows/<uuid:workflow_id>/steps/", workflow_views.workflow_steps, name="workflow-steps"),
     path("workflows/<uuid:workflow_id>/map-equipment/", workflow_views.workflow_map_equipment, name="workflow-map-equipment"),
+    # Agent installer: store workstation Windows credentials for automatic Guacamole login
+    path("installer/link/", installer_views.link_equipment, name="installer-link"),
 ]

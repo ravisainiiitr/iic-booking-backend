@@ -390,6 +390,8 @@ class SchedulerTelemetryAdmin(admin.ModelAdmin):
 
 
 # --- Milestone 4 ---
+from django import forms  # noqa: E402
+from iic_booking.remote_analysis.guacamole.secrets import encrypt_password  # noqa: E402
 from iic_booking.remote_analysis.session_models import (  # noqa: E402
     GuacamoleConnection,
     RemoteAnalysisSettings,
@@ -403,6 +405,30 @@ from iic_booking.remote_analysis.session_models import (  # noqa: E402
     SessionToken,
     WorkstationRdpSecret,
 )
+
+
+class WorkstationRdpSecretForm(forms.ModelForm):
+    """Accept plaintext Windows password; store only Fernet ciphertext."""
+
+    password_plaintext = forms.CharField(
+        label="Windows password",
+        required=False,
+        widget=forms.PasswordInput(render_value=False),
+        help_text="Enter to set/replace the stored password. Leave blank to keep the existing secret.",
+    )
+
+    class Meta:
+        model = WorkstationRdpSecret
+        fields = ("workstation", "username", "domain", "port", "security")
+
+    def save(self, commit=True):
+        obj = super().save(commit=False)
+        plaintext = (self.cleaned_data.get("password_plaintext") or "").strip()
+        if plaintext:
+            obj.password_encrypted = encrypt_password(plaintext)
+        if commit:
+            obj.save()
+        return obj
 
 
 @admin.register(RemoteAnalysisSettings)
@@ -500,8 +526,9 @@ class RemoteAnalysisSettingsAdmin(admin.ModelAdmin):
 
 class WorkstationRdpSecretInline(admin.StackedInline):
     model = WorkstationRdpSecret
+    form = WorkstationRdpSecretForm
     extra = 0
-    fields = ("username", "password_encrypted", "domain", "port", "security", "updated_at")
+    fields = ("username", "password_plaintext", "domain", "port", "security", "updated_at")
     readonly_fields = ("updated_at",)
 
 
@@ -562,8 +589,19 @@ class SessionRecordingAdmin(admin.ModelAdmin):
 
 @admin.register(WorkstationRdpSecret)
 class WorkstationRdpSecretAdmin(admin.ModelAdmin):
+    form = WorkstationRdpSecretForm
     list_display = ("workstation", "username", "domain", "port", "updated_at")
     readonly_fields = ("password_encrypted", "updated_at")
+    fields = (
+        "workstation",
+        "username",
+        "password_plaintext",
+        "password_encrypted",
+        "domain",
+        "port",
+        "security",
+        "updated_at",
+    )
 
 
 # --- Milestone 5 ---

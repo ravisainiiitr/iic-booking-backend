@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.remote_analysis.constants import SessionStatus
@@ -99,23 +99,28 @@ def session_launch(request, session_id):
 
 
 @api_view(["GET", "POST"])
-@permission_classes(_AUTH)
+@permission_classes([AllowAny])
 def session_connect(request, session_id):
     """
     GET/POST /api/v1/analysis/session/{id}/connect/?t=<one-time-token>
     Consumes the launch token and returns connection payload (no secrets to user beyond ephemeral client token).
     With ?redirect=1 or Accept: text/html, redirects to Guacamole client_url (live) or shows mock HTML.
+
+    Auth is the single-use Portal launch token (bound_user). Authorization Token is optional
+    (SPA apiClient sends it). This also allows iframe/HTML redirects without Token headers.
     """
     session = get_object_or_404(RemoteDesktopSession, pk=session_id)
     token = request.query_params.get("t") or request.data.get("token") or ""
     if not token:
         return Response({"detail": "Missing token", "code": "missing_token"}, status=status.HTTP_400_BAD_REQUEST)
+
+    acting_user = request.user if getattr(request.user, "is_authenticated", False) else None
     svc = GuacamoleIntegrationService()
     try:
         payload = svc.connect(
             session,
             token,
-            request.user,
+            acting_user,
             client_ip=_client_ip(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
         )
