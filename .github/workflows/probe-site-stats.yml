@@ -1,0 +1,29 @@
+name: Probe Site Stats 500
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Reproduce site-stats 500 inside Django
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          import traceback
+          from django.test import Client
+          c = Client(HTTP_HOST='equip.iitr.ac.in')
+          for path in ['/api/v1/site-stats/', '/api/v1/home/', '/api/site-stats/', '/api/home/']:
+              try:
+                  r = c.get(path)
+                  print('PATH', path, 'STATUS', r.status_code)
+                  print('BODY', r.content[:500])
+              except Exception:
+                  print('PATH', path, 'EXC')
+                  traceback.print_exc()
+          "
+          echo '=== last logs ==='
+          docker logs --tail 80 "$CID" 2>&1 | tail -n 80
