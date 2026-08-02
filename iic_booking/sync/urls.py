@@ -7,6 +7,7 @@ Mounted at /api/v1/sync/
 from django.urls import path
 
 from iic_booking.sync import views
+from iic_booking.sync.installer import views as installer_views
 
 app_name = "sync"
 
@@ -110,4 +111,34 @@ urlpatterns = [
     path("operations/table-sizes/", views.operations_table_sizes, name="operations-table-sizes"),
     path("operations/top-events/", views.operations_top_events, name="operations-top-events"),
     path("operations/maintenance/", views.operations_maintenance, name="operations-maintenance"),
+    # DSA Installer distribution
+    path("installer/releases/", installer_views.releases_collection, name="installer-releases"),
+    path("installer/releases/latest/", installer_views.release_latest, name="installer-release-latest"),
+    path(
+        "installer/releases/latest/download/",
+        installer_views.release_latest_download,
+        name="installer-release-latest-download",
+    ),
+    path(
+        "installer/releases/latest/download-ticket/",
+        installer_views.release_download_ticket,
+        name="installer-release-latest-download-ticket",
+    ),
+    path(
+        "installer/releases/download/ticket/<path:token>/",
+        installer_views.release_download_by_ticket,
+        name="installer-release-download-by-ticket",
+    ),
+    path(
+        "installer/releases/<uuid:release_id>/download-ticket/",
+        installer_views.release_download_ticket,
+        name="installer-release-download-ticket",
+    ),
+    path(
+        "installer/releases/<uuid:release_id>/download/",
+        installer_views.release_download,
+        name="installer-release-download",
+    ),
+    path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
+    path("installer/link/", installer_views.link_equipment, name="installer-link"),
 ]

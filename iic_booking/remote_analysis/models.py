@@ -504,3 +504,5 @@ from iic_booking.remote_analysis.collaboration_models import (  # noqa: E402,F40
     WorkspaceComment,
     WorkspaceSharePermission,
 )
+
+from iic_booking.remote_analysis.installer.models import AgentInstallerRelease  # noqa: E402,F401

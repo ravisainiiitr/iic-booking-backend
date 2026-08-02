@@ -897,3 +897,22 @@ class CollaborationTelemetryAdmin(admin.ModelAdmin):
     list_display = ("metric_name", "value", "unit", "recorded_at")
     list_filter = ("metric_name",)
 
+
+from iic_booking.remote_analysis.installer.models import AgentInstallerRelease  # noqa: E402
+
+
+@admin.register(AgentInstallerRelease)
+class AgentInstallerReleaseAdmin(admin.ModelAdmin):
+    list_display = (
+        "version",
+        "channel",
+        "release_date",
+        "signature_status",
+        "is_latest",
+        "is_active",
+        "download_size_bytes",
+    )
+    list_filter = ("channel", "signature_status", "is_latest", "is_active")
+    search_fields = ("version", "sha256", "original_name")
+    readonly_fields = ("sha256", "created_at", "updated_at")
+

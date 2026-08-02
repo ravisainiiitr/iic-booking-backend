@@ -12,18 +12,45 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID"
-          docker exec -w /app "$CID" python manage.py shell -c "
-          import traceback
-          from django.test import Client
-          c = Client(HTTP_HOST='equip.iitr.ac.in')
-          for path in ['/api/v1/site-stats/', '/api/v1/home/', '/api/site-stats/', '/api/home/']:
+          docker exec -w /app "$CID" python - <<'PY'
+          import os, django, traceback
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.test import RequestFactory
+          from django.urls import resolve, get_resolver
+          from django.conf import settings
+          print("ROOT_URLCONF", settings.ROOT_URLCONF)
+          print("ALLOWED_HOSTS", settings.ALLOWED_HOSTS)
+          factory = RequestFactory()
+          paths = [
+            "/api/v1/site-stats/",
+            "/api/v1/home/",
+            "/api/site-stats/",
+            "/api/home/",
+            "/api/v1/equipments/?include_ratings=1",
+          ]
+          for path in paths:
+              print("====", path)
               try:
+                  match = resolve(path.split("?")[0])
+                  print("resolve", match.func, match.url_name)
+              except Exception as e:
+                  print("resolve_fail", type(e), e)
+              try:
+                  from django.test import Client
+                  c = Client(HTTP_HOST="equip.iitr.ac.in", raise_request_exception=False)
                   r = c.get(path)
-                  print('PATH', path, 'STATUS', r.status_code)
-                  print('BODY', r.content[:500])
+                  print("status", r.status_code)
+                  print("body", r.content[:800])
               except Exception:
-                  print('PATH', path, 'EXC')
                   traceback.print_exc()
-          "
-          echo '=== last logs ==='
-          docker logs --tail 80 "$CID" 2>&1 | tail -n 80
+          PY
+          echo '=== hit via curl localhost:5000 ==='
+          for p in /api/v1/site-stats/ /api/v1/home/ /api/site-stats/; do
+            code=$(curl -sS -o /tmp/out.txt -w '%{http_code}' -H 'Host: equip.iitr.ac.in' "http://127.0.0.1:5000$p" || true)
+            echo "$p -> $code"
+            head -c 400 /tmp/out.txt || true
+            echo
+          done
+          echo '=== last django logs ==='
+          docker logs --tail 100 "$CID" 2>&1 | tail -n 100

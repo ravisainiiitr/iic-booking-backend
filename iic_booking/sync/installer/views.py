@@ -1,4 +1,4 @@
-"""Agent Installer portal + enrollment-keyed bootstrap APIs."""
+"""DSA Installer portal + enrollment-keyed bootstrap APIs."""
 
 from __future__ import annotations
 
@@ -19,18 +19,18 @@ from iic_booking.common_download import (
     release_download_headers,
 )
 from iic_booking.installer_download_tickets import absolute_ticket_url, issue_ticket, parse_ticket
-from iic_booking.remote_analysis.permissions import CanManageRemoteAnalysis
-from iic_booking.remote_analysis.installer.models import AgentInstallerRelease
-from iic_booking.remote_analysis.installer.services import (
-    link_workstation_to_equipment,
+from iic_booking.sync.installer.models import DsaInstallerRelease
+from iic_booking.sync.installer.services import (
+    link_agent_to_equipment,
+    resolve_installer_agent,
     sha256_filefield,
-    verify_enrollment_key,
 )
+from iic_booking.sync.permissions import CanManageDepartmentSync
 
-_MANAGE = [IsAuthenticated, CanManageRemoteAnalysis]
+_MANAGE = [IsAuthenticated, CanManageDepartmentSync]
 
 
-def _serialize_release(rel: AgentInstallerRelease) -> dict:
+def _serialize_release(rel: DsaInstallerRelease) -> dict:
     return {
         "id": str(rel.id),
         "version": rel.version,
@@ -64,7 +64,7 @@ def _file_response(file_field, download_name: str, *, prefer_redirect: bool = Tr
     return build_installer_file_response(
         file_field,
         download_name=download_name,
-        default_name="RemoteAnalysisAgentSetup.exe",
+        default_name="DepartmentSyncAgentSetup.exe",
         prefer_redirect=prefer_redirect,
         **headers,
     )
@@ -74,14 +74,14 @@ def _file_response(file_field, download_name: str, *, prefer_redirect: bool = Tr
 @permission_classes(_MANAGE)
 @parser_classes([JSONParser, MultiPartParser, FormParser])
 def releases_collection(request):
-    """GET list / POST upload new installer release (Main Admin / RA manage)."""
+    """GET list / POST upload new DSA installer release (Main Admin)."""
     if request.method == "GET":
-        qs = AgentInstallerRelease.objects.filter(is_active=True).order_by(
+        qs = DsaInstallerRelease.objects.filter(is_active=True).order_by(
             "-is_latest", "-release_date", "-created_at"
         )
         include_inactive = str(request.query_params.get("all") or "") in {"1", "true", "yes"}
         if include_inactive:
-            qs = AgentInstallerRelease.objects.all().order_by(
+            qs = DsaInstallerRelease.objects.all().order_by(
                 "-is_latest", "-release_date", "-created_at"
             )
         return Response({"count": qs.count(), "results": [_serialize_release(r) for r in qs[:50]]})
@@ -92,9 +92,9 @@ def releases_collection(request):
     uploaded = request.FILES.get("file") or request.FILES.get("installer")
     offline = request.FILES.get("offline_file") or request.FILES.get("offline")
 
-    rel = AgentInstallerRelease(
+    rel = DsaInstallerRelease(
         version=version,
-        channel=(request.data.get("channel") or AgentInstallerRelease.Channel.STABLE).strip(),
+        channel=(request.data.get("channel") or DsaInstallerRelease.Channel.STABLE).strip(),
         release_date=request.data.get("release_date") or timezone.now().date(),
         release_notes=request.data.get("release_notes") or "",
         supported_windows=request.data.get("supported_windows")
@@ -102,7 +102,7 @@ def releases_collection(request):
         min_ram_gb=int(request.data.get("min_ram_gb") or 8),
         min_disk_gb=int(request.data.get("min_disk_gb") or 20),
         signature_status=(
-            request.data.get("signature_status") or AgentInstallerRelease.SignatureStatus.UNSIGNED
+            request.data.get("signature_status") or DsaInstallerRelease.SignatureStatus.UNSIGNED
         ),
         documentation_url=request.data.get("documentation_url") or "",
         installation_guide_url=request.data.get("installation_guide_url") or "",
@@ -130,8 +130,8 @@ def releases_collection(request):
 @permission_classes(_MANAGE)
 def release_latest(request):
     rel = (
-        AgentInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
-        or AgentInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
+        DsaInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
+        or DsaInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
     )
     if not rel:
         return Response({"detail": "No installer release published."}, status=status.HTTP_404_NOT_FOUND)
@@ -141,11 +141,11 @@ def release_latest(request):
 def _download_release(request, release_id=None):
     """Shared installer download logic (must not call another @api_view)."""
     if release_id:
-        rel = get_object_or_404(AgentInstallerRelease, pk=release_id, is_active=True)
+        rel = get_object_or_404(DsaInstallerRelease, pk=release_id, is_active=True)
     else:
         rel = (
-            AgentInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
-            or AgentInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
+            DsaInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
+            or DsaInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
         )
         if not rel:
             return Response({"detail": "No installer release published."}, status=status.HTTP_404_NOT_FOUND)
@@ -159,7 +159,7 @@ def _download_release(request, release_id=None):
         else rel.original_name
     ) or os.path.basename(field.name)
     hdrs = release_download_headers(rel, offline=offline)
-    if offline and field.size:
+    if offline and getattr(field, "size", None):
         hdrs["size_bytes"] = field.size
     # Authenticated fetch fallback must stream (no S3 302) — CORS breaks blob reads on redirect.
     return _file_response(field, name, prefer_redirect=False, **hdrs)
@@ -168,7 +168,6 @@ def _download_release(request, release_id=None):
 @api_view(["GET"])
 @permission_classes(_MANAGE)
 def release_download(request, release_id=None):
-    """Download setup EXE for a release, or latest when release_id omitted via sibling route."""
     return _download_release(request, release_id=release_id)
 
 
@@ -180,21 +179,16 @@ def release_latest_download(request):
 
 def _resolve_latest_or_id(release_id=None):
     if release_id:
-        return get_object_or_404(AgentInstallerRelease, pk=release_id, is_active=True)
-    rel = (
-        AgentInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
-        or AgentInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
+        return get_object_or_404(DsaInstallerRelease, pk=release_id, is_active=True)
+    return (
+        DsaInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
+        or DsaInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
     )
-    return rel
 
 
 @api_view(["POST"])
 @permission_classes(_MANAGE)
 def release_download_ticket(request, release_id=None):
-    """
-    Issue a short-lived ticket so the browser can download natively
-    (no SPA buffering of 100+ MB installers).
-    """
     rel = _resolve_latest_or_id(release_id)
     if not rel:
         return Response({"detail": "No installer release published."}, status=status.HTTP_404_NOT_FOUND)
@@ -208,7 +202,7 @@ def release_download_ticket(request, release_id=None):
         return Response({"detail": "Installer file not available."}, status=status.HTTP_404_NOT_FOUND)
 
     token = issue_ticket(
-        product="ra",
+        product="dsa",
         release_id=str(rel.id),
         offline=offline,
         user_id=getattr(request.user, "pk", None),
@@ -223,9 +217,8 @@ def release_download_ticket(request, release_id=None):
     except Exception:
         size = int(rel.download_size_bytes or 0) if not offline else 0
 
-    # Prefer direct S3 URL — browser downloads from object storage, not via Django.
     direct = build_direct_download_url(field, download_name=name, expires_in=900)
-    url = direct or absolute_ticket_url(request, "ra", token)
+    url = direct or absolute_ticket_url(request, "dsa", token)
 
     return Response(
         {
@@ -255,10 +248,10 @@ def release_download_by_ticket(request, token: str):
     except signing.BadSignature:
         return Response({"detail": "Invalid download link."}, status=status.HTTP_403_FORBIDDEN)
 
-    if data.get("p") != "ra":
+    if data.get("p") != "dsa":
         return Response({"detail": "Invalid download link."}, status=status.HTTP_403_FORBIDDEN)
 
-    rel = AgentInstallerRelease.objects.filter(pk=data["r"], is_active=True).first()
+    rel = DsaInstallerRelease.objects.filter(pk=data["r"], is_active=True).first()
     if not rel:
         return Response({"detail": "Installer release not found."}, status=status.HTTP_404_NOT_FOUND)
     offline = bool(int(data.get("o") or 0))
@@ -279,49 +272,23 @@ def release_download_by_ticket(request, token: str):
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
-def catalog_software(request):
-    """Enrollment-keyed software catalog for installer wizard."""
-    ok, err = verify_enrollment_key(request)
-    if not ok:
-        return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
-
-    rows = AnalysisSoftwareCatalog.objects.filter(is_active=True).order_by("name")
-    results = []
-    for c in rows:
-        results.append(
-            {
-                "id": str(c.id),
-                "name": c.name,
-                "slug": c.slug,
-                "vendor": c.vendor,
-                "version_constraint": c.version_constraint,
-                "description": c.description,
-                "category": getattr(c, "category", "") or "",
-                "icon_url": getattr(c, "icon_url", "") or "",
-            }
-        )
-    return Response({"count": len(results), "results": results})
-
-
-@api_view(["GET"])
-@authentication_classes([])
-@permission_classes([AllowAny])
 def equipment_tree(request):
-    """Enrollment-keyed department → equipment tree (RA-enabled only)."""
-    ok, err = verify_enrollment_key(request)
+    """Agent UUID + enrollment secret → department → equipment tree for wizard."""
+    ok, err, agent = resolve_installer_agent(request, allow_access_token=True)
     if not ok:
         return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.equipment.models import Equipment
-    from iic_booking.users.models import Department
 
-    equipment_qs = (
-        Equipment.objects.filter(enable_remote_analysis=True)
-        .select_related("internal_department")
-        .order_by("name")
-    )
+    from iic_booking.equipment.models import Equipment
+
+    equipment_qs = Equipment.objects.select_related("internal_department").order_by("name")
+    # Prefer agent department when set (pre-created agent scoping).
+    if getattr(agent, "department_id", None):
+        scoped = equipment_qs.filter(internal_department_id=agent.department_id)
+        if scoped.exists():
+            equipment_qs = scoped
+
     by_dept: dict[str, dict] = {}
-    for eq in equipment_qs:
+    for eq in equipment_qs[:500]:
         dept = eq.internal_department
         dept_id = str(dept.id) if dept else "unassigned"
         dept_name = dept.name if dept else "Unassigned"
@@ -331,68 +298,64 @@ def equipment_tree(request):
                 "name": dept_name,
                 "equipment": [],
             }
+        lab_name = ""
+        lab = getattr(eq, "laboratory", None) or getattr(eq, "lab", None)
+        if lab is not None:
+            lab_name = getattr(lab, "name", "") or str(lab)
         by_dept[dept_id]["equipment"].append(
             {
                 "id": eq.pk,
                 "name": eq.name,
                 "code": getattr(eq, "code", "") or "",
-                "enable_remote_analysis": True,
+                "laboratory": lab_name,
             }
         )
-    # Include empty departments that exist (optional clarity)
-    for d in Department.objects.all().order_by("name")[:200]:
-        did = str(d.id)
-        if did not in by_dept:
-            continue
-    return Response({"count": len(by_dept), "departments": list(by_dept.values())})
+
+    return Response(
+        {
+            "count": len(by_dept),
+            "agent_uuid": str(agent.agent_uuid),
+            "department_id": str(agent.department_id) if agent.department_id else None,
+            "departments": list(by_dept.values()),
+        }
+    )
 
 
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
 def link_equipment(request):
-    """After register: link workstation to equipment, store RDP secret, attach software."""
-    ok, err = verify_enrollment_key(request)
+    """After enroll: link agent to equipment via access token (or pre-enroll secret)."""
+    ok, err, agent = resolve_installer_agent(request, allow_access_token=True)
     if not ok:
         return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
 
     data = request.data if isinstance(request.data, dict) else {}
-    workstation_id = str(data.get("workstation_id") or data.get("workstationId") or "").strip()
-    agent_id = str(data.get("agent_id") or data.get("agentId") or "").strip()
     equipment_id = data.get("equipment_id") or data.get("equipmentId")
     if not equipment_id:
         return Response({"detail": "equipment_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     from iic_booking.equipment.models import Equipment
-    from iic_booking.remote_analysis.models import AnalysisWorkstation
 
-    ws = None
-    if workstation_id:
-        ws = AnalysisWorkstation.objects.filter(pk=workstation_id).first()
-    if ws is None and agent_id:
-        ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
-    if ws is None:
-        return Response({"detail": "Workstation not found. Register the agent first."}, status=status.HTTP_404_NOT_FOUND)
-
-    equipment = Equipment.objects.filter(pk=equipment_id, enable_remote_analysis=True).first()
+    equipment = Equipment.objects.filter(pk=equipment_id).first()
     if not equipment:
-        return Response(
-            {"detail": "Equipment not found or remote analysis not enabled."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
+        return Response({"detail": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    software = data.get("software_slugs") or data.get("softwareSlugs") or data.get("software") or []
-    if isinstance(software, str):
-        software = [s.strip() for s in software.split(",") if s.strip()]
+    if agent.department_id and equipment.internal_department_id:
+        if equipment.internal_department_id != agent.department_id:
+            return Response(
+                {"detail": "Equipment does not belong to the agent's department."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    result = link_workstation_to_equipment(
-        workstation=ws,
+    result = link_agent_to_equipment(
+        agent=agent,
         equipment=equipment,
-        rdp_username=str(data.get("rdp_username") or data.get("rdpUsername") or "").strip(),
-        rdp_password=str(data.get("rdp_password") or data.get("rdpPassword") or ""),
-        rdp_domain=str(data.get("rdp_domain") or data.get("rdpDomain") or "").strip(),
-        rdp_port=int(data.get("rdp_port") or data.get("rdpPort") or 3389),
-        software_slugs=list(software),
-        priority_boost=int(data.get("priority_boost") or data.get("priorityBoost") or 10),
+        result_folder=str(data.get("result_folder") or data.get("resultFolder") or "").strip(),
+        unc_path=str(data.get("unc_path") or data.get("uncPath") or "").strip(),
+        watch_folder=str(data.get("watch_folder") or data.get("watchFolder") or "").strip(),
+        hostname=str(data.get("hostname") or "").strip(),
+        ip_address=str(data.get("ip_address") or data.get("ipAddress") or "").strip(),
+        share_name=str(data.get("share_name") or data.get("shareName") or "").strip(),
     )
     return Response({"accepted": True, **result})

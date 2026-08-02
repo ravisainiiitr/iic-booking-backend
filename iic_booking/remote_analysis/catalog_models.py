@@ -33,6 +33,17 @@ class AnalysisSoftwareCatalog(models.Model):
         related_name="ra_software_catalog",
     )
     description = models.TextField(blank=True, default="")
+    category = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        help_text=_("Optional grouping for installer software checklist (e.g. XRD, General)."),
+    )
+    icon_url = models.URLField(
+        blank=True,
+        default="",
+        help_text=_("Optional icon URL shown in the agent installer software list."),
+    )
     default_session_duration_hours = models.PositiveIntegerField(default=4)
     is_active = models.BooleanField(default=True)
     capabilities = models.ManyToManyField(

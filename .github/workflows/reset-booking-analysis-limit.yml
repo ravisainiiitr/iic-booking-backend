@@ -1,0 +1,45 @@
+name: Reset Booking Analysis Session Limit
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_pk:
+        description: "Booking primary key (e.g. 311)"
+        required: true
+        default: "311"
+
+jobs:
+  reset:
+    runs-on: self-hosted
+    steps:
+      - name: Reset analysis_session_count and stuck sessions
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID booking=${{ github.event.inputs.booking_pk }}"
+          docker exec -e BOOKING_PK="${{ github.event.inputs.booking_pk }}" -w /app "$CID" python manage.py shell -c "
+          import os
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.constants import SessionStatus, ReservationStatus, WorkstationStatus
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.equipment.remote_analysis_integration.eligibility import BookingAnalysisEligibilityService
+          pk = int(os.environ['BOOKING_PK'])
+          b = Booking.objects.select_related('equipment').get(pk=pk)
+          print('before', b.pk, b.booking_id, 'count', b.analysis_session_count, 'limit', getattr(b.equipment, 'analysis_session_limit', None))
+          OPEN = {
+              SessionStatus.CREATED, SessionStatus.PREPARING, SessionStatus.READY,
+              SessionStatus.TOKEN_GENERATED, SessionStatus.LAUNCHED, SessionStatus.CONNECTING,
+              SessionStatus.CONNECTED, SessionStatus.ACTIVE, SessionStatus.IDLE,
+          }
+          for s in RemoteDesktopSession.objects.filter(booking=b, status__in=OPEN):
+              print('terminate', s.id, s.status)
+              s.status = SessionStatus.TERMINATED
+              s.termination_reason = 'Admin reset after session-limit burn from failed prepares'
+              s.save(update_fields=['status', 'termination_reason'])
+          b.analysis_session_count = 0
+          b.save(update_fields=['analysis_session_count', 'updated_at'])
+          b.refresh_from_db()
+          elig = BookingAnalysisEligibilityService().evaluate(b)
+          print('after', 'count', b.analysis_session_count, 'elig', elig.eligible, elig.reason)
+          "

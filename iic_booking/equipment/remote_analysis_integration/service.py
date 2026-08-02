@@ -554,10 +554,21 @@ class BookingRemoteAnalysisService:
             session.refresh_from_db()
 
         if was_new:
-            booking.analysis_session_count = int(booking.analysis_session_count or 0) + 1
-            booking.analysis_last_session = timezone.now()
-            booking.save(update_fields=["analysis_session_count", "analysis_last_session", "updated_at"])
-            self.audit.log(booking, "Launch", details=str(session.id), actor=user)
+            # Only consume a session slot once prepare/Guacamole provisioning succeeds.
+            # Failed prepare attempts (timeouts, agent blips) must not permanently
+            # disable Analyze Data via analysis_session_limit.
+            if session.status not in {SessionStatus.PREPARING, SessionStatus.FAILED, SessionStatus.TERMINATED}:
+                booking.analysis_session_count = int(booking.analysis_session_count or 0) + 1
+                booking.analysis_last_session = timezone.now()
+                booking.save(update_fields=["analysis_session_count", "analysis_last_session", "updated_at"])
+                self.audit.log(booking, "Launch", details=str(session.id), actor=user)
+            else:
+                self.audit.log(
+                    booking,
+                    "LaunchPending",
+                    details=f"{session.id}:{session.status}",
+                    actor=user,
+                )
         else:
             self.audit.log(booking, "LaunchReuse", details=str(session.id), actor=user)
 

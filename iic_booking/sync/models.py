@@ -2743,3 +2743,6 @@ class ResultAttachment(models.Model):
 
     def __str__(self) -> str:
         return self.file_name
+
+
+from iic_booking.sync.installer.models import DsaInstallerRelease  # noqa: E402,F401

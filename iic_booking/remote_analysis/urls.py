@@ -201,6 +201,35 @@ urlpatterns = [
     path("workflows/<uuid:workflow_id>/publish/", workflow_views.workflow_publish, name="workflow-publish"),
     path("workflows/<uuid:workflow_id>/steps/", workflow_views.workflow_steps, name="workflow-steps"),
     path("workflows/<uuid:workflow_id>/map-equipment/", workflow_views.workflow_map_equipment, name="workflow-map-equipment"),
-    # Agent installer: store workstation Windows credentials for automatic Guacamole login
+    # Agent Installer distribution + enrollment-keyed bootstrap
+    path("installer/releases/", installer_views.releases_collection, name="installer-releases"),
+    path("installer/releases/latest/", installer_views.release_latest, name="installer-release-latest"),
+    path(
+        "installer/releases/latest/download/",
+        installer_views.release_latest_download,
+        name="installer-release-latest-download",
+    ),
+    path(
+        "installer/releases/latest/download-ticket/",
+        installer_views.release_download_ticket,
+        name="installer-release-latest-download-ticket",
+    ),
+    path(
+        "installer/releases/download/ticket/<path:token>/",
+        installer_views.release_download_by_ticket,
+        name="installer-release-download-by-ticket",
+    ),
+    path(
+        "installer/releases/<uuid:release_id>/download-ticket/",
+        installer_views.release_download_ticket,
+        name="installer-release-download-ticket",
+    ),
+    path(
+        "installer/releases/<uuid:release_id>/download/",
+        installer_views.release_download,
+        name="installer-release-download",
+    ),
+    path("installer/catalog/software/", installer_views.catalog_software, name="installer-catalog-software"),
+    path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
     path("installer/link/", installer_views.link_equipment, name="installer-link"),
 ]

@@ -32,17 +32,15 @@ jobs:
           git reset --hard origin/master
           git clean -fdx -- iic_booking/remote_analysis/migrations
 
-          echo "=== Explicitly delete any leftover installer migrations ==="
-          rm -fv iic_booking/remote_analysis/migrations/0015_reverse_tunnel_transport.py \
-                 iic_booking/remote_analysis/migrations/0016_agent_installer_release.py \
-                 iic_booking/remote_analysis/migrations/0016_*.py || true
+          echo "=== Explicitly delete leftover broken installer migrations only ==="
+          # Do not delete official 0015 stub or 0016_agent_installer_release once shipped.
+          rm -fv iic_booking/remote_analysis/migrations/0016_broken_*.py || true
 
           echo "migrations now:"
           ls -1 iic_booking/remote_analysis/migrations
 
-          if ls iic_booking/remote_analysis/migrations/0016* >/dev/null 2>&1; then
-            echo "ERROR: 0016 still present after clean"
-            exit 1
+          if ls iic_booking/remote_analysis/migrations/0016_agent_installer_release.py >/dev/null 2>&1; then
+            echo "0016 installer migration present (expected)"
           fi
 
           COMPOSE_FILE=""
@@ -70,13 +68,9 @@ jobs:
             docker compose up -d --force-recreate django || true
           fi
 
-          # Also remove the orphan file from inside any still-running/old container filesystem
-          # (in case of bind-mount). Safe no-op if missing.
+          # Also remove accidental broken leftovers from bind-mounts (keep official 0015/0016).
           CID="$(docker ps -a --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           if [ -n "$CID" ]; then
-            docker exec "$CID" rm -fv \
-              /app/iic_booking/remote_analysis/migrations/0015_reverse_tunnel_transport.py \
-              /app/iic_booking/remote_analysis/migrations/0016_agent_installer_release.py 2>/dev/null || true
             docker restart "$CID" || true
           fi
 

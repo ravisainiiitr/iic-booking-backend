@@ -10,6 +10,7 @@ from .assignments import AgentAssignmentAdmin
 from .commands import AgentCommandAdmin, BookingWorkspaceAdmin
 from .console import SyncOperationsConsoleAdmin
 from .heartbeats import AgentHeartbeatAdmin
+from .installer import DsaInstallerReleaseAdmin
 from .logs import SyncLogAdmin
 from .profiles import EquipmentSyncProfileAdmin
 
@@ -22,4 +23,5 @@ __all__ = [
     "SyncLogAdmin",
     "AgentCommandAdmin",
     "BookingWorkspaceAdmin",
+    "DsaInstallerReleaseAdmin",
 ]
