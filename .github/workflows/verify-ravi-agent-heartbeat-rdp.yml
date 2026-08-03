@@ -1,0 +1,35 @@
+name: Verify RAVI Agent Heartbeat And RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Check RAVI workstation heartbeat and RDP secret presence
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from django.utils import timezone
+          from iic_booking.remote_analysis.models import AnalysisWorkstation
+          from iic_booking.remote_analysis.session_models import WorkstationRdpSecret
+
+          now = timezone.now()
+          for ws in AnalysisWorkstation.objects.filter(hostname__icontains="RAVI").order_by("-last_heartbeat"):
+              age = int((now - ws.last_heartbeat).total_seconds()) if ws.last_heartbeat else None
+              has_secret = WorkstationRdpSecret.objects.filter(workstation=ws).exists()
+              secret = WorkstationRdpSecret.objects.filter(workstation=ws).first()
+              user = (secret.username if secret else "") or ""
+              domain = (secret.domain if secret else "") or ""
+              port = secret.port if secret else None
+              has_password = bool(secret and (secret.password_ciphertext or "").strip())
+              print(
+                  "WS", ws.id, ws.hostname, "status", ws.status,
+                  "enabled", ws.enabled, "hb_age_s", age,
+                  "agent_id", getattr(ws, "agent_id", None),
+                  "rdp_secret", has_secret, "rdp_user", bool(user), "rdp_domain", domain or "-",
+                  "rdp_port", port, "rdp_password_set", has_password,
+              )
+          PY
