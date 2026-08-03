@@ -144,17 +144,39 @@ class HeartbeatService:
 
 
 def mark_stale_workstations_offline() -> int:
-    """Detect missed heartbeats and mark workstations offline."""
+    """Detect missed heartbeats and mark workstations offline.
+
+    Workstations with an in-flight reservation are left alone so a brief agent
+    pause cannot yank an already-allocated session back into the queue.
+    """
+    from iic_booking.remote_analysis.constants import ReservationStatus
+    from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+
     cutoff = timezone.now() - timedelta(seconds=HEARTBEAT_OFFLINE_SECONDS)
-    qs = AnalysisWorkstation.objects.filter(
-        enabled=True,
-        last_heartbeat__lt=cutoff,
-    ).exclude(
-        status__in=[
-            WorkstationStatus.OFFLINE,
-            WorkstationStatus.DISABLED,
-            WorkstationStatus.MAINTENANCE,
-        ]
+    protected_ids = set(
+        AnalysisReservation.objects.filter(
+            status__in=[
+                ReservationStatus.RESERVED,
+                ReservationStatus.PREPARING,
+                ReservationStatus.READY,
+                ReservationStatus.ACTIVE,
+            ],
+            workstation_id__isnull=False,
+        ).values_list("workstation_id", flat=True)
+    )
+    qs = (
+        AnalysisWorkstation.objects.filter(
+            enabled=True,
+            last_heartbeat__lt=cutoff,
+        )
+        .exclude(
+            status__in=[
+                WorkstationStatus.OFFLINE,
+                WorkstationStatus.DISABLED,
+                WorkstationStatus.MAINTENANCE,
+            ]
+        )
+        .exclude(id__in=protected_ids)
     )
     count = 0
     for ws in qs:
