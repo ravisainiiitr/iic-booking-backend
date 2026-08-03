@@ -1,0 +1,83 @@
+name: Probe Booking Analysis Eligibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_id:
+        description: "Human booking id (e.g. IICPXRD [A]202600019) or PK"
+        required: true
+        default: "IICPXRD [A]202600019"
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Probe booking RA eligibility
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" python manage.py shell -c "
+          import os, json
+          from django.db.models import Q
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.eligibility import BookingAnalysisEligibilityService
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          bid = os.environ['BID'].strip()
+          qs = Booking.objects.select_related('equipment', 'user')
+          b = None
+          if bid.isdigit():
+              b = qs.filter(pk=int(bid)).first()
+          if b is None:
+              b = qs.filter(booking_id=bid).first()
+          if b is None:
+              b = qs.filter(booking_id__icontains=bid.replace(' ', '')).first()
+          if b is None:
+              # try loose match on trailing number
+              b = qs.filter(Q(booking_id__icontains='202600019') | Q(booking_id__icontains=bid)).order_by('-id').first()
+          if b is None:
+              print('NOT_FOUND', bid)
+              raise SystemExit(1)
+          eq = b.equipment
+          print('BOOKING', 'pk=', b.pk, 'booking_id=', b.booking_id, 'status=', b.status)
+          print('USER', b.user_id, getattr(b.user, 'email', None))
+          print('EQUIPMENT', eq.id, eq.name, 'code=', getattr(eq, 'code', None) or getattr(eq, 'equipment_code', None))
+          print('enable_remote_analysis=', getattr(eq, 'enable_remote_analysis', None))
+          print('remote_analysis_enabled_from_status=', getattr(eq, 'remote_analysis_enabled_from_status', None))
+          print('analysis_requires_experiment_completion=', getattr(eq, 'analysis_requires_experiment_completion', None))
+          print('analysis_requires_sample_acceptance=', getattr(eq, 'analysis_requires_sample_acceptance', None))
+          print('analysis_session_limit=', getattr(eq, 'analysis_session_limit', None))
+          print('analysis_access_duration=', getattr(eq, 'analysis_access_duration', None))
+          print('analysis_profile=', repr(getattr(eq, 'analysis_profile', None)))
+          print('analysis_available=', getattr(b, 'analysis_available', None))
+          print('analysis_expiry=', getattr(b, 'analysis_expiry', None))
+          print('analysis_session_count=', getattr(b, 'analysis_session_count', None))
+          elig = BookingAnalysisEligibilityService().evaluate(b)
+          print('ELIGIBLE=', elig.eligible, 'REASON=', elig.reason)
+          print('CHECKS=', getattr(elig, 'checks', None) or getattr(elig, 'details', None))
+          try:
+              ctx = BookingRemoteAnalysisService().get_analyze_context(b, actor=b.user)
+              keys = ['can_analyze','can_launch','software_configured','raw_ready','require_raw_files','button_label','analysis_ended']
+              print('ANALYZE', {k: ctx.get(k) if isinstance(ctx, dict) else getattr(ctx, k, None) for k in keys})
+              if isinstance(ctx, dict):
+                  print('ANALYZE_KEYS', sorted(ctx.keys()))
+                  for k in ('eligibility','software_options','workflows','reason','message'):
+                      if k in ctx:
+                          print(k, '=', ctx[k])
+          except Exception as e:
+              print('ANALYZE_ERR', type(e).__name__, e)
+          # workflow / software mappings
+          try:
+              from iic_booking.remote_analysis.models import EquipmentAnalysisWorkflow, EquipmentAnalysisSoftware
+              print('workflows', list(EquipmentAnalysisWorkflow.objects.filter(equipment=eq).values_list('id','is_active')[:10]))
+          except Exception as e:
+              print('wf_err', e)
+          try:
+              from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware
+              print('software_maps', list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).values('id','software_id','is_active')[:10]))
+          except Exception as e:
+              try:
+                  from iic_booking.remote_analysis.models import EquipmentAnalysisSoftware as EAS
+                  print('software_maps', list(EAS.objects.filter(equipment=eq).values_list('id', flat=True)[:10]))
+              except Exception as e2:
+                  print('sw_err', e2)
+          "
