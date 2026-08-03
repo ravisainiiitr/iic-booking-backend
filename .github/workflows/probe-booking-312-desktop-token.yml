@@ -1,0 +1,40 @@
+name: Probe Booking 312 Desktop Token
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Inspect TOKEN_GENERATED session launch payload
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession, SessionToken
+
+          b = Booking.objects.select_related("user").get(pk=312)
+          s = RemoteDesktopSession.objects.filter(booking=b).order_by("-created_at").first()
+          print("SESSION", s.id, s.status)
+          for f in ["client_url", "guacamole_url", "launch_url", "viewer_url", "connection_url", "redirect_url"]:
+              if hasattr(s, f):
+                  print("FIELD", f, getattr(s, f))
+          toks = list(SessionToken.objects.filter(session=s).order_by("-created_at")[:3])
+          for t in toks:
+              print("TOKEN", t.id, "expires", getattr(t, "expires_at", None), "used", getattr(t, "used_at", None), "url", getattr(t, "launch_url", None) or getattr(t, "url", None))
+          try:
+              summary = BookingRemoteAnalysisService().get_summary(b, user=b.user)
+              sess = (summary or {}).get("session") or {}
+              exp = (summary or {}).get("experience") or {}
+              print("SUMMARY session keys", sorted(sess.keys()))
+              print("SUMMARY session status", sess.get("status"), "desktop", sess.get("desktop_url") or sess.get("client_url") or sess.get("launch_url"))
+              print("EXP desktop_prepare", exp.get("desktop_prepare"))
+              print("EXP session", exp.get("session"))
+          except Exception as e:
+              print("SUMMARY_ERR", type(e).__name__, e)
+          # list model fields that look url-like
+          print("MODEL fields", [f.name for f in s._meta.fields])
+          PY
