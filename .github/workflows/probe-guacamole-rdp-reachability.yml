@@ -1,0 +1,50 @@
+name: Probe Guacamole RDP Reachability
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Test Guacamole container reachability to RAVI RDP host
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          GUAC="$(docker ps --format '{{.Names}}' | grep -E 'guacamole' | grep -v guacd | head -n 1 || true)"
+          GUACD="$(docker ps --format '{{.Names}}' | grep -E 'guacd' | head -n 1 || true)"
+          echo "django=$CID guac=$GUAC guacd=$GUACD"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.guacamole.connection import build_rdp_parameters
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession, RemoteAnalysisSettings, WorkstationRdpSecret
+          from iic_booking.remote_analysis.models import AnalysisWorkstation
+
+          b = Booking.objects.get(pk=312)
+          s = RemoteDesktopSession.objects.filter(booking=b).order_by("-created_at").first()
+          ws = s.workstation if s else AnalysisWorkstation.objects.filter(hostname__icontains="RAVI").order_by("-last_heartbeat").first()
+          print("SESSION", getattr(s, "id", None), getattr(s, "status", None))
+          print("WS", ws.id, ws.hostname, "ip", ws.ip_address, "status", ws.status)
+          secret = WorkstationRdpSecret.objects.filter(workstation=ws).first()
+          print("RDP secret", bool(secret), "user", bool(secret and secret.username), "domain", (secret.domain if secret else None), "port", (secret.port if secret else None))
+          if s:
+              params = build_rdp_parameters(s, RemoteAnalysisSettings.get_solo())
+              print("RDP target host", params.get("hostname"), "port", params.get("port"), "user", params.get("username"), "domain", params.get("domain"), "security", params.get("security"))
+          PY
+          TARGET_IP="$(docker exec -i -w /app "$CID" python manage.py shell -c "from iic_booking.remote_analysis.models import AnalysisWorkstation; w=AnalysisWorkstation.objects.filter(hostname__icontains='RAVI').order_by('-last_heartbeat').first(); print((w.ip_address or '').strip())" | tail -n 1)"
+          echo "TARGET_IP=$TARGET_IP"
+          if [ -n "$TARGET_IP" ]; then
+            echo "=== from host ==="
+            timeout 3 bash -c "echo >/dev/tcp/$TARGET_IP/3389" && echo "host_tcp_3389 OK" || echo "host_tcp_3389 FAIL"
+            (command -v nc >/dev/null && nc -vz -w 3 "$TARGET_IP" 3389) || true
+            echo "=== from guacd ==="
+            if [ -n "$GUACD" ]; then
+              docker exec "$GUACD" sh -c "timeout 3 sh -c 'echo >/dev/tcp/$TARGET_IP/3389' && echo guacd_tcp_ok || echo guacd_tcp_fail" || echo "guacd probe unsupported"
+            fi
+            echo "=== from guacamole ==="
+            if [ -n "$GUAC" ]; then
+              docker exec "$GUAC" sh -c "timeout 3 sh -c 'echo >/dev/tcp/$TARGET_IP/3389' && echo guac_tcp_ok || echo guac_tcp_fail" || echo "guac probe unsupported"
+            fi
+          fi
+          docker logs --tail 80 "$GUACD" 2>&1 | tail -40 || true
+          docker logs --tail 40 "$GUAC" 2>&1 | tail -20 || true

@@ -228,32 +228,39 @@ def evaluate_session_launch_gates(
 
     checks = dict(base.checks)
     now = timezone.now()
-    # Prefer the earliest open time. A future reservation.requested_start must not block
-    # launch when the booking analysis window (analysis_available_from) is already open.
-    early_minutes = max(60, int(getattr(settings_obj, "prepare_timeout_seconds", 120) or 120) // 60)
-    candidates = [
-        t
-        for t in (
-            reservation.requested_start,
-            getattr(booking, "analysis_available_from", None) if booking is not None else None,
-            getattr(reservation, "reserved_start", None),
-        )
-        if t is not None
-    ]
-    window_start = min(candidates) if candidates else None
-    if window_start and (window_start - timedelta(minutes=early_minutes)) > now:
-        checks["analysis_window_started"] = False
-        return _reject(
-            code="window_not_started",
-            reason="Analysis window has not started",
-            checks=checks,
-            reservation=reservation,
-            booking=booking,
-            user=user,
-            client_ip=client_ip,
-            action="LaunchRejected",
-        )
-    checks["analysis_window_started"] = True
+    # Booking analysis window already open ⇒ allow launch even if the scheduler
+    # reservation slot is still in the future (common for Analyze Data on completed bookings).
+    booking_from = getattr(booking, "analysis_available_from", None) if booking is not None else None
+    if booking_from is not None and booking_from <= now:
+        checks["analysis_window_started"] = True
+        checks["analysis_window_source"] = "booking.analysis_available_from"
+    else:
+        # Allow early launch/prepare shortly before scheduled start (ops buffer).
+        early_minutes = max(60, int(getattr(settings_obj, "prepare_timeout_seconds", 120) or 120) // 60)
+        candidates = [
+            t
+            for t in (
+                reservation.requested_start,
+                booking_from,
+                getattr(reservation, "reserved_start", None),
+            )
+            if t is not None
+        ]
+        window_start = min(candidates) if candidates else None
+        if window_start and (window_start - timedelta(minutes=early_minutes)) > now:
+            checks["analysis_window_started"] = False
+            return _reject(
+                code="window_not_started",
+                reason="Analysis window has not started",
+                checks=checks,
+                reservation=reservation,
+                booking=booking,
+                user=user,
+                client_ip=client_ip,
+                action="LaunchRejected",
+            )
+        checks["analysis_window_started"] = True
+        checks["analysis_window_source"] = "reservation_or_earliest"
 
     if session.user_id != getattr(user, "pk", None):
         from iic_booking.remote_analysis.permissions import CanManageRemoteAnalysis
