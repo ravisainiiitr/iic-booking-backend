@@ -28,17 +28,18 @@ jobs:
           if bid.isdigit():
               b = qs.filter(pk=int(bid)).first()
           if b is None:
-              b = qs.filter(booking_id=bid).first()
+              b = qs.filter(virtual_booking_id=bid).first()
           if b is None:
-              b = qs.filter(booking_id__icontains=bid.replace(' ', '')).first()
+              b = qs.filter(virtual_booking_id__iexact=bid).first()
           if b is None:
-              # try loose match on trailing number
-              b = qs.filter(Q(booking_id__icontains='202600019') | Q(booking_id__icontains=bid)).order_by('-id').first()
+              b = qs.filter(virtual_booking_id__icontains='202600019').order_by('-pk').first()
+          if b is None:
+              b = qs.filter(virtual_booking_id__icontains=bid[-9:]).order_by('-pk').first()
           if b is None:
               print('NOT_FOUND', bid)
               raise SystemExit(1)
           eq = b.equipment
-          print('BOOKING', 'pk=', b.pk, 'booking_id=', b.booking_id, 'status=', b.status)
+          print('BOOKING', 'pk=', b.pk, 'virtual=', b.virtual_booking_id, 'status=', b.status)
           print('USER', b.user_id, getattr(b.user, 'email', None))
           print('EQUIPMENT', eq.id, eq.name, 'code=', getattr(eq, 'code', None) or getattr(eq, 'equipment_code', None))
           print('enable_remote_analysis=', getattr(eq, 'enable_remote_analysis', None))
