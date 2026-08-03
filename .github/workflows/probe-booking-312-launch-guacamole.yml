@@ -1,0 +1,67 @@
+name: Probe Booking 312 Launch Guacamole
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Simulate launch payload and Guacamole connect for booking 312
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
+          from iic_booking.remote_analysis.guacamole.connection import ConnectionManager, build_rdp_parameters, _credential_diagnostics
+          from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
+          from iic_booking.remote_analysis.guacamole.settings_env import production_guacamole_configured
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession, RemoteAnalysisSettings, SessionToken
+
+          b = Booking.objects.select_related("user").get(pk=312)
+          s = RemoteDesktopSession.objects.filter(booking=b).order_by("-created_at").first()
+          print("SESSION", s.id, s.status, "ws", s.workstation_id)
+          settings_obj = RemoteAnalysisSettings.get_solo()
+          print("GUAC mock", settings_obj.mock_guacamole, "base", settings_obj.guacamole_base_url, "api", settings_obj.guacamole_api_url)
+          configured, problems = production_guacamole_configured(settings_obj)
+          print("GUAC configured", configured, problems)
+          try:
+              print("GUAC health", GuacamoleClient(settings_obj).health_check())
+          except Exception as e:
+              print("GUAC health_err", type(e).__name__, e)
+
+          params = build_rdp_parameters(s, settings_obj)
+          diag = _credential_diagnostics(s, params)
+          print("RDP diag", diag)
+          print("RDP has_user", bool((params.get("username") or "").strip()), "has_pass", bool((params.get("password") or "").strip()), "host", params.get("hostname"), "port", params.get("port"))
+
+          def abs_builder(path):
+              return "https://equip.iitr.ac.in" + path
+
+          try:
+              payload = BookingRemoteAnalysisService().launch_session(
+                  b,
+                  user=b.user,
+                  client_ip="127.0.0.1",
+                  request_absolute_uri_builder=abs_builder,
+                  user_agent="ops-probe",
+              )
+              print("LAUNCH keys", sorted(payload.keys()))
+              print("LAUNCH status", payload.get("status"), "launch_url", payload.get("launch_url"), "pending", payload.get("launch_pending"), "detail", payload.get("detail"))
+          except Exception as e:
+              print("LAUNCH_ERR", type(e).__name__, e)
+
+          try:
+              launch = GuacamoleIntegrationService().launch(
+                  s, b.user, request_absolute_uri_builder=abs_builder, client_ip="127.0.0.1", user_agent="ops-probe"
+              )
+              print("GSVC launch", launch)
+          except Exception as e:
+              print("GSVC_ERR", type(e).__name__, e)
+
+          toks = list(SessionToken.objects.filter(session=s).order_by("-issued_at")[:3])
+          for t in toks:
+              print("TOKEN", t.id, "prefix", t.token_prefix, "exp", t.expires_at, "consumed", t.consumed_at, "revoked", t.revoked_at)
+          PY
