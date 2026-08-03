@@ -1,4 +1,4 @@
-name: Verify RAVI Agent Heartbeat And RDP
+﻿name: Verify RAVI Agent Heartbeat And RDP
 
 on:
   workflow_dispatch:
@@ -14,22 +14,19 @@ jobs:
           docker exec -i -w /app "$CID" python manage.py shell <<'PY'
           from django.utils import timezone
           from iic_booking.remote_analysis.models import AnalysisWorkstation
-          from iic_booking.remote_analysis.session_models import WorkstationRdpSecret
+          from iic_booking.remote_analysis.session_models import WorkstationRdpSecret, RemoteDesktopSession
+          from iic_booking.remote_analysis.constants import CommandStatus
+          from iic_booking.remote_analysis.models import RemoteCommand
 
           now = timezone.now()
-          for ws in AnalysisWorkstation.objects.filter(hostname__icontains="RAVI").order_by("-last_heartbeat"):
+          for ws in AnalysisWorkstation.objects.filter(hostname__icontains='RAVI').order_by('-last_heartbeat'):
               age = int((now - ws.last_heartbeat).total_seconds()) if ws.last_heartbeat else None
-              has_secret = WorkstationRdpSecret.objects.filter(workstation=ws).exists()
               secret = WorkstationRdpSecret.objects.filter(workstation=ws).first()
-              user = (secret.username if secret else "") or ""
-              domain = (secret.domain if secret else "") or ""
-              port = secret.port if secret else None
-              has_password = bool(secret and (secret.password_ciphertext or "").strip())
-              print(
-                  "WS", ws.id, ws.hostname, "status", ws.status,
-                  "enabled", ws.enabled, "hb_age_s", age,
-                  "agent_id", getattr(ws, "agent_id", None),
-                  "rdp_secret", has_secret, "rdp_user", bool(user), "rdp_domain", domain or "-",
-                  "rdp_port", port, "rdp_password_set", has_password,
-              )
+              print('WS', ws.id, ws.hostname, 'status', ws.status, 'hb_age_s', age, 'agent', getattr(ws,'agent_id',None),
+                    'rdp_secret', bool(secret), 'rdp_user', bool(secret and secret.username),
+                    'rdp_password_set', bool(secret and (secret.password_encrypted or '').strip()))
+          for c in RemoteCommand.objects.filter(workstation_id='d5cb9ef0-db96-4d6c-aa5d-523087a3f9cc').order_by('-created_at')[:5]:
+              print('CMD', c.id, c.command_type, c.status, c.created_at)
+          for s in RemoteDesktopSession.objects.filter(workstation_id='d5cb9ef0-db96-4d6c-aa5d-523087a3f9cc').order_by('-created_at')[:3]:
+              print('SESSION', s.id, s.status, s.termination_reason)
           PY
