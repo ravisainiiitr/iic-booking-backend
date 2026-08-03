@@ -1,0 +1,57 @@
+name: Probe Booking 312 Prepare Sync
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Probe prepare/sync/session for booking 312
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.experience import AnalysisExperienceBuilder
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession, AgentCommand
+          from iic_booking.remote_analysis.workspace_models import WorkspaceFile
+          from iic_booking.remote_analysis.models import AnalysisWorkstation
+
+          b = Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace").get(pk=312)
+          r = b.analysis_reservation
+          w = b.analysis_workspace
+          print("BOOKING", b.pk, b.virtual_booking_id)
+          print("RES", getattr(r, "id", None), getattr(r, "status", None), "ws", getattr(r, "workstation_id", None))
+          print("WORKSPACE", getattr(w, "id", None), getattr(w, "status", None), getattr(w, "sync_status", None))
+          if w:
+              for f in WorkspaceFile.objects.filter(workspace=w).order_by("-id")[:15]:
+                  print("FILE", getattr(f, "relative_path", None), getattr(f, "size_bytes", None), getattr(f, "sync_state", None), getattr(f, "direction", None), getattr(f, "source", None))
+
+          for s in RemoteDesktopSession.objects.filter(booking=b).order_by("-created_at")[:5]:
+              print("SESSION", s.id, s.status, "prep_cmd", s.prepare_command_id, "term", s.termination_reason)
+              if s.prepare_command_id:
+                  c = s.prepare_command
+                  print("  PREP", c.id, c.status, c.command_type, "created", c.created_at, "updated", getattr(c, "updated_at", None), "err", getattr(c, "error_message", None) or getattr(c, "result_message", None))
+                  print("  PREP payload keys", list((c.payload or {}).keys()) if isinstance(getattr(c, "payload", None), dict) else type(getattr(c, "payload", None)))
+
+          # live summary experience
+          try:
+              summary = BookingRemoteAnalysisService().get_summary(b, user=b.user)
+              exp = summary.get("experience") if isinstance(summary, dict) else None
+              if exp is None:
+                  exp = AnalysisExperienceBuilder().build(b, user=b.user, summary=summary if isinstance(summary, dict) else {})
+              print("EXP desktop_prepare", (exp or {}).get("desktop_prepare"))
+              print("EXP sync", (exp or {}).get("sync"))
+              print("EXP journey", [(x.get("id"), x.get("status"), x.get("label")) for x in ((exp or {}).get("journey") or [])])
+          except Exception as e:
+              print("EXP_ERR", type(e).__name__, e)
+
+          print("=== workstations ===")
+          now = timezone.now()
+          for ws in AnalysisWorkstation.objects.filter(enabled=True).order_by("-last_heartbeat"):
+              age = int((now - ws.last_heartbeat).total_seconds()) if ws.last_heartbeat else None
+              print("WS", ws.id, ws.hostname, ws.status, "hb_age_s", age, "cmd", ws.current_command)
+          PY
