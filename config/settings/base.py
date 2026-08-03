@@ -515,11 +515,13 @@ SOCIALACCOUNT_FORMS = {"signup": "iic_booking.users.forms.UserSocialSignupForm"}
 # overrides this to allow repeated enrollment testing without hitting 429.
 
 REST_FRAMEWORK = {
-    # Token header first so API clients holding a leftover session cookie (e.g. after
-    # the remote-analysis desktop handoff) are not forced through CSRF checks.
+    # Token-only by default. SessionAuthentication enforces CSRF whenever a Django
+    # session cookie is present (e.g. after the remote-analysis desktop handoff),
+    # which breaks the SPA that authenticates with Authorization: Token and never
+    # sends a CSRF header. Views that need browser sessions (desktop/Guacamole)
+    # opt in explicitly via authentication_classes.
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "iic_booking.users.api.token_auth.TokenAuthenticationWithInactivity",
-        "rest_framework.authentication.SessionAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",

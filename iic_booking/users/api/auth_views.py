@@ -435,6 +435,7 @@ def omniport_auth_url(request):
 
 
 @api_view(["GET", "POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def omniport_callback(request):
     """
@@ -936,6 +937,7 @@ def omniport_callback(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def obtain_auth_token_single_session(request):
     """
@@ -964,6 +966,7 @@ def obtain_auth_token_single_session(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def login(request):
     """
@@ -1145,6 +1148,7 @@ OTP_EXPIRY_SECONDS = 600  # 10 minutes
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def request_login_otp(request):
     """
@@ -1218,6 +1222,7 @@ def request_login_otp(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def verify_login_otp(request):
     """
@@ -1284,6 +1289,7 @@ def verify_login_otp(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def request_forgot_password_otp(request):
     """
@@ -1334,6 +1340,7 @@ def request_forgot_password_otp(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def verify_forgot_password_otp_and_set_password(request):
     """
@@ -1382,6 +1389,7 @@ def verify_forgot_password_otp_and_set_password(request):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def register(request):
     """
@@ -2091,6 +2099,7 @@ def self_verify(request, uidb64, token):
 
 
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def resend_verification_email(request):
     """

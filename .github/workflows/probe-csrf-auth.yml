@@ -12,14 +12,14 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID"
-          docker exec -w /app "$CID" python - <<'PY'
-          from django.conf import settings
-          print("AUTH_CLASSES", settings.REST_FRAMEWORK.get("DEFAULT_AUTHENTICATION_CLASSES"))
-          print("CSRF_COOKIE_HTTPONLY", getattr(settings, "CSRF_COOKIE_HTTPONLY", None))
-          print("CSRF_COOKIE_SECURE", getattr(settings, "CSRF_COOKIE_SECURE", None))
-          print("CSRF_COOKIE_NAME", getattr(settings, "CSRF_COOKIE_NAME", None))
-          print("CSRF_TRUSTED_ORIGINS", getattr(settings, "CSRF_TRUSTED_ORIGINS", None))
-          print("SESSION_COOKIE_SAMESITE", getattr(settings, "SESSION_COOKIE_SAMESITE", None))
-          print("SESSION_COOKIE_SECURE", getattr(settings, "SESSION_COOKIE_SECURE", None))
-          PY
-          docker logs --tail 120 "$CID" 2>&1 | grep -iE 'csrf|Forbidden|403' | tail -40 || true
+          docker exec -i -w /app "$CID" python manage.py shell -c '
+from django.conf import settings
+print("AUTH_CLASSES", settings.REST_FRAMEWORK.get("DEFAULT_AUTHENTICATION_CLASSES"))
+print("CSRF_COOKIE_HTTPONLY", getattr(settings, "CSRF_COOKIE_HTTPONLY", None))
+print("CSRF_COOKIE_SECURE", getattr(settings, "CSRF_COOKIE_SECURE", None))
+print("CSRF_COOKIE_NAME", getattr(settings, "CSRF_COOKIE_NAME", None))
+print("CSRF_TRUSTED_ORIGINS", getattr(settings, "CSRF_TRUSTED_ORIGINS", None))
+print("SESSION_COOKIE_SAMESITE", getattr(settings, "SESSION_COOKIE_SAMESITE", None))
+print("SESSION_COOKIE_SECURE", getattr(settings, "SESSION_COOKIE_SECURE", None))
+'
+          docker logs --tail 200 "$CID" 2>&1 | grep -iE 'csrf|Forbidden|403' | tail -40 || true
