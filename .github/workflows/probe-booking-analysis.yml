@@ -41,7 +41,7 @@ jobs:
           eq = b.equipment
           print('BOOKING', 'pk=', b.pk, 'virtual=', b.virtual_booking_id, 'status=', b.status)
           print('USER', b.user_id, getattr(b.user, 'email', None))
-          print('EQUIPMENT', eq.id, eq.name, 'code=', getattr(eq, 'code', None) or getattr(eq, 'equipment_code', None))
+          print('EQUIPMENT', 'pk=', eq.pk, 'name=', eq.name, 'code=', getattr(eq, 'equipment_code', None) or getattr(eq, 'code', None))
           print('enable_remote_analysis=', getattr(eq, 'enable_remote_analysis', None))
           print('remote_analysis_enabled_from_status=', getattr(eq, 'remote_analysis_enabled_from_status', None))
           print('analysis_requires_experiment_completion=', getattr(eq, 'analysis_requires_experiment_completion', None))
@@ -66,9 +66,8 @@ jobs:
                           print(k, '=', ctx[k])
           except Exception as e:
               print('ANALYZE_ERR', type(e).__name__, e)
-          # workflow / software mappings
           try:
-              from iic_booking.remote_analysis.models import EquipmentAnalysisWorkflow, EquipmentAnalysisSoftware
+              from iic_booking.remote_analysis.models import EquipmentAnalysisWorkflow
               print('workflows', list(EquipmentAnalysisWorkflow.objects.filter(equipment=eq).values_list('id','is_active')[:10]))
           except Exception as e:
               print('wf_err', e)
@@ -76,9 +75,5 @@ jobs:
               from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware
               print('software_maps', list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).values('id','software_id','is_active')[:10]))
           except Exception as e:
-              try:
-                  from iic_booking.remote_analysis.models import EquipmentAnalysisSoftware as EAS
-                  print('software_maps', list(EAS.objects.filter(equipment=eq).values_list('id', flat=True)[:10]))
-              except Exception as e2:
-                  print('sw_err', e2)
+              print('sw_err', e)
           "
