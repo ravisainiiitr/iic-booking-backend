@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from django.db import transaction
@@ -13,6 +14,8 @@ from iic_booking.equipment.remote_analysis_integration.notifications import Book
 from iic_booking.equipment.remote_analysis_integration.timeline import BookingTimelineIntegrationService
 from iic_booking.equipment.remote_analysis_integration.workspace import BookingWorkspaceFacade
 from iic_booking.remote_analysis.constants import NotificationType, ReservationStatus
+
+logger = logging.getLogger(__name__)
 
 
 TERMINAL_RESERVATION = {
@@ -95,9 +98,21 @@ class BookingRemoteAnalysisService:
             payload["raw_ready"] = payload["analyze"].get("raw_ready")
             payload["can_analyze"] = payload["analyze"].get("can_analyze")
             payload["workspace_page_title"] = "Analysis Workspace"
-        except Exception:
-            payload["analyze"] = {}
-            payload["can_analyze"] = False
+        except Exception:  # noqa: BLE001
+            logger.exception("get_analyze_context failed for booking %s; retrying without request", booking.pk)
+            try:
+                payload["analyze"] = self.get_analyze_context(booking, user=user, request=None)
+                payload["button_label"] = payload["analyze"].get("button_label")
+                payload["software_options"] = payload["analyze"].get("software_options")
+                payload["workflows"] = payload["analyze"].get("workflows")
+                payload["job"] = payload["analyze"].get("job")
+                payload["raw_ready"] = payload["analyze"].get("raw_ready")
+                payload["can_analyze"] = payload["analyze"].get("can_analyze")
+                payload["workspace_page_title"] = "Analysis Workspace"
+            except Exception:  # noqa: BLE001
+                logger.exception("get_analyze_context fallback also failed for booking %s", booking.pk)
+                payload["analyze"] = {}
+                payload["can_analyze"] = False
         return payload
 
     @transaction.atomic
@@ -244,7 +259,13 @@ class BookingRemoteAnalysisService:
         options = mapping.serialize_options(booking.equipment, settings_obj=settings_obj)
         workflows = engine.list_workflows_for_equipment(booking.equipment)
         job = engine.get_active_job(booking)
-        raw_ready = staging.has_raw_files(booking, request=request)
+        # Existence check must not depend on building absolute download URLs from request
+        # (DisallowedHost / missing Host must not zero out can_analyze).
+        try:
+            raw_ready = staging.has_raw_files(booking, request=request)
+        except Exception:  # noqa: BLE001
+            logger.exception("raw_ready check failed for booking %s; retrying without request", booking.pk)
+            raw_ready = staging.has_raw_files(booking, request=None)
         require_raw = bool(settings_obj.analyze_data_require_s3_files)
         software_configured = (
             bool(workflows)
@@ -253,7 +274,14 @@ class BookingRemoteAnalysisService:
         )
         can_launch = True
         if user is not None:
-            can_launch = bool(getattr(user, "is_superuser", False) or booking.user_id == getattr(user, "pk", None))
+            user_type = str(getattr(user, "user_type", "") or "").lower()
+            can_launch = bool(
+                getattr(user, "is_superuser", False)
+                or getattr(user, "is_staff", False)
+                or booking.user_id == getattr(user, "pk", None)
+                or user_type
+                in {"admin", "dept_admin", "manager", "officer_in_charge", "operator"}
+            )
 
         can_analyze = (
             elig.eligible
