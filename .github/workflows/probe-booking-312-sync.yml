@@ -1,0 +1,34 @@
+name: Probe Booking 312 Sync Stuck
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Probe session sync state for booking 312
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceFile
+          from iic_booking.remote_analysis.models import Workstation
+          b = Booking.objects.select_related('equipment','user','analysis_reservation','analysis_workspace').get(pk=312)
+          print('BOOKING', b.pk, b.virtual_booking_id, b.status)
+          print('reservation', getattr(b.analysis_reservation, 'id', None), getattr(b.analysis_reservation, 'status', None))
+          ws = getattr(b, 'analysis_workspace', None)
+          print('workspace', getattr(ws, 'id', None), getattr(ws, 'status', None), getattr(ws, 'sync_status', None))
+          if ws:
+              print('files', list(WorkspaceFile.objects.filter(workspace=ws, deleted=False).values('relative_path','size_bytes','source')[:20]))
+          sessions = list(RemoteDesktopSession.objects.filter(booking=b).order_by('-created_at')[:5])
+          for s in sessions:
+              print('SESSION', s.id, 'status=', s.status, 'sync=', getattr(s, 'sync_status', None), 'prep=', getattr(s, 'preparation_status', None), 'err=', getattr(s, 'error_message', None) or getattr(s, 'termination_reason', None), 'ws=', getattr(s, 'workstation_id', None))
+              print('  fields', {k: getattr(s, k, None) for k in ['client_url','guacamole_connection_id','last_error','message','ux_status'] if hasattr(s, k)})
+          # recent open sessions any booking stuck preparing
+          stuck = RemoteDesktopSession.objects.filter(status__in=['CREATED','PREPARING','READY']).order_by('-created_at')[:5]
+          for s in stuck:
+              print('STUCK', s.id, 'booking=', s.booking_id, 'status=', s.status, 'reason=', getattr(s, 'termination_reason', None), 'err=', getattr(s, 'error_message', None))
+          "
