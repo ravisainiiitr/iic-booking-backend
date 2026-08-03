@@ -16,40 +16,42 @@ jobs:
           from iic_booking.equipment.models import Booking
           from iic_booking.equipment.remote_analysis_integration.experience import AnalysisExperienceBuilder
           from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
-          from iic_booking.remote_analysis.session_models import RemoteDesktopSession, AgentCommand
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, RemoteCommand
           from iic_booking.remote_analysis.workspace_models import WorkspaceFile
-          from iic_booking.remote_analysis.models import AnalysisWorkstation
+          from iic_booking.remote_analysis.constants import CommandStatus
 
           b = Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace").get(pk=312)
           r = b.analysis_reservation
           w = b.analysis_workspace
           print("BOOKING", b.pk, b.virtual_booking_id)
           print("RES", getattr(r, "id", None), getattr(r, "status", None), "ws", getattr(r, "workstation_id", None))
-          print("WORKSPACE", getattr(w, "id", None), getattr(w, "status", None), getattr(w, "sync_status", None))
+          print("WORKSPACE", getattr(w, "id", None), getattr(w, "status", None), "sync_phase", getattr(w, "sync_phase", None), "sync_status", getattr(w, "sync_status", None), "msg", getattr(w, "sync_message", None))
           if w:
-              for f in WorkspaceFile.objects.filter(workspace=w).order_by("-id")[:15]:
-                  print("FILE", getattr(f, "relative_path", None), getattr(f, "size_bytes", None), getattr(f, "sync_state", None), getattr(f, "direction", None), getattr(f, "source", None))
+              for f in WorkspaceFile.objects.filter(workspace=w).order_by("-id")[:20]:
+                  print("FILE", getattr(f, "relative_path", None), getattr(f, "size_bytes", None), getattr(f, "sync_state", None), getattr(f, "direction", None))
 
           for s in RemoteDesktopSession.objects.filter(booking=b).order_by("-created_at")[:5]:
-              print("SESSION", s.id, s.status, "prep_cmd", s.prepare_command_id, "term", s.termination_reason)
+              print("SESSION", s.id, s.status, "prep_cmd", s.prepare_command_id, "term", s.termination_reason, "created", s.created_at)
               if s.prepare_command_id:
                   c = s.prepare_command
-                  print("  PREP", c.id, c.status, c.command_type, "created", c.created_at, "updated", getattr(c, "updated_at", None), "err", getattr(c, "error_message", None) or getattr(c, "result_message", None))
-                  print("  PREP payload keys", list((c.payload or {}).keys()) if isinstance(getattr(c, "payload", None), dict) else type(getattr(c, "payload", None)))
+                  age = int((timezone.now() - c.created_at).total_seconds()) if c.created_at else None
+                  print("  PREP", c.id, "status", c.status, "type", c.command_type, "age_s", age, "err", c.error_message, "result", getattr(c, "result_message", None))
 
-          # live summary experience
+          pending = RemoteCommand.objects.filter(status__in=[CommandStatus.PENDING, CommandStatus.DELIVERED]).order_by("-created_at")[:10]
+          for c in pending:
+              print("PENDING_CMD", c.id, c.command_type, c.status, "ws", c.workstation_id, "created", c.created_at)
+
           try:
               summary = BookingRemoteAnalysisService().get_summary(b, user=b.user)
-              exp = summary.get("experience") if isinstance(summary, dict) else None
-              if exp is None:
+              exp = (summary or {}).get("experience") if isinstance(summary, dict) else None
+              if not exp:
                   exp = AnalysisExperienceBuilder().build(b, user=b.user, summary=summary if isinstance(summary, dict) else {})
-              print("EXP desktop_prepare", (exp or {}).get("desktop_prepare"))
-              print("EXP sync", (exp or {}).get("sync"))
-              print("EXP journey", [(x.get("id"), x.get("status"), x.get("label")) for x in ((exp or {}).get("journey") or [])])
+              print("EXP desktop_prepare", exp.get("desktop_prepare"))
+              print("EXP sync", {k: exp.get(k) for k in ("sync_phase", "sync_progress", "sync_message") if k in exp or True})
           except Exception as e:
               print("EXP_ERR", type(e).__name__, e)
 
-          print("=== workstations ===")
           now = timezone.now()
           for ws in AnalysisWorkstation.objects.filter(enabled=True).order_by("-last_heartbeat"):
               age = int((now - ws.last_heartbeat).total_seconds()) if ws.last_heartbeat else None

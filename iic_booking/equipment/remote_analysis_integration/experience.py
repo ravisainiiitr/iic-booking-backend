@@ -551,7 +551,7 @@ class AnalysisExperienceBuilder:
             launch_status = "pending"
             ready_status = "pending"
         else:
-            sync_status = "done" if input_ready else ("active" if preparing or sync_phase == "DownloadingInput" or allocated else "pending")
+            sync_status = "done" if input_ready else ("active" if preparing or sync_phase == "DownloadingInput" else "pending")
             launch_status = (
                 "done"
                 if session and session.status in ACTIVE_DESKTOP | {SessionStatus.LAUNCHED, SessionStatus.TOKEN_GENERATED}
