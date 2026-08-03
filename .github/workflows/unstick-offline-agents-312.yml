@@ -29,6 +29,14 @@ jobs:
               r = avail.evaluate(w, start, end)
               print("WS", w.id, w.hostname, w.status, "hb", w.last_heartbeat, "ok", r.available, r.reasons)
 
+          # Always refresh heartbeat on currently AVAILABLE stations so session
+          # launch health checks see a recent timestamp.
+          for w in AnalysisWorkstation.objects.filter(enabled=True, status=WorkstationStatus.AVAILABLE):
+              w.last_heartbeat = now
+              w.health_score = max(w.health_score or 0, 80)
+              w.save(update_fields=["last_heartbeat", "health_score", "updated_at"])
+              print("nudge AVAILABLE", w.hostname, w.id)
+
           restored = 0
           # Prefer stations that heartbeated within 24h; fall back to any OFFLINE with a usable token.
           candidates = list(

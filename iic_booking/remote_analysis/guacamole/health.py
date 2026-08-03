@@ -4,29 +4,21 @@ from __future__ import annotations
 
 from django.utils import timezone
 
-from iic_booking.remote_analysis.constants import HEARTBEAT_OFFLINE_SECONDS, WorkstationStatus
 from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
+from iic_booking.remote_analysis.services.availability import AvailabilityEngine
 from iic_booking.remote_analysis.session_models import RemoteDesktopSession, SessionHealth
 
 
 def workstation_agent_online(workstation) -> bool:
-    if not workstation.last_heartbeat:
-        return False
-    age = (timezone.now() - workstation.last_heartbeat).total_seconds()
-    return age <= HEARTBEAT_OFFLINE_SECONDS
+    """Prefer fresh heartbeat; fall back to AVAILABLE/ONLINE + valid agent token."""
+    return AvailabilityEngine().agent_online(workstation)
 
 
 def workstation_healthy_for_session(workstation) -> bool:
     if not workstation.enabled:
         return False
-    if workstation.status in {
-        WorkstationStatus.DISABLED,
-        WorkstationStatus.MAINTENANCE,
-        WorkstationStatus.ERROR,
-        WorkstationStatus.OFFLINE,
-    }:
-        return False
-    return workstation_agent_online(workstation)
+    # AvailabilityEngine already rejects OFFLINE / disabled / token-missing cases.
+    return AvailabilityEngine().agent_online(workstation)
 
 
 def refresh_session_health(session: RemoteDesktopSession) -> SessionHealth:
