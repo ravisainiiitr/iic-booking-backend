@@ -1,0 +1,50 @@
+name: Probe Booking 312 Queue State
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Probe queue and workstation allocation for booking 312
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus, SessionStatus, QueueEntryStatus
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, AnalysisQueueEntry
+          from iic_booking.remote_analysis.models import AnalysisWorkstation
+          from iic_booking.equipment.remote_analysis_integration.eligibility import BookingAnalysisEligibilityService
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+
+          b = Booking.objects.select_related('equipment','user','analysis_reservation','analysis_workspace').get(pk=312)
+          print('BOOKING', b.pk, b.virtual_booking_id, 'status', b.status, 'session_count', b.analysis_session_count)
+          elig = BookingAnalysisEligibilityService().evaluate(b)
+          print('ELIG', elig.eligible, elig.reason)
+          r = b.analysis_reservation
+          if r:
+              print('RES', r.id, 'status', r.status, 'ws', r.workstation_id, 'start', r.requested_start, 'end', r.requested_end)
+          else:
+              print('RES none')
+          for s in RemoteDesktopSession.objects.filter(booking=b).order_by('-created_at')[:5]:
+              print('SESSION', s.id, s.status, 'prep_cmd', getattr(s.prepare_command, 'status', None) if s.prepare_command_id else None, 'term', s.termination_reason)
+          print('--- workstations ---')
+          for w in AnalysisWorkstation.objects.all().order_by('hostname')[:30]:
+              print('WS', w.id, getattr(w,'hostname',None), 'status', w.status, 'enabled', getattr(w,'is_enabled', None) or getattr(w,'enabled', None), 'agent', getattr(w,'agent_version',None), 'last_seen', getattr(w,'last_heartbeat_at', None) or getattr(w,'last_seen_at', None))
+          print('--- queue entries ---')
+          for q in AnalysisQueueEntry.objects.filter(status__in=[QueueEntryStatus.WAITING, QueueEntryStatus.OFFERED, 'WAITING','QUEUED','PENDING']).order_by('created_at')[:20]:
+              print('Q', q.id, 'status', q.status, 'res', q.reservation_id, 'pos', getattr(q,'position',None), 'booking', getattr(getattr(q,'reservation',None),'booking_id',None))
+          print('--- reservations queued/open ---')
+          for rr in AnalysisReservation.objects.filter(status__in=[ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING, ReservationStatus.RESERVED, ReservationStatus.PREPARING, ReservationStatus.READY, ReservationStatus.ACTIVE]).order_by('-updated_at')[:20]:
+              print('R', rr.id, rr.status, 'booking', rr.booking_id, 'ws', rr.workstation_id)
+          # try ensure + allocate
+          try:
+              svc = BookingRemoteAnalysisService()
+              out = svc.ensure_reservation(b, actor=b.user, auto_allocate=True)
+              print('ENSURE', getattr(out,'id',out), getattr(out,'status',None), getattr(out,'workstation_id',None))
+          except Exception as e:
+              print('ENSURE_ERR', type(e).__name__, e)
+          "
