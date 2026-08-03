@@ -111,6 +111,9 @@ class AvailabilityEngine:
         if workstation.status in {
             WorkstationStatus.AVAILABLE,
             WorkstationStatus.ONLINE,
+            WorkstationStatus.BUSY,
+            WorkstationStatus.PREPARING,
+            WorkstationStatus.CLEANING,
         } and workstation.enabled:
             return self._has_usable_agent_token(workstation)
         return False
