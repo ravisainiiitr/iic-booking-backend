@@ -88,10 +88,28 @@ class AvailabilityEngine:
         return qs.exists()
 
     def agent_online(self, workstation: AnalysisWorkstation) -> bool:
-        if workstation.last_heartbeat is None:
-            return False
-        age = (timezone.now() - workstation.last_heartbeat).total_seconds()
-        return age <= HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS
+        """
+        True when the agent is considered reachable for allocation.
+
+        Prefer a fresh heartbeat. If status is already AVAILABLE/ONLINE and an
+        active agent token exists, allow allocation even when heartbeat is briefly
+        missing (common right after registration / admin enable).
+        """
+        if workstation.last_heartbeat is not None:
+            age = (timezone.now() - workstation.last_heartbeat).total_seconds()
+            return age <= HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS
+
+        if workstation.status in {
+            WorkstationStatus.AVAILABLE,
+            WorkstationStatus.ONLINE,
+        } and workstation.enabled:
+            active = workstation.tokens.filter(is_active=True).order_by("-issued_at").first()
+            if active is None:
+                return False
+            if active.expires_at and active.expires_at < timezone.now():
+                return False
+            return True
+        return False
 
     def token_expired(self, workstation: AnalysisWorkstation) -> bool:
         active = workstation.tokens.filter(is_active=True).order_by("-issued_at").first()
