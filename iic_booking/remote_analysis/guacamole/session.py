@@ -194,6 +194,14 @@ class SessionOrchestrator:
                 percent=25,
                 message="Preparing workstation and downloading input",
             )
+            # Nothing to download — do not leave the UI stuck on "Synchronizing input data".
+            manifest_files = (prepare_payload.get("manifest") or {}).get("files") or []
+            if not manifest_files:
+                sync_svc.mark_prepared(
+                    workspace,
+                    success=True,
+                    message="No input files to synchronize",
+                )
         except Exception:
             logger.exception("Workspace ensure/ingest failed during session create")
             workspace_id = ""
@@ -291,6 +299,28 @@ class SessionOrchestrator:
                 pass
             self.fail_session(session, cmd.error_message or "Prepare failed")
             return False
+        if not prepare_ok:
+            # Zero-input shortcut: InputReady already set and booking has no RAW —
+            # do not block Guacamole forever waiting for agent ack.
+            try:
+                from iic_booking.equipment.remote_analysis_integration.raw_staging import (
+                    BookingRawStagingService,
+                )
+                from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+                from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceFile
+
+                ws_obj = AnalysisWorkspace.objects.filter(reservation=session.reservation).first()
+                booking = getattr(session.reservation, "booking", None)
+                if (
+                    ws_obj
+                    and booking is not None
+                    and WorkspaceSyncService().is_input_ready(ws_obj)
+                    and (cmd is None or cmd.status != CommandStatus.FAILED)
+                    and not BookingRawStagingService().has_raw_files(booking)
+                ):
+                    prepare_ok = True
+            except Exception:
+                logger.exception("Empty-input prepare shortcut failed")
         if not prepare_ok:
             return False
 

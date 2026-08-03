@@ -68,10 +68,28 @@ class BookingRemoteAnalysisService:
                 reservation, expose_infrastructure=expose_infrastructure
             ),
             "workspace": self._serialize_workspace(workspace),
+            "workspace_id": str(workspace.id) if workspace else None,
+            "virtual_booking_id": (getattr(booking, "virtual_booking_id", None) or "")
+            or str(booking.booking_id),
             "session": self._serialize_session(session),
             "timeline": self.timeline.build(booking),
             "files": self.workspace.list_files(booking, limit=50) if include_files else [],
         }
+        try:
+            from iic_booking.equipment.remote_analysis_integration.experience import AnalysisExperienceBuilder
+
+            payload["experience"] = AnalysisExperienceBuilder().build(
+                booking,
+                summary=payload,
+                files=payload.get("files") or [],
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("AnalysisExperienceBuilder failed for booking %s", booking.pk)
+            payload["experience"] = {
+                "virtual_booking_id": payload["virtual_booking_id"],
+                "equipment_name": getattr(booking.equipment, "name", "") or "",
+                "equipment_code": getattr(booking.equipment, "code", "") or "",
+            }
         try:
             payload["analyze"] = self.get_analyze_context(booking, user=user, request=request)
             payload["button_label"] = payload["analyze"].get("button_label")
@@ -568,6 +586,17 @@ class BookingRemoteAnalysisService:
         from iic_booking.remote_analysis.guacamole.authorization import find_reusable_open_session
         from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
         from iic_booking.remote_analysis.guacamole.session import SessionOrchestrator
+        from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
+        from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+
+        settings_obj = RemoteAnalysisSettings.get_solo()
+        workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user)
+        if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
+            try:
+                BookingRawStagingService().stage_into_workspace(booking, workspace, actor=user)
+            except Exception:  # noqa: BLE001
+                logger.exception("RAW staging before launch failed for booking %s", booking.pk)
 
         orch = SessionOrchestrator()
         was_new = find_reusable_open_session(reservation, settings_obj=orch.settings) is None

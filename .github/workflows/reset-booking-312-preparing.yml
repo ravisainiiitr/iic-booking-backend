@@ -1,0 +1,35 @@
+name: Reset Booking 312 Stuck Preparing Session
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: self-hosted
+    steps:
+      - name: Terminate stuck PREPARING sessions and restage RAW
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.constants import SessionStatus
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
+          from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+          b = Booking.objects.select_related('equipment','analysis_reservation','analysis_workspace').get(pk=312)
+          print('booking', b.pk, b.virtual_booking_id)
+          OPEN = {SessionStatus.CREATED, SessionStatus.PREPARING, SessionStatus.READY, SessionStatus.TOKEN_GENERATED, SessionStatus.LAUNCHED, SessionStatus.CONNECTING, SessionStatus.CONNECTED, SessionStatus.ACTIVE, SessionStatus.IDLE}
+          for s in RemoteDesktopSession.objects.filter(booking=b, status__in=OPEN):
+              print('terminate', s.id, s.status)
+              s.status = SessionStatus.TERMINATED
+              s.termination_reason = 'Admin reset: stuck preparing / synchronizing input'
+              s.save(update_fields=['status','termination_reason'])
+          reservation = b.analysis_reservation
+          if reservation:
+              ws = WorkspaceSyncService().ensure_for_reservation(reservation, actor=b.user)
+              staged = BookingRawStagingService().stage_into_workspace(b, ws, actor=b.user)
+              print('restaged', staged)
+              print('workspace', ws.id, 'phase', ws.sync_phase, 'status', ws.status)
+          print('done')
+          "
