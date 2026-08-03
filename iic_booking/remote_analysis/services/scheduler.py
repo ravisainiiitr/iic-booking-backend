@@ -10,7 +10,6 @@ from django.utils import timezone
 from iic_booking.remote_analysis.constants import (
     DEFAULT_RESERVATION_GRACE_MINUTES,
     DEFAULT_UNUSED_RESERVATION_MINUTES,
-    HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS,
     AuditCategory,
     ReservationStatus,
     WorkstationStatus,
@@ -254,8 +253,8 @@ class SchedulerService:
             expired += 1
             self._record_metric("reservation_failures", 1, tags={"reason": "queue_expired"})
 
-        # Offline workstation while reserved
-        heartbeat_cut = timedelta(seconds=HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS)
+        # Offline workstation while reserved (use AvailabilityEngine soft online rules
+        # so AVAILABLE + valid token is not expired solely for a stale heartbeat).
         for reservation in AnalysisReservation.objects.filter(
             status__in=[
                 ReservationStatus.RESERVED,
@@ -266,24 +265,25 @@ class SchedulerService:
             workstation__isnull=False,
         ).select_related("workstation"):
             ws = reservation.workstation
-            if ws.last_heartbeat is None or (now - ws.last_heartbeat) > heartbeat_cut:
-                self.conflicts.persist_conflicts(
-                    reservation,
-                    self.conflicts.detect_for_window(
-                        ws,
-                        reservation.reserved_start or reservation.requested_start,
-                        reservation.reserved_end or reservation.requested_end,
-                        reservation=reservation,
-                    ),
-                )
-                self.reservations.release(
-                    reservation,
-                    reason="Workstation offline / heartbeat timeout",
-                    final_status=ReservationStatus.EXPIRED,
-                )
-                self.queue.expire(reservation)
-                self._free_workstation(reservation)
-                expired += 1
+            if self.availability.agent_online(ws):
+                continue
+            self.conflicts.persist_conflicts(
+                reservation,
+                self.conflicts.detect_for_window(
+                    ws,
+                    reservation.reserved_start or reservation.requested_start,
+                    reservation.reserved_end or reservation.requested_end,
+                    reservation=reservation,
+                ),
+            )
+            self.reservations.release(
+                reservation,
+                reason="Workstation offline / heartbeat timeout",
+                final_status=ReservationStatus.EXPIRED,
+            )
+            self.queue.expire(reservation)
+            self._free_workstation(reservation)
+            expired += 1
 
         # Natural end
         for reservation in AnalysisReservation.objects.filter(
