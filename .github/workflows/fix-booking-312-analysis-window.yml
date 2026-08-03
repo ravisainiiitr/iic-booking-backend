@@ -1,0 +1,92 @@
+name: Fix Booking 312 Analysis Window Launch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: self-hosted
+    steps:
+      - name: Align analysis window and re-issue launch for booking 312
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession, RemoteAnalysisSettings
+
+          now = timezone.now()
+          b = Booking.objects.select_related("user", "analysis_reservation").get(pk=312)
+          r = b.analysis_reservation
+          print("NOW", now.isoformat())
+          print("BOOKING start", getattr(b, "start_time", None), "end", getattr(b, "end_time", None))
+          print("BOOKING analysis_available_from", getattr(b, "analysis_available_from", None), "analysis_available_until", getattr(b, "analysis_available_until", None))
+          print("RES requested_start", getattr(r, "requested_start", None), "requested_end", getattr(r, "requested_end", None))
+          print("RES reserved_start", getattr(r, "reserved_start", None), "reserved_end", getattr(r, "reserved_end", None), "status", getattr(r, "status", None))
+
+          # Open the analysis window immediately for this completed booking so launch can proceed.
+          # Keep a generous end window (at least booking analysis_available_until or +8h).
+          end = getattr(b, "analysis_available_until", None) or getattr(b, "end_time", None) or (now + timedelta(hours=8))
+          if end <= now:
+              end = now + timedelta(hours=8)
+
+          changed = []
+          if hasattr(b, "analysis_available_from"):
+              if b.analysis_available_from is None or b.analysis_available_from > now:
+                  b.analysis_available_from = now - timedelta(minutes=5)
+                  changed.append("booking.analysis_available_from")
+              if b.analysis_available_until is None or b.analysis_available_until <= now:
+                  b.analysis_available_until = end
+                  changed.append("booking.analysis_available_until")
+              if changed:
+                  b.save(update_fields=["analysis_available_from", "analysis_available_until", "updated_at"] if hasattr(b, "updated_at") else ["analysis_available_from", "analysis_available_until"])
+
+          if r is not None:
+              r_fields = []
+              if r.requested_start is None or r.requested_start > now:
+                  r.requested_start = now - timedelta(minutes=5)
+                  r_fields.append("requested_start")
+              if r.requested_end is None or r.requested_end <= now:
+                  r.requested_end = end
+                  r_fields.append("requested_end")
+              if getattr(r, "reserved_start", None) is None or r.reserved_start > now:
+                  r.reserved_start = now - timedelta(minutes=5)
+                  r_fields.append("reserved_start")
+              if getattr(r, "reserved_end", None) is None or r.reserved_end <= now:
+                  r.reserved_end = end
+                  r_fields.append("reserved_end")
+              if r_fields:
+                  r.save(update_fields=r_fields + ["updated_at"])
+                  changed.extend(["reservation." + f for f in r_fields])
+
+          print("CHANGED", changed)
+          b.refresh_from_db()
+          r.refresh_from_db()
+          print("AFTER analysis_available_from", b.analysis_available_from, "until", b.analysis_available_until)
+          print("AFTER requested_start", r.requested_start, "end", r.requested_end)
+
+          def abs_builder(path):
+              return "https://equip.iitr.ac.in" + path
+
+          s = RemoteDesktopSession.objects.filter(booking=b).order_by("-created_at").first()
+          print("SESSION", s.id, s.status)
+          try:
+              launch = GuacamoleIntegrationService().launch(
+                  s, b.user, request_absolute_uri_builder=abs_builder, client_ip="127.0.0.1", user_agent="ops-fix-window"
+              )
+              print("LAUNCH_OK", launch.get("status"), bool(launch.get("launch_url")), launch.get("launch_url"))
+          except Exception as e:
+              print("LAUNCH_ERR", type(e).__name__, e)
+
+          try:
+              payload = BookingRemoteAnalysisService().launch_session(
+                  b, user=b.user, client_ip="127.0.0.1", request_absolute_uri_builder=abs_builder, user_agent="ops-fix-window"
+              )
+              print("SERVICE", payload.get("status"), "pending", payload.get("launch_pending"), "detail", payload.get("detail"), "url", bool(payload.get("launch_url")))
+          except Exception as e:
+              print("SERVICE_ERR", type(e).__name__, e)
+          PY
