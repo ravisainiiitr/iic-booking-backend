@@ -1,0 +1,18 @@
+name: Probe Live Auth Classes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Print DEFAULT_AUTHENTICATION_CLASSES
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
+          from django.conf import settings
+          print("AUTH_CLASSES=", settings.REST_FRAMEWORK.get("DEFAULT_AUTHENTICATION_CLASSES"))
+          PY
