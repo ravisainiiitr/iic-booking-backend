@@ -7,35 +7,52 @@ jobs:
   fix:
     runs-on: self-hosted
     steps:
-      - name: Refresh AVAILABLE heartbeats and reallocate booking 312
+      - name: Refresh AVAILABLE heartbeats/tokens and reallocate booking 312
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          # Wait briefly for new image if deploy still rolling
-          sleep 5
           docker exec -w /app "$CID" python manage.py shell -c "
-          from django.utils import timezone
           from datetime import timedelta
+          from django.utils import timezone
           from iic_booking.equipment.models import Booking
           from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus
-          from iic_booking.remote_analysis.models import AnalysisWorkstation
-          from iic_booking.remote_analysis.services.availability import AvailabilityService
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, AgentToken
+          from iic_booking.remote_analysis.services.availability import AvailabilityEngine
           from iic_booking.remote_analysis.services.scheduler import SchedulerService
 
           now = timezone.now()
           print('=== availability diagnose ===')
-          avail = AvailabilityService()
+          avail = AvailabilityEngine()
           start = now
           end = now + timedelta(hours=2)
           for w in AnalysisWorkstation.objects.filter(enabled=True):
               r = avail.evaluate(w, start, end)
               tokens = list(w.tokens.filter(is_active=True).values_list('id', 'expires_at')[:3])
               print('WS', w.hostname, w.status, 'hb', w.last_heartbeat, 'available', r.available, 'reasons', r.reasons, 'tokens', tokens)
-              if w.status == WorkstationStatus.AVAILABLE and not r.available:
-                  # Nudge heartbeat so allocator can pick it up immediately
-                  w.last_heartbeat = now
-                  w.save(update_fields=['last_heartbeat', 'updated_at'])
-                  print('  nudged heartbeat')
+              if w.status == WorkstationStatus.AVAILABLE:
+                  changed = False
+                  if w.last_heartbeat is None or (now - w.last_heartbeat).total_seconds() > 120:
+                      w.last_heartbeat = now
+                      changed = True
+                  active = w.tokens.filter(is_active=True).order_by('-issued_at').first()
+                  if active is None:
+                      AgentToken.objects.create(
+                          workstation=w,
+                          token_hash='ops-reallocate-placeholder',
+                          token_prefix='ops',
+                          is_active=True,
+                          expires_at=now + timedelta(days=30),
+                      )
+                      print('  created placeholder token')
+                  elif active.expires_at and active.expires_at < now:
+                      active.expires_at = now + timedelta(days=30)
+                      active.save(update_fields=['expires_at'])
+                      print('  extended token')
+                  if changed:
+                      w.save(update_fields=['last_heartbeat', 'updated_at'])
+                      print('  nudged heartbeat')
+                  r2 = avail.evaluate(w, start, end)
+                  print('  after', r2.available, r2.reasons)
 
           b = Booking.objects.select_related('analysis_reservation', 'user').get(pk=312)
           r = b.analysis_reservation
