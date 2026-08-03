@@ -1,0 +1,118 @@
+name: Unstick Analysis Queue Booking 312
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: self-hosted
+    steps:
+      - name: Free stuck workstations and reallocate booking 312
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.constants import (
+              ReservationStatus, WorkstationStatus, SessionStatus,
+          )
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+          from iic_booking.remote_analysis.models import AnalysisWorkstation
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+          from iic_booking.remote_analysis.services.queue import QueueService
+
+          print('=== workstations before ===')
+          for w in AnalysisWorkstation.objects.all().order_by('hostname'):
+              print('WS', w.pk, w.hostname, w.status, 'hb', getattr(w, 'last_heartbeat_at', None) or getattr(w, 'last_seen_at', None))
+
+          # Free workstations stuck in PREPARING/BUSY with no ACTIVE reservation/session
+          active_res_ws = set(
+              AnalysisReservation.objects.filter(
+                  status__in=[
+                      ReservationStatus.RESERVED,
+                      ReservationStatus.PREPARING,
+                      ReservationStatus.READY,
+                      ReservationStatus.ACTIVE,
+                  ],
+                  workstation_id__isnull=False,
+              ).values_list('workstation_id', flat=True)
+          )
+          active_sess_ws = set(
+              RemoteDesktopSession.objects.filter(
+                  status__in=[
+                      SessionStatus.CREATED, SessionStatus.PREPARING, SessionStatus.READY,
+                      SessionStatus.TOKEN_GENERATED, SessionStatus.LAUNCHED, SessionStatus.CONNECTING,
+                      SessionStatus.CONNECTED, SessionStatus.ACTIVE, SessionStatus.IDLE,
+                  ],
+                  workstation_id__isnull=False,
+              ).values_list('workstation_id', flat=True)
+          )
+          busyish = {WorkstationStatus.PREPARING, WorkstationStatus.BUSY, WorkstationStatus.CLEANING}
+          freed = 0
+          for w in AnalysisWorkstation.objects.filter(status__in=busyish):
+              if w.pk in active_res_ws or w.pk in active_sess_ws:
+                  print('KEEP busy', w.hostname, w.status, 'has active res/session')
+                  continue
+              print('FREE', w.hostname, w.status, '-> AVAILABLE')
+              w.status = WorkstationStatus.AVAILABLE
+              w.save(update_fields=['status', 'updated_at'])
+              freed += 1
+          print('freed', freed)
+
+          # Terminate leftover open sessions on booking 312
+          b = Booking.objects.select_related('analysis_reservation', 'user', 'equipment').get(pk=312)
+          OPEN = {
+              SessionStatus.CREATED, SessionStatus.PREPARING, SessionStatus.READY,
+              SessionStatus.TOKEN_GENERATED, SessionStatus.LAUNCHED, SessionStatus.CONNECTING,
+              SessionStatus.CONNECTED, SessionStatus.ACTIVE, SessionStatus.IDLE,
+          }
+          for s in RemoteDesktopSession.objects.filter(booking=b, status__in=OPEN):
+              print('terminate session', s.id, s.status)
+              s.status = SessionStatus.TERMINATED
+              s.termination_reason = 'Admin unstick queue: release environment'
+              s.save(update_fields=['status', 'termination_reason'])
+
+          r = b.analysis_reservation
+          print('RES before', getattr(r, 'id', None), getattr(r, 'status', None), getattr(r, 'workstation_id', None))
+          if r is None:
+              print('no reservation')
+          else:
+              # Cancel stale queue entry if present
+              try:
+                  QueueService().cancel(r)
+              except Exception as e:
+                  print('queue cancel', e)
+
+              if r.status in {
+                  ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING,
+                  ReservationStatus.FAILED, ReservationStatus.EXPIRED, ReservationStatus.CANCELLED,
+              } or r.workstation_id is None:
+                  # Re-run allocation on existing reservation
+                  if r.status in {ReservationStatus.FAILED, ReservationStatus.EXPIRED, ReservationStatus.CANCELLED, ReservationStatus.COMPLETED}:
+                      # Create fresh reservation by clearing link then ensure
+                      print('terminal reservation; clearing booking link')
+                      b.analysis_reservation = None
+                      b.save(update_fields=['analysis_reservation', 'updated_at'])
+                      from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+                      out = BookingRemoteAnalysisService().ensure_reservation(b, actor=b.user, auto_allocate=True)
+                      print('NEW RES', out.id, out.status, out.workstation_id)
+                  else:
+                      # Force status to VALIDATING then allocate
+                      r.status = ReservationStatus.VALIDATING
+                      r.workstation = None
+                      r.allocated_at = None
+                      r.save(update_fields=['status', 'workstation', 'allocated_at', 'updated_at'])
+                      out = SchedulerService().allocate(r, actor=b.user)
+                      print('REALLOC', out.id, out.status, out.workstation_id, out.allocation_notes)
+              else:
+                  print('reservation already allocated', r.status, r.workstation_id)
+
+          b.refresh_from_db()
+          r = b.analysis_reservation
+          print('RES after', getattr(r, 'id', None), getattr(r, 'status', None), getattr(r, 'workstation_id', None))
+          print('=== workstations after ===')
+          for w in AnalysisWorkstation.objects.all().order_by('hostname'):
+              print('WS', w.pk, w.hostname, w.status)
+          "
