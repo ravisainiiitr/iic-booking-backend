@@ -15,6 +15,7 @@ jobs:
           sleep 5
           docker exec -w /app "$CID" python manage.py shell -c "
           from django.utils import timezone
+          from datetime import timedelta
           from iic_booking.equipment.models import Booking
           from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus
           from iic_booking.remote_analysis.models import AnalysisWorkstation
@@ -25,7 +26,7 @@ jobs:
           print('=== availability diagnose ===')
           avail = AvailabilityService()
           start = now
-          end = now + timezone.timedelta(hours=2)
+          end = now + timedelta(hours=2)
           for w in AnalysisWorkstation.objects.filter(enabled=True):
               r = avail.evaluate(w, start, end)
               tokens = list(w.tokens.filter(is_active=True).values_list('id', 'expires_at')[:3])
