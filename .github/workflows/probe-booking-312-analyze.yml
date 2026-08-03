@@ -14,32 +14,25 @@ jobs:
           docker exec -w /app "$CID" python manage.py shell -c "
           from iic_booking.equipment.models import Booking
           from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
-          from iic_booking.equipment.serializers import BookingDetailSerializer, BookingListSerializer
+          from iic_booking.equipment.serializers import BookingListSerializer
           b = Booking.objects.select_related('equipment','user').get(pk=312)
           svc = BookingRemoteAnalysisService()
           ctx = svc.get_analyze_context(b, user=b.user)
           print('ANALYZE', {k: ctx.get(k) for k in ['can_analyze','can_launch','software_configured','raw_ready','require_raw_files','button_label','analysis_ended','queue_message']})
           print('workflows', ctx.get('workflows'))
           print('software_options', ctx.get('software_options'))
-          print('elig', ctx.get('eligibility'))
-          summary = svc.get_booking_analysis_summary(b, user=b.user)
+          summary = svc.get_summary(b, user=b.user)
           print('SUMMARY can_analyze=', summary.get('can_analyze'), 'raw_ready=', summary.get('raw_ready'), 'analysis_ended=', summary.get('analysis_ended'))
           print('SUMMARY eligibility=', summary.get('eligibility'))
-          # serializer fields as API would return
-          try:
-              data = BookingDetailSerializer(b, context={'request': None}).data
-          except Exception:
-              data = BookingListSerializer(b, context={'request': None}).data
+          data = BookingListSerializer(b, context={'request': None}).data
           print('SER equipment_enable_remote_analysis=', data.get('equipment_enable_remote_analysis'))
           print('SER user=', data.get('user'), type(data.get('user')).__name__)
           print('SER status=', data.get('status'))
           print('SER analysis_available=', data.get('analysis_available'))
-          # mappings
           from iic_booking.remote_analysis.models import EquipmentAnalysisWorkflow
           from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware
           print('wf_rows', list(EquipmentAnalysisWorkflow.objects.filter(equipment=b.equipment).values('id','workflow_id','is_default','sort_order')))
           print('sw_rows', list(EquipmentAnalysisSoftware.objects.filter(equipment=b.equipment).values('id','catalog_id','is_default','sort_order')))
-          # raw files
-          from iic_booking.equipment.remote_analysis_integration.staging import BookingRawStagingService
+          from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
           print('has_raw', BookingRawStagingService().has_raw_files(b))
           "
