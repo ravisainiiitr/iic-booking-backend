@@ -39,7 +39,25 @@ class CommandType(models.TextChoices):
     CLEAN_WORKSTATION = "CLEAN_WORKSTATION", _("Clean workstation")
     SYNC_WORKSPACE = "SYNC_WORKSPACE", _("Synchronize analysis workspace")
     COLLECT_WORKSPACE = "COLLECT_WORKSPACE", _("Collect workspace outputs")
+    JOIN_TUNNEL = "JOIN_TUNNEL", _("Join reverse tunnel")
+    CLOSE_TUNNEL = "CLOSE_TUNNEL", _("Close reverse tunnel")
 
+
+class TransportMode(models.TextChoices):
+    """How guacd reaches the Analysis PC RDP endpoint."""
+
+    DIRECT_RDP = "direct_rdp", _("Direct RDP")
+    REVERSE_TUNNEL = "reverse_tunnel", _("Reverse tunnel")
+
+
+class TunnelSessionStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    WAITING_AGENT = "WAITING_AGENT", _("Waiting for agent")
+    ACTIVE = "ACTIVE", _("Active")
+    RECONNECTING = "RECONNECTING", _("Reconnecting")
+    CLOSED = "CLOSED", _("Closed")
+    FAILED = "FAILED", _("Failed")
+    EXPIRED = "EXPIRED", _("Expired")
 
 class CommandStatus(models.TextChoices):
     PENDING = "PENDING", _("Pending")
@@ -202,7 +220,7 @@ DEFAULT_WORKSPACE_FOLDERS = (
     "Metadata",
 )
 
-# Additive workflow step folders are created dynamically as Step01, Step02, …
+# Additive workflow step folders are created dynamically as Step01, Step02, ΓÇª
 
 
 class WorkflowJobStatus(models.TextChoices):
@@ -227,7 +245,7 @@ class WorkflowJobStepStatus(models.TextChoices):
 
 
 class AnalysisJobCollaboratorRole(models.TextChoices):
-    """Reserved for v2 multi-user collaboration — do not expose in Portal UX yet."""
+    """Reserved for v2 multi-user collaboration ΓÇö do not expose in Portal UX yet."""
 
     OWNER = "OWNER", _("Owner")
     COLLABORATOR = "COLLABORATOR", _("Collaborator")
@@ -313,9 +331,9 @@ class WorkspaceSyncPhase(models.TextChoices):
     """Explicit workspace lifecycle for automatic data synchronization.
 
     Success path:
-      Preparing → DownloadingInput → VerifyingInput → InputReady →
-      SessionStarting → SessionActive → CollectingOutput → UploadingOutput →
-      UploadVerified → Cleanup → Completed
+      Preparing ΓåÆ DownloadingInput ΓåÆ VerifyingInput ΓåÆ InputReady ΓåÆ
+      SessionStarting ΓåÆ SessionActive ΓåÆ CollectingOutput ΓåÆ UploadingOutput ΓåÆ
+      UploadVerified ΓåÆ Cleanup ΓåÆ Completed
 
     Failure / control:
       PreparationFailed | UploadFailed | RetryPending | CleanupFailed | Cancelled
@@ -339,7 +357,7 @@ class WorkspaceSyncPhase(models.TextChoices):
     CANCELLED = "Cancelled", _("Cancelled")
 
 
-# Map legacy sync_phase DB values → canonical lifecycle (migration + normalize)
+# Map legacy sync_phase DB values ΓåÆ canonical lifecycle (migration + normalize)
 LEGACY_SYNC_PHASE_MAP = {
     "QUEUED": "Preparing",
     "PREPARING": "Preparing",
@@ -385,7 +403,7 @@ WORKSPACE_UPLOAD_VERIFIED_PHASES = frozenset(
 )
 
 
-# Agent PC layout ↔ portal folder mapping (keep portal RawData/Processed for compat)
+# Agent PC layout Γåö portal folder mapping (keep portal RawData/Processed for compat)
 AGENT_LAYOUT_FOLDERS = ("Input", "Working", "Output", "Logs", "Temp")
 AGENT_INPUT_PORTAL_FOLDERS = ("RawData", "Metadata")
 AGENT_OUTPUT_PORTAL_FOLDERS = ("Processed", "Reports", "Exports", "Logs")

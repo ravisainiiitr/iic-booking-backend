@@ -42,32 +42,18 @@ def _readiness_payload() -> tuple[dict, int]:
     except Exception as exc:  # noqa: BLE001
         checks["cache"] = f"error:{type(exc).__name__}"
 
-    # Guacamole readiness (production): fail when mock is off but gateway is unreachable.
-    # When DEBUG is False, mock Guacamole is never "ready" (pilot/production gate).
+    # Enrollment always applies. Guacamole / reverse-tunnel deps apply when
+    # transport_mode=reverse_tunnel; direct_rdp still runs Guacamole readiness (rt-port).
     try:
         import os
 
         from django.conf import settings as django_settings
 
-        from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
-        from iic_booking.remote_analysis.guacamole.settings_env import production_guacamole_configured
+        from iic_booking.remote_analysis.constants import TransportMode
         from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
 
         settings_obj = RemoteAnalysisSettings.get_solo()
-        configured, problems = production_guacamole_configured(settings_obj)
-        if settings_obj.mock_guacamole:
-            checks["guacamole"] = "mock"
-            if not django_settings.DEBUG:
-                checks["guacamole"] = "mock_forbidden_when_debug_false"
-                ok = False
-        elif not configured:
-            checks["guacamole"] = "misconfigured:" + ",".join(problems)
-            ok = False
-        elif GuacamoleClient(settings_obj).health_check():
-            checks["guacamole"] = "ok"
-        else:
-            checks["guacamole"] = "unreachable"
-            ok = False
+        checks["transport_mode"] = settings_obj.transport_mode
 
         enrollment = (os.environ.get("RA_AGENT_ENROLLMENT_KEY") or "").strip()
         if enrollment:
@@ -77,8 +63,86 @@ def _readiness_payload() -> tuple[dict, int]:
             ok = False
         else:
             checks["agent_enrollment"] = "open_debug"
-    except Exception as exc:  # noqa: BLE001
-        checks["guacamole"] = f"error:{type(exc).__name__}"
+
+        if settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL:
+            try:
+                from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
+                from iic_booking.remote_analysis.guacamole.settings_env import (
+                    production_guacamole_configured,
+                )
+                from iic_booking.remote_analysis.tunnel import (
+                    TunnelGatewayClient,
+                    reverse_tunnel_config_status,
+                )
+
+                # Presence-only tunnel config (never emit secret values).
+                cfg = reverse_tunnel_config_status(settings_obj)
+                for key, status in cfg.items():
+                    check_key = {
+                        "RA_TUNNEL_TOKEN_SECRET": "tunnel_token_secret",
+                        "RA_TUNNEL_GATEWAY_ADMIN_KEY": "tunnel_gateway_admin_key",
+                        "RA_TUNNEL_GATEWAY_ADMIN_URL": "tunnel_gateway_admin_url",
+                        "RA_TUNNEL_GATEWAY_WSS_URL": "tunnel_gateway_wss_url",
+                        "RA_TUNNEL_ADAPTER_HOSTNAME": "tunnel_adapter_hostname",
+                    }[key]
+                    checks[check_key] = status
+                    if status != "configured":
+                        ok = False
+
+                # Gateway health is required under reverse_tunnel (not Guacamole-only).
+                gateway = TunnelGatewayClient(settings_obj).health()
+                if gateway.get("ok"):
+                    checks["gateway"] = "ok"
+                else:
+                    checks["gateway"] = (
+                        f"unreachable:{gateway.get('detail') or gateway.get('status') or 'error'}"
+                    )
+                    ok = False
+
+                # Guacamole readiness (production): fail when mock is off but unreachable.
+                # When DEBUG is False, mock Guacamole is never "ready" (pilot/production gate).
+                configured, problems = production_guacamole_configured(settings_obj)
+                if settings_obj.mock_guacamole:
+                    checks["guacamole"] = "mock"
+                    if not django_settings.DEBUG:
+                        checks["guacamole"] = "mock_forbidden_when_debug_false"
+                        ok = False
+                elif not configured:
+                    checks["guacamole"] = "misconfigured:" + ",".join(problems)
+                    ok = False
+                elif GuacamoleClient(settings_obj).health_check():
+                    checks["guacamole"] = "ok"
+                else:
+                    checks["guacamole"] = "unreachable"
+                    ok = False
+            except Exception as exc:  # noqa: BLE001
+                checks["guacamole"] = f"error:{type(exc).__name__}"
+                ok = False
+        else:
+            # direct_rdp — rt-port Guacamole readiness probe
+            try:
+                from iic_booking.remote_analysis.guacamole.client import GuacamoleClient
+                from iic_booking.remote_analysis.guacamole.settings_env import production_guacamole_configured
+
+                configured, problems = production_guacamole_configured(settings_obj)
+                if settings_obj.mock_guacamole:
+                    checks["guacamole"] = "mock"
+                    if not django_settings.DEBUG:
+                        checks["guacamole"] = "mock_forbidden_when_debug_false"
+                        ok = False
+                elif not configured:
+                    checks["guacamole"] = "misconfigured:" + ",".join(problems)
+                    ok = False
+                elif GuacamoleClient(settings_obj).health_check():
+                    checks["guacamole"] = "ok"
+                else:
+                    checks["guacamole"] = "unreachable"
+                    ok = False
+            except Exception as exc:  # noqa: BLE001
+                checks["guacamole"] = f"error:{type(exc).__name__}"
+    except Exception as exc:  # noqa: BLE001 — enrollment / settings probe must not raise
+        checks["agent_enrollment"] = f"error:{type(exc).__name__}"
+        ok = False
 
     body = {
         "status": "ready" if ok else "not_ready",

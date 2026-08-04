@@ -12,6 +12,7 @@ from iic_booking.remote_analysis.constants import (
     ClipboardPolicy,
     FileTransferPolicy,
     SessionStatus,
+    TransportMode,
 )
 
 
@@ -65,6 +66,31 @@ class RemoteAnalysisSettings(models.Model):
         default=True,
         help_text=_("When True, use in-process mock Guacamole responses (dev/test)."),
     )
+    transport_mode = models.CharField(
+        max_length=32,
+        choices=TransportMode.choices,
+        default=TransportMode.DIRECT_RDP,
+        help_text=_("direct_rdp = guacd dials workstation; reverse_tunnel = guacd dials AWS adapter."),
+    )
+    tunnel_gateway_admin_url = models.URLField(
+        blank=True,
+        default="",
+        help_text=_("Internal Gateway admin HTTP base (Portal→Gateway). Never returned to browsers."),
+    )
+    tunnel_gateway_wss_url = models.URLField(
+        blank=True,
+        default="",
+        help_text=_("Public WSS URL agents use for reverse tunnels."),
+    )
+    tunnel_adapter_hostname = models.CharField(
+        max_length=255,
+        blank=True,
+        default="reverse-tunnel-gateway",
+        help_text=_("Hostname guacd uses to reach the GuacamoleSocketAdapter (compose DNS)."),
+    )
+    tunnel_token_lifetime_seconds = models.PositiveIntegerField(default=120)
+    tunnel_idle_timeout_seconds = models.PositiveIntegerField(default=900)
+    tunnel_max_lifetime_seconds = models.PositiveIntegerField(default=14400)
     # Milestone 5 — Analysis workspace / secure file exchange
     workspace_root = models.CharField(
         max_length=1024,

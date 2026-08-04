@@ -1,0 +1,409 @@
+# Idempotent restore of reverse-tunnel schema for hosts where 0015 is an empty stub
+# but production may already have applied a full 0015/0017 from release/reverse-tunnel-rc1.
+
+from __future__ import annotations
+
+import uuid
+
+import django.db.models.deletion
+from django.conf import settings
+from django.db import migrations, models
+
+
+def _table_columns(schema_editor, table: str) -> set[str]:
+    connection = schema_editor.connection
+    with connection.cursor() as cursor:
+        description = connection.introspection.get_table_description(cursor, table)
+    return {col.name for col in description}
+
+
+def _index_names(schema_editor, table: str) -> set[str]:
+    connection = schema_editor.connection
+    with connection.cursor() as cursor:
+        return {
+            idx["name"]
+            for idx in connection.introspection.get_indexes(cursor, table)
+            if idx.get("name")
+        }
+
+
+def restore_reverse_tunnel_transport(apps, schema_editor):
+    connection = schema_editor.connection
+    table_names = set(connection.introspection.table_names())
+
+    RemoteAnalysisSettings = apps.get_model("remote_analysis", "RemoteAnalysisSettings")
+    settings_table = RemoteAnalysisSettings._meta.db_table
+    if settings_table in table_names:
+        columns = _table_columns(schema_editor, settings_table)
+        settings_fields = [
+            (
+                "transport_mode",
+                models.CharField(
+                    choices=[
+                        ("direct_rdp", "Direct RDP"),
+                        ("reverse_tunnel", "Reverse tunnel"),
+                    ],
+                    default="direct_rdp",
+                    help_text="direct_rdp = guacd dials workstation; reverse_tunnel = guacd dials AWS adapter.",
+                    max_length=32,
+                ),
+            ),
+            (
+                "tunnel_adapter_hostname",
+                models.CharField(
+                    blank=True,
+                    default="reverse-tunnel-gateway",
+                    help_text="Hostname guacd uses to reach the GuacamoleSocketAdapter (compose DNS).",
+                    max_length=255,
+                ),
+            ),
+            (
+                "tunnel_gateway_admin_url",
+                models.URLField(
+                    blank=True,
+                    default="",
+                    help_text="Internal Gateway admin HTTP base (Portal→Gateway). Never returned to browsers.",
+                ),
+            ),
+            (
+                "tunnel_gateway_wss_url",
+                models.URLField(
+                    blank=True,
+                    default="",
+                    help_text="Public WSS URL agents use for reverse tunnels.",
+                ),
+            ),
+            (
+                "tunnel_idle_timeout_seconds",
+                models.PositiveIntegerField(default=900),
+            ),
+            (
+                "tunnel_max_lifetime_seconds",
+                models.PositiveIntegerField(default=14400),
+            ),
+            (
+                "tunnel_token_lifetime_seconds",
+                models.PositiveIntegerField(default=120),
+            ),
+        ]
+        for name, field in settings_fields:
+            if name not in columns:
+                field.set_attributes_from_name(name)
+                schema_editor.add_field(RemoteAnalysisSettings, field)
+
+    RemoteCommand = apps.get_model("remote_analysis", "RemoteCommand")
+    command_field = RemoteCommand._meta.get_field("command_type")
+    command_field.choices = [
+        ("PING", "Ping"),
+        ("REFRESH", "Refresh"),
+        ("REFRESH_SOFTWARE", "Refresh software"),
+        ("COLLECT_LOGS", "Collect logs"),
+        ("RESTART_AGENT", "Restart agent"),
+        ("PREPARE_WORKSTATION", "Prepare workstation"),
+        ("CLEAN_WORKSTATION", "Clean workstation"),
+        ("SYNC_WORKSPACE", "Synchronize analysis workspace"),
+        ("COLLECT_WORKSPACE", "Collect workspace outputs"),
+        ("JOIN_TUNNEL", "Join reverse tunnel"),
+        ("CLOSE_TUNNEL", "Close reverse tunnel"),
+    ]
+    if RemoteCommand._meta.db_table in table_names:
+        try:
+            schema_editor.alter_field(
+                RemoteCommand,
+                RemoteCommand._meta.get_field("command_type"),
+                command_field,
+            )
+        except Exception:
+            # Column type unchanged; choices-only updates are state-level on some backends.
+            pass
+
+    TunnelSession = apps.get_model("remote_analysis", "TunnelSession")
+    TunnelEvent = apps.get_model("remote_analysis", "TunnelEvent")
+    TunnelMetric = apps.get_model("remote_analysis", "TunnelMetric")
+
+    if TunnelSession._meta.db_table not in table_names:
+        schema_editor.create_model(TunnelSession)
+        table_names.add(TunnelSession._meta.db_table)
+    if TunnelMetric._meta.db_table not in table_names:
+        schema_editor.create_model(TunnelMetric)
+        table_names.add(TunnelMetric._meta.db_table)
+    if TunnelEvent._meta.db_table not in table_names:
+        schema_editor.create_model(TunnelEvent)
+        table_names.add(TunnelEvent._meta.db_table)
+
+    if TunnelSession._meta.db_table in table_names:
+        existing_indexes = _index_names(schema_editor, TunnelSession._meta.db_table)
+        for index in TunnelSession._meta.indexes:
+            if index.name not in existing_indexes:
+                try:
+                    schema_editor.add_index(TunnelSession, index)
+                except Exception:
+                    pass
+
+
+def noop_reverse(apps, schema_editor):
+    pass
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ("equipment", "0181_waitlistentry_opt_out_and_sample"),
+        ("remote_analysis", "0016_agent_installer_release"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="transport_mode",
+                    field=models.CharField(
+                        choices=[
+                            ("direct_rdp", "Direct RDP"),
+                            ("reverse_tunnel", "Reverse tunnel"),
+                        ],
+                        default="direct_rdp",
+                        help_text="direct_rdp = guacd dials workstation; reverse_tunnel = guacd dials AWS adapter.",
+                        max_length=32,
+                    ),
+                ),
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="tunnel_adapter_hostname",
+                    field=models.CharField(
+                        blank=True,
+                        default="reverse-tunnel-gateway",
+                        help_text="Hostname guacd uses to reach the GuacamoleSocketAdapter (compose DNS).",
+                        max_length=255,
+                    ),
+                ),
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="tunnel_gateway_admin_url",
+                    field=models.URLField(
+                        blank=True,
+                        default="",
+                        help_text="Internal Gateway admin HTTP base (Portal→Gateway). Never returned to browsers.",
+                    ),
+                ),
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="tunnel_gateway_wss_url",
+                    field=models.URLField(
+                        blank=True,
+                        default="",
+                        help_text="Public WSS URL agents use for reverse tunnels.",
+                    ),
+                ),
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="tunnel_idle_timeout_seconds",
+                    field=models.PositiveIntegerField(default=900),
+                ),
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="tunnel_max_lifetime_seconds",
+                    field=models.PositiveIntegerField(default=14400),
+                ),
+                migrations.AddField(
+                    model_name="remoteanalysissettings",
+                    name="tunnel_token_lifetime_seconds",
+                    field=models.PositiveIntegerField(default=120),
+                ),
+                migrations.AlterField(
+                    model_name="remotecommand",
+                    name="command_type",
+                    field=models.CharField(
+                        choices=[
+                            ("PING", "Ping"),
+                            ("REFRESH", "Refresh"),
+                            ("REFRESH_SOFTWARE", "Refresh software"),
+                            ("COLLECT_LOGS", "Collect logs"),
+                            ("RESTART_AGENT", "Restart agent"),
+                            ("PREPARE_WORKSTATION", "Prepare workstation"),
+                            ("CLEAN_WORKSTATION", "Clean workstation"),
+                            ("SYNC_WORKSPACE", "Synchronize analysis workspace"),
+                            ("COLLECT_WORKSPACE", "Collect workspace outputs"),
+                            ("JOIN_TUNNEL", "Join reverse tunnel"),
+                            ("CLOSE_TUNNEL", "Close reverse tunnel"),
+                        ],
+                        max_length=64,
+                    ),
+                ),
+                migrations.CreateModel(
+                    name="TunnelSession",
+                    fields=[
+                        (
+                            "id",
+                            models.UUIDField(
+                                default=uuid.uuid4,
+                                editable=False,
+                                primary_key=True,
+                                serialize=False,
+                            ),
+                        ),
+                        (
+                            "status",
+                            models.CharField(
+                                choices=[
+                                    ("PENDING", "Pending"),
+                                    ("WAITING_AGENT", "Waiting for agent"),
+                                    ("ACTIVE", "Active"),
+                                    ("RECONNECTING", "Reconnecting"),
+                                    ("CLOSED", "Closed"),
+                                    ("FAILED", "Failed"),
+                                    ("EXPIRED", "Expired"),
+                                ],
+                                db_index=True,
+                                default="PENDING",
+                                max_length=32,
+                            ),
+                        ),
+                        ("session_version", models.PositiveIntegerField(default=1)),
+                        ("nonce", models.CharField(max_length=64, unique=True)),
+                        ("adapter_hostname", models.CharField(blank=True, default="", max_length=255)),
+                        ("adapter_port", models.PositiveIntegerField(blank=True, null=True)),
+                        ("gateway_instance", models.CharField(blank=True, default="", max_length=128)),
+                        ("token_expires_at", models.DateTimeField(blank=True, null=True)),
+                        ("agent_joined_at", models.DateTimeField(blank=True, null=True)),
+                        ("activated_at", models.DateTimeField(blank=True, null=True)),
+                        ("closed_at", models.DateTimeField(blank=True, null=True)),
+                        ("close_reason", models.CharField(blank=True, default="", max_length=255)),
+                        ("bytes_sent", models.BigIntegerField(default=0)),
+                        ("bytes_received", models.BigIntegerField(default=0)),
+                        ("reconnect_count", models.PositiveIntegerField(default=0)),
+                        ("created_at", models.DateTimeField(auto_now_add=True)),
+                        ("updated_at", models.DateTimeField(auto_now=True)),
+                        (
+                            "analysis_job",
+                            models.ForeignKey(
+                                blank=True,
+                                null=True,
+                                on_delete=django.db.models.deletion.SET_NULL,
+                                related_name="tunnel_sessions",
+                                to="remote_analysis.analysisjob",
+                            ),
+                        ),
+                        (
+                            "booking",
+                            models.ForeignKey(
+                                blank=True,
+                                null=True,
+                                on_delete=django.db.models.deletion.SET_NULL,
+                                related_name="tunnel_sessions",
+                                to="equipment.booking",
+                            ),
+                        ),
+                        (
+                            "desktop_session",
+                            models.ForeignKey(
+                                blank=True,
+                                null=True,
+                                on_delete=django.db.models.deletion.CASCADE,
+                                related_name="tunnel_sessions",
+                                to="remote_analysis.remotedesktopsession",
+                            ),
+                        ),
+                        (
+                            "user",
+                            models.ForeignKey(
+                                on_delete=django.db.models.deletion.PROTECT,
+                                related_name="ra_tunnel_sessions",
+                                to=settings.AUTH_USER_MODEL,
+                            ),
+                        ),
+                        (
+                            "workstation",
+                            models.ForeignKey(
+                                on_delete=django.db.models.deletion.PROTECT,
+                                related_name="tunnel_sessions",
+                                to="remote_analysis.analysisworkstation",
+                            ),
+                        ),
+                    ],
+                    options={
+                        "verbose_name": "Tunnel session",
+                        "verbose_name_plural": "Tunnel sessions",
+                    },
+                ),
+                migrations.CreateModel(
+                    name="TunnelMetric",
+                    fields=[
+                        (
+                            "id",
+                            models.UUIDField(
+                                default=uuid.uuid4,
+                                editable=False,
+                                primary_key=True,
+                                serialize=False,
+                            ),
+                        ),
+                        ("latency_ms", models.FloatField(blank=True, null=True)),
+                        ("bytes_sent", models.BigIntegerField(default=0)),
+                        ("bytes_received", models.BigIntegerField(default=0)),
+                        ("packet_loss", models.FloatField(blank=True, null=True)),
+                        ("bandwidth_kbps", models.FloatField(blank=True, null=True)),
+                        ("heartbeat_rtt_ms", models.FloatField(blank=True, null=True)),
+                        ("recorded_at", models.DateTimeField(auto_now_add=True)),
+                        (
+                            "tunnel",
+                            models.ForeignKey(
+                                on_delete=django.db.models.deletion.CASCADE,
+                                related_name="metrics",
+                                to="remote_analysis.tunnelsession",
+                            ),
+                        ),
+                    ],
+                    options={
+                        "verbose_name": "Tunnel metric",
+                        "verbose_name_plural": "Tunnel metrics",
+                        "ordering": ["-recorded_at"],
+                    },
+                ),
+                migrations.CreateModel(
+                    name="TunnelEvent",
+                    fields=[
+                        (
+                            "id",
+                            models.UUIDField(
+                                default=uuid.uuid4,
+                                editable=False,
+                                primary_key=True,
+                                serialize=False,
+                            ),
+                        ),
+                        ("event_type", models.CharField(db_index=True, max_length=64)),
+                        ("detail", models.TextField(blank=True, default="")),
+                        ("metadata", models.JSONField(blank=True, default=dict)),
+                        ("created_at", models.DateTimeField(auto_now_add=True)),
+                        (
+                            "tunnel",
+                            models.ForeignKey(
+                                on_delete=django.db.models.deletion.CASCADE,
+                                related_name="events",
+                                to="remote_analysis.tunnelsession",
+                            ),
+                        ),
+                    ],
+                    options={
+                        "verbose_name": "Tunnel event",
+                        "verbose_name_plural": "Tunnel events",
+                        "ordering": ["-created_at"],
+                    },
+                ),
+                migrations.AddIndex(
+                    model_name="tunnelsession",
+                    index=models.Index(fields=["status", "created_at"], name="remote_anal_status_7b334f_idx"),
+                ),
+                migrations.AddIndex(
+                    model_name="tunnelsession",
+                    index=models.Index(fields=["workstation", "status"], name="remote_anal_worksta_aaf3ec_idx"),
+                ),
+            ],
+            database_operations=[
+                migrations.RunPython(restore_reverse_tunnel_transport, noop_reverse),
+            ],
+        ),
+    ]

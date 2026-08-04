@@ -1,4 +1,4 @@
-"""Remote Analysis Portal domain models — enterprise workstation registry."""
+"""Remote Analysis Portal domain models â€” enterprise workstation registry."""
 
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ class AgentToken(models.Model):
         verbose_name_plural = _("Agent tokens")
 
     def __str__(self) -> str:
-        return f"Token:{self.token_prefix}… ({self.workstation.agent_id})"
+        return f"Token:{self.token_prefix}â€¦ ({self.workstation.agent_id})"
 
 
 class WorkstationHeartbeat(models.Model):
@@ -446,6 +446,13 @@ from iic_booking.remote_analysis.session_models import (  # noqa: E402,F401
     SessionTermination,
     SessionToken,
     WorkstationRdpSecret,
+)
+
+# Reverse tunnel lifecycle metadata
+from iic_booking.remote_analysis.tunnel_models import (  # noqa: E402,F401
+    TunnelEvent,
+    TunnelMetric,
+    TunnelSession,
 )
 
 # Milestone 5 analysis workspace models

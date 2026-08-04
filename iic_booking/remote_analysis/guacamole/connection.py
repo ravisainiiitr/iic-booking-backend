@@ -25,17 +25,28 @@ def _disable_flag(enabled: bool) -> str:
     return "" if enabled else "true"
 
 
-def build_rdp_parameters(session: RemoteDesktopSession, settings_obj: RemoteAnalysisSettings) -> dict[str, Any]:
+def build_rdp_parameters(
+    session: RemoteDesktopSession,
+    settings_obj: RemoteAnalysisSettings,
+    *,
+    tunnel=None,
+) -> dict[str, Any]:
     ws = session.workstation
     secret = WorkstationRdpSecret.objects.filter(workstation=ws).first()
-    hostname = (ws.ip_address or ws.hostname or "").strip()
+    if tunnel is not None and getattr(tunnel, "adapter_hostname", None) and tunnel.adapter_port:
+        hostname = (tunnel.adapter_hostname or "").strip()
+        port = str(tunnel.adapter_port)
+    else:
+        hostname = (ws.ip_address or ws.hostname or "").strip()
+        port = str(secret.port if secret else 3389)
     username = (secret.username if secret else "") or ""
     password = decrypt_password(secret.password_encrypted) if secret else ""
     domain = (secret.domain if secret else "") or ""
-    port = str(secret.port if secret else 3389)
     security = (secret.security if secret else "nla") or "nla"
 
-    # Local Windows accounts: prefer bare username + computer name as domain.
+    # Local Windows accounts: FreeRDP/guacd through the reverse tunnel rejects
+    # ".\user" with NLA ("Credentials expired"). Prefer bare username + computer
+    # name as domain (matches whoami COMPUTER\user).
     host_label = (ws.hostname or "").strip()
     if username:
         local_user = username.replace("/", "\\").split("\\")[-1].lstrip(".")
@@ -107,11 +118,36 @@ class ConnectionManager:
         Create temporary Guacamole user + RDP connection.
         Returns (GuacamoleConnection, temp_username, temp_password).
 
+        When transport_mode=reverse_tunnel, hostname/port point at the AWS
+        GuacamoleSocketAdapter; the agent bridges to localhost:3389.
+
         Windows credentials come only from WorkstationRdpSecret (installer /
         admin). They are injected into Guacamole connection parameters
         server-side and never returned to the browser.
         """
-        params = build_rdp_parameters(session, self.settings)
+        from iic_booking.remote_analysis.constants import TransportMode
+        from iic_booking.remote_analysis.tunnel import TunnelOrchestrator
+
+        tunnel = None
+        if self.settings.transport_mode == TransportMode.REVERSE_TUNNEL:
+            analysis_job = None
+            try:
+                from iic_booking.remote_analysis.workflow_models import AnalysisJob
+
+                if session.booking_id:
+                    analysis_job = (
+                        AnalysisJob.objects.filter(booking_id=session.booking_id)
+                        .exclude(status__in={"COMPLETED", "CANCELLED", "FAILED"})
+                        .order_by("-created_at")
+                        .first()
+                    )
+            except Exception:  # noqa: BLE001
+                analysis_job = None
+            tunnel = TunnelOrchestrator(self.settings).provision_for_session(
+                session, analysis_job=analysis_job
+            )
+
+        params = build_rdp_parameters(session, self.settings, tunnel=tunnel)
         diag = _credential_diagnostics(session, params)
         logger.info("Guacamole RDP credential diagnostics: %s", diag)
 
@@ -181,9 +217,13 @@ class ConnectionManager:
             "connection_name": conn_name,
             # Server-side only — Fernet ciphertext; never expose via serializers
             "temp_password_encrypted": encrypt_password(temp_password),
+            "transport_mode": self.settings.transport_mode,
             "rdp_username_injected": bool((params.get("username") or "").strip()),
             "rdp_password_injected": bool((params.get("password") or "").strip()),
         }
+        if tunnel is not None:
+            meta["tunnel_id"] = str(tunnel.id)
+            meta["adapter_port"] = tunnel.adapter_port
 
         row, _ = GuacamoleConnection.objects.update_or_create(
             session=session,
@@ -214,6 +254,19 @@ class ConnectionManager:
             conn = session.guacamole_connection
         except GuacamoleConnection.DoesNotExist:
             return True
+
+        meta = conn.metadata or {}
+        tunnel_id = meta.get("tunnel_id")
+        if tunnel_id:
+            try:
+                from iic_booking.remote_analysis.tunnel import TunnelOrchestrator
+                from iic_booking.remote_analysis.tunnel_models import TunnelSession
+
+                tunnel = TunnelSession.objects.filter(pk=tunnel_id).first()
+                if tunnel:
+                    TunnelOrchestrator(self.settings).close(tunnel, reason="guacamole_destroy")
+            except Exception:  # noqa: BLE001
+                logger.exception("Failed to close reverse tunnel for session %s", session.id)
 
         self.client.delete_connection(conn.guacamole_connection_id)
         if conn.guacamole_username:
