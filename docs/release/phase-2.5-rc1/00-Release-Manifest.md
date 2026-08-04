@@ -42,7 +42,8 @@
 | 3 | B3 | Deployment Center | `24fb089613ad7fd51dd39bde24ebf1f2845a385d` | Accepted |
 | 4 | B4 | Plug-and-Play Platform | `61b151fdb66d5dffef84dbbe9786e05e458ad167` | Accepted |
 | 5 | B5 | Laboratory Infrastructure | `932d016bb1119e71ada4df4959ab508217d46c52` | Accepted |
-| 6 | B6 | Diagnostics & Reporting | `TBD (assigned after commit)` | In progress |
+| 6 | B6 | Diagnostics & Reporting | `49bfd66835e1c9d6d40e84184cf2dab28cd7281d` | Accepted |
+| 7 | B7 | SAT Dashboard | `TBD (assigned after commit)` | In progress |
 
 ---
 

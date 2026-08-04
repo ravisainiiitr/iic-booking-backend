@@ -6,6 +6,7 @@ Format: Keep a Changelog. Entries finalized when commits exist.
 
 ### Added
 
+- SAT dashboard and acceptance/readiness documentation set for execution evidence and release-gate traceability
 - Diagnostics and reporting documentation pack for operational troubleshooting, readiness, and compliance-oriented workflows
 - Laboratory Infrastructure backend foundation for fleet operations, heartbeat health monitoring, maintenance orchestration, and operational alerting workflows
 - Plug-and-Play backend foundation: sync templates, IP reservation workflow, and DSA bootstrap/config integration endpoints
