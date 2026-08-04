@@ -11,7 +11,7 @@
 | Decision | Value |
 |----------|-------|
 | **RC1 engineering readiness** | **NO GO** to produce a shippable RC artifact **today** |
-| **Why** | B1 is committed and B2 (Remote Analysis execution engine) is in controlled commit creation; remaining backend/frontend/DSA/RAA work is still uncommitted and untagged |
+| **Why** | Backend commits B1-B5 are committed; diagnostics/SAT/backend stabilization and remaining frontend/DSA/RAA work are still uncommitted and untagged |
 | **Next gate** | After approved commits on `release/phase-2.5` + clean CI builds → re-score to **Conditional GO** for staging Lab SAT |
 | **Production deploy** | **NO GO** (SAT gate still closed; Manifest empty) |
 
@@ -34,7 +34,8 @@
 | B2 — Remote Analysis execution engine | `500629b60992839fce99be2d2257230dfcb43ba3` | Accepted |
 | B3 — Deployment Center | `24fb089613ad7fd51dd39bde24ebf1f2845a385d` | Accepted |
 | B4 — Plug-and-Play Platform | `61b151fdb66d5dffef84dbbe9786e05e458ad167` | Accepted |
-| B5 — Laboratory Infrastructure | `TBD (assigned after commit)` | In progress |
+| B5 — Laboratory Infrastructure | `932d016bb1119e71ada4df4959ab508217d46c52` | Accepted |
+| B6 — Diagnostics & Reporting | `TBD (assigned after commit)` | In progress |
 
 ---
 

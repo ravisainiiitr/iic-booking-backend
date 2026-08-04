@@ -41,7 +41,8 @@
 | 2 | B2 | Remote Analysis execution engine | `500629b60992839fce99be2d2257230dfcb43ba3` | Accepted |
 | 3 | B3 | Deployment Center | `24fb089613ad7fd51dd39bde24ebf1f2845a385d` | Accepted |
 | 4 | B4 | Plug-and-Play Platform | `61b151fdb66d5dffef84dbbe9786e05e458ad167` | Accepted |
-| 5 | B5 | Laboratory Infrastructure | `TBD (assigned after commit)` | In progress |
+| 5 | B5 | Laboratory Infrastructure | `932d016bb1119e71ada4df4959ab508217d46c52` | Accepted |
+| 6 | B6 | Diagnostics & Reporting | `TBD (assigned after commit)` | In progress |
 
 ---
 
