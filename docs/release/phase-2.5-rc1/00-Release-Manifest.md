@@ -38,7 +38,8 @@
 | Order | Commit | Scope | SHA | Status |
 |------:|--------|-------|-----|--------|
 | 1 | B1 | Reverse Tunnel transport + orchestration | `d4d50e29891bce543d6d9258958fb744df71d90e` | Accepted |
-| 2 | B2 | Remote Analysis execution engine | `TBD (assigned after commit)` | In progress |
+| 2 | B2 | Remote Analysis execution engine | `500629b60992839fce99be2d2257230dfcb43ba3` | Accepted |
+| 3 | B3 | Deployment Center | `TBD (assigned after commit)` | In progress |
 
 ---
 

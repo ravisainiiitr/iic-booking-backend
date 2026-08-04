@@ -42,6 +42,8 @@ def parse_ticket(token: str, *, max_age: int = _MAX_AGE_SECONDS) -> dict[str, An
 def ticket_download_path(product: str, token: str) -> str:
     if product == "dsa":
         return f"/api/v1/sync/installer/releases/download/ticket/{token}/"
+    if product == "eq_wizard":
+        return f"/api/v1/deployment/wizard/download/{token}/"
     return f"/api/v1/analysis/installer/releases/download/ticket/{token}/"
 
 

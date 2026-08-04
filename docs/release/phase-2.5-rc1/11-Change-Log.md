@@ -6,6 +6,8 @@ Format: Keep a Changelog. Entries finalized when commits exist.
 
 ### Added
 
+- Deployment Center backend module for release catalog, compatibility metadata, and installer distribution
+- Equipment PC Wizard installer publishing and ticketed download path integration
 - Remote Analysis execution engine lifecycle APIs and orchestration:
   session state machine, PREPARE/COLLECT flow, End Analysis, Extend Analysis, Upload Past Data, cleanup/timeouts, and reservation lifecycle handling
 - Equipment Remote Analysis configuration surface:
