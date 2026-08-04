@@ -126,16 +126,125 @@ def releases_collection(request):
     return Response(_serialize_release(rel), status=status.HTTP_201_CREATED)
 
 
+def _agent_or_enrollment_or_manage(request) -> tuple[bool, str | None]:
+    """Phase 2.5 H-07/H-08: agents may discover updates without admin session."""
+    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
+    from iic_booking.remote_analysis.permissions import CanManageRemoteAnalysis
+
+    if isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
+        return True, None
+    if request.user and getattr(request.user, "is_authenticated", False):
+        if CanManageRemoteAnalysis().has_permission(request, None):
+            return True, None
+        if getattr(request.user, "is_superuser", False):
+            return True, None
+    ok, err = verify_enrollment_key(request)
+    if ok:
+        return True, None
+    return False, err or "Authentication required."
+
+
+def _try_bind_agent_auth(request) -> None:
+    """Attach RemoteAnalysisAgentUser when Bearer + X-Agent-Id are present."""
+    from iic_booking.remote_analysis.authentication import (
+        RemoteAnalysisAgentAuthentication,
+        RemoteAnalysisAgentUser,
+    )
+
+    if isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
+        return
+    auth_header = request.META.get("HTTP_AUTHORIZATION") or ""
+    if not auth_header.lower().startswith("bearer "):
+        return
+    try:
+        result = RemoteAnalysisAgentAuthentication().authenticate(request)
+    except Exception:
+        return
+    if result:
+        request.user, request.auth = result
+
+
 @api_view(["GET"])
-@permission_classes(_MANAGE)
+@authentication_classes([])
+@permission_classes([AllowAny])
 def release_latest(request):
+    """Latest RA agent installer — admin session, enrollment key, or agent bearer."""
+    _try_bind_agent_auth(request)
+    allowed, err = _agent_or_enrollment_or_manage(request)
+    if not allowed:
+        return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
+
+    channel = (request.query_params.get("channel") or "").strip().lower()
+    qs = AgentInstallerRelease.objects.filter(is_active=True)
+    if channel in {"stable", "production", "prod"}:
+        from django.db.models import Q
+
+        qs = qs.filter(Q(channel__iexact="stable") | Q(channel__iexact="production"))
+    elif channel:
+        qs = qs.filter(channel__iexact=channel)
     rel = (
-        AgentInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
-        or AgentInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
+        qs.filter(is_latest=True).first()
+        or qs.order_by("-release_date").first()
     )
     if not rel:
         return Response({"detail": "No installer release published."}, status=status.HTTP_404_NOT_FOUND)
-    return Response(_serialize_release(rel))
+    payload = _serialize_release(rel)
+    current = (request.query_params.get("current_version") or "").strip()
+    if current:
+        payload["current_version"] = current
+        payload["update_available"] = (rel.version or "") != current
+    return Response(payload)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def agent_update_report(request):
+    """RAA posts update-discovery status (enrollment key or agent bearer)."""
+    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
+    from iic_booking.remote_analysis.constants import AuditCategory
+    from iic_booking.remote_analysis.services.audit import record_event
+
+    _try_bind_agent_auth(request)
+    allowed, err = _agent_or_enrollment_or_manage(request)
+    if not allowed:
+        return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    agent_id = (request.headers.get("X-Agent-Id") or data.get("agent_id") or "").strip()
+    if not agent_id and isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
+        agent_id = getattr(request.user.workstation, "agent_id", "") or ""
+
+    detail = {
+        "current_version": data.get("current_version") or "",
+        "latest_version": data.get("latest_version") or "",
+        "update_available": bool(data.get("update_available")),
+        "channel": data.get("channel") or "production",
+        "checked_at": data.get("checked_at"),
+        "detail": data.get("detail") or "",
+        "agent_id": agent_id,
+    }
+    try:
+        import json
+
+        from iic_booking.remote_analysis.models import AnalysisWorkstation
+
+        ws = None
+        if agent_id:
+            ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
+        if ws is None and isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
+            ws = request.user.workstation
+        record_event(
+            category=AuditCategory.STATUS,
+            action="agent_update_discovery",
+            details=json.dumps(detail, default=str)[:4000],
+            success=True,
+            workstation=ws,
+        )
+    except Exception:
+        pass
+
+    return Response({"accepted": True, "report": detail}, status=status.HTTP_202_ACCEPTED)
 
 
 def _download_release(request, release_id=None):

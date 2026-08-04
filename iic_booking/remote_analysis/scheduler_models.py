@@ -12,8 +12,10 @@ from iic_booking.remote_analysis.constants import (
     DEFAULT_SCORING_WEIGHTS,
     AllocationRuleType,
     ConflictType,
+    MaintenanceKind,
     QueueEntryStatus,
     ReservationStatus,
+    WorkstationStatus,
 )
 
 
@@ -93,9 +95,33 @@ class MaintenanceWindow(models.Model):
         related_name="maintenance_windows",
         help_text=_("Null = applies to all workstations"),
     )
+    kind = models.CharField(
+        max_length=32,
+        choices=MaintenanceKind.choices,
+        default=MaintenanceKind.MAINTENANCE,
+        db_index=True,
+    )
     start = models.DateTimeField()
-    end = models.DateTimeField()
+    end = models.DateTimeField(
+        help_text=_("Expected end — scheduler restores availability after this time."),
+    )
     reason = models.CharField(max_length=512, blank=True, default="")
+    description = models.TextField(blank=True, default="")
+    assigned_engineer = models.CharField(max_length=255, blank=True, default="")
+    amc_reference = models.CharField(max_length=128, blank=True, default="")
+    ticket_number = models.CharField(max_length=128, blank=True, default="")
+    maintenance_notes = models.TextField(blank=True, default="")
+    restore_status = models.CharField(
+        max_length=32,
+        choices=WorkstationStatus.choices,
+        default=WorkstationStatus.AVAILABLE,
+        help_text=_("Status applied when the window ends (if agent still healthy)."),
+    )
+    previous_status = models.CharField(max_length=32, blank=True, default="")
+    applied_at = models.DateTimeField(null=True, blank=True)
+    restored_at = models.DateTimeField(null=True, blank=True)
+    # Reserved for recurring windows (cron-like); ignored by scheduler until implemented.
+    recurrence_rule = models.CharField(max_length=255, blank=True, default="")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
@@ -105,13 +131,31 @@ class MaintenanceWindow(models.Model):
     )
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-start"]
+        indexes = [
+            models.Index(fields=["active", "start", "end"]),
+            models.Index(fields=["workstation", "active", "kind"]),
+        ]
 
     def __str__(self) -> str:
         target = self.workstation_id or "ALL"
-        return f"Maintenance {target} {self.start}–{self.end}"
+        return f"{self.kind} {target} {self.start}–{self.end}"
+
+    @property
+    def target_status(self) -> str:
+        mapping = {
+            MaintenanceKind.MAINTENANCE: WorkstationStatus.MAINTENANCE,
+            MaintenanceKind.CALIBRATION: WorkstationStatus.CALIBRATION,
+            MaintenanceKind.SOFTWARE_UPDATE: WorkstationStatus.SOFTWARE_UPDATE,
+            MaintenanceKind.HARDWARE_FAULT: WorkstationStatus.HARDWARE_FAULT,
+            MaintenanceKind.CLEANING: WorkstationStatus.CLEANING,
+            MaintenanceKind.OFFLINE: WorkstationStatus.OFFLINE,
+            MaintenanceKind.DISABLED: WorkstationStatus.DISABLED,
+        }
+        return mapping.get(self.kind, WorkstationStatus.MAINTENANCE)
 
 
 class AnalysisReservation(models.Model):
@@ -168,6 +212,13 @@ class AnalysisReservation(models.Model):
     requested_resources = models.JSONField(default=dict, blank=True)
     allocation_score = models.FloatField(null=True, blank=True)
     allocation_notes = models.TextField(blank=True, default="")
+    checkin_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("Deadline for user to start the desktop session after reservation."),
+    )
+    checkin_notified_at = models.DateTimeField(null=True, blank=True)
+    missed_checkin_count = models.PositiveSmallIntegerField(default=0)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,

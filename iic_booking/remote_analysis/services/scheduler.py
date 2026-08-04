@@ -137,6 +137,11 @@ class SchedulerService:
         except Exception:
             pass
 
+        # Hold PC for explicit user check-in before Guacamole / tunnel / prepare.
+        from iic_booking.remote_analysis.services.checkin import CheckinService
+
+        CheckinService().open_checkin_window(reservation, actor=actor)
+
         ReservationAudit.objects.create(
             reservation=reservation,
             action="Allocated",
@@ -258,6 +263,7 @@ class SchedulerService:
         for reservation in AnalysisReservation.objects.filter(
             status__in=[
                 ReservationStatus.RESERVED,
+                ReservationStatus.AWAITING_CHECKIN,
                 ReservationStatus.PREPARING,
                 ReservationStatus.READY,
                 ReservationStatus.ACTIVE,

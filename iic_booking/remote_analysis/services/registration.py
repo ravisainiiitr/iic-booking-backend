@@ -56,6 +56,9 @@ def _apply_workstation_payload(workstation: AnalysisWorkstation, payload: dict[s
         "IPAddress": "ip_address",
         "macAddress": "mac_address",
         "MACAddress": "mac_address",
+        "machineGuid": "machine_guid",
+        "biosUuid": "bios_uuid",
+        "machineFingerprint": "machine_fingerprint",
         "agentVersion": "agent_version",
         "schemaVersion": "schema_version",
         "supportsRDP": "supports_rdp",
@@ -104,6 +107,24 @@ class RegistrationService:
 
         agent_id = str(agent_id).strip()
         existing = AnalysisWorkstation.objects.select_for_update().filter(agent_id=agent_id).first()
+        reconnected_by_fingerprint = False
+
+        machine_fingerprint = (
+            workstation_data.get("machineFingerprint")
+            or workstation_data.get("machine_fingerprint")
+            or ""
+        ).strip()
+        if existing is None and machine_fingerprint:
+            existing = (
+                AnalysisWorkstation.objects.select_for_update()
+                .filter(machine_fingerprint=machine_fingerprint)
+                .first()
+            )
+            if existing is not None:
+                reconnected_by_fingerprint = True
+                if existing.agent_id != agent_id:
+                    existing.agent_id = agent_id
+
         created = existing is None
         workstation = existing or AnalysisWorkstation(agent_id=agent_id)
 
@@ -136,16 +157,20 @@ class RegistrationService:
                 _transition(workstation, WorkstationStatus.ONLINE, "Re-registration contact")
             workstation.save()
             _upsert_capabilities(workstation)
-            # Keep existing active token; issue new only if none active
             active = workstation.tokens.filter(is_active=True).first()
-            if active is None:
+            if reconnected_by_fingerprint or active is None:
+                revoke_all_tokens(workstation)
                 token_row, plaintext = issue_agent_token(workstation)
             else:
                 token_row, plaintext = active, ""
             record_event(
                 category=AuditCategory.REGISTRATION,
-                action="Updated",
-                details=f"Existing workstation {agent_id} updated (no duplicate)",
+                action="Updated" if not reconnected_by_fingerprint else "Reconnected",
+                details=(
+                    f"Existing workstation {agent_id} updated (no duplicate)"
+                    if not reconnected_by_fingerprint
+                    else f"Workstation reconnected via machine fingerprint for {agent_id}"
+                ),
                 workstation=workstation,
                 correlation_id=agent_id,
             )

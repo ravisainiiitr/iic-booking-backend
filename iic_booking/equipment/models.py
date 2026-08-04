@@ -700,6 +700,16 @@ class Equipment(models.Model):
         verbose_name=_("Analysis access duration (hours)"),
         help_text=_("Hours after availability before analysis access expires."),
     )
+    analysis_default_session_minutes = models.PositiveIntegerField(
+        default=30,
+        verbose_name=_("Default analysis session duration (minutes)"),
+        help_text=_("Interactive desktop session length for Analyze Data (default 30)."),
+    )
+    analysis_extension_minutes = models.PositiveIntegerField(
+        default=15,
+        verbose_name=_("Analysis session extension (minutes)"),
+        help_text=_("Extra minutes when the user extends and no one is waiting (default 15)."),
+    )
     analysis_auto_archive = models.BooleanField(
         default=True,
         verbose_name=_("Workspace auto archive"),
@@ -712,6 +722,52 @@ class Equipment(models.Model):
         null=True,
         verbose_name=_("Analysis profile"),
         help_text=_("Optional software/capability profile name for scheduler matching."),
+    )
+    analysis_raw_data_directory = models.CharField(
+        max_length=1024,
+        blank=True,
+        default="",
+        verbose_name=_("Analysis raw data directory"),
+        help_text=_(
+            "Absolute path on Analysis PCs for RAW booking folders "
+            "(e.g. D:\\Analysis\\PXRD\\RAW or \\\\NAS\\share\\RAW). "
+            "When set, the agent creates RAW\\{booking_id} and stages input files there."
+        ),
+    )
+    analysis_results_directory = models.CharField(
+        max_length=1024,
+        blank=True,
+        default="",
+        verbose_name=_("Analysis results directory"),
+        help_text=_(
+            "Absolute path on Analysis PCs for analyzed/results booking folders "
+            "(e.g. D:\\Analysis\\PXRD\\RESULTS). "
+            "Users should save processed files under RESULTS\\{booking_id}; "
+            "End Analysis uploads from that folder then deletes it."
+        ),
+    )
+    analysis_checkin_minutes = models.PositiveIntegerField(
+        default=10,
+        verbose_name=_("Reservation check-in window (minutes)"),
+        help_text=_(
+            "After a workstation is reserved, the user must click Start Analysis Session "
+            "within this many minutes or the reservation is released."
+        ),
+    )
+    analysis_missed_checkin_policy = models.CharField(
+        max_length=32,
+        default="END_OF_QUEUE",
+        choices=[
+            ("END_OF_QUEUE", "Move to end of queue"),
+            ("RETRY_LATER", "Retry allocation later"),
+            ("CANCEL_AFTER_N", "Cancel after N missed check-ins"),
+        ],
+        verbose_name=_("Missed check-in policy"),
+    )
+    analysis_missed_checkin_limit = models.PositiveSmallIntegerField(
+        default=3,
+        verbose_name=_("Missed check-in cancel limit"),
+        help_text=_("Used when policy is Cancel after N missed check-ins."),
     )
     analysis_requires_sample_acceptance = models.BooleanField(
         default=False,

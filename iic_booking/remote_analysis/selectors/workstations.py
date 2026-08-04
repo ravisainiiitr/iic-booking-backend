@@ -72,12 +72,23 @@ def dashboard_metrics(*, department_id: int | None = None) -> dict:
         WorkstationStatus.AVAILABLE,
         WorkstationStatus.PREPARING,
         WorkstationStatus.BUSY,
+        WorkstationStatus.RESERVED,
         WorkstationStatus.CLEANING,
     }
     online = qs.filter(status__in=online_statuses).count()
     offline = qs.filter(status=WorkstationStatus.OFFLINE).count()
-    busy = qs.filter(status=WorkstationStatus.BUSY).count()
+    busy = qs.filter(
+        status__in=[WorkstationStatus.BUSY, WorkstationStatus.PREPARING, WorkstationStatus.RESERVED]
+    ).count()
     maintenance = qs.filter(status=WorkstationStatus.MAINTENANCE).count()
+    calibration = qs.filter(status=WorkstationStatus.CALIBRATION).count()
+    software_update = qs.filter(status=WorkstationStatus.SOFTWARE_UPDATE).count()
+    faulty = qs.filter(
+        status__in=[WorkstationStatus.HARDWARE_FAULT, WorkstationStatus.ERROR]
+    ).count()
+    available = qs.filter(
+        status__in=[WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE]
+    ).count()
 
     since = timezone.now() - timedelta(hours=1)
     hb = WorkstationHeartbeat.objects.filter(received_at__gte=since)
@@ -101,12 +112,27 @@ def dashboard_metrics(*, department_id: int | None = None) -> dict:
 
     avg_health = qs.aggregate(avg=Avg("health_score"))["avg"] or 0
 
+    fleet = {
+        "total_analysis_pcs": total,
+        "available": available,
+        "busy": busy,
+        "maintenance": maintenance,
+        "calibration": calibration,
+        "software_update": software_update,
+        "offline": offline,
+        "faulty": faulty,
+    }
+
     return {
         "total_workstations": total,
         "online": online,
         "offline": offline,
         "busy": busy,
         "maintenance": maintenance,
+        "calibration": calibration,
+        "available": available,
+        "faulty": faulty,
+        "fleet": fleet,
         "average_cpu": round(aggregates["avg_cpu"] or 0, 2),
         "average_memory": round(aggregates["avg_memory"] or 0, 2),
         "average_disk": round(aggregates["avg_disk"] or 0, 2),

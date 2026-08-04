@@ -24,6 +24,7 @@ from iic_booking.remote_analysis.serializers import (
     AnalysisWorkstationSerializer,
     CreateCommandSerializer,
     InstalledSoftwareSerializer,
+    MaintenanceWindowSerializer,
     RemoteCommandSerializer,
     WorkstationEventSerializer,
     WorkstationHeartbeatSerializer,
@@ -32,6 +33,7 @@ from iic_booking.remote_analysis.serializers import (
 from iic_booking.remote_analysis.services.commands import CommandService
 from iic_booking.remote_analysis.services.heartbeat import HeartbeatService, mark_stale_workstations_offline
 from iic_booking.remote_analysis.services.inventory import InventoryService
+from iic_booking.remote_analysis.services.maintenance import MaintenanceService
 from iic_booking.remote_analysis.services.registration import RegistrationService
 from iic_booking.remote_analysis.services.workstation_admin import WorkstationAdminService
 
@@ -192,9 +194,140 @@ def dashboard(request):
 @permission_classes(_MANAGE)
 def workstation_maintenance(request, workstation_id):
     ws = get_object_or_404(AnalysisWorkstation, pk=workstation_id)
-    reason = str(request.data.get("reason") or "")
-    WorkstationAdminService().set_maintenance(ws, actor=request.user, reason=reason)
+    data = request.data or {}
+    reason = str(data.get("reason") or "")
+    try:
+        WorkstationAdminService().set_maintenance(
+            ws,
+            actor=request.user,
+            reason=reason,
+            kind=str(data.get("kind") or ""),
+            end=data.get("end") or data.get("expected_end"),
+            description=str(data.get("description") or ""),
+            assigned_engineer=str(data.get("assigned_engineer") or ""),
+            amc_reference=str(data.get("amc_reference") or ""),
+            ticket_number=str(data.get("ticket_number") or ""),
+            maintenance_notes=str(data.get("maintenance_notes") or data.get("notes") or ""),
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    ws.refresh_from_db()
     return Response(AnalysisWorkstationSerializer(ws).data)
+
+
+@api_view(["GET", "POST"])
+@permission_classes(_MANAGE)
+def maintenance_windows_collection(request):
+    from iic_booking.remote_analysis.scheduler_models import MaintenanceWindow
+
+    if request.method == "GET":
+        qs = MaintenanceWindow.objects.select_related("workstation").order_by("-start")[:200]
+        active_only = str(request.query_params.get("active") or "").lower() in {"1", "true", "yes"}
+        if active_only:
+            qs = qs.filter(active=True)
+        return Response(MaintenanceWindowSerializer(qs, many=True).data)
+
+    data = request.data or {}
+    ws = None
+    ws_id = data.get("workstation") or data.get("workstation_id")
+    if ws_id:
+        ws = get_object_or_404(AnalysisWorkstation, pk=ws_id)
+    try:
+        window = MaintenanceService().schedule(
+            workstation=ws,
+            kind=str(data.get("kind") or "MAINTENANCE"),
+            start=data.get("start"),
+            end=data.get("end") or data.get("expected_end"),
+            reason=str(data.get("reason") or ""),
+            description=str(data.get("description") or ""),
+            assigned_engineer=str(data.get("assigned_engineer") or ""),
+            amc_reference=str(data.get("amc_reference") or ""),
+            ticket_number=str(data.get("ticket_number") or ""),
+            maintenance_notes=str(data.get("maintenance_notes") or data.get("notes") or ""),
+            restore_status=str(data.get("restore_status") or "AVAILABLE"),
+            actor=request.user,
+            apply_immediately=bool(data.get("apply_immediately", True)),
+        )
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(MaintenanceWindowSerializer(window).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes(_MANAGE)
+def maintenance_window_end(request, window_id):
+    from iic_booking.remote_analysis.scheduler_models import MaintenanceWindow
+
+    window = get_object_or_404(MaintenanceWindow, pk=window_id)
+    result = MaintenanceService().restore_window(window, actor=request.user)
+    window.refresh_from_db()
+    return Response({"window": MaintenanceWindowSerializer(window).data, "result": result})
+
+
+@api_view(["GET"])
+@permission_classes(_VIEW)
+def fleet_dashboard(request):
+    """GET /api/v1/analysis/fleet/ — Analysis PC operational fleet summary."""
+    mark_stale_workstations_offline()
+    payload = MaintenanceService().fleet_dashboard(department_id=_department_scope(request))
+    return Response(payload)
+
+
+@api_view(["GET"])
+@permission_classes(_VIEW)
+def fleet_inventory_view(request):
+    """GET /api/v1/analysis/fleet/inventory/ — detailed per-PC health inventory."""
+    from iic_booking.remote_analysis.services.fleet_inventory import fleet_inventory
+
+    mark_stale_workstations_offline()
+    status_filter = request.query_params.get("status")
+    return Response(
+        fleet_inventory(department_id=_department_scope(request), status=status_filter)
+    )
+
+
+@api_view(["GET", "POST"])
+@permission_classes(_MANAGE)
+def fleet_duplicates(request):
+    from iic_booking.remote_analysis.services.workstation_identity import WorkstationIdentityService
+
+    svc = WorkstationIdentityService()
+    if request.method == "GET":
+        return Response({"groups": svc.list_duplicates()})
+    data = request.data or {}
+    if data.get("auto"):
+        return Response(svc.auto_merge_hostname_duplicates(actor=request.user, archive=True))
+    survivor = data.get("survivor_id")
+    dupes = data.get("duplicate_ids") or []
+    if not survivor or not dupes:
+        return Response({"detail": "survivor_id and duplicate_ids required"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(
+        svc.merge(
+            survivor_id=survivor,
+            duplicate_ids=dupes,
+            actor=request.user,
+            archive=bool(data.get("archive", True)),
+            delete=bool(data.get("delete", False)),
+        )
+    )
+
+
+@api_view(["GET"])
+@permission_classes(_VIEW)
+def equipment_config_audit_view(request):
+    from iic_booking.remote_analysis.services.fleet_inventory import equipment_ra_config_audit
+
+    return Response(equipment_ra_config_audit())
+
+
+@api_view(["POST", "GET"])
+@permission_classes(_MANAGE)
+def run_commissioning(request):
+    """GET/POST /api/v1/analysis/commissioning/run/ — automatic production readiness checks."""
+    from iic_booking.remote_analysis.services.production_commissioning import run_production_commissioning
+
+    mark_stale_workstations_offline()
+    return Response(run_production_commissioning())
 
 
 @api_view(["POST"])

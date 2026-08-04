@@ -143,10 +143,46 @@ class AnalysisExperienceBuilder:
         extension_minutes = int(getattr(equipment, "analysis_extension_minutes", None) or 15)
 
         # Environment pool (logical counts only — no hostnames)
+        from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+        from iic_booking.remote_analysis.models import InstalledSoftware
+
+        required_software = SoftwareMappingService().required_software_names(equipment)
         ws_qs = AnalysisWorkstation.objects.filter(enabled=True)
-        env_total = ws_qs.count()
-        env_available = ws_qs.filter(status__in=[WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE]).count()
-        env_busy = ws_qs.filter(status=WorkstationStatus.BUSY).count()
+        matching_ids: list = []
+        if required_software:
+            for ws in ws_qs.only("id", "status"):
+                if all(
+                    InstalledSoftware.objects.filter(
+                        workstation_id=ws.id, is_present=True, software_name__icontains=name
+                    ).exists()
+                    for name in required_software
+                ):
+                    matching_ids.append(ws.id)
+            matching_qs = ws_qs.filter(id__in=matching_ids) if matching_ids else ws_qs.none()
+        else:
+            matching_qs = ws_qs
+        env_total = matching_qs.count() if required_software else ws_qs.count()
+        env_available = matching_qs.filter(
+            status__in=[WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE]
+        ).count()
+        env_busy = matching_qs.filter(
+            status__in=[
+                WorkstationStatus.BUSY,
+                WorkstationStatus.PREPARING,
+                WorkstationStatus.RESERVED,
+            ]
+        ).count()
+        matching_total = env_total
+        matching_busy = env_busy
+        matching_available = env_available
+        all_env_total = ws_qs.count()
+
+        from iic_booking.remote_analysis.services.maintenance import MaintenanceService
+
+        maintenance_hint = MaintenanceService().next_compatible_availability(
+            required_software=required_software or None,
+            matching_workstation_ids=matching_ids if required_software else None,
+        )
 
         waiting = list(
             ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING)
@@ -231,6 +267,10 @@ class AnalysisExperienceBuilder:
             sync_progress=sync_progress,
         )
 
+        from iic_booking.remote_analysis.services.checkin import CheckinService
+
+        checkin = CheckinService().checkin_payload(reservation)
+
         return {
             "virtual_booking_id": (getattr(booking, "virtual_booking_id", None) or "")
             or str(booking.booking_id),
@@ -238,6 +278,7 @@ class AnalysisExperienceBuilder:
             "equipment_code": getattr(equipment, "code", ""),
             "current_stage": next((s["id"] for s in reversed(journey) if s["status"] in {"active", "done"}), "booking"),
             "journey": journey,
+            "checkin": checkin,
             "input_choice": {
                 "prompt": "What data would you like to analyze?",
                 "booking_raw": {
@@ -254,23 +295,47 @@ class AnalysisExperienceBuilder:
                 "is_queued": bool(
                     (reservation and reservation.status in QUEUED_RESERVATION) or queue_position
                 ),
-                "title": "Analysis Environment Currently Unavailable",
-                "body": [
-                    "All available Analysis Environments are currently processing other requests.",
-                    "Your request has been placed in the execution queue.",
-                    "Analysis will begin automatically as soon as an Analysis Environment becomes available.",
-                    "You may safely leave this page.",
-                    "You will receive notifications when your analysis starts.",
-                ],
+                "title": (
+                    "No compatible Analysis Workstation is currently available"
+                    if maintenance_hint.get("all_under_maintenance") and matching_available == 0
+                    else (
+                        "Waiting for an Analysis PC with the required software"
+                        if required_software
+                        else "Analysis Environment Currently Unavailable"
+                    )
+                ),
+                "body": (
+                    [
+                        f"Reason: {maintenance_hint.get('reason') or 'Scheduled Maintenance'}",
+                        f"Estimated Availability: {maintenance_hint.get('estimated_availability_display') or 'Unknown'}",
+                        "Your request remains in the queue and will be allocated automatically.",
+                        "You may safely leave this page.",
+                    ]
+                    if maintenance_hint.get("all_under_maintenance") and matching_available == 0
+                    else [
+                        (
+                            "No Analysis PC with the required software is free right now."
+                            if required_software
+                            else "All available Analysis Environments are currently processing other requests."
+                        ),
+                        "Your request has been placed in the Remote Analysis queue.",
+                        "A matching Analysis PC will be allocated automatically when one becomes available.",
+                        "You may safely leave this page.",
+                        "You will receive notifications when your analysis starts.",
+                    ]
+                ),
+                "required_software": required_software,
                 "position": queue_position,
                 "queue_size": max(queue_total, queue_position or 0),
                 "people_ahead": people_ahead,
                 "estimated_wait_minutes": estimated_wait_minutes,
                 "expected_start_at": _ts(expected_start),
+                "maintenance": maintenance_hint,
                 "environments": {
-                    "total": env_total,
-                    "available": env_available,
-                    "busy": env_busy,
+                    "total": all_env_total,
+                    "matching": matching_total,
+                    "available": matching_available,
+                    "busy": matching_busy,
                     "waiting": queue_total,
                 },
             },
@@ -295,6 +360,22 @@ class AnalysisExperienceBuilder:
                 "input": {"label": "Input Folder", "logical_name": "Uploaded Input Data", **raw_stats},
                 "output": {"label": "Output Folder", "logical_name": "Generated Results", **output_stats},
                 "last_synced_at": _ts(getattr(workspace, "last_synced_at", None)) if workspace else None,
+                "raw_data_directory": (getattr(equipment, "analysis_raw_data_directory", None) or ""),
+                "results_directory": (getattr(equipment, "analysis_results_directory", None) or ""),
+                "instructions": [
+                    "Raw files have already been copied to your Booking Folder under the Raw Data directory "
+                    "(when configured for this equipment)."
+                    if (getattr(equipment, "analysis_raw_data_directory", None) or "")
+                    else "Raw files are synchronized into the Analysis Environment Input folder before the desktop opens.",
+                    (
+                        "Please save all analyzed files inside your Booking Folder under the Analyzed Data directory: "
+                        f"{(getattr(equipment, 'analysis_results_directory', None) or '').rstrip(chr(92)+'/')}\\"
+                        f"{(getattr(booking, 'virtual_booking_id', None) or booking.booking_id)}."
+                    )
+                    if (getattr(equipment, "analysis_results_directory", None) or "")
+                    else "Please save all processed files inside the Analysis Environment Output / Processed folder.",
+                    "After End Analysis, all results are uploaded to the booking and local copies are securely deleted.",
+                ],
             },
             "sync_pipeline": sync_pipeline,
             "desktop_prepare": desktop_prepare,

@@ -133,27 +133,39 @@ class CommandService:
             correlation_id=str(command.id),
         )
 
-        # Milestone 4/5+: advance remote desktop session after PREPARE_WORKSTATION (+ input sync)
+        # Milestone 4/5+: advance remote desktop session after PREPARE_WORKSTATION (+ input sync).
+        # Defer side effects until after this @transaction.atomic block commits so booking
+        # deadlocks elsewhere do not roll back COMPLETED status.
         if command.command_type == CommandType.PREPARE_WORKSTATION:
-            try:
-                from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
-                from iic_booking.remote_analysis.session_models import RemoteDesktopSession
-                from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
-                from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+            cmd_id = command.id
+            cmd_payload = dict(command.payload or {})
+            cmd_success = success
+            cmd_message = message
 
-                workspace_id = (command.payload or {}).get("workspace_id")
-                if workspace_id:
-                    ws_obj = AnalysisWorkspace.objects.filter(pk=workspace_id).first()
-                    if ws_obj:
-                        WorkspaceSyncService().mark_prepared(ws_obj, success=success, message=message)
+            def _after_prepare():
+                try:
+                    from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
+                    from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+                    from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+                    from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
 
-                for session in RemoteDesktopSession.objects.filter(prepare_command=command):
-                    GuacamoleIntegrationService().retry_prepare(session)
-            except Exception:
-                logger.exception(
-                    "Failed to advance workspace/session after PREPARE_WORKSTATION complete (%s)",
-                    command.id,
-                )
+                    workspace_id = cmd_payload.get("workspace_id")
+                    if workspace_id:
+                        ws_obj = AnalysisWorkspace.objects.filter(pk=workspace_id).first()
+                        if ws_obj:
+                            WorkspaceSyncService().mark_prepared(
+                                ws_obj, success=cmd_success, message=cmd_message
+                            )
+
+                    for session in RemoteDesktopSession.objects.filter(prepare_command_id=cmd_id):
+                        GuacamoleIntegrationService().retry_prepare(session)
+                except Exception:
+                    logger.exception(
+                        "Failed to advance workspace/session after PREPARE_WORKSTATION complete (%s)",
+                        cmd_id,
+                    )
+
+            transaction.on_commit(_after_prepare)
 
         # Milestone 5: mark workspace synced after SYNC/COLLECT
         if command.command_type in {CommandType.SYNC_WORKSPACE, CommandType.COLLECT_WORKSPACE}:
@@ -176,8 +188,6 @@ class CommandService:
                     command.command_type,
                     command.id,
                 )
-
-
 
         # Phase 4 RC1: JOIN_TUNNEL completion drives TunnelSession ACTIVE / FAILED
         if command.command_type == CommandType.JOIN_TUNNEL:

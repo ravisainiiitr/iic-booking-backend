@@ -1,4 +1,4 @@
-"""Remote Analysis Portal domain models â€” enterprise workstation registry."""
+"""Remote Analysis Portal domain models — enterprise workstation registry."""
 
 from __future__ import annotations
 
@@ -22,6 +22,9 @@ class AnalysisWorkstation(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     agent_id = models.CharField(max_length=64, unique=True, db_index=True)
+    machine_guid = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    bios_uuid = models.CharField(max_length=64, blank=True, default="")
+    machine_fingerprint = models.CharField(max_length=256, blank=True, default="", db_index=True)
     hostname = models.CharField(max_length=255, blank=True, default="")
     display_name = models.CharField(max_length=255, blank=True, default="")
     department = models.ForeignKey(
@@ -160,7 +163,7 @@ class AgentToken(models.Model):
         verbose_name_plural = _("Agent tokens")
 
     def __str__(self) -> str:
-        return f"Token:{self.token_prefix}â€¦ ({self.workstation.agent_id})"
+        return f"Token:{self.token_prefix}… ({self.workstation.agent_id})"
 
 
 class WorkstationHeartbeat(models.Model):

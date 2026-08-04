@@ -191,7 +191,7 @@ class WorkspaceSyncService:
 
     def prepare_payload(self, workspace: AnalysisWorkspace, *, session_id: str = "") -> dict[str, Any]:
         """Payload embedded in PREPARE_WORKSTATION so agent creates layout + pulls Input."""
-        return {
+        payload: dict[str, Any] = {
             "session_id": session_id or str(workspace.reservation_id),
             "workspace_id": str(workspace.id),
             "reservation_id": str(workspace.reservation_id),
@@ -204,6 +204,40 @@ class WorkspaceSyncService:
             "compression_enabled": bool(getattr(self.settings, "compression_enabled", False)),
             "compression_min_bytes": int(getattr(self.settings, "compression_min_bytes", 0) or 0),
             "bandwidth_limit_kbps": int(getattr(self.settings, "bandwidth_limit_kbps", 0) or 0),
+        }
+        payload.update(self._equipment_booking_paths(workspace))
+        return payload
+
+    def _equipment_booking_paths(self, workspace: AnalysisWorkspace) -> dict[str, Any]:
+        """Optional absolute RAW/RESULTS roots from Equipment config (Analysis PC)."""
+        booking = getattr(workspace, "booking", None)
+        if booking is None:
+            reservation = getattr(workspace, "reservation", None)
+            booking = getattr(reservation, "booking", None) if reservation is not None else None
+        equipment = getattr(booking, "equipment", None) if booking is not None else None
+        if equipment is None:
+            return {}
+        raw_root = (getattr(equipment, "analysis_raw_data_directory", None) or "").strip()
+        results_root = (getattr(equipment, "analysis_results_directory", None) or "").strip()
+        if not raw_root and not results_root:
+            return {}
+        booking_folder = (
+            (getattr(booking, "virtual_booking_id", None) or "").strip()
+            or str(getattr(booking, "booking_id", "") or workspace.storage_key or workspace.id)
+        )
+        return {
+            "booking_id": getattr(booking, "booking_id", None),
+            "booking_folder": booking_folder,
+            "raw_data_directory": raw_root,
+            "results_directory": results_root,
+            "raw_booking_path": f"{raw_root.rstrip('\\/')}\\{booking_folder}" if raw_root else "",
+            "results_booking_path": f"{results_root.rstrip('\\/')}\\{booking_folder}" if results_root else "",
+            "user_instruction": (
+                "Raw files have already been copied to your Booking Folder under the Raw Data directory. "
+                "Please save all analyzed files inside your Booking Folder under the Analyzed Data / Results "
+                f"directory ({results_root or 'RESULTS'}\\{booking_folder}). "
+                "After End Analysis, results are uploaded automatically and local booking folders are deleted."
+            ),
         }
 
     def issue_sync_command(self, workspace: AnalysisWorkspace, *, actor=None) -> Any:
@@ -279,6 +313,11 @@ class WorkspaceSyncService:
             "compression_min_bytes": int(getattr(self.settings, "compression_min_bytes", 0) or 0),
             "bandwidth_limit_kbps": int(getattr(self.settings, "bandwidth_limit_kbps", 0) or 0),
         }
+        payload.update(self._equipment_booking_paths(workspace))
+        # When equipment RESULTS path is configured, agent uploads from that booking folder.
+        if payload.get("results_booking_path"):
+            payload["upload_from_results_booking_path"] = True
+            payload["delete_booking_folders_after_upload"] = True
         cmd = CommandService().create_command(
             workspace.workstation,
             CommandType.COLLECT_WORKSPACE,

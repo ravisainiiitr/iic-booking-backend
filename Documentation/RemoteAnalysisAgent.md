@@ -32,6 +32,17 @@ Transient portal HTTP failures use exponential backoff (`MaxRetryAttempts` / `Re
 
 On `PREPARE_WORKSTATION` / `SYNC_WORKSPACE` the agent creates `Input|Working|Output|Logs|Temp`, downloads portal RawData into `Input` using the **manifest** (sha256 verified; skips unchanged), and on `COLLECT_WORKSPACE` uploads `Output`/`Logs` (skips files already on portal). Cleanup respects `defer_output_cleanup` until portal reaches **UploadVerified**. See Portal doc `AutomaticDataSynchronization.md`.
 
+When equipment defines `analysis_raw_data_directory` / `analysis_results_directory`, prepare also mirrors RAW into `{RAW}\{booking}` and collect reads from `{RESULTS}\{booking}` (see `Documentation/RawResultsFolderConfiguration.md`).
+
+## Reverse tunnel commands
+
+With Portal `transport_mode=reverse_tunnel`, the agent also handles:
+
+- `JOIN_TUNNEL` — connect WSS to gateway with session token
+- `CLOSE_TUNNEL` — tear down bridge
+
+Heartbeats continue during Maintenance / Calibration / Software Update so fleet monitoring remains live.
+
 ## Relation to DSA
 
 DSA (`DepartmentSyncAgent`) handles instrument booking sync/uploads.  

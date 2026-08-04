@@ -12,6 +12,7 @@ from django.utils import timezone
 from iic_booking.remote_analysis.constants import (
     HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS,
     MIN_HEALTH_SCORE_FOR_ALLOCATION,
+    NON_OPERATIONAL_STATUSES,
     ReservationStatus,
     WorkstationStatus,
 )
@@ -25,12 +26,10 @@ from iic_booking.remote_analysis.models import (
 from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, SoftwareRequirement
 
 
-BLOCKING_STATUSES = {
-    WorkstationStatus.OFFLINE,
-    WorkstationStatus.DISABLED,
-    WorkstationStatus.MAINTENANCE,
-    WorkstationStatus.ERROR,
-    WorkstationStatus.REGISTERING,
+BLOCKING_STATUSES = set(NON_OPERATIONAL_STATUSES) | {
+    WorkstationStatus.BUSY,
+    WorkstationStatus.PREPARING,
+    WorkstationStatus.RESERVED,
 }
 
 
@@ -73,6 +72,7 @@ class AvailabilityEngine:
     ) -> bool:
         active = {
             ReservationStatus.RESERVED,
+            ReservationStatus.AWAITING_CHECKIN,
             ReservationStatus.PREPARING,
             ReservationStatus.READY,
             ReservationStatus.ACTIVE,
@@ -247,9 +247,44 @@ class AvailabilityEngine:
             .first()
         )
         if latest and latest.cpu >= 95:
-            reasons.append("Current CPU load too high")
+            reasons.append("CPU saturated")
 
-        return AvailabilityResult(available=len(reasons) == 0 and soft_ok and cap_ok, reasons=reasons, workstation_id=wid)
+        # Hard-require ALL named softwares (equipment catalog / workflow).
+        # Soft scoring alone is insufficient — incomplete coverage must not allocate.
+        required_names = []
+        if requested_capabilities:
+            raw_names = requested_capabilities.get("required_software_names") or []
+            if isinstance(raw_names, (list, tuple)):
+                required_names = [str(n).strip() for n in raw_names if str(n).strip()]
+        if required_names:
+            from iic_booking.remote_analysis.models import InstalledSoftware
+
+            missing = [
+                name
+                for name in required_names
+                if not InstalledSoftware.objects.filter(
+                    workstation=workstation,
+                    is_present=True,
+                    software_name__icontains=name,
+                ).exists()
+            ]
+            if missing:
+                reasons.append(
+                    "Missing required software: " + ", ".join(missing)
+                )
+
+        available = len(reasons) == 0
+        # Busy workstations remain ineligible via overlap / status checks above;
+        # surface a clearer reason when status is BUSY without overlap text.
+        if (
+            not available
+            and workstation.status == WorkstationStatus.BUSY
+            and not any("reservation overlap" in r.lower() for r in reasons)
+        ):
+            if "Busy" not in reasons and not any(r.startswith("Status") for r in reasons):
+                reasons.append("Workstation busy")
+
+        return AvailabilityResult(available=available, reasons=reasons, workstation_id=wid)
 
     def list_available(
         self,

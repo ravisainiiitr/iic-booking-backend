@@ -51,6 +51,17 @@ urlpatterns = [
         name="workstation-create-command",
     ),
     path("dashboard/", views.dashboard, name="dashboard"),
+    path("fleet/", views.fleet_dashboard, name="fleet-dashboard"),
+    path("fleet/inventory/", views.fleet_inventory_view, name="fleet-inventory"),
+    path("fleet/duplicates/", views.fleet_duplicates, name="fleet-duplicates"),
+    path("commissioning/run/", views.run_commissioning, name="commissioning-run"),
+    path("equipment/config-audit/", views.equipment_config_audit_view, name="equipment-config-audit"),
+    path("maintenance/windows/", views.maintenance_windows_collection, name="maintenance-windows"),
+    path(
+        "maintenance/windows/<uuid:window_id>/end/",
+        views.maintenance_window_end,
+        name="maintenance-window-end",
+    ),
     path("software/", views.software_list, name="software-list"),
     path("commands/history/", views.commands_list, name="commands-history"),
     path("events/", views.events_list, name="events-list"),
@@ -232,4 +243,7 @@ urlpatterns = [
     path("installer/catalog/software/", installer_views.catalog_software, name="installer-catalog-software"),
     path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
     path("installer/link/", installer_views.link_equipment, name="installer-link"),
+    # Phase 2.5 — RAA update discovery/report (agent or enrollment auth)
+    path("updates/report/", installer_views.agent_update_report, name="agent-update-report"),
+    path("updates/discover/", installer_views.release_latest, name="agent-update-discover"),
 ]

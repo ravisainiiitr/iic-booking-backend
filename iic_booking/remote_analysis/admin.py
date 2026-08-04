@@ -192,8 +192,20 @@ class ReservationQueueAdmin(admin.ModelAdmin):
 
 @admin.register(MaintenanceWindow)
 class MaintenanceWindowAdmin(admin.ModelAdmin):
-    list_display = ("workstation", "start", "end", "active", "reason", "created_by")
-    list_filter = ("active",)
+    list_display = (
+        "workstation",
+        "kind",
+        "start",
+        "end",
+        "active",
+        "reason",
+        "assigned_engineer",
+        "ticket_number",
+        "created_by",
+    )
+    list_filter = ("active", "kind")
+    search_fields = ("reason", "ticket_number", "amc_reference", "assigned_engineer", "description")
+    readonly_fields = ("previous_status", "applied_at", "restored_at", "created_at", "updated_at")
 
 
 @admin.register(AllocationRule)
@@ -640,6 +652,7 @@ class TunnelEventAdmin(admin.ModelAdmin):
 @admin.register(TunnelMetric)
 class TunnelMetricAdmin(admin.ModelAdmin):
     list_display = ("tunnel", "latency_ms", "bytes_sent", "bytes_received", "recorded_at")
+
 
 # --- Milestone 5 ---
 from iic_booking.remote_analysis.workspace_models import (  # noqa: E402

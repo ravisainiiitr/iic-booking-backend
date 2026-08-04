@@ -108,7 +108,13 @@ class SessionOrchestrator:
         session.display_width = s.default_display_width
         session.display_height = s.default_display_height
         session.color_depth = s.default_color_depth
-        session.expires_at = timezone.now() + timedelta(minutes=s.session_timeout)
+        minutes = int(s.session_timeout or 30)
+        booking = getattr(session, "booking", None) or getattr(getattr(session, "reservation", None), "booking", None)
+        if booking is not None:
+            eq_minutes = getattr(getattr(booking, "equipment", None), "analysis_default_session_minutes", None)
+            if eq_minutes:
+                minutes = int(eq_minutes)
+        session.expires_at = timezone.now() + timedelta(minutes=max(1, minutes))
 
     @transaction.atomic
     def create_session(

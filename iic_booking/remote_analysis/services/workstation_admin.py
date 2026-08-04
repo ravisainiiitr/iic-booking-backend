@@ -1,26 +1,52 @@
-"""Workstation lifecycle actions: enable, disable, maintenance."""
+"""Workstation admin lifecycle — enable / disable / maintenance states."""
 
 from __future__ import annotations
 
-from django.db import transaction
+from datetime import timedelta
 
-from iic_booking.remote_analysis.constants import AuditCategory, WorkstationStatus
+from django.db import transaction
+from django.utils import timezone
+
+from iic_booking.remote_analysis.constants import AuditCategory, MaintenanceKind, WorkstationStatus
 from iic_booking.remote_analysis.models import AnalysisWorkstation, WorkstationStateHistory
 from iic_booking.remote_analysis.services.audit import record_event
 from iic_booking.remote_analysis.services.health import update_workstation_health
+from iic_booking.remote_analysis.services.maintenance import MaintenanceService
 
 
 class WorkstationAdminService:
     @transaction.atomic
-    def set_maintenance(self, workstation: AnalysisWorkstation, *, actor=None, reason: str = "") -> AnalysisWorkstation:
-        return self._set_status(
-            workstation,
-            WorkstationStatus.MAINTENANCE,
-            actor=actor,
+    def set_maintenance(
+        self,
+        workstation: AnalysisWorkstation,
+        *,
+        actor=None,
+        reason: str = "",
+        kind: str = MaintenanceKind.MAINTENANCE,
+        end=None,
+        description: str = "",
+        assigned_engineer: str = "",
+        amc_reference: str = "",
+        ticket_number: str = "",
+        maintenance_notes: str = "",
+    ) -> AnalysisWorkstation:
+        end_dt = end or (timezone.now() + timedelta(hours=4))
+        MaintenanceService().schedule(
+            workstation=workstation,
+            kind=kind or MaintenanceKind.MAINTENANCE,
+            start=timezone.now(),
+            end=end_dt,
             reason=reason or "Maintenance mode",
-            category=AuditCategory.MAINTENANCE,
-            action="Maintenance",
+            description=description,
+            assigned_engineer=assigned_engineer,
+            amc_reference=amc_reference,
+            ticket_number=ticket_number,
+            maintenance_notes=maintenance_notes,
+            actor=actor,
+            apply_immediately=True,
         )
+        workstation.refresh_from_db()
+        return workstation
 
     @transaction.atomic
     def enable(self, workstation: AnalysisWorkstation, *, actor=None) -> AnalysisWorkstation:

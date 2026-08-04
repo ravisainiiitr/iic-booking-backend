@@ -117,52 +117,61 @@ class SessionCleanupService:
             logger.exception("CLEAN_WORKSTATION failed to queue for session %s", session.id)
 
         ws = session.workstation
-        if ws.status not in {WorkstationStatus.DISABLED, WorkstationStatus.MAINTENANCE}:
-            WorkstationStateHistory.objects.create(
-                workstation=ws,
-                from_status=ws.status,
-                to_status=WorkstationStatus.AVAILABLE,
-                reason=f"Session cleanup: {reason}"[:500],
-            )
-            ws.status = WorkstationStatus.AVAILABLE
-            ws.save(update_fields=["status", "updated_at"])
+        try:
+            if ws.status not in {WorkstationStatus.DISABLED, WorkstationStatus.MAINTENANCE}:
+                WorkstationStateHistory.objects.create(
+                    workstation=ws,
+                    from_status=ws.status,
+                    to_status=WorkstationStatus.AVAILABLE,
+                    reason=f"Session cleanup: {reason}"[:500],
+                )
+                ws.status = WorkstationStatus.AVAILABLE
+                ws.save(update_fields=["status", "updated_at"])
+        except Exception:
+            logger.exception("Workstation release failed for session %s", session.id)
 
         if release_reservation and session.reservation_id:
-            reservation = session.reservation
-            if reservation.status in {
-                ReservationStatus.ACTIVE,
-                ReservationStatus.READY,
-                ReservationStatus.PREPARING,
-                ReservationStatus.RESERVED,
-            }:
-                from iic_booking.remote_analysis.scheduler_models import ReservationHistory
+            try:
+                reservation = session.reservation
+                if reservation.status in {
+                    ReservationStatus.ACTIVE,
+                    ReservationStatus.READY,
+                    ReservationStatus.PREPARING,
+                    ReservationStatus.RESERVED,
+                }:
+                    from iic_booking.remote_analysis.scheduler_models import ReservationHistory
 
-                ReservationHistory.objects.create(
-                    reservation=reservation,
-                    from_status=reservation.status,
-                    to_status=ReservationStatus.COMPLETED,
-                    reason=f"Session ended: {reason}"[:500],
-                    changed_by=actor if actor is not None and getattr(actor, "pk", None) else None,
-                )
-                reservation.status = ReservationStatus.COMPLETED
-                reservation.released_at = timezone.now()
-                reservation.save(update_fields=["status", "released_at", "updated_at"])
-                released = True
+                    ReservationHistory.objects.create(
+                        reservation=reservation,
+                        from_status=reservation.status,
+                        to_status=ReservationStatus.COMPLETED,
+                        reason=f"Session ended: {reason}"[:500],
+                        changed_by=actor if actor is not None and getattr(actor, "pk", None) else None,
+                    )
+                    reservation.status = ReservationStatus.COMPLETED
+                    reservation.released_at = timezone.now()
+                    reservation.save(update_fields=["status", "released_at", "updated_at"])
+                    released = True
+            except Exception:
+                logger.exception("Reservation release failed for session %s", session.id)
 
         now = timezone.now()
-        if not session.disconnected_at:
-            session.disconnected_at = now
-        session.termination_reason = reason[:512]
-        session.status = final_status
-        session.save(
-            update_fields=[
-                "status",
-                "termination_reason",
-                "disconnected_at",
-                "cleanup_command",
-                "updated_at",
-            ]
-        )
+        try:
+            if not session.disconnected_at:
+                session.disconnected_at = now
+            session.termination_reason = reason[:512]
+            session.status = final_status
+            session.save(
+                update_fields=[
+                    "status",
+                    "termination_reason",
+                    "disconnected_at",
+                    "cleanup_command",
+                    "updated_at",
+                ]
+            )
+        except Exception:
+            logger.exception("Session terminal save failed for session %s", session.id)
 
         duration = 0.0
         if session.connected_at:
@@ -170,34 +179,43 @@ class SessionCleanupService:
         elif session.launch_time:
             duration = (now - session.launch_time).total_seconds()
 
-        SessionStatistics.objects.update_or_create(
-            session=session,
-            defaults={
-                "duration_seconds": max(0.0, duration),
-                "reconnect_count": session.reconnect_count,
-            },
-        )
+        try:
+            SessionStatistics.objects.update_or_create(
+                session=session,
+                defaults={
+                    "duration_seconds": max(0.0, duration),
+                    "reconnect_count": session.reconnect_count,
+                },
+            )
+        except Exception:
+            logger.exception("SessionStatistics update failed for session %s", session.id)
 
-        SessionTermination.objects.update_or_create(
-            session=session,
-            defaults={
-                "reason": reason[:512],
-                "terminated_by": actor if actor is not None and getattr(actor, "pk", None) else None,
-                "cleanup_completed": cleanup_cmd_ok,
-                "guacamole_destroyed": guac_ok,
-                "reservation_released": released,
-            },
-        )
+        try:
+            SessionTermination.objects.update_or_create(
+                session=session,
+                defaults={
+                    "reason": reason[:512],
+                    "terminated_by": actor if actor is not None and getattr(actor, "pk", None) else None,
+                    "cleanup_completed": cleanup_cmd_ok,
+                    "guacamole_destroyed": guac_ok,
+                    "reservation_released": released,
+                },
+            )
+        except Exception:
+            logger.exception("SessionTermination update failed for session %s", session.id)
 
-        audit_session(session, "Cleanup", details=reason, actor=actor, success=guac_ok and cleanup_cmd_ok)
-        record_event(
-            category=AuditCategory.GUACAMOLE,
-            action="SessionCleanup",
-            details=reason,
-            workstation=session.workstation,
-            actor=actor if actor is not None and getattr(actor, "is_authenticated", False) else None,
-            correlation_id=str(session.id),
-        )
+        try:
+            audit_session(session, "Cleanup", details=reason, actor=actor, success=guac_ok and cleanup_cmd_ok)
+            record_event(
+                category=AuditCategory.GUACAMOLE,
+                action="SessionCleanup",
+                details=reason,
+                workstation=session.workstation,
+                actor=actor if actor is not None and getattr(actor, "is_authenticated", False) else None,
+                correlation_id=str(session.id),
+            )
+        except Exception:
+            logger.exception("Cleanup audit failed for session %s", session.id)
         return session
 
     @transaction.atomic

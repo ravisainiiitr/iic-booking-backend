@@ -41,13 +41,15 @@ Full history persisted in `ReservationHistory`.
 
 ## Availability (never allocate)
 
-- Offline / disabled / maintenance / error / registering
+- Offline / disabled / maintenance / calibration / software update / hardware fault / cleaning / error / registering / reserved / busy / preparing
 - Health score below threshold (default 50)
 - Missed heartbeats / expired agent tokens
-- Maintenance windows
+- Active maintenance windows (see `Documentation/MaintenanceMode.md`)
 - Overlapping active reservations
-- Missing required software / capabilities / licenses
+- Missing **required** equipment software (`required_software_names` hard filter — see `SoftwareMappingGuide.md`)
 - Extreme current CPU load
+
+When a PC enters maintenance, queued users are notified and the reservation queue is reprocessed against remaining compatible PCs.
 
 ## Conflict resolution
 

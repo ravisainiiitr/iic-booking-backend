@@ -21,12 +21,60 @@ class WorkstationStatus(models.TextChoices):
     AVAILABLE = "AVAILABLE", _("Available")
     PREPARING = "PREPARING", _("Preparing")
     BUSY = "BUSY", _("Busy")
+    RESERVED = "RESERVED", _("Reserved")
     CLEANING = "CLEANING", _("Cleaning")
     OFFLINE = "OFFLINE", _("Offline")
     MAINTENANCE = "MAINTENANCE", _("Maintenance")
+    CALIBRATION = "CALIBRATION", _("Calibration")
+    SOFTWARE_UPDATE = "SOFTWARE_UPDATE", _("Software update")
+    HARDWARE_FAULT = "HARDWARE_FAULT", _("Hardware fault")
     DISABLED = "DISABLED", _("Disabled")
     ERROR = "ERROR", _("Error")
     UNKNOWN = "UNKNOWN", _("Unknown")
+
+
+class MaintenanceKind(models.TextChoices):
+    """Administrator-facing maintenance / outage classification."""
+
+    MAINTENANCE = "MAINTENANCE", _("Scheduled maintenance")
+    CALIBRATION = "CALIBRATION", _("Calibration")
+    SOFTWARE_UPDATE = "SOFTWARE_UPDATE", _("Software update")
+    HARDWARE_FAULT = "HARDWARE_FAULT", _("Hardware fault")
+    CLEANING = "CLEANING", _("Cleaning")
+    OFFLINE = "OFFLINE", _("Offline")
+    DISABLED = "DISABLED", _("Disabled")
+
+
+# Statuses that must never receive new analysis allocations.
+NON_OPERATIONAL_STATUSES = frozenset(
+    {
+        WorkstationStatus.REGISTERING,
+        WorkstationStatus.OFFLINE,
+        WorkstationStatus.MAINTENANCE,
+        WorkstationStatus.CALIBRATION,
+        WorkstationStatus.SOFTWARE_UPDATE,
+        WorkstationStatus.HARDWARE_FAULT,
+        WorkstationStatus.CLEANING,
+        WorkstationStatus.DISABLED,
+        WorkstationStatus.ERROR,
+        WorkstationStatus.UNKNOWN,
+    }
+)
+
+# Heartbeat must not overwrite these admin / lifecycle states.
+HEARTBEAT_PROTECTED_STATUSES = frozenset(
+    {
+        WorkstationStatus.MAINTENANCE,
+        WorkstationStatus.CALIBRATION,
+        WorkstationStatus.SOFTWARE_UPDATE,
+        WorkstationStatus.HARDWARE_FAULT,
+        WorkstationStatus.DISABLED,
+        WorkstationStatus.PREPARING,
+        WorkstationStatus.BUSY,
+        WorkstationStatus.RESERVED,
+        WorkstationStatus.CLEANING,
+    }
+)
 
 
 class CommandType(models.TextChoices):
@@ -58,6 +106,7 @@ class TunnelSessionStatus(models.TextChoices):
     CLOSED = "CLOSED", _("Closed")
     FAILED = "FAILED", _("Failed")
     EXPIRED = "EXPIRED", _("Expired")
+
 
 class CommandStatus(models.TextChoices):
     PENDING = "PENDING", _("Pending")
@@ -118,6 +167,7 @@ class ReservationStatus(models.TextChoices):
     VALIDATING = "VALIDATING", _("Validating")
     QUEUED = "QUEUED", _("Queued")
     RESERVED = "RESERVED", _("Reserved")
+    AWAITING_CHECKIN = "AWAITING_CHECKIN", _("Awaiting user check-in")
     PREPARING = "PREPARING", _("Preparing")
     READY = "READY", _("Ready")
     ACTIVE = "ACTIVE", _("Active")
@@ -125,6 +175,12 @@ class ReservationStatus(models.TextChoices):
     EXPIRED = "EXPIRED", _("Expired")
     CANCELLED = "CANCELLED", _("Cancelled")
     FAILED = "FAILED", _("Failed")
+
+
+class MissedCheckinPolicy(models.TextChoices):
+    END_OF_QUEUE = "END_OF_QUEUE", _("Move to end of queue")
+    RETRY_LATER = "RETRY_LATER", _("Retry allocation later")
+    CANCEL_AFTER_N = "CANCEL_AFTER_N", _("Cancel after N missed check-ins")
 
 
 class QueueEntryStatus(models.TextChoices):
@@ -220,7 +276,7 @@ DEFAULT_WORKSPACE_FOLDERS = (
     "Metadata",
 )
 
-# Additive workflow step folders are created dynamically as Step01, Step02, ΓÇª
+# Additive workflow step folders are created dynamically as Step01, Step02, …
 
 
 class WorkflowJobStatus(models.TextChoices):
@@ -245,7 +301,7 @@ class WorkflowJobStepStatus(models.TextChoices):
 
 
 class AnalysisJobCollaboratorRole(models.TextChoices):
-    """Reserved for v2 multi-user collaboration ΓÇö do not expose in Portal UX yet."""
+    """Reserved for v2 multi-user collaboration — do not expose in Portal UX yet."""
 
     OWNER = "OWNER", _("Owner")
     COLLABORATOR = "COLLABORATOR", _("Collaborator")
@@ -331,9 +387,9 @@ class WorkspaceSyncPhase(models.TextChoices):
     """Explicit workspace lifecycle for automatic data synchronization.
 
     Success path:
-      Preparing ΓåÆ DownloadingInput ΓåÆ VerifyingInput ΓåÆ InputReady ΓåÆ
-      SessionStarting ΓåÆ SessionActive ΓåÆ CollectingOutput ΓåÆ UploadingOutput ΓåÆ
-      UploadVerified ΓåÆ Cleanup ΓåÆ Completed
+      Preparing → DownloadingInput → VerifyingInput → InputReady →
+      SessionStarting → SessionActive → CollectingOutput → UploadingOutput →
+      UploadVerified → Cleanup → Completed
 
     Failure / control:
       PreparationFailed | UploadFailed | RetryPending | CleanupFailed | Cancelled
@@ -357,7 +413,7 @@ class WorkspaceSyncPhase(models.TextChoices):
     CANCELLED = "Cancelled", _("Cancelled")
 
 
-# Map legacy sync_phase DB values ΓåÆ canonical lifecycle (migration + normalize)
+# Map legacy sync_phase DB values → canonical lifecycle (migration + normalize)
 LEGACY_SYNC_PHASE_MAP = {
     "QUEUED": "Preparing",
     "PREPARING": "Preparing",
@@ -403,7 +459,7 @@ WORKSPACE_UPLOAD_VERIFIED_PHASES = frozenset(
 )
 
 
-# Agent PC layout Γåö portal folder mapping (keep portal RawData/Processed for compat)
+# Agent PC layout ↔ portal folder mapping (keep portal RawData/Processed for compat)
 AGENT_LAYOUT_FOLDERS = ("Input", "Working", "Output", "Logs", "Temp")
 AGENT_INPUT_PORTAL_FOLDERS = ("RawData", "Metadata")
 AGENT_OUTPUT_PORTAL_FOLDERS = ("Processed", "Reports", "Exports", "Logs")

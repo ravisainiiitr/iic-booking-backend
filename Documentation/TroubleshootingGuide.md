@@ -125,6 +125,34 @@ Portal “license” style errors on booking checkout are **booking billing**, n
 
 ---
 
+## Analysis PC stuck in Maintenance / Calibration
+
+| Check | Action |
+|-------|--------|
+| Active window end time | `GET /api/v1/analysis/maintenance/windows/?active=true` or Django admin |
+| End early | `POST /api/v1/analysis/maintenance/windows/<id>/end/` |
+| Fleet counts | `GET /api/v1/analysis/fleet/` |
+| Heartbeat still flowing? | Expected — maintenance must not stop heartbeats |
+| Queue not advancing | Run/wait for `monitor_maintenance_windows` + `process_reservation_queue` |
+
+See `Documentation/MaintenanceMode.md`.
+
+---
+
+## Reverse tunnel desktop fails (black screen / NLA)
+
+| Check | Action |
+|-------|--------|
+| Transport mode | Portal `RA_TRANSPORT=reverse_tunnel` / settings `transport_mode` |
+| Tunnel status | `TunnelSession` ACTIVE with `adapter_port` |
+| Guacamole hostname | Must be gateway adapter host, **not** campus `10.x` |
+| Windows session | Sign out interactive user on Analysis PC (lock screen blocks NLA) |
+| JOIN_TUNNEL command | Agent must complete successfully |
+
+See `docs/ReverseTunnelTroubleshooting.md`.
+
+---
+
 ## Escalation data to collect
 
 1. `health/ready/` JSON  
@@ -133,3 +161,4 @@ Portal “license” style errors on booking checkout are **booking billing**, n
 4. Session id + prepare/collect command ids  
 5. Agent log tail (`ProgramData\RemoteAnalysisAgent\Logs`)  
 6. Guacamole / guacd container logs  
+7. Tunnel session id / adapter port (if reverse tunnel)  

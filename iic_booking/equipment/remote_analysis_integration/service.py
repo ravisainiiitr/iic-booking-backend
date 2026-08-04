@@ -211,6 +211,19 @@ class BookingRemoteAnalysisService:
                 slug=software_slug,
             )
 
+        # Always hard-require every catalog software mapped to this equipment.
+        caps = dict(requested_capabilities or {})
+        required_names = SoftwareMappingService().required_software_names(booking.equipment)
+        if required_names:
+            caps["required_software_names"] = required_names
+            # Prefer a PC that already has the full set when multiple are needed.
+            if len(required_names) > 1 and not caps.get("prefer_workstation_id"):
+                from iic_booking.remote_analysis.services.allocation import AllocationService
+
+                preferred = AllocationService().find_workstation_with_all_software(required_names)
+                if preferred is not None:
+                    caps["prefer_workstation_id"] = str(preferred.id)
+
         duration_hours = int(getattr(booking.equipment, "analysis_access_duration", 72) or 72)
         if software_profile is not None:
             catalog = getattr(software_profile, "catalog_entry", None)
@@ -230,7 +243,7 @@ class BookingRemoteAnalysisService:
                 created_by=actor,
                 auto_allocate=auto_allocate,
                 software_profile=software_profile,
-                requested_capabilities=requested_capabilities or {},
+                requested_capabilities=caps,
             )
         except ValueError as exc:
             # Race: another active reservation appeared
@@ -528,6 +541,30 @@ class BookingRemoteAnalysisService:
                 "job": engine.serialize_job(job) if job else None,
             }
 
+        # Two-stage allocation: hold PC until user explicitly starts the desktop.
+        if reservation.status in {ReservationStatus.AWAITING_CHECKIN, ReservationStatus.RESERVED}:
+            from iic_booking.remote_analysis.services.checkin import CheckinService
+
+            if reservation.status == ReservationStatus.RESERVED:
+                CheckinService().open_checkin_window(reservation, actor=user)
+                reservation.refresh_from_db()
+            checkin = CheckinService().checkin_payload(reservation)
+            self.audit.log(booking, "AwaitingCheckin", details=str(reservation.id), actor=user)
+            return {
+                "eligible": True,
+                "queued": False,
+                "awaiting_checkin": True,
+                "checkin": checkin,
+                "status": reservation.status,
+                "reservation_id": str(reservation.id),
+                "message": "Your Analysis Environment is ready. Start the session to begin.",
+                "launcher_url": f"/api/v1/bookings/{booking.booking_id}/analysis/desktop/?view=html",
+                "workspace_url": f"/analysis-workspace/{booking.booking_id}",
+                "staging": staging_result,
+                "button_label": "Start Analysis Session",
+                "job": engine.serialize_job(job) if job else None,
+            }
+
         payload = self.launch_session(
             booking,
             user=user,
@@ -548,6 +585,7 @@ class BookingRemoteAnalysisService:
             engine.metadata.write(job)
 
         payload["queued"] = False
+        payload["awaiting_checkin"] = False
         payload["reservation_id"] = str(reservation.id)
         payload["staging"] = staging_result
         payload["button_label"] = ctx["button_label"]
@@ -582,6 +620,19 @@ class BookingRemoteAnalysisService:
             raise SessionError(elig.reason, code="booking_ineligible")
 
         reservation = self.ensure_reservation(booking, actor=user)
+
+        # Explicit check-in required before Guacamole / tunnel allocation.
+        if reservation.status == ReservationStatus.AWAITING_CHECKIN:
+            from iic_booking.remote_analysis.services.reservation import ReservationService
+
+            ReservationService().transition(
+                reservation,
+                ReservationStatus.RESERVED,
+                reason="User checked in — starting desktop",
+                actor=user,
+            )
+            self.audit.log(booking, "CheckinAccepted", details=str(reservation.id), actor=user)
+
         from iic_booking.remote_analysis.constants import SessionStatus
         from iic_booking.remote_analysis.guacamole.authorization import find_reusable_open_session
         from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
@@ -884,6 +935,280 @@ class BookingRemoteAnalysisService:
         if result.get("completed"):
             self.audit.log(booking, "WorkflowCompleted", details=str(job.id), actor=user)
         return result
+
+    def release_checkin(self, booking, *, user, reason: str = "Released by user") -> dict:
+        """User declines a reserved Analysis PC before starting the desktop."""
+        from iic_booking.remote_analysis.guacamole.session import SessionError
+        from iic_booking.remote_analysis.services.checkin import CheckinService
+
+        reservation = booking.analysis_reservation
+        if reservation is None or reservation.status != ReservationStatus.AWAITING_CHECKIN:
+            raise SessionError("No reserved Analysis Environment awaiting check-in.", code="no_checkin")
+        result = CheckinService().release_checkin(reservation, actor=user, reason=reason)
+        self.audit.log(booking, "CheckinReleased", details=str(result), actor=user)
+        return {"ok": True, **result}
+
+    def start_checked_in_session(
+        self,
+        booking,
+        *,
+        user,
+        client_ip: str | None = None,
+        request_absolute_uri_builder=None,
+        user_agent: str = "",
+    ) -> dict:
+        """Explicit Start Analysis Session after reservation check-in."""
+        from iic_booking.remote_analysis.guacamole.session import SessionError
+
+        reservation = booking.analysis_reservation
+        if reservation is None or reservation.status != ReservationStatus.AWAITING_CHECKIN:
+            raise SessionError(
+                "No Analysis Environment is reserved for check-in. Request analysis first.",
+                code="no_checkin",
+            )
+        if reservation.checkin_expires_at and reservation.checkin_expires_at < timezone.now():
+            from iic_booking.remote_analysis.services.checkin import CheckinService
+
+            CheckinService().expire_due(limit=5)
+            raise SessionError("Check-in window expired. Please request analysis again.", code="checkin_expired")
+        return self.launch_session(
+            booking,
+            user=user,
+            client_ip=client_ip,
+            request_absolute_uri_builder=request_absolute_uri_builder,
+            user_agent=user_agent,
+        )
+
+    def end_analysis(self, booking, *, user, reason: str = "Finished early by user") -> dict:
+        """
+        Researcher finish-early: terminate open session (if any), release reservation,
+        free workstation, collect/upload results, close reverse tunnel, drain queue.
+        """
+        from iic_booking.remote_analysis.constants import WorkstationStatus
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.guacamole.session import SessionError, SessionOrchestrator
+        from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+        from iic_booking.remote_analysis.services.reservation import ReservationService
+        from iic_booking.remote_analysis.services.scheduler import SchedulerService
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        if booking.user_id != getattr(user, "pk", None) and not getattr(user, "is_superuser", False):
+            raise SessionError("Only the booking owner may end analysis.", code="forbidden")
+
+        reason = (reason or "Finished early by user").strip()[:512]
+        session = (
+            RemoteDesktopSession.objects.filter(
+                booking_id=booking.pk,
+                status__in=OPEN_SESSION_STATUSES,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if session is None and booking.analysis_reservation_id:
+            session = (
+                RemoteDesktopSession.objects.filter(
+                    reservation_id=booking.analysis_reservation_id,
+                    status__in=OPEN_SESSION_STATUSES,
+                )
+                .order_by("-created_at")
+                .first()
+            )
+
+        session_ended = False
+        reservation_released = False
+        try:
+            if session is not None:
+                SessionOrchestrator().terminate(session, user=user, reason=reason)
+                session_ended = True
+                reservation_released = True
+            else:
+                reservation = booking.analysis_reservation
+                if reservation is None:
+                    reservation = (
+                        AnalysisReservation.objects.filter(booking_id=booking.pk)
+                        .exclude(status__in=TERMINAL_RESERVATION)
+                        .order_by("-created_at")
+                        .first()
+                    )
+                if reservation and reservation.status not in TERMINAL_RESERVATION:
+                    ws = reservation.workstation
+                    ReservationService().release(
+                        reservation,
+                        actor=user,
+                        reason=reason,
+                        final_status=ReservationStatus.COMPLETED,
+                    )
+                    reservation_released = True
+                    if ws is not None and ws.status not in {
+                        WorkstationStatus.DISABLED,
+                        WorkstationStatus.MAINTENANCE,
+                    }:
+                        SchedulerService()._free_workstation(reservation)
+                        ws.refresh_from_db()
+                        if ws.status == WorkstationStatus.BUSY:
+                            from iic_booking.remote_analysis.models import WorkstationStateHistory
+
+                            WorkstationStateHistory.objects.create(
+                                workstation=ws,
+                                from_status=ws.status,
+                                to_status=WorkstationStatus.AVAILABLE,
+                                reason=f"Early end analysis: {reason}"[:500],
+                            )
+                            ws.status = WorkstationStatus.AVAILABLE
+                            ws.save(update_fields=["status", "updated_at"])
+
+            if not session_ended and not reservation_released:
+                raise SessionError("No active analysis session or reservation to end.", code="nothing_to_end")
+
+            queue_stats = {}
+            try:
+                queue_stats = SchedulerService().process_queue() or {}
+            except Exception:
+                logger.exception("process_queue failed after end_analysis booking=%s", booking.pk)
+
+            self.audit.log(
+                booking,
+                "AnalysisEndedEarly",
+                details=(
+                    f"session_ended={session_ended}; "
+                    f"reservation_released={reservation_released}; queue={queue_stats}"
+                ),
+                actor=user,
+            )
+            return {
+                "ok": True,
+                "session_ended": session_ended,
+                "reservation_released": reservation_released,
+                "session_id": str(session.id) if session is not None else None,
+                "queue": queue_stats,
+                "reason": reason,
+            }
+        except SessionError:
+            raise
+        except Exception as exc:
+            logger.exception("end_analysis failed booking=%s", booking.pk)
+            raise SessionError(
+                "Could not end analysis cleanly. Please try again or contact support.",
+                code="end_failed",
+            ) from exc
+
+    def extend_analysis(self, booking, *, user) -> dict:
+        """Extend active session when nobody else is waiting."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from iic_booking.remote_analysis.constants import QueueEntryStatus
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.guacamole.session import SessionError
+        from iic_booking.remote_analysis.scheduler_models import ReservationQueue
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        if booking.user_id != getattr(user, "pk", None) and not getattr(user, "is_superuser", False):
+            raise SessionError("Only the booking owner may extend analysis.", code="forbidden")
+
+        session = (
+            RemoteDesktopSession.objects.filter(booking_id=booking.pk, status__in=OPEN_SESSION_STATUSES)
+            .order_by("-created_at")
+            .first()
+        )
+        if session is None and booking.analysis_reservation_id:
+            session = (
+                RemoteDesktopSession.objects.filter(
+                    reservation_id=booking.analysis_reservation_id,
+                    status__in=OPEN_SESSION_STATUSES,
+                )
+                .order_by("-created_at")
+                .first()
+            )
+        if session is None:
+            raise SessionError("No active analysis session to extend.", code="no_session")
+
+        others = ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING).exclude(
+            reservation_id=session.reservation_id
+        )
+        if others.exists():
+            raise SessionError(
+                "Another analysis request is currently waiting. "
+                "Session extension is unavailable to ensure fair access.",
+                code="queue_blocked",
+            )
+
+        minutes = int(getattr(booking.equipment, "analysis_extension_minutes", None) or 15)
+        base = session.expires_at if session.expires_at and session.expires_at > timezone.now() else timezone.now()
+        session.expires_at = base + timedelta(minutes=max(1, minutes))
+        session.save(update_fields=["expires_at", "updated_at"])
+        self.audit.log(
+            booking,
+            "AnalysisExtended",
+            details=f"+{minutes}m expires_at={session.expires_at.isoformat()}",
+            actor=user,
+        )
+        return {
+            "ok": True,
+            "extended_minutes": minutes,
+            "expires_at": session.expires_at.isoformat(),
+            "remaining_seconds": max(0, int((session.expires_at - timezone.now()).total_seconds())),
+            "message": "No users are waiting. Your analysis session has been extended.",
+        }
+
+    def upload_past_data(self, booking, *, user, uploaded_file, folder: str = "RawData") -> dict:
+        """Upload extra/past files into workspace RawData and sync to agent Input when possible."""
+        from iic_booking.remote_analysis.guacamole.session import SessionError
+        from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+        from iic_booking.remote_analysis.workspace.transfer import TransferError, TransferManager
+
+        if booking.user_id != getattr(user, "pk", None) and not getattr(user, "is_superuser", False):
+            raise SessionError("Only the booking owner may upload analysis files.", code="forbidden")
+
+        workspace = self.workspace.get_for_booking(booking)
+        if workspace is None:
+            raise SessionError("No analysis workspace for this booking yet.", code="no_workspace")
+
+        folder = (folder or "RawData").strip() or "RawData"
+        try:
+            file_row = TransferManager().upload(
+                workspace,
+                uploaded_file,
+                folder=folder,
+                actor=user,
+                source="portal",
+            )
+        except TransferError as exc:
+            raise SessionError(str(exc), code=getattr(exc, "code", "upload_failed")) from exc
+
+        sync_command_id = None
+        if workspace.workstation_id:
+            try:
+                cmd = WorkspaceSyncService().issue_sync_command(workspace, actor=user)
+                sync_command_id = str(getattr(cmd, "id", "") or "") or None
+            except Exception as exc:  # noqa: BLE001
+                self.audit.log(
+                    booking,
+                    "PastDataSyncDeferred",
+                    details=str(exc),
+                    actor=user,
+                    success=False,
+                )
+
+        self.audit.log(
+            booking,
+            "PastDataUploaded",
+            details=f"{file_row.relative_path}; sync={sync_command_id}",
+            actor=user,
+        )
+        return {
+            "ok": True,
+            "workspace_id": str(workspace.id),
+            "file": {
+                "id": str(file_row.id),
+                "name": file_row.original_name or file_row.relative_path,
+                "relative_path": file_row.relative_path,
+                "size": file_row.size,
+            },
+            "sync_command_id": sync_command_id,
+            "agent_folder": "Input" if folder.replace("\\", "/").split("/")[0] in {"RawData", "Metadata"} else folder,
+        }
 
     def pause_analysis_job(self, booking, *, user) -> dict:
         from iic_booking.remote_analysis.guacamole.session import SessionError

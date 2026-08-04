@@ -19,6 +19,7 @@ from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings, R
 
 ACTIVE_RESERVATION_STATUSES = {
     ReservationStatus.RESERVED,
+    ReservationStatus.AWAITING_CHECKIN,
     ReservationStatus.PREPARING,
     ReservationStatus.READY,
     ReservationStatus.ACTIVE,

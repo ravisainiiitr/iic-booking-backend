@@ -437,6 +437,10 @@ urlpatterns = router.urls + [
     path("v1/sync/", include("iic_booking.sync.urls")),
     # Remote Analysis Agent control plane (Milestone 2) — /api/v1/analysis/
     path("v1/analysis/", include("iic_booking.remote_analysis.urls")),
+    # Deployment Center — unified installer catalog (Main Admin)
+    path("v1/deployment/", include("iic_booking.deployment.urls")),
+    # Laboratory Infrastructure — enterprise fleet lifecycle (Phase 2)
+    path("v1/lab/", include("iic_booking.lab_infrastructure.urls")),
     # Booking ↔ Remote Analysis integration
     path(
         "v1/bookings/analysis/dashboard/",
@@ -502,6 +506,31 @@ urlpatterns = router.urls + [
         "v1/bookings/<int:booking_id>/analysis/files/",
         booking_ra_views.booking_analysis_files,
         name="booking-analysis-files",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/files/upload/",
+        booking_ra_views.booking_analysis_files_upload,
+        name="booking-analysis-files-upload",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/end/",
+        booking_ra_views.booking_analysis_end,
+        name="booking-analysis-end",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/start/",
+        booking_ra_views.booking_analysis_start,
+        name="booking-analysis-start",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/release/",
+        booking_ra_views.booking_analysis_release,
+        name="booking-analysis-release",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/extend/",
+        booking_ra_views.booking_analysis_extend,
+        name="booking-analysis-extend",
     ),
     path(
         "v1/bookings/<int:booking_id>/analysis/archive/",
@@ -573,6 +602,31 @@ urlpatterns = router.urls + [
         "bookings/<int:booking_id>/analysis/files/",
         booking_ra_views.booking_analysis_files,
         name="booking-analysis-files-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/files/upload/",
+        booking_ra_views.booking_analysis_files_upload,
+        name="booking-analysis-files-upload-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/end/",
+        booking_ra_views.booking_analysis_end,
+        name="booking-analysis-end-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/start/",
+        booking_ra_views.booking_analysis_start,
+        name="booking-analysis-start-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/release/",
+        booking_ra_views.booking_analysis_release,
+        name="booking-analysis-release-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/extend/",
+        booking_ra_views.booking_analysis_extend,
+        name="booking-analysis-extend-legacy",
     ),
     path(
         "bookings/<int:booking_id>/analysis/archive/",

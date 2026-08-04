@@ -15,6 +15,26 @@ class SoftwareMappingService:
             .order_by("sort_order", "catalog__name")
         )
 
+    def required_software_names(self, equipment) -> list[str]:
+        """All active catalog software names mapped to this equipment (deduped, ordered)."""
+        names: list[str] = []
+        seen: set[str] = set()
+        for row in self.list_for_equipment(equipment):
+            name = (row.catalog.name or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+        # Legacy free-text profile when no catalog mappings exist
+        if not names:
+            profile = (getattr(equipment, "analysis_profile", None) or "").strip()
+            if profile:
+                names.append(profile)
+        return names
+
     def serialize_options(self, equipment, *, settings_obj: RemoteAnalysisSettings | None = None) -> list[dict]:
         settings_obj = settings_obj or RemoteAnalysisSettings.get_solo()
         default_label = (settings_obj.analyze_data_button_label or "Analyze Data").strip() or "Analyze Data"

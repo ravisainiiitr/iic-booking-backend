@@ -18,10 +18,10 @@ def calculate_health_score(workstation: AnalysisWorkstation) -> int:
     score = 100
     now = timezone.now()
 
-    if not workstation.enabled or workstation.status in {"DISABLED", "ERROR"}:
+    if not workstation.enabled or workstation.status in {"DISABLED", "ERROR", "HARDWARE_FAULT"}:
         score -= 40
 
-    if workstation.status == "MAINTENANCE":
+    if workstation.status in {"MAINTENANCE", "CALIBRATION", "SOFTWARE_UPDATE", "CLEANING"}:
         score -= 15
 
     if workstation.last_heartbeat is None:

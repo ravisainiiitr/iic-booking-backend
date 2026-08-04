@@ -12,10 +12,13 @@ logger = logging.getLogger(__name__)
 @ra_periodic_task(name="remote_analysis.expire_reservations")
 def expire_reservations() -> dict:
     from iic_booking.remote_analysis.production_hardening import correlation_scope, structured_log
+    from iic_booking.remote_analysis.services.checkin import CheckinService
     from iic_booking.remote_analysis.services.scheduler import SchedulerService
 
     with correlation_scope():
+        checkin = CheckinService().expire_due(limit=50)
         result = SchedulerService().expire_stale()
+        result["checkin_expired"] = checkin.get("expired", 0)
         structured_log(logging.INFO, "expire_reservations", **result)
         return result
 
@@ -42,37 +45,12 @@ def refresh_workstation_health() -> int:
 
 @ra_periodic_task(name="remote_analysis.monitor_maintenance_windows")
 def monitor_maintenance_windows() -> dict:
-    from django.utils import timezone
+    """Apply active windows, restore expired ones, notify queued users, reprocess queue."""
+    from iic_booking.remote_analysis.services.maintenance import MaintenanceService
 
-    from iic_booking.remote_analysis.constants import AuditCategory, WorkstationStatus
-    from iic_booking.remote_analysis.models import WorkstationStateHistory
-    from iic_booking.remote_analysis.scheduler_models import MaintenanceWindow
-    from iic_booking.remote_analysis.services.audit import record_event
-
-    now = timezone.now()
-    applied = 0
-    for window in MaintenanceWindow.objects.filter(active=True, start__lte=now, end__gte=now).select_related(
-        "workstation"
-    ):
-        if window.workstation_id:
-            ws = window.workstation
-            if ws.status != WorkstationStatus.MAINTENANCE:
-                WorkstationStateHistory.objects.create(
-                    workstation=ws,
-                    from_status=ws.status,
-                    to_status=WorkstationStatus.MAINTENANCE,
-                    reason=window.reason or "Maintenance window",
-                )
-                ws.status = WorkstationStatus.MAINTENANCE
-                ws.save(update_fields=["status", "updated_at"])
-                applied += 1
-                record_event(
-                    category=AuditCategory.MAINTENANCE,
-                    action="Applied",
-                    details=window.reason,
-                    workstation=ws,
-                )
-    return {"applied": applied}
+    result = MaintenanceService().monitor()
+    logger.info("monitor_maintenance_windows: %s", result)
+    return result
 
 
 @ra_periodic_task(name="remote_analysis.detect_reservation_conflicts")

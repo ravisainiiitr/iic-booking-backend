@@ -8,7 +8,7 @@ from datetime import datetime
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.mail import send_mail
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import permissions, serializers, status, throttling
 from rest_framework.authentication import SessionAuthentication
@@ -914,52 +914,73 @@ def equipment_addition_request_approve(request, pk: int):
 
     review_notes = (request.data.get("review_notes") or "").strip()
 
-    with transaction.atomic():
-        create_kwargs = {
-            "name": obj.name.strip(),
-            "code": code,
-            "description": obj.description or "",
-            "make": obj.make or "",
-            "model_information": obj.model_information or "",
-            "location": obj.location or "",
-            "internal_department": obj.internal_department,
-            "status": EquipmentStatus.INACTIVE,
-            "important_instruction": _build_setup_instruction(obj),
-        }
-        if obj.slots_per_day is not None:
-            create_kwargs["slots_per_day"] = obj.slots_per_day
-        if obj.slot_duration_minutes is not None:
-            create_kwargs["slot_duration_minutes"] = obj.slot_duration_minutes
+    try:
+        with transaction.atomic():
+            create_kwargs = {
+                "name": obj.name.strip(),
+                "code": code,
+                "description": obj.description or "",
+                "make": obj.make or "",
+                "model_information": obj.model_information or "",
+                "location": obj.location or "",
+                "internal_department": obj.internal_department,
+                "status": EquipmentStatus.INACTIVE,
+                "important_instruction": _build_setup_instruction(obj),
+                # Required by production schema (NOT NULL); keep explicit for safety.
+                "analysis_default_session_minutes": 30,
+                "analysis_extension_minutes": 15,
+            }
+            if obj.slots_per_day is not None:
+                create_kwargs["slots_per_day"] = obj.slots_per_day
+            if obj.slot_duration_minutes is not None:
+                create_kwargs["slot_duration_minutes"] = obj.slot_duration_minutes
 
-        equipment = Equipment(**create_kwargs)
-        if obj.equipment_image:
-            try:
-                obj.equipment_image.open("rb")
-                equipment.image.save(
-                    obj.equipment_image.name.rsplit("/", 1)[-1],
-                    ContentFile(obj.equipment_image.read()),
-                    save=False,
-                )
-            except Exception:
-                logger.exception(
-                    "Could not copy proposal image to equipment for request %s", obj.id
-                )
-        equipment.save()
+            equipment = Equipment(**create_kwargs)
+            if obj.equipment_image:
+                try:
+                    obj.equipment_image.open("rb")
+                    equipment.image.save(
+                        obj.equipment_image.name.rsplit("/", 1)[-1],
+                        ContentFile(obj.equipment_image.read()),
+                        save=False,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Could not copy proposal image to equipment for request %s", obj.id
+                    )
+            equipment.save()
 
-        obj.status = EquipmentAdditionRequestStatus.APPROVED
-        obj.reviewed_by = request.user
-        obj.reviewed_at = timezone.now()
-        obj.review_notes = review_notes
-        obj.created_equipment = equipment
-        obj.save(
-            update_fields=[
-                "status",
-                "reviewed_by",
-                "reviewed_at",
-                "review_notes",
-                "created_equipment",
-                "updated_at",
-            ]
+            obj.status = EquipmentAdditionRequestStatus.APPROVED
+            obj.reviewed_by = request.user
+            obj.reviewed_at = timezone.now()
+            obj.review_notes = review_notes
+            obj.created_equipment = equipment
+            obj.save(
+                update_fields=[
+                    "status",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "review_notes",
+                    "created_equipment",
+                    "updated_at",
+                ]
+            )
+    except IntegrityError:
+        logger.exception("Approve equipment addition IntegrityError for request %s", pk)
+        return Response(
+            {
+                "error": (
+                    f"Equipment code '{code}' could not be created "
+                    "(duplicate code or database constraint)."
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except Exception:
+        logger.exception("Approve equipment addition failed for request %s", pk)
+        return Response(
+            {"error": "Failed to create equipment from this request. Check server logs."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
     try:

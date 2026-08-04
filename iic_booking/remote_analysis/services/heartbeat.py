@@ -87,9 +87,13 @@ class HeartbeatService:
         agent_reported = (heartbeat.current_state or "").upper()
         if workstation.enabled and workstation.status not in {
             WorkstationStatus.MAINTENANCE,
+            WorkstationStatus.CALIBRATION,
+            WorkstationStatus.SOFTWARE_UPDATE,
+            WorkstationStatus.HARDWARE_FAULT,
             WorkstationStatus.DISABLED,
             WorkstationStatus.PREPARING,
             WorkstationStatus.BUSY,
+            WorkstationStatus.RESERVED,
             WorkstationStatus.CLEANING,
         }:
             if agent_reported in {s.value for s in WorkstationStatus}:
@@ -174,6 +178,9 @@ def mark_stale_workstations_offline() -> int:
                 WorkstationStatus.OFFLINE,
                 WorkstationStatus.DISABLED,
                 WorkstationStatus.MAINTENANCE,
+                WorkstationStatus.CALIBRATION,
+                WorkstationStatus.SOFTWARE_UPDATE,
+                WorkstationStatus.HARDWARE_FAULT,
             ]
         )
         .exclude(id__in=protected_ids)

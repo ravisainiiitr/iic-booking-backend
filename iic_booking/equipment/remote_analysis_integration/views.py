@@ -303,6 +303,142 @@ def booking_analysis_files(request, booking_id: int):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_end(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/end/ — finish early; free environment for next user."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    body = request.data if hasattr(request, "data") else {}
+    reason = (body.get("reason") if isinstance(body, dict) else None) or "Finished early by user"
+    try:
+        payload = BookingRemoteAnalysisService().end_analysis(
+            booking, user=request.user, reason=str(reason)
+        )
+    except SessionError as exc:
+        http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden"} else status.HTTP_400_BAD_REQUEST
+        return Response({"detail": str(exc), "code": exc.code}, status=http)
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("booking_analysis_end failed booking_id=%s", booking_id)
+        return Response(
+            {
+                "detail": "Could not end analysis due to an unexpected server error.",
+                "code": "end_failed",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_start(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/start/ — explicit check-in Start Analysis Session."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking):
+        return Response({"detail": "Permission denied.", "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        payload = BookingRemoteAnalysisService().start_checked_in_session(
+            booking,
+            user=request.user,
+            client_ip=_client_ip(request),
+            request_absolute_uri_builder=_absolute_builder(request),
+            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+        )
+    except SessionError as exc:
+        http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden"} else status.HTTP_400_BAD_REQUEST
+        return Response({"detail": str(exc), "code": exc.code}, status=http)
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_release(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/release/ — release reserved PC without starting."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking):
+        return Response({"detail": "Permission denied.", "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    body = request.data if hasattr(request, "data") else {}
+    reason = (body.get("reason") if isinstance(body, dict) else None) or "Released by user"
+    try:
+        payload = BookingRemoteAnalysisService().release_checkin(
+            booking, user=request.user, reason=str(reason)
+        )
+    except SessionError as exc:
+        return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_extend(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/extend/ — extend session when queue is empty."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        payload = BookingRemoteAnalysisService().extend_analysis(booking, user=request.user)
+    except SessionError as exc:
+        http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden"} else status.HTTP_400_BAD_REQUEST
+        return Response({"detail": str(exc), "code": exc.code}, status=http)
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_files_upload(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/files/upload/ — past/extra data into RawData → agent Input."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    uploaded = request.FILES.get("file") or request.FILES.get("upload")
+    if not uploaded:
+        return Response({"detail": "Missing file", "code": "missing_file"}, status=status.HTTP_400_BAD_REQUEST)
+    folder = (request.data.get("folder") if hasattr(request, "data") else None) or "RawData"
+    try:
+        payload = BookingRemoteAnalysisService().upload_past_data(
+            booking,
+            user=request.user,
+            uploaded_file=uploaded,
+            folder=str(folder),
+        )
+    except SessionError as exc:
+        http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden"} else status.HTTP_400_BAD_REQUEST
+        return Response({"detail": str(exc), "code": exc.code}, status=http)
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def booking_analysis_archive(request, booking_id: int):
     """POST /api/v1/bookings/{id}/analysis/archive/ — owner or analysis staff only."""
     booking = get_object_or_404(Booking.objects.select_related("equipment", "user"), booking_id=booking_id)
