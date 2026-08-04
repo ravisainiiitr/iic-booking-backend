@@ -33,7 +33,8 @@
 | B1 — Reverse Tunnel restoration | `d4d50e29891bce543d6d9258958fb744df71d90e` | Accepted |
 | B2 — Remote Analysis execution engine | `500629b60992839fce99be2d2257230dfcb43ba3` | Accepted |
 | B3 — Deployment Center | `24fb089613ad7fd51dd39bde24ebf1f2845a385d` | Accepted |
-| B4 — Plug-and-Play Platform | `TBD (assigned after commit)` | In progress |
+| B4 — Plug-and-Play Platform | `61b151fdb66d5dffef84dbbe9786e05e458ad167` | Accepted |
+| B5 — Laboratory Infrastructure | `TBD (assigned after commit)` | In progress |
 
 ---
 

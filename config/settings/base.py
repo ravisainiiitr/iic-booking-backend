@@ -106,6 +106,7 @@ LOCAL_APPS = [
     "iic_booking.sync",
     "iic_booking.remote_analysis.apps.RemoteAnalysisConfig",
     "iic_booking.deployment.apps.DeploymentConfig",
+    "iic_booking.lab_infrastructure.apps.LabInfrastructureConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
