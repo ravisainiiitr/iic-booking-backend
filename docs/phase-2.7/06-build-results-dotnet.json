@@ -1,0 +1,20 @@
+[
+    {
+        "Repo":  "RAA",
+        "Command":  "dotnet build RemoteAnalysis.Agent.slnx -c Release",
+        "Exit":  0,
+        "Ok":  true
+    },
+    {
+        "Repo":  "DSA",
+        "Command":  "dotnet build DepartmentSyncAgent.Api.csproj -c Release",
+        "Exit":  0,
+        "Ok":  true
+    },
+    {
+        "Repo":  "Wizard",
+        "Command":  "dotnet build EquipmentPcConfigurationWizard.csproj -c Release",
+        "Exit":  0,
+        "Ok":  true
+    }
+]

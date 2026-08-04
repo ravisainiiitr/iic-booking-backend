@@ -1,0 +1,48 @@
+[
+    {
+        "Repo":  "Backend",
+        "Branch":  "feature/forward-port-reverse-tunnel",
+        "Detached":  false,
+        "HEAD":  "52ddcfc",
+        "Commits":  "159",
+        "DirtyLines":  155,
+        "Untracked":  97,
+        "BinObjDirs":  1,
+        "ArtifactsDir":  false
+    },
+    {
+        "Repo":  "Frontend",
+        "Branch":  "main",
+        "Detached":  false,
+        "HEAD":  "ffa5af4",
+        "Commits":  "181",
+        "DirtyLines":  13,
+        "Untracked":  4,
+        "BinObjDirs":  0,
+        "ArtifactsDir":  false
+    },
+    {
+        "Repo":  "DSA",
+        "Branch":  "recovery/dsa-phase-2.7",
+        "Detached":  false,
+        "HEAD":  "54f1966",
+        "Commits":  "1",
+        "DirtyLines":  1341,
+        "Untracked":  48,
+        "BinObjDirs":  12,
+        "ArtifactsDir":  true
+    },
+    {
+        "Repo":  "RAA",
+        "Branch":  "HEAD",
+        "Detached":  true,
+        "HEAD":  {
+
+                 },
+        "Commits":  0,
+        "DirtyLines":  6,
+        "Untracked":  75,
+        "BinObjDirs":  2,
+        "ArtifactsDir":  false
+    }
+]

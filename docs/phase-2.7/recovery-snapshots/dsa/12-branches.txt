@@ -1,0 +1,3 @@
+* (HEAD detached at 54f1966) 54f1966 Prepare repository for initial release
+  develop                    54f1966 [origin/develop] Prepare repository for initial release
+  main                       54f1966 [origin/main] Prepare repository for initial release

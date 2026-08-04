@@ -1,0 +1,2679 @@
+diff --git a/config/api_router.py b/config/api_router.py
+index 0f5a06a..384ae1e 100644
+--- a/config/api_router.py
++++ b/config/api_router.py
+@@ -437,6 +437,10 @@ urlpatterns = router.urls + [
+     path("v1/sync/", include("iic_booking.sync.urls")),
+     # Remote Analysis Agent control plane (Milestone 2) GÇö /api/v1/analysis/
+     path("v1/analysis/", include("iic_booking.remote_analysis.urls")),
++    # Deployment Center GÇö unified installer catalog (Main Admin)
++    path("v1/deployment/", include("iic_booking.deployment.urls")),
++    # Laboratory Infrastructure GÇö enterprise fleet lifecycle (Phase 2)
++    path("v1/lab/", include("iic_booking.lab_infrastructure.urls")),
+     # Booking Gåö Remote Analysis integration
+     path(
+         "v1/bookings/analysis/dashboard/",
+@@ -503,6 +507,31 @@ urlpatterns = router.urls + [
+         booking_ra_views.booking_analysis_files,
+         name="booking-analysis-files",
+     ),
++    path(
++        "v1/bookings/<int:booking_id>/analysis/files/upload/",
++        booking_ra_views.booking_analysis_files_upload,
++        name="booking-analysis-files-upload",
++    ),
++    path(
++        "v1/bookings/<int:booking_id>/analysis/end/",
++        booking_ra_views.booking_analysis_end,
++        name="booking-analysis-end",
++    ),
++    path(
++        "v1/bookings/<int:booking_id>/analysis/start/",
++        booking_ra_views.booking_analysis_start,
++        name="booking-analysis-start",
++    ),
++    path(
++        "v1/bookings/<int:booking_id>/analysis/release/",
++        booking_ra_views.booking_analysis_release,
++        name="booking-analysis-release",
++    ),
++    path(
++        "v1/bookings/<int:booking_id>/analysis/extend/",
++        booking_ra_views.booking_analysis_extend,
++        name="booking-analysis-extend",
++    ),
+     path(
+         "v1/bookings/<int:booking_id>/analysis/archive/",
+         booking_ra_views.booking_analysis_archive,
+@@ -574,6 +603,31 @@ urlpatterns = router.urls + [
+         booking_ra_views.booking_analysis_files,
+         name="booking-analysis-files-legacy",
+     ),
++    path(
++        "bookings/<int:booking_id>/analysis/files/upload/",
++        booking_ra_views.booking_analysis_files_upload,
++        name="booking-analysis-files-upload-legacy",
++    ),
++    path(
++        "bookings/<int:booking_id>/analysis/end/",
++        booking_ra_views.booking_analysis_end,
++        name="booking-analysis-end-legacy",
++    ),
++    path(
++        "bookings/<int:booking_id>/analysis/start/",
++        booking_ra_views.booking_analysis_start,
++        name="booking-analysis-start-legacy",
++    ),
++    path(
++        "bookings/<int:booking_id>/analysis/release/",
++        booking_ra_views.booking_analysis_release,
++        name="booking-analysis-release-legacy",
++    ),
++    path(
++        "bookings/<int:booking_id>/analysis/extend/",
++        booking_ra_views.booking_analysis_extend,
++        name="booking-analysis-extend-legacy",
++    ),
+     path(
+         "bookings/<int:booking_id>/analysis/archive/",
+         booking_ra_views.booking_analysis_archive,
+diff --git a/config/settings/base.py b/config/settings/base.py
+index c2858bb..bdd9a17 100644
+--- a/config/settings/base.py
++++ b/config/settings/base.py
+@@ -105,6 +105,8 @@ LOCAL_APPS = [
+     "iic_booking.payments",
+     "iic_booking.sync",
+     "iic_booking.remote_analysis.apps.RemoteAnalysisConfig",
++    "iic_booking.deployment.apps.DeploymentConfig",
++    "iic_booking.lab_infrastructure.apps.LabInfrastructureConfig",
+     # Your stuff: custom apps go here
+ ]
+ # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
+diff --git a/iic_booking/deployment/__init__.py b/iic_booking/deployment/__init__.py
+new file mode 100644
+index 0000000..1cb4658
+--- /dev/null
++++ b/iic_booking/deployment/__init__.py
+@@ -0,0 +1 @@
++"""Deployment Center package."""
+diff --git a/iic_booking/deployment/admin.py b/iic_booking/deployment/admin.py
+new file mode 100644
+index 0000000..00f538b
+--- /dev/null
++++ b/iic_booking/deployment/admin.py
+@@ -0,0 +1,22 @@
++"""Admin for Deployment Center models."""
++
++from django.contrib import admin
++
++from iic_booking.deployment.models import EquipmentPcWizardRelease
++
++
++@admin.register(EquipmentPcWizardRelease)
++class EquipmentPcWizardReleaseAdmin(admin.ModelAdmin):
++    list_display = (
++        "version",
++        "build_number",
++        "channel",
++        "release_date",
++        "signature_status",
++        "is_latest",
++        "is_active",
++        "download_count",
++    )
++    list_filter = ("channel", "signature_status", "is_latest", "is_active")
++    search_fields = ("version", "build_number", "release_notes", "sha256")
++    readonly_fields = ("sha256", "download_count", "created_at", "updated_at")
+diff --git a/iic_booking/deployment/apps.py b/iic_booking/deployment/apps.py
+new file mode 100644
+index 0000000..8418ec7
+--- /dev/null
++++ b/iic_booking/deployment/apps.py
+@@ -0,0 +1,9 @@
++"""Deployment Center GÇö unified installer catalog for Main Administrators."""
++
++from django.apps import AppConfig
++
++
++class DeploymentConfig(AppConfig):
++    default_auto_field = "django.db.models.BigAutoField"
++    name = "iic_booking.deployment"
++    verbose_name = "Deployment Center"
+diff --git a/iic_booking/deployment/management/__init__.py b/iic_booking/deployment/management/__init__.py
+new file mode 100644
+index 0000000..8b13789
+--- /dev/null
++++ b/iic_booking/deployment/management/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/iic_booking/deployment/management/commands/__init__.py b/iic_booking/deployment/management/commands/__init__.py
+new file mode 100644
+index 0000000..8b13789
+--- /dev/null
++++ b/iic_booking/deployment/management/commands/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/iic_booking/deployment/management/commands/publish_equipment_wizard.py b/iic_booking/deployment/management/commands/publish_equipment_wizard.py
+new file mode 100644
+index 0000000..26ab757
+--- /dev/null
++++ b/iic_booking/deployment/management/commands/publish_equipment_wizard.py
+@@ -0,0 +1,55 @@
++"""Publish Equipment PC Configuration Wizard EXE as latest portal release."""
++
++from __future__ import annotations
++
++import hashlib
++from datetime import date
++from pathlib import Path
++
++from django.core.files import File
++from django.core.management.base import BaseCommand, CommandError
++
++from iic_booking.deployment.models import EquipmentPcWizardRelease
++
++
++class Command(BaseCommand):
++    help = "Publish EquipmentPcConfigurationWizard.exe as EquipmentPcWizardRelease."
++
++    def add_arguments(self, parser):
++        parser.add_argument("path", type=str, help="Path to wizard EXE")
++        parser.add_argument(
++            "--release-version",
++            required=True,
++            dest="release_version",
++            help="Release version string (e.g. 1.0.0)",
++        )
++        parser.add_argument("--build", default="", dest="build_number")
++        parser.add_argument("--channel", default="stable")
++        parser.add_argument("--notes", default="")
++
++    def handle(self, *args, **options):
++        path = Path(options["path"])
++        if not path.is_file():
++            raise CommandError(f"File not found: {path}")
++        digest = hashlib.sha256(path.read_bytes()).hexdigest()
++        version = options["release_version"]
++        rel = EquipmentPcWizardRelease(
++            version=version,
++            build_number=options.get("build_number") or "",
++            channel=options["channel"],
++            release_date=date.today(),
++            release_notes=options["notes"] or f"Published {version}",
++            sha256=digest,
++            signature_status=EquipmentPcWizardRelease.SignatureStatus.UNSIGNED,
++            download_size_bytes=path.stat().st_size,
++            original_name=path.name,
++            is_active=True,
++            installation_guide_url="/deployment-center",
++            documentation_url="/deployment-center",
++            troubleshooting_guide_url="/deployment-center",
++        )
++        with path.open("rb") as fh:
++            rel.file.save(path.name, File(fh), save=False)
++        rel.save()
++        rel.mark_latest()
++        self.stdout.write(self.style.SUCCESS(f"Published wizard {rel.version} sha256={rel.sha256}"))
+diff --git a/iic_booking/deployment/migrations/0001_equipment_pc_wizard_release.py b/iic_booking/deployment/migrations/0001_equipment_pc_wizard_release.py
+new file mode 100644
+index 0000000..4d09478
+--- /dev/null
++++ b/iic_booking/deployment/migrations/0001_equipment_pc_wizard_release.py
+@@ -0,0 +1,79 @@
++# Generated manually for Equipment PC Wizard releases + Deployment Center
++
++import uuid
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    initial = True
++
++    dependencies = []
++
++    operations = [
++        migrations.CreateModel(
++            name="EquipmentPcWizardRelease",
++            fields=[
++                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ("product_name", models.CharField(default="Equipment PC Configuration Wizard", max_length=128)),
++                ("version", models.CharField(max_length=64)),
++                ("build_number", models.CharField(blank=True, default="", max_length=64)),
++                (
++                    "channel",
++                    models.CharField(
++                        choices=[("stable", "Stable"), ("rc", "Release Candidate"), ("beta", "Beta")],
++                        default="stable",
++                        max_length=16,
++                    ),
++                ),
++                ("release_date", models.DateField()),
++                ("release_notes", models.TextField(blank=True, default="")),
++                (
++                    "supported_windows",
++                    models.CharField(
++                        blank=True,
++                        default="Windows 10 Pro, Windows 11 Pro, Windows Server 2019/2022",
++                        max_length=255,
++                    ),
++                ),
++                ("download_size_bytes", models.BigIntegerField(default=0)),
++                ("sha256", models.CharField(blank=True, default="", max_length=64)),
++                (
++                    "signature_status",
++                    models.CharField(
++                        choices=[
++                            ("unsigned", "Unsigned"),
++                            ("signed", "Signed"),
++                            ("verified", "Verified"),
++                        ],
++                        default="unsigned",
++                        max_length=16,
++                    ),
++                ),
++                (
++                    "file",
++                    models.FileField(
++                        blank=True,
++                        max_length=512,
++                        null=True,
++                        upload_to="equipment_pc_wizard/%Y/%m/%d/",
++                    ),
++                ),
++                ("original_name", models.CharField(blank=True, default="", max_length=255)),
++                ("documentation_url", models.URLField(blank=True, default="")),
++                ("installation_guide_url", models.URLField(blank=True, default="")),
++                ("troubleshooting_guide_url", models.URLField(blank=True, default="")),
++                ("download_count", models.PositiveIntegerField(default=0)),
++                ("is_latest", models.BooleanField(default=False)),
++                ("is_active", models.BooleanField(default=True)),
++                ("created_at", models.DateTimeField(auto_now_add=True)),
++                ("updated_at", models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                "verbose_name": "Equipment PC Wizard release",
++                "verbose_name_plural": "Equipment PC Wizard releases",
++                "ordering": ["-release_date", "-created_at"],
++            },
++        ),
++    ]
+diff --git a/iic_booking/deployment/migrations/0002_compatibility_repair_packages.py b/iic_booking/deployment/migrations/0002_compatibility_repair_packages.py
+new file mode 100644
+index 0000000..917ceb9
+--- /dev/null
++++ b/iic_booking/deployment/migrations/0002_compatibility_repair_packages.py
+@@ -0,0 +1,54 @@
++# Phase 2 Deployment Center compatibility + repair packages
++
++from django.db import migrations, models
++import django.db.models.deletion
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("deployment", "0001_equipment_pc_wizard_release"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="equipmentpcwizardrelease",
++            name="compatibility",
++            field=models.JSONField(
++                blank=True,
++                default=dict,
++                help_text='e.g. {"min_portal":"1.0","min_dsa":"1.0","min_raa":"1.0"}',
++            ),
++        ),
++        migrations.AddField(
++            model_name="equipmentpcwizardrelease",
++            name="rollback_of",
++            field=models.ForeignKey(
++                blank=True,
++                null=True,
++                on_delete=django.db.models.deletion.SET_NULL,
++                related_name="rollbacks",
++                to="deployment.equipmentpcwizardrelease",
++            ),
++        ),
++        migrations.AddField(
++            model_name="equipmentpcwizardrelease",
++            name="repair_file",
++            field=models.FileField(
++                blank=True,
++                max_length=512,
++                null=True,
++                upload_to="equipment_pc_wizard/%Y/%m/%d/repair/",
++            ),
++        ),
++        migrations.AddField(
++            model_name="equipmentpcwizardrelease",
++            name="emergency_file",
++            field=models.FileField(
++                blank=True,
++                max_length=512,
++                null=True,
++                upload_to="equipment_pc_wizard/%Y/%m/%d/emergency/",
++            ),
++        ),
++    ]
+diff --git a/iic_booking/deployment/migrations/__init__.py b/iic_booking/deployment/migrations/__init__.py
+new file mode 100644
+index 0000000..8b13789
+--- /dev/null
++++ b/iic_booking/deployment/migrations/__init__.py
+@@ -0,0 +1 @@
++
+diff --git a/iic_booking/deployment/models.py b/iic_booking/deployment/models.py
+new file mode 100644
+index 0000000..3382d10
+--- /dev/null
++++ b/iic_booking/deployment/models.py
+@@ -0,0 +1,97 @@
++"""Unified Deployment Center GÇö installer catalog for Main Administrators."""
++
++from __future__ import annotations
++
++import uuid
++
++from django.db import models
++from django.utils.translation import gettext_lazy as _
++
++
++class EquipmentPcWizardRelease(models.Model):
++    """Published Equipment PC Configuration Wizard EXE."""
++
++    class Channel(models.TextChoices):
++        STABLE = "stable", _("Stable")
++        RC = "rc", _("Release Candidate")
++        BETA = "beta", _("Beta")
++
++    class SignatureStatus(models.TextChoices):
++        UNSIGNED = "unsigned", _("Unsigned")
++        SIGNED = "signed", _("Signed")
++        VERIFIED = "verified", _("Verified")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    product_name = models.CharField(max_length=128, default="Equipment PC Configuration Wizard")
++    version = models.CharField(max_length=64)
++    build_number = models.CharField(max_length=64, blank=True, default="")
++    channel = models.CharField(max_length=16, choices=Channel.choices, default=Channel.STABLE)
++    release_date = models.DateField()
++    release_notes = models.TextField(blank=True, default="")
++    supported_windows = models.CharField(
++        max_length=255,
++        blank=True,
++        default="Windows 10 Pro, Windows 11 Pro, Windows Server 2019/2022",
++    )
++    download_size_bytes = models.BigIntegerField(default=0)
++    sha256 = models.CharField(max_length=64, blank=True, default="")
++    signature_status = models.CharField(
++        max_length=16,
++        choices=SignatureStatus.choices,
++        default=SignatureStatus.UNSIGNED,
++    )
++    file = models.FileField(
++        upload_to="equipment_pc_wizard/%Y/%m/%d/",
++        max_length=512,
++        blank=True,
++        null=True,
++    )
++    original_name = models.CharField(max_length=255, blank=True, default="")
++    documentation_url = models.URLField(blank=True, default="")
++    installation_guide_url = models.URLField(blank=True, default="")
++    troubleshooting_guide_url = models.URLField(blank=True, default="")
++    download_count = models.PositiveIntegerField(default=0)
++    is_latest = models.BooleanField(default=False)
++    is_active = models.BooleanField(default=True)
++    # Phase 2 Deployment Center metadata
++    compatibility = models.JSONField(
++        blank=True,
++        default=dict,
++        help_text=_('e.g. {"min_portal":"1.0","min_dsa":"1.0","min_raa":"1.0"}'),
++    )
++    rollback_of = models.ForeignKey(
++        "self",
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="rollbacks",
++    )
++    repair_file = models.FileField(
++        upload_to="equipment_pc_wizard/%Y/%m/%d/repair/",
++        max_length=512,
++        blank=True,
++        null=True,
++    )
++    emergency_file = models.FileField(
++        upload_to="equipment_pc_wizard/%Y/%m/%d/emergency/",
++        max_length=512,
++        blank=True,
++        null=True,
++    )
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    class Meta:
++        ordering = ["-release_date", "-created_at"]
++        verbose_name = _("Equipment PC Wizard release")
++        verbose_name_plural = _("Equipment PC Wizard releases")
++
++    def __str__(self) -> str:
++        latest = " (latest)" if self.is_latest else ""
++        return f"{self.version}{latest}"
++
++    def mark_latest(self) -> None:
++        type(self).objects.filter(is_latest=True).exclude(pk=self.pk).update(is_latest=False)
++        if not self.is_latest:
++            self.is_latest = True
++            self.save(update_fields=["is_latest", "updated_at"])
+diff --git a/iic_booking/deployment/urls.py b/iic_booking/deployment/urls.py
+new file mode 100644
+index 0000000..2661b23
+--- /dev/null
++++ b/iic_booking/deployment/urls.py
+@@ -0,0 +1,28 @@
++"""URL routes for Deployment Center."""
++
++from django.urls import path
++
++from iic_booking.deployment import views
++
++app_name = "deployment"
++
++urlpatterns = [
++    path("center/", views.deployment_center, name="center"),
++    path("wizard/releases/", views.wizard_releases_collection, name="wizard-releases"),
++    path("wizard/releases/latest/", views.wizard_release_latest, name="wizard-latest"),
++    path(
++        "wizard/releases/latest/download-ticket/",
++        views.wizard_download_ticket,
++        name="wizard-latest-ticket",
++    ),
++    path(
++        "wizard/releases/<uuid:release_id>/download-ticket/",
++        views.wizard_download_ticket,
++        name="wizard-ticket",
++    ),
++    path(
++        "wizard/download/<str:token>/",
++        views.wizard_download_by_ticket,
++        name="wizard-ticket-download",
++    ),
++]
+diff --git a/iic_booking/deployment/views.py b/iic_booking/deployment/views.py
+new file mode 100644
+index 0000000..6094dd5
+--- /dev/null
++++ b/iic_booking/deployment/views.py
+@@ -0,0 +1,354 @@
++"""Deployment Center APIs GÇö aggregate catalog + Equipment PC Wizard releases."""
++
++from __future__ import annotations
++
++import os
++
++from django.shortcuts import get_object_or_404
++from django.utils import timezone
++from rest_framework import status
++from rest_framework.decorators import api_view, authentication_classes, permission_classes, parser_classes
++from rest_framework.parsers import FormParser, MultiPartParser, JSONParser
++from rest_framework.permissions import AllowAny, IsAuthenticated
++from rest_framework.response import Response
++
++from iic_booking.common_download import (
++    build_direct_download_url,
++    build_installer_file_response,
++)
++from iic_booking.installer_download_tickets import absolute_ticket_url, issue_ticket, parse_ticket
++from iic_booking.deployment.models import EquipmentPcWizardRelease
++from iic_booking.remote_analysis.installer.models import AgentInstallerRelease
++from iic_booking.sync.installer.models import DsaInstallerRelease
++from iic_booking.sync.installer.services import sha256_filefield
++from iic_booking.sync.permissions import CanManageDepartmentSync
++
++_MANAGE = [IsAuthenticated, CanManageDepartmentSync]
++
++
++def _serialize_dsa(rel: DsaInstallerRelease) -> dict:
++    return {
++        "product": "dsa",
++        "product_label": "Department Sync Agent",
++        "id": str(rel.id),
++        "version": rel.version,
++        "channel": rel.channel,
++        "release_date": rel.release_date.isoformat() if rel.release_date else None,
++        "release_notes": rel.release_notes,
++        "supported_windows": rel.supported_windows,
++        "download_size_bytes": rel.download_size_bytes
++        or (rel.file.size if rel.file else 0),
++        "sha256": rel.sha256,
++        "signature_status": rel.signature_status,
++        "signature_status_display": rel.get_signature_status_display(),
++        "has_file": bool(rel.file),
++        "has_offline_file": bool(rel.offline_file),
++        "original_name": rel.original_name
++        or (os.path.basename(rel.file.name) if rel.file else ""),
++        "documentation_url": rel.documentation_url,
++        "installation_guide_url": rel.installation_guide_url,
++        "troubleshooting_guide_url": rel.troubleshooting_guide_url,
++        "is_latest": rel.is_latest,
++        "is_active": rel.is_active,
++        "download_count": getattr(rel, "download_count", None),
++    }
++
++
++def _serialize_ra(rel: AgentInstallerRelease) -> dict:
++    return {
++        "product": "ra",
++        "product_label": "Remote Analysis Agent",
++        "id": str(rel.id),
++        "version": rel.version,
++        "channel": rel.channel,
++        "release_date": rel.release_date.isoformat() if rel.release_date else None,
++        "release_notes": rel.release_notes,
++        "supported_windows": rel.supported_windows,
++        "download_size_bytes": rel.download_size_bytes
++        or (rel.file.size if rel.file else 0),
++        "sha256": rel.sha256,
++        "signature_status": rel.signature_status,
++        "signature_status_display": rel.get_signature_status_display(),
++        "has_file": bool(rel.file),
++        "has_offline_file": bool(rel.offline_file),
++        "original_name": rel.original_name
++        or (os.path.basename(rel.file.name) if rel.file else ""),
++        "documentation_url": rel.documentation_url,
++        "installation_guide_url": rel.installation_guide_url,
++        "troubleshooting_guide_url": rel.troubleshooting_guide_url,
++        "is_latest": rel.is_latest,
++        "is_active": rel.is_active,
++        "download_count": getattr(rel, "download_count", None),
++    }
++
++
++def _serialize_wizard(rel: EquipmentPcWizardRelease) -> dict:
++    return {
++        "product": "eq_wizard",
++        "product_label": rel.product_name or "Equipment PC Configuration Wizard",
++        "id": str(rel.id),
++        "version": rel.version,
++        "build_number": rel.build_number,
++        "channel": rel.channel,
++        "release_date": rel.release_date.isoformat() if rel.release_date else None,
++        "release_notes": rel.release_notes,
++        "supported_windows": rel.supported_windows,
++        "download_size_bytes": rel.download_size_bytes
++        or (rel.file.size if rel.file else 0),
++        "sha256": rel.sha256,
++        "signature_status": rel.signature_status,
++        "signature_status_display": rel.get_signature_status_display(),
++        "has_file": bool(rel.file),
++        "has_offline_file": False,
++        "has_repair_file": bool(getattr(rel, "repair_file", None)),
++        "has_emergency_file": bool(getattr(rel, "emergency_file", None)),
++        "compatibility": getattr(rel, "compatibility", None) or {},
++        "rollback_of": str(rel.rollback_of_id) if getattr(rel, "rollback_of_id", None) else None,
++        "original_name": rel.original_name
++        or (os.path.basename(rel.file.name) if rel.file else ""),
++        "documentation_url": rel.documentation_url,
++        "installation_guide_url": rel.installation_guide_url,
++        "troubleshooting_guide_url": rel.troubleshooting_guide_url,
++        "is_latest": rel.is_latest,
++        "is_active": rel.is_active,
++        "download_count": rel.download_count,
++    }
++
++
++def _latest_dsa():
++    return (
++        DsaInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
++        or DsaInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
++    )
++
++
++def _latest_ra():
++    return (
++        AgentInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
++        or AgentInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
++    )
++
++
++def _latest_wizard():
++    return (
++        EquipmentPcWizardRelease.objects.filter(is_active=True, is_latest=True).first()
++        or EquipmentPcWizardRelease.objects.filter(is_active=True)
++        .order_by("-release_date")
++        .first()
++    )
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def deployment_center(request):
++    """Aggregate installer catalog for the Deployment Center UI."""
++    dsa = _latest_dsa()
++    ra = _latest_ra()
++    wizard = _latest_wizard()
++
++    previous_dsa = list(
++        DsaInstallerRelease.objects.filter(is_active=True)
++        .exclude(pk=dsa.pk if dsa else None)
++        .order_by("-release_date", "-created_at")[:5]
++    )
++    previous_ra = list(
++        AgentInstallerRelease.objects.filter(is_active=True)
++        .exclude(pk=ra.pk if ra else None)
++        .order_by("-release_date", "-created_at")[:5]
++    )
++    previous_wizard = list(
++        EquipmentPcWizardRelease.objects.filter(is_active=True)
++        .exclude(pk=wizard.pk if wizard else None)
++        .order_by("-release_date", "-created_at")[:5]
++    )
++
++    return Response(
++        {
++            "products": [
++                {
++                    "key": "dsa",
++                    "label": "Department Sync Agent",
++                    "guide_path": "/department-sync/agent-installer",
++                    "ticket_product": "dsa",
++                    "latest": _serialize_dsa(dsa) if dsa else None,
++                    "previous": [_serialize_dsa(r) for r in previous_dsa],
++                },
++                {
++                    "key": "ra",
++                    "label": "Remote Analysis Agent",
++                    "guide_path": "/remote-analysis/agent-installer",
++                    "ticket_product": "ra",
++                    "latest": _serialize_ra(ra) if ra else None,
++                    "previous": [_serialize_ra(r) for r in previous_ra],
++                },
++                {
++                    "key": "eq_wizard",
++                    "label": "Equipment PC Configuration Wizard",
++                    "guide_path": "/deployment-center",
++                    "ticket_product": "eq_wizard",
++                    "latest": _serialize_wizard(wizard) if wizard else None,
++                    "previous": [_serialize_wizard(r) for r in previous_wizard],
++                },
++            ],
++            "links": {
++                "dsa_guide": "/department-sync/agent-installer",
++                "ra_guide": "/remote-analysis/agent-installer",
++                "deployment_center": "/deployment-center",
++            },
++        }
++    )
++
++
++@api_view(["GET", "POST"])
++@permission_classes(_MANAGE)
++@parser_classes([JSONParser, MultiPartParser, FormParser])
++def wizard_releases_collection(request):
++    if request.method == "GET":
++        qs = EquipmentPcWizardRelease.objects.filter(is_active=True).order_by(
++            "-is_latest", "-release_date", "-created_at"
++        )
++        include_inactive = str(request.query_params.get("all") or "") in {"1", "true", "yes"}
++        if include_inactive:
++            qs = EquipmentPcWizardRelease.objects.all().order_by(
++                "-is_latest", "-release_date", "-created_at"
++            )
++        return Response(
++            {"count": qs.count(), "results": [_serialize_wizard(r) for r in qs[:50]]}
++        )
++
++    version = (request.data.get("version") or "").strip()
++    if not version:
++        return Response({"detail": "version is required"}, status=status.HTTP_400_BAD_REQUEST)
++    uploaded = request.FILES.get("file") or request.FILES.get("installer")
++
++    rel = EquipmentPcWizardRelease(
++        product_name=(request.data.get("product_name") or "Equipment PC Configuration Wizard").strip(),
++        version=version,
++        build_number=(request.data.get("build_number") or "").strip(),
++        channel=(request.data.get("channel") or EquipmentPcWizardRelease.Channel.STABLE).strip(),
++        release_date=request.data.get("release_date") or timezone.now().date(),
++        release_notes=request.data.get("release_notes") or "",
++        supported_windows=request.data.get("supported_windows")
++        or "Windows 10 Pro, Windows 11 Pro, Windows Server 2019/2022",
++        signature_status=(
++            request.data.get("signature_status")
++            or EquipmentPcWizardRelease.SignatureStatus.UNSIGNED
++        ),
++        documentation_url=request.data.get("documentation_url") or "",
++        installation_guide_url=request.data.get("installation_guide_url") or "/deployment-center",
++        troubleshooting_guide_url=request.data.get("troubleshooting_guide_url") or "",
++        is_active=True,
++    )
++    if uploaded:
++        rel.file = uploaded
++        rel.original_name = getattr(uploaded, "name", "") or ""
++        rel.download_size_bytes = getattr(uploaded, "size", 0) or 0
++    rel.save()
++    if rel.file:
++        rel.sha256 = sha256_filefield(rel.file)
++        rel.save(update_fields=["sha256", "updated_at"])
++    mark_latest = str(request.data.get("is_latest") or "1") in {"1", "true", "yes"}
++    if mark_latest:
++        rel.mark_latest()
++    return Response(_serialize_wizard(rel), status=status.HTTP_201_CREATED)
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def wizard_release_latest(request):
++    rel = _latest_wizard()
++    if not rel:
++        return Response(
++            {"detail": "No Equipment PC Wizard release published."},
++            status=status.HTTP_404_NOT_FOUND,
++        )
++    return Response(_serialize_wizard(rel))
++
++
++def _resolve_wizard(release_id=None):
++    if release_id:
++        return get_object_or_404(EquipmentPcWizardRelease, pk=release_id, is_active=True)
++    return _latest_wizard()
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def wizard_download_ticket(request, release_id=None):
++    rel = _resolve_wizard(release_id)
++    if not rel:
++        return Response(
++            {"detail": "No Equipment PC Wizard release published."},
++            status=status.HTTP_404_NOT_FOUND,
++        )
++    if not rel.file:
++        return Response({"detail": "Installer file not available."}, status=status.HTTP_404_NOT_FOUND)
++
++    token = issue_ticket(
++        product="eq_wizard",
++        release_id=str(rel.id),
++        offline=False,
++        user_id=getattr(request.user, "pk", None),
++    )
++    name = rel.original_name or os.path.basename(rel.file.name)
++    try:
++        size = int(getattr(rel.file, "size", 0) or 0) or int(rel.download_size_bytes or 0)
++    except Exception:
++        size = int(rel.download_size_bytes or 0)
++
++    direct = build_direct_download_url(rel.file, download_name=name, expires_in=900)
++    url = direct or absolute_ticket_url(request, "eq_wizard", token)
++
++    return Response(
++        {
++            "token": token,
++            "url": url,
++            "direct": bool(direct),
++            "expires_in": 900,
++            "filename": name,
++            "size_bytes": size,
++            "sha256": rel.sha256 or "",
++            "version": rel.version,
++            "offline": False,
++        }
++    )
++
++
++@api_view(["GET"])
++@authentication_classes([])
++@permission_classes([AllowAny])
++def wizard_download_by_ticket(request, token: str):
++    from django.core import signing
++
++    try:
++        data = parse_ticket(token)
++    except signing.SignatureExpired:
++        return Response(
++            {"detail": "Download link expired. Please try again."},
++            status=status.HTTP_403_FORBIDDEN,
++        )
++    except signing.BadSignature:
++        return Response({"detail": "Invalid download link."}, status=status.HTTP_403_FORBIDDEN)
++
++    if data.get("p") != "eq_wizard":
++        return Response({"detail": "Invalid download link."}, status=status.HTTP_403_FORBIDDEN)
++
++    rel = EquipmentPcWizardRelease.objects.filter(pk=data["r"], is_active=True).first()
++    if not rel or not rel.file:
++        return Response({"detail": "Installer release not found."}, status=status.HTTP_404_NOT_FOUND)
++
++    EquipmentPcWizardRelease.objects.filter(pk=rel.pk).update(
++        download_count=(rel.download_count or 0) + 1
++    )
++    name = rel.original_name or os.path.basename(rel.file.name)
++    hdrs = {
++        "sha256": rel.sha256 or "",
++        "version": rel.version,
++        "size_bytes": int(getattr(rel.file, "size", 0) or 0) or int(rel.download_size_bytes or 0),
++    }
++    return build_installer_file_response(
++        rel.file,
++        download_name=name,
++        default_name="EquipmentPcConfigurationWizard.exe",
++        prefer_redirect=True,
++        **hdrs,
++    )
+diff --git a/iic_booking/lab_infrastructure/__init__.py b/iic_booking/lab_infrastructure/__init__.py
+new file mode 100644
+index 0000000..0e609fe
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/__init__.py
+@@ -0,0 +1 @@
++"""Laboratory Infrastructure package."""
+diff --git a/iic_booking/lab_infrastructure/admin.py b/iic_booking/lab_infrastructure/admin.py
+new file mode 100644
+index 0000000..dae5790
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/admin.py
+@@ -0,0 +1,48 @@
++"""Django admin for Lab Infrastructure models."""
++
++from django.contrib import admin
++
++from iic_booking.lab_infrastructure.models import (
++    ConfigurationAck,
++    ConfigurationChange,
++    LabAlert,
++    LabAuditEvent,
++    LabRepairAction,
++)
++
++
++@admin.register(ConfigurationChange)
++class ConfigurationChangeAdmin(admin.ModelAdmin):
++    list_display = ("sync_profile", "configuration_version", "reason", "applied_by", "created_at")
++    list_filter = ("created_at",)
++
++
++@admin.register(ConfigurationAck)
++class ConfigurationAckAdmin(admin.ModelAdmin):
++    list_display = ("sync_agent", "equipment_pc_id", "configuration_version", "status", "applied_at")
++    list_filter = ("status",)
++
++
++@admin.register(LabRepairAction)
++class LabRepairActionAdmin(admin.ModelAdmin):
++    list_display = ("node_kind", "node_id", "action", "status", "requested_by", "created_at")
++    list_filter = ("action", "status")
++
++
++@admin.register(LabAuditEvent)
++class LabAuditEventAdmin(admin.ModelAdmin):
++    list_display = ("event_type", "node_kind", "node_id", "success", "created_at")
++    list_filter = ("event_type", "success")
++
++
++@admin.register(LabAlert)
++class LabAlertAdmin(admin.ModelAdmin):
++    list_display = ("code", "severity", "status", "title", "node_id", "created_at")
++    list_filter = ("severity", "status", "code")
++    actions = ("resolve_selected",)
++
++    @admin.action(description="Resolve selected alerts")
++    def resolve_selected(self, request, queryset):
++        from django.utils import timezone
++
++        queryset.update(status=LabAlert.Status.RESOLVED, resolved_at=timezone.now())
+diff --git a/iic_booking/lab_infrastructure/apps.py b/iic_booking/lab_infrastructure/apps.py
+new file mode 100644
+index 0000000..4c1abc6
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/apps.py
+@@ -0,0 +1,12 @@
++"""Laboratory Infrastructure GÇö enterprise fleet aggregation (Phase 2)."""
++
++from django.apps import AppConfig
++
++
++class LabInfrastructureConfig(AppConfig):
++    default_auto_field = "django.db.models.BigAutoField"
++    name = "iic_booking.lab_infrastructure"
++    verbose_name = "Laboratory Infrastructure"
++
++    def ready(self) -> None:
++        from iic_booking.lab_infrastructure import signals  # noqa: F401
+diff --git a/iic_booking/lab_infrastructure/management/__init__.py b/iic_booking/lab_infrastructure/management/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/iic_booking/lab_infrastructure/management/commands/__init__.py b/iic_booking/lab_infrastructure/management/commands/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/iic_booking/lab_infrastructure/management/commands/run_lab_health_detectors.py b/iic_booking/lab_infrastructure/management/commands/run_lab_health_detectors.py
+new file mode 100644
+index 0000000..eab090c
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/management/commands/run_lab_health_detectors.py
+@@ -0,0 +1,13 @@
++"""Celery / management entry for lab health detectors."""
++
++from django.core.management.base import BaseCommand
++
++from iic_booking.lab_infrastructure.services.detectors import run_health_detectors
++
++
++class Command(BaseCommand):
++    help = "Run Laboratory Infrastructure health detectors (offline, drift, disk, duplicates)."
++
++    def handle(self, *args, **options):
++        result = run_health_detectors()
++        self.stdout.write(self.style.SUCCESS(str(result)))
+diff --git a/iic_booking/lab_infrastructure/migrations/0001_initial.py b/iic_booking/lab_infrastructure/migrations/0001_initial.py
+new file mode 100644
+index 0000000..67dd5c4
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/migrations/0001_initial.py
+@@ -0,0 +1,206 @@
++# Generated manually for Laboratory Infrastructure Phase 2
++
++import uuid
++
++from django.conf import settings
++from django.db import migrations, models
++import django.db.models.deletion
++
++
++class Migration(migrations.Migration):
++
++    initial = True
++
++    dependencies = [
++        ("sync", "0018_equipment_pc_ip_reservation"),
++        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name="ConfigurationChange",
++            fields=[
++                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ("configuration_version", models.PositiveIntegerField()),
++                ("previous_value", models.JSONField(blank=True, default=dict)),
++                ("new_value", models.JSONField(blank=True, default=dict)),
++                ("reason", models.CharField(blank=True, default="", max_length=500)),
++                ("created_at", models.DateTimeField(auto_now_add=True)),
++                (
++                    "applied_by",
++                    models.ForeignKey(
++                        blank=True,
++                        null=True,
++                        on_delete=django.db.models.deletion.SET_NULL,
++                        related_name="lab_configuration_changes",
++                        to=settings.AUTH_USER_MODEL,
++                    ),
++                ),
++                (
++                    "sync_profile",
++                    models.ForeignKey(
++                        on_delete=django.db.models.deletion.CASCADE,
++                        related_name="configuration_changes",
++                        to="sync.equipmentsyncprofile",
++                    ),
++                ),
++            ],
++            options={"ordering": ["-created_at"]},
++        ),
++        migrations.CreateModel(
++            name="ConfigurationAck",
++            fields=[
++                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ("equipment_pc_id", models.CharField(blank=True, default="", max_length=64)),
++                ("configuration_version", models.PositiveIntegerField()),
++                (
++                    "status",
++                    models.CharField(
++                        choices=[("pending", "Pending"), ("applied", "Applied"), ("failed", "Failed")],
++                        default="pending",
++                        max_length=16,
++                    ),
++                ),
++                ("error_message", models.TextField(blank=True, default="")),
++                ("applied_at", models.DateTimeField(blank=True, null=True)),
++                ("created_at", models.DateTimeField(auto_now_add=True)),
++                ("updated_at", models.DateTimeField(auto_now=True)),
++                (
++                    "sync_agent",
++                    models.ForeignKey(
++                        blank=True,
++                        null=True,
++                        on_delete=django.db.models.deletion.CASCADE,
++                        related_name="configuration_acks",
++                        to="sync.departmentsyncagent",
++                    ),
++                ),
++                (
++                    "sync_profile",
++                    models.ForeignKey(
++                        blank=True,
++                        null=True,
++                        on_delete=django.db.models.deletion.CASCADE,
++                        related_name="configuration_acks",
++                        to="sync.equipmentsyncprofile",
++                    ),
++                ),
++            ],
++            options={"ordering": ["-created_at"]},
++        ),
++        migrations.CreateModel(
++            name="LabRepairAction",
++            fields=[
++                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ("node_kind", models.CharField(max_length=32)),
++                ("node_id", models.CharField(max_length=64)),
++                ("action", models.CharField(max_length=32)),
++                (
++                    "status",
++                    models.CharField(
++                        choices=[
++                            ("queued", "Queued"),
++                            ("sent", "Sent"),
++                            ("succeeded", "Succeeded"),
++                            ("failed", "Failed"),
++                        ],
++                        default="queued",
++                        max_length=16,
++                    ),
++                ),
++                ("result", models.JSONField(blank=True, default=dict)),
++                ("error_message", models.TextField(blank=True, default="")),
++                ("created_at", models.DateTimeField(auto_now_add=True)),
++                ("updated_at", models.DateTimeField(auto_now=True)),
++                (
++                    "requested_by",
++                    models.ForeignKey(
++                        blank=True,
++                        null=True,
++                        on_delete=django.db.models.deletion.SET_NULL,
++                        related_name="lab_repair_actions",
++                        to=settings.AUTH_USER_MODEL,
++                    ),
++                ),
++            ],
++            options={"ordering": ["-created_at"]},
++        ),
++        migrations.CreateModel(
++            name="LabAuditEvent",
++            fields=[
++                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ("event_type", models.CharField(db_index=True, max_length=64)),
++                ("message", models.TextField(blank=True, default="")),
++                ("node_kind", models.CharField(blank=True, default="", max_length=32)),
++                ("node_id", models.CharField(blank=True, default="", max_length=64)),
++                ("payload", models.JSONField(blank=True, default=dict)),
++                ("success", models.BooleanField(default=True)),
++                ("created_at", models.DateTimeField(auto_now_add=True, db_index=True)),
++                (
++                    "actor",
++                    models.ForeignKey(
++                        blank=True,
++                        null=True,
++                        on_delete=django.db.models.deletion.SET_NULL,
++                        related_name="lab_audit_events",
++                        to=settings.AUTH_USER_MODEL,
++                    ),
++                ),
++            ],
++            options={"ordering": ["-created_at"]},
++        ),
++        migrations.CreateModel(
++            name="LabAlert",
++            fields=[
++                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ("code", models.CharField(db_index=True, max_length=64)),
++                (
++                    "severity",
++                    models.CharField(
++                        choices=[("warning", "Warning"), ("error", "Error"), ("critical", "Critical")],
++                        default="warning",
++                        max_length=16,
++                    ),
++                ),
++                (
++                    "status",
++                    models.CharField(
++                        choices=[
++                            ("open", "Open"),
++                            ("acknowledged", "Acknowledged"),
++                            ("resolved", "Resolved"),
++                        ],
++                        default="open",
++                        max_length=16,
++                    ),
++                ),
++                ("title", models.CharField(max_length=255)),
++                ("detail", models.TextField(blank=True, default="")),
++                ("node_kind", models.CharField(blank=True, default="", max_length=32)),
++                ("node_id", models.CharField(blank=True, default="", max_length=64)),
++                ("department_id", models.IntegerField(blank=True, db_index=True, null=True)),
++                ("source", models.CharField(blank=True, default="lab", max_length=32)),
++                ("fingerprint", models.CharField(blank=True, db_index=True, default="", max_length=128)),
++                ("created_at", models.DateTimeField(auto_now_add=True)),
++                ("updated_at", models.DateTimeField(auto_now=True)),
++                ("resolved_at", models.DateTimeField(blank=True, null=True)),
++            ],
++            options={"ordering": ["-created_at"]},
++        ),
++        migrations.AddIndex(
++            model_name="configurationchange",
++            index=models.Index(fields=["sync_profile", "configuration_version"], name="lab_infra_c_sync_pr_idx"),
++        ),
++        migrations.AddIndex(
++            model_name="configurationack",
++            index=models.Index(fields=["configuration_version", "status"], name="lab_infra_c_configu_idx"),
++        ),
++        migrations.AddIndex(
++            model_name="labauditevent",
++            index=models.Index(fields=["event_type", "created_at"], name="lab_infra_l_event_t_idx"),
++        ),
++        migrations.AddIndex(
++            model_name="labalert",
++            index=models.Index(fields=["status", "severity"], name="lab_infra_l_status_idx"),
++        ),
++    ]
+diff --git a/iic_booking/lab_infrastructure/migrations/__init__.py b/iic_booking/lab_infrastructure/migrations/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/iic_booking/lab_infrastructure/models.py b/iic_booking/lab_infrastructure/models.py
+new file mode 100644
+index 0000000..b1ad845
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/models.py
+@@ -0,0 +1,189 @@
++"""Lab Infrastructure domain models GÇö config history, acks, repair audit."""
++
++from __future__ import annotations
++
++import uuid
++
++from django.conf import settings
++from django.db import models
++from django.utils.translation import gettext_lazy as _
++
++
++class LabNodeKind(models.TextChoices):
++    DSA = "dsa", _("Department Sync Agent")
++    EQUIPMENT_PC = "equipment_pc", _("Equipment PC")
++    RAA = "raa", _("Remote Analysis Agent")
++    ANALYSIS_PC = "analysis_pc", _("Analysis PC")
++
++
++class LabNodeStatus(models.TextChoices):
++    ONLINE = "online", _("Online")
++    OFFLINE = "offline", _("Offline")
++    SYNCHRONIZING = "synchronizing", _("Synchronizing")
++    BUSY = "busy", _("Busy")
++    MAINTENANCE = "maintenance", _("Maintenance")
++    COMMISSIONING = "commissioning", _("Commissioning")
++    ERROR = "error", _("Error")
++    WAITING = "waiting", _("Waiting")
++
++
++class ConfigurationChange(models.Model):
++    """History of Equipment Sync Profile configuration changes (Portal master)."""
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    sync_profile = models.ForeignKey(
++        "sync.EquipmentSyncProfile",
++        on_delete=models.CASCADE,
++        related_name="configuration_changes",
++    )
++    configuration_version = models.PositiveIntegerField()
++    previous_value = models.JSONField(default=dict, blank=True)
++    new_value = models.JSONField(default=dict, blank=True)
++    reason = models.CharField(max_length=500, blank=True, default="")
++    applied_by = models.ForeignKey(
++        settings.AUTH_USER_MODEL,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="lab_configuration_changes",
++    )
++    created_at = models.DateTimeField(auto_now_add=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++        indexes = [models.Index(fields=["sync_profile", "configuration_version"])]
++
++
++class ConfigurationAck(models.Model):
++    """Agent / Equipment PC acknowledgement of a configuration version."""
++
++    class Status(models.TextChoices):
++        PENDING = "pending", _("Pending")
++        APPLIED = "applied", _("Applied")
++        FAILED = "failed", _("Failed")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    sync_agent = models.ForeignKey(
++        "sync.DepartmentSyncAgent",
++        on_delete=models.CASCADE,
++        related_name="configuration_acks",
++        null=True,
++        blank=True,
++    )
++    sync_profile = models.ForeignKey(
++        "sync.EquipmentSyncProfile",
++        on_delete=models.CASCADE,
++        related_name="configuration_acks",
++        null=True,
++        blank=True,
++    )
++    equipment_pc_id = models.CharField(max_length=64, blank=True, default="")
++    configuration_version = models.PositiveIntegerField()
++    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
++    error_message = models.TextField(blank=True, default="")
++    applied_at = models.DateTimeField(null=True, blank=True)
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++        indexes = [
++            models.Index(fields=["configuration_version", "status"]),
++            models.Index(fields=["equipment_pc_id"]),
++        ]
++
++
++class LabRepairAction(models.Model):
++    """Self-heal / repair command issued from Laboratory Infrastructure."""
++
++    class Action(models.TextChoices):
++        REPAIR = "repair", _("Repair")
++        RECONFIGURE = "reconfigure", _("Reconfigure")
++        RECOMMISSION = "recommission", _("Recommission")
++        RESTART_AGENT = "restart_agent", _("Restart Agent")
++        REFRESH_CONFIGURATION = "refresh_configuration", _("Refresh Configuration")
++        RESCAN_SOFTWARE = "rescan_software", _("Rescan Software")
++        RETRY_SYNCHRONIZATION = "retry_synchronization", _("Retry Synchronization")
++
++    class Status(models.TextChoices):
++        QUEUED = "queued", _("Queued")
++        SENT = "sent", _("Sent")
++        SUCCEEDED = "succeeded", _("Succeeded")
++        FAILED = "failed", _("Failed")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    node_kind = models.CharField(max_length=32, choices=LabNodeKind.choices)
++    node_id = models.CharField(max_length=64)
++    action = models.CharField(max_length=32, choices=Action.choices)
++    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
++    requested_by = models.ForeignKey(
++        settings.AUTH_USER_MODEL,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="lab_repair_actions",
++    )
++    result = models.JSONField(default=dict, blank=True)
++    error_message = models.TextField(blank=True, default="")
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++
++
++class LabAuditEvent(models.Model):
++    """Unified audit events for Lab Infrastructure (complements SyncLog / WorkstationEvent)."""
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    event_type = models.CharField(max_length=64, db_index=True)
++    message = models.TextField(blank=True, default="")
++    node_kind = models.CharField(max_length=32, blank=True, default="")
++    node_id = models.CharField(max_length=64, blank=True, default="")
++    actor = models.ForeignKey(
++        settings.AUTH_USER_MODEL,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="lab_audit_events",
++    )
++    payload = models.JSONField(default=dict, blank=True)
++    success = models.BooleanField(default=True)
++    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++        indexes = [models.Index(fields=["event_type", "created_at"])]
++
++
++class LabAlert(models.Model):
++    """Unified alerts for Laboratory Infrastructure dashboard."""
++
++    class Severity(models.TextChoices):
++        WARNING = "warning", _("Warning")
++        ERROR = "error", _("Error")
++        CRITICAL = "critical", _("Critical")
++
++    class Status(models.TextChoices):
++        OPEN = "open", _("Open")
++        ACKNOWLEDGED = "acknowledged", _("Acknowledged")
++        RESOLVED = "resolved", _("Resolved")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    code = models.CharField(max_length=64, db_index=True)
++    severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.WARNING)
++    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
++    title = models.CharField(max_length=255)
++    detail = models.TextField(blank=True, default="")
++    node_kind = models.CharField(max_length=32, blank=True, default="")
++    node_id = models.CharField(max_length=64, blank=True, default="")
++    department_id = models.IntegerField(null=True, blank=True, db_index=True)
++    source = models.CharField(max_length=32, blank=True, default="lab")  # lab|dsa|ra
++    fingerprint = models.CharField(max_length=128, blank=True, default="", db_index=True)
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++    resolved_at = models.DateTimeField(null=True, blank=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++        indexes = [models.Index(fields=["status", "severity"])]
+diff --git a/iic_booking/lab_infrastructure/services/__init__.py b/iic_booking/lab_infrastructure/services/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/iic_booking/lab_infrastructure/services/detectors.py b/iic_booking/lab_infrastructure/services/detectors.py
+new file mode 100644
+index 0000000..7080e30
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/services/detectors.py
+@@ -0,0 +1,141 @@
++"""Health detectors that open LabAlert rows (Celery-friendly)."""
++
++from __future__ import annotations
++
++from datetime import timedelta
++
++from django.utils import timezone
++
++from iic_booking.lab_infrastructure.models import LabAlert
++from iic_booking.remote_analysis.constants import HEARTBEAT_OFFLINE_SECONDS
++from iic_booking.remote_analysis.models import AnalysisWorkstation
++from iic_booking.remote_analysis.services.fleet_inventory import fleet_inventory
++from iic_booking.sync.admin.constants import heartbeat_timeout_seconds
++from iic_booking.sync.models import DepartmentSyncAgent
++from iic_booking.sync.services.tokens import agent_expected_versions
++
++
++def _upsert_alert(*, code: str, fingerprint: str, severity: str, title: str, detail: str, node_kind: str, node_id: str):
++    existing = LabAlert.objects.filter(fingerprint=fingerprint, status__in=["open", "acknowledged"]).first()
++    if existing:
++        existing.detail = detail
++        existing.severity = severity
++        existing.title = title
++        existing.updated_at = timezone.now()
++        existing.save(update_fields=["detail", "severity", "title", "updated_at"])
++        return existing
++    return LabAlert.objects.create(
++        code=code,
++        fingerprint=fingerprint,
++        severity=severity,
++        title=title,
++        detail=detail,
++        node_kind=node_kind,
++        node_id=node_id,
++        source="lab",
++    )
++
++
++def run_health_detectors() -> dict:
++    """Detect offline agents, heartbeat timeouts, config drift, disk full, duplicates."""
++    opened = 0
++    now = timezone.now()
++    dsa_timeout = heartbeat_timeout_seconds()
++
++    for agent in DepartmentSyncAgent.objects.filter(is_active=True).iterator():
++        node_id = f"dsa:{agent.pk}"
++        age = (now - agent.last_heartbeat_at).total_seconds() if agent.last_heartbeat_at else None
++        if age is None or age > dsa_timeout:
++            _upsert_alert(
++                code="heartbeat_timeout",
++                fingerprint=f"hb-timeout-{node_id}",
++                severity="critical" if age is None or age > dsa_timeout * 2 else "error",
++                title=f"DSA offline: {agent.agent_name}",
++                detail=f"Last heartbeat age={age}",
++                node_kind="dsa",
++                node_id=node_id,
++            )
++            opened += 1
++        try:
++            expected_cfg, _ = agent_expected_versions(agent)
++            reported = agent.last_reported_configuration_version
++            if reported is not None and expected_cfg is not None and int(reported) != int(expected_cfg):
++                _upsert_alert(
++                    code="configuration_drift",
++                    fingerprint=f"cfg-drift-{node_id}",
++                    severity="warning",
++                    title=f"Config drift: {agent.agent_name}",
++                    detail=f"reported={reported} expected={expected_cfg}",
++                    node_kind="dsa",
++                    node_id=node_id,
++                )
++                opened += 1
++        except Exception:
++            pass
++
++        # Equipment PC rollup from latest heartbeat details
++        from iic_booking.sync.models import AgentHeartbeat
++
++        hb = AgentHeartbeat.objects.filter(sync_agent=agent).order_by("-reported_at").first()
++        if hb and isinstance((hb.details or {}).get("equipment_pcs"), list):
++            for pc in hb.details["equipment_pcs"]:
++                disk = pc.get("disk_used_percent") or pc.get("diskUsedPercent")
++                mac = pc.get("mac_address") or pc.get("macAddress") or "unknown"
++                eq_id = f"eqpc:{pc.get('id') or mac}"
++                if disk is not None and float(disk) >= 95:
++                    _upsert_alert(
++                        code="disk_full",
++                        fingerprint=f"disk-{eq_id}",
++                        severity="critical",
++                        title=f"Disk nearly full on {pc.get('hostname') or mac}",
++                        detail=f"Disk used {disk}%",
++                        node_kind="equipment_pc",
++                        node_id=eq_id,
++                    )
++                    opened += 1
++                if pc.get("last_error") or pc.get("lastError"):
++                    _upsert_alert(
++                        code="equipment_pc_error",
++                        fingerprint=f"err-{eq_id}",
++                        severity="error",
++                        title=f"Equipment PC error: {pc.get('hostname') or mac}",
++                        detail=str(pc.get("last_error") or pc.get("lastError")),
++                        node_kind="equipment_pc",
++                        node_id=eq_id,
++                    )
++                    opened += 1
++
++    for ws in AnalysisWorkstation.objects.filter(enabled=True).iterator():
++        node_id = f"raa:{ws.pk}"
++        age = (now - ws.last_heartbeat).total_seconds() if ws.last_heartbeat else None
++        if age is None or age > HEARTBEAT_OFFLINE_SECONDS:
++            _upsert_alert(
++                code="analysis_pc_offline",
++                fingerprint=f"hb-timeout-{node_id}",
++                severity="critical",
++                title=f"Analysis PC offline: {ws.hostname}",
++                detail=f"Last heartbeat age={age}",
++                node_kind="analysis_pc",
++                node_id=node_id,
++            )
++            opened += 1
++
++    try:
++        from iic_booking.remote_analysis.services.workstation_identity import WorkstationIdentityService
++
++        for d in WorkstationIdentityService().list_duplicates() or []:
++            fp = f"dup-{d.get('fingerprint') or d.get('key') or d.get('hostname') or id(d)}"
++            _upsert_alert(
++                code="duplicate_registration",
++                fingerprint=str(fp)[:128],
++                severity="warning",
++                title="Duplicate Analysis PC registration",
++                detail=str(d)[:500],
++                node_kind="analysis_pc",
++                node_id=str(d.get("id") or d.get("hostname") or ""),
++            )
++            opened += 1
++    except Exception:
++        pass
++
++    return {"opened_or_updated": opened, "generated_at": now.isoformat()}
+diff --git a/iic_booking/lab_infrastructure/services/fleet.py b/iic_booking/lab_infrastructure/services/fleet.py
+new file mode 100644
+index 0000000..e73509f
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/services/fleet.py
+@@ -0,0 +1,336 @@
++"""Aggregate Laboratory Infrastructure fleet tree from DSA + RA sources."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from django.utils import timezone
++
++from iic_booking.lab_infrastructure.models import LabNodeKind, LabNodeStatus
++from iic_booking.remote_analysis.constants import HEARTBEAT_OFFLINE_SECONDS, WorkstationStatus
++from iic_booking.remote_analysis.models import AnalysisWorkstation, WorkstationHeartbeat
++from iic_booking.remote_analysis.services.fleet_inventory import fleet_inventory
++from iic_booking.sync.admin.constants import heartbeat_timeout_seconds
++from iic_booking.sync.models import AgentHeartbeat, DepartmentSyncAgent, EquipmentSyncProfile
++
++
++def _age_seconds(ts) -> int | None:
++    if not ts:
++        return None
++    return int((timezone.now() - ts).total_seconds())
++
++
++def _dsa_status(agent: DepartmentSyncAgent, hb: AgentHeartbeat | None) -> str:
++    status = (agent.status or "").upper()
++    if status in {"MAINTENANCE", "DRAINING"}:
++        return LabNodeStatus.MAINTENANCE
++    if status in {"DISABLED", "REVOKED", "RETIRED", "DELETED"}:
++        return LabNodeStatus.OFFLINE
++    timeout = heartbeat_timeout_seconds()
++    age = _age_seconds(agent.last_heartbeat_at)
++    if age is None or age > timeout:
++        return LabNodeStatus.OFFLINE
++    if agent.bootstrap_required:
++        return LabNodeStatus.SYNCHRONIZING
++    if hb and (hb.status_message or "").lower().find("error") >= 0:
++        return LabNodeStatus.ERROR
++    return LabNodeStatus.ONLINE
++
++
++def _ra_status(row: dict[str, Any]) -> str:
++    if not row.get("online"):
++        return LabNodeStatus.OFFLINE
++    st = (row.get("status") or "").upper()
++    if st == WorkstationStatus.BUSY or row.get("rdp_status") == "SESSION_ACTIVE":
++        return LabNodeStatus.BUSY
++    if st == WorkstationStatus.MAINTENANCE or st == "MAINTENANCE":
++        return LabNodeStatus.MAINTENANCE
++    if st in {WorkstationStatus.ERROR, "ERROR"}:
++        return LabNodeStatus.ERROR
++    if st in {WorkstationStatus.PREPARING, "PREPARING"}:
++        return LabNodeStatus.WAITING
++    return LabNodeStatus.ONLINE
++
++
++def _eqpc_status(pc: dict[str, Any], *, parent_online: bool) -> str:
++    if not parent_online:
++        return LabNodeStatus.OFFLINE
++    last = pc.get("last_status_at") or pc.get("last_seen") or pc.get("lastSeen")
++    if last:
++        try:
++            from django.utils.dateparse import parse_datetime
++
++            ts = parse_datetime(str(last).replace("Z", "+00:00")) if isinstance(last, str) else last
++            age = _age_seconds(ts)
++            if age is not None and age > 300:
++                return LabNodeStatus.OFFLINE
++        except Exception:
++            pass
++    if pc.get("last_error") or pc.get("lastError"):
++        return LabNodeStatus.ERROR
++    sync = (pc.get("sync_status") or pc.get("syncStatus") or "").lower()
++    if sync in {"syncing", "synchronizing"}:
++        return LabNodeStatus.SYNCHRONIZING
++    return LabNodeStatus.ONLINE
++
++
++def _latest_equipment_pcs(agent: DepartmentSyncAgent) -> list[dict]:
++    hb = (
++        AgentHeartbeat.objects.filter(sync_agent=agent)
++        .order_by("-reported_at")
++        .only("details", "reported_at", "cpu_percent", "memory_percent", "disk_percent", "status_message", "service_version", "hostname", "windows_build")
++        .first()
++    )
++    if not hb:
++        return [], None
++    pcs = (hb.details or {}).get("equipment_pcs") or []
++    if not isinstance(pcs, list):
++        pcs = []
++    return pcs, hb
++
++
++def build_infrastructure_tree(*, department_id: int | None = None, page: int = 1, page_size: int = 500) -> dict[str, Any]:
++    """Department GåÆ equipment GåÆ DSA / Equipment PCs / Analysis PCs."""
++    page = max(1, int(page or 1))
++    page_size = min(1000, max(50, int(page_size or 500)))
++    agents = DepartmentSyncAgent.objects.select_related("department", "equipment").order_by(
++        "department__name", "agent_name"
++    )
++    if department_id is not None:
++        agents = agents.filter(department_id=department_id)
++
++    profiles = EquipmentSyncProfile.objects.select_related(
++        "equipment", "equipment__internal_department", "primary_agent"
++    )
++    if department_id is not None:
++        profiles = profiles.filter(equipment__internal_department_id=department_id)
++
++    ra = fleet_inventory(department_id=department_id)
++    workstations = ra.get("workstations") or []
++
++    departments: dict[str, dict] = {}
++
++    def dept_bucket(dept) -> dict:
++        if dept is None:
++            key = "_unassigned"
++            name = "Unassigned"
++            did = None
++        else:
++            key = str(dept.pk)
++            name = getattr(dept, "name", None) or str(dept)
++            did = dept.pk
++        if key not in departments:
++            departments[key] = {
++                "id": did,
++                "name": name,
++                "nodes": [],
++                "equipment": {},
++            }
++        return departments[key]
++
++    # DSA + Equipment PCs
++    for agent in agents:
++        bucket = dept_bucket(agent.department)
++        pcs, hb = _latest_equipment_pcs(agent)
++        dsa_st = _dsa_status(agent, hb)
++        parent_online = dsa_st == LabNodeStatus.ONLINE or dsa_st == LabNodeStatus.SYNCHRONIZING
++        dsa_node = {
++            "id": f"dsa:{agent.pk}",
++            "kind": LabNodeKind.DSA,
++            "status": dsa_st,
++            "computer_name": agent.machine_name or agent.agent_name,
++            "equipment": getattr(agent.equipment, "code", None) if agent.equipment_id else None,
++            "equipment_name": getattr(agent.equipment, "name", None) if agent.equipment_id else None,
++            "department": bucket["name"],
++            "department_id": bucket["id"],
++            "ip_address": None,
++            "mac_address": None,
++            "windows_version": (hb.windows_build if hb else None) or agent.operating_system,
++            "agent_version": agent.version or (hb.service_version if hb else ""),
++            "configuration_version": agent.last_reported_configuration_version,
++            "software_version": agent.version,
++            "health_score": None,
++            "last_heartbeat": agent.last_heartbeat_at.isoformat() if agent.last_heartbeat_at else None,
++            "last_synchronization": None,
++            "last_configuration_update": None,
++            "cpu": hb.cpu_percent if hb else None,
++            "memory": hb.memory_percent if hb else None,
++            "disk": hb.disk_percent if hb else None,
++            "children": [],
++        }
++        for pc in pcs:
++            dsa_node["children"].append(
++                {
++                    "id": f"eqpc:{pc.get('id') or pc.get('equipment_pc_id') or pc.get('mac_address') or pc.get('macAddress')}",
++                    "kind": LabNodeKind.EQUIPMENT_PC,
++                    "status": _eqpc_status(pc, parent_online=parent_online),
++                    "computer_name": pc.get("hostname") or pc.get("computer_name"),
++                    "equipment": pc.get("equipment_id") or pc.get("equipmentId"),
++                    "department": bucket["name"],
++                    "department_id": bucket["id"],
++                    "ip_address": pc.get("observed_ip") or pc.get("observedIp") or pc.get("preferred_ip"),
++                    "mac_address": pc.get("mac_address") or pc.get("macAddress"),
++                    "windows_version": pc.get("windows_version") or pc.get("windowsVersion"),
++                    "agent_version": pc.get("agent_version") or pc.get("agentVersion"),
++                    "configuration_version": pc.get("configuration_version") or pc.get("configurationVersion"),
++                    "cpu": pc.get("cpu_percent") or pc.get("cpuPercent"),
++                    "memory": pc.get("memory_percent") or pc.get("memoryPercent"),
++                    "disk": pc.get("disk_used_percent") or pc.get("diskUsedPercent"),
++                    "last_heartbeat": pc.get("last_status_at") or pc.get("last_seen"),
++                    "parent_dsa_id": str(agent.pk),
++                    "raw": pc,
++                }
++            )
++        bucket["nodes"].append(dsa_node)
++
++    # Analysis PCs / RAA
++    for row in workstations:
++        # Resolve department name from workstation if possible
++        ws_id = row.get("id")
++        dept_name = "Remote Analysis"
++        dept_key = "_ra"
++        if dept_key not in departments:
++            departments[dept_key] = {
++                "id": None,
++                "name": "Remote Analysis / Analysis PCs",
++                "nodes": [],
++                "equipment": {},
++            }
++        bucket = departments[dept_key]
++        st = _ra_status(row)
++        bucket["nodes"].append(
++            {
++                "id": f"raa:{ws_id}",
++                "kind": LabNodeKind.ANALYSIS_PC,
++                "status": st,
++                "computer_name": row.get("hostname") or row.get("display_name"),
++                "equipment": None,
++                "department": dept_name,
++                "department_id": None,
++                "ip_address": None,
++                "mac_address": None,
++                "windows_version": row.get("operating_system"),
++                "agent_version": row.get("agent_version"),
++                "configuration_version": None,
++                "software_version": row.get("agent_version"),
++                "health_score": row.get("health_score"),
++                "last_heartbeat": row.get("last_heartbeat"),
++                "last_remote_analysis_session": row.get("current_booking"),
++                "last_user": row.get("current_user") or row.get("current_user_email"),
++                "cpu": row.get("cpu"),
++                "memory": row.get("memory"),
++                "disk": row.get("disk"),
++                "agent_id": row.get("agent_id"),
++                "enabled": row.get("enabled"),
++                "tunnel_status": row.get("tunnel_status"),
++            }
++        )
++
++    # Summary counts
++    all_nodes = []
++    for d in departments.values():
++        all_nodes.extend(d["nodes"])
++        for n in d["nodes"]:
++            all_nodes.extend(n.get("children") or [])
++
++    status_counts: dict[str, int] = {}
++    for n in all_nodes:
++        status_counts[n["status"]] = status_counts.get(n["status"], 0) + 1
++
++    return {
++        "generated_at": timezone.now().isoformat(),
++        "page": page,
++        "page_size": page_size,
++        "departments": [
++            {
++                "id": d["id"],
++                "name": d["name"],
++                "nodes": d["nodes"],
++                "node_count": len(d["nodes"]) + sum(len(n.get("children") or []) for n in d["nodes"]),
++            }
++            for d in departments.values()
++        ],
++        "counts": {
++            "total_nodes": len(all_nodes),
++            "by_status": status_counts,
++            "dsa": sum(1 for n in all_nodes if n["kind"] == LabNodeKind.DSA),
++            "equipment_pc": sum(1 for n in all_nodes if n["kind"] == LabNodeKind.EQUIPMENT_PC),
++            "analysis_pc": sum(1 for n in all_nodes if n["kind"] == LabNodeKind.ANALYSIS_PC),
++        },
++        "ra_fleet_counts": ra.get("counts") or {},
++    }
++
++
++def get_node_detail(node_id: str) -> dict[str, Any] | None:
++    # Direct lookups GÇö avoid rebuilding the full fleet tree on every detail/diagnostics call
++    if node_id.startswith("raa:"):
++        ws_pk = node_id.split(":", 1)[1]
++        ws = AnalysisWorkstation.objects.filter(pk=ws_pk).first()
++        if not ws:
++            return None
++        hb = WorkstationHeartbeat.objects.filter(workstation=ws).order_by("-received_at").first()
++        raw = (hb.raw_payload if hb else None) or {}
++        return {
++            "id": node_id,
++            "kind": LabNodeKind.ANALYSIS_PC,
++            "computer_name": ws.hostname,
++            "agent_version": ws.agent_version,
++            "health_score": ws.health_score,
++            "status": LabNodeStatus.ONLINE
++            if ws.last_heartbeat
++            and _age_seconds(ws.last_heartbeat) is not None
++            and _age_seconds(ws.last_heartbeat) <= HEARTBEAT_OFFLINE_SECONDS
++            else LabNodeStatus.OFFLINE,
++            "last_heartbeat": ws.last_heartbeat.isoformat() if ws.last_heartbeat else None,
++            "windows_version": ws.operating_system or ws.windows_version,
++            "cpu": getattr(hb, "cpu", None),
++            "memory": getattr(hb, "memory", None),
++            "disk": getattr(hb, "disk", None),
++            "disk_free_bytes": raw.get("diskFreeBytes") or raw.get("DiskFreeBytes"),
++            "windows_uptime_seconds": raw.get("windowsUptimeSeconds"),
++            "reverse_tunnel_status": raw.get("reverseTunnelStatus"),
++            "raw_heartbeat": raw,
++        }
++    if node_id.startswith("dsa:"):
++        agent = DepartmentSyncAgent.objects.filter(pk=node_id.split(":", 1)[1]).first()
++        if not agent:
++            return None
++        pcs, hb = _latest_equipment_pcs(agent)
++        return {
++            "id": node_id,
++            "kind": LabNodeKind.DSA,
++            "computer_name": agent.machine_name or agent.agent_name,
++            "agent_version": agent.version,
++            "configuration_version": agent.last_reported_configuration_version,
++            "last_heartbeat": agent.last_heartbeat_at.isoformat() if agent.last_heartbeat_at else None,
++            "status": _dsa_status(agent, hb),
++            "cpu": hb.cpu_percent if hb else None,
++            "memory": hb.memory_percent if hb else None,
++            "disk": hb.disk_percent if hb else None,
++            "equipment_pcs": pcs,
++            "windows_version": (hb.windows_build if hb else None) or agent.operating_system,
++        }
++    if node_id.startswith("eqpc:"):
++        # Search recent DSA heartbeats for matching equipment PC id/mac
++        key = node_id.split(":", 1)[1]
++        for agent in DepartmentSyncAgent.objects.all().iterator():
++            pcs, hb = _latest_equipment_pcs(agent)
++            for pc in pcs:
++                pid = str(pc.get("id") or pc.get("equipment_pc_id") or pc.get("mac_address") or pc.get("macAddress") or "")
++                if pid == key or str(pc.get("mac_address") or pc.get("macAddress") or "") == key:
++                    return {
++                        "id": node_id,
++                        "kind": LabNodeKind.EQUIPMENT_PC,
++                        "computer_name": pc.get("hostname") or pc.get("computer_name"),
++                        "status": _eqpc_status(pc, parent_online=_dsa_status(agent, hb) != LabNodeStatus.OFFLINE),
++                        "ip_address": pc.get("observed_ip") or pc.get("observedIp") or pc.get("preferred_ip"),
++                        "mac_address": pc.get("mac_address") or pc.get("macAddress"),
++                        "parent_dsa_id": str(agent.pk),
++                        "raw": pc,
++                        "cpu": pc.get("cpu_percent") or pc.get("cpuPercent"),
++                        "memory": pc.get("memory_percent") or pc.get("memoryPercent"),
++                        "disk": pc.get("disk_used_percent") or pc.get("diskUsedPercent"),
++                        "last_heartbeat": pc.get("last_status_at") or pc.get("last_seen"),
++                    }
++        return None
++    return None
+diff --git a/iic_booking/lab_infrastructure/signals.py b/iic_booking/lab_infrastructure/signals.py
+new file mode 100644
+index 0000000..a3b4ea6
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/signals.py
+@@ -0,0 +1,31 @@
++"""Post-migrate seed for Lab Infrastructure periodic tasks."""
++
++from __future__ import annotations
++
++import logging
++
++from django.db.models.signals import post_migrate
++from django.dispatch import receiver
++
++logger = logging.getLogger(__name__)
++
++
++@receiver(post_migrate)
++def ensure_lab_infrastructure_periodic_tasks(sender, **kwargs):
++    if sender.name != "iic_booking.lab_infrastructure":
++        return
++    try:
++        from django_celery_beat.models import IntervalSchedule, PeriodicTask
++
++        interval_5m, _ = IntervalSchedule.objects.get_or_create(every=5, period=IntervalSchedule.MINUTES)
++        PeriodicTask.objects.update_or_create(
++            name="Lab Infrastructure Health Detectors",
++            defaults={
++                "task": "lab_infrastructure.run_health_detectors",
++                "interval": interval_5m,
++                "crontab": None,
++                "enabled": True,
++            },
++        )
++    except Exception:
++        logger.exception("Failed to seed lab infrastructure periodic tasks")
+diff --git a/iic_booking/lab_infrastructure/tasks.py b/iic_booking/lab_infrastructure/tasks.py
+new file mode 100644
+index 0000000..b96c426
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/tasks.py
+@@ -0,0 +1,18 @@
++"""Celery tasks for Laboratory Infrastructure."""
++
++from __future__ import annotations
++
++import logging
++
++from celery import shared_task
++
++logger = logging.getLogger(__name__)
++
++
++@shared_task(name="lab_infrastructure.run_health_detectors")
++def run_health_detectors_task() -> dict:
++    from iic_booking.lab_infrastructure.services.detectors import run_health_detectors
++
++    result = run_health_detectors()
++    logger.info("lab_infrastructure.run_health_detectors: %s", result)
++    return result
+diff --git a/iic_booking/lab_infrastructure/tests/__init__.py b/iic_booking/lab_infrastructure/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/iic_booking/lab_infrastructure/tests/test_lab_infrastructure.py b/iic_booking/lab_infrastructure/tests/test_lab_infrastructure.py
+new file mode 100644
+index 0000000..d74757b
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/tests/test_lab_infrastructure.py
+@@ -0,0 +1,76 @@
++"""Integration-style tests for Laboratory Infrastructure Phase 2 APIs."""
++
++from __future__ import annotations
++
++import pytest
++from django.urls import reverse
++from rest_framework.test import APIClient
++
++from iic_booking.lab_infrastructure.models import ConfigurationAck, LabAlert, LabAuditEvent, LabRepairAction
++from iic_booking.lab_infrastructure.services.detectors import run_health_detectors
++from iic_booking.lab_infrastructure.services.fleet import build_infrastructure_tree
++
++
++@pytest.mark.django_db
++def test_build_infrastructure_tree_smoke():
++    tree = build_infrastructure_tree()
++    assert "departments" in tree
++    assert "counts" in tree
++    assert "generated_at" in tree
++
++
++@pytest.mark.django_db
++def test_health_detectors_smoke():
++    result = run_health_detectors()
++    assert "opened_or_updated" in result
++
++
++@pytest.mark.django_db
++def test_lab_infrastructure_requires_auth():
++    client = APIClient()
++    url = "/api/v1/lab/infrastructure/"
++    resp = client.get(url)
++    assert resp.status_code in {401, 403}
++
++
++@pytest.mark.django_db
++def test_lab_alert_and_repair_models():
++    alert = LabAlert.objects.create(
++        code="test",
++        title="Test alert",
++        severity=LabAlert.Severity.WARNING,
++        fingerprint="test-fp-1",
++    )
++    assert alert.status == LabAlert.Status.OPEN
++    repair = LabRepairAction.objects.create(
++        node_kind="dsa",
++        node_id="dsa:00000000-0000-0000-0000-000000000001",
++        action=LabRepairAction.Action.REFRESH_CONFIGURATION,
++    )
++    assert repair.status == LabRepairAction.Status.QUEUED
++    LabAuditEvent.objects.create(event_type="test_event", message="ok")
++    assert LabAuditEvent.objects.count() == 1
++
++
++@pytest.mark.django_db
++def test_configuration_ack_model():
++    ack = ConfigurationAck.objects.create(
++        configuration_version=3,
++        status=ConfigurationAck.Status.APPLIED,
++        equipment_pc_id="eq-1",
++    )
++    assert ack.configuration_version == 3
++
++
++@pytest.mark.django_db
++def test_run_health_detectors_task_importable():
++    from iic_booking.lab_infrastructure.tasks import run_health_detectors_task
++
++    assert run_health_detectors_task.name == "lab_infrastructure.run_health_detectors"
++
++
++@pytest.mark.django_db
++def test_node_detail_missing_returns_none():
++    from iic_booking.lab_infrastructure.services.fleet import get_node_detail
++
++    assert get_node_detail("dsa:00000000-0000-0000-0000-000000000099") is None
+diff --git a/iic_booking/lab_infrastructure/urls.py b/iic_booking/lab_infrastructure/urls.py
+new file mode 100644
+index 0000000..91edc79
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/urls.py
+@@ -0,0 +1,32 @@
++"""URL routes for Laboratory Infrastructure."""
++
++from django.urls import path
++
++from iic_booking.lab_infrastructure import views
++
++app_name = "lab_infrastructure"
++
++urlpatterns = [
++    path("infrastructure/", views.infrastructure, name="infrastructure"),
++    path("infrastructure/nodes/<path:node_id>/", views.node_detail, name="node-detail"),
++    path("infrastructure/nodes/<path:node_id>/repair/", views.repair_action, name="node-repair"),
++    path("infrastructure/nodes/<path:node_id>/diagnostics/", views.run_diagnostics, name="node-diagnostics"),
++    path("alerts/", views.alerts_list, name="alerts"),
++    path("alerts/<uuid:alert_id>/ack/", views.alert_ack, name="alert-ack"),
++    path("audit/", views.audit_list, name="audit"),
++    path("configuration/profiles/<uuid:profile_id>/", views.configuration_history, name="config-history"),
++    path(
++        "configuration/profiles/<uuid:profile_id>/rollback/",
++        views.configuration_rollback,
++        name="config-rollback",
++    ),
++    path("configuration/ack/", views.configuration_ack, name="config-ack"),
++    path("software/compliance/", views.software_compliance, name="software-compliance"),
++    path("reports/utilization/", views.utilization_report, name="utilization"),
++    path("infrastructure/nodes/<path:node_id>/maintenance/", views.maintenance_action, name="node-maintenance"),
++    path(
++        "infrastructure/nodes/<path:node_id>/rotate-credentials/",
++        views.rotate_agent_secret_hint,
++        name="node-rotate-credentials",
++    ),
++]
+diff --git a/iic_booking/lab_infrastructure/views.py b/iic_booking/lab_infrastructure/views.py
+new file mode 100644
+index 0000000..3fe6f90
+--- /dev/null
++++ b/iic_booking/lab_infrastructure/views.py
+@@ -0,0 +1,617 @@
++"""Lab Infrastructure API views."""
++
++from __future__ import annotations
++
++from datetime import timedelta
++
++from django.utils import timezone
++from rest_framework import status
++from rest_framework.decorators import api_view, authentication_classes, permission_classes
++from rest_framework.permissions import IsAuthenticated
++from rest_framework.response import Response
++
++from iic_booking.lab_infrastructure.models import (
++    ConfigurationAck,
++    ConfigurationChange,
++    LabAlert,
++    LabAuditEvent,
++    LabRepairAction,
++)
++from iic_booking.lab_infrastructure.services.fleet import build_infrastructure_tree, get_node_detail
++from iic_booking.sync.authentication import DepartmentSyncAgentAuthentication
++from iic_booking.sync.permissions import CanManageDepartmentSync, IsDepartmentSyncAgent
++
++_MANAGE = [IsAuthenticated, CanManageDepartmentSync]
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def infrastructure(request):
++    department_id = request.query_params.get("department_id")
++    dept = int(department_id) if department_id and str(department_id).isdigit() else None
++    page = request.query_params.get("page")
++    page_size = request.query_params.get("page_size")
++    return Response(
++        build_infrastructure_tree(
++            department_id=dept,
++            page=int(page) if page and str(page).isdigit() else 1,
++            page_size=int(page_size) if page_size and str(page_size).isdigit() else 500,
++        )
++    )
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def node_detail(request, node_id: str):
++    detail = get_node_detail(node_id)
++    if not detail:
++        return Response({"detail": "Node not found."}, status=status.HTTP_404_NOT_FOUND)
++    return Response(detail)
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def alerts_list(request):
++    qs = LabAlert.objects.filter(status__in=["open", "acknowledged"]).order_by("-created_at")[:200]
++    # Also merge open DSA AlertEvents lightly
++    from iic_booking.sync.models import AlertEvent
++
++    dsa = []
++    try:
++        for a in AlertEvent.objects.filter(resolved_at__isnull=True).order_by("-created_at")[:50]:
++            dsa.append(
++                {
++                    "id": f"dsa-alert:{a.pk}",
++                    "code": getattr(a, "alert_code", None) or getattr(a, "code", "") or "dsa",
++                    "severity": (getattr(a, "severity", None) or "warning").lower(),
++                    "status": "open",
++                    "title": getattr(a, "title", None) or getattr(a, "message", "")[:255],
++                    "detail": getattr(a, "message", "") or "",
++                    "source": "dsa",
++                    "created_at": a.created_at.isoformat() if getattr(a, "created_at", None) else None,
++                }
++            )
++    except Exception:
++        dsa = []
++
++    rows = [
++        {
++            "id": str(a.id),
++            "code": a.code,
++            "severity": a.severity,
++            "status": a.status,
++            "title": a.title,
++            "detail": a.detail,
++            "node_kind": a.node_kind,
++            "node_id": a.node_id,
++            "source": a.source,
++            "created_at": a.created_at.isoformat(),
++        }
++        for a in qs
++    ] + dsa
++    return Response({"count": len(rows), "results": rows})
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def alert_ack(request, alert_id: str):
++    alert = LabAlert.objects.filter(pk=alert_id).first()
++    if not alert:
++        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
++    alert.status = LabAlert.Status.ACKNOWLEDGED
++    alert.save(update_fields=["status", "updated_at"])
++    return Response({"id": str(alert.id), "status": alert.status})
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def audit_list(request):
++    qs = LabAuditEvent.objects.all().order_by("-created_at")[:200]
++    # Merge SyncLog + WorkstationEvent samples
++    merged = [
++        {
++            "id": str(e.id),
++            "event_type": e.event_type,
++            "message": e.message,
++            "node_kind": e.node_kind,
++            "node_id": e.node_id,
++            "success": e.success,
++            "created_at": e.created_at.isoformat(),
++            "source": "lab",
++        }
++        for e in qs
++    ]
++    try:
++        from iic_booking.sync.models import SyncLog
++
++        for s in SyncLog.objects.order_by("-created_at")[:50]:
++            merged.append(
++                {
++                    "id": f"sync:{s.pk}",
++                    "event_type": getattr(s, "event_code", "") or "sync",
++                    "message": getattr(s, "message", "") or "",
++                    "success": True,
++                    "created_at": s.created_at.isoformat() if getattr(s, "created_at", None) else None,
++                    "source": "dsa",
++                }
++            )
++    except Exception:
++        pass
++    try:
++        from iic_booking.remote_analysis.models import WorkstationEvent
++
++        for w in WorkstationEvent.objects.order_by("-created_at")[:50]:
++            merged.append(
++                {
++                    "id": f"ra:{w.pk}",
++                    "event_type": getattr(w, "action", "") or getattr(w, "category", "") or "ra",
++                    "message": getattr(w, "details", "") or "",
++                    "success": bool(getattr(w, "success", True)),
++                    "created_at": w.created_at.isoformat() if getattr(w, "created_at", None) else None,
++                    "source": "ra",
++                }
++            )
++    except Exception:
++        pass
++    merged.sort(key=lambda x: x.get("created_at") or "", reverse=True)
++    return Response({"count": len(merged), "results": merged[:200]})
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def repair_action(request, node_id: str):
++    action = (request.data.get("action") or "").strip()
++    if action not in {c.value for c in LabRepairAction.Action}:
++        return Response(
++            {"detail": f"Invalid action. Choose one of: {[c.value for c in LabRepairAction.Action]}"},
++            status=status.HTTP_400_BAD_REQUEST,
++        )
++    kind = "dsa"
++    if node_id.startswith("raa:"):
++        kind = "analysis_pc"
++    elif node_id.startswith("eqpc:"):
++        kind = "equipment_pc"
++    elif node_id.startswith("dsa:"):
++        kind = "dsa"
++
++    row = LabRepairAction.objects.create(
++        node_kind=kind,
++        node_id=node_id,
++        action=action,
++        status=LabRepairAction.Status.QUEUED,
++        requested_by=request.user,
++    )
++
++    # Map to existing agent command channels where possible
++    result = {"queued": True}
++    try:
++        from iic_booking.sync.models import DepartmentSyncAgent
++
++        if kind == "dsa" and action == LabRepairAction.Action.RESTART_AGENT:
++            agent = DepartmentSyncAgent.objects.filter(pk=node_id.split(":", 1)[1]).first()
++            if agent:
++                agent.restart_required = True
++                agent.save(update_fields=["restart_required", "updated_at"])
++                result["restart_required"] = True
++                row.status = LabRepairAction.Status.SENT
++            else:
++                row.status = LabRepairAction.Status.FAILED
++                row.error_message = "DSA agent not found"
++        elif kind == "dsa" and action in {
++            LabRepairAction.Action.REFRESH_CONFIGURATION,
++            LabRepairAction.Action.RECONFIGURE,
++            LabRepairAction.Action.REPAIR,
++            LabRepairAction.Action.RECOMMISSION,
++        }:
++            agent = DepartmentSyncAgent.objects.filter(pk=node_id.split(":", 1)[1]).first()
++            if agent:
++                agent.bootstrap_required = True
++                agent.save(update_fields=["bootstrap_required", "updated_at"])
++                result["bootstrap_required"] = True
++                row.status = LabRepairAction.Status.SENT
++            else:
++                row.status = LabRepairAction.Status.FAILED
++                row.error_message = "DSA agent not found"
++        elif kind == "analysis_pc" and action == LabRepairAction.Action.RESCAN_SOFTWARE:
++            result["note"] = "Rescan queued for next agent inventory cycle"
++            row.status = LabRepairAction.Status.SENT
++        else:
++            row.status = LabRepairAction.Status.SENT
++            result["note"] = "Action recorded; agent will pick up via command channel when available"
++    except Exception as exc:
++        row.status = LabRepairAction.Status.FAILED
++        row.error_message = str(exc)
++        result = {"error": str(exc)}
++
++    row.result = result
++    row.save(update_fields=["status", "result", "error_message", "updated_at"])
++
++    LabAuditEvent.objects.create(
++        event_type="repair_executed",
++        message=f"{action} on {node_id}",
++        node_kind=kind,
++        node_id=node_id,
++        actor=request.user,
++        payload={"action": action, "result": result},
++        success=row.status != LabRepairAction.Status.FAILED,
++    )
++    return Response(
++        {"id": str(row.id), "status": row.status, "result": result},
++        status=status.HTTP_201_CREATED,
++    )
++
++
++@api_view(["GET", "POST"])
++@permission_classes(_MANAGE)
++def configuration_history(request, profile_id: str):
++    from iic_booking.sync.models import EquipmentSyncProfile
++
++    profile = EquipmentSyncProfile.objects.filter(pk=profile_id).first()
++    if not profile:
++        return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
++
++    if request.method == "GET":
++        rows = ConfigurationChange.objects.filter(sync_profile=profile).order_by("-created_at")[:100]
++        return Response(
++            {
++                "profile_id": str(profile.id),
++                "current_version": profile.configuration_version,
++                "results": [
++                    {
++                        "id": str(r.id),
++                        "configuration_version": r.configuration_version,
++                        "reason": r.reason,
++                        "previous_value": r.previous_value,
++                        "new_value": r.new_value,
++                        "applied_by": getattr(r.applied_by, "email", None),
++                        "created_at": r.created_at.isoformat(),
++                    }
++                    for r in rows
++                ],
++            }
++        )
++
++    # POST = record change + bump (or apply snapshot)
++    reason = (request.data.get("reason") or "Manual configuration change").strip()
++    new_value = request.data.get("new_value") or {}
++    previous = {
++        "share_name": profile.share_name,
++        "watch_folder": profile.watch_folder,
++        "unc_path": profile.unc_path,
++        "sync_interval_seconds": profile.sync_interval_seconds,
++        "enabled_features": profile.enabled_features,
++        "configuration_version": profile.configuration_version,
++    }
++    for key in ("share_name", "watch_folder", "unc_path", "sync_interval_seconds"):
++        if key in new_value:
++            setattr(profile, key, new_value[key])
++    if "enabled_features" in new_value and isinstance(new_value["enabled_features"], dict):
++        profile.enabled_features = new_value["enabled_features"]
++    # Persist field changes then bump version (bump alone only saves configuration_version)
++    profile.configuration_version = (profile.configuration_version or 0) + 1
++    profile.save(
++        update_fields=[
++            "share_name",
++            "watch_folder",
++            "unc_path",
++            "sync_interval_seconds",
++            "enabled_features",
++            "configuration_version",
++            "updated_at",
++        ]
++    )
++    change = ConfigurationChange.objects.create(
++        sync_profile=profile,
++        configuration_version=profile.configuration_version,
++        previous_value=previous,
++        new_value=new_value or {"bumped": True},
++        reason=reason,
++        applied_by=request.user,
++    )
++    for assignment in profile.assignments.filter(is_active=True).select_related("sync_agent"):
++        if assignment.sync_agent:
++            assignment.sync_agent.bootstrap_required = True
++            assignment.sync_agent.save(update_fields=["bootstrap_required", "updated_at"])
++            ConfigurationAck.objects.update_or_create(
++                sync_agent=assignment.sync_agent,
++                sync_profile=profile,
++                configuration_version=profile.configuration_version,
++                equipment_pc_id="",
++                defaults={"status": ConfigurationAck.Status.PENDING, "error_message": ""},
++            )
++    LabAuditEvent.objects.create(
++        event_type="configuration_applied",
++        message=f"Profile {profile.id} GåÆ v{profile.configuration_version}",
++        actor=request.user,
++        payload={"change_id": str(change.id), "reason": reason},
++    )
++    return Response(
++        {"configuration_version": profile.configuration_version, "change_id": str(change.id)},
++        status=status.HTTP_201_CREATED,
++    )
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def configuration_rollback(request, profile_id: str):
++    from iic_booking.sync.models import EquipmentSyncProfile
++
++    profile = EquipmentSyncProfile.objects.filter(pk=profile_id).first()
++    if not profile:
++        return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
++    change_id = request.data.get("change_id")
++    change = ConfigurationChange.objects.filter(pk=change_id, sync_profile=profile).first()
++    if not change:
++        return Response({"detail": "Change not found"}, status=status.HTTP_404_NOT_FOUND)
++    prev = change.previous_value or {}
++    snapshot_before = {
++        "share_name": profile.share_name,
++        "watch_folder": profile.watch_folder,
++        "unc_path": profile.unc_path,
++        "sync_interval_seconds": profile.sync_interval_seconds,
++        "enabled_features": profile.enabled_features,
++    }
++    for key in ("share_name", "watch_folder", "unc_path", "sync_interval_seconds"):
++        if key in prev:
++            setattr(profile, key, prev[key])
++    if "enabled_features" in prev:
++        profile.enabled_features = prev["enabled_features"]
++    profile.configuration_version = (profile.configuration_version or 0) + 1
++    profile.save(
++        update_fields=[
++            "share_name",
++            "watch_folder",
++            "unc_path",
++            "sync_interval_seconds",
++            "enabled_features",
++            "configuration_version",
++            "updated_at",
++        ]
++    )
++    ConfigurationChange.objects.create(
++        sync_profile=profile,
++        configuration_version=profile.configuration_version,
++        previous_value=snapshot_before,
++        new_value=prev,
++        reason=f"Rollback to change {change.id}",
++        applied_by=request.user,
++    )
++    for assignment in profile.assignments.filter(is_active=True).select_related("sync_agent"):
++        if assignment.sync_agent:
++            assignment.sync_agent.bootstrap_required = True
++            assignment.sync_agent.save(update_fields=["bootstrap_required", "updated_at"])
++    return Response({"configuration_version": profile.configuration_version, "rolled_back_from": str(change.id)})
++
++
++@api_view(["POST"])
++@authentication_classes([DepartmentSyncAgentAuthentication])
++@permission_classes([IsDepartmentSyncAgent])
++def configuration_ack(request):
++    """DSA posts config apply acknowledgement (agent bearer auth)."""
++    version = request.data.get("configuration_version")
++    equipment_pc_id = (request.data.get("equipment_pc_id") or "")[:64]
++    ack_status = (request.data.get("status") or "applied").lower()
++    error = request.data.get("error_message") or ""
++    if version is None:
++        return Response({"detail": "configuration_version required"}, status=status.HTTP_400_BAD_REQUEST)
++
++    sync_agent = getattr(request, "sync_agent", None) or getattr(request.user, "agent", None)
++    if sync_agent is None:
++        return Response({"detail": "Authenticated sync agent required."}, status=status.HTTP_400_BAD_REQUEST)
++    st = ConfigurationAck.Status.APPLIED if ack_status == "applied" else ConfigurationAck.Status.FAILED
++    ack, _created = ConfigurationAck.objects.update_or_create(
++        sync_agent=sync_agent,
++        configuration_version=int(version),
++        equipment_pc_id=equipment_pc_id,
++        defaults={
++            "status": st,
++            "error_message": error,
++            "applied_at": timezone.now() if st == ConfigurationAck.Status.APPLIED else None,
++        },
++    )
++    return Response({"id": str(ack.id), "status": ack.status}, status=status.HTTP_201_CREATED)
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def run_diagnostics(request, node_id: str):
++    checks = []
++    detail = get_node_detail(node_id)
++    if not detail:
++        return Response({"detail": "Node not found"}, status=status.HTTP_404_NOT_FOUND)
++
++    def add(name, passed, message, severity="info"):
++        checks.append({"name": name, "passed": passed, "message": message, "severity": severity})
++
++    add("NodeResolved", True, f"Resolved {detail.get('kind')} {detail.get('computer_name')}")
++    hb = detail.get("last_heartbeat")
++    add("Heartbeat", bool(hb), f"Last heartbeat: {hb or 'never'}", "error" if not hb else "info")
++    if detail.get("kind") in {"dsa", "analysis_pc"}:
++        add("AgentVersion", bool(detail.get("agent_version")), f"Version {detail.get('agent_version') or 'unknown'}")
++    if detail.get("cpu") is not None:
++        add("CPU", float(detail["cpu"]) < 95, f"CPU {detail['cpu']}%", "warning" if float(detail["cpu"]) >= 90 else "info")
++    if detail.get("disk") is not None:
++        add("Disk", float(detail["disk"]) < 95, f"Disk {detail['disk']}%", "critical" if float(detail["disk"]) >= 95 else "info")
++    if detail.get("reverse_tunnel_status"):
++        tun = str(detail["reverse_tunnel_status"]).upper()
++        add("ReverseTunnel", tun in {"CONNECTED", "UNKNOWN", "DISABLED"}, f"Tunnel {tun}")
++
++    # Lightweight node-scoped checks only (full fleet commissioning is a separate ops action)
++    if node_id.startswith("raa:"):
++        try:
++            from iic_booking.remote_analysis.models import AnalysisWorkstation
++
++            ws = AnalysisWorkstation.objects.filter(pk=node_id.split(":", 1)[1]).first()
++            add("WorkstationRecord", ws is not None, f"Workstation {'found' if ws else 'missing'}")
++            if ws:
++                add("Enabled", bool(ws.enabled), f"enabled={ws.enabled}")
++                add(
++                    "Fingerprint",
++                    bool(getattr(ws, "machine_fingerprint", None)),
++                    f"fingerprint={getattr(ws, 'machine_fingerprint', None) or 'empty'}",
++                )
++        except Exception as exc:
++            add("WorkstationLookup", False, str(exc), "warning")
++
++    failed = [c for c in checks if not c["passed"]]
++    overall = "FAIL" if any(c["severity"] == "critical" and not c["passed"] for c in checks) else (
++        "WARNINGS" if failed else "HEALTHY"
++    )
++    LabAuditEvent.objects.create(
++        event_type="diagnostics_run",
++        message=f"Diagnostics {overall} for {node_id}",
++        node_id=node_id,
++        actor=request.user,
++        payload={"overall": overall, "checks": checks},
++        success=overall != "FAIL",
++    )
++    return Response({"node_id": node_id, "overall": overall, "checks": checks, "generated_at": timezone.now().isoformat()})
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def software_compliance(request):
++    """Required vs installed software matrix for Analysis PCs."""
++    from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
++
++    rows = []
++    for ws in AnalysisWorkstation.objects.filter(enabled=True).order_by("hostname")[:200]:
++        installed = list(
++            InstalledSoftware.objects.filter(workstation=ws).values_list("name", "version")[:100]
++        )
++        installed_map = {n.lower(): v for n, v in installed}
++        required = []
++        # Pull from linked equipment requirements if available
++        try:
++            from iic_booking.remote_analysis.scheduler_models import SoftwareRequirement
++
++            for req in SoftwareRequirement.objects.all()[:50]:
++                name = getattr(req, "name", None) or getattr(req, "software_name", "")
++                if not name:
++                    continue
++                ver = installed_map.get(name.lower())
++                required.append(
++                    {
++                        "name": name,
++                        "required_version": getattr(req, "min_version", None) or getattr(req, "version", "") or "",
++                        "installed_version": ver,
++                        "status": "installed" if ver else "missing",
++                    }
++                )
++        except Exception:
++            required = []
++        rows.append(
++            {
++                "workstation_id": str(ws.id),
++                "hostname": ws.hostname,
++                "installed_count": len(installed),
++                "requirements": required,
++                "missing": sum(1 for r in required if r["status"] == "missing"),
++            }
++        )
++    return Response({"count": len(rows), "results": rows})
++
++
++@api_view(["GET"])
++@permission_classes(_MANAGE)
++def utilization_report(request):
++    """Lightweight utilization snapshot (CSV-friendly JSON)."""
++    from iic_booking.remote_analysis.models import AnalysisWorkstation
++
++    fmt = (request.query_params.get("format") or "json").lower()
++    ws_count = AnalysisWorkstation.objects.count()
++    online = AnalysisWorkstation.objects.filter(
++        last_heartbeat__gte=timezone.now() - timedelta(minutes=5)
++    ).count()
++    from iic_booking.sync.models import DepartmentSyncAgent
++
++    dsa_count = DepartmentSyncAgent.objects.count()
++    payload = {
++        "generated_at": timezone.now().isoformat(),
++        "analysis_pcs": {"total": ws_count, "recently_online": online},
++        "dsa_agents": {"total": dsa_count},
++        "report_type": "utilization_snapshot",
++    }
++    if fmt == "csv":
++        lines = [
++            "metric,value",
++            f"analysis_pcs_total,{ws_count}",
++            f"analysis_pcs_online,{online}",
++            f"dsa_total,{dsa_count}",
++        ]
++        from django.http import HttpResponse
++
++        resp = HttpResponse("\n".join(lines), content_type="text/csv")
++        resp["Content-Disposition"] = 'attachment; filename="lab-utilization.csv"'
++        return resp
++    return Response(payload)
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def maintenance_action(request, node_id: str):
++    """Surface existing RA maintenance / DSA drain without new orchestration stacks."""
++    action = (request.data.get("action") or "").strip().lower()
++    LabAuditEvent.objects.create(
++        event_type="maintenance_action",
++        message=f"{action} on {node_id}",
++        node_id=node_id,
++        actor=request.user,
++        payload=dict(request.data),
++    )
++    if node_id.startswith("raa:") and action in {"take_offline", "resume", "schedule"}:
++        try:
++            from iic_booking.remote_analysis.models import AnalysisWorkstation
++            from iic_booking.remote_analysis.constants import WorkstationStatus
++
++            ws = AnalysisWorkstation.objects.filter(pk=node_id.split(":", 1)[1]).first()
++            if not ws:
++                return Response({"detail": "Workstation not found"}, status=status.HTTP_404_NOT_FOUND)
++            if action == "take_offline":
++                ws.status = WorkstationStatus.MAINTENANCE
++                ws.save(update_fields=["status", "updated_at"])
++            elif action == "resume":
++                ws.status = WorkstationStatus.ONLINE
++                ws.enabled = True
++                ws.save(update_fields=["status", "enabled", "updated_at"])
++            return Response({"node_id": node_id, "action": action, "status": ws.status})
++        except Exception as exc:
++            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
++    if node_id.startswith("dsa:") and action in {"drain", "maintenance", "resume"}:
++        from iic_booking.sync.models import DepartmentSyncAgent, AgentLifecycleStatus
++
++        agent = DepartmentSyncAgent.objects.filter(pk=node_id.split(":", 1)[1]).first()
++        if not agent:
++            return Response({"detail": "Agent not found"}, status=status.HTTP_404_NOT_FOUND)
++        if action == "drain":
++            agent.status = AgentLifecycleStatus.DRAINING
++        elif action == "maintenance":
++            agent.status = AgentLifecycleStatus.MAINTENANCE
++        else:
++            agent.status = AgentLifecycleStatus.ACTIVE
++        agent.save(update_fields=["status", "updated_at"])
++        return Response({"node_id": node_id, "action": action, "status": agent.status})
++    return Response({"detail": f"Unsupported action {action} for {node_id}"}, status=status.HTTP_400_BAD_REQUEST)
++
++
++@api_view(["POST"])
++@permission_classes(_MANAGE)
++def rotate_agent_secret_hint(request, node_id: str):
++    """Trigger DSA API-key rotate path flag (credential rotation workflow entry)."""
++    if not node_id.startswith("dsa:"):
++        return Response({"detail": "Only DSA nodes support secret rotation hint"}, status=400)
++    from iic_booking.sync.models import DepartmentSyncAgent
++
++    agent = DepartmentSyncAgent.objects.filter(pk=node_id.split(":", 1)[1]).first()
++    if not agent:
++        return Response({"detail": "Not found"}, status=404)
++    # Existing security/api-keys/rotate is agent-initiated; mark bootstrap + audit for admin-driven rotation request
++    agent.bootstrap_required = True
++    agent.save(update_fields=["bootstrap_required", "updated_at"])
++    LabAuditEvent.objects.create(
++        event_type="credential_rotation_requested",
++        message=f"Admin requested credential rotation for {node_id}",
++        node_id=node_id,
++        actor=request.user,
++    )
++    return Response({"detail": "Rotation requested; agent should call security/api-keys/rotate on next cycle."})

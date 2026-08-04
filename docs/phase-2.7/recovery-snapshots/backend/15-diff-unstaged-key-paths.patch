@@ -1,0 +1,879 @@
+diff --git a/iic_booking/lab_infrastructure/admin.py b/iic_booking/lab_infrastructure/admin.py
+index dae5790..51f0b0a 100644
+--- a/iic_booking/lab_infrastructure/admin.py
++++ b/iic_booking/lab_infrastructure/admin.py
+@@ -8,6 +8,11 @@ from iic_booking.lab_infrastructure.models import (
+     LabAlert,
+     LabAuditEvent,
+     LabRepairAction,
++    SatDefect,
++    SatEvidence,
++    SatTestCase,
++    SatTestResult,
++    SatTestRun,
+ )
+ 
+ 
+@@ -46,3 +51,35 @@ class LabAlertAdmin(admin.ModelAdmin):
+         from django.utils import timezone
+ 
+         queryset.update(status=LabAlert.Status.RESOLVED, resolved_at=timezone.now())
++
++
++@admin.register(SatTestCase)
++class SatTestCaseAdmin(admin.ModelAdmin):
++    list_display = ("test_id", "stage", "execution_order", "suite", "module", "feature", "severity", "is_active")
++    list_filter = ("suite", "stage", "module", "severity", "is_active")
++    search_fields = ("test_id", "feature", "module")
++
++
++@admin.register(SatTestRun)
++class SatTestRunAdmin(admin.ModelAdmin):
++    list_display = ("name", "suite", "status", "recommendation", "executed_by", "started_at", "finished_at")
++    list_filter = ("status", "suite", "recommendation")
++
++
++@admin.register(SatTestResult)
++class SatTestResultAdmin(admin.ModelAdmin):
++    list_display = ("run", "test_case", "status", "executed_at")
++    list_filter = ("status",)
++    search_fields = ("test_case__test_id", "actual_result")
++
++
++@admin.register(SatEvidence)
++class SatEvidenceAdmin(admin.ModelAdmin):
++    list_display = ("title", "kind", "run", "result", "original_name", "created_at")
++    list_filter = ("kind",)
++
++
++@admin.register(SatDefect)
++class SatDefectAdmin(admin.ModelAdmin):
++    list_display = ("title", "kind", "severity", "status", "test_id", "run", "created_at")
++    list_filter = ("kind", "severity", "status")
+diff --git a/iic_booking/lab_infrastructure/models.py b/iic_booking/lab_infrastructure/models.py
+index b1ad845..d48339c 100644
+--- a/iic_booking/lab_infrastructure/models.py
++++ b/iic_booking/lab_infrastructure/models.py
+@@ -187,3 +187,229 @@ class LabAlert(models.Model):
+     class Meta:
+         ordering = ["-created_at"]
+         indexes = [models.Index(fields=["status", "severity"])]
++
++
++class SatTestCase(models.Model):
++    """Catalog entry for System Acceptance / UAT / Integration tests (Phase 2.5)."""
++
++    class Suite(models.TextChoices):
++        SAT = "sat", _("System Acceptance")
++        UAT = "uat", _("User Acceptance")
++        INTEGRATION = "integration", _("Integration")
++        PERFORMANCE = "performance", _("Performance")
++        SECURITY = "security", _("Security")
++
++    class Severity(models.TextChoices):
++        CRITICAL = "critical", _("Critical")
++        HIGH = "high", _("High")
++        MEDIUM = "medium", _("Medium")
++        LOW = "low", _("Low")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    test_id = models.CharField(max_length=32, unique=True, db_index=True)
++    suite = models.CharField(max_length=16, choices=Suite.choices, default=Suite.SAT, db_index=True)
++    module = models.CharField(max_length=64, db_index=True)
++    feature = models.CharField(max_length=255)
++    preconditions = models.TextField(blank=True, default="")
++    steps = models.TextField(blank=True, default="")
++    expected_result = models.TextField(blank=True, default="")
++    severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.HIGH)
++    stage = models.PositiveSmallIntegerField(
++        default=1,
++        db_index=True,
++        help_text=_("Lab SAT execution stage 1GÇô5"),
++    )
++    execution_order = models.PositiveIntegerField(default=0, db_index=True)
++    is_active = models.BooleanField(default=True)
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    class Meta:
++        ordering = ["stage", "execution_order", "test_id"]
++        indexes = [models.Index(fields=["suite", "module"]), models.Index(fields=["stage", "execution_order"])]
++
++
++class SatTestRun(models.Model):
++    """One execution wave of the acceptance catalog."""
++
++    class Status(models.TextChoices):
++        RUNNING = "running", _("Running")
++        COMPLETED = "completed", _("Completed")
++        ABORTED = "aborted", _("Aborted")
++
++    class Recommendation(models.TextChoices):
++        GO = "go", _("GO")
++        CONDITIONAL_GO = "conditional_go", _("Conditional GO")
++        NO_GO = "no_go", _("NO GO")
++        PENDING = "pending", _("Pending")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    name = models.CharField(max_length=255, blank=True, default="")
++    suite = models.CharField(max_length=16, choices=SatTestCase.Suite.choices, blank=True, default="")
++    status = models.CharField(max_length=16, choices=Status.choices, default=Status.RUNNING)
++    executed_by = models.ForeignKey(
++        settings.AUTH_USER_MODEL,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="sat_test_runs",
++    )
++    notes = models.TextField(blank=True, default="")
++    current_result = models.ForeignKey(
++        "SatTestResult",
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="+",
++    )
++    lab_context = models.JSONField(
++        default=dict,
++        blank=True,
++        help_text=_("Optional building/floor/lab/equipment focus for this run"),
++    )
++    readiness_snapshot = models.JSONField(default=dict, blank=True)
++    recommendation = models.CharField(
++        max_length=32,
++        choices=Recommendation.choices,
++        default=Recommendation.PENDING,
++    )
++    started_at = models.DateTimeField(auto_now_add=True)
++    finished_at = models.DateTimeField(null=True, blank=True)
++
++    class Meta:
++        ordering = ["-started_at"]
++
++
++class SatTestResult(models.Model):
++    """Per-case result within a run (Actual Result / Status for SAT sheets)."""
++
++    class Status(models.TextChoices):
++        PASSED = "passed", _("Passed")
++        FAILED = "failed", _("Failed")
++        SKIPPED = "skipped", _("Skipped")
++        BLOCKED = "blocked", _("Blocked")
++        NOT_RUN = "not_run", _("Not Run")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    run = models.ForeignKey(SatTestRun, on_delete=models.CASCADE, related_name="results")
++    test_case = models.ForeignKey(SatTestCase, on_delete=models.CASCADE, related_name="results")
++    status = models.CharField(max_length=16, choices=Status.choices, default=Status.NOT_RUN, db_index=True)
++    actual_result = models.TextField(blank=True, default="")
++    remarks = models.TextField(blank=True, default="")
++    administrator_notes = models.TextField(blank=True, default="")
++    log_url = models.URLField(blank=True, default="")
++    evidence = models.JSONField(default=dict, blank=True)
++    failure_snapshot = models.JSONField(
++        default=dict,
++        blank=True,
++        help_text=_("Auto-captured environment at failure time"),
++    )
++    executed_at = models.DateTimeField(null=True, blank=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    class Meta:
++        ordering = ["test_case__stage", "test_case__execution_order", "test_case__test_id"]
++        unique_together = [("run", "test_case")]
++        indexes = [models.Index(fields=["status", "run"])]
++
++
++def sat_evidence_upload_to(instance, filename):
++    run_id = getattr(instance, "run_id", None) or "unknown"
++    return f"sat_evidence/{run_id}/{filename}"
++
++
++class SatEvidence(models.Model):
++    """Screenshots, logs, configs, captures attached to a SAT result/run."""
++
++    class Kind(models.TextChoices):
++        SCREENSHOT = "screenshot", _("Screenshot")
++        LOG = "log", _("Log File")
++        CONFIG = "config", _("Configuration File")
++        NETWORK = "network", _("Network Capture")
++        VIDEO = "video", _("Video")
++        OTHER = "other", _("Other")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    run = models.ForeignKey(SatTestRun, on_delete=models.CASCADE, related_name="evidence_files")
++    result = models.ForeignKey(
++        SatTestResult,
++        on_delete=models.CASCADE,
++        null=True,
++        blank=True,
++        related_name="evidence_files",
++    )
++    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.OTHER)
++    title = models.CharField(max_length=255, blank=True, default="")
++    file = models.FileField(upload_to=sat_evidence_upload_to, max_length=512)
++    original_name = models.CharField(max_length=255, blank=True, default="")
++    content_type = models.CharField(max_length=128, blank=True, default="")
++    uploaded_by = models.ForeignKey(
++        settings.AUTH_USER_MODEL,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="sat_evidence_uploads",
++    )
++    created_at = models.DateTimeField(auto_now_add=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++
++
++class SatDefect(models.Model):
++    """Defect raised from a failed / blocked SAT case."""
++
++    class Kind(models.TextChoices):
++        BUG = "bug", _("Bug")
++        IMPROVEMENT = "improvement", _("Improvement")
++        CONFIGURATION = "configuration", _("Configuration Issue")
++        HARDWARE = "hardware", _("Hardware Issue")
++        NETWORK = "network", _("Network Issue")
++        USER_ERROR = "user_error", _("User Error")
++
++    class Severity(models.TextChoices):
++        CRITICAL = "critical", _("Critical")
++        HIGH = "high", _("High")
++        MEDIUM = "medium", _("Medium")
++        LOW = "low", _("Low")
++
++    class Status(models.TextChoices):
++        OPEN = "open", _("Open")
++        IN_PROGRESS = "in_progress", _("In Progress")
++        RESOLVED = "resolved", _("Resolved")
++        WONT_FIX = "wont_fix", _("Won't Fix")
++        DUPLICATE = "duplicate", _("Duplicate")
++
++    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
++    run = models.ForeignKey(SatTestRun, on_delete=models.CASCADE, related_name="defects")
++    result = models.ForeignKey(
++        SatTestResult,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="defects",
++    )
++    kind = models.CharField(max_length=32, choices=Kind.choices, default=Kind.BUG)
++    severity = models.CharField(max_length=16, choices=Severity.choices, default=Severity.HIGH)
++    status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN, db_index=True)
++    title = models.CharField(max_length=255)
++    description = models.TextField(blank=True, default="")
++    test_id = models.CharField(max_length=32, blank=True, default="", db_index=True)
++    equipment_id = models.CharField(max_length=64, blank=True, default="")
++    department_id = models.IntegerField(null=True, blank=True)
++    machine_name = models.CharField(max_length=255, blank=True, default="")
++    node_id = models.CharField(max_length=64, blank=True, default="")
++    created_by = models.ForeignKey(
++        settings.AUTH_USER_MODEL,
++        on_delete=models.SET_NULL,
++        null=True,
++        blank=True,
++        related_name="sat_defects_created",
++    )
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++    resolved_at = models.DateTimeField(null=True, blank=True)
++
++    class Meta:
++        ordering = ["-created_at"]
++        indexes = [models.Index(fields=["status", "severity"])]
+diff --git a/iic_booking/lab_infrastructure/urls.py b/iic_booking/lab_infrastructure/urls.py
+index 91edc79..6e5a247 100644
+--- a/iic_booking/lab_infrastructure/urls.py
++++ b/iic_booking/lab_infrastructure/urls.py
+@@ -29,4 +29,17 @@ urlpatterns = [
+         views.rotate_agent_secret_hint,
+         name="node-rotate-credentials",
+     ),
++    # Phase 2.5 GÇö Automated Test Dashboard (Main Admin)
++    path("testing/", views.testing_dashboard, name="testing-dashboard"),
++    path("testing/runs/", views.testing_runs, name="testing-runs"),
++    path("testing/runs/<uuid:run_id>/", views.testing_run_detail, name="testing-run-detail"),
++    path("testing/runs/<uuid:run_id>/report/", views.testing_report, name="testing-report"),
++    path("testing/results/", views.testing_results, name="testing-results"),
++    path("testing/results/<uuid:result_id>/", views.testing_result_update, name="testing-result-update"),
++    path("testing/seed/", views.testing_seed_catalog, name="testing-seed"),
++    path("testing/wizard/", views.testing_wizard_current, name="testing-wizard"),
++    path("testing/evidence/", views.testing_evidence_upload, name="testing-evidence"),
++    path("testing/defects/", views.testing_defects, name="testing-defects"),
++    path("testing/health/", views.testing_health_panel, name="testing-health"),
++    path("testing/readiness/", views.testing_readiness, name="testing-readiness"),
+ ]
+diff --git a/iic_booking/lab_infrastructure/views.py b/iic_booking/lab_infrastructure/views.py
+index 3fe6f90..872f9a3 100644
+--- a/iic_booking/lab_infrastructure/views.py
++++ b/iic_booking/lab_infrastructure/views.py
+@@ -6,7 +6,8 @@ from datetime import timedelta
+ 
+ from django.utils import timezone
+ from rest_framework import status
+-from rest_framework.decorators import api_view, authentication_classes, permission_classes
++from rest_framework.decorators import api_view, authentication_classes, permission_classes, parser_classes
++from rest_framework.parsers import FormParser, MultiPartParser, JSONParser
+ from rest_framework.permissions import IsAuthenticated
+ from rest_framework.response import Response
+ 
+@@ -16,6 +17,9 @@ from iic_booking.lab_infrastructure.models import (
+     LabAlert,
+     LabAuditEvent,
+     LabRepairAction,
++    SatTestCase,
++    SatTestResult,
++    SatTestRun,
+ )
+ from iic_booking.lab_infrastructure.services.fleet import build_infrastructure_tree, get_node_detail
+ from iic_booking.sync.authentication import DepartmentSyncAgentAuthentication
+@@ -615,3 +619,400 @@ def rotate_agent_secret_hint(request, node_id: str):
+         actor=request.user,
+     )
+     return Response({"detail": "Rotation requested; agent should call security/api-keys/rotate on next cycle."})
++
++
++def _is_main_admin(user) -> bool:
++    if not user or not getattr(user, "is_authenticated", False):
++        return False
++    if getattr(user, "is_superuser", False):
++        return True
++    return str(getattr(user, "user_type", "") or "").lower() == "admin"
++
++
++@api_view(["GET"])
++@permission_classes([IsAuthenticated])
++def testing_dashboard(request):
++    """Main Admin Lab SAT Execution Dashboard."""
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import (
++        compute_readiness,
++        current_wizard_step,
++        live_health_panel,
++        run_progress,
++        stage_summary,
++    )
++    from iic_booking.lab_infrastructure.services.testing import module_summary, overall_health
++
++    run_id = request.query_params.get("run_id")
++    run = SatTestRun.objects.filter(pk=run_id).first() if run_id else SatTestRun.objects.order_by("-started_at").first()
++    modules = module_summary(run)
++    progress = run_progress(run) if run else None
++    readiness = compute_readiness(run) if run else None
++    return Response(
++        {
++            "overall": overall_health(modules),
++            "modules": modules,
++            "progress": progress,
++            "stages": stage_summary(run) if run else [],
++            "readiness": readiness,
++            "current_test": current_wizard_step(run) if run and run.status == SatTestRun.Status.RUNNING else None,
++            "health_panel": live_health_panel(),
++            "run_id": str(run.id) if run else None,
++            "latest_run": _serialize_run(run),
++            "mode": "lab_sat_execution",
++        }
++    )
++
++
++@api_view(["GET", "POST"])
++@permission_classes([IsAuthenticated])
++def testing_runs(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.testing import ensure_catalog, start_run
++
++    if request.method == "GET":
++        ensure_catalog()
++        runs = SatTestRun.objects.order_by("-started_at")[:50]
++        return Response({"count": len(list(runs)), "results": [_serialize_run(r) for r in runs]})
++
++    lab_context = request.data.get("lab_context") if isinstance(request.data.get("lab_context"), dict) else {}
++    run = start_run(
++        user=request.user,
++        name=(request.data.get("name") or "")[:255],
++        suite=(request.data.get("suite") or "")[:16],
++        lab_context=lab_context,
++    )
++    return Response(_serialize_run(run), status=status.HTTP_201_CREATED)
++
++
++@api_view(["GET", "PATCH"])
++@permission_classes([IsAuthenticated])
++def testing_run_detail(request, run_id):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    run = SatTestRun.objects.filter(pk=run_id).first()
++    if not run:
++        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
++    if request.method == "PATCH":
++        st = (request.data.get("status") or "").lower()
++        if st in {c.value for c in SatTestRun.Status}:
++            run.status = st
++            if st in {SatTestRun.Status.COMPLETED, SatTestRun.Status.ABORTED}:
++                run.finished_at = timezone.now()
++            run.save(update_fields=["status", "finished_at"])
++        if "notes" in request.data:
++            run.notes = str(request.data.get("notes") or "")[:5000]
++            run.save(update_fields=["notes"])
++    return Response(_serialize_run(run))
++
++
++@api_view(["GET"])
++@permission_classes([IsAuthenticated])
++def testing_results(request):
++    """Drill-down results; filter by module / status / run / failed-only / stage."""
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import serialize_result
++    from iic_booking.lab_infrastructure.services.testing import ensure_catalog
++
++    ensure_catalog()
++    run_id = request.query_params.get("run_id")
++    run = SatTestRun.objects.filter(pk=run_id).first() if run_id else SatTestRun.objects.order_by("-started_at").first()
++    qs = SatTestResult.objects.select_related("test_case", "run").prefetch_related("evidence_files", "defects")
++    if run:
++        qs = qs.filter(run=run)
++    else:
++        qs = qs.none()
++    module = (request.query_params.get("module") or "").strip()
++    if module:
++        qs = qs.filter(test_case__module=module)
++    stage = request.query_params.get("stage")
++    if stage and str(stage).isdigit():
++        qs = qs.filter(test_case__stage=int(stage))
++    st = (request.query_params.get("status") or "").strip().lower()
++    if st:
++        qs = qs.filter(status=st)
++    if str(request.query_params.get("failed_only") or "") in {"1", "true", "yes"}:
++        qs = qs.filter(status__in=[SatTestResult.Status.FAILED, SatTestResult.Status.BLOCKED])
++    qs = qs.order_by("test_case__stage", "test_case__execution_order", "test_case__test_id")
++    results = [serialize_result(r) for r in qs[:500]]
++    return Response({"count": len(results), "run_id": str(run.id) if run else None, "results": results})
++
++
++@api_view(["PATCH"])
++@permission_classes([IsAuthenticated])
++def testing_result_update(request, result_id):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import record_result, serialize_result
++
++    result = (
++        SatTestResult.objects.select_related("test_case", "run")
++        .prefetch_related("evidence_files", "defects")
++        .filter(pk=result_id)
++        .first()
++    )
++    if not result:
++        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
++    st = (request.data.get("status") or "").lower()
++    if st and st not in {c.value for c in SatTestResult.Status}:
++        return Response({"detail": "Invalid status"}, status=status.HTTP_400_BAD_REQUEST)
++    if st:
++        record_result(
++            result,
++            status=st,
++            actual_result=str(request.data.get("actual_result") or ""),
++            remarks=str(request.data.get("remarks") or ""),
++            administrator_notes=str(request.data.get("administrator_notes") or ""),
++            log_url=str(request.data.get("log_url") or ""),
++            advance=str(request.data.get("advance") or "1") not in {"0", "false", "no"},
++        )
++    else:
++        if "actual_result" in request.data:
++            result.actual_result = str(request.data.get("actual_result") or "")[:8000]
++        if "remarks" in request.data:
++            result.remarks = str(request.data.get("remarks") or "")[:4000]
++        if "administrator_notes" in request.data:
++            result.administrator_notes = str(request.data.get("administrator_notes") or "")[:8000]
++        if "log_url" in request.data:
++            result.log_url = str(request.data.get("log_url") or "")[:500]
++        result.save()
++    result.refresh_from_db()
++    LabAuditEvent.objects.create(
++        event_type="sat_result_updated",
++        message=f"{result.test_case.test_id} GåÆ {result.status}",
++        actor=request.user,
++        payload={"result_id": str(result.id), "status": result.status},
++        success=result.status != SatTestResult.Status.FAILED,
++    )
++    from iic_booking.lab_infrastructure.services.sat_execution import current_wizard_step
++
++    return Response(
++        {
++            **serialize_result(result),
++            "next_test": current_wizard_step(result.run) if result.run.status == SatTestRun.Status.RUNNING else None,
++        }
++    )
++
++
++@api_view(["POST"])
++@permission_classes([IsAuthenticated])
++def testing_seed_catalog(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.testing import ensure_catalog
++
++    created = ensure_catalog()
++    total = SatTestCase.objects.filter(is_active=True).count()
++    return Response({"created": created, "total": total})
++
++
++@api_view(["GET"])
++@permission_classes([IsAuthenticated])
++def testing_wizard_current(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import current_wizard_step, run_progress
++
++    run_id = request.query_params.get("run_id")
++    run = SatTestRun.objects.filter(pk=run_id).first() if run_id else SatTestRun.objects.order_by("-started_at").first()
++    if not run:
++        return Response({"detail": "No SAT run"}, status=status.HTTP_404_NOT_FOUND)
++    return Response({"progress": run_progress(run), "current_test": current_wizard_step(run)})
++
++
++@api_view(["POST"])
++@permission_classes([IsAuthenticated])
++@parser_classes([FormParser, MultiPartParser])
++def testing_evidence_upload(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.models import SatEvidence
++
++    run_id = request.data.get("run_id")
++    result_id = request.data.get("result_id")
++    run = SatTestRun.objects.filter(pk=run_id).first()
++    if not run:
++        return Response({"detail": "run_id required"}, status=status.HTTP_400_BAD_REQUEST)
++    result = SatTestResult.objects.filter(pk=result_id, run=run).first() if result_id else None
++    upload = request.FILES.get("file")
++    if not upload:
++        return Response({"detail": "file required"}, status=status.HTTP_400_BAD_REQUEST)
++    kind = (request.data.get("kind") or SatEvidence.Kind.OTHER).lower()
++    if kind not in {c.value for c in SatEvidence.Kind}:
++        kind = SatEvidence.Kind.OTHER
++    ev = SatEvidence.objects.create(
++        run=run,
++        result=result,
++        kind=kind,
++        title=(request.data.get("title") or upload.name or "")[:255],
++        file=upload,
++        original_name=(upload.name or "")[:255],
++        content_type=getattr(upload, "content_type", "") or "",
++        uploaded_by=request.user,
++    )
++    return Response(
++        {
++            "id": str(ev.id),
++            "kind": ev.kind,
++            "title": ev.title,
++            "original_name": ev.original_name,
++            "url": ev.file.url if ev.file else "",
++        },
++        status=status.HTTP_201_CREATED,
++    )
++
++
++@api_view(["GET", "POST"])
++@permission_classes([IsAuthenticated])
++def testing_defects(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.models import SatDefect
++
++    if request.method == "GET":
++        run_id = request.query_params.get("run_id")
++        qs = SatDefect.objects.all().order_by("-created_at")
++        if run_id:
++            qs = qs.filter(run_id=run_id)
++        return Response(
++            {
++                "count": qs.count(),
++                "results": [
++                    {
++                        "id": str(d.id),
++                        "run_id": str(d.run_id),
++                        "result_id": str(d.result_id) if d.result_id else None,
++                        "kind": d.kind,
++                        "severity": d.severity,
++                        "status": d.status,
++                        "title": d.title,
++                        "description": d.description,
++                        "test_id": d.test_id,
++                        "equipment_id": d.equipment_id,
++                        "department_id": d.department_id,
++                        "machine_name": d.machine_name,
++                        "node_id": d.node_id,
++                        "created_at": d.created_at.isoformat() if d.created_at else None,
++                    }
++                    for d in qs[:200]
++                ],
++            }
++        )
++
++    run = SatTestRun.objects.filter(pk=request.data.get("run_id")).first()
++    if not run:
++        return Response({"detail": "run_id required"}, status=status.HTTP_400_BAD_REQUEST)
++    result = None
++    if request.data.get("result_id"):
++        result = SatTestResult.objects.filter(pk=request.data.get("result_id"), run=run).first()
++    title = (request.data.get("title") or "").strip()
++    if not title:
++        return Response({"detail": "title required"}, status=status.HTTP_400_BAD_REQUEST)
++    kind = (request.data.get("kind") or SatDefect.Kind.BUG).lower()
++    if kind not in {c.value for c in SatDefect.Kind}:
++        kind = SatDefect.Kind.BUG
++    sev = (request.data.get("severity") or SatDefect.Severity.HIGH).lower()
++    if sev not in {c.value for c in SatDefect.Severity}:
++        sev = SatDefect.Severity.HIGH
++    defect = SatDefect.objects.create(
++        run=run,
++        result=result,
++        kind=kind,
++        severity=sev,
++        title=title[:255],
++        description=str(request.data.get("description") or "")[:8000],
++        test_id=(request.data.get("test_id") or (result.test_case.test_id if result else ""))[:32],
++        equipment_id=str(request.data.get("equipment_id") or "")[:64],
++        department_id=request.data.get("department_id") if str(request.data.get("department_id") or "").isdigit() else None,
++        machine_name=str(request.data.get("machine_name") or "")[:255],
++        node_id=str(request.data.get("node_id") or "")[:64],
++        created_by=request.user,
++    )
++    LabAuditEvent.objects.create(
++        event_type="sat_defect_created",
++        message=f"SAT defect {defect.title}",
++        actor=request.user,
++        payload={"defect_id": str(defect.id), "test_id": defect.test_id, "severity": defect.severity},
++        success=False,
++    )
++    return Response({"id": str(defect.id), "title": defect.title, "severity": defect.severity}, status=status.HTTP_201_CREATED)
++
++
++@api_view(["GET"])
++@permission_classes([IsAuthenticated])
++def testing_report(request, run_id):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import (
++        build_report_payload,
++        compute_readiness,
++        report_csv,
++        report_pdf,
++        report_xlsx,
++    )
++
++    run = SatTestRun.objects.filter(pk=run_id).first()
++    if not run:
++        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
++    fmt = (request.query_params.get("format") or "json").lower()
++    if run.status == SatTestRun.Status.COMPLETED or request.query_params.get("refresh") == "1":
++        readiness = compute_readiness(run)
++        run.readiness_snapshot = readiness
++        run.recommendation = readiness.get("recommendation", run.recommendation)
++        run.save(update_fields=["readiness_snapshot", "recommendation"])
++    if fmt == "csv":
++        return report_csv(run)
++    if fmt in {"xlsx", "excel"}:
++        return report_xlsx(run)
++    if fmt == "pdf":
++        return report_pdf(run)
++    return Response(build_report_payload(run))
++
++
++@api_view(["GET"])
++@permission_classes([IsAuthenticated])
++def testing_health_panel(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import live_health_panel
++
++    return Response(live_health_panel())
++
++
++@api_view(["GET"])
++@permission_classes([IsAuthenticated])
++def testing_readiness(request):
++    if not _is_main_admin(request.user):
++        return Response({"detail": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
++    from iic_booking.lab_infrastructure.services.sat_execution import compute_readiness
++
++    run_id = request.query_params.get("run_id")
++    run = SatTestRun.objects.filter(pk=run_id).first() if run_id else SatTestRun.objects.order_by("-started_at").first()
++    if not run:
++        return Response({"detail": "No SAT run"}, status=status.HTTP_404_NOT_FOUND)
++    readiness = compute_readiness(run)
++    run.readiness_snapshot = readiness
++    run.recommendation = readiness.get("recommendation", run.recommendation)
++    run.save(update_fields=["readiness_snapshot", "recommendation"])
++    return Response(readiness)
++
++
++def _serialize_run(run: SatTestRun | None) -> dict | None:
++    if run is None:
++        return None
++    return {
++        "id": str(run.id),
++        "name": run.name,
++        "suite": run.suite,
++        "status": run.status,
++        "notes": run.notes,
++        "recommendation": run.recommendation,
++        "lab_context": run.lab_context or {},
++        "current_result_id": str(run.current_result_id) if run.current_result_id else None,
++        "started_at": run.started_at.isoformat() if run.started_at else None,
++        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
++        "executed_by": getattr(run.executed_by, "email", None) or getattr(run.executed_by, "username", None),
++    }
+diff --git a/iic_booking/remote_analysis/installer/views.py b/iic_booking/remote_analysis/installer/views.py
+index f8530e5..5d7d535 100644
+--- a/iic_booking/remote_analysis/installer/views.py
++++ b/iic_booking/remote_analysis/installer/views.py
+@@ -126,16 +126,125 @@ def releases_collection(request):
+     return Response(_serialize_release(rel), status=status.HTTP_201_CREATED)
+ 
+ 
++def _agent_or_enrollment_or_manage(request) -> tuple[bool, str | None]:
++    """Phase 2.5 H-07/H-08: agents may discover updates without admin session."""
++    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
++    from iic_booking.remote_analysis.permissions import CanManageRemoteAnalysis
++
++    if isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
++        return True, None
++    if request.user and getattr(request.user, "is_authenticated", False):
++        if CanManageRemoteAnalysis().has_permission(request, None):
++            return True, None
++        if getattr(request.user, "is_superuser", False):
++            return True, None
++    ok, err = verify_enrollment_key(request)
++    if ok:
++        return True, None
++    return False, err or "Authentication required."
++
++
++def _try_bind_agent_auth(request) -> None:
++    """Attach RemoteAnalysisAgentUser when Bearer + X-Agent-Id are present."""
++    from iic_booking.remote_analysis.authentication import (
++        RemoteAnalysisAgentAuthentication,
++        RemoteAnalysisAgentUser,
++    )
++
++    if isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
++        return
++    auth_header = request.META.get("HTTP_AUTHORIZATION") or ""
++    if not auth_header.lower().startswith("bearer "):
++        return
++    try:
++        result = RemoteAnalysisAgentAuthentication().authenticate(request)
++    except Exception:
++        return
++    if result:
++        request.user, request.auth = result
++
++
+ @api_view(["GET"])
+-@permission_classes(_MANAGE)
++@authentication_classes([])
++@permission_classes([AllowAny])
+ def release_latest(request):
++    """Latest RA agent installer GÇö admin session, enrollment key, or agent bearer."""
++    _try_bind_agent_auth(request)
++    allowed, err = _agent_or_enrollment_or_manage(request)
++    if not allowed:
++        return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
++
++    channel = (request.query_params.get("channel") or "").strip().lower()
++    qs = AgentInstallerRelease.objects.filter(is_active=True)
++    if channel in {"stable", "production", "prod"}:
++        from django.db.models import Q
++
++        qs = qs.filter(Q(channel__iexact="stable") | Q(channel__iexact="production"))
++    elif channel:
++        qs = qs.filter(channel__iexact=channel)
+     rel = (
+-        AgentInstallerRelease.objects.filter(is_active=True, is_latest=True).first()
+-        or AgentInstallerRelease.objects.filter(is_active=True).order_by("-release_date").first()
++        qs.filter(is_latest=True).first()
++        or qs.order_by("-release_date").first()
+     )
+     if not rel:
+         return Response({"detail": "No installer release published."}, status=status.HTTP_404_NOT_FOUND)
+-    return Response(_serialize_release(rel))
++    payload = _serialize_release(rel)
++    current = (request.query_params.get("current_version") or "").strip()
++    if current:
++        payload["current_version"] = current
++        payload["update_available"] = (rel.version or "") != current
++    return Response(payload)
++
++
++@api_view(["POST"])
++@authentication_classes([])
++@permission_classes([AllowAny])
++def agent_update_report(request):
++    """RAA posts update-discovery status (enrollment key or agent bearer)."""
++    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
++    from iic_booking.remote_analysis.constants import AuditCategory
++    from iic_booking.remote_analysis.services.audit import record_event
++
++    _try_bind_agent_auth(request)
++    allowed, err = _agent_or_enrollment_or_manage(request)
++    if not allowed:
++        return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
++
++    data = request.data if isinstance(request.data, dict) else {}
++    agent_id = (request.headers.get("X-Agent-Id") or data.get("agent_id") or "").strip()
++    if not agent_id and isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
++        agent_id = getattr(request.user.workstation, "agent_id", "") or ""
++
++    detail = {
++        "current_version": data.get("current_version") or "",
++        "latest_version": data.get("latest_version") or "",
++        "update_available": bool(data.get("update_available")),
++        "channel": data.get("channel") or "production",
++        "checked_at": data.get("checked_at"),
++        "detail": data.get("detail") or "",
++        "agent_id": agent_id,
++    }
++    try:
++        import json
++
++        from iic_booking.remote_analysis.models import AnalysisWorkstation
++
++        ws = None
++        if agent_id:
++            ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
++        if ws is None and isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
++            ws = request.user.workstation
++        record_event(
++            category=AuditCategory.STATUS,
++            action="agent_update_discovery",
++            details=json.dumps(detail, default=str)[:4000],
++            success=True,
++            workstation=ws,
++        )
++    except Exception:
++        pass
++
++    return Response({"accepted": True, "report": detail}, status=status.HTTP_202_ACCEPTED)
+ 
+ 
+ def _download_release(request, release_id=None):
+diff --git a/iic_booking/remote_analysis/urls.py b/iic_booking/remote_analysis/urls.py
+index 18b5b89..53ad73c 100644
+--- a/iic_booking/remote_analysis/urls.py
++++ b/iic_booking/remote_analysis/urls.py
+@@ -243,4 +243,7 @@ urlpatterns = [
+     path("installer/catalog/software/", installer_views.catalog_software, name="installer-catalog-software"),
+     path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
+     path("installer/link/", installer_views.link_equipment, name="installer-link"),
++    # Phase 2.5 GÇö RAA update discovery/report (agent or enrollment auth)
++    path("updates/report/", installer_views.agent_update_report, name="agent-update-report"),
++    path("updates/discover/", installer_views.release_latest, name="agent-update-discover"),
+ ]

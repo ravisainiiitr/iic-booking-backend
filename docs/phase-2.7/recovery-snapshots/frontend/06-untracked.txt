@@ -1,0 +1,4 @@
+src/pages/DeploymentCenter.tsx
+src/pages/LaboratoryInfrastructure.tsx
+src/pages/RdpPathDiagnostics.tsx
+src/pages/TestDashboard.tsx

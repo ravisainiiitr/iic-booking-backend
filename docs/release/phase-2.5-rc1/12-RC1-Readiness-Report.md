@@ -36,7 +36,8 @@
 | B4 — Plug-and-Play Platform | `61b151fdb66d5dffef84dbbe9786e05e458ad167` | Accepted |
 | B5 — Laboratory Infrastructure | `932d016bb1119e71ada4df4959ab508217d46c52` | Accepted |
 | B6 — Diagnostics & Reporting | `49bfd66835e1c9d6d40e84184cf2dab28cd7281d` | Accepted |
-| B7 — SAT Dashboard | `TBD (assigned after commit)` | In progress |
+| B7 — SAT Dashboard | `7b53a93542950ed30df8a27f235bfe7cfc02693d` | Accepted |
+| B8 — Cross-cutting Stabilization | `TBD (assigned after commit)` | In progress |
 
 ---
 

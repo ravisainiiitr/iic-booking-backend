@@ -1,0 +1,9 @@
+M	docs/enterprise/AgentUpdates.md
+M	docs/enterprise/README.md
+M	docs/phase-2.5/README.md
+M	iic_booking/lab_infrastructure/admin.py
+M	iic_booking/lab_infrastructure/models.py
+M	iic_booking/lab_infrastructure/urls.py
+M	iic_booking/lab_infrastructure/views.py
+M	iic_booking/remote_analysis/installer/views.py
+M	iic_booking/remote_analysis/urls.py

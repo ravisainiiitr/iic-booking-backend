@@ -1,0 +1,6 @@
+DIR|D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\bin
+DIR|D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\obj
+FILE|D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\logs\raa-20260728.log|19.2KB
+FILE|D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\bin\Release\net8.0\RemoteAnalysis.Agent.exe|148.5KB
+FILE|D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\obj\Release\net8.0\apphost.exe|148.5KB
+FILE|D:\IIC_NEW\RemoteAnalysis.Agent\tmp-end-analysis-diff.txt|40.1KB

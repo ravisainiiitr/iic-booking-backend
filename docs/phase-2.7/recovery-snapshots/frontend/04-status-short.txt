@@ -1,0 +1,14 @@
+## main...origin/master
+ M src/App.tsx
+ M src/components/BackToDashboardButton.tsx
+ M src/components/admin/EquipmentLocationFields.tsx
+ M src/lib/api.ts
+ M src/lib/equipmentGps.ts
+ M src/pages/AnalysisLaunch.tsx
+ M src/pages/Dashboard.tsx
+ M src/pages/RemoteAnalysis.tsx
+ M vite.config.ts
+?? src/pages/DeploymentCenter.tsx
+?? src/pages/LaboratoryInfrastructure.tsx
+?? src/pages/RdpPathDiagnostics.tsx
+?? src/pages/TestDashboard.tsx

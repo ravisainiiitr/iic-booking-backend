@@ -1,0 +1,3 @@
+name=dsa
+path=D:\IIC_NEW\DepartmentSyncAgent
+captured_utc=2026-08-04T10:58:18.3295832+05:30

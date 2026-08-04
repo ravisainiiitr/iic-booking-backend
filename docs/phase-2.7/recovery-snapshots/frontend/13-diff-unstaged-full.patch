@@ -1,0 +1,470 @@
+diff --git a/src/App.tsx b/src/App.tsx
+index 7b575f1..a172533 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -80,7 +80,11 @@ import CalendarColorSettings from "./pages/CalendarColorSettings";
+ import InventoryManagement from "./pages/InventoryManagement";
+ import RemoteAnalysis from "./pages/RemoteAnalysis";
+ import AgentInstaller from "./pages/AgentInstaller";
++import RdpPathDiagnostics from "./pages/RdpPathDiagnostics";
+ import DsaAgentInstaller from "./pages/DsaAgentInstaller";
++import DeploymentCenter from "./pages/DeploymentCenter";
++import LaboratoryInfrastructure from "./pages/LaboratoryInfrastructure";
++import TestDashboard from "./pages/TestDashboard";
+ import AnalysisWorkspace from "./pages/AnalysisWorkspace";
+ import AnalysisLaunch from "./pages/AnalysisLaunch";
+ import WorkflowDesigner from "./pages/WorkflowDesigner";
+@@ -206,6 +210,7 @@ const App = () => (
+                 <Route path="/inventory-management" element={<InventoryManagement />} />
+                 <Route path="/remote-analysis" element={<RemoteAnalysis />} />
+                 <Route path="/remote-analysis/agent-installer" element={<AgentInstaller />} />
++                <Route path="/remote-analysis/rdp-diagnostics" element={<RdpPathDiagnostics />} />
+                 <Route path="/analysis-workspace/:bookingId" element={<AnalysisWorkspace />} />
+                 <Route path="/analysis-launch/:bookingId" element={<AnalysisLaunch />} />
+                 <Route
+@@ -218,6 +223,9 @@ const App = () => (
+                 />
+                 <Route path="/department-sync" element={<ErrorBoundary fallbackTitle="Department Sync" backPath="/dashboard"><DepartmentSync /></ErrorBoundary>} />
+                 <Route path="/department-sync/agent-installer" element={<DsaAgentInstaller />} />
++                <Route path="/deployment-center" element={<ErrorBoundary fallbackTitle="Deployment Center" backPath="/dashboard"><DeploymentCenter /></ErrorBoundary>} />
++                <Route path="/laboratory-infrastructure" element={<ErrorBoundary fallbackTitle="Laboratory Infrastructure" backPath="/dashboard"><LaboratoryInfrastructure /></ErrorBoundary>} />
++                <Route path="/test-dashboard" element={<ErrorBoundary fallbackTitle="Test Dashboard" backPath="/dashboard"><TestDashboard /></ErrorBoundary>} />
+                 <Route path="/procurement-workflow" element={<ProcurementWorkflow />} />
+                 <Route path="/equipment-lifecycle" element={<EquipmentLifecycleHub />} />
+                 <Route path="/propose-equipment" element={<ProposeEquipment />} />
+diff --git a/src/lib/api.ts b/src/lib/api.ts
+index 3ff4ee1..97d41e3 100644
+--- a/src/lib/api.ts
++++ b/src/lib/api.ts
+@@ -8530,6 +8530,33 @@ class ApiClient {
+     return this.request<unknown[]>('/v1/analysis/reports/', { method: 'GET' });
+   }
+ 
++  /** RDP path diagnostics (Portal GåÆ Agent GåÆ Guacamole GåÆ Analysis PC). */
++  async getRemoteAnalysisRdpPath(params?: { workstation_id?: string; session_id?: string }) {
++    const qs = new URLSearchParams();
++    if (params?.workstation_id) qs.set('workstation_id', params.workstation_id);
++    if (params?.session_id) qs.set('session_id', params.session_id);
++    const q = qs.toString() ? `?${qs.toString()}` : '';
++    return this.request<Record<string, unknown>>(`/v1/analysis/operations/rdp-path/${q}`, { method: 'GET' });
++  }
++
++  async runRemoteAnalysisRdpPath(body: {
++    workstation_id?: string;
++    session_id?: string;
++    issue_diagnose_command?: boolean;
++  }) {
++    return this.request<Record<string, unknown>>('/v1/analysis/operations/rdp-path/run/', {
++      method: 'POST',
++      body: JSON.stringify(body || {}),
++    });
++  }
++
++  async getRemoteAnalysisConnectionTrace(sessionId: string) {
++    return this.request<Record<string, unknown>>(
++      `/v1/analysis/session/${encodeURIComponent(sessionId)}/connection-trace/`,
++      { method: 'GET' }
++    );
++  }
++
+   /** Agent Installer releases (Main Admin / RA manage). */
+   async getAgentInstallerReleases(all?: boolean) {
+     const qs = all ? '?all=1' : '';
+@@ -8691,6 +8718,209 @@ class ApiClient {
+     });
+   }
+ 
++  /** Deployment Center GÇö aggregate DSA / RA / Equipment PC Wizard catalog. */
++  async getDeploymentCenter() {
++    return this.request<{
++      products: Array<{
++        key: string;
++        label: string;
++        guide_path?: string;
++        ticket_product?: string;
++        latest: Record<string, unknown> | null;
++        previous: Array<Record<string, unknown>>;
++      }>;
++      links?: Record<string, string>;
++    }>('/v1/deployment/center/', { method: 'GET' });
++  }
++
++  async createEquipmentWizardDownloadTicket(opts?: { signal?: AbortSignal }) {
++    return this.request<{
++      token: string;
++      url: string;
++      expires_in: number;
++      filename: string;
++      size_bytes: number;
++      sha256: string;
++      version: string;
++      offline: boolean;
++    }>('/v1/deployment/wizard/releases/latest/download-ticket/', {
++      method: 'POST',
++      body: JSON.stringify({}),
++      signal: opts?.signal,
++    });
++  }
++
++  /** Laboratory Infrastructure (Phase 2 enterprise fleet). */
++  async getLabInfrastructure(departmentId?: number) {
++    const qs = departmentId != null ? `?department_id=${departmentId}` : '';
++    return this.request<Record<string, unknown>>(`/v1/lab/infrastructure/${qs}`, { method: 'GET' });
++  }
++
++  async getLabNodeDetail(nodeId: string) {
++    return this.request<Record<string, unknown>>(
++      `/v1/lab/infrastructure/nodes/${encodeURIComponent(nodeId)}/`,
++      { method: 'GET' }
++    );
++  }
++
++  async postLabRepair(nodeId: string, action: string) {
++    return this.request<Record<string, unknown>>(
++      `/v1/lab/infrastructure/nodes/${encodeURIComponent(nodeId)}/repair/`,
++      { method: 'POST', body: JSON.stringify({ action }) }
++    );
++  }
++
++  async runLabDiagnostics(nodeId: string) {
++    return this.request<Record<string, unknown>>(
++      `/v1/lab/infrastructure/nodes/${encodeURIComponent(nodeId)}/diagnostics/`,
++      { method: 'POST', body: JSON.stringify({}) }
++    );
++  }
++
++  async getLabAlerts() {
++    return this.request<{ count: number; results: Array<Record<string, unknown>> }>('/v1/lab/alerts/', {
++      method: 'GET',
++    });
++  }
++
++  async ackLabAlert(alertId: string) {
++    return this.request<Record<string, unknown>>(`/v1/lab/alerts/${alertId}/ack/`, { method: 'POST', body: '{}' });
++  }
++
++  async getLabAudit() {
++    return this.request<{ count: number; results: Array<Record<string, unknown>> }>('/v1/lab/audit/', {
++      method: 'GET',
++    });
++  }
++
++  async getLabSoftwareCompliance() {
++    return this.request<{ count: number; results: Array<Record<string, unknown>> }>(
++      '/v1/lab/software/compliance/',
++      { method: 'GET' }
++    );
++  }
++
++  async getLabUtilizationReport() {
++    return this.request<Record<string, unknown>>('/v1/lab/reports/utilization/', { method: 'GET' });
++  }
++
++  async getTestingDashboard(runId?: string) {
++    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
++    return this.request<{
++      overall: Record<string, unknown>;
++      modules: Array<Record<string, unknown>>;
++      progress?: Record<string, unknown> | null;
++      stages?: Array<Record<string, unknown>>;
++      readiness?: Record<string, unknown> | null;
++      current_test?: Record<string, unknown> | null;
++      health_panel?: Record<string, unknown>;
++      run_id?: string | null;
++      latest_run?: Record<string, unknown> | null;
++      mode?: string;
++    }>(`/v1/lab/testing/${qs}`, { method: 'GET' });
++  }
++
++  async seedTestingCatalog() {
++    return this.request<{ created: number; total: number }>('/v1/lab/testing/seed/', {
++      method: 'POST',
++      body: '{}',
++    });
++  }
++
++  async startTestingRun(payload?: { name?: string; suite?: string; lab_context?: Record<string, unknown> }) {
++    return this.request<Record<string, unknown>>('/v1/lab/testing/runs/', {
++      method: 'POST',
++      body: JSON.stringify(payload || {}),
++    });
++  }
++
++  async getTestingResults(opts?: {
++    runId?: string;
++    module?: string;
++    failedOnly?: boolean;
++    status?: string;
++    stage?: number;
++  }) {
++    const params = new URLSearchParams();
++    if (opts?.runId) params.set('run_id', opts.runId);
++    if (opts?.module) params.set('module', opts.module);
++    if (opts?.status) params.set('status', opts.status);
++    if (opts?.stage != null) params.set('stage', String(opts.stage));
++    if (opts?.failedOnly) params.set('failed_only', '1');
++    const qs = params.toString() ? `?${params.toString()}` : '';
++    return this.request<{ count: number; run_id?: string | null; results: Array<Record<string, unknown>> }>(
++      `/v1/lab/testing/results/${qs}`,
++      { method: 'GET' }
++    );
++  }
++
++  async updateTestingResult(
++    resultId: string,
++    payload: {
++      status?: string;
++      actual_result?: string;
++      remarks?: string;
++      administrator_notes?: string;
++      log_url?: string;
++      advance?: boolean;
++    }
++  ) {
++    return this.request<Record<string, unknown>>(`/v1/lab/testing/results/${resultId}/`, {
++      method: 'PATCH',
++      body: JSON.stringify(payload),
++    });
++  }
++
++  async getTestingWizard(runId?: string) {
++    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
++    return this.request<{ progress: Record<string, unknown>; current_test: Record<string, unknown> | null }>(
++      `/v1/lab/testing/wizard/${qs}`,
++      { method: 'GET' }
++    );
++  }
++
++  async uploadTestingEvidence(form: FormData) {
++    return this.request<{ id: string; url?: string; kind: string; title: string }>(
++      '/v1/lab/testing/evidence/',
++      { method: 'POST', body: form }
++    );
++  }
++
++  async getTestingDefects(runId?: string) {
++    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
++    return this.request<{ count: number; results: Array<Record<string, unknown>> }>(`/v1/lab/testing/defects/${qs}`, {
++      method: 'GET',
++    });
++  }
++
++  async createTestingDefect(payload: Record<string, unknown>) {
++    return this.request<Record<string, unknown>>('/v1/lab/testing/defects/', {
++      method: 'POST',
++      body: JSON.stringify(payload),
++    });
++  }
++
++  async getTestingReadiness(runId?: string) {
++    const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : '';
++    return this.request<Record<string, unknown>>(`/v1/lab/testing/readiness/${qs}`, { method: 'GET' });
++  }
++
++  async getTestingHealthPanel() {
++    return this.request<Record<string, unknown>>('/v1/lab/testing/health/', { method: 'GET' });
++  }
++
++  getTestingReportUrl(runId: string, format: 'json' | 'csv' | 'xlsx' | 'pdf' = 'json') {
++    return `/api/v1/lab/testing/runs/${runId}/report/?format=${format}`;
++  }
++
++  async getAgentInstallerReleasesForFleet() {
++    return this.getAgentInstallerReleases(true);
++  }
++
++  async getDsaInstallerReleasesForFleet() {
++    return this.getDsaInstallerReleases(true);
++  }
++
+   async generateRemoteAnalysisReport(reportType: string, format = 'JSON') {
+     return this.request<Record<string, unknown>>('/v1/analysis/reports/generate/', {
+       method: 'POST',
+diff --git a/src/pages/AnalysisLaunch.tsx b/src/pages/AnalysisLaunch.tsx
+index 8168593..78c5d28 100644
+--- a/src/pages/AnalysisLaunch.tsx
++++ b/src/pages/AnalysisLaunch.tsx
+@@ -177,7 +177,13 @@ export default function AnalysisLaunchPage() {
+     }
+     const data = res.data || {};
+     if (typeof data.session_id === "string") setSessionId(data.session_id);
+-    if (data.launch_pending && data.detail) {
++    const failure = data.failure as
++      | { user_message?: string; detail?: string; failure_category?: string; failed_stage?: string }
++      | undefined;
++    if (failure?.user_message) {
++      const cat = failure.failure_category ? `[${failure.failure_category}] ` : "";
++      setError(`${cat}${failure.user_message}`);
++    } else if (data.launch_pending && data.detail) {
+       setError(String(data.detail));
+     }
+     if (typeof data.launch_url === "string" && data.launch_url) {
+diff --git a/src/pages/Dashboard.tsx b/src/pages/Dashboard.tsx
+index 0600356..19284a9 100644
+--- a/src/pages/Dashboard.tsx
++++ b/src/pages/Dashboard.tsx
+@@ -3510,6 +3510,72 @@ const Dashboard = () => {
+             </Card>
+           )}
+ 
++          {isAdmin && (
++            <Card
++              className="overflow-hidden border-0 shadow-md cursor-pointer transition-all duration-200 hover:shadow-xl hover:-translate-y-0.5 hover:border-teal-200 dark:hover:border-teal-800"
++              onClick={() => navigate("/laboratory-infrastructure")}
++            >
++              <CardHeader className="pb-2">
++                <div className="flex items-center gap-4 mb-1">
++                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-teal-500 to-emerald-700 text-white shadow-lg">
++                    <HardDrive className="h-6 w-6" />
++                  </div>
++                  <div className="flex-1 min-w-0">
++                    <CardTitle className="text-lg">Laboratory Infrastructure</CardTitle>
++                    <CardDescription className="text-sm mt-0.5">
++                      Fleet monitoring, diagnostics, repair, alerts, and lifecycle for DSA, Equipment PCs, and Analysis PCs
++                    </CardDescription>
++                  </div>
++                </div>
++                <div className="h-1 w-16 rounded-full bg-gradient-to-r from-teal-500 to-emerald-500 mt-3" />
++              </CardHeader>
++              <CardContent>
++                <Button
++                  className="w-full bg-teal-600 hover:bg-teal-700 text-white"
++                  onClick={(e) => {
++                    e.stopPropagation();
++                    navigate("/laboratory-infrastructure");
++                  }}
++                >
++                  Open Fleet Dashboard
++                </Button>
++              </CardContent>
++            </Card>
++          )}
++
++          {isAdmin && (
++            <Card
++              className="overflow-hidden border-0 shadow-md cursor-pointer transition-all duration-200 hover:shadow-xl hover:-translate-y-0.5 hover:border-amber-200 dark:hover:border-amber-800"
++              onClick={() => navigate("/test-dashboard")}
++            >
++              <CardHeader className="pb-2">
++                <div className="flex items-center gap-4 mb-1">
++                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-500 to-orange-700 text-white shadow-lg">
++                    <ClipboardList className="h-6 w-6" />
++                  </div>
++                  <div className="flex-1 min-w-0">
++                    <CardTitle className="text-lg">Acceptance Test Dashboard</CardTitle>
++                    <CardDescription className="text-sm mt-0.5">
++                      Phase 2.5 SAT coverage GÇö module health, pass/fail drill-down (Main Admin)
++                    </CardDescription>
++                  </div>
++                </div>
++                <div className="h-1 w-16 rounded-full bg-gradient-to-r from-amber-500 to-orange-500 mt-3" />
++              </CardHeader>
++              <CardContent>
++                <Button
++                  className="w-full bg-amber-600 hover:bg-amber-700 text-white"
++                  onClick={(e) => {
++                    e.stopPropagation();
++                    navigate("/test-dashboard");
++                  }}
++                >
++                  Open Test Dashboard
++                </Button>
++              </CardContent>
++            </Card>
++          )}
++
+           {isAdmin && (
+             <Card className="overflow-hidden border-0 shadow-md transition-all duration-200 hover:shadow-xl hover:-translate-y-0.5 hover:border-violet-200 dark:hover:border-violet-800">
+               <CardHeader className="pb-2">
+@@ -3518,15 +3584,25 @@ const Dashboard = () => {
+                     <HardDrive className="h-6 w-6" />
+                   </div>
+                   <div className="flex-1 min-w-0">
+-                    <CardTitle className="text-lg">Agent Installers</CardTitle>
++                    <CardTitle className="text-lg">Deployment Center</CardTitle>
+                     <CardDescription className="text-sm mt-0.5">
+-                      Download Setup EXE for Remote Analysis PCs and Department Sync Equipment PCs
++                      DSA, Remote Analysis Agent, and Equipment PC Wizard GÇö versions, SHA-256, ticket downloads
+                     </CardDescription>
+                   </div>
+                 </div>
+                 <div className="h-1 w-16 rounded-full bg-gradient-to-r from-violet-500 to-indigo-500 mt-3" />
+               </CardHeader>
+               <CardContent className="flex flex-col gap-2 sm:flex-row">
++                <Button
++                  className="w-full bg-violet-600 hover:bg-violet-700 text-white"
++                  onClick={(e) => {
++                    e.stopPropagation();
++                    navigate("/deployment-center");
++                  }}
++                >
++                  <Download className="mr-2 h-4 w-4" />
++                  Open Deployment Center
++                </Button>
+                 <Button
+                   className="w-full bg-sky-600 hover:bg-sky-700 text-white"
+                   onClick={(e) => {
+@@ -3535,7 +3611,7 @@ const Dashboard = () => {
+                   }}
+                 >
+                   <Download className="mr-2 h-4 w-4" />
+-                  Remote Analysis Agent
++                  RA Agent
+                 </Button>
+                 <Button
+                   className="w-full bg-teal-600 hover:bg-teal-700 text-white"
+@@ -3545,7 +3621,7 @@ const Dashboard = () => {
+                   }}
+                 >
+                   <Download className="mr-2 h-4 w-4" />
+-                  Department Sync Agent
++                  DSA
+                 </Button>
+               </CardContent>
+             </Card>
+diff --git a/src/pages/RemoteAnalysis.tsx b/src/pages/RemoteAnalysis.tsx
+index aa7fa45..5e1b8c5 100644
+--- a/src/pages/RemoteAnalysis.tsx
++++ b/src/pages/RemoteAnalysis.tsx
+@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
+ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+-import { ArrowLeft, HardDrive, Loader2, Monitor, RefreshCw } from "lucide-react";
++import { ArrowLeft, HardDrive, Loader2, Monitor, Network, RefreshCw } from "lucide-react";
+ import { toast } from "sonner";
+ 
+ type DashboardMetrics = {
+@@ -240,6 +240,7 @@ const COMMAND_TYPES = [
+   "CLEAN_WORKSTATION",
+   "SYNC_WORKSPACE",
+   "COLLECT_WORKSPACE",
++  "DIAGNOSE_RDP",
+ ];
+ 
+ const statusVariant = (status: string): "default" | "secondary" | "destructive" | "outline" => {
+@@ -464,6 +465,9 @@ export default function RemoteAnalysis() {
+             </p>
+           </div>
+           <div className="flex gap-2">
++            <Button variant="outline" onClick={() => navigate("/remote-analysis/rdp-diagnostics")}>
++              <Network className="mr-2 h-4 w-4" /> RDP Diagnostics
++            </Button>
+             <Button variant="outline" onClick={() => navigate("/remote-analysis/agent-installer")}>
+               <HardDrive className="mr-2 h-4 w-4" /> Agent Installer
+             </Button>
+diff --git a/vite.config.ts b/vite.config.ts
+index dafc563..f741946 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -11,7 +11,9 @@ export default defineConfig(({ mode }) => ({
+     proxy: {
+       "/api": {
+         target: "http://127.0.0.1:8000",
+-        changeOrigin: true,
++        // Keep the Host header so backend-built absolute URLs (e.g. the remote
++        // analysis desktop redirect) stay on this origin and retain cookies.
++        changeOrigin: false,
+       },
+     },
+   },

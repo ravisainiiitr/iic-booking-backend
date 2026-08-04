@@ -1,0 +1,1319 @@
+ .github/workflows/integration-tests.yml            |   63 +
+ .gitignore                                         |   12 +
+ .../Controllers/AgentManagementController.cs       |   69 +
+ .../Controllers/DeveloperToolsController.cs        |  258 +++
+ .../Controllers/InstrumentsController.cs           |   34 +
+ .../Controllers/LocalEnrollmentController.cs       |   60 +
+ .../Controllers/LogsController.cs                  |   50 +
+ .../Controllers/PortalSettingsController.cs        |  269 ++-
+ .../Controllers/SystemHealthController.cs          |  135 ++
+ .../Middleware/ExceptionHandlingMiddleware.cs      |   19 +-
+ .../Middleware/LoopbackOnlyMiddleware.cs           |   47 +
+ Backend/src/DepartmentSyncAgent.Api/Program.cs     |  152 +-
+ .../Properties/launchSettings.json                 |    2 +-
+ .../appsettings.Development.json                   |   69 +-
+ .../appsettings.Production.json                    |   60 +
+ .../src/DepartmentSyncAgent.Api/appsettings.json   |  218 ++-
+ .../Developer/IDeveloperInstrumentSettings.cs      |   77 +
+ .../Developer/IDeveloperToolsService.cs            |   19 +-
+ .../Abstractions/Discovery/IFileDiscovery.cs       |  138 ++
+ .../Abstractions/Enterprise/IEnterprise.cs         |   42 +
+ .../Abstractions/Execution/IExecutionEngine.cs     |  144 ++
+ .../Health/IBackgroundServiceRuntimeTracker.cs     |   35 +
+ .../Health/IDiagnosticsReportService.cs            |   24 +
+ .../Abstractions/Health/IHealthCheck.cs            |   17 +
+ .../Abstractions/Health/ISystemHealthService.cs    |   11 +
+ .../Abstractions/Instruments/IInstruments.cs       |  133 ++
+ .../Abstractions/Monitoring/IMonitoring.cs         |   82 +
+ .../Persistence/ILocalPersistenceServices.cs       |   84 +
+ .../Persistence/ISyncCacheRepositories.cs          |  155 ++
+ .../Abstractions/Portal/IAgentEnrollmentService.cs |   38 +
+ .../Portal/IAgentRegistrationService.cs            |   21 -
+ .../Abstractions/Portal/IAuthenticationService.cs  |   17 +
+ .../Abstractions/Portal/IPortalApiClient.cs        |   31 +-
+ .../Abstractions/Portal/IPortalClient.cs           |   25 +-
+ .../Portal/IPortalConnectivityService.cs           |   17 +
+ .../Abstractions/Portal/IPortalTokenStore.cs       |   25 -
+ .../Abstractions/Portal/IPortalUrlProvider.cs      |   29 +
+ .../Abstractions/Portal/ITokenStore.cs             |   36 +
+ .../Abstractions/Processing/IResultProcessing.cs   |  135 ++
+ .../Abstractions/Production/IProduction.cs         |   66 +
+ .../Abstractions/Recovery/IRecovery.cs             |  126 ++
+ .../Abstractions/RemoteAdmin/IRemoteAdmin.cs       |   21 +
+ .../Abstractions/Security/ILocalApiAccessPolicy.cs |   11 +
+ .../Abstractions/Security/ISecretProtector.cs      |   20 +
+ .../Abstractions/Security/ISecurity.cs             |  101 ++
+ .../Abstractions/Services/IAgentLogBuffer.cs       |   36 +
+ .../Abstractions/Services/ILocalDatabaseService.cs |    3 +
+ .../Abstractions/Services/ILoggingService.cs       |   12 +-
+ .../Synchronization/ISynchronizationEngine.cs      |   41 +
+ .../Abstractions/Updates/IUpdates.cs               |  128 ++
+ .../Abstractions/Upload/IUploadEngine.cs           |  101 ++
+ .../Workers/IInstrumentWorkerSupervisor.cs         |    3 +
+ .../Models/Developer/DeveloperDtos.cs              |   91 +
+ .../Models/Discovery/DiscoveryModels.cs            |   98 +
+ .../Models/Discovery/FileDiscoveryOptions.cs       |   40 +
+ .../Models/Enterprise/EnterpriseModels.cs          |   43 +
+ .../Models/Execution/ExecutionEngineOptions.cs     |   27 +
+ .../Models/Execution/ExecutionTask.cs              |   57 +
+ .../Models/Execution/ExecutionTelemetry.cs         |   65 +
+ .../Models/Execution/RetryPolicyOptions.cs         |   37 +
+ .../Models/Health/HealthCheckResult.cs             |   43 +
+ .../Models/Health/HealthSeverity.cs                |    9 +
+ .../Models/Health/SystemHealthDtos.cs              |  204 +++
+ .../Models/Heartbeat/HeartbeatPayload.cs           |   51 +-
+ .../Models/Instruments/InstrumentModels.cs         |  152 ++
+ .../Models/Monitoring/MonitoringModels.cs          |  143 ++
+ .../Portal/LocalEnrollmentDiagnosticsDtos.cs       |  132 ++
+ .../Models/Portal/PortalAuthenticationDtos.cs      |   23 +
+ .../Models/Portal/PortalConnectivityDtos.cs        |   29 +
+ .../Models/Portal/PortalRegistrationDtos.cs        |   70 +-
+ .../Models/Processing/ProcessingModels.cs          |  116 ++
+ .../Models/Production/ProductionModels.cs          |  143 ++
+ .../Models/Recovery/RecoveryModels.cs              |  122 ++
+ .../Models/RemoteAdmin/RemoteAdminModels.cs        |   34 +
+ .../Models/Security/SecurityModels.cs              |   89 +
+ .../Models/Updates/UpdateModels.cs                 |  120 ++
+ .../Models/Upload/UploadEngineModels.cs            |  123 ++
+ .../Services/InstrumentPcService.cs                |   12 +-
+ .../Common/SyncableEntity.cs                       |   20 +
+ .../DepartmentSyncAgent.Domain/Entities/Agent.cs   |   75 +-
+ .../Entities/ExperimentSession.cs                  |   49 +
+ .../Entities/Instrument.cs                         |   26 +-
+ .../Entities/Sync/BookingCacheEntry.cs             |   21 +
+ .../Entities/Sync/EquipmentCacheEntry.cs           |   25 +
+ .../Entities/Sync/ExecutionHistoryEntry.cs         |   30 +
+ .../Entities/Sync/KeyValueEntry.cs                 |   21 +
+ .../Entities/Sync/LocalAgentConfiguration.cs       |   31 +
+ .../Entities/Sync/PersistedCommand.cs              |   28 +
+ .../Entities/Sync/PersistedTask.cs                 |   45 +
+ .../Entities/Sync/RecoveryCheckpoint.cs            |   25 +
+ .../Entities/Sync/ResultProcessingQueueItem.cs     |   44 +
+ .../Entities/Sync/SchemaVersionRecord.cs           |   21 +
+ .../Entities/Sync/TelemetrySnapshotRecord.cs       |   29 +
+ .../Entities/Sync/UploadQueueItem.cs               |   81 +
+ .../Entities/Sync/WorkspaceCacheEntry.cs           |   24 +
+ .../Enums/DiscoveryEnums.cs                        |   27 +
+ .../Enums/DomainStatuses.cs                        |    9 +-
+ .../Enums/ExperimentSessionStatus.cs               |   13 +
+ .../Enums/ResultProcessingStatus.cs                |   17 +
+ .../DepartmentSyncAgent.Domain/Enums/SyncState.cs  |   37 +
+ .../Enums/TaskLifecycleState.cs                    |   26 +
+ .../Persistence/LocalPersistenceSchema.cs          |   13 +
+ .../AgentBootstrapHostedService.cs                 |   22 +
+ .../AgentHeartbeatHostedService.cs                 |  112 +-
+ .../InstrumentSyncHostedService.cs                 |   91 +-
+ .../InstrumentSynchronizationService.cs            |  207 +++
+ .../ResultProcessingHostedService.cs               |   63 +
+ .../UploadEngineHostedService.cs                   |   70 +
+ .../DepartmentSyncAgent.Infrastructure.csproj      |    3 +-
+ .../InfrastructureServiceCollectionExtensions.cs   |  284 ++-
+ .../Discovery/DiscoveryCoreServices.cs             |  342 ++++
+ .../Discovery/DiscoverySupportServices.cs          |  431 +++++
+ .../Discovery/FileDiscoveryManager.cs              |  468 +++++
+ .../FileDiscoveryServiceCollectionExtensions.cs    |   29 +
+ .../Discovery/SMBWatcherPlugin.cs                  |  144 ++
+ .../Enterprise/AgentCapabilityReporter.cs          |  104 ++
+ .../Enterprise/AssignmentClient.cs                 |   27 +
+ .../Enterprise/EnterpriseAuditLogger.cs            |   29 +
+ .../EnterpriseServiceCollectionExtensions.cs       |   92 +
+ .../Enterprise/EnterpriseTelemetry.cs              |   68 +
+ .../Enterprise/TopologyReporter.cs                 |   31 +
+ .../Execution/ArchitecturalWorkerPool.cs           |  220 +++
+ .../Execution/ExecutionEngine.cs                   |  298 +++
+ .../ExecutionEngineServiceCollectionExtensions.cs  |   60 +
+ .../Execution/Plugins/ArchitecturalPlugins.cs      |   97 +
+ .../Execution/RetryAndPlugins.cs                   |  223 +++
+ .../Execution/Stages/PipelineStages.cs             |  145 ++
+ .../Instruments/ExperimentCoordinator.cs           |  187 ++
+ .../Instruments/ExperimentHooks.cs                 |  109 ++
+ .../Instruments/ExperimentSessionService.cs        |  213 +++
+ .../Instruments/ExperimentTelemetry.cs             |   97 +
+ .../Instruments/InstrumentExecutionBridgePlugin.cs |   97 +
+ .../Instruments/InstrumentPluginBase.cs            |   85 +
+ .../Instruments/InstrumentPluginRegistry.cs        |   59 +
+ .../InstrumentsServiceCollectionExtensions.cs      |   53 +
+ .../Plugins/BuiltInInstrumentPlugins.cs            |  116 ++
+ .../Monitoring/HealthReporter.cs                   |   47 +
+ .../Monitoring/MetricsCollector.cs                 |  166 ++
+ .../Monitoring/MonitoringAuditLogger.cs            |   25 +
+ .../Monitoring/MonitoringHostedService.cs          |  139 ++
+ .../Monitoring/MonitoringTelemetry.cs              |   88 +
+ .../Monitoring/PerformanceSampler.cs               |   34 +
+ .../Monitoring/PluginHealthMonitor.cs              |   74 +
+ .../Monitoring/ProcessingMonitor.cs                |   85 +
+ .../Monitoring/QueueMonitor.cs                     |   49 +
+ .../Monitoring/ResourceMonitor.cs                  |   62 +
+ .../Monitoring/TelemetryPublisher.cs               |  153 ++
+ .../Monitoring/UploadMonitor.cs                    |   80 +
+ .../Options/DepartmentSyncAgentOptions.cs          |   20 +-
+ .../Options/DeveloperModeOptions.cs                |   44 +-
+ .../Options/LocalApiOptions.cs                     |   37 +
+ .../Options/PortalClientOptions.cs                 |   11 +-
+ .../Options/UploadOptions.cs                       |   15 +-
+ .../Configurations/AgentConfiguration.cs           |   22 +-
+ .../ExperimentSessionConfiguration.cs              |   29 +
+ .../Configurations/InstrumentConfiguration.cs      |   10 +-
+ .../Configurations/SyncCacheConfigurations.cs      |  245 +++
+ .../Persistence/DsaDbContext.cs                    |   17 +
+ .../Persistence/LocalPersistenceServices.cs        |  323 ++++
+ .../20260721052815_AddJwtTokenFields.Designer.cs   | 1014 +++++++++++
+ .../Migrations/20260721052815_AddJwtTokenFields.cs |   60 +
+ ...0721073000_AddAgentPortalApiBaseUrl.Designer.cs | 1018 +++++++++++
+ .../20260721073000_AddAgentPortalApiBaseUrl.cs     |   29 +
+ ...00_AddAgentLastSuccessfulPortalCommunication.cs |   31 +
+ ...3323_Milestone7LocalPersistenceSync.Designer.cs | 1729 ++++++++++++++++++
+ ...0260727113323_Milestone7LocalPersistenceSync.cs |  465 +++++
+ ..._Milestone8FileDiscoveryUploadQueue.Designer.cs | 1787 ++++++++++++++++++
+ ...727114404_Milestone8FileDiscoveryUploadQueue.cs |  218 +++
+ ...Milestone9UploadEngineSessionFields.Designer.cs | 1827 +++++++++++++++++++
+ ...27115548_Milestone9UploadEngineSessionFields.cs |  154 ++
+ ...59_Milestone10ResultProcessingQueue.Designer.cs | 1915 ++++++++++++++++++++
+ ...60727121359_Milestone10ResultProcessingQueue.cs |   74 +
+ .../20260727133846_Milestone12Security.cs          |  152 ++
+ ...60727140000_ExpandInstrumentPortalSyncFields.cs |  102 ++
+ .../20260727143000_Milestone13OfflineRecovery.cs   |   56 +
+ ...20260727180000_Milestone18ExperimentSessions.cs |   78 +
+ .../20260728180000_ControlPlaneEnrollmentFields.cs |   61 +
+ .../Migrations/DsaDbContextModelSnapshot.cs        | 1138 +++++++++++-
+ .../Persistence/Repositories/QueueRepositories.cs  |  492 +++++
+ .../ResultProcessingQueueRepository.cs             |   57 +
+ .../Repositories/SyncCacheRepositories.cs          |  235 +++
+ .../Processing/Parsers.cs                          |  348 ++++
+ .../Processing/ProcessingServices.cs               |  452 +++++
+ .../Processing/ResultProcessingEngine.cs           |  380 ++++
+ .../ResultProcessingServiceCollectionExtensions.cs |   35 +
+ .../Production/ConfigurationValidator.cs           |   89 +
+ .../Production/DatabaseValidator.cs                |  104 ++
+ .../Production/FailureInjectionGate.cs             |   66 +
+ .../Production/PerformanceSnapshotService.cs       |   73 +
+ .../Production/ProductionCleanupHostedService.cs   |  120 ++
+ .../Production/ProductionDiagnosticsService.cs     |   96 +
+ .../Production/ProductionSecurityStartup.cs        |   68 +
+ .../Production/RetentionCleanupService.cs          |  186 ++
+ .../Production/SqlitePerformanceTuner.cs           |   59 +
+ .../Production/StressTestCatalog.cs                |   84 +
+ .../Production/SupportBundleGenerator.cs           |  134 ++
+ .../Production/SupportBundleSecretRedactor.cs      |   45 +
+ .../Recovery/ConflictResolutionService.cs          |  102 ++
+ .../Recovery/DatabaseIntegrityService.cs           |  192 ++
+ .../Recovery/OfflineSyncManager.cs                 |  162 ++
+ .../Recovery/PortalAvailabilityMonitor.cs          |  146 ++
+ .../Recovery/ProcessingRecoveryService.cs          |   47 +
+ .../Recovery/QueueRepairService.cs                 |  158 ++
+ .../Recovery/RecoveryAuditLogger.cs                |   29 +
+ .../Recovery/RecoveryCheckpointStore.cs            |   53 +
+ .../Recovery/RecoveryCoordinator.cs                |  220 +++
+ .../RecoveryServiceCollectionExtensions.cs         |   77 +
+ .../Recovery/RecoveryStateMachine.cs               |   60 +
+ .../Recovery/RecoveryTelemetry.cs                  |   81 +
+ .../Recovery/UploadRecoveryService.cs              |   47 +
+ .../RemoteAdminServiceCollectionExtensions.cs      |   93 +
+ .../RemoteAdmin/RemoteAdminServices.cs             |  410 +++++
+ .../Security/AgentAuthenticationService.cs         |   53 +
+ .../Security/ApiKeyRotationService.cs              |   95 +
+ .../Security/CertificateManager.cs                 |  145 ++
+ .../Security/CertificateStore.cs                   |   60 +
+ .../Security/DeviceIdentityService.cs              |  156 ++
+ .../Security/DpapiSecretProtector.cs               |   91 +
+ .../Security/LocalApiAccessPolicy.cs               |   50 +
+ .../Security/RequestSigningHandler.cs              |   44 +
+ .../Security/RequestSigningService.cs              |   84 +
+ .../Security/SecretEncryptionService.cs            |   60 +
+ .../Security/SecureConfigurationService.cs         |   99 +
+ .../Security/SecurityAuditLogger.cs                |   41 +
+ .../SecurityServiceCollectionExtensions.cs         |  107 ++
+ .../Security/SecurityTelemetry.cs                  |   65 +
+ .../Developer/DeveloperInstrumentSettings.cs       |  685 +++++++
+ .../DeveloperInstrumentSettingsHostedService.cs    |   20 +
+ .../Services/Developer/DeveloperToolsService.cs    |  125 +-
+ .../FileWatch/DetectionProcessingService.cs        |   45 +-
+ .../FileWatch/FileWatcherResumeHostedService.cs    |    8 +
+ .../Services/Health/AgentVersionHealthCheck.cs     |   71 +
+ .../Services/Health/AuthenticationHealthCheck.cs   |   58 +
+ .../Health/BackgroundServiceRuntimeTracker.cs      |   51 +
+ .../Services/Health/BackgroundWorkerHealthCheck.cs |   96 +
+ .../Services/Health/DiagnosticsReportService.cs    |  204 +++
+ .../Services/Health/DiskSpaceHealthCheck.cs        |   96 +
+ .../Services/Health/FileWatcherHealthCheck.cs      |   82 +
+ .../Health/PortalConnectivityHealthCheck.cs        |   49 +
+ .../Services/Health/SqliteHealthCheck.cs           |  130 ++
+ .../Services/Health/SystemHealthService.cs         |  377 ++++
+ .../Services/Health/SystemTimeHealthCheck.cs       |   72 +
+ .../Services/Health/UploadQueueHealthCheck.cs      |  107 ++
+ .../Services/Heartbeat/HeartbeatService.cs         |  266 ++-
+ .../Services/Logging/AgentLogBuffer.cs             |   37 +
+ .../Logging/AgentLogPersistenceHostedService.cs    |   95 +
+ .../Services/Logging/AgentLogQueryService.cs       |  143 ++
+ .../Services/Logging/LoggingService.cs             |  100 +-
+ .../Operations/OperationsDashboardService.cs       |    6 -
+ .../Services/Persistence/LocalDatabaseService.cs   |   88 +-
+ .../Services/Portal/AgentEnrollmentService.cs      |  855 +++++++++
+ .../Services/Portal/AgentRegistrationService.cs    |  248 ---
+ .../Services/Portal/AuthenticationService.cs       |  120 ++
+ .../Services/Portal/BearerTokenHandler.cs          |  165 ++
+ .../Portal/ControlPlaneBootstrapService.cs         |  166 ++
+ .../Portal/EnrollmentTransportException.cs         |   16 +
+ .../Services/Portal/PortalApiClientAdapter.cs      |   37 +-
+ .../Services/Portal/PortalBearerHandler.cs         |   30 -
+ .../Services/Portal/PortalClient.cs                |  336 +++-
+ .../Services/Portal/PortalConnectivityService.cs   |  234 +++
+ .../Services/Portal/PortalJobProcessor.cs          |  170 +-
+ .../Services/Portal/PortalRequestUriHandler.cs     |   28 +
+ .../Services/Portal/PortalService.cs               |   14 +-
+ .../Services/Portal/PortalTokenStore.cs            |   86 -
+ .../Services/Portal/PortalUrlProvider.cs           |  160 ++
+ .../Services/Portal/SqliteTokenStore.cs            |  398 ++++
+ .../Services/Registry/InstrumentRegistry.cs        |   76 +-
+ .../Services/Sync/AgentStartupOrchestrator.cs      |  101 +-
+ .../Services/Sync/ConfigurationRefreshService.cs   |  113 +-
+ .../Services/Sync/InstrumentConfigurationSync.cs   |  305 +++-
+ .../Services/Sync/WorkerCoordinator.cs             |   42 +-
+ .../Services/Upload/UploadBackgroundService.cs     |   45 +-
+ .../Synchronization/SynchronizationEngine.cs       |   71 +
+ .../Updates/ConfigurationUpdater.cs                |   50 +
+ .../Updates/DigitalSignatureVerifier.cs            |  135 ++
+ .../Updates/PackageDownloader.cs                   |  170 ++
+ .../Updates/PackageVerifier.cs                     |   92 +
+ .../Updates/PluginUpdater.cs                       |   70 +
+ .../Updates/ReleaseManifestClient.cs               |  168 ++
+ .../Updates/RollbackManager.cs                     |   82 +
+ .../Updates/UpdateAuditLogger.cs                   |   25 +
+ .../Updates/UpdateCoordinator.cs                   |  306 ++++
+ .../Updates/UpdateHostedService.cs                 |  100 +
+ .../Updates/UpdateInstaller.cs                     |  114 ++
+ .../Updates/UpdateScheduler.cs                     |   57 +
+ .../Updates/UpdateStateMachine.cs                  |   77 +
+ .../Updates/UpdateTelemetry.cs                     |  101 ++
+ .../Updates/VersionManager.cs                      |   73 +
+ .../Upload/UploadEngine.cs                         |  476 +++++
+ .../UploadEngineServiceCollectionExtensions.cs     |   27 +
+ .../Upload/UploadPlugin.cs                         |  104 ++
+ .../Upload/UploadSupportServices.cs                |  405 +++++
+ .../InstrumentWorkerSupervisorHostedService.cs     |   30 +
+ Backend/src/data/backups/dsa-20260729-120049.db    |  Bin 0 -> 4096 bytes
+ .../src/data/backups/dsa-20260729-120049.db.sha256 |    1 +
+ Backend/src/data/backups/dsa-20260729-120822.db    |  Bin 0 -> 4096 bytes
+ .../src/data/backups/dsa-20260729-120822.db.sha256 |    1 +
+ Backend/src/data/dsa.dev.db-shm                    |  Bin 32768 -> 32768 bytes
+ Backend/src/data/dsa.dev.db-wal                    |  Bin 605672 -> 1413192 bytes
+ .../Configuration/IntegrationTestOptions.cs        |  187 ++
+ .../DepartmentSyncAgent.IntegrationTests.csproj    |   32 +
+ .../Factories/TestDataFactory.cs                   |   41 +
+ .../Fixtures/IntegrationFixture.cs                 |  218 +++
+ .../Helpers/HttpClients.cs                         |  392 ++++
+ .../Helpers/IntegrationHarness.cs                  |   71 +
+ .../Helpers/ProcessAndDjango.cs                    |  293 +++
+ .../Helpers/SqliteProbe.cs                         |  178 ++
+ .../Helpers/WaitHelpers.cs                         |  244 +++
+ .../DepartmentSyncAgent.IntegrationTests/README.md |  103 ++
+ .../Scripts/django_ops.py                          |  410 +++++
+ .../Tests/EquipmentAndWorkspaceTests.cs            |  162 ++
+ .../Tests/RemoteCommandTests.cs                    |   92 +
+ .../Tests/UploadOfflineStabilityTests.cs           |  293 +++
+ .../appsettings.Integration.json                   |   22 +
+ .../xunit.runner.json                              |    6 +
+ .../DepartmentSyncAgent.Security.Tests.csproj      |   18 +
+ .../SecurityHardeningTests.cs                      |  147 ++
+ CHANGELOG.md                                       |   14 +-
+ Directory.Build.props                              |   15 +
+ Documentation/AgentManagement.md                   |  107 ++
+ Documentation/Architecture.md                      |   88 +-
+ Documentation/Database.md                          |   50 +-
+ Documentation/EnterpriseScaling.md                 |   93 +
+ Documentation/ExecutionEngine.md                   |  169 ++
+ Documentation/FileDiscovery.md                     |  115 ++
+ Documentation/InstrumentExperiments.md             |  102 ++
+ Documentation/LocalPersistence.md                  |  106 ++
+ Documentation/Monitoring.md                        |  110 ++
+ Documentation/OperationsGuide.md                   |   63 +
+ Documentation/Packaging.md                         |   75 +
+ Documentation/PerformanceTuning.md                 |   42 +
+ Documentation/Pilot/01-DeploymentVerification.md   |  164 ++
+ Documentation/Pilot/02-WindowsServiceValidation.md |  127 ++
+ .../Pilot/03-OperationalMonitoringGuide.md         |   96 +
+ Documentation/Pilot/04-BackupAndRecovery.md        |  120 ++
+ Documentation/Pilot/05-DisasterRecovery.md         |  115 ++
+ Documentation/Pilot/06-LabAdministratorManual.md   |   95 +
+ Documentation/Pilot/07-AdministratorRunbooks.md    |  245 +++
+ Documentation/Pilot/08-PilotAcceptanceChecklist.md |  111 ++
+ .../Pilot/09-ReleaseCandidateAssessment.md         |  100 +
+ Documentation/Pilot/README.md                      |   36 +
+ Documentation/PortalSyncArchitecture.md            |  203 +--
+ Documentation/ProductionChecklist.md               |   83 +
+ Documentation/ProductionDeployment.md              |   82 +
+ Documentation/Recovery.md                          |  112 ++
+ Documentation/ReleaseNotes-1.0.0-rc1.md            |  110 ++
+ Documentation/ReleaseNotes-ProductionRC.md         |   11 +
+ Documentation/ResultProcessing.md                  |  159 ++
+ Documentation/Security.md                          |  223 +++
+ Documentation/Troubleshooting.md                   |   65 +
+ Documentation/Updates.md                           |  124 ++
+ Documentation/UploadEngine.md                      |   81 +
+ Frontend/package-lock.json                         |    8 +-
+ Frontend/package.json                              |    2 +-
+ Frontend/src/App.tsx                               |    5 +-
+ Frontend/src/api/developerApi.ts                   |  236 +++
+ Frontend/src/api/instrumentsApi.ts                 |   48 +
+ Frontend/src/api/logsApi.ts                        |   76 +
+ Frontend/src/api/portalAuthApi.ts                  |   42 +
+ Frontend/src/api/portalSettingsApi.ts              |   63 +-
+ Frontend/src/api/systemHealthApi.ts                |  152 ++
+ .../src/components/EquipmentPcSettingsPanel.tsx    |  540 ++++++
+ Frontend/src/diagnostics/exporters.ts              |   51 +
+ Frontend/src/layout/AppLayout.tsx                  |    4 +-
+ .../src/monitoring/RealtimeMonitoringContext.tsx   |   64 +-
+ Frontend/src/monitoring/mockData.ts                |  367 +---
+ Frontend/src/pages/DashboardPage.tsx               |  122 +-
+ Frontend/src/pages/DetectedFilesPage.tsx           |    2 +-
+ Frontend/src/pages/InstrumentsPage.tsx             |  203 ++-
+ Frontend/src/pages/LogsPage.tsx                    |  369 +++-
+ Frontend/src/pages/SettingsPage.tsx                |  301 ++-
+ Frontend/src/pages/SystemHealthPage.tsx            |  497 +++++
+ Frontend/src/pages/UploadsPage.tsx                 |    4 +-
+ Frontend/vite.config.ts                            |   27 +-
+ README.md                                          |  152 +-
+ .../Contracts/InstrumentPcDto.cs                   |   16 +
+ .../Portal/AgentAuthenticationRequest.cs           |   10 -
+ .../Portal/AgentAuthenticationResponse.cs          |   12 -
+ .../Portal/AgentRegistrationRequest.cs             |   19 -
+ .../Portal/AgentRegistrationResponse.cs            |   17 -
+ .../Portal/ControlPlaneDtos.cs                     |  228 +++
+ .../Portal/PortalInstrumentDto.cs                  |   82 +-
+ Shared/DepartmentSyncAgent.Shared/ProductInfo.cs   |   39 +
+ VERSION                                            |    1 +
+ .../DepartmentSyncAgent.Api.deps.json              | 1258 +++++++++++++
+ .../auth-lost-fix/DepartmentSyncAgent.Api.dll      |  Bin 0 -> 99328 bytes
+ .../auth-lost-fix/DepartmentSyncAgent.Api.exe      |  Bin 0 -> 162816 bytes
+ .../auth-lost-fix/DepartmentSyncAgent.Api.pdb      |  Bin 0 -> 38700 bytes
+ .../DepartmentSyncAgent.Api.runtimeconfig.json     |   20 +
+ ...entSyncAgent.Api.staticwebassets.endpoints.json |    1 +
+ .../DepartmentSyncAgent.Application.deps.json      |  122 ++
+ .../DepartmentSyncAgent.Application.dll            |  Bin 0 -> 247808 bytes
+ .../DepartmentSyncAgent.Application.pdb            |  Bin 0 -> 80276 bytes
+ .../DepartmentSyncAgent.Domain.deps.json           |   23 +
+ .../auth-lost-fix/DepartmentSyncAgent.Domain.dll   |  Bin 0 -> 66048 bytes
+ .../auth-lost-fix/DepartmentSyncAgent.Domain.pdb   |  Bin 0 -> 34764 bytes
+ .../DepartmentSyncAgent.Infrastructure.deps.json   | 1340 ++++++++++++++
+ .../DepartmentSyncAgent.Infrastructure.dll         |  Bin 0 -> 1540608 bytes
+ .../DepartmentSyncAgent.Infrastructure.pdb         |  Bin 0 -> 294396 bytes
+ ...mentSyncAgent.Infrastructure.runtimeconfig.json |   13 +
+ .../DepartmentSyncAgent.Shared.deps.json           |   23 +
+ .../auth-lost-fix/DepartmentSyncAgent.Shared.dll   |  Bin 0 -> 33280 bytes
+ .../auth-lost-fix/DepartmentSyncAgent.Shared.pdb   |  Bin 0 -> 22372 bytes
+ artifacts/auth-lost-fix/Humanizer.dll              |  Bin 0 -> 355944 bytes
+ .../auth-lost-fix/Microsoft.Build.Framework.dll    |  Bin 0 -> 269608 bytes
+ .../Microsoft.CodeAnalysis.CSharp.Workspaces.dll   |  Bin 0 -> 944904 bytes
+ .../Microsoft.CodeAnalysis.CSharp.dll              |  Bin 0 -> 6839608 bytes
+ ...t.CodeAnalysis.ExternalAccess.RazorCompiler.dll |  Bin 0 -> 21256 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.MSBuild.dll  |  Bin 0 -> 141576 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.dll          |  Bin 0 -> 4230448 bytes
+ artifacts/auth-lost-fix/Microsoft.CodeAnalysis.dll |  Bin 0 -> 3059000 bytes
+ artifacts/auth-lost-fix/Microsoft.Data.Sqlite.dll  |  Bin 0 -> 177464 bytes
+ .../Microsoft.EntityFrameworkCore.Abstractions.dll |  Bin 0 -> 34656 bytes
+ .../Microsoft.EntityFrameworkCore.Design.dll       |  Bin 0 -> 631608 bytes
+ .../Microsoft.EntityFrameworkCore.Relational.dll   |  Bin 0 -> 2194784 bytes
+ .../Microsoft.EntityFrameworkCore.Sqlite.dll       |  Bin 0 -> 311608 bytes
+ .../Microsoft.EntityFrameworkCore.dll              |  Bin 0 -> 2828600 bytes
+ .../Microsoft.Extensions.DependencyModel.dll       |  Bin 0 -> 84776 bytes
+ .../Microsoft.Extensions.Http.Polly.dll            |  Bin 0 -> 32552 bytes
+ artifacts/auth-lost-fix/Microsoft.OpenApi.dll      |  Bin 0 -> 486752 bytes
+ .../Microsoft.VisualStudio.SolutionPersistence.dll |  Bin 0 -> 172072 bytes
+ artifacts/auth-lost-fix/Mono.TextTemplating.dll    |  Bin 0 -> 177664 bytes
+ artifacts/auth-lost-fix/Newtonsoft.Json.dll        |  Bin 0 -> 712464 bytes
+ artifacts/auth-lost-fix/Polly.Core.dll             |  Bin 0 -> 223136 bytes
+ artifacts/auth-lost-fix/Polly.Extensions.Http.dll  |  Bin 0 -> 6144 bytes
+ artifacts/auth-lost-fix/Polly.dll                  |  Bin 0 -> 287648 bytes
+ .../auth-lost-fix/SQLitePCLRaw.batteries_v2.dll    |  Bin 0 -> 5120 bytes
+ artifacts/auth-lost-fix/SQLitePCLRaw.core.dll      |  Bin 0 -> 51200 bytes
+ .../SQLitePCLRaw.provider.e_sqlite3.dll            |  Bin 0 -> 36864 bytes
+ artifacts/auth-lost-fix/Serilog.AspNetCore.dll     |  Bin 0 -> 17920 bytes
+ .../auth-lost-fix/Serilog.Extensions.Hosting.dll   |  Bin 0 -> 35840 bytes
+ .../auth-lost-fix/Serilog.Extensions.Logging.dll   |  Bin 0 -> 28672 bytes
+ .../auth-lost-fix/Serilog.Formatting.Compact.dll   |  Bin 0 -> 9728 bytes
+ .../Serilog.Settings.Configuration.dll             |  Bin 0 -> 71680 bytes
+ artifacts/auth-lost-fix/Serilog.Sinks.Console.dll  |  Bin 0 -> 38400 bytes
+ artifacts/auth-lost-fix/Serilog.Sinks.Debug.dll    |  Bin 0 -> 7168 bytes
+ artifacts/auth-lost-fix/Serilog.Sinks.File.dll     |  Bin 0 -> 36864 bytes
+ artifacts/auth-lost-fix/Serilog.dll                |  Bin 0 -> 161792 bytes
+ .../Swashbuckle.AspNetCore.Swagger.dll             |  Bin 0 -> 23040 bytes
+ .../Swashbuckle.AspNetCore.SwaggerGen.dll          |  Bin 0 -> 157696 bytes
+ .../Swashbuckle.AspNetCore.SwaggerUI.dll           |  Bin 0 -> 727552 bytes
+ artifacts/auth-lost-fix/System.CodeDom.dll         |  Bin 0 -> 184944 bytes
+ .../System.Composition.AttributedModel.dll         |  Bin 0 -> 20248 bytes
+ .../System.Composition.Convention.dll              |  Bin 0 -> 54040 bytes
+ .../auth-lost-fix/System.Composition.Hosting.dll   |  Bin 0 -> 56072 bytes
+ .../auth-lost-fix/System.Composition.Runtime.dll   |  Bin 0 -> 27424 bytes
+ .../System.Composition.TypedParts.dll              |  Bin 0 -> 65816 bytes
+ .../System.Security.Cryptography.ProtectedData.dll |  Bin 0 -> 38664 bytes
+ .../auth-lost-fix/appsettings.Production.json      |   60 +
+ artifacts/auth-lost-fix/appsettings.json           |  228 +++
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../cs/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 444168 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41224 bytes
+ .../cs/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40200 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../de/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 474376 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../de/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../es/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 463120 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42248 bytes
+ .../es/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41272 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../fr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43320 bytes
+ .../fr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../it/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 469768 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42808 bytes
+ .../it/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41784 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../ja/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 515848 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 45320 bytes
+ .../ja/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 44304 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../ko/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43280 bytes
+ .../ko/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41744 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../pl/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 476432 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../pl/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 456456 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42296 bytes
+ .../pt-BR/Microsoft.CodeAnalysis.resources.dll     |  Bin 0 -> 40720 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 18192 bytes
+ .../ru/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 617744 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 47888 bytes
+ .../ru/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 49464 bytes
+ .../browser-wasm/nativeassets/net9.0/e_sqlite3.a   |  Bin 0 -> 1202596 bytes
+ .../runtimes/linux-arm/native/libe_sqlite3.so      |  Bin 0 -> 893360 bytes
+ .../runtimes/linux-arm64/native/libe_sqlite3.so    |  Bin 0 -> 1374696 bytes
+ .../runtimes/linux-armel/native/libe_sqlite3.so    |  Bin 0 -> 1257916 bytes
+ .../runtimes/linux-mips64/native/libe_sqlite3.so   |  Bin 0 -> 1594136 bytes
+ .../runtimes/linux-musl-arm/native/libe_sqlite3.so |  Bin 0 -> 1219860 bytes
+ .../linux-musl-arm64/native/libe_sqlite3.so        |  Bin 0 -> 1335840 bytes
+ .../linux-musl-riscv64/native/libe_sqlite3.so      |  Bin 0 -> 941944 bytes
+ .../linux-musl-s390x/native/libe_sqlite3.so        |  Bin 0 -> 1554416 bytes
+ .../runtimes/linux-musl-x64/native/libe_sqlite3.so |  Bin 0 -> 1323128 bytes
+ .../runtimes/linux-ppc64le/native/libe_sqlite3.so  |  Bin 0 -> 1722360 bytes
+ .../runtimes/linux-riscv64/native/libe_sqlite3.so  |  Bin 0 -> 955392 bytes
+ .../runtimes/linux-s390x/native/libe_sqlite3.so    |  Bin 0 -> 1504352 bytes
+ .../runtimes/linux-x64/native/libe_sqlite3.so      |  Bin 0 -> 1348440 bytes
+ .../runtimes/linux-x86/native/libe_sqlite3.so      |  Bin 0 -> 1416232 bytes
+ .../maccatalyst-arm64/native/libe_sqlite3.dylib    |  Bin 0 -> 1569856 bytes
+ .../maccatalyst-x64/native/libe_sqlite3.dylib      |  Bin 0 -> 1624336 bytes
+ .../runtimes/osx-arm64/native/libe_sqlite3.dylib   |  Bin 0 -> 1554624 bytes
+ .../runtimes/osx-x64/native/libe_sqlite3.dylib     |  Bin 0 -> 1591680 bytes
+ .../runtimes/win-arm/native/e_sqlite3.dll          |  Bin 0 -> 1282560 bytes
+ .../runtimes/win-arm64/native/e_sqlite3.dll        |  Bin 0 -> 1592320 bytes
+ .../runtimes/win-x64/native/e_sqlite3.dll          |  Bin 0 -> 1795072 bytes
+ .../runtimes/win-x86/native/e_sqlite3.dll          |  Bin 0 -> 1453568 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../tr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 452360 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41784 bytes
+ .../tr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40240 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405776 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40200 bytes
+ .../zh-Hans/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 37640 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17720 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405304 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40248 bytes
+ .../zh-Hant/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 38152 bytes
+ .../cmd-id-fix/DepartmentSyncAgent.Api.deps.json   | 1258 +++++++++++++
+ artifacts/cmd-id-fix/DepartmentSyncAgent.Api.dll   |  Bin 0 -> 103424 bytes
+ artifacts/cmd-id-fix/DepartmentSyncAgent.Api.exe   |  Bin 0 -> 162816 bytes
+ artifacts/cmd-id-fix/DepartmentSyncAgent.Api.pdb   |  Bin 0 -> 39480 bytes
+ .../DepartmentSyncAgent.Api.runtimeconfig.json     |   20 +
+ ...entSyncAgent.Api.staticwebassets.endpoints.json |    1 +
+ .../DepartmentSyncAgent.Application.deps.json      |  122 ++
+ .../cmd-id-fix/DepartmentSyncAgent.Application.dll |  Bin 0 -> 254976 bytes
+ .../cmd-id-fix/DepartmentSyncAgent.Application.pdb |  Bin 0 -> 82504 bytes
+ .../DepartmentSyncAgent.Domain.deps.json           |   23 +
+ .../cmd-id-fix/DepartmentSyncAgent.Domain.dll      |  Bin 0 -> 66048 bytes
+ .../cmd-id-fix/DepartmentSyncAgent.Domain.pdb      |  Bin 0 -> 34764 bytes
+ .../DepartmentSyncAgent.Infrastructure.deps.json   | 1340 ++++++++++++++
+ .../DepartmentSyncAgent.Infrastructure.dll         |  Bin 0 -> 1566208 bytes
+ .../DepartmentSyncAgent.Infrastructure.pdb         |  Bin 0 -> 299304 bytes
+ ...mentSyncAgent.Infrastructure.runtimeconfig.json |   13 +
+ .../DepartmentSyncAgent.Shared.deps.json           |   23 +
+ .../cmd-id-fix/DepartmentSyncAgent.Shared.dll      |  Bin 0 -> 33280 bytes
+ .../cmd-id-fix/DepartmentSyncAgent.Shared.pdb      |  Bin 0 -> 22372 bytes
+ artifacts/cmd-id-fix/Humanizer.dll                 |  Bin 0 -> 355944 bytes
+ artifacts/cmd-id-fix/Microsoft.Build.Framework.dll |  Bin 0 -> 269608 bytes
+ .../Microsoft.CodeAnalysis.CSharp.Workspaces.dll   |  Bin 0 -> 944904 bytes
+ .../cmd-id-fix/Microsoft.CodeAnalysis.CSharp.dll   |  Bin 0 -> 6839608 bytes
+ ...t.CodeAnalysis.ExternalAccess.RazorCompiler.dll |  Bin 0 -> 21256 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.MSBuild.dll  |  Bin 0 -> 141576 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.dll          |  Bin 0 -> 4230448 bytes
+ artifacts/cmd-id-fix/Microsoft.CodeAnalysis.dll    |  Bin 0 -> 3059000 bytes
+ artifacts/cmd-id-fix/Microsoft.Data.Sqlite.dll     |  Bin 0 -> 177464 bytes
+ .../Microsoft.EntityFrameworkCore.Abstractions.dll |  Bin 0 -> 34656 bytes
+ .../Microsoft.EntityFrameworkCore.Design.dll       |  Bin 0 -> 631608 bytes
+ .../Microsoft.EntityFrameworkCore.Relational.dll   |  Bin 0 -> 2194784 bytes
+ .../Microsoft.EntityFrameworkCore.Sqlite.dll       |  Bin 0 -> 311608 bytes
+ .../cmd-id-fix/Microsoft.EntityFrameworkCore.dll   |  Bin 0 -> 2828600 bytes
+ .../Microsoft.Extensions.DependencyModel.dll       |  Bin 0 -> 84776 bytes
+ .../cmd-id-fix/Microsoft.Extensions.Http.Polly.dll |  Bin 0 -> 32552 bytes
+ artifacts/cmd-id-fix/Microsoft.OpenApi.dll         |  Bin 0 -> 486752 bytes
+ .../Microsoft.VisualStudio.SolutionPersistence.dll |  Bin 0 -> 172072 bytes
+ artifacts/cmd-id-fix/Mono.TextTemplating.dll       |  Bin 0 -> 177664 bytes
+ artifacts/cmd-id-fix/Newtonsoft.Json.dll           |  Bin 0 -> 712464 bytes
+ artifacts/cmd-id-fix/Polly.Core.dll                |  Bin 0 -> 223136 bytes
+ artifacts/cmd-id-fix/Polly.Extensions.Http.dll     |  Bin 0 -> 6144 bytes
+ artifacts/cmd-id-fix/Polly.dll                     |  Bin 0 -> 287648 bytes
+ artifacts/cmd-id-fix/SQLitePCLRaw.batteries_v2.dll |  Bin 0 -> 5120 bytes
+ artifacts/cmd-id-fix/SQLitePCLRaw.core.dll         |  Bin 0 -> 51200 bytes
+ .../cmd-id-fix/SQLitePCLRaw.provider.e_sqlite3.dll |  Bin 0 -> 36864 bytes
+ artifacts/cmd-id-fix/Serilog.AspNetCore.dll        |  Bin 0 -> 17920 bytes
+ .../cmd-id-fix/Serilog.Extensions.Hosting.dll      |  Bin 0 -> 35840 bytes
+ .../cmd-id-fix/Serilog.Extensions.Logging.dll      |  Bin 0 -> 28672 bytes
+ .../cmd-id-fix/Serilog.Formatting.Compact.dll      |  Bin 0 -> 9728 bytes
+ .../cmd-id-fix/Serilog.Settings.Configuration.dll  |  Bin 0 -> 71680 bytes
+ artifacts/cmd-id-fix/Serilog.Sinks.Console.dll     |  Bin 0 -> 38400 bytes
+ artifacts/cmd-id-fix/Serilog.Sinks.Debug.dll       |  Bin 0 -> 7168 bytes
+ artifacts/cmd-id-fix/Serilog.Sinks.File.dll        |  Bin 0 -> 36864 bytes
+ artifacts/cmd-id-fix/Serilog.dll                   |  Bin 0 -> 161792 bytes
+ .../cmd-id-fix/Swashbuckle.AspNetCore.Swagger.dll  |  Bin 0 -> 23040 bytes
+ .../Swashbuckle.AspNetCore.SwaggerGen.dll          |  Bin 0 -> 157696 bytes
+ .../Swashbuckle.AspNetCore.SwaggerUI.dll           |  Bin 0 -> 727552 bytes
+ artifacts/cmd-id-fix/System.CodeDom.dll            |  Bin 0 -> 184944 bytes
+ .../System.Composition.AttributedModel.dll         |  Bin 0 -> 20248 bytes
+ .../cmd-id-fix/System.Composition.Convention.dll   |  Bin 0 -> 54040 bytes
+ .../cmd-id-fix/System.Composition.Hosting.dll      |  Bin 0 -> 56072 bytes
+ .../cmd-id-fix/System.Composition.Runtime.dll      |  Bin 0 -> 27424 bytes
+ .../cmd-id-fix/System.Composition.TypedParts.dll   |  Bin 0 -> 65816 bytes
+ .../System.Security.Cryptography.ProtectedData.dll |  Bin 0 -> 38664 bytes
+ artifacts/cmd-id-fix/appsettings.Production.json   |   60 +
+ artifacts/cmd-id-fix/appsettings.json              |  228 +++
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../cs/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 444168 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41224 bytes
+ .../cs/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40200 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../de/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 474376 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../de/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../es/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 463120 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42248 bytes
+ .../es/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41272 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../fr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43320 bytes
+ .../fr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../it/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 469768 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42808 bytes
+ .../it/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41784 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../ja/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 515848 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 45320 bytes
+ .../ja/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 44304 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../ko/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43280 bytes
+ .../ko/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41744 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../pl/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 476432 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../pl/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 456456 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42296 bytes
+ .../pt-BR/Microsoft.CodeAnalysis.resources.dll     |  Bin 0 -> 40720 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 18192 bytes
+ .../ru/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 617744 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 47888 bytes
+ .../ru/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 49464 bytes
+ .../browser-wasm/nativeassets/net9.0/e_sqlite3.a   |  Bin 0 -> 1202596 bytes
+ .../runtimes/linux-arm/native/libe_sqlite3.so      |  Bin 0 -> 893360 bytes
+ .../runtimes/linux-arm64/native/libe_sqlite3.so    |  Bin 0 -> 1374696 bytes
+ .../runtimes/linux-armel/native/libe_sqlite3.so    |  Bin 0 -> 1257916 bytes
+ .../runtimes/linux-mips64/native/libe_sqlite3.so   |  Bin 0 -> 1594136 bytes
+ .../runtimes/linux-musl-arm/native/libe_sqlite3.so |  Bin 0 -> 1219860 bytes
+ .../linux-musl-arm64/native/libe_sqlite3.so        |  Bin 0 -> 1335840 bytes
+ .../linux-musl-riscv64/native/libe_sqlite3.so      |  Bin 0 -> 941944 bytes
+ .../linux-musl-s390x/native/libe_sqlite3.so        |  Bin 0 -> 1554416 bytes
+ .../runtimes/linux-musl-x64/native/libe_sqlite3.so |  Bin 0 -> 1323128 bytes
+ .../runtimes/linux-ppc64le/native/libe_sqlite3.so  |  Bin 0 -> 1722360 bytes
+ .../runtimes/linux-riscv64/native/libe_sqlite3.so  |  Bin 0 -> 955392 bytes
+ .../runtimes/linux-s390x/native/libe_sqlite3.so    |  Bin 0 -> 1504352 bytes
+ .../runtimes/linux-x64/native/libe_sqlite3.so      |  Bin 0 -> 1348440 bytes
+ .../runtimes/linux-x86/native/libe_sqlite3.so      |  Bin 0 -> 1416232 bytes
+ .../maccatalyst-arm64/native/libe_sqlite3.dylib    |  Bin 0 -> 1569856 bytes
+ .../maccatalyst-x64/native/libe_sqlite3.dylib      |  Bin 0 -> 1624336 bytes
+ .../runtimes/osx-arm64/native/libe_sqlite3.dylib   |  Bin 0 -> 1554624 bytes
+ .../runtimes/osx-x64/native/libe_sqlite3.dylib     |  Bin 0 -> 1591680 bytes
+ .../runtimes/win-arm/native/e_sqlite3.dll          |  Bin 0 -> 1282560 bytes
+ .../runtimes/win-arm64/native/e_sqlite3.dll        |  Bin 0 -> 1592320 bytes
+ .../runtimes/win-x64/native/e_sqlite3.dll          |  Bin 0 -> 1795072 bytes
+ .../runtimes/win-x86/native/e_sqlite3.dll          |  Bin 0 -> 1453568 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../tr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 452360 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41784 bytes
+ .../tr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40240 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405776 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40200 bytes
+ .../zh-Hans/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 37640 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17720 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405304 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40248 bytes
+ .../zh-Hant/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 38152 bytes
+ .../DepartmentSyncAgent.Api.deps.json              | 1258 +++++++++++++
+ .../enroll-diag-build/DepartmentSyncAgent.Api.dll  |  Bin 0 -> 99328 bytes
+ .../enroll-diag-build/DepartmentSyncAgent.Api.exe  |  Bin 0 -> 162816 bytes
+ .../enroll-diag-build/DepartmentSyncAgent.Api.pdb  |  Bin 0 -> 38684 bytes
+ .../DepartmentSyncAgent.Api.runtimeconfig.json     |   20 +
+ ...entSyncAgent.Api.staticwebassets.endpoints.json |    1 +
+ .../DepartmentSyncAgent.Application.deps.json      |  122 ++
+ .../DepartmentSyncAgent.Application.dll            |  Bin 0 -> 247808 bytes
+ .../DepartmentSyncAgent.Application.pdb            |  Bin 0 -> 80276 bytes
+ .../DepartmentSyncAgent.Domain.deps.json           |   23 +
+ .../DepartmentSyncAgent.Domain.dll                 |  Bin 0 -> 66048 bytes
+ .../DepartmentSyncAgent.Domain.pdb                 |  Bin 0 -> 34764 bytes
+ .../DepartmentSyncAgent.Infrastructure.deps.json   | 1340 ++++++++++++++
+ .../DepartmentSyncAgent.Infrastructure.dll         |  Bin 0 -> 1540608 bytes
+ .../DepartmentSyncAgent.Infrastructure.pdb         |  Bin 0 -> 294388 bytes
+ ...mentSyncAgent.Infrastructure.runtimeconfig.json |   13 +
+ .../DepartmentSyncAgent.Shared.deps.json           |   23 +
+ .../DepartmentSyncAgent.Shared.dll                 |  Bin 0 -> 33280 bytes
+ .../DepartmentSyncAgent.Shared.pdb                 |  Bin 0 -> 22372 bytes
+ artifacts/enroll-diag-build/Humanizer.dll          |  Bin 0 -> 355944 bytes
+ .../Microsoft.Build.Framework.dll                  |  Bin 0 -> 269608 bytes
+ .../Microsoft.CodeAnalysis.CSharp.Workspaces.dll   |  Bin 0 -> 944904 bytes
+ .../Microsoft.CodeAnalysis.CSharp.dll              |  Bin 0 -> 6839608 bytes
+ ...t.CodeAnalysis.ExternalAccess.RazorCompiler.dll |  Bin 0 -> 21256 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.MSBuild.dll  |  Bin 0 -> 141576 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.dll          |  Bin 0 -> 4230448 bytes
+ .../enroll-diag-build/Microsoft.CodeAnalysis.dll   |  Bin 0 -> 3059000 bytes
+ .../enroll-diag-build/Microsoft.Data.Sqlite.dll    |  Bin 0 -> 177464 bytes
+ .../Microsoft.EntityFrameworkCore.Abstractions.dll |  Bin 0 -> 34656 bytes
+ .../Microsoft.EntityFrameworkCore.Design.dll       |  Bin 0 -> 631608 bytes
+ .../Microsoft.EntityFrameworkCore.Relational.dll   |  Bin 0 -> 2194784 bytes
+ .../Microsoft.EntityFrameworkCore.Sqlite.dll       |  Bin 0 -> 311608 bytes
+ .../Microsoft.EntityFrameworkCore.dll              |  Bin 0 -> 2828600 bytes
+ .../Microsoft.Extensions.DependencyModel.dll       |  Bin 0 -> 84776 bytes
+ .../Microsoft.Extensions.Http.Polly.dll            |  Bin 0 -> 32552 bytes
+ artifacts/enroll-diag-build/Microsoft.OpenApi.dll  |  Bin 0 -> 486752 bytes
+ .../Microsoft.VisualStudio.SolutionPersistence.dll |  Bin 0 -> 172072 bytes
+ .../enroll-diag-build/Mono.TextTemplating.dll      |  Bin 0 -> 177664 bytes
+ artifacts/enroll-diag-build/Newtonsoft.Json.dll    |  Bin 0 -> 712464 bytes
+ artifacts/enroll-diag-build/Polly.Core.dll         |  Bin 0 -> 223136 bytes
+ .../enroll-diag-build/Polly.Extensions.Http.dll    |  Bin 0 -> 6144 bytes
+ artifacts/enroll-diag-build/Polly.dll              |  Bin 0 -> 287648 bytes
+ .../SQLitePCLRaw.batteries_v2.dll                  |  Bin 0 -> 5120 bytes
+ artifacts/enroll-diag-build/SQLitePCLRaw.core.dll  |  Bin 0 -> 51200 bytes
+ .../SQLitePCLRaw.provider.e_sqlite3.dll            |  Bin 0 -> 36864 bytes
+ artifacts/enroll-diag-build/Serilog.AspNetCore.dll |  Bin 0 -> 17920 bytes
+ .../Serilog.Extensions.Hosting.dll                 |  Bin 0 -> 35840 bytes
+ .../Serilog.Extensions.Logging.dll                 |  Bin 0 -> 28672 bytes
+ .../Serilog.Formatting.Compact.dll                 |  Bin 0 -> 9728 bytes
+ .../Serilog.Settings.Configuration.dll             |  Bin 0 -> 71680 bytes
+ .../enroll-diag-build/Serilog.Sinks.Console.dll    |  Bin 0 -> 38400 bytes
+ .../enroll-diag-build/Serilog.Sinks.Debug.dll      |  Bin 0 -> 7168 bytes
+ artifacts/enroll-diag-build/Serilog.Sinks.File.dll |  Bin 0 -> 36864 bytes
+ artifacts/enroll-diag-build/Serilog.dll            |  Bin 0 -> 161792 bytes
+ .../Swashbuckle.AspNetCore.Swagger.dll             |  Bin 0 -> 23040 bytes
+ .../Swashbuckle.AspNetCore.SwaggerGen.dll          |  Bin 0 -> 157696 bytes
+ .../Swashbuckle.AspNetCore.SwaggerUI.dll           |  Bin 0 -> 727552 bytes
+ artifacts/enroll-diag-build/System.CodeDom.dll     |  Bin 0 -> 184944 bytes
+ .../System.Composition.AttributedModel.dll         |  Bin 0 -> 20248 bytes
+ .../System.Composition.Convention.dll              |  Bin 0 -> 54040 bytes
+ .../System.Composition.Hosting.dll                 |  Bin 0 -> 56072 bytes
+ .../System.Composition.Runtime.dll                 |  Bin 0 -> 27424 bytes
+ .../System.Composition.TypedParts.dll              |  Bin 0 -> 65816 bytes
+ .../System.Security.Cryptography.ProtectedData.dll |  Bin 0 -> 38664 bytes
+ .../enroll-diag-build/appsettings.Production.json  |   60 +
+ artifacts/enroll-diag-build/appsettings.json       |  228 +++
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../cs/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 444168 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41224 bytes
+ .../cs/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40200 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../de/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 474376 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../de/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../es/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 463120 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42248 bytes
+ .../es/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41272 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../fr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43320 bytes
+ .../fr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../it/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 469768 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42808 bytes
+ .../it/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41784 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../ja/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 515848 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 45320 bytes
+ .../ja/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 44304 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../ko/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43280 bytes
+ .../ko/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41744 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../pl/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 476432 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../pl/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 456456 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42296 bytes
+ .../pt-BR/Microsoft.CodeAnalysis.resources.dll     |  Bin 0 -> 40720 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 18192 bytes
+ .../ru/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 617744 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 47888 bytes
+ .../ru/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 49464 bytes
+ .../browser-wasm/nativeassets/net9.0/e_sqlite3.a   |  Bin 0 -> 1202596 bytes
+ .../runtimes/linux-arm/native/libe_sqlite3.so      |  Bin 0 -> 893360 bytes
+ .../runtimes/linux-arm64/native/libe_sqlite3.so    |  Bin 0 -> 1374696 bytes
+ .../runtimes/linux-armel/native/libe_sqlite3.so    |  Bin 0 -> 1257916 bytes
+ .../runtimes/linux-mips64/native/libe_sqlite3.so   |  Bin 0 -> 1594136 bytes
+ .../runtimes/linux-musl-arm/native/libe_sqlite3.so |  Bin 0 -> 1219860 bytes
+ .../linux-musl-arm64/native/libe_sqlite3.so        |  Bin 0 -> 1335840 bytes
+ .../linux-musl-riscv64/native/libe_sqlite3.so      |  Bin 0 -> 941944 bytes
+ .../linux-musl-s390x/native/libe_sqlite3.so        |  Bin 0 -> 1554416 bytes
+ .../runtimes/linux-musl-x64/native/libe_sqlite3.so |  Bin 0 -> 1323128 bytes
+ .../runtimes/linux-ppc64le/native/libe_sqlite3.so  |  Bin 0 -> 1722360 bytes
+ .../runtimes/linux-riscv64/native/libe_sqlite3.so  |  Bin 0 -> 955392 bytes
+ .../runtimes/linux-s390x/native/libe_sqlite3.so    |  Bin 0 -> 1504352 bytes
+ .../runtimes/linux-x64/native/libe_sqlite3.so      |  Bin 0 -> 1348440 bytes
+ .../runtimes/linux-x86/native/libe_sqlite3.so      |  Bin 0 -> 1416232 bytes
+ .../maccatalyst-arm64/native/libe_sqlite3.dylib    |  Bin 0 -> 1569856 bytes
+ .../maccatalyst-x64/native/libe_sqlite3.dylib      |  Bin 0 -> 1624336 bytes
+ .../runtimes/osx-arm64/native/libe_sqlite3.dylib   |  Bin 0 -> 1554624 bytes
+ .../runtimes/osx-x64/native/libe_sqlite3.dylib     |  Bin 0 -> 1591680 bytes
+ .../runtimes/win-arm/native/e_sqlite3.dll          |  Bin 0 -> 1282560 bytes
+ .../runtimes/win-arm64/native/e_sqlite3.dll        |  Bin 0 -> 1592320 bytes
+ .../runtimes/win-x64/native/e_sqlite3.dll          |  Bin 0 -> 1795072 bytes
+ .../runtimes/win-x86/native/e_sqlite3.dll          |  Bin 0 -> 1453568 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../tr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 452360 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41784 bytes
+ .../tr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40240 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405776 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40200 bytes
+ .../zh-Hans/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 37640 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17720 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405304 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40248 bytes
+ .../zh-Hant/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 38152 bytes
+ .../DepartmentSyncAgent.Api.deps.json              | 1258 +++++++++++++
+ .../logs-pipeline/DepartmentSyncAgent.Api.dll      |  Bin 0 -> 102912 bytes
+ .../logs-pipeline/DepartmentSyncAgent.Api.exe      |  Bin 0 -> 162816 bytes
+ .../logs-pipeline/DepartmentSyncAgent.Api.pdb      |  Bin 0 -> 39444 bytes
+ .../DepartmentSyncAgent.Api.runtimeconfig.json     |   20 +
+ ...entSyncAgent.Api.staticwebassets.endpoints.json |    1 +
+ .../DepartmentSyncAgent.Application.deps.json      |  122 ++
+ .../DepartmentSyncAgent.Application.dll            |  Bin 0 -> 254976 bytes
+ .../DepartmentSyncAgent.Application.pdb            |  Bin 0 -> 82504 bytes
+ .../DepartmentSyncAgent.Domain.deps.json           |   23 +
+ .../logs-pipeline/DepartmentSyncAgent.Domain.dll   |  Bin 0 -> 66048 bytes
+ .../logs-pipeline/DepartmentSyncAgent.Domain.pdb   |  Bin 0 -> 34764 bytes
+ .../DepartmentSyncAgent.Infrastructure.deps.json   | 1340 ++++++++++++++
+ .../DepartmentSyncAgent.Infrastructure.dll         |  Bin 0 -> 1562624 bytes
+ .../DepartmentSyncAgent.Infrastructure.pdb         |  Bin 0 -> 298708 bytes
+ ...mentSyncAgent.Infrastructure.runtimeconfig.json |   13 +
+ .../DepartmentSyncAgent.Shared.deps.json           |   23 +
+ .../logs-pipeline/DepartmentSyncAgent.Shared.dll   |  Bin 0 -> 33280 bytes
+ .../logs-pipeline/DepartmentSyncAgent.Shared.pdb   |  Bin 0 -> 22372 bytes
+ artifacts/logs-pipeline/Humanizer.dll              |  Bin 0 -> 355944 bytes
+ .../logs-pipeline/Microsoft.Build.Framework.dll    |  Bin 0 -> 269608 bytes
+ .../Microsoft.CodeAnalysis.CSharp.Workspaces.dll   |  Bin 0 -> 944904 bytes
+ .../Microsoft.CodeAnalysis.CSharp.dll              |  Bin 0 -> 6839608 bytes
+ ...t.CodeAnalysis.ExternalAccess.RazorCompiler.dll |  Bin 0 -> 21256 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.MSBuild.dll  |  Bin 0 -> 141576 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.dll          |  Bin 0 -> 4230448 bytes
+ artifacts/logs-pipeline/Microsoft.CodeAnalysis.dll |  Bin 0 -> 3059000 bytes
+ artifacts/logs-pipeline/Microsoft.Data.Sqlite.dll  |  Bin 0 -> 177464 bytes
+ .../Microsoft.EntityFrameworkCore.Abstractions.dll |  Bin 0 -> 34656 bytes
+ .../Microsoft.EntityFrameworkCore.Design.dll       |  Bin 0 -> 631608 bytes
+ .../Microsoft.EntityFrameworkCore.Relational.dll   |  Bin 0 -> 2194784 bytes
+ .../Microsoft.EntityFrameworkCore.Sqlite.dll       |  Bin 0 -> 311608 bytes
+ .../Microsoft.EntityFrameworkCore.dll              |  Bin 0 -> 2828600 bytes
+ .../Microsoft.Extensions.DependencyModel.dll       |  Bin 0 -> 84776 bytes
+ .../Microsoft.Extensions.Http.Polly.dll            |  Bin 0 -> 32552 bytes
+ artifacts/logs-pipeline/Microsoft.OpenApi.dll      |  Bin 0 -> 486752 bytes
+ .../Microsoft.VisualStudio.SolutionPersistence.dll |  Bin 0 -> 172072 bytes
+ artifacts/logs-pipeline/Mono.TextTemplating.dll    |  Bin 0 -> 177664 bytes
+ artifacts/logs-pipeline/Newtonsoft.Json.dll        |  Bin 0 -> 712464 bytes
+ artifacts/logs-pipeline/Polly.Core.dll             |  Bin 0 -> 223136 bytes
+ artifacts/logs-pipeline/Polly.Extensions.Http.dll  |  Bin 0 -> 6144 bytes
+ artifacts/logs-pipeline/Polly.dll                  |  Bin 0 -> 287648 bytes
+ .../logs-pipeline/SQLitePCLRaw.batteries_v2.dll    |  Bin 0 -> 5120 bytes
+ artifacts/logs-pipeline/SQLitePCLRaw.core.dll      |  Bin 0 -> 51200 bytes
+ .../SQLitePCLRaw.provider.e_sqlite3.dll            |  Bin 0 -> 36864 bytes
+ artifacts/logs-pipeline/Serilog.AspNetCore.dll     |  Bin 0 -> 17920 bytes
+ .../logs-pipeline/Serilog.Extensions.Hosting.dll   |  Bin 0 -> 35840 bytes
+ .../logs-pipeline/Serilog.Extensions.Logging.dll   |  Bin 0 -> 28672 bytes
+ .../logs-pipeline/Serilog.Formatting.Compact.dll   |  Bin 0 -> 9728 bytes
+ .../Serilog.Settings.Configuration.dll             |  Bin 0 -> 71680 bytes
+ artifacts/logs-pipeline/Serilog.Sinks.Console.dll  |  Bin 0 -> 38400 bytes
+ artifacts/logs-pipeline/Serilog.Sinks.Debug.dll    |  Bin 0 -> 7168 bytes
+ artifacts/logs-pipeline/Serilog.Sinks.File.dll     |  Bin 0 -> 36864 bytes
+ artifacts/logs-pipeline/Serilog.dll                |  Bin 0 -> 161792 bytes
+ .../Swashbuckle.AspNetCore.Swagger.dll             |  Bin 0 -> 23040 bytes
+ .../Swashbuckle.AspNetCore.SwaggerGen.dll          |  Bin 0 -> 157696 bytes
+ .../Swashbuckle.AspNetCore.SwaggerUI.dll           |  Bin 0 -> 727552 bytes
+ artifacts/logs-pipeline/System.CodeDom.dll         |  Bin 0 -> 184944 bytes
+ .../System.Composition.AttributedModel.dll         |  Bin 0 -> 20248 bytes
+ .../System.Composition.Convention.dll              |  Bin 0 -> 54040 bytes
+ .../logs-pipeline/System.Composition.Hosting.dll   |  Bin 0 -> 56072 bytes
+ .../logs-pipeline/System.Composition.Runtime.dll   |  Bin 0 -> 27424 bytes
+ .../System.Composition.TypedParts.dll              |  Bin 0 -> 65816 bytes
+ .../System.Security.Cryptography.ProtectedData.dll |  Bin 0 -> 38664 bytes
+ .../logs-pipeline/appsettings.Production.json      |   60 +
+ artifacts/logs-pipeline/appsettings.json           |  228 +++
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../cs/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 444168 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41224 bytes
+ .../cs/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40200 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../de/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 474376 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../de/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../es/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 463120 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42248 bytes
+ .../es/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41272 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../fr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43320 bytes
+ .../fr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../it/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 469768 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42808 bytes
+ .../it/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41784 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../ja/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 515848 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 45320 bytes
+ .../ja/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 44304 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../ko/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43280 bytes
+ .../ko/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41744 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../pl/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 476432 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../pl/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 456456 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42296 bytes
+ .../pt-BR/Microsoft.CodeAnalysis.resources.dll     |  Bin 0 -> 40720 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 18192 bytes
+ .../ru/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 617744 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 47888 bytes
+ .../ru/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 49464 bytes
+ .../browser-wasm/nativeassets/net9.0/e_sqlite3.a   |  Bin 0 -> 1202596 bytes
+ .../runtimes/linux-arm/native/libe_sqlite3.so      |  Bin 0 -> 893360 bytes
+ .../runtimes/linux-arm64/native/libe_sqlite3.so    |  Bin 0 -> 1374696 bytes
+ .../runtimes/linux-armel/native/libe_sqlite3.so    |  Bin 0 -> 1257916 bytes
+ .../runtimes/linux-mips64/native/libe_sqlite3.so   |  Bin 0 -> 1594136 bytes
+ .../runtimes/linux-musl-arm/native/libe_sqlite3.so |  Bin 0 -> 1219860 bytes
+ .../linux-musl-arm64/native/libe_sqlite3.so        |  Bin 0 -> 1335840 bytes
+ .../linux-musl-riscv64/native/libe_sqlite3.so      |  Bin 0 -> 941944 bytes
+ .../linux-musl-s390x/native/libe_sqlite3.so        |  Bin 0 -> 1554416 bytes
+ .../runtimes/linux-musl-x64/native/libe_sqlite3.so |  Bin 0 -> 1323128 bytes
+ .../runtimes/linux-ppc64le/native/libe_sqlite3.so  |  Bin 0 -> 1722360 bytes
+ .../runtimes/linux-riscv64/native/libe_sqlite3.so  |  Bin 0 -> 955392 bytes
+ .../runtimes/linux-s390x/native/libe_sqlite3.so    |  Bin 0 -> 1504352 bytes
+ .../runtimes/linux-x64/native/libe_sqlite3.so      |  Bin 0 -> 1348440 bytes
+ .../runtimes/linux-x86/native/libe_sqlite3.so      |  Bin 0 -> 1416232 bytes
+ .../maccatalyst-arm64/native/libe_sqlite3.dylib    |  Bin 0 -> 1569856 bytes
+ .../maccatalyst-x64/native/libe_sqlite3.dylib      |  Bin 0 -> 1624336 bytes
+ .../runtimes/osx-arm64/native/libe_sqlite3.dylib   |  Bin 0 -> 1554624 bytes
+ .../runtimes/osx-x64/native/libe_sqlite3.dylib     |  Bin 0 -> 1591680 bytes
+ .../runtimes/win-arm/native/e_sqlite3.dll          |  Bin 0 -> 1282560 bytes
+ .../runtimes/win-arm64/native/e_sqlite3.dll        |  Bin 0 -> 1592320 bytes
+ .../runtimes/win-x64/native/e_sqlite3.dll          |  Bin 0 -> 1795072 bytes
+ .../runtimes/win-x86/native/e_sqlite3.dll          |  Bin 0 -> 1453568 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../tr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 452360 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41784 bytes
+ .../tr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40240 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405776 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40200 bytes
+ .../zh-Hans/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 37640 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17720 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405304 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40248 bytes
+ .../zh-Hant/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 38152 bytes
+ .../DepartmentSyncAgent.Api.deps.json              | 1258 +++++++++++++
+ .../logs-pipeline2/DepartmentSyncAgent.Api.dll     |  Bin 0 -> 103424 bytes
+ .../logs-pipeline2/DepartmentSyncAgent.Api.exe     |  Bin 0 -> 162816 bytes
+ .../logs-pipeline2/DepartmentSyncAgent.Api.pdb     |  Bin 0 -> 39480 bytes
+ .../DepartmentSyncAgent.Api.runtimeconfig.json     |   20 +
+ ...entSyncAgent.Api.staticwebassets.endpoints.json |    1 +
+ .../DepartmentSyncAgent.Application.deps.json      |  122 ++
+ .../DepartmentSyncAgent.Application.dll            |  Bin 0 -> 254976 bytes
+ .../DepartmentSyncAgent.Application.pdb            |  Bin 0 -> 82504 bytes
+ .../DepartmentSyncAgent.Domain.deps.json           |   23 +
+ .../logs-pipeline2/DepartmentSyncAgent.Domain.dll  |  Bin 0 -> 66048 bytes
+ .../logs-pipeline2/DepartmentSyncAgent.Domain.pdb  |  Bin 0 -> 34764 bytes
+ .../DepartmentSyncAgent.Infrastructure.deps.json   | 1340 ++++++++++++++
+ .../DepartmentSyncAgent.Infrastructure.dll         |  Bin 0 -> 1566208 bytes
+ .../DepartmentSyncAgent.Infrastructure.pdb         |  Bin 0 -> 299340 bytes
+ ...mentSyncAgent.Infrastructure.runtimeconfig.json |   13 +
+ .../DepartmentSyncAgent.Shared.deps.json           |   23 +
+ .../logs-pipeline2/DepartmentSyncAgent.Shared.dll  |  Bin 0 -> 33280 bytes
+ .../logs-pipeline2/DepartmentSyncAgent.Shared.pdb  |  Bin 0 -> 22372 bytes
+ artifacts/logs-pipeline2/Humanizer.dll             |  Bin 0 -> 355944 bytes
+ .../logs-pipeline2/Microsoft.Build.Framework.dll   |  Bin 0 -> 269608 bytes
+ .../Microsoft.CodeAnalysis.CSharp.Workspaces.dll   |  Bin 0 -> 944904 bytes
+ .../Microsoft.CodeAnalysis.CSharp.dll              |  Bin 0 -> 6839608 bytes
+ ...t.CodeAnalysis.ExternalAccess.RazorCompiler.dll |  Bin 0 -> 21256 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.MSBuild.dll  |  Bin 0 -> 141576 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.dll          |  Bin 0 -> 4230448 bytes
+ .../logs-pipeline2/Microsoft.CodeAnalysis.dll      |  Bin 0 -> 3059000 bytes
+ artifacts/logs-pipeline2/Microsoft.Data.Sqlite.dll |  Bin 0 -> 177464 bytes
+ .../Microsoft.EntityFrameworkCore.Abstractions.dll |  Bin 0 -> 34656 bytes
+ .../Microsoft.EntityFrameworkCore.Design.dll       |  Bin 0 -> 631608 bytes
+ .../Microsoft.EntityFrameworkCore.Relational.dll   |  Bin 0 -> 2194784 bytes
+ .../Microsoft.EntityFrameworkCore.Sqlite.dll       |  Bin 0 -> 311608 bytes
+ .../Microsoft.EntityFrameworkCore.dll              |  Bin 0 -> 2828600 bytes
+ .../Microsoft.Extensions.DependencyModel.dll       |  Bin 0 -> 84776 bytes
+ .../Microsoft.Extensions.Http.Polly.dll            |  Bin 0 -> 32552 bytes
+ artifacts/logs-pipeline2/Microsoft.OpenApi.dll     |  Bin 0 -> 486752 bytes
+ .../Microsoft.VisualStudio.SolutionPersistence.dll |  Bin 0 -> 172072 bytes
+ artifacts/logs-pipeline2/Mono.TextTemplating.dll   |  Bin 0 -> 177664 bytes
+ artifacts/logs-pipeline2/Newtonsoft.Json.dll       |  Bin 0 -> 712464 bytes
+ artifacts/logs-pipeline2/Polly.Core.dll            |  Bin 0 -> 223136 bytes
+ artifacts/logs-pipeline2/Polly.Extensions.Http.dll |  Bin 0 -> 6144 bytes
+ artifacts/logs-pipeline2/Polly.dll                 |  Bin 0 -> 287648 bytes
+ .../logs-pipeline2/SQLitePCLRaw.batteries_v2.dll   |  Bin 0 -> 5120 bytes
+ artifacts/logs-pipeline2/SQLitePCLRaw.core.dll     |  Bin 0 -> 51200 bytes
+ .../SQLitePCLRaw.provider.e_sqlite3.dll            |  Bin 0 -> 36864 bytes
+ artifacts/logs-pipeline2/Serilog.AspNetCore.dll    |  Bin 0 -> 17920 bytes
+ .../logs-pipeline2/Serilog.Extensions.Hosting.dll  |  Bin 0 -> 35840 bytes
+ .../logs-pipeline2/Serilog.Extensions.Logging.dll  |  Bin 0 -> 28672 bytes
+ .../logs-pipeline2/Serilog.Formatting.Compact.dll  |  Bin 0 -> 9728 bytes
+ .../Serilog.Settings.Configuration.dll             |  Bin 0 -> 71680 bytes
+ artifacts/logs-pipeline2/Serilog.Sinks.Console.dll |  Bin 0 -> 38400 bytes
+ artifacts/logs-pipeline2/Serilog.Sinks.Debug.dll   |  Bin 0 -> 7168 bytes
+ artifacts/logs-pipeline2/Serilog.Sinks.File.dll    |  Bin 0 -> 36864 bytes
+ artifacts/logs-pipeline2/Serilog.dll               |  Bin 0 -> 161792 bytes
+ .../Swashbuckle.AspNetCore.Swagger.dll             |  Bin 0 -> 23040 bytes
+ .../Swashbuckle.AspNetCore.SwaggerGen.dll          |  Bin 0 -> 157696 bytes
+ .../Swashbuckle.AspNetCore.SwaggerUI.dll           |  Bin 0 -> 727552 bytes
+ artifacts/logs-pipeline2/System.CodeDom.dll        |  Bin 0 -> 184944 bytes
+ .../System.Composition.AttributedModel.dll         |  Bin 0 -> 20248 bytes
+ .../System.Composition.Convention.dll              |  Bin 0 -> 54040 bytes
+ .../logs-pipeline2/System.Composition.Hosting.dll  |  Bin 0 -> 56072 bytes
+ .../logs-pipeline2/System.Composition.Runtime.dll  |  Bin 0 -> 27424 bytes
+ .../System.Composition.TypedParts.dll              |  Bin 0 -> 65816 bytes
+ .../System.Security.Cryptography.ProtectedData.dll |  Bin 0 -> 38664 bytes
+ .../logs-pipeline2/appsettings.Production.json     |   60 +
+ artifacts/logs-pipeline2/appsettings.json          |  228 +++
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../cs/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 444168 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41224 bytes
+ .../cs/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40200 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../de/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 474376 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../de/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../es/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 463120 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42248 bytes
+ .../es/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41272 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../fr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43320 bytes
+ .../fr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../it/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 469768 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42808 bytes
+ .../it/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41784 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../ja/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 515848 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 45320 bytes
+ .../ja/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 44304 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../ko/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43280 bytes
+ .../ko/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41744 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../pl/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 476432 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../pl/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 456456 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42296 bytes
+ .../pt-BR/Microsoft.CodeAnalysis.resources.dll     |  Bin 0 -> 40720 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 18192 bytes
+ .../ru/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 617744 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 47888 bytes
+ .../ru/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 49464 bytes
+ .../browser-wasm/nativeassets/net9.0/e_sqlite3.a   |  Bin 0 -> 1202596 bytes
+ .../runtimes/linux-arm/native/libe_sqlite3.so      |  Bin 0 -> 893360 bytes
+ .../runtimes/linux-arm64/native/libe_sqlite3.so    |  Bin 0 -> 1374696 bytes
+ .../runtimes/linux-armel/native/libe_sqlite3.so    |  Bin 0 -> 1257916 bytes
+ .../runtimes/linux-mips64/native/libe_sqlite3.so   |  Bin 0 -> 1594136 bytes
+ .../runtimes/linux-musl-arm/native/libe_sqlite3.so |  Bin 0 -> 1219860 bytes
+ .../linux-musl-arm64/native/libe_sqlite3.so        |  Bin 0 -> 1335840 bytes
+ .../linux-musl-riscv64/native/libe_sqlite3.so      |  Bin 0 -> 941944 bytes
+ .../linux-musl-s390x/native/libe_sqlite3.so        |  Bin 0 -> 1554416 bytes
+ .../runtimes/linux-musl-x64/native/libe_sqlite3.so |  Bin 0 -> 1323128 bytes
+ .../runtimes/linux-ppc64le/native/libe_sqlite3.so  |  Bin 0 -> 1722360 bytes
+ .../runtimes/linux-riscv64/native/libe_sqlite3.so  |  Bin 0 -> 955392 bytes
+ .../runtimes/linux-s390x/native/libe_sqlite3.so    |  Bin 0 -> 1504352 bytes
+ .../runtimes/linux-x64/native/libe_sqlite3.so      |  Bin 0 -> 1348440 bytes
+ .../runtimes/linux-x86/native/libe_sqlite3.so      |  Bin 0 -> 1416232 bytes
+ .../maccatalyst-arm64/native/libe_sqlite3.dylib    |  Bin 0 -> 1569856 bytes
+ .../maccatalyst-x64/native/libe_sqlite3.dylib      |  Bin 0 -> 1624336 bytes
+ .../runtimes/osx-arm64/native/libe_sqlite3.dylib   |  Bin 0 -> 1554624 bytes
+ .../runtimes/osx-x64/native/libe_sqlite3.dylib     |  Bin 0 -> 1591680 bytes
+ .../runtimes/win-arm/native/e_sqlite3.dll          |  Bin 0 -> 1282560 bytes
+ .../runtimes/win-arm64/native/e_sqlite3.dll        |  Bin 0 -> 1592320 bytes
+ .../runtimes/win-x64/native/e_sqlite3.dll          |  Bin 0 -> 1795072 bytes
+ .../runtimes/win-x86/native/e_sqlite3.dll          |  Bin 0 -> 1453568 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../tr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 452360 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41784 bytes
+ .../tr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40240 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405776 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40200 bytes
+ .../zh-Hans/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 37640 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17720 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405304 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40248 bytes
+ .../zh-Hant/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 38152 bytes
+ .../DepartmentSyncAgent.Api.deps.json              | 1258 +++++++++++++
+ .../token-lifecycle/DepartmentSyncAgent.Api.dll    |  Bin 0 -> 99328 bytes
+ .../token-lifecycle/DepartmentSyncAgent.Api.exe    |  Bin 0 -> 162816 bytes
+ .../token-lifecycle/DepartmentSyncAgent.Api.pdb    |  Bin 0 -> 38700 bytes
+ .../DepartmentSyncAgent.Api.runtimeconfig.json     |   20 +
+ ...entSyncAgent.Api.staticwebassets.endpoints.json |    1 +
+ .../DepartmentSyncAgent.Application.deps.json      |  122 ++
+ .../DepartmentSyncAgent.Application.dll            |  Bin 0 -> 248320 bytes
+ .../DepartmentSyncAgent.Application.pdb            |  Bin 0 -> 80384 bytes
+ .../DepartmentSyncAgent.Domain.deps.json           |   23 +
+ .../token-lifecycle/DepartmentSyncAgent.Domain.dll |  Bin 0 -> 66048 bytes
+ .../token-lifecycle/DepartmentSyncAgent.Domain.pdb |  Bin 0 -> 34764 bytes
+ .../DepartmentSyncAgent.Infrastructure.deps.json   | 1340 ++++++++++++++
+ .../DepartmentSyncAgent.Infrastructure.dll         |  Bin 0 -> 1549824 bytes
+ .../DepartmentSyncAgent.Infrastructure.pdb         |  Bin 0 -> 295612 bytes
+ ...mentSyncAgent.Infrastructure.runtimeconfig.json |   13 +
+ .../DepartmentSyncAgent.Shared.deps.json           |   23 +
+ .../token-lifecycle/DepartmentSyncAgent.Shared.dll |  Bin 0 -> 33280 bytes
+ .../token-lifecycle/DepartmentSyncAgent.Shared.pdb |  Bin 0 -> 22372 bytes
+ artifacts/token-lifecycle/Humanizer.dll            |  Bin 0 -> 355944 bytes
+ .../token-lifecycle/Microsoft.Build.Framework.dll  |  Bin 0 -> 269608 bytes
+ .../Microsoft.CodeAnalysis.CSharp.Workspaces.dll   |  Bin 0 -> 944904 bytes
+ .../Microsoft.CodeAnalysis.CSharp.dll              |  Bin 0 -> 6839608 bytes
+ ...t.CodeAnalysis.ExternalAccess.RazorCompiler.dll |  Bin 0 -> 21256 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.MSBuild.dll  |  Bin 0 -> 141576 bytes
+ .../Microsoft.CodeAnalysis.Workspaces.dll          |  Bin 0 -> 4230448 bytes
+ .../token-lifecycle/Microsoft.CodeAnalysis.dll     |  Bin 0 -> 3059000 bytes
+ .../token-lifecycle/Microsoft.Data.Sqlite.dll      |  Bin 0 -> 177464 bytes
+ .../Microsoft.EntityFrameworkCore.Abstractions.dll |  Bin 0 -> 34656 bytes
+ .../Microsoft.EntityFrameworkCore.Design.dll       |  Bin 0 -> 631608 bytes
+ .../Microsoft.EntityFrameworkCore.Relational.dll   |  Bin 0 -> 2194784 bytes
+ .../Microsoft.EntityFrameworkCore.Sqlite.dll       |  Bin 0 -> 311608 bytes
+ .../Microsoft.EntityFrameworkCore.dll              |  Bin 0 -> 2828600 bytes
+ .../Microsoft.Extensions.DependencyModel.dll       |  Bin 0 -> 84776 bytes
+ .../Microsoft.Extensions.Http.Polly.dll            |  Bin 0 -> 32552 bytes
+ artifacts/token-lifecycle/Microsoft.OpenApi.dll    |  Bin 0 -> 486752 bytes
+ .../Microsoft.VisualStudio.SolutionPersistence.dll |  Bin 0 -> 172072 bytes
+ artifacts/token-lifecycle/Mono.TextTemplating.dll  |  Bin 0 -> 177664 bytes
+ artifacts/token-lifecycle/Newtonsoft.Json.dll      |  Bin 0 -> 712464 bytes
+ artifacts/token-lifecycle/Polly.Core.dll           |  Bin 0 -> 223136 bytes
+ .../token-lifecycle/Polly.Extensions.Http.dll      |  Bin 0 -> 6144 bytes
+ artifacts/token-lifecycle/Polly.dll                |  Bin 0 -> 287648 bytes
+ .../token-lifecycle/SQLitePCLRaw.batteries_v2.dll  |  Bin 0 -> 5120 bytes
+ artifacts/token-lifecycle/SQLitePCLRaw.core.dll    |  Bin 0 -> 51200 bytes
+ .../SQLitePCLRaw.provider.e_sqlite3.dll            |  Bin 0 -> 36864 bytes
+ artifacts/token-lifecycle/Serilog.AspNetCore.dll   |  Bin 0 -> 17920 bytes
+ .../token-lifecycle/Serilog.Extensions.Hosting.dll |  Bin 0 -> 35840 bytes
+ .../token-lifecycle/Serilog.Extensions.Logging.dll |  Bin 0 -> 28672 bytes
+ .../token-lifecycle/Serilog.Formatting.Compact.dll |  Bin 0 -> 9728 bytes
+ .../Serilog.Settings.Configuration.dll             |  Bin 0 -> 71680 bytes
+ .../token-lifecycle/Serilog.Sinks.Console.dll      |  Bin 0 -> 38400 bytes
+ artifacts/token-lifecycle/Serilog.Sinks.Debug.dll  |  Bin 0 -> 7168 bytes
+ artifacts/token-lifecycle/Serilog.Sinks.File.dll   |  Bin 0 -> 36864 bytes
+ artifacts/token-lifecycle/Serilog.dll              |  Bin 0 -> 161792 bytes
+ .../Swashbuckle.AspNetCore.Swagger.dll             |  Bin 0 -> 23040 bytes
+ .../Swashbuckle.AspNetCore.SwaggerGen.dll          |  Bin 0 -> 157696 bytes
+ .../Swashbuckle.AspNetCore.SwaggerUI.dll           |  Bin 0 -> 727552 bytes
+ artifacts/token-lifecycle/System.CodeDom.dll       |  Bin 0 -> 184944 bytes
+ .../System.Composition.AttributedModel.dll         |  Bin 0 -> 20248 bytes
+ .../System.Composition.Convention.dll              |  Bin 0 -> 54040 bytes
+ .../token-lifecycle/System.Composition.Hosting.dll |  Bin 0 -> 56072 bytes
+ .../token-lifecycle/System.Composition.Runtime.dll |  Bin 0 -> 27424 bytes
+ .../System.Composition.TypedParts.dll              |  Bin 0 -> 65816 bytes
+ .../System.Security.Cryptography.ProtectedData.dll |  Bin 0 -> 38664 bytes
+ .../token-lifecycle/appsettings.Production.json    |   60 +
+ artifacts/token-lifecycle/appsettings.json         |  228 +++
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../cs/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 444168 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41224 bytes
+ .../cs/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40200 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../de/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 474376 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../de/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../es/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 463120 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42248 bytes
+ .../es/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41272 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../fr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43320 bytes
+ .../fr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../it/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 469768 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42808 bytes
+ .../it/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41784 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17672 bytes
+ .../ja/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 515848 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 45320 bytes
+ .../ja/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 44304 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../ko/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 475920 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 43280 bytes
+ .../ko/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41744 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../pl/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 476432 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42760 bytes
+ .../pl/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 41736 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17712 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 456456 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 42296 bytes
+ .../pt-BR/Microsoft.CodeAnalysis.resources.dll     |  Bin 0 -> 40720 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 18192 bytes
+ .../ru/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 617744 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17680 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 47888 bytes
+ .../ru/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 49464 bytes
+ .../browser-wasm/nativeassets/net9.0/e_sqlite3.a   |  Bin 0 -> 1202596 bytes
+ .../runtimes/linux-arm/native/libe_sqlite3.so      |  Bin 0 -> 893360 bytes
+ .../runtimes/linux-arm64/native/libe_sqlite3.so    |  Bin 0 -> 1374696 bytes
+ .../runtimes/linux-armel/native/libe_sqlite3.so    |  Bin 0 -> 1257916 bytes
+ .../runtimes/linux-mips64/native/libe_sqlite3.so   |  Bin 0 -> 1594136 bytes
+ .../runtimes/linux-musl-arm/native/libe_sqlite3.so |  Bin 0 -> 1219860 bytes
+ .../linux-musl-arm64/native/libe_sqlite3.so        |  Bin 0 -> 1335840 bytes
+ .../linux-musl-riscv64/native/libe_sqlite3.so      |  Bin 0 -> 941944 bytes
+ .../linux-musl-s390x/native/libe_sqlite3.so        |  Bin 0 -> 1554416 bytes
+ .../runtimes/linux-musl-x64/native/libe_sqlite3.so |  Bin 0 -> 1323128 bytes
+ .../runtimes/linux-ppc64le/native/libe_sqlite3.so  |  Bin 0 -> 1722360 bytes
+ .../runtimes/linux-riscv64/native/libe_sqlite3.so  |  Bin 0 -> 955392 bytes
+ .../runtimes/linux-s390x/native/libe_sqlite3.so    |  Bin 0 -> 1504352 bytes
+ .../runtimes/linux-x64/native/libe_sqlite3.so      |  Bin 0 -> 1348440 bytes
+ .../runtimes/linux-x86/native/libe_sqlite3.so      |  Bin 0 -> 1416232 bytes
+ .../maccatalyst-arm64/native/libe_sqlite3.dylib    |  Bin 0 -> 1569856 bytes
+ .../maccatalyst-x64/native/libe_sqlite3.dylib      |  Bin 0 -> 1624336 bytes
+ .../runtimes/osx-arm64/native/libe_sqlite3.dylib   |  Bin 0 -> 1554624 bytes
+ .../runtimes/osx-x64/native/libe_sqlite3.dylib     |  Bin 0 -> 1591680 bytes
+ .../runtimes/win-arm/native/e_sqlite3.dll          |  Bin 0 -> 1282560 bytes
+ .../runtimes/win-arm64/native/e_sqlite3.dll        |  Bin 0 -> 1592320 bytes
+ .../runtimes/win-x64/native/e_sqlite3.dll          |  Bin 0 -> 1795072 bytes
+ .../runtimes/win-x86/native/e_sqlite3.dll          |  Bin 0 -> 1453568 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../tr/Microsoft.CodeAnalysis.CSharp.resources.dll |  Bin 0 -> 452360 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17720 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 41784 bytes
+ .../tr/Microsoft.CodeAnalysis.resources.dll        |  Bin 0 -> 40240 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17680 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405776 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40200 bytes
+ .../zh-Hans/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 37640 bytes
+ ...ft.CodeAnalysis.CSharp.Workspaces.resources.dll |  Bin 0 -> 17720 bytes
+ .../Microsoft.CodeAnalysis.CSharp.resources.dll    |  Bin 0 -> 405304 bytes
+ ...t.CodeAnalysis.Workspaces.MSBuild.resources.dll |  Bin 0 -> 17672 bytes
+ ...Microsoft.CodeAnalysis.Workspaces.resources.dll |  Bin 0 -> 40248 bytes
+ .../zh-Hant/Microsoft.CodeAnalysis.resources.dll   |  Bin 0 -> 38152 bytes
+ docs/EnrollmentTesting.md                          |  167 ++
+ scripts/dev-start.bat                              |    5 +
+ scripts/dev-start.ps1                              |  296 +++
+ scripts/dev-stop.bat                               |    5 +
+ scripts/dev-stop.ps1                               |  128 ++
+ scripts/print-integration-env.ps1                  |   79 +
+ scripts/publish.bat                                |    5 +
+ scripts/publish.ps1                                |  159 ++
+ scripts/resolve_integration_env.py                 |   66 +
+ scripts/restart-dsa.ps1                            |   30 +
+ 1318 files changed, 68244 insertions(+), 1834 deletions(-)

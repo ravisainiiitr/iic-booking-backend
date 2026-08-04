@@ -1,0 +1,6 @@
+M	src/App.tsx
+M	src/lib/api.ts
+M	src/pages/AnalysisLaunch.tsx
+M	src/pages/Dashboard.tsx
+M	src/pages/RemoteAnalysis.tsx
+M	vite.config.ts

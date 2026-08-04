@@ -1,0 +1,3 @@
+name=frontend
+path=D:\IIC_NEW\iic-booking-frontend
+captured_utc=2026-08-04T10:58:17.0869702+05:30

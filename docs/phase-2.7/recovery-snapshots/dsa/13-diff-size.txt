@@ -1,0 +1,3 @@
+unstaged_diff_lines=1116
+cached_diff_lines=78377
+NOTE: Full patch omitted due to size; use name-status + working tree.

@@ -1,0 +1,2 @@
+DIR|D:\IIC_NEW\iic-booking-frontend\dist
+DIR|D:\IIC_NEW\iic-booking-frontend\node_modules

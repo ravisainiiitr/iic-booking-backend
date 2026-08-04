@@ -1,0 +1,3 @@
+Frontend|npm run build|0|True
+Backend|SKIPPED - no uv/venv|-1|False
+Backend|python -m compileall config -q|9009|False

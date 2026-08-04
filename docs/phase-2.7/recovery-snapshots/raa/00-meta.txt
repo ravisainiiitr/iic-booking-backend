@@ -1,0 +1,3 @@
+name=raa
+path=D:\IIC_NEW\RemoteAnalysis.Agent
+captured_utc=2026-08-04T10:58:26.2978183+05:30

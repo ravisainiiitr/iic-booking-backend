@@ -1,0 +1,22 @@
+Commit Readiness Cleanup — 2026-08-04T12:16:30.4686331+05:30
+Deleted count: 19
+---
+D:\IIC_NEW\DepartmentSyncAgent\artifacts
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Infrastructure\obj
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Infrastructure\bin
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Application\bin
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Application\obj
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\EquipmentPcConfigurationWizard\bin
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\EquipmentPcConfigurationWizard\obj
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Domain\bin
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Domain\obj
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Api\obj
+D:\IIC_NEW\DepartmentSyncAgent\Backend\src\DepartmentSyncAgent.Api\bin
+D:\IIC_NEW\DepartmentSyncAgent\Shared\DepartmentSyncAgent.Shared\bin
+D:\IIC_NEW\DepartmentSyncAgent\Shared\DepartmentSyncAgent.Shared\obj
+D:\IIC_NEW\DepartmentSyncAgent\Frontend\dist
+D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\obj
+D:\IIC_NEW\RemoteAnalysis.Agent\src\RemoteAnalysis.Agent\bin
+D:\IIC_NEW\iic-booking-frontend\dist
+D:\IIC_NEW\iic-booking-backend-rt-port\bin
+D:\IIC_NEW\iic-booking-backend-rt-port\tmp_commission_run.py

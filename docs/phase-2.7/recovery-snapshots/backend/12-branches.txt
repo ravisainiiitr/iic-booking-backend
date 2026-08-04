@@ -1,0 +1,5 @@
+* feature/forward-port-reverse-tunnel 52ddcfc [origin/master] fix(remote-analysis): allow launch when booking analysis window is already open
+  main                                ac70cfa [origin/master: behind 40] Add Analysis Platform test harness for validation-phase regression.
++ master                              52ddcfc (D:/IIC_NEW/iic-booking-backend-deploy) [origin/master] fix(remote-analysis): allow launch when booking analysis window is already open
+  ravi                                d0492e3 CMS and other updates
++ release/reverse-tunnel-rc1          90ae217 (D:/IIC_NEW/iic-booking-backend) [origin/release/reverse-tunnel-rc1] ops(ci): add portal-only RC1 deploy workflow for self-hosted runner

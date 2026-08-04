@@ -1,0 +1,27 @@
+ Backend/DepartmentSyncAgent.slnx                   |   6 +
+ .../DepartmentSyncAgent.Api.csproj                 |   1 +
+ Backend/src/DepartmentSyncAgent.Api/Program.cs     |  29 ++++
+ .../appsettings.Development.json                   |   8 +-
+ .../src/DepartmentSyncAgent.Api/appsettings.json   |  13 ++
+ .../Persistence/ISyncCacheRepositories.cs          |   2 +
+ .../Abstractions/Portal/IPortalClient.cs           |   5 +
+ .../Models/Heartbeat/HeartbeatPayload.cs           |   6 +
+ .../UploadEngineHostedService.cs                   |  12 ++
+ .../InfrastructureServiceCollectionExtensions.cs   |  10 ++
+ .../Options/PortalClientOptions.cs                 |   3 +
+ .../Persistence/DsaDbContext.cs                    |   2 +
+ .../Migrations/DsaDbContextModelSnapshot.cs        | 161 +++++++++++++++++++++
+ .../Persistence/Repositories/QueueRepositories.cs  |  12 +-
+ .../Processing/Parsers.cs                          |  10 +-
+ .../Processing/ProcessingServices.cs               |   9 +-
+ .../RemoteAdmin/RemoteAdminServices.cs             |  31 +++-
+ .../Services/Heartbeat/HeartbeatService.cs         |  13 +-
+ .../Portal/ControlPlaneBootstrapService.cs         |  12 ++
+ .../Services/Portal/PortalClient.cs                |  34 +++++
+ .../Services/Portal/PortalJobProcessor.cs          |  21 ++-
+ .../Services/Upload/UploadScheduler.cs             | 147 +++++++++++++++++++
+ .../Upload/UploadEngine.cs                         |  26 +++-
+ Documentation/Packaging.md                         |  21 ++-
+ .../src/components/EquipmentPcSettingsPanel.tsx    |   3 +-
+ Frontend/src/pages/LogsPage.tsx                    |   4 +-
+ 26 files changed, 581 insertions(+), 20 deletions(-)

@@ -1,0 +1,4 @@
+ffa5af4b84fd76984c4cea547c75f1cfcb6a8ccd
+Ravi Saini <ravisaini.15@gmail.com>
+Mon Aug 3 13:49:06 2026 +0530
+fix(ui): show analysis launch gate errors instead of spinning forever

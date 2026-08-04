@@ -1,0 +1,10 @@
+ docs/enterprise/AgentUpdates.md                |  10 +-
+ docs/enterprise/README.md                      |  16 +-
+ docs/phase-2.5/README.md                       |  57 +++-
+ iic_booking/lab_infrastructure/admin.py        |  37 +++
+ iic_booking/lab_infrastructure/models.py       | 226 ++++++++++++++
+ iic_booking/lab_infrastructure/urls.py         |  13 +
+ iic_booking/lab_infrastructure/views.py        | 403 ++++++++++++++++++++++++-
+ iic_booking/remote_analysis/installer/views.py | 117 ++++++-
+ iic_booking/remote_analysis/urls.py            |   3 +
+ 9 files changed, 869 insertions(+), 13 deletions(-)

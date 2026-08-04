@@ -1,0 +1,7 @@
+## No commits yet on master
+?? .gitignore
+?? Documentation/
+?? README.md
+?? RemoteAnalysis.Agent.slnx
+?? src/
+?? tmp-end-analysis-diff.txt
