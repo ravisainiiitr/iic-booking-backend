@@ -77,6 +77,11 @@ class HeartbeatService:
                 raise InvalidSchemaVersionError() from exc
 
         now = timezone.now()
+        details = dict(payload.get("details") or {})
+        equipment_pcs = payload.get("equipment_pcs")
+        if equipment_pcs is not None:
+            details["equipment_pcs"] = equipment_pcs
+
         AgentHeartbeat.objects.create(
             sync_agent=agent,
             reported_at=now,
@@ -94,7 +99,7 @@ class HeartbeatService:
             reported_configuration_version=reported_config,
             reported_schema_version=reported_schema,
             status_message=(payload.get("status_message") or "")[:500],
-            details=payload.get("details") or {},
+            details=details,
         )
 
         agent.last_heartbeat_at = now

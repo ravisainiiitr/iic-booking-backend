@@ -82,6 +82,21 @@ class BootstrapService:
                     "sync_interval_seconds": profile.sync_interval_seconds,
                     "configuration_version": profile.configuration_version,
                     "schema_version": profile.schema_version,
+                    # Phase 1 Configuration Push extensions (from templates / policy)
+                    "network_mode": (profile.enabled_features or {}).get("network_mode", "dhcp"),
+                    "windows_account_policy": (profile.enabled_features or {}).get(
+                        "windows_account_policy", {}
+                    ),
+                    "folder_layout": (profile.enabled_features or {}).get("folder_layout", {}),
+                    "firewall_profile": (profile.enabled_features or {}).get("firewall_profile", {}),
+                    "retry_policy": (profile.enabled_features or {}).get("retry_policy", {}),
+                    "required_software": (profile.enabled_features or {}).get(
+                        "required_software", []
+                    ),
+                    "health_thresholds": (profile.enabled_features or {}).get(
+                        "health_thresholds", {}
+                    ),
+                    "template_code": (profile.enabled_features or {}).get("template_code"),
                 }
             )
 
@@ -127,14 +142,41 @@ class BootstrapService:
             },
         }
 
+        # Phase 2: signed configuration pack (HMAC of canonical JSON subset)
+        try:
+            import hashlib
+            import hmac
+            import json
+
+            from django.conf import settings
+
+            secret = (
+                getattr(settings, "DSA_BOOTSTRAP_SIGNING_KEY", None)
+                or getattr(settings, "SECRET_KEY", "")
+                or ""
+            )
+            body = json.dumps(
+                {
+                    "configuration_version": config_version,
+                    "schema_version": schema_version,
+                    "agent_uuid": str(agent.agent_uuid),
+                    "assigned_equipment": equipment_payload,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            payload["configuration_signature"] = {
+                "alg": "HMAC-SHA256",
+                "value": hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest(),
+            }
+        except Exception:
+            payload["configuration_signature"] = None
+
         agent.bootstrap_required = False
-        agent.last_reported_configuration_version = config_version
-        agent.last_reported_schema_version = schema_version
+        # Do NOT set last_reported_* here — heartbeat after apply is source of truth (avoids false "in sync")
         agent.save(
             update_fields=[
                 "bootstrap_required",
-                "last_reported_configuration_version",
-                "last_reported_schema_version",
                 "updated_at",
             ]
         )

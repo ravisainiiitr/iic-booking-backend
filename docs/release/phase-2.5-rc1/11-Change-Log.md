@@ -6,6 +6,7 @@ Format: Keep a Changelog. Entries finalized when commits exist.
 
 ### Added
 
+- Plug-and-Play backend foundation: sync templates, IP reservation workflow, and DSA bootstrap/config integration endpoints
 - Deployment Center backend module for release catalog, compatibility metadata, and installer distribution
 - Equipment PC Wizard installer publishing and ticketed download path integration
 - Remote Analysis execution engine lifecycle APIs and orchestration:

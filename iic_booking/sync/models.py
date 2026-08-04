@@ -2746,3 +2746,221 @@ class ResultAttachment(models.Model):
 
 
 from iic_booking.sync.installer.models import DsaInstallerRelease  # noqa: E402,F401
+
+
+class EquipmentSyncTemplate(models.Model):
+    """
+    Reusable Equipment PC sync configuration pack.
+
+    Apply to equipment → create/update EquipmentSyncProfile → bump configuration_version
+    so DSA receives a Configuration Push via the existing bootstrap_required path.
+    """
+
+    class NetworkMode(models.TextChoices):
+        DHCP = "dhcp", _("DHCP (register observed IP)")
+        STATIC = "static", _("Static IP (apply when policy allows)")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(_("Template name"), max_length=200)
+    code = models.SlugField(_("Template code"), max_length=64, unique=True)
+    description = models.TextField(_("Description"), blank=True, default="")
+    department = models.ForeignKey(
+        "users.Department",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="equipment_sync_templates",
+        verbose_name=_("Department"),
+    )
+    share_name = models.CharField(_("Share name"), max_length=200, blank=True, default="Results")
+    watch_folder = models.CharField(_("Watch folder"), max_length=500, blank=True, default="")
+    unc_path_template = models.CharField(
+        _("UNC path template"),
+        max_length=500,
+        blank=True,
+        default="",
+        help_text=_(r"Optional; may include {hostname} / {ip} placeholders."),
+    )
+    sync_interval_seconds = models.PositiveIntegerField(
+        _("Synchronization interval (seconds)"),
+        default=300,
+        validators=[MinValueValidator(30)],
+    )
+    sync_enabled = models.BooleanField(_("Sync enabled"), default=True)
+    watch_enabled = models.BooleanField(_("Watch folder enabled"), default=True)
+    upload_enabled = models.BooleanField(_("Upload enabled"), default=True)
+    enabled_features = models.JSONField(
+        _("Enabled features"),
+        default=default_enabled_features,
+        blank=True,
+    )
+    network_mode = models.CharField(
+        _("Network mode"),
+        max_length=16,
+        choices=NetworkMode.choices,
+        default=NetworkMode.DHCP,
+        help_text=_(
+            "Phase 1: dhcp by default. static only applied when Wizard/DSA policy allows."
+        ),
+    )
+    windows_account_policy = models.JSONField(
+        _("Windows account policy"),
+        default=dict,
+        blank=True,
+        help_text=_("Username pattern, password policy refs (no plaintext secrets)."),
+    )
+    folder_layout = models.JSONField(
+        _("Folder layout"),
+        default=dict,
+        blank=True,
+        help_text=_('e.g. {"raw": "D:\\\\RAW", "results": "D:\\\\RESULTS"}'),
+    )
+    firewall_profile = models.JSONField(
+        _("Firewall profile"),
+        default=dict,
+        blank=True,
+    )
+    retry_policy = models.JSONField(
+        _("Retry policy"),
+        default=dict,
+        blank=True,
+    )
+    required_software = models.JSONField(
+        _("Required software list"),
+        default=list,
+        blank=True,
+    )
+    health_thresholds = models.JSONField(
+        _("Health thresholds"),
+        default=dict,
+        blank=True,
+    )
+    smb_username = models.CharField(_("SMB username hint"), max_length=200, blank=True, default="")
+    smb_credential_reference = models.CharField(
+        _("SMB credential reference"),
+        max_length=255,
+        blank=True,
+        default="",
+    )
+    is_active = models.BooleanField(_("Active"), default=True)
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Equipment Sync Template")
+        verbose_name_plural = _("Equipment Sync Templates")
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.code})"
+
+    def apply_to_profile(self, profile: "EquipmentSyncProfile", *, bump: bool = True) -> "EquipmentSyncProfile":
+        """Copy template fields onto a profile and optionally bump configuration_version."""
+        profile.share_name = self.share_name or profile.share_name
+        profile.watch_folder = self.watch_folder or profile.watch_folder
+        if self.unc_path_template:
+            hostname = profile.hostname or ""
+            ip = profile.ip_address or ""
+            profile.unc_path = (
+                self.unc_path_template.replace("{hostname}", hostname).replace("{ip}", ip)
+            )
+        profile.sync_interval_seconds = self.sync_interval_seconds
+        profile.sync_enabled = self.sync_enabled
+        profile.watch_enabled = self.watch_enabled
+        profile.upload_enabled = self.upload_enabled
+        profile.enabled_features = dict(self.enabled_features or {})
+        # Stash Phase-1 policy extensions in enabled_features for bootstrap consumers.
+        features = dict(profile.enabled_features or {})
+        features["network_mode"] = self.network_mode
+        features["windows_account_policy"] = self.windows_account_policy or {}
+        features["folder_layout"] = self.folder_layout or {}
+        features["firewall_profile"] = self.firewall_profile or {}
+        features["retry_policy"] = self.retry_policy or {}
+        features["required_software"] = self.required_software or []
+        features["health_thresholds"] = self.health_thresholds or {}
+        features["template_code"] = self.code
+        profile.enabled_features = features
+        if self.smb_username:
+            profile.smb_username = self.smb_username
+        if self.smb_credential_reference:
+            profile.smb_credential_reference = self.smb_credential_reference
+        update_fields = [
+            "share_name",
+            "watch_folder",
+            "unc_path",
+            "sync_interval_seconds",
+            "sync_enabled",
+            "watch_enabled",
+            "upload_enabled",
+            "enabled_features",
+            "smb_username",
+            "smb_credential_reference",
+            "updated_at",
+        ]
+        if bump:
+            profile.configuration_version = (profile.configuration_version or 0) + 1
+            update_fields.append("configuration_version")
+        profile.save(update_fields=update_fields)
+        return profile
+
+
+class EquipmentPcIpReservation(models.Model):
+    """
+    Optional Portal mirror of DSA soft IP reservations (MAC → preferred IP).
+
+    Phase 1: informational / ops visibility. DSA SQLite remains authoritative on LAN.
+    Static apply still requires network_mode=static on the sync template/profile.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", _("Active")
+        RELEASED = "released", _("Released")
+        CONFLICT = "conflict", _("Conflict")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    equipment = models.ForeignKey(
+        "equipment.Equipment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pc_ip_reservations",
+        verbose_name=_("Equipment"),
+    )
+    computer_name = models.CharField(_("Computer name"), max_length=200, blank=True, default="")
+    mac_address = models.CharField(_("MAC address"), max_length=32, unique=True, db_index=True)
+    preferred_ip = models.GenericIPAddressField(
+        _("Preferred IP"),
+        null=True,
+        blank=True,
+        protocol="IPv4",
+    )
+    observed_ip = models.GenericIPAddressField(
+        _("Observed IP"),
+        null=True,
+        blank=True,
+        protocol="IPv4",
+    )
+    network_mode = models.CharField(
+        _("Network mode"),
+        max_length=16,
+        default="dhcp",
+        help_text=_("dhcp (default) or static (apply only when policy allows)."),
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+    last_seen = models.DateTimeField(_("Last seen"), null=True, blank=True)
+    notes = models.TextField(_("Notes"), blank=True, default="")
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Equipment PC IP reservation")
+        verbose_name_plural = _("Equipment PC IP reservations")
+        ordering = ["-updated_at"]
+
+    def __str__(self) -> str:
+        return f"{self.mac_address} → {self.preferred_ip or 'dhcp'}"
+

@@ -8,6 +8,7 @@ from django.urls import path
 
 from iic_booking.sync import views
 from iic_booking.sync.installer import views as installer_views
+from iic_booking.lab_infrastructure.views import configuration_ack as lab_configuration_ack
 
 app_name = "sync"
 
@@ -141,4 +142,6 @@ urlpatterns = [
     ),
     path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
     path("installer/link/", installer_views.link_equipment, name="installer-link"),
+    # Phase 2 — config ack alias (agent auth; same handler as /api/v1/lab/configuration/ack/)
+    path("configuration/ack/", lab_configuration_ack, name="configuration-ack"),
 ]

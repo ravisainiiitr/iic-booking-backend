@@ -32,6 +32,8 @@ class HeartbeatRequestSerializer(serializers.Serializer):
     last_upload_at = serializers.DateTimeField(required=False, allow_null=True)
     status_message = serializers.CharField(required=False, allow_blank=True, default="", max_length=500)
     details = serializers.JSONField(required=False, default=dict)
+    # Phase 2: Equipment PC rollup from DSA (persisted into AgentHeartbeat.details)
+    equipment_pcs = serializers.JSONField(required=False, allow_null=True)
 
 
 class BootstrapRequestSerializer(serializers.Serializer):

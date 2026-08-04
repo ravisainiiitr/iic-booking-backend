@@ -1,0 +1,10 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p>{% trans "Copies template fields onto the selected Equipment Sync Profile and bumps configuration_version so DSA pulls a Configuration Push on next heartbeat/bootstrap." %}</p>
+<form method="post">{% csrf_token %}
+  {{ form.as_p }}
+  <input type="submit" class="default" value="{% trans 'Apply template' %}">
+</form>
+{% endblock %}

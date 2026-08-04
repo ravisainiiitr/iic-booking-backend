@@ -11,13 +11,17 @@ from .commands import AgentCommandAdmin, BookingWorkspaceAdmin
 from .console import SyncOperationsConsoleAdmin
 from .heartbeats import AgentHeartbeatAdmin
 from .installer import DsaInstallerReleaseAdmin
+from .ip_reservations import EquipmentPcIpReservationAdmin
 from .logs import SyncLogAdmin
 from .profiles import EquipmentSyncProfileAdmin
+from .templates_admin import EquipmentSyncTemplateAdmin
 
 __all__ = [
     "SyncOperationsConsoleAdmin",
     "DepartmentSyncAgentAdmin",
     "EquipmentSyncProfileAdmin",
+    "EquipmentSyncTemplateAdmin",
+    "EquipmentPcIpReservationAdmin",
     "AgentAssignmentAdmin",
     "AgentHeartbeatAdmin",
     "SyncLogAdmin",
