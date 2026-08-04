@@ -10,10 +10,10 @@
 
 | Decision | Value |
 |----------|-------|
-| **RC1 engineering readiness** | **NO GO** to produce a shippable RC artifact **today** |
-| **Why** | Backend B1-B8, Frontend F1-F4, DSA D0-D4, and RAA R1-R4 are committed; RC remains blocked only on cross-repo integration/SAT gates and release-environment validation |
-| **Next gate** | After approved commits on `release/phase-2.5` + clean CI builds → re-score to **Conditional GO** for staging Lab SAT |
-| **Production deploy** | **NO GO** (SAT gate still closed; Manifest empty) |
+| **RC1 engineering readiness** | **CONDITIONAL GO** for Backend documentation freeze / commissioning preparation |
+| **Why** | Backend product baseline B8 is frozen; local tag `v2.5.0-rc1` marks documentation freeze tip; full shippable RC still blocked on cross-repo integration/SAT and release-environment validation |
+| **Next gate** | Frontend/DSA/RAA Phase A audits → staging deploy rehearsal → Lab SAT evidence |
+| **Production deploy** | **NO GO** (SAT gate still closed; installer hashes/signing and live commissioning pending) |
 
 ---
 
@@ -21,7 +21,7 @@
 
 | Repo | Health | Notes |
 |------|--------|-------|
-| Portal Backend | **Poor for RC** | Dirty WT; tip == master without Phase 2.5 |
+| Portal Backend | **Good for RC docs freeze** | Product baseline B8; documentation freeze tip tagged locally as `v2.5.0-rc1` (unpushed) |
 | Portal Frontend | **Good for RC history, pending cleanup** | F1-F4 committed; only residual non-functional local modifications remain |
 | DSA | **Good for RC history** | D0-D4 committed on `recovery/dsa-phase-2.7`; working tree clean |
 | RAA | **Good for RC history** | R1-R4 committed on `release/reverse-tunnel-rc1`; working tree clean |

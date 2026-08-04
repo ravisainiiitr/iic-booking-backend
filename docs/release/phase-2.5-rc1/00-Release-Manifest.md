@@ -2,7 +2,7 @@
 
 **Release name:** IIC Laboratory Platform Phase 2.5  
 **Candidate:** RC1  
-**Status:** TEMPLATE — fill only from measured values after commits/tags exist  
+**Status:** Backend RC1 documentation freeze prepared (local tag `v2.5.0-rc1`); product code baseline remains B8  
 
 > Nothing below may be invented. Use `TBD` until a SHA, hash, or version is recorded from CI/build output.
 
@@ -12,10 +12,11 @@
 
 | Field | Value |
 |-------|-------|
-| Release version (platform) | `2.5.0-rc1` *(proposed — confirm)* |
-| Release date (UTC) | TBD |
+| Release version (platform) | `2.5.0-rc1` |
+| Release date (UTC) | 2026-08-04 |
 | Release manager | TBD |
-| Git tag (portal monorepo / backend) | TBD e.g. `platform-v2.5.0-rc1` |
+| Git tag (portal monorepo / backend) | `v2.5.0-rc1` *(local annotated documentation freeze tip; do not push until authorized)* |
+| Portal Backend product baseline | B8 `4ed823579474a9b4d15ca35703543dfc42491184` *(runtime-equivalent; docs-only delta after B8)* |
 | Prior production baseline | Backend `52ddcfc` / Frontend `ffa5af4` on `origin/master` *(audit 2026-08-04)* |
 | Rollback version / tag | TBD (previous prod tag) |
 
