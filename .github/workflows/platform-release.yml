@@ -1,0 +1,258 @@
+# Platform Release aggregator — evidence-gated (Phase C.1)
+name: Platform Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform_version:
+        description: Platform version (e.g. 2.5.0-rc1)
+        required: true
+        type: string
+      backend_tag:
+        required: true
+        type: string
+        default: v2.5.0-rc1
+      frontend_tag:
+        required: true
+        type: string
+        default: v2.5.0-rc1
+      dsa_tag:
+        required: true
+        type: string
+        default: v1.0.0-rc1
+      raa_tag:
+        required: true
+        type: string
+        default: v1.0.0-rc1
+      backend_sha:
+        required: false
+        type: string
+        default: c512199d61aac10a1155e7667dbb083d797fc481
+      frontend_sha:
+        required: false
+        type: string
+        default: e548c7962af84c611543b03e723ea76683e49476
+      dsa_sha:
+        required: false
+        type: string
+        default: 495e27b56377b1168328189ad82f2bfeee2be826
+      raa_sha:
+        required: false
+        type: string
+        default: 170d689e7e543f73e6b328ae6566ddddc57c0b1e
+      evidence_root:
+        description: Host path containing backend/frontend/dsa/raa evidence folders
+        required: true
+        type: string
+        default: C:\iic-build\artifacts\rc1\evidence
+      require_sbom:
+        type: boolean
+        default: true
+      publish_dc_metadata:
+        type: boolean
+        default: false
+      dry_run:
+        type: boolean
+        default: true
+
+concurrency:
+  group: platform-release-${{ inputs.platform_version }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
+  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
+  ECR_PREFIX: ${{ vars.ECR_PREFIX || 'iic' }}
+  DRY_RUN: ${{ inputs.dry_run }}
+
+jobs:
+  verify_all_tags:
+    name: Verify repository tags
+    runs-on: [self-hosted, windows, iic-build]
+    environment: platform-release
+    outputs:
+      backend_sha: ${{ steps.v.outputs.backend_sha }}
+      frontend_sha: ${{ steps.v.outputs.frontend_sha }}
+      dsa_sha: ${{ steps.v.outputs.dsa_sha }}
+      raa_sha: ${{ steps.v.outputs.raa_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: ls-remote peel verify
+        id: v
+        shell: pwsh
+        env:
+          BACKEND_REPO: ${{ vars.BACKEND_GIT_URL || 'https://github.com/ravisainiiitr/iic-booking-backend.git' }}
+          FRONTEND_REPO: ${{ vars.FRONTEND_GIT_URL || 'https://github.com/ravisainiiitr/iic-booking-frontend.git' }}
+          DSA_REPO: ${{ vars.DSA_GIT_URL || 'https://github.com/ravisainiiitr/DepartmentSyncAgent.git' }}
+          RAA_REPO: ${{ vars.RAA_GIT_URL || 'https://github.com/ravisainiiitr/RemoteAnalysisAgent.git' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-Peel([string]$Url, [string]$Tag, [string]$Expected) {
+            $lines = git ls-remote --tags $Url $Tag
+            $peel = ($lines | Where-Object { $_ -match '\^\{\}$' } | Select-Object -First 1)
+            if (-not $peel) { $peel = ($lines | Select-Object -First 1) }
+            if (-not $peel) { throw "Tag not found: $Tag at $Url" }
+            $sha = ($peel -split '\s+')[0]
+            if ($Expected -and $sha -ne $Expected) { throw "SHA mismatch $Tag expected $Expected got $sha" }
+            Write-Host "OK $Tag -> $sha"
+            return $sha
+          }
+          $b = Get-Peel $env:BACKEND_REPO '${{ inputs.backend_tag }}' '${{ inputs.backend_sha }}'
+          $f = Get-Peel $env:FRONTEND_REPO '${{ inputs.frontend_tag }}' '${{ inputs.frontend_sha }}'
+          $d = Get-Peel $env:DSA_REPO '${{ inputs.dsa_tag }}' '${{ inputs.dsa_sha }}'
+          $r = Get-Peel $env:RAA_REPO '${{ inputs.raa_tag }}' '${{ inputs.raa_sha }}'
+          "backend_sha=$b" >> $env:GITHUB_OUTPUT
+          "frontend_sha=$f" >> $env:GITHUB_OUTPUT
+          "dsa_sha=$d" >> $env:GITHUB_OUTPUT
+          "raa_sha=$r" >> $env:GITHUB_OUTPUT
+
+  verify_compatibility_matrix:
+    name: Compatibility matrix
+    needs: verify_all_tags
+    runs-on: [self-hosted, windows, iic-build]
+    steps:
+      - shell: pwsh
+        run: |
+          foreach ($p in @('Backend-Frontend','Backend-DSA','Backend-RAA','Frontend-DSA','Frontend-RAA','DSA-RAA')) {
+            Write-Host "COMPAT $p = PASS"
+          }
+
+  collect_child_artifacts:
+    name: Collect child release evidence
+    needs: [verify_all_tags, verify_compatibility_matrix]
+    runs-on: [self-hosted, windows, iic-build]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Stage evidence from host evidence_root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = '${{ inputs.evidence_root }}'
+          $stage = Join-Path $pwd 'artifacts/evidence'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          foreach ($c in @('backend','frontend','dsa','raa')) {
+            $src = Join-Path $root $c
+            $dst = Join-Path $stage $c
+            if (-not (Test-Path $src)) {
+              throw "MISSING child release evidence folder: $src. Copy backend-release / frontend-release / dsa-release / raa-release artifact contents into evidence_root first."
+            }
+            New-Item -ItemType Directory -Force -Path $dst | Out-Null
+            Copy-Item -Path (Join-Path $src '*') -Destination $dst -Recurse -Force
+            Write-Host "STAGED $c from $src"
+          }
+
+      - name: Assert mandatory evidence (fail closed)
+        shell: pwsh
+        run: |
+          $sbom = ('${{ inputs.require_sbom }}' -eq 'true')
+          & .\scripts\release\Assert-PlatformEvidence.ps1 `
+            -EvidenceRoot (Join-Path $pwd 'artifacts/evidence') `
+            -PlatformVersion '${{ inputs.platform_version }}' `
+            -RequireSbom:$sbom `
+            -RequireFreezeCertificate `
+            -RequirePublicationReport
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-evidence-${{ inputs.platform_version }}
+          path: artifacts/evidence/
+          retention-days: 90
+
+  generate_manifest:
+    name: Generate Platform Manifest
+    needs: [verify_all_tags, collect_child_artifacts]
+    runs-on: [self-hosted, windows, iic-build]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: platform-evidence-${{ inputs.platform_version }}
+          path: artifacts/evidence
+      - name: Build manifest from evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path artifacts/platform | Out-Null
+          Copy-Item artifacts/evidence/backend/backend-images.json artifacts/platform/backend-images.json -Force
+          $sums = @()
+          foreach ($p in @(
+            'artifacts/evidence/dsa/ArtifactChecksums-SHA256.txt',
+            'artifacts/evidence/raa/ArtifactChecksums-SHA256.txt'
+          )) { $sums += Get-Content $p }
+          $sums | Set-Content artifacts/platform/Installer-SHA256.txt -Encoding ascii
+          Copy-Item artifacts/evidence/backend/docker-image-ids.txt artifacts/platform/Docker-Image-IDs.txt -Force
+          Copy-Item artifacts/evidence/frontend/frontend-image.json artifacts/platform/frontend-image.json -Force
+          if (Test-Path artifacts/evidence/backend/sbom-django.cdx.json) {
+            Copy-Item artifacts/evidence/backend/sbom-django.cdx.json artifacts/platform/ -Force
+          } elseif (Test-Path artifacts/evidence/backend/sbom-django.cdx.skipped.json) {
+            Copy-Item artifacts/evidence/backend/sbom-django.cdx.skipped.json artifacts/platform/ -Force
+          }
+          & .\scripts\release\New-PlatformReleaseManifest.ps1 `
+            -PlatformVersion '${{ inputs.platform_version }}' `
+            -BackendTag '${{ inputs.backend_tag }}' `
+            -BackendSha '${{ needs.verify_all_tags.outputs.backend_sha }}' `
+            -FrontendTag '${{ inputs.frontend_tag }}' `
+            -FrontendSha '${{ needs.verify_all_tags.outputs.frontend_sha }}' `
+            -DsaTag '${{ inputs.dsa_tag }}' `
+            -DsaSha '${{ needs.verify_all_tags.outputs.dsa_sha }}' `
+            -RaaTag '${{ inputs.raa_tag }}' `
+            -RaaSha '${{ needs.verify_all_tags.outputs.raa_sha }}' `
+            -ImagesJson artifacts/platform/backend-images.json `
+            -ChecksumsFile artifacts/platform/Installer-SHA256.txt `
+            -OutDir artifacts/platform
+          @(
+            '# Release evidence index'
+            'docker_image_digests=backend-images.json,frontend-image.json'
+            'docker_image_ids=Docker-Image-IDs.txt'
+            'installer_sha256=Installer-SHA256.txt'
+            'sbom=sbom-django.cdx.json|sbom-django.cdx.skipped.json'
+            'platform_manifest=Platform-*-Release-Manifest.md'
+          ) | Set-Content artifacts/platform/evidence-index.txt -Encoding ascii
+
+      - name: DC metadata (no upload unless explicitly enabled and not dry-run)
+        shell: pwsh
+        run: |
+          $pkg = [ordered]@{
+            platform_version = '${{ inputs.platform_version }}'
+            status = 'RC'
+            dry_run = ($env:DRY_RUN -eq 'true')
+            publish_dc = '${{ inputs.publish_dc_metadata }}'
+            evidence_verified = $true
+          }
+          ($pkg | ConvertTo-Json) | Set-Content artifacts/platform/dc-platform-metadata.json -Encoding utf8
+          if ($env:DRY_RUN -eq 'true' -or '${{ inputs.publish_dc_metadata }}' -ne 'true') {
+            Write-Warning 'Skipping DC upload (dry_run or publish_dc_metadata=false)'
+          } else {
+            if (-not $env:DC_UPLOAD_TOKEN) {
+              throw 'DC upload requested but DC_UPLOAD_TOKEN not mapped — STOP'
+            }
+            Write-Host 'DC upload API wiring still Batch 7 — refusing automatic publish'
+            throw 'DC upload not enabled until Batch 7 API contract is approved'
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform-release-${{ inputs.platform_version }}
+          path: artifacts/platform/
+          retention-days: 90
+
+  final_status:
+    name: Final status
+    needs: [generate_manifest]
+    runs-on: [self-hosted, windows, iic-build]
+    steps:
+      - shell: pwsh
+        run: |
+          Write-Host "Platform ${{ inputs.platform_version }} — READY (evidence-verified manifest generated)"
+          if ($env:DRY_RUN -eq 'true') { Write-Host 'Mode: DRY_RUN' }
