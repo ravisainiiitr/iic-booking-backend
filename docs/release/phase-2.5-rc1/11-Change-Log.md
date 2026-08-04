@@ -6,6 +6,15 @@ Format: Keep a Changelog. Entries finalized when commits exist.
 
 ### Added
 
+- DSA D4: release architecture and operations documentation pack, pilot acceptance runbooks, deployment/packaging/security/troubleshooting guides, and integration test workflow collateral
+- DSA D3: monitoring and diagnostics platform with heartbeat/health services, log and system-health APIs, telemetry collectors, and monitoring dashboard UI
+- DSA D2: configuration platform including synchronization engine, upload/result-processing pipelines, offline recovery workflows, and persistence migration chain
+- DSA D1: discovery and provisioning control plane with enrollment APIs, equipment discovery/provisioning services, and provisioning UI surfaces
+- DSA D0: repository recovery baseline with normalized solution structure, shared infrastructure foundations, installer/wizard infrastructure, and project integrity repairs
+- Frontend F4: SAT execution dashboard with guided test runs, evidence capture, readiness scoring, diagnostics/utilization surfaces, and CSV/Excel/PDF report exports
+- Frontend F3: Laboratory Infrastructure fleet dashboard, node diagnostics/repair controls, alerts/audit/compliance views, and RDP path diagnostics UI
+- Frontend F2: Deployment Center capability with installer version cards, secure ticketed downloads, compatibility metadata, and dashboard/routing integration for Plug-and-Play operations
+- Frontend F1: Analyze Data launch page now surfaces backend failure category and user-facing launch error details during PREPARE/session lifecycle flow
 - Cross-cutting stabilization collateral for release governance, operational checklists, and commit-process traceability artifacts
 - SAT dashboard and acceptance/readiness documentation set for execution evidence and release-gate traceability
 - Diagnostics and reporting documentation pack for operational troubleshooting, readiness, and compliance-oriented workflows

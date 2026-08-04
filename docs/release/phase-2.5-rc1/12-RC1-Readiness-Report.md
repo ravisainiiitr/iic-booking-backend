@@ -11,7 +11,7 @@
 | Decision | Value |
 |----------|-------|
 | **RC1 engineering readiness** | **NO GO** to produce a shippable RC artifact **today** |
-| **Why** | Backend commits B1-B5 are committed; diagnostics/SAT/backend stabilization and remaining frontend/DSA/RAA work are still uncommitted and untagged |
+| **Why** | Backend commits B1-B8, Frontend F1-F4, and DSA commits D0-D4 are committed; integration remains blocked on RAA commit execution and cross-repo validation |
 | **Next gate** | After approved commits on `release/phase-2.5` + clean CI builds → re-score to **Conditional GO** for staging Lab SAT |
 | **Production deploy** | **NO GO** (SAT gate still closed; Manifest empty) |
 
@@ -22,8 +22,8 @@
 | Repo | Health | Notes |
 |------|--------|-------|
 | Portal Backend | **Poor for RC** | Dirty WT; tip == master without Phase 2.5 |
-| Portal Frontend | **Poor for RC** | Features untracked/unstaged only |
-| DSA | **Poor for RC** | Detached HEAD; artifacts pollution risk; huge uncommitted delta |
+| Portal Frontend | **Good for RC history, pending cleanup** | F1-F4 committed; only residual non-functional local modifications remain |
+| DSA | **Good for RC history** | D0-D4 committed on `recovery/dsa-phase-2.7`; working tree clean |
 | RAA | **Critical for RC** | Zero commits |
 
 ### Controlled commit progress (Phase 2.8)
@@ -37,7 +37,12 @@
 | B5 — Laboratory Infrastructure | `932d016bb1119e71ada4df4959ab508217d46c52` | Accepted |
 | B6 — Diagnostics & Reporting | `49bfd66835e1c9d6d40e84184cf2dab28cd7281d` | Accepted |
 | B7 — SAT Dashboard | `7b53a93542950ed30df8a27f235bfe7cfc02693d` | Accepted |
-| B8 — Cross-cutting Stabilization | `TBD (assigned after commit)` | In progress |
+| B8 — Cross-cutting Stabilization | `4ed823579474a9b4d15ca35703543dfc42491184` | Accepted |
+| D0 — DSA Repository Recovery baseline | `b657c20228a9c7f273d78c0af6c6b25e059fa1f7` | Accepted |
+| D1 — DSA Discovery & Provisioning | `f58f8e5937c4f8e117d1af14b5e9ae01c9757b4e` | Accepted |
+| D2 — DSA Configuration Platform | `6c0191f1c7187ce005756264d9aa209c11546213` | Accepted |
+| D3 — DSA Monitoring Platform | `6d9e5dd52ac80ceb564d947fba3fe16082e11224` | Accepted |
+| D4 — DSA Documentation & Release assets | `495e27b56377b1168328189ad82f2bfeee2be826` | Accepted |
 
 ---
 

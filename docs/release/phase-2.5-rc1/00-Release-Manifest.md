@@ -25,10 +25,10 @@
 
 | Component | Repository | Branch / tag | Commit SHA (full) | Short |
 |-----------|------------|--------------|-------------------|-------|
-| Portal Backend | `iic-booking-backend` | `feature/forward-port-reverse-tunnel` | `d4d50e29891bce543d6d9258958fb744df71d90e` | `d4d50e2` |
-| Portal Frontend | `iic-booking-frontend` | TBD | TBD | TBD |
-| Department Sync Agent | `DepartmentSyncAgent` | TBD | TBD | TBD |
-| Equipment PC Wizard | *(same DSA repo or separate)* | TBD | TBD | TBD |
+| Portal Backend | `iic-booking-backend` | `feature/forward-port-reverse-tunnel` | `4ed823579474a9b4d15ca35703543dfc42491184` | `4ed8235` |
+| Portal Frontend | `iic-booking-frontend` | `main` | `e548c7962af84c611543b03e723ea76683e49476` | `e548c79` |
+| Department Sync Agent | `DepartmentSyncAgent` | `recovery/dsa-phase-2.7` | `495e27b56377b1168328189ad82f2bfeee2be826` | `495e27b` |
+| Equipment PC Wizard | *(same DSA repo or separate)* | `recovery/dsa-phase-2.7` | `495e27b56377b1168328189ad82f2bfeee2be826` | `495e27b` |
 | Remote Analysis Agent | `RemoteAnalysis.Agent` | TBD | TBD | TBD |
 
 **How to fill:** `git rev-parse HEAD` on clean release checkout; never use dirty working-tree SHAs.
@@ -44,7 +44,16 @@
 | 5 | B5 | Laboratory Infrastructure | `932d016bb1119e71ada4df4959ab508217d46c52` | Accepted |
 | 6 | B6 | Diagnostics & Reporting | `49bfd66835e1c9d6d40e84184cf2dab28cd7281d` | Accepted |
 | 7 | B7 | SAT Dashboard | `7b53a93542950ed30df8a27f235bfe7cfc02693d` | Accepted |
-| 8 | B8 | Cross-cutting Stabilization | `TBD (assigned after commit)` | In progress |
+| 8 | B8 | Cross-cutting Stabilization | `4ed823579474a9b4d15ca35703543dfc42491184` | Accepted |
+| 9 | F1 | Frontend Remote Analysis workspace lifecycle failure UX | `e8b4d1dd94f0fd79dbf11f8b3298d92b1b89e518` | Accepted |
+| 10 | F2 | Frontend Deployment Center and Plug-and-Play UI | `3a66794e446374f65dcc939008c30f4f6aa1a7aa` | Accepted |
+| 11 | F3 | Frontend Laboratory Infrastructure UI | `8cd1d59f7150b0b8354dce5dfc99b60ff8631056` | Accepted |
+| 12 | F4 | Frontend SAT Dashboard and Reporting UI | `e548c7962af84c611543b03e723ea76683e49476` | Accepted |
+| 13 | D0 | DSA Repository Recovery baseline | `b657c20228a9c7f273d78c0af6c6b25e059fa1f7` | Accepted |
+| 14 | D1 | DSA Discovery and Provisioning control plane | `f58f8e5937c4f8e117d1af14b5e9ae01c9757b4e` | Accepted |
+| 15 | D2 | DSA Configuration Platform and sync pipelines | `6c0191f1c7187ce005756264d9aa209c11546213` | Accepted |
+| 16 | D3 | DSA Monitoring and Diagnostics platform | `6d9e5dd52ac80ceb564d947fba3fe16082e11224` | Accepted |
+| 17 | D4 | DSA Documentation and Release assets | `495e27b56377b1168328189ad82f2bfeee2be826` | Accepted |
 
 ---
 
