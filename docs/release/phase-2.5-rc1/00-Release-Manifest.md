@@ -29,7 +29,7 @@
 | Portal Frontend | `iic-booking-frontend` | `main` | `e548c7962af84c611543b03e723ea76683e49476` | `e548c79` |
 | Department Sync Agent | `DepartmentSyncAgent` | `recovery/dsa-phase-2.7` | `495e27b56377b1168328189ad82f2bfeee2be826` | `495e27b` |
 | Equipment PC Wizard | *(same DSA repo or separate)* | `recovery/dsa-phase-2.7` | `495e27b56377b1168328189ad82f2bfeee2be826` | `495e27b` |
-| Remote Analysis Agent | `RemoteAnalysis.Agent` | TBD | TBD | TBD |
+| Remote Analysis Agent | `RemoteAnalysis.Agent` | `release/reverse-tunnel-rc1` | `170d689e7e543f73e6b328ae6566ddddc57c0b1e` | `170d689` |
 
 **How to fill:** `git rev-parse HEAD` on clean release checkout; never use dirty working-tree SHAs.
 
@@ -54,6 +54,10 @@
 | 15 | D2 | DSA Configuration Platform and sync pipelines | `6c0191f1c7187ce005756264d9aa209c11546213` | Accepted |
 | 16 | D3 | DSA Monitoring and Diagnostics platform | `6d9e5dd52ac80ceb564d947fba3fe16082e11224` | Accepted |
 | 17 | D4 | DSA Documentation and Release assets | `495e27b56377b1168328189ad82f2bfeee2be826` | Accepted |
+| 18 | R1 | RAA Repository Foundation and Enrollment bootstrap | `e841afbf0a693b348c833ead5ce958efa8e06044` | Accepted |
+| 19 | R2 | RAA Identity, Heartbeat, and Reverse Tunnel hardening | `93533bfad6608c0c36d06cf4a90c8ca118deb285` | Accepted |
+| 20 | R3 | RAA Session execution workspace maintenance | `80314f07f7f4ad24dc5614cc4162e71d9141294f` | Accepted |
+| 21 | R4 | RAA Documentation and Installer release assets | `170d689e7e543f73e6b328ae6566ddddc57c0b1e` | Accepted |
 
 ---
 

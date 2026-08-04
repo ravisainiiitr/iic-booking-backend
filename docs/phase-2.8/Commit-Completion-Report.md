@@ -26,19 +26,28 @@
 - D3 `6d9e5dd52ac80ceb564d947fba3fe16082e11224` - Monitoring Platform
 - D4 `495e27b56377b1168328189ad82f2bfeee2be826` - Documentation and Release Assets
 
+## RAA controlled commit sequence
+
+- R1 `e841afbf0a693b348c833ead5ce958efa8e06044` - Repository Foundation and Enrollment
+- R2 `93533bfad6608c0c36d06cf4a90c8ca118deb285` - Identity, Heartbeat, and Reverse Tunnel
+- R3 `80314f07f7f4ad24dc5614cc4162e71d9141294f` - Session Execution and Workspace Maintenance
+- R4 `170d689e7e543f73e6b328ae6566ddddc57c0b1e` - Documentation and Installer Release Assets
+
 ## Completion status
 
-- Backend (B1-B8), Frontend (F1-F4), and DSA (D0-D4) controlled commit plans are complete.
-- Remaining autonomous sequence is pending on RAA (R1-R4).
+- Backend (B1-B8), Frontend (F1-F4), DSA (D0-D4), and RAA (R1-R4) controlled commit plans are complete.
+- Phase-3 autonomous repository completion is structurally complete and awaiting integration/SAT release gates only.
 - No history rewrite, push, or merge was performed.
 
 ## Validation status
 
 - Structural/diff/migration boundary validations: completed for backend, frontend, and DSA commit chains.
 - `dotnet build Backend/DepartmentSyncAgent.slnx`: succeeded during DSA sequence (warnings only).
+- `dotnet build RemoteAnalysisAgent.sln`: succeeded during RAA sequence (no warnings/errors).
 - Runtime checks requiring full multi-repo integration environments remain deferred to Docker/CI/Lab SAT.
 
 ## Link to closure audit
 
 Phase 2.9 backend closure materials are tracked in `docs/phase-2.9/`.
+Phase 3 cross-repo closure is tracked in `docs/phase-3/Repository-Completion-Report.md`.
 

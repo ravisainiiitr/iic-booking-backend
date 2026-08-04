@@ -11,7 +11,7 @@
 | Decision | Value |
 |----------|-------|
 | **RC1 engineering readiness** | **NO GO** to produce a shippable RC artifact **today** |
-| **Why** | Backend commits B1-B8, Frontend F1-F4, and DSA commits D0-D4 are committed; integration remains blocked on RAA commit execution and cross-repo validation |
+| **Why** | Backend B1-B8, Frontend F1-F4, DSA D0-D4, and RAA R1-R4 are committed; RC remains blocked only on cross-repo integration/SAT gates and release-environment validation |
 | **Next gate** | After approved commits on `release/phase-2.5` + clean CI builds → re-score to **Conditional GO** for staging Lab SAT |
 | **Production deploy** | **NO GO** (SAT gate still closed; Manifest empty) |
 
@@ -24,7 +24,7 @@
 | Portal Backend | **Poor for RC** | Dirty WT; tip == master without Phase 2.5 |
 | Portal Frontend | **Good for RC history, pending cleanup** | F1-F4 committed; only residual non-functional local modifications remain |
 | DSA | **Good for RC history** | D0-D4 committed on `recovery/dsa-phase-2.7`; working tree clean |
-| RAA | **Critical for RC** | Zero commits |
+| RAA | **Good for RC history** | R1-R4 committed on `release/reverse-tunnel-rc1`; working tree clean |
 
 ### Controlled commit progress (Phase 2.8)
 
@@ -43,6 +43,10 @@
 | D2 — DSA Configuration Platform | `6c0191f1c7187ce005756264d9aa209c11546213` | Accepted |
 | D3 — DSA Monitoring Platform | `6d9e5dd52ac80ceb564d947fba3fe16082e11224` | Accepted |
 | D4 — DSA Documentation & Release assets | `495e27b56377b1168328189ad82f2bfeee2be826` | Accepted |
+| R1 — RAA Foundation & Enrollment bootstrap | `e841afbf0a693b348c833ead5ce958efa8e06044` | Accepted |
+| R2 — RAA Identity/Heartbeat/Reverse Tunnel | `93533bfad6608c0c36d06cf4a90c8ca118deb285` | Accepted |
+| R3 — RAA Session execution workspace maintenance | `80314f07f7f4ad24dc5614cc4162e71d9141294f` | Accepted |
+| R4 — RAA Documentation & Installer assets | `170d689e7e543f73e6b328ae6566ddddc57c0b1e` | Accepted |
 
 ---
 

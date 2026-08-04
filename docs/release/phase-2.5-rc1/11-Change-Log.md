@@ -11,6 +11,10 @@ Format: Keep a Changelog. Entries finalized when commits exist.
 - DSA D2: configuration platform including synchronization engine, upload/result-processing pipelines, offline recovery workflows, and persistence migration chain
 - DSA D1: discovery and provisioning control plane with enrollment APIs, equipment discovery/provisioning services, and provisioning UI surfaces
 - DSA D0: repository recovery baseline with normalized solution structure, shared infrastructure foundations, installer/wizard infrastructure, and project integrity repairs
+- RAA R4: installer project/assets, enrollment key operational scripts, and release documentation for packaging and operations handoff
+- RAA R3: workspace maintenance lifecycle updates for session execution cleanup/synchronization behavior
+- RAA R2: startup diagnostics plus heartbeat and reverse-tunnel hardening for connectivity resilience
+- RAA R1: repository foundation and enrollment bootstrap hardening across startup configuration, program wiring, and persistent agent state handling
 - Frontend F4: SAT execution dashboard with guided test runs, evidence capture, readiness scoring, diagnostics/utilization surfaces, and CSV/Excel/PDF report exports
 - Frontend F3: Laboratory Infrastructure fleet dashboard, node diagnostics/repair controls, alerts/audit/compliance views, and RDP path diagnostics UI
 - Frontend F2: Deployment Center capability with installer version cards, secure ticketed downloads, compatibility metadata, and dashboard/routing integration for Plug-and-Play operations
