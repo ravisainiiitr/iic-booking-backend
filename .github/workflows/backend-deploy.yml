@@ -11,10 +11,10 @@ on:
         type: string
         default: v2.5.0-rc19-release
       deploy_path:
-        description: Absolute path to the backend git checkout on EC2
+        description: Absolute path to the backend git checkout on EC2 (empty = auto-detect)
         required: false
         type: string
-        default: /home/ubuntu
+        default: ''
       health_url:
         description: Health URL checked on the EC2 host (loopback)
         required: false
@@ -45,29 +45,60 @@ jobs:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Preflight host context
+        id: preflight
+        env:
+          INPUT_DEPLOY_PATH: ${{ inputs.deploy_path }}
+          COMPOSE_FILE: ${{ inputs.compose_file }}
         run: |
           set -euo pipefail
           echo "Runner: $(hostname)"
           echo "User: $(whoami)"
           echo "PWD: $(pwd)"
-          echo "Deploy path: ${{ inputs.deploy_path }}"
-          test -d "${{ inputs.deploy_path }}" || { echo "Deploy path missing"; exit 2; }
-          test -f "${{ inputs.deploy_path }}/${{ inputs.compose_file }}" || {
-            echo "Compose file missing: ${{ inputs.deploy_path }}/${{ inputs.compose_file }}"
+
+          resolve_path() {
+            if [[ -n "${INPUT_DEPLOY_PATH}" ]]; then
+              echo "${INPUT_DEPLOY_PATH}"
+              return
+            fi
+            for d in \
+              /home/ubuntu/iic-booking-backend \
+              /home/ubuntu/iic_booking_backend \
+              /home/ubuntu/iic-booking-backend-rt-port \
+              /home/ubuntu
+            do
+              if [[ -f "$d/$COMPOSE_FILE" ]]; then
+                echo "$d"
+                return
+              fi
+            done
+            return 1
+          }
+
+          DEPLOY_PATH="$(resolve_path)" || {
+            echo "Could not locate $COMPOSE_FILE under known deploy roots."
+            ls -la /home/ubuntu || true
+            exit 2
+          }
+          echo "Deploy path: $DEPLOY_PATH"
+          echo "deploy_path=$DEPLOY_PATH" >> "$GITHUB_OUTPUT"
+
+          test -d "$DEPLOY_PATH" || { echo "Deploy path missing"; exit 2; }
+          test -f "$DEPLOY_PATH/$COMPOSE_FILE" || {
+            echo "Compose file missing: $DEPLOY_PATH/$COMPOSE_FILE"
             exit 2
           }
           docker compose version
-          cd "${{ inputs.deploy_path }}"
+          cd "$DEPLOY_PATH"
           pwd
           git remote -v
           git status -sb || true
           git describe --tags --always || true
-          docker compose -f "${{ inputs.compose_file }}" ps || true
+          docker compose -f "$COMPOSE_FILE" ps || true
 
       - name: Deploy release tag
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
-          DEPLOY_PATH: ${{ inputs.deploy_path }}
+          DEPLOY_PATH: ${{ steps.preflight.outputs.deploy_path }}
           COMPOSE_FILE: ${{ inputs.compose_file }}
           HEALTH_URL: ${{ inputs.health_url }}
           ENABLE_FLOWER: ${{ inputs.enable_flower }}

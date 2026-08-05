@@ -48,7 +48,7 @@ Application/runtime secrets remain on the EC2 host (e.g. `.envs/.production/.dja
 | Input | Default | Meaning |
 |---|---|---|
 | `release_tag` | `v2.5.0-rc19-release` | Immutable tag already qualified |
-| `deploy_path` | `/home/ubuntu` | Git checkout on EC2 |
+| `deploy_path` | *(auto-detect)* | Git checkout on EC2 (`/home/ubuntu/iic-booking-backend`, …) |
 | `compose_file` | `docker-compose.production.yml` | Compose file |
 | `health_url` | `http://127.0.0.1:8080/api/v1/analysis/health/ready/` | Loopback readiness |
 | `enable_flower` | `true` | Passes `--profile flower` |
