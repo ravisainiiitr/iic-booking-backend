@@ -131,7 +131,11 @@ jobs:
       - name: Cleanup local compose before test gate
         shell: pwsh
         run: |
-          docker compose -f docker-compose.local.yml down --remove-orphans || true
+          $ErrorActionPreference = 'Continue'
+          docker compose -f docker-compose.local.yml down --remove-orphans
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "No existing compose environment to remove."
+          }
       - name: Test gate (no silent pass)
         id: gate
         shell: pwsh
@@ -177,7 +181,11 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           docker compose -f docker-compose.local.yml down --remove-orphans
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Post-test compose cleanup reported non-zero exit."
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: backend-validation-${{ needs.verify_tag.outputs.version }}
