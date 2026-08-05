@@ -102,8 +102,9 @@ def test_tunnel_token_expired(eligible_workstation, ra_user, monkeypatch, ra_tun
         svc.verify(token)
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_join_success_transitions_tunnel_active(eligible_workstation, ra_user):
+    """JOIN_TUNNEL success activates via transaction.on_commit → apply_join_result."""
     tunnel = TunnelSession.objects.create(
         workstation=eligible_workstation,
         user=ra_user,
@@ -132,8 +133,9 @@ def test_join_success_transitions_tunnel_active(eligible_workstation, ra_user):
     assert cmd.status == CommandStatus.COMPLETED
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_join_failure_transitions_tunnel_failed(eligible_workstation, ra_user):
+    """JOIN_TUNNEL failure marks FAILED via transaction.on_commit → apply_join_result."""
     tunnel = TunnelSession.objects.create(
         workstation=eligible_workstation,
         user=ra_user,
