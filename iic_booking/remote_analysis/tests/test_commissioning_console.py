@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
+from functools import wraps
 
 import pytest
+from django.conf import settings as django_settings
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
+from django.urls import clear_url_caches, set_urlconf
 from rest_framework.test import APIClient
 
 from iic_booking.remote_analysis.constants import CommandType, WorkstationStatus, WorkspaceSyncPhase
@@ -19,12 +23,31 @@ from iic_booking.remote_analysis.services.reservation import ReservationService
 from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 from iic_booking.remote_analysis.workspace_models import WorkspaceAudit
 
-# Local settings load debug_toolbar; URLconf only registers `djdt` when DEBUG is
-# True at import. Tests that flip DEBUG=True must suppress the toolbar so error
-# pages are not rewritten via reverse("djdt:…").
-_DISABLE_DEBUG_TOOLBAR = override_settings(
-    DEBUG_TOOLBAR_CONFIG={"SHOW_TOOLBAR_CALLBACK": lambda request: False},
-)
+_TOOLBAR_MW = "debug_toolbar.middleware.DebugToolbarMiddleware"
+
+
+@contextmanager
+def _isolate_debug_toolbar():
+    """Drop Debug Toolbar from apps/middleware for one test; refresh URL caches."""
+    apps = [a for a in django_settings.INSTALLED_APPS if a != "debug_toolbar"]
+    middleware = [m for m in django_settings.MIDDLEWARE if m != _TOOLBAR_MW]
+    with override_settings(INSTALLED_APPS=apps, MIDDLEWARE=middleware):
+        clear_url_caches()
+        set_urlconf(None)
+        try:
+            yield
+        finally:
+            clear_url_caches()
+            set_urlconf(None)
+
+
+def _without_debug_toolbar(fn):
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        with _isolate_debug_toolbar():
+            return fn(*args, **kwargs)
+
+    return _wrapped
 
 
 @pytest.fixture
@@ -53,7 +76,7 @@ def test_commissioning_html_and_json(api, eligible_workstation):
 
 
 @pytest.mark.django_db
-@_DISABLE_DEBUG_TOOLBAR
+@_without_debug_toolbar
 def test_commissioning_html_error_page_logs_and_renders_hint(api, monkeypatch, settings, caplog):
     """HTML path logs full traceback; page shows traceback only when DEBUG=True."""
     settings.DEBUG = True
@@ -94,7 +117,7 @@ def test_commissioning_html_hides_traceback_when_debug_false(api, monkeypatch, s
 
 
 @pytest.mark.django_db
-@_DISABLE_DEBUG_TOOLBAR
+@_without_debug_toolbar
 def test_commissioning_json_missing_schema_hint(api, monkeypatch, settings):
     from django.db.utils import ProgrammingError
 
