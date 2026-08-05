@@ -65,7 +65,7 @@ def list_dsa_result_files(booking: Booking, request: HttpRequest | None = None) 
             download_url = presign_results_s3_get(s3_key) or ""
             if not download_url:
                 # Fall back to authenticated portal download endpoint
-                download_path = f"/api/v1/bookings/{booking.pk}/results/attachments/{att.id}/"
+                download_path = f"/api/bookings/{booking.pk}/results/attachments/{att.id}/"
                 download_url = download_path
                 if request is not None:
                     try:
@@ -97,7 +97,7 @@ def list_dsa_result_files(booking: Booking, request: HttpRequest | None = None) 
             )
             continue
 
-        download_path = f"/api/v1/bookings/{booking.pk}/results/attachments/{att.id}/"
+        download_path = f"/api/bookings/{booking.pk}/results/attachments/{att.id}/"
         download_url = download_path
         if request is not None:
             try:
@@ -129,7 +129,7 @@ def list_booking_result_file_entries(
         if not brf.file:
             continue
         name = (brf.original_name or Path(brf.file.name).name).strip() or Path(brf.file.name).name
-        download_path = f"/api/v1/bookings/{booking.pk}/results/files/{brf.pk}/"
+        download_path = f"/api/bookings/{booking.pk}/results/files/{brf.pk}/"
         download_url = download_path
         if request is not None:
             try:

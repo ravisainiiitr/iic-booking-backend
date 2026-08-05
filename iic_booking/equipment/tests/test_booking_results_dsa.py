@@ -129,7 +129,7 @@ def test_dsa_single_result_listed_and_downloadable(tmp_path, settings):
     client = APIClient()
     client.force_authenticate(user=user)
 
-    listed = client.get(f"/api/v1/bookings/{booking.pk}/results/")
+    listed = client.get(f"/api/bookings/{booking.pk}/results/")
     assert listed.status_code == 200
     body = listed.json()
     assert body["exists"] is True
@@ -140,13 +140,13 @@ def test_dsa_single_result_listed_and_downloadable(tmp_path, settings):
     assert "results/attachments/" in body["files"][0]["download_url"]
 
     attachment_id = body["files"][0]["attachment_id"]
-    downloaded = client.get(f"/api/v1/bookings/{booking.pk}/results/attachments/{attachment_id}/")
+    downloaded = client.get(f"/api/bookings/{booking.pk}/results/attachments/{attachment_id}/")
     assert downloaded.status_code == 200
-    assert downloaded.content == b"a,b\n1,2\n"
+    assert b"".join(downloaded.streaming_content) == b"a,b\n1,2\n"
 
     # Unauthorized user cannot download
     client.force_authenticate(user=other)
-    denied = client.get(f"/api/v1/bookings/{booking.pk}/results/attachments/{attachment_id}/")
+    denied = client.get(f"/api/bookings/{booking.pk}/results/attachments/{attachment_id}/")
     assert denied.status_code == 403
 
 
@@ -173,7 +173,7 @@ def test_dsa_multiple_results_listed(tmp_path, settings):
 
     client = APIClient()
     client.force_authenticate(user=user)
-    listed = client.get(f"/api/v1/bookings/{booking.pk}/results/")
+    listed = client.get(f"/api/bookings/{booking.pk}/results/")
     assert listed.status_code == 200
     names = sorted(f["name"] for f in listed.json()["files"])
     assert names == ["run1.csv", "run2.pdf"]
@@ -200,11 +200,11 @@ def test_completed_booking_keeps_dsa_results_visible(tmp_path, settings):
 
     client = APIClient()
     client.force_authenticate(user=user)
-    listed = client.get(f"/api/v1/bookings/{booking.pk}/results/")
+    listed = client.get(f"/api/bookings/{booking.pk}/results/")
     assert listed.status_code == 200
     assert listed.json()["exists"] is True
 
-    zipped = client.get(f"/api/v1/bookings/{booking.pk}/results/download/")
+    zipped = client.get(f"/api/bookings/{booking.pk}/results/download/")
     assert zipped.status_code == 200
     assert zipped["Content-Type"] == "application/zip"
     with zipfile.ZipFile(io.BytesIO(zipped.content)) as zf:
@@ -255,7 +255,7 @@ def test_operator_booking_result_file_also_listed(tmp_path, settings):
 
     client = APIClient()
     client.force_authenticate(user=user)
-    listed = client.get(f"/api/v1/bookings/{booking.pk}/results/")
+    listed = client.get(f"/api/bookings/{booking.pk}/results/")
     assert listed.status_code == 200
     body = listed.json()
     assert body["exists"] is True
