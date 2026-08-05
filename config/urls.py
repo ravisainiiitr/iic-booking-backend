@@ -6,6 +6,8 @@ from django.http import JsonResponse
 from django.urls import include
 from django.urls import path
 from django.views import defaults as default_views
+from drf_spectacular.views import SpectacularAPIView
+from drf_spectacular.views import SpectacularSwaggerView
 from iic_booking.equipment.views import serve_equipment_image
 from iic_booking.users.api.auth_views import obtain_auth_token_single_session
 
@@ -42,6 +44,13 @@ urlpatterns += [
     path("api/", include("config.api_router")),
     # DRF auth token (single-session: invalidates previous logins)
     path("api/auth-token/", obtain_auth_token_single_session, name="obtain_auth_token"),
+    # OpenAPI schema + Swagger UI (admin-only via SPECTACULAR_SETTINGS.SERVE_PERMISSIONS)
+    path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
+    path(
+        "api/docs/",
+        SpectacularSwaggerView.as_view(url_name="api-schema"),
+        name="api-docs",
+    ),
     # User views (including wallet recharge approve/reject web forms)
     path("", include("iic_booking.users.urls")),
 ]
