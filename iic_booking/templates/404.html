@@ -1,13 +1,23 @@
-{% extends "base.html" %}
-
-{% block title %}Page not found{% endblock title %}
-{% block content %}
-  <h1>Page not found</h1>
-  <p>
-    {% if exception %}
-      {{ exception }}
-    {% else %}
-      This is not the page you were looking for.
-    {% endif %}
-  </p>
-{% endblock content %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Page not found</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+      a { color: #0b5fff; }
+    </style>
+  </head>
+  <body>
+    <h1>Page not found</h1>
+    <p>
+      {% if exception %}
+        {{ exception }}
+      {% else %}
+        This is not the page you were looking for.
+      {% endif %}
+    </p>
+    <p><a href="/">Back to API root</a></p>
+  </body>
+</html>

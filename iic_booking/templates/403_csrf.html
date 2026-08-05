@@ -1,13 +1,17 @@
-{% extends "base.html" %}
-
-{% block title %}Forbidden (403){% endblock title %}
-{% block content %}
-  <h1>Forbidden (403)</h1>
-  <p>
-    {% if exception %}
-      {{ exception }}
-    {% else %}
-      You're not allowed to access this page.
-    {% endif %}
-  </p>
-{% endblock content %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Forbidden (CSRF)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+      a { color: #0b5fff; }
+    </style>
+  </head>
+  <body>
+    <h1>Forbidden</h1>
+    <p>CSRF verification failed. Request aborted.</p>
+    <p><a href="/">Back to API root</a></p>
+  </body>
+</html>

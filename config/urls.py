@@ -21,6 +21,26 @@ def root_view(request):
     })
 
 
+def _wants_api_error_payload(request) -> bool:
+    """Prefer JSON error bodies for API paths."""
+    path = request.path or ""
+    return path == "/api" or path.startswith("/api/")
+
+
+def handler404(request, exception):
+    """API-safe 404: JSON for /api/*, standalone HTML otherwise (no base.html / home URL)."""
+    if _wants_api_error_payload(request):
+        return JsonResponse({"detail": "Not found."}, status=404)
+    return default_views.page_not_found(request, exception)
+
+
+def handler500(request):
+    """API-safe 500: JSON for /api/*, standalone HTML otherwise."""
+    if _wants_api_error_payload(request):
+        return JsonResponse({"detail": "Internal server error."}, status=500)
+    return default_views.server_error(request)
+
+
 # Only Admin and API endpoints
 urlpatterns = [
     # Root URL - simple JSON response
