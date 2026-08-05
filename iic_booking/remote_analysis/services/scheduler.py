@@ -195,33 +195,62 @@ class SchedulerService:
         return reservation
 
     def process_queue(self, *, limit: int = 20) -> dict:
-        processed = allocated = failed = 0
-        for entry in self.queue.next_waiting(limit=limit):
-            processed += 1
-            enqueued_at = entry.enqueued_at
-            self.queue.mark_allocating(entry)
-            reservation = entry.reservation
-            if reservation.status in TERMINAL:
-                self.queue.cancel(reservation)
-                continue
-            wait_ms = (timezone.now() - enqueued_at).total_seconds() * 1000
-            self._record_metric("queue_time", wait_ms, "ms")
-            before = reservation.status
-            self.allocate(reservation)
-            reservation.refresh_from_db()
-            if reservation.status == ReservationStatus.RESERVED:
-                allocated += 1
-            elif reservation.status == ReservationStatus.QUEUED:
-                # put back to waiting
-                entry.status = entry.status  # already reserved or still queued
-                from iic_booking.remote_analysis.constants import QueueEntryStatus
+        """
+        Drain WAITING queue entries and attempt allocation.
 
-                entry.status = QueueEntryStatus.WAITING
-                entry.save(update_fields=["status"])
-                failed += 1
-            else:
-                failed += 1
-            _ = before
+        Lock ReservationQueue and AnalysisReservation rows by primary key only —
+        never combine select_for_update() with select_related() on nullable FKs
+        (PostgreSQL rejects FOR UPDATE on the nullable side of an OUTER JOIN).
+
+        Successful allocation ends in AWAITING_CHECKIN (check-in hold) or RESERVED.
+        """
+        from iic_booking.remote_analysis.constants import QueueEntryStatus
+
+        processed = allocated = failed = 0
+        allocated_statuses = {
+            ReservationStatus.RESERVED,
+            ReservationStatus.AWAITING_CHECKIN,
+        }
+        waiting_ids = list(
+            ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING)
+            .order_by("priority", "enqueued_at")
+            .values_list("pk", flat=True)[:limit]
+        )
+        for entry_id in waiting_ids:
+            with transaction.atomic():
+                entry = (
+                    ReservationQueue.objects.select_for_update()
+                    .filter(pk=entry_id, status=QueueEntryStatus.WAITING)
+                    .first()
+                )
+                if entry is None:
+                    continue
+                processed += 1
+                enqueued_at = entry.enqueued_at
+                self.queue.mark_allocating(entry)
+                reservation = (
+                    AnalysisReservation.objects.select_for_update()
+                    .filter(pk=entry.reservation_id)
+                    .first()
+                )
+                if reservation is None:
+                    continue
+                if reservation.status in TERMINAL:
+                    self.queue.cancel(reservation)
+                    continue
+                wait_ms = (timezone.now() - enqueued_at).total_seconds() * 1000
+                self._record_metric("queue_time", wait_ms, "ms")
+                self.allocate(reservation)
+                reservation.refresh_from_db()
+                if reservation.status in allocated_statuses:
+                    allocated += 1
+                elif reservation.status == ReservationStatus.QUEUED:
+                    entry.refresh_from_db()
+                    entry.status = QueueEntryStatus.WAITING
+                    entry.save(update_fields=["status"])
+                    failed += 1
+                else:
+                    failed += 1
         return {"processed": processed, "allocated": allocated, "failed": failed}
 
     def expire_stale(self) -> dict:
@@ -320,6 +349,7 @@ class SchedulerService:
             workstation=ws,
             status__in=[
                 ReservationStatus.RESERVED,
+                ReservationStatus.AWAITING_CHECKIN,
                 ReservationStatus.PREPARING,
                 ReservationStatus.READY,
                 ReservationStatus.ACTIVE,
@@ -358,6 +388,7 @@ class SchedulerService:
             AnalysisReservation.objects.filter(
                 status__in=[
                     ReservationStatus.RESERVED,
+                    ReservationStatus.AWAITING_CHECKIN,
                     ReservationStatus.PREPARING,
                     ReservationStatus.READY,
                     ReservationStatus.ACTIVE,
@@ -402,6 +433,7 @@ class SchedulerService:
             "active_reservations": AnalysisReservation.objects.filter(
                 status__in=[
                     ReservationStatus.RESERVED,
+                    ReservationStatus.AWAITING_CHECKIN,
                     ReservationStatus.PREPARING,
                     ReservationStatus.READY,
                     ReservationStatus.ACTIVE,

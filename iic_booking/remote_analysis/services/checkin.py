@@ -130,10 +130,22 @@ class CheckinService:
     @transaction.atomic
     def expire_due(self, *, limit: int = 50) -> dict[str, Any]:
         now = timezone.now()
+        # Lock reservation PKs only — select_related on nullable FKs under
+        # select_for_update() produces OUTER JOINs that PostgreSQL rejects.
+        due_ids = list(
+            AnalysisReservation.objects.filter(
+                status=ReservationStatus.AWAITING_CHECKIN,
+                checkin_expires_at__lte=now,
+            )
+            .order_by("checkin_expires_at")
+            .values_list("pk", flat=True)[:limit]
+        )
+        if not due_ids:
+            return {"expired": 0}
         qs = (
             AnalysisReservation.objects.select_for_update()
-            .filter(status=ReservationStatus.AWAITING_CHECKIN, checkin_expires_at__lte=now)
-            .select_related("workstation", "booking", "booking__equipment", "user")[:limit]
+            .filter(pk__in=due_ids)
+            .order_by("checkin_expires_at")
         )
         expired = 0
         for reservation in qs:
