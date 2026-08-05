@@ -27,6 +27,9 @@ class TestUserManager:
         assert user.email == "admin@example.com"
         assert user.is_staff
         assert user.is_superuser
+        assert user.admin_approved is True
+        assert user.email_verified is True
+        assert user.is_active is True
         assert user.username is None
 
     def test_create_superuser_username_ignored(self):

@@ -31,6 +31,9 @@ class UserManager(DjangoUserManager["User"]):
     def create_superuser(self, email: str, password: str | None = None, **extra_fields):  # type: ignore[override]
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
+        # is_active is derived from admin_approved (see User.save); staff must be approved.
+        extra_fields.setdefault("admin_approved", True)
+        extra_fields.setdefault("email_verified", True)
 
         if extra_fields.get("is_staff") is not True:
             msg = "Superuser must have is_staff=True."

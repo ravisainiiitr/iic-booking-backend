@@ -3,6 +3,7 @@ from rest_framework.test import APIRequestFactory
 
 from iic_booking.users.api.views import UserViewSet
 from iic_booking.users.models import User
+from iic_booking.users.serializers import UserSerializer
 
 
 class TestUserViewSet:
@@ -28,7 +29,12 @@ class TestUserViewSet:
 
         response = view.me(request)  # type: ignore[call-arg, arg-type, misc]
 
-        assert response.data == {
-            "url": f"http://testserver/api/users/{user.pk}/",
-            "name": user.name,
-        }
+        expected = UserSerializer(user, context={"request": request}).data
+        assert response.data == expected
+        # Contract anchors for the current profile serializer (not cookiecutter url/name-only).
+        assert response.data["id"] == user.pk
+        assert response.data["email"] == user.email
+        assert response.data["name"] == user.name
+        assert "url" not in response.data
+        assert "rbac_permissions" in response.data
+        assert "admin_panel_enabled" in response.data
