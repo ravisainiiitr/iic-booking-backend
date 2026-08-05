@@ -1,24 +1,26 @@
-name: Deploy Backend
+# Legacy auto-deploy on master push — DISABLED.
+# Production rollout is tag-based via workflow "Deploy Backend" (SSH → EC2).
+# Qualification remains workflow "Backend Release" on the Build Host.
+name: Deploy Backend (legacy master push)
 
 on:
-  push:
-    branches:
-      - master
+  workflow_dispatch:
+    inputs:
+      notice:
+        description: Use workflow "Deploy Backend" instead (SSH → EC2 by release tag)
+        required: false
+        type: string
+        default: deprecated
 
 jobs:
-  deploy:
-    runs-on: self-hosted
-
+  redirect:
+    name: Redirect to Deploy Backend
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v5
-
-      - name: Show Runner Information
+      - name: Deprecation notice
         run: |
-          echo "Runner: $(hostname)"
-          pwd
-
-      - name: Deploy Backend
-        run: |
-          cd /home/ubuntu
-          ./deploy.sh
+          echo "::warning::This legacy master-push deploy is retired."
+          echo "1) Qualify tag with workflow: Backend Release"
+          echo "2) Deploy with workflow: Deploy Backend (release_tag=<tag>)"
+          echo "See docs/release/Backend-EC2-SSH-Deploy.md"
+          exit 1

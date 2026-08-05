@@ -1,5 +1,6 @@
-# Backend Release — hardened (Phase C.1)
-# Tag push: verify only. Build/publish: workflow_dispatch only.
+# Backend Release — qualification only (no ECR publish, no EC2 deploy).
+# Tag push: verify only. Build/test: workflow_dispatch.
+# Production rollout: workflow "Deploy Backend" (SSH → EC2).
 name: Backend Release
 
 on:
@@ -9,17 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to build (e.g. v2.5.0-rc1)
+        description: Existing tag to qualify (e.g. v2.5.0-rc19-release)
         required: true
         type: string
       dry_run:
-        description: Build only — no ECR login/push (default true)
+        description: Qualification build only — does not deploy to EC2 (default true)
         type: boolean
         default: true
-      publish:
-        description: Explicit ECR publish request (requires dry_run=false + release-ecr)
-        type: boolean
-        default: false
       allow_partial_validation:
         description: Allow PARTIAL VALIDATION when full compose tests unavailable
         type: boolean
@@ -35,16 +32,12 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
   actions: read
 
 env:
   DOCKER_BUILDKIT: '1'
   COMPOSE_DOCKER_CLI_BUILD: '1'
   COMPOSE_PROJECT_NAME: iic-booking-backend
-  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
-  ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
-  ECR_PREFIX: ${{ vars.ECR_PREFIX || 'iic' }}
 
 jobs:
   verify_tag:
@@ -56,7 +49,6 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       sha: ${{ steps.sha.outputs.sha }}
       dry_run: ${{ steps.meta.outputs.dry_run }}
-      publish: ${{ steps.meta.outputs.publish }}
       mode: ${{ steps.meta.outputs.mode }}
     steps:
       - name: Resolve mode
@@ -67,25 +59,21 @@ jobs:
           if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
             $tag = '${{ inputs.tag }}'
             $dry = '${{ inputs.dry_run }}'
-            $publish = '${{ inputs.publish }}'
             $mode = 'dispatch'
           } else {
             $tag = $env:GITHUB_REF_NAME
             $dry = 'true'
-            $publish = 'false'
             $mode = 'tag_verify_only'
           }
-          if ($publish -eq 'true' -and $dry -eq 'true') {
-            throw 'Invalid inputs: publish=true requires dry_run=false'
-          }
           if ($mode -eq 'tag_verify_only') {
-            Write-Host 'TAG PUSH MODE: verification only — no build, no ECR login, no publish'
+            Write-Host 'TAG PUSH MODE: verification only — no build, no deploy'
+          } else {
+            Write-Host 'DISPATCH MODE: qualify tag (tests + image build). Deploy via Deploy Backend workflow.'
           }
           $version = $tag.TrimStart('v')
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
           "dry_run=$dry" >> $env:GITHUB_OUTPUT
-          "publish=$publish" >> $env:GITHUB_OUTPUT
           "mode=$mode" >> $env:GITHUB_OUTPUT
 
       - uses: actions/checkout@v4
@@ -267,75 +255,13 @@ jobs:
           $ids | Set-Content artifacts/release/docker-image-ids.txt -Encoding ascii
           @{
             artifact_types = @('docker_image_digest','docker_image_id','sbom')
-            note = 'Installer SHA256 files are produced by DSA/RAA workflows, not this job'
+            note = 'Build-host qualification digests only. Production deploys via SSH (Deploy Backend), not ECR.'
           } | ConvertTo-Json | Set-Content artifacts/release/artifact-index.json -Encoding utf8
       - uses: actions/upload-artifact@v4
         with:
           name: backend-release-${{ needs.verify_tag.outputs.version }}
           path: artifacts/release/
           retention-days: 90
-
-  publish_gate:
-    name: Publish prerequisites
-    needs: [verify_tag, build_images]
-    if: needs.verify_tag.outputs.mode == 'dispatch' && needs.verify_tag.outputs.publish == 'true' && needs.verify_tag.outputs.dry_run != 'true'
-    runs-on: [self-hosted, windows, iic-build]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - name: Assert publish gate
-        shell: pwsh
-        env:
-          ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
-          AWS_ROLE_ARN_ECR_PUSH: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
-        run: |
-          & .\scripts\release\Assert-PublishGate.ps1 `
-            -EnvironmentName release-ecr `
-            -RequiredVars @('ECR_REGISTRY') `
-            -RequiredSecretNames @('AWS_ROLE_ARN_ECR_PUSH') `
-            -EcrRegistry $env:ECR_REGISTRY `
-            -RequirePublishDispatch `
-            -EventName '${{ github.event_name }}' `
-            -PublishFlag '${{ needs.verify_tag.outputs.publish }}'
-
-  push_ecr:
-    name: Push to AWS ECR
-    needs: [verify_tag, build_images, publish_gate]
-    if: needs.verify_tag.outputs.mode == 'dispatch' && needs.verify_tag.outputs.publish == 'true' && needs.verify_tag.outputs.dry_run != 'true'
-    runs-on: [self-hosted, windows, iic-build]
-    environment: release-ecr
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ needs.verify_tag.outputs.tag }}
-          fetch-depth: 1
-      - name: Configure AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN_ECR_PUSH }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Login + push
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not $env:ECR_REGISTRY) { throw 'ECR_REGISTRY variable is required' }
-          aws ecr get-login-password --region $env:AWS_REGION | docker login --username AWS --password-stdin $env:ECR_REGISTRY
-          $v = '${{ needs.verify_tag.outputs.version }}'
-          $map = @{
-            django = 'booking-django'
-            celeryworker = 'booking-celeryworker'
-            celerybeat = 'booking-celerybeat'
-            flower = 'booking-flower'
-          }
-          foreach ($k in $map.Keys) {
-            $src = "iic_booking_production_${k}:$v"
-            $dst = "$($env:ECR_REGISTRY)/$($env:ECR_PREFIX)/$($map[$k]):$v"
-            docker tag $src $dst
-            docker push $dst
-            Write-Host "PUSHED $dst"
-          }
-          docker logout $env:ECR_REGISTRY
 
   tag_verify_complete:
     name: Tag verify-only complete
@@ -347,3 +273,4 @@ jobs:
         run: |
           Write-Host "Tag ${{ needs.verify_tag.outputs.tag }} verified at ${{ needs.verify_tag.outputs.sha }}"
           Write-Host 'No build / no ECR / no deploy performed on tag push.'
+          Write-Host 'To qualify: workflow_dispatch Backend Release. To deploy: Deploy Backend (SSH → EC2).'

@@ -15,20 +15,18 @@ GitHub Repositories
   (Backend · Frontend · DSA · RAA)
         ↓  (tag / workflow_dispatch)
 GitHub Actions (orchestration)
-        ↓  (jobs scheduled on)
-Dedicated Windows Build Host
-  (Self-hosted Runner · Docker · .NET · Node)
-        ↓  (docker push by digest)
-AWS ECR (ap-south-1)
-        ↓  (installers + metadata API)
+        ├── Backend Release → Windows Build Host (tests + image build qualification)
+        └── Deploy Backend  → SSH → Production EC2
+                                git checkout <release tag>
+                                docker compose build / up -d
+                                health checks
+        ↓  (installers + metadata API — agents/wizards)
 Deployment Center (Portal)
-        ↓  (compose pull by digest)
-Production EC2 (pull-only runtime)
         ↓
 Department Sync Agents  ·  Equipment PC Wizards  ·  Remote Analysis Agents
 ```
 
-**Hard rule:** Production EC2 is **never** the build machine. It pulls immutable artifacts only.
+**Hard rule:** Backend production rolls out from an **immutable git tag** over SSH. AWS ECR is **not** used for Backend portal images. See [Backend-EC2-SSH-Deploy.md](Backend-EC2-SSH-Deploy.md).
 
 ---
 
@@ -53,8 +51,8 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 
 ### 3. GitHub Actions
 
-- Orchestrates checkout of **tags**, invokes build jobs, uploads workflow artifacts, and (later) pushes to ECR / notifies Deployment Center.
-- Uses **OIDC / short-lived tokens** where possible; no long-lived AWS keys in workflows when instance roles on the runner suffice.
+- Orchestrates checkout of **tags**, invokes Build Host qualification jobs, uploads workflow artifacts.
+- **Backend Deploy** uses SSH secrets (`EC2_HOST` / `EC2_USER` / `EC2_SSH_KEY`) — no AWS credentials for portal rollout.
 - Separate workflows per repo + one **Platform Release** aggregator (see Blueprint Part 2).
 
 ### 4. Dedicated Windows Build Host (Self-hosted Runner)
@@ -68,11 +66,12 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 - Registered as GitHub Actions self-hosted runner for the org/repos.
 - **Not** co-located with production Apache/compose workloads.
 
-### 5. AWS ECR
+### 5. Production EC2 (Backend)
 
-- Private image registry in **`ap-south-1`**.
-- Stores portal runtime images tagged with semver + digest.
-- Production EC2 authenticates via **IAM instance profile** (no Hub passwords).
+- Holds a git checkout of `iic-booking-backend`.
+- Receives releases via **Deploy Backend** (`git checkout <tag>` + `docker compose` build/up).
+- Health: `GET /api/v1/analysis/health/ready/` (published on host port **8080** in `docker-compose.production.yml`).
+- AWS ECR is **not** required for Backend portal images.
 
 ### 6. Deployment Center
 
@@ -109,8 +108,8 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 |---|---|
 | Dev → GitHub | PR review, branch protection |
 | GitHub → Build host | Runner registration token; tag-only release workflows |
-| Build host → ECR | IAM role / OIDC; push only from release workflows |
-| ECR → Prod EC2 | Pull-only IAM; digests pinned in release manifest |
+| Build host → qualification artifacts | Local digests/SBOM only (not a production registry) |
+| GitHub → Prod EC2 | SSH (`Deploy Backend`); checkout immutable tag; compose build/up |
 | Build host → Deployment Center | Authenticated admin upload after image/install verification |
 | Portal → Agents | Enrollment keys, mTLS/HTTPS, version compatibility |
 
@@ -118,10 +117,10 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 
 ## Data flow for a Platform RC
 
-1. Freeze tips → annotated tags pushed (Batch 1 style).  
-2. Platform Release workflow (or manual Batch 2) builds on Windows host.  
-3. Images → ECR; installers → artifact store + Deployment Center.  
-4. Manifest signed/archived.  
-5. Prod pulls images; agents upgrade via DC when commissioned.
+1. Freeze tips → annotated tags pushed.  
+2. **Backend Release** qualifies the tag on the Windows Build Host (tests + image build).  
+3. **Deploy Backend** SSHs to production EC2, checks out the tag, builds and restarts compose.  
+4. Agent/wizard installers → artifact store + Deployment Center (unchanged path).  
+5. Agents upgrade via Deployment Center when commissioned.
 
-See the Blueprint for workflows, versioning, rollback, DR, and lifecycle detail.
+See [Backend-EC2-SSH-Deploy.md](Backend-EC2-SSH-Deploy.md) and the Blueprint for versioning, rollback, and DR detail.
