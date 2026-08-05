@@ -25,6 +25,17 @@ from iic_booking.remote_analysis.tunnel import (
 )
 from iic_booking.remote_analysis.tunnel_models import TunnelEvent, TunnelSession
 
+# Deterministic non-production secret for TunnelTokenService under DEBUG=False.
+TEST_RA_TUNNEL_TOKEN_SECRET = "test-ra-tunnel-secret-for-pytest"
+
+
+@pytest.fixture
+def ra_tunnel_token_secret(settings, monkeypatch):
+    """Supply RA_TUNNEL_TOKEN_SECRET for tests that issue/verify tunnel tokens."""
+    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", TEST_RA_TUNNEL_TOKEN_SECRET)
+    settings.RA_TUNNEL_TOKEN_SECRET = TEST_RA_TUNNEL_TOKEN_SECRET
+    return TEST_RA_TUNNEL_TOKEN_SECRET
+
 
 @pytest.mark.django_db
 def test_transport_mode_defaults_direct_rdp():
@@ -43,7 +54,7 @@ def test_ra_transport_env_overlay(monkeypatch):
 
 
 @pytest.mark.django_db
-def test_tunnel_token_issue_and_verify(eligible_workstation, ra_user):
+def test_tunnel_token_issue_and_verify(eligible_workstation, ra_user, ra_tunnel_token_secret):
     tunnel = TunnelSession.objects.create(
         workstation=eligible_workstation,
         user=ra_user,
@@ -61,7 +72,7 @@ def test_tunnel_token_issue_and_verify(eligible_workstation, ra_user):
 
 
 @pytest.mark.django_db
-def test_tunnel_token_rejects_tamper(eligible_workstation, ra_user):
+def test_tunnel_token_rejects_tamper(eligible_workstation, ra_user, ra_tunnel_token_secret):
     tunnel = TunnelSession.objects.create(
         workstation=eligible_workstation,
         user=ra_user,
@@ -75,7 +86,7 @@ def test_tunnel_token_rejects_tamper(eligible_workstation, ra_user):
 
 
 @pytest.mark.django_db
-def test_tunnel_token_expired(eligible_workstation, ra_user, monkeypatch):
+def test_tunnel_token_expired(eligible_workstation, ra_user, monkeypatch, ra_tunnel_token_secret):
     tunnel = TunnelSession.objects.create(
         workstation=eligible_workstation,
         user=ra_user,
@@ -258,7 +269,7 @@ def test_readiness_reverse_tunnel_requires_gateway_health(
 ):
     settings.DEBUG = False
     monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "readiness-enroll-gw")
-    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", "unit-test-tunnel-secret-32chars")
+    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", TEST_RA_TUNNEL_TOKEN_SECRET)
     monkeypatch.setenv("RA_TUNNEL_GATEWAY_ADMIN_KEY", "unit-admin-key")
     settings_obj = RemoteAnalysisSettings.get_solo()
     settings_obj.transport_mode = TransportMode.REVERSE_TUNNEL
@@ -299,7 +310,7 @@ def test_readiness_reverse_tunnel_fails_when_gateway_down(
 ):
     settings.DEBUG = False
     monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "readiness-enroll-gw-down")
-    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", "unit-test-tunnel-secret-32chars")
+    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", TEST_RA_TUNNEL_TOKEN_SECRET)
     monkeypatch.setenv("RA_TUNNEL_GATEWAY_ADMIN_KEY", "unit-admin-key")
     settings_obj = RemoteAnalysisSettings.get_solo()
     settings_obj.transport_mode = TransportMode.REVERSE_TUNNEL
@@ -407,7 +418,7 @@ def test_validate_deployment_startup_fails_missing_tunnel_config_when_reverse_tu
 @pytest.mark.django_db
 def test_verify_reverse_tunnel_production_read_only(settings, monkeypatch):
     settings.DEBUG = False
-    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", "unit-test-tunnel-secret-32chars")
+    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", TEST_RA_TUNNEL_TOKEN_SECRET)
     monkeypatch.setenv("RA_TUNNEL_GATEWAY_ADMIN_KEY", "unit-admin-key")
     settings_obj = RemoteAnalysisSettings.get_solo()
     settings_obj.transport_mode = TransportMode.DIRECT_RDP
@@ -432,7 +443,7 @@ def test_verify_reverse_tunnel_production_read_only(settings, monkeypatch):
     assert "migration.0015" in text
     assert "configured" in text
     # Never leak secrets
-    assert "unit-test-tunnel-secret-32chars" not in text
+    assert TEST_RA_TUNNEL_TOKEN_SECRET not in text
     assert "unit-admin-key" not in text
 
 
