@@ -51,7 +51,8 @@ def test_evaluate_reservation_overlap(eligible_workstation, reservation_window, 
 
 
 @pytest.mark.django_db
-def test_evaluate_stale_heartbeat(db, reservation_window):
+def test_evaluate_stale_heartbeat_soft_online(db, reservation_window):
+    """AVAILABLE + enabled + valid token remains allocatable despite stale heartbeat."""
     start, end = reservation_window
     ws = AnalysisWorkstation.objects.create(
         agent_id="stale-hb",
@@ -63,8 +64,99 @@ def test_evaluate_stale_heartbeat(db, reservation_window):
     )
     issue_agent_token(ws)
     result = AvailabilityEngine().evaluate(ws, start, end)
+    assert result.available is True, result.reasons
+    assert result.reasons == []
+
+
+@pytest.mark.django_db
+def test_evaluate_stale_heartbeat_online_status_soft_online(db, reservation_window):
+    """ONLINE status also uses soft-online when heartbeat is stale."""
+    start, end = reservation_window
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="stale-hb-online",
+        hostname="STALE-ONLINE",
+        status=WorkstationStatus.ONLINE,
+        enabled=True,
+        health_score=90,
+        last_heartbeat=timezone.now() - timedelta(minutes=30),
+    )
+    issue_agent_token(ws)
+    result = AvailabilityEngine().evaluate(ws, start, end)
+    assert result.available is True, result.reasons
+
+
+@pytest.mark.django_db
+def test_evaluate_stale_heartbeat_without_token(db, reservation_window):
+    """Stale heartbeat without a usable agent token is not allocatable."""
+    start, end = reservation_window
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="stale-hb-no-token",
+        hostname="STALE-NO-TOKEN",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+        health_score=90,
+        last_heartbeat=timezone.now() - timedelta(minutes=30),
+    )
+    result = AvailabilityEngine().evaluate(ws, start, end)
     assert result.available is False
     assert any("heartbeat" in r.lower() or "offline" in r.lower() for r in result.reasons)
+    assert any("token" in r.lower() for r in result.reasons)
+
+
+@pytest.mark.django_db
+def test_evaluate_stale_heartbeat_disabled(db, reservation_window):
+    """Disabled workstations stay unavailable even with soft-online inputs."""
+    start, end = reservation_window
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="stale-hb-disabled",
+        hostname="STALE-DISABLED",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=False,
+        health_score=90,
+        last_heartbeat=timezone.now() - timedelta(minutes=30),
+    )
+    issue_agent_token(ws)
+    result = AvailabilityEngine().evaluate(ws, start, end)
+    assert result.available is False
+    assert any("disabled" in r.lower() for r in result.reasons)
+
+
+@pytest.mark.django_db
+def test_evaluate_stale_heartbeat_offline_status(db, reservation_window):
+    """OFFLINE status is not allocatable regardless of token or heartbeat age."""
+    start, end = reservation_window
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="stale-hb-offline",
+        hostname="STALE-OFFLINE",
+        status=WorkstationStatus.OFFLINE,
+        enabled=True,
+        health_score=90,
+        last_heartbeat=timezone.now() - timedelta(minutes=30),
+    )
+    issue_agent_token(ws)
+    result = AvailabilityEngine().evaluate(ws, start, end)
+    assert result.available is False
+    assert any("not allocatable" in r.lower() or "offline" in r.lower() for r in result.reasons)
+
+
+@pytest.mark.django_db
+def test_evaluate_stale_heartbeat_expired_token(db, reservation_window):
+    """Expired agent token blocks soft-online allocation."""
+    start, end = reservation_window
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="stale-hb-expired-token",
+        hostname="STALE-EXPIRED",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+        health_score=90,
+        last_heartbeat=timezone.now() - timedelta(minutes=30),
+    )
+    token, _ = issue_agent_token(ws)
+    token.expires_at = timezone.now() - timedelta(minutes=1)
+    token.save(update_fields=["expires_at"])
+    result = AvailabilityEngine().evaluate(ws, start, end)
+    assert result.available is False
+    assert any("token" in r.lower() for r in result.reasons)
 
 
 @pytest.mark.django_db

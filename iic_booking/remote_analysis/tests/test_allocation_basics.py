@@ -51,6 +51,25 @@ def test_available_workstation_with_fresh_heartbeat():
 
 
 @pytest.mark.django_db
+def test_available_workstation_with_stale_heartbeat_and_valid_token():
+    """Soft-online: stale heartbeat does not block AVAILABLE + enabled + valid token."""
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="alloc-soft-1",
+        hostname="SOFT",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+        health_score=95,
+        last_heartbeat=timezone.now() - timedelta(minutes=30),
+        supports_rdp=True,
+    )
+    issue_agent_token(ws)
+    start = timezone.now()
+    end = start + timedelta(hours=1)
+    result = AvailabilityEngine().evaluate(ws, start, end)
+    assert result.available is True, result.reasons
+
+
+@pytest.mark.django_db
 def test_score_workstation_returns_candidate():
     ws = AnalysisWorkstation.objects.create(
         agent_id="alloc-score-1",
