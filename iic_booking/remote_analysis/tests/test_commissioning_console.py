@@ -113,6 +113,7 @@ def test_commissioning_html_hides_traceback_when_debug_false(api, monkeypatch, s
     assert html.status_code == 500
     assert b"secret path leak" in html.content  # exception message ok
     assert b"Traceback (most recent call last)" not in html.content
+    assert b"Enable DEBUG" in html.content or b"server logs" in html.content
     assert "Commissioning console failed" in caplog.text
 
 
@@ -137,6 +138,7 @@ def test_commissioning_json_missing_schema_hint(api, monkeypatch, settings):
     body = res.json()
     assert "upload_verified_at" in body["detail"]
     assert "migrate remote_analysis" in body["hint"]
+    assert body["error_type"]
     assert body["traceback"]
 
 
@@ -156,6 +158,7 @@ def test_commissioning_json_omits_traceback_when_debug_false(api, monkeypatch, s
     body = res.json()
     assert body["detail"] == "boom"
     assert body["traceback"] is None
+    assert "hint" in body
 
 
 @pytest.mark.django_db
@@ -166,7 +169,56 @@ def test_commissioning_action_requires_workstation(api):
         format="json",
     )
     assert res.status_code == 400
-    assert "workstation_id" in res.json()["detail"]
+    assert res.json()["detail"] == "workstation_id required"
+
+
+@pytest.mark.django_db
+def test_commissioning_action_requires_booking_id(api, eligible_workstation):
+    res = api.post(
+        "/api/v1/analysis/operations/commissioning/action/",
+        {"action": "create", "workstation_id": str(eligible_workstation.id)},
+        format="json",
+    )
+    assert res.status_code == 400
+    assert "booking_id" in res.json()["detail"]
+
+
+@pytest.mark.django_db
+def test_commissioning_action_prepare_requires_workspace_id(api):
+    res = api.post(
+        "/api/v1/analysis/operations/commissioning/action/",
+        {"action": "prepare"},
+        format="json",
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "workspace_id required"
+
+
+@pytest.mark.django_db
+def test_commissioning_action_unknown_rejected(api):
+    res = api.post(
+        "/api/v1/analysis/operations/commissioning/action/",
+        {"action": "not-a-real-action"},
+        format="json",
+    )
+    assert res.status_code == 400
+    assert "Unknown action" in res.json()["detail"]
+
+
+@pytest.mark.django_db
+def test_commissioning_action_invalid_run_id_ignored(api):
+    """Invalid commissioning_run_id must not 500 before action validation."""
+    res = api.post(
+        "/api/v1/analysis/operations/commissioning/action/",
+        {
+            "action": "create",
+            "booking_id": 1,
+            "commissioning_run_id": "not-a-uuid",
+        },
+        format="json",
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == "workstation_id required"
 
 
 @pytest.mark.django_db

@@ -748,7 +748,8 @@ def commissioning_action(request):
 
     action = (request.data.get("action") or "").strip().lower()
     actor = request.user
-    run = get_run(str(request.data.get("commissioning_run_id") or "").strip() or "")
+    run_id = str(request.data.get("commissioning_run_id") or "").strip()
+    run = get_run(run_id) if run_id else None
 
     def _attach(payload: dict) -> dict:
         if run:
@@ -758,8 +759,14 @@ def commissioning_action(request):
     with bind_run_context(run):
         try:
             if action in {"create", "create_workspace"}:
-                booking_id = int(request.data.get("booking_id"))
-                workstation_id = str(request.data.get("workstation_id") or "")
+                raw_booking = request.data.get("booking_id")
+                if raw_booking is None or str(raw_booking).strip() == "":
+                    return Response({"detail": "booking_id required"}, status=status.HTTP_400_BAD_REQUEST)
+                try:
+                    booking_id = int(raw_booking)
+                except (TypeError, ValueError):
+                    return Response({"detail": "booking_id must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+                workstation_id = str(request.data.get("workstation_id") or "").strip()
                 if not workstation_id:
                     return Response({"detail": "workstation_id required"}, status=status.HTTP_400_BAD_REQUEST)
                 if run:
@@ -783,14 +790,18 @@ def commissioning_action(request):
                 )
 
             if action in {"prepare", "prepare_workspace"}:
-                workspace_id = str(request.data.get("workspace_id") or "")
+                workspace_id = str(request.data.get("workspace_id") or "").strip()
+                if not workspace_id:
+                    return Response({"detail": "workspace_id required"}, status=status.HTTP_400_BAD_REQUEST)
                 cmd = prepare_workspace(workspace_id=workspace_id, actor=actor)
                 return Response(
                     _attach({"ok": True, "command_id": str(cmd.id), "command_type": cmd.command_type})
                 )
 
             if action in {"collect", "collect_output", "collect_workspace"}:
-                workspace_id = str(request.data.get("workspace_id") or "")
+                workspace_id = str(request.data.get("workspace_id") or "").strip()
+                if not workspace_id:
+                    return Response({"detail": "workspace_id required"}, status=status.HTTP_400_BAD_REQUEST)
                 if run:
                     begin_step(run, STEP_OUTPUT_COLLECTION_STARTED)
                 cmd = collect_workspace(workspace_id=workspace_id, actor=actor)
@@ -807,7 +818,9 @@ def commissioning_action(request):
                 )
 
             if action in {"cleanup", "cleanup_workspace"}:
-                workspace_id = str(request.data.get("workspace_id") or "")
+                workspace_id = str(request.data.get("workspace_id") or "").strip()
+                if not workspace_id:
+                    return Response({"detail": "workspace_id required"}, status=status.HTTP_400_BAD_REQUEST)
                 if run:
                     begin_step(run, STEP_CLEANUP_STARTED)
                 cmd = cleanup_workspace(workspace_id=workspace_id, actor=actor)
@@ -830,11 +843,16 @@ def commissioning_action(request):
                 )
 
             if action in {"pause", "waiting"}:
-                mark_pause_waiting(workspace_id=str(request.data.get("workspace_id") or ""), actor=actor)
+                workspace_id = str(request.data.get("workspace_id") or "").strip()
+                if not workspace_id:
+                    return Response({"detail": "workspace_id required"}, status=status.HTTP_400_BAD_REQUEST)
+                mark_pause_waiting(workspace_id=workspace_id, actor=actor)
                 return Response(_attach({"ok": True, "paused": True}))
 
             if action == "upload":
-                workspace_id = str(request.data.get("workspace_id") or "")
+                workspace_id = str(request.data.get("workspace_id") or "").strip()
+                if not workspace_id:
+                    return Response({"detail": "workspace_id required"}, status=status.HTTP_400_BAD_REQUEST)
                 uploaded = request.FILES.get("file") or request.FILES.get("upload")
                 if not uploaded:
                     return Response({"detail": "Missing file"}, status=status.HTTP_400_BAD_REQUEST)

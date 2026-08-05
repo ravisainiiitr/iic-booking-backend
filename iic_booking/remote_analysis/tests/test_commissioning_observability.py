@@ -20,6 +20,7 @@ from iic_booking.remote_analysis.operations.commissioning_observability import (
     end_step,
     begin_step,
     get_commissioning_run_id,
+    get_run,
     persist_evidence_bundle,
     start_commissioning_run,
     timeline_payload,
@@ -45,6 +46,14 @@ def test_run_id_propagation_in_context(ra_user):
         assert str(run.id) in tagged
         assert tagged.startswith("[commissioning_run=")
     assert get_commissioning_run_id() is None
+
+
+@pytest.mark.django_db
+def test_get_run_empty_or_invalid_returns_none():
+    assert get_run("") is None
+    assert get_run(None) is None
+    assert get_run("not-a-uuid") is None
+    assert get_run("   ") is None
 
 
 @pytest.mark.django_db

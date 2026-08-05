@@ -103,8 +103,17 @@ def bind_run_context(run: CommissioningRun | str | None):
     return commissioning_run_scope(rid)
 
 
-def get_run(run_id: str) -> CommissioningRun | None:
-    return CommissioningRun.objects.filter(pk=run_id).first()
+def get_run(run_id: str | None) -> CommissioningRun | None:
+    """Resolve a commissioning run by id. Empty/invalid ids return None (never raise)."""
+    from django.core.exceptions import ValidationError
+
+    rid = (str(run_id).strip() if run_id is not None else "")
+    if not rid:
+        return None
+    try:
+        return CommissioningRun.objects.filter(pk=rid).first()
+    except (ValidationError, ValueError, TypeError):
+        return None
 
 
 def link_workspace(run: CommissioningRun, workspace: AnalysisWorkspace | None, *, booking_id: int | None = None) -> None:
