@@ -6,6 +6,7 @@ import logging
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from iic_booking.remote_analysis.constants import CommandType, WorkstationStatus, WorkspaceSyncPhase
@@ -17,6 +18,13 @@ from iic_booking.remote_analysis.operations.commissioning import (
 from iic_booking.remote_analysis.services.reservation import ReservationService
 from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 from iic_booking.remote_analysis.workspace_models import WorkspaceAudit
+
+# Local settings load debug_toolbar; URLconf only registers `djdt` when DEBUG is
+# True at import. Tests that flip DEBUG=True must suppress the toolbar so error
+# pages are not rewritten via reverse("djdt:…").
+_DISABLE_DEBUG_TOOLBAR = override_settings(
+    DEBUG_TOOLBAR_CONFIG={"SHOW_TOOLBAR_CALLBACK": lambda request: False},
+)
 
 
 @pytest.fixture
@@ -45,6 +53,7 @@ def test_commissioning_html_and_json(api, eligible_workstation):
 
 
 @pytest.mark.django_db
+@_DISABLE_DEBUG_TOOLBAR
 def test_commissioning_html_error_page_logs_and_renders_hint(api, monkeypatch, settings, caplog):
     """HTML path logs full traceback; page shows traceback only when DEBUG=True."""
     settings.DEBUG = True
@@ -85,6 +94,7 @@ def test_commissioning_html_hides_traceback_when_debug_false(api, monkeypatch, s
 
 
 @pytest.mark.django_db
+@_DISABLE_DEBUG_TOOLBAR
 def test_commissioning_json_missing_schema_hint(api, monkeypatch, settings):
     from django.db.utils import ProgrammingError
 
