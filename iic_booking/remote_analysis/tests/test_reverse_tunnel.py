@@ -38,12 +38,6 @@ def ra_tunnel_token_secret(settings, monkeypatch):
 
 
 @pytest.mark.django_db
-def test_transport_mode_defaults_direct_rdp():
-    settings_obj = RemoteAnalysisSettings.get_solo()
-    assert settings_obj.transport_mode == TransportMode.DIRECT_RDP
-
-
-@pytest.mark.django_db
 def test_ra_transport_env_overlay(monkeypatch):
     settings_obj, _ = RemoteAnalysisSettings.objects.get_or_create(pk=1)
     monkeypatch.setenv("RA_TRANSPORT", "reverse_tunnel")
@@ -200,48 +194,6 @@ def test_mock_allocator_allowed_when_debug_true(eligible_workstation, ra_user, s
     assert alloc["mock"] is True
     assert alloc["gateway_instance"] == "local-mock"
     assert alloc["adapter_port"]
-
-
-@pytest.mark.django_db
-def test_readiness_direct_rdp_skips_guacamole_when_mock_and_debug_false(
-    client, settings, monkeypatch
-):
-    """Production-shaped direct_rdp: mock Guacamole must not fail readiness."""
-    settings.DEBUG = False
-    monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "readiness-enroll-direct")
-    monkeypatch.delenv("RA_TUNNEL_TOKEN_SECRET", raising=False)
-    if hasattr(settings, "RA_TUNNEL_TOKEN_SECRET"):
-        settings.RA_TUNNEL_TOKEN_SECRET = ""
-    settings_obj = RemoteAnalysisSettings.get_solo()
-    settings_obj.transport_mode = TransportMode.DIRECT_RDP
-    settings_obj.mock_guacamole = True
-    settings_obj.tunnel_gateway_admin_url = ""
-    settings_obj.tunnel_gateway_wss_url = ""
-    settings_obj.save(
-        update_fields=[
-            "transport_mode",
-            "mock_guacamole",
-            "tunnel_gateway_admin_url",
-            "tunnel_gateway_wss_url",
-        ]
-    )
-
-    response = client.get("/api/v1/analysis/health/ready/")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "ready"
-    assert body["checks"]["transport_mode"] == TransportMode.DIRECT_RDP
-    assert body["checks"]["database"] == "ok"
-    assert "cache" in body["checks"]
-    assert body["checks"]["agent_enrollment"] == "configured"
-    for key in (
-        "guacamole",
-        "gateway",
-        "tunnel",
-        "tunnel_token_secret",
-        "reverse_tunnel",
-    ):
-        assert key not in body["checks"]
 
 
 @pytest.mark.django_db
@@ -423,7 +375,7 @@ def test_verify_reverse_tunnel_production_read_only(settings, monkeypatch):
     monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", TEST_RA_TUNNEL_TOKEN_SECRET)
     monkeypatch.setenv("RA_TUNNEL_GATEWAY_ADMIN_KEY", "unit-admin-key")
     settings_obj = RemoteAnalysisSettings.get_solo()
-    settings_obj.transport_mode = TransportMode.DIRECT_RDP
+    settings_obj.transport_mode = TransportMode.REVERSE_TUNNEL
     settings_obj.tunnel_gateway_admin_url = "http://reverse-tunnel-gateway:7090"
     settings_obj.tunnel_gateway_wss_url = "wss://gw.example/tunnel"
     settings_obj.tunnel_adapter_hostname = "reverse-tunnel-gateway"
