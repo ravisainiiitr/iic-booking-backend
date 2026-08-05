@@ -33,7 +33,7 @@ def parse_email_list(raw: str | None) -> list[str]:
     return out
 
 
-def test_email_redirects() -> list[str]:
+def email_redirects() -> list[str]:
     """
     Addresses that receive mail for is_test_account users.
     Prefer Django admin TestAccountEmailSettings; else env TEST_ACCOUNT_EMAIL_REDIRECT
@@ -56,9 +56,9 @@ def test_email_redirects() -> list[str]:
     return parse_email_list(DEFAULT_TEST_EMAIL_REDIRECT)
 
 
-def test_email_redirect() -> str:
-    """Primary redirect address (first configured). Prefer test_email_redirects()."""
-    addrs = test_email_redirects()
+def email_redirect() -> str:
+    """Primary redirect address (first configured). Prefer email_redirects()."""
+    addrs = email_redirects()
     return addrs[0] if addrs else ""
 
 
@@ -109,7 +109,7 @@ def redirect_email_for_user(
     email = (original_email or getattr(user, "email", None) or "").strip()
     if not is_test_user(user):
         return ([email] if email else [], subject)
-    redirects = test_email_redirects()
+    redirects = email_redirects()
     if not redirects:
         return ([email] if email else [], subject)
     return redirects, subject
@@ -131,6 +131,6 @@ def redirect_email_address(email: str, *, subject: Optional[str] = None) -> tupl
     return redirect_email_for_user(user, original_email=addr, subject=subject)
 
 
-def test_user_email_for_type(user_type_code: str) -> str:
+def user_email_for_type(user_type_code: str) -> str:
     safe = str(user_type_code or "unknown").strip().lower().replace(" ", "_")
     return f"test.{safe}@{TEST_EMAIL_DOMAIN}"

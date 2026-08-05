@@ -27,8 +27,8 @@ from iic_booking.users.repositories.wallet_repository import (
 )
 from iic_booking.users.test_accounts import (
     TEST_USER_PASSWORD,
-    test_email_redirects,
-    test_user_email_for_type,
+    email_redirects,
+    user_email_for_type,
 )
 
 
@@ -60,7 +60,7 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             for code, label in UserType.get_choices():
-                email = test_user_email_for_type(code)
+                email = user_email_for_type(code)
                 name = f"Test {label}"
                 defaults = {
                     "name": name,
@@ -169,11 +169,11 @@ class Command(BaseCommand):
         self.stdout.write(f"  Seed departments: {len(seed_depts)}")
         self.stdout.write(f"  Sub-wallets topped up: {subwallets_topped}")
         self.stdout.write(f"  Shared password: {TEST_USER_PASSWORD}")
-        self.stdout.write(f"  Email redirect target(s): {', '.join(test_email_redirects()) or '(none)'}")
+        self.stdout.write(f"  Email redirect target(s): {', '.join(email_redirects()) or '(none)'}")
         self.stdout.write("")
         self.stdout.write("Accounts:")
         for code, label in UserType.get_choices():
-            self.stdout.write(f"  - {label}: {test_user_email_for_type(code)}")
+            self.stdout.write(f"  - {label}: {user_email_for_type(code)}")
         if not seed_depts:
             self.stdout.write(
                 self.style.WARNING(
