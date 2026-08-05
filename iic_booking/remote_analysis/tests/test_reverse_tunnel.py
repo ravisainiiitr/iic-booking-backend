@@ -24,17 +24,7 @@ from iic_booking.remote_analysis.tunnel import (
     TunnelTokenService,
 )
 from iic_booking.remote_analysis.tunnel_models import TunnelEvent, TunnelSession
-
-# Deterministic non-production secret for TunnelTokenService under DEBUG=False.
-TEST_RA_TUNNEL_TOKEN_SECRET = "test-ra-tunnel-secret-for-pytest"
-
-
-@pytest.fixture
-def ra_tunnel_token_secret(settings, monkeypatch):
-    """Supply RA_TUNNEL_TOKEN_SECRET for tests that issue/verify tunnel tokens."""
-    monkeypatch.setenv("RA_TUNNEL_TOKEN_SECRET", TEST_RA_TUNNEL_TOKEN_SECRET)
-    settings.RA_TUNNEL_TOKEN_SECRET = TEST_RA_TUNNEL_TOKEN_SECRET
-    return TEST_RA_TUNNEL_TOKEN_SECRET
+from iic_booking.remote_analysis.tests.tunnel_test_config import TEST_RA_TUNNEL_TOKEN_SECRET
 
 
 @pytest.mark.django_db
