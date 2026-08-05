@@ -8,7 +8,7 @@ This guide covers **deployment automation only**. Business logic, APIs, and work
 
 ## Architecture (compose)
 
-**Active CI deploy path:** GitHub **Deploy Backend** → SSH → EC2 → `docker-compose.production.yml`  
+**Active CI deploy path:** GitHub **Deploy Backend** → Linux self-hosted runner on EC2 → `docker-compose.production.yml`  
 Details: [Backend-EC2-SSH-Deploy.md](../release/Backend-EC2-SSH-Deploy.md)
 
 Primary full-stack file for fresh RA installs: [`docker-compose.ra-production.yml`](../../docker-compose.ra-production.yml)

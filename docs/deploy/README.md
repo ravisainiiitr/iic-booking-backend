@@ -2,7 +2,7 @@
 
 | Document | Audience |
 |----------|----------|
-| [../release/Backend-EC2-SSH-Deploy.md](../release/Backend-EC2-SSH-Deploy.md) | **Active** GitHub → SSH → EC2 release deploy |
+| [../release/Backend-EC2-SSH-Deploy.md](../release/Backend-EC2-SSH-Deploy.md) | **Active** GitHub → EC2 Linux runner deploy (no SSH) |
 | [Production-Deployment-Guide.md](Production-Deployment-Guide.md) | Fresh install, upgrade, rollback, DR |
 | [Operations-Runbook-IITR.md](Operations-Runbook-IITR.md) | Day-2 ops for IIT Roorkee admins |
 | [MONITORING.md](MONITORING.md) | Health / readiness / metrics URLs |

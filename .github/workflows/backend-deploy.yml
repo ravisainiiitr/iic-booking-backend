@@ -1,5 +1,5 @@
-# Deploy Backend — direct GitHub → EC2 via SSH (no AWS ECR).
-# Prerequisite: qualify the release tag with Backend Release (tests + image build).
+# Deploy Backend — execute on the Linux self-hosted runner (EC2).
+# No SSH hop. Prerequisite: qualify the tag with Backend Release.
 name: Deploy Backend
 
 on:
@@ -40,52 +40,31 @@ permissions:
 
 jobs:
   deploy:
-    name: SSH deploy to EC2
-    runs-on: ubuntu-latest
+    name: Deploy on EC2 runner
+    # Linux EC2 runner ip-10-0-1-153 (same host as production compose)
+    runs-on: [self-hosted, Linux]
     steps:
-      - name: Validate secrets
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+      - name: Preflight host context
         run: |
           set -euo pipefail
-          test -n "${EC2_HOST:-}" || { echo "Missing repository secret EC2_HOST"; exit 1; }
-          test -n "${EC2_USER:-}" || { echo "Missing repository secret EC2_USER"; exit 1; }
-          if [ -z "${EC2_SSH_KEY:-}" ] && [ -z "${EC2_SSH_PRIVATE_KEY:-}" ]; then
-            echo "Missing repository secret EC2_SSH_KEY (or EC2_SSH_PRIVATE_KEY)"
-            exit 1
-          fi
-          echo "Secrets present (values redacted). Host=${EC2_HOST} User=${EC2_USER}"
+          echo "Runner: $(hostname)"
+          echo "User: $(whoami)"
+          echo "PWD: $(pwd)"
+          echo "Deploy path: ${{ inputs.deploy_path }}"
+          test -d "${{ inputs.deploy_path }}" || { echo "Deploy path missing"; exit 2; }
+          test -f "${{ inputs.deploy_path }}/${{ inputs.compose_file }}" || {
+            echo "Compose file missing: ${{ inputs.deploy_path }}/${{ inputs.compose_file }}"
+            exit 2
+          }
+          docker compose version
+          cd "${{ inputs.deploy_path }}"
+          pwd
+          git remote -v
+          git status -sb || true
+          git describe --tags --always || true
+          docker compose -f "${{ inputs.compose_file }}" ps || true
 
-      - name: Prepare SSH config
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_PORT: ${{ secrets.EC2_PORT }}
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          KEY="${EC2_SSH_PRIVATE_KEY:-$EC2_SSH_KEY}"
-          mkdir -p ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/ec2_deploy_key
-          chmod 600 ~/.ssh/ec2_deploy_key
-          PORT="${EC2_PORT:-22}"
-          {
-            echo "Host ec2-deploy"
-            echo "  HostName ${EC2_HOST}"
-            echo "  User ${EC2_USER}"
-            echo "  Port ${PORT}"
-            echo "  IdentityFile ~/.ssh/ec2_deploy_key"
-            echo "  StrictHostKeyChecking accept-new"
-            echo "  ServerAliveInterval 30"
-            echo "  ServerAliveCountMax 10"
-          } > ~/.ssh/config
-          chmod 600 ~/.ssh/config
-
-      - name: Deploy release tag over SSH
+      - name: Deploy release tag
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           DEPLOY_PATH: ${{ inputs.deploy_path }}
@@ -94,15 +73,6 @@ jobs:
           ENABLE_FLOWER: ${{ inputs.enable_flower }}
         run: |
           set -euo pipefail
-          SCRIPT="$(mktemp)"
-          cat > "$SCRIPT" <<'REMOTE'
-          set -euo pipefail
-
-          RELEASE_TAG="__RELEASE_TAG__"
-          DEPLOY_PATH="__DEPLOY_PATH__"
-          COMPOSE_FILE="__COMPOSE_FILE__"
-          HEALTH_URL="__HEALTH_URL__"
-          ENABLE_FLOWER="__ENABLE_FLOWER__"
 
           cd "$DEPLOY_PATH"
           test -f "$COMPOSE_FILE" || { echo "Compose file missing: $DEPLOY_PATH/$COMPOSE_FILE"; exit 2; }
@@ -196,7 +166,6 @@ jobs:
               echo "django healthy"
               break
             fi
-            # If compose does not print Health column, continue to HTTP probe.
             if ! echo "$HEALTH_LINE" | grep -qi 'health'; then
               echo "No docker Health column for django — relying on HTTP probe"
               break
@@ -222,17 +191,8 @@ jobs:
           fi
           echo "PASS health $HEALTH_URL"
           echo "PASS deployed $RELEASE_TAG at $(git rev-parse --short HEAD)"
-          REMOTE
 
-          export SCRIPT
-          python3 <<'PY'
-          import os
-          from pathlib import Path
-          p = Path(os.environ["SCRIPT"])
-          text = p.read_text()
-          for key in ("RELEASE_TAG", "DEPLOY_PATH", "COMPOSE_FILE", "HEALTH_URL", "ENABLE_FLOWER"):
-              text = text.replace(f"__{key}__", os.environ[key])
-          p.write_text(text)
-          PY
-          ssh ec2-deploy bash < "$SCRIPT"
-          rm -f "$SCRIPT"
+          echo "=== Rollback metadata ==="
+          echo "previous_release_tag=$(cat "$PREV_TAG_FILE" 2>/dev/null || echo none)"
+          echo "current_release_tag=$(cat "$CUR_TAG_FILE")"
+          compose ps

@@ -16,7 +16,7 @@ GitHub Repositories
         ↓  (tag / workflow_dispatch)
 GitHub Actions (orchestration)
         ├── Backend Release → Windows Build Host (tests + image build qualification)
-        └── Deploy Backend  → SSH → Production EC2
+        └── Deploy Backend  → Linux self-hosted runner on Production EC2 (no SSH)
                                 git checkout <release tag>
                                 docker compose build / up -d
                                 health checks
@@ -52,7 +52,7 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 ### 3. GitHub Actions
 
 - Orchestrates checkout of **tags**, invokes Build Host qualification jobs, uploads workflow artifacts.
-- **Backend Deploy** uses SSH secrets (`EC2_HOST` / `EC2_USER` / `EC2_SSH_KEY`) — no AWS credentials for portal rollout.
+- **Backend Deploy** runs on the Linux self-hosted runner colocated with production compose — no SSH hop, no AWS credentials for portal rollout.
 - Separate workflows per repo + one **Platform Release** aggregator (see Blueprint Part 2).
 
 ### 4. Dedicated Windows Build Host (Self-hosted Runner)
@@ -69,7 +69,7 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 ### 5. Production EC2 (Backend)
 
 - Holds a git checkout of `iic-booking-backend`.
-- Receives releases via **Deploy Backend** (`git checkout <tag>` + `docker compose` build/up).
+- Receives releases via **Deploy Backend** on the colocated Linux Actions runner (`git checkout <tag>` + `docker compose` build/up).
 - Health: `GET /api/v1/analysis/health/ready/` (published on host port **8080** in `docker-compose.production.yml`).
 - AWS ECR is **not** required for Backend portal images.
 
@@ -109,7 +109,7 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 | Dev → GitHub | PR review, branch protection |
 | GitHub → Build host | Runner registration token; tag-only release workflows |
 | Build host → qualification artifacts | Local digests/SBOM only (not a production registry) |
-| GitHub → Prod EC2 | SSH (`Deploy Backend`); checkout immutable tag; compose build/up |
+| GitHub → Prod EC2 | Linux self-hosted runner on EC2 (`Deploy Backend`); checkout immutable tag; compose build/up |
 | Build host → Deployment Center | Authenticated admin upload after image/install verification |
 | Portal → Agents | Enrollment keys, mTLS/HTTPS, version compatibility |
 
@@ -119,7 +119,7 @@ Multi-repo sync is enforced by a **Platform Release Manifest**, not by assuming 
 
 1. Freeze tips → annotated tags pushed.  
 2. **Backend Release** qualifies the tag on the Windows Build Host (tests + image build).  
-3. **Deploy Backend** SSHs to production EC2, checks out the tag, builds and restarts compose.  
+3. **Deploy Backend** runs on the EC2 Linux runner, checks out the tag, builds and restarts compose.  
 4. Agent/wizard installers → artifact store + Deployment Center (unchanged path).  
 5. Agents upgrade via Deployment Center when commissioned.
 

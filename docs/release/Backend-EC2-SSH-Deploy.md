@@ -1,27 +1,27 @@
-# Backend EC2 SSH Deploy
+# Backend EC2 Deploy (Linux self-hosted runner)
 
-**Status:** Active release path (replaces AWS ECR publication)  
-**Qualified release example:** `v2.5.0-rc19-release`
+**Status:** Active release path (replaces AWS ECR and SSH hop)  
+**Qualified release example:** `v2.5.0-rc19-release`  
+**Runner:** Linux self-hosted on production EC2 (`ip-10-0-1-153`, labels `self-hosted` + `Linux`)
 
 ---
 
 ## Deployment model
 
 ```text
-GitHub
+GitHub Release (immutable tag)
         ↓
-Backend Release          (Build Host: verify tag → tests → image build qualification)
+Backend Release          (Windows Build Host: verify → tests → image build qualification)
         ↓
-Deploy Backend           (ubuntu-latest → SSH → EC2)
+Deploy Backend           (Linux self-hosted runner on EC2 — no SSH)
         ↓
-EC2 host
-  git fetch / checkout <release tag>
-  docker compose -f docker-compose.production.yml build --pull
-  docker compose -f docker-compose.production.yml up -d
-  health checks
+git checkout <release_tag>
+docker compose build --pull
+docker compose up -d
+Health Check
 ```
 
-AWS ECR, OIDC publish roles, and image registry push are **not** part of this path.
+No AWS ECR. No SSH from GitHub-hosted runners.
 
 ---
 
@@ -30,22 +30,16 @@ AWS ECR, OIDC publish roles, and image registry push are **not** part of this pa
 | Workflow | File | Purpose |
 |---|---|---|
 | Backend Release | `.github/workflows/backend-release.yml` | Tag verification, pytest, Build Host image build |
-| Deploy Backend | `.github/workflows/backend-deploy.yml` | SSH deploy of an immutable tag to EC2 |
-| Deploy Backend (legacy) | `.github/workflows/deploy.yml` | Retired master-push deploy (dispatch fails with redirect) |
+| Deploy Backend | `.github/workflows/backend-deploy.yml` | Local deploy on EC2 Linux runner |
+| Deploy Backend (legacy) | `.github/workflows/deploy.yml` | Retired master-push path |
 
 ---
 
 ## Required GitHub secrets
 
-| Secret | Required | Notes |
-|---|---|---|
-| `EC2_HOST` | Yes | EC2 hostname or IP |
-| `EC2_USER` | Yes | SSH user (e.g. `ubuntu`) |
-| `EC2_SSH_KEY` | Yes* | Private key PEM (*or* `EC2_SSH_PRIVATE_KEY`) |
-| `EC2_SSH_PRIVATE_KEY` | Alternate | Used if set; otherwise `EC2_SSH_KEY` |
-| `EC2_PORT` | No | Defaults to `22` |
+**None for Deploy Backend.** EC2 SSH secrets (`EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`, `EC2_PORT`) are **not** used by this workflow.
 
-Do **not** configure AWS credentials, IAM OIDC roles, or ECR registry variables for Backend deploy.
+Application/runtime secrets remain on the EC2 host (e.g. `.envs/.production/.django`).
 
 ---
 
@@ -63,7 +57,7 @@ Do **not** configure AWS credentials, IAM OIDC roles, or ECR registry variables 
 
 ## On-host sequence
 
-Executed over SSH in `deploy_path`:
+Executed on the Linux runner in `deploy_path`:
 
 1. Record previous git ref / release tag under `.deploy-state/`
 2. `git fetch --all --tags`
@@ -76,50 +70,40 @@ Executed over SSH in `deploy_path`:
 9. Wait for django health when Docker reports Health
 10. `curl` health URL until HTTP 200 (fail closed)
 
-Existing on-host helpers remain available: `./deploy.sh`, `./scripts/deploy/rollback.sh`, `./scripts/deploy/verify-production.sh`.
+Existing helpers: `./deploy.sh`, `./scripts/deploy/rollback.sh`, `./scripts/deploy/verify-production.sh`.
 
 ---
 
 ## Rollback procedure
 
-### Automatic (Deploy Backend workflow)
+### Automatic (Deploy Backend)
 
-On build/up/health failure the remote script:
+On build/up/health failure the script:
 
-1. Checks out the previous release tag from `.deploy-state/previous_release_tag`
-2. Rebuilds and `up -d` that tag
-3. Leaves failure status so the Actions run is red
+1. Checks out `.deploy-state/previous_release_tag`
+2. Rebuilds and `up -d`
+3. Leaves the Actions run failed
 
 ### Manual
 
 ```bash
-cd /home/ubuntu   # or your deploy_path
+cd /home/ubuntu
 PREV=$(cat .deploy-state/previous_release_tag)
 git fetch --all --tags
 git checkout "$PREV"
-git submodule update --init --recursive
 docker compose -f docker-compose.production.yml --profile flower down
 docker compose -f docker-compose.production.yml --profile flower build --pull
 docker compose -f docker-compose.production.yml --profile flower up -d
 curl -fsS http://127.0.0.1:8080/api/v1/analysis/health/ready/
 ```
 
-Or:
-
-```bash
-ROLLBACK_REF=<previous-tag-or-sha> ./scripts/deploy/rollback.sh
-```
-
-If the database schema is newer than the rolled-back code, restore DB from `backups/deploy` before traffic returns — see [Production-Deployment-Guide.md](../deploy/Production-Deployment-Guide.md).
+Or: `ROLLBACK_REF=<tag> ./scripts/deploy/rollback.sh`
 
 ---
 
 ## Operator checklist
 
-1. Qualify tag with **Backend Release** (`dry_run=true`).
-2. Confirm secrets `EC2_HOST`, `EC2_USER`, `EC2_SSH_KEY`.
+1. Qualify tag with **Backend Release**.
+2. Confirm Linux runner `ip-10-0-1-153` is **online**.
 3. Dispatch **Deploy Backend** with `release_tag=<qualified tag>`.
-4. Confirm Actions log: compose ps + health 200.
-5. Smoke-test portal URL externally if applicable.
-
-**STOP:** Do not treat Build Host image digests as production registry artifacts — EC2 builds from the checked-out tag.
+4. Confirm compose ps + health HTTP 200 in the run log.
