@@ -132,10 +132,27 @@ jobs:
       - name: Cleanup local compose before test gate
         shell: pwsh
         run: |
+          # Fixed container_name values in docker-compose.local.yml are global.
+          # compose down -p <release> cannot remove them if another compose project
+          # (manual operator / prior local session) still owns those names.
           $ErrorActionPreference = 'Continue'
           docker compose -p $env:COMPOSE_PROJECT_NAME -f docker-compose.local.yml down --remove-orphans
           if ($LASTEXITCODE -ne 0) {
             Write-Host "No existing compose environment to remove."
+          }
+          $fixedNames = @(
+            'iic_booking_local_django',
+            'iic_booking_local_mailpit',
+            'iic_booking_local_redis',
+            'iic_booking_local_celeryworker',
+            'iic_booking_local_celerybeat',
+            'iic_booking_local_flower'
+          )
+          foreach ($name in $fixedNames) {
+            docker rm -f $name 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Removed leftover container: $name"
+            }
           }
       - name: Test gate (no silent pass)
         id: gate
@@ -186,6 +203,17 @@ jobs:
           docker compose -p $env:COMPOSE_PROJECT_NAME -f docker-compose.local.yml down --remove-orphans
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Post-test compose cleanup reported non-zero exit."
+          }
+          $fixedNames = @(
+            'iic_booking_local_django',
+            'iic_booking_local_mailpit',
+            'iic_booking_local_redis',
+            'iic_booking_local_celeryworker',
+            'iic_booking_local_celerybeat',
+            'iic_booking_local_flower'
+          )
+          foreach ($name in $fixedNames) {
+            docker rm -f $name 2>$null | Out-Null
           }
       - uses: actions/upload-artifact@v4
         with:
