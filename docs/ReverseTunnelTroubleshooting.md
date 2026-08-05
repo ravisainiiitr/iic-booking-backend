@@ -2,7 +2,7 @@
 
 | Symptom | Check |
 |---------|--------|
-| Launch still uses PC hostname | `transport_mode` / `RA_TRANSPORT` |
+| Launch still uses PC hostname | Confirm reverse tunnel provisioned; Direct RDP is retired |
 | JOIN_TUNNEL never arrives | Agent heartbeat; command poll; workstation allocation |
 | Auth failure on WSS | Token secret mismatch; clock skew; expired token |
 | guacd cannot connect | Adapter hostname DNS from guacd network; port allocate |

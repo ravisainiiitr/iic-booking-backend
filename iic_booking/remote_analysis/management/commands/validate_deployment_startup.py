@@ -202,6 +202,34 @@ class Command(BaseCommand):
             except Exception as exc:  # noqa: BLE001
                 bad("guacamole", f"{type(exc).__name__}: {exc}")
 
+        # --- Reverse Tunnel (sole supported remote-access mechanism) ---
+        try:
+            from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+            from iic_booking.remote_analysis.tunnel import reverse_tunnel_config_status
+
+            settings_obj = RemoteAnalysisSettings.get_solo()
+            mode = (settings_obj.transport_mode or "").strip() or "reverse_tunnel"
+            if mode != "reverse_tunnel":
+                bad("transport_mode", f"unsupported={mode}; require reverse_tunnel")
+            else:
+                ok("transport_mode", mode)
+
+            cfg = reverse_tunnel_config_status(settings_obj)
+            for name, status in cfg.items():
+                label = {
+                    "RA_TUNNEL_TOKEN_SECRET": "RA_TUNNEL_TOKEN_SECRET",
+                    "RA_TUNNEL_GATEWAY_ADMIN_KEY": "RA_TUNNEL_GATEWAY_ADMIN_KEY",
+                    "RA_TUNNEL_GATEWAY_ADMIN_URL": "RA_TUNNEL_GATEWAY_ADMIN_URL",
+                    "RA_TUNNEL_GATEWAY_WSS_URL": "RA_TUNNEL_GATEWAY_WSS_URL",
+                    "RA_TUNNEL_ADAPTER_HOSTNAME": "RA_TUNNEL_ADAPTER_HOSTNAME",
+                }.get(name, name)
+                if status == "configured":
+                    ok(label, "configured")
+                else:
+                    bad(label, "missing")
+        except Exception as exc:  # noqa: BLE001
+            bad("reverse_tunnel", f"{type(exc).__name__}: {exc}")
+
         # --- Report ---
         self.stdout.write("=== Deployment Startup Validation ===")
         for status, name, detail in rows:

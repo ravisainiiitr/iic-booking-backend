@@ -36,7 +36,7 @@ When equipment defines `analysis_raw_data_directory` / `analysis_results_directo
 
 ## Reverse tunnel commands
 
-With Portal `transport_mode=reverse_tunnel`, the agent also handles:
+With Portal reverse tunnel transport (sole supported mode), the agent also handles:
 
 - `JOIN_TUNNEL` — connect WSS to gateway with session token
 - `CLOSE_TUNNEL` — tear down bridge

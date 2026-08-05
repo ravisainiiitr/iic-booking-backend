@@ -69,8 +69,11 @@ class RemoteAnalysisSettings(models.Model):
     transport_mode = models.CharField(
         max_length=32,
         choices=TransportMode.choices,
-        default=TransportMode.DIRECT_RDP,
-        help_text=_("direct_rdp = guacd dials workstation; reverse_tunnel = guacd dials AWS adapter."),
+        default=TransportMode.REVERSE_TUNNEL,
+        help_text=_(
+            "Sole supported mode: reverse_tunnel — guacd dials the AWS adapter; "
+            "the agent bridges to localhost RDP."
+        ),
     )
     tunnel_gateway_admin_url = models.URLField(
         blank=True,

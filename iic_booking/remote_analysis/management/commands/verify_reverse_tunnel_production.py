@@ -49,7 +49,6 @@ class Command(BaseCommand):
 
         # --- Settings / env presence (no secret values) ---
         try:
-            from iic_booking.remote_analysis.constants import TransportMode
             from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
             from iic_booking.remote_analysis.tunnel import (
                 TunnelGatewayClient,
@@ -64,11 +63,7 @@ class Command(BaseCommand):
                 if status == "configured":
                     ok(f"config.{name}", "configured")
                 else:
-                    # Always report; hard-fail when reverse_tunnel is the live mode.
-                    if settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL:
-                        bad(f"config.{name}", "missing")
-                    else:
-                        rows.append(("WARN", f"config.{name}", "missing (ok while direct_rdp)"))
+                    bad(f"config.{name}", "missing")
 
             client = TunnelGatewayClient(settings_obj)
             health = client.health()
@@ -81,10 +76,7 @@ class Command(BaseCommand):
                 )
             else:
                 detail = health.get("detail") or health.get("status") or "unreachable"
-                if settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL:
-                    bad("gateway.health", str(detail))
-                else:
-                    rows.append(("WARN", "gateway.health", str(detail)))
+                bad("gateway.health", str(detail))
 
             metrics = client.metrics()
             if metrics.get("ok"):
@@ -96,10 +88,7 @@ class Command(BaseCommand):
                 )
             else:
                 detail = metrics.get("detail") or "unavailable"
-                if settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL:
-                    bad("gateway.metrics", str(detail))
-                else:
-                    rows.append(("WARN", "gateway.metrics", str(detail)))
+                bad("gateway.metrics", str(detail))
         except Exception as exc:  # noqa: BLE001
             bad("reverse_tunnel.verify", f"{type(exc).__name__}: {exc}")
 

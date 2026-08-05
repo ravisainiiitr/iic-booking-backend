@@ -198,7 +198,7 @@ See `Documentation/MaintenanceMode.md`.
 
 1. Revert container files from last known-good image tag / git SHA.
 2. Migrations `0018` additive — leaving columns is safe; do not reverse on prod unless necessary.
-3. Set `transport_mode=direct_rdp` only if campus routing restored (not viable on current AWS topology).
+3. Confirm `transport_mode=reverse_tunnel` (sole supported remote-access mode; Direct RDP is retired).
 4. Disable Remote Analysis per equipment (`enable_remote_analysis=False`) as operational kill-switch.
 
 ---

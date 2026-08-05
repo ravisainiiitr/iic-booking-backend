@@ -34,7 +34,7 @@
 ## Required Portal behavior
 
 - Maintain strict state transitions for reservation/session/tunnel orchestration.
-- Allow additive compatibility with direct RDP and reverse-tunnel modes.
+- Reverse Tunnel is the only supported remote-access mode (Direct RDP retired).
 - Enforce auth and role boundaries between agent-side and portal-side endpoints.
 - Preserve idempotent command completion semantics (duplicate complete/ack should not corrupt state).
 - Keep timeout/cleanup paths deterministic to avoid orphan reservations, sessions, or workspaces.

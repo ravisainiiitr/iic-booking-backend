@@ -38,6 +38,12 @@ def ra_tunnel_token_secret(settings, monkeypatch):
 
 
 @pytest.mark.django_db
+def test_transport_mode_defaults_reverse_tunnel():
+    settings_obj = RemoteAnalysisSettings.get_solo()
+    assert settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL
+
+
+@pytest.mark.django_db
 def test_ra_transport_env_overlay(monkeypatch):
     settings_obj, _ = RemoteAnalysisSettings.objects.get_or_create(pk=1)
     monkeypatch.setenv("RA_TRANSPORT", "reverse_tunnel")
@@ -45,6 +51,16 @@ def test_ra_transport_env_overlay(monkeypatch):
     overlay_from_environ(settings_obj)
     assert settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL
     assert settings_obj.tunnel_gateway_wss_url == "wss://gw.example/tunnel"
+
+
+@pytest.mark.django_db
+def test_ra_transport_env_ignores_retired_direct_rdp(monkeypatch):
+    settings_obj, _ = RemoteAnalysisSettings.objects.get_or_create(pk=1)
+    settings_obj.transport_mode = TransportMode.REVERSE_TUNNEL
+    settings_obj.save(update_fields=["transport_mode"])
+    monkeypatch.setenv("RA_TRANSPORT", "direct_rdp")
+    overlay_from_environ(settings_obj)
+    assert settings_obj.transport_mode == TransportMode.REVERSE_TUNNEL
 
 
 @pytest.mark.django_db

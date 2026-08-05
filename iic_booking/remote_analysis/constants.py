@@ -92,9 +92,11 @@ class CommandType(models.TextChoices):
 
 
 class TransportMode(models.TextChoices):
-    """How guacd reaches the Analysis PC RDP endpoint."""
+    """How guacd reaches the Analysis PC RDP endpoint.
 
-    DIRECT_RDP = "direct_rdp", _("Direct RDP")
+    Reverse Tunnel is the only supported remote-access mechanism.
+    """
+
     REVERSE_TUNNEL = "reverse_tunnel", _("Reverse tunnel")
 
 

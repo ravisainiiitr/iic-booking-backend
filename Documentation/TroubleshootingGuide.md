@@ -143,7 +143,7 @@ See `Documentation/MaintenanceMode.md`.
 
 | Check | Action |
 |-------|--------|
-| Transport mode | Portal `RA_TRANSPORT=reverse_tunnel` / settings `transport_mode` |
+| Transport mode | Must be reverse tunnel (`RA_TRANSPORT=reverse_tunnel` / settings); Direct RDP retired |
 | Tunnel status | `TunnelSession` ACTIVE with `adapter_port` |
 | Guacamole hostname | Must be gateway adapter host, **not** campus `10.x` |
 | Windows session | Sign out interactive user on Analysis PC (lock screen blocks NLA) |

@@ -23,7 +23,6 @@ from iic_booking.remote_analysis.constants import (
     AuditCategory,
     CommandType,
     TunnelSessionStatus,
-    TransportMode,
 )
 from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
 from iic_booking.remote_analysis.tunnel_models import TunnelEvent, TunnelSession
@@ -198,14 +197,12 @@ class TunnelGatewayClient:
         Production reverse_tunnel must never use the mock allocator.
         """
         if not (self.settings.tunnel_gateway_admin_url or "").strip():
-            is_rt = self.settings.transport_mode == TransportMode.REVERSE_TUNNEL
-            if is_rt and not getattr(django_settings, "DEBUG", False):
+            if not getattr(django_settings, "DEBUG", False):
                 from django.core.exceptions import ImproperlyConfigured
 
                 raise ImproperlyConfigured(
                     "RA_TUNNEL_GATEWAY_ADMIN_URL (tunnel_gateway_admin_url) is required "
-                    "when transport_mode=reverse_tunnel and DEBUG=False; "
-                    "local mock allocation is disabled in production."
+                    "when DEBUG=False; local mock allocation is disabled in production."
                 )
             # Dev/test fallback only.
             port = 40000 + (abs(hash(str(tunnel.id))) % 10000)
@@ -279,7 +276,8 @@ class TunnelOrchestrator:
         self.gateway = TunnelGatewayClient(self.settings)
 
     def is_reverse_tunnel(self) -> bool:
-        return self.settings.transport_mode == TransportMode.REVERSE_TUNNEL
+        """Reverse Tunnel is the only supported transport."""
+        return True
 
     def apply_join_result(
         self,

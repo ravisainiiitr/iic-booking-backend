@@ -49,30 +49,29 @@ def run_production_commissioning() -> dict[str, Any]:
     except Exception as exc:
         checks.append(_check("Cache/Redis", "WARNING", str(exc), recommendation="Verify Redis for Celery/cache"))
 
-    # Transport / Gateway settings
+    # Transport / Gateway settings — Reverse Tunnel is mandatory.
     settings_obj = RemoteAnalysisSettings.get_solo()
-    mode = getattr(settings_obj, "transport_mode", "")
-    if mode == "reverse_tunnel":
-        if (settings_obj.tunnel_gateway_admin_url or "").strip() and (
-            settings_obj.tunnel_gateway_wss_url or ""
-        ).strip():
-            checks.append(_check("Reverse Tunnel Config", "PASS", f"transport_mode={mode}"))
-        else:
-            checks.append(
-                _check(
-                    "Reverse Tunnel Config",
-                    "FAIL",
-                    "reverse_tunnel enabled but gateway URLs empty",
-                    recommendation="Set tunnel_gateway_admin_url and tunnel_gateway_wss_url",
-                )
+    mode = getattr(settings_obj, "transport_mode", "") or "reverse_tunnel"
+    if mode != "reverse_tunnel":
+        checks.append(
+            _check(
+                "Reverse Tunnel Config",
+                "FAIL",
+                f"unsupported transport_mode={mode}",
+                recommendation="Set transport_mode=reverse_tunnel (sole supported mode)",
             )
+        )
+    elif (settings_obj.tunnel_gateway_admin_url or "").strip() and (
+        settings_obj.tunnel_gateway_wss_url or ""
+    ).strip():
+        checks.append(_check("Reverse Tunnel Config", "PASS", f"transport_mode={mode}"))
     else:
         checks.append(
             _check(
                 "Reverse Tunnel Config",
-                "WARNING",
-                f"transport_mode={mode}",
-                recommendation="AWS deployments require reverse_tunnel",
+                "FAIL",
+                "reverse_tunnel enabled but gateway URLs empty",
+                recommendation="Set tunnel_gateway_admin_url and tunnel_gateway_wss_url",
             )
         )
 

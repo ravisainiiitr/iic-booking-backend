@@ -8,7 +8,7 @@ CONFIGURATION_CATALOG: list[dict[str, str]] = [
     {"key": "guacamole_base_url", "source": "RemoteAnalysisSettings", "default": "", "description": "Public Guacamole URL (server-side redirects only)"},
     {"key": "guacamole_api_url", "source": "RemoteAnalysisSettings", "default": "", "description": "Internal Guacamole REST API; never returned to browsers"},
     {"key": "mock_guacamole", "source": "RemoteAnalysisSettings", "default": "True", "description": "Dev/test mock Guacamole; MUST be False in production"},
-    {"key": "transport_mode", "source": "RemoteAnalysisSettings", "default": "direct_rdp", "description": "direct_rdp | reverse_tunnel — how guacd reaches the Analysis PC"},
+    {"key": "transport_mode", "source": "RemoteAnalysisSettings", "default": "reverse_tunnel", "description": "reverse_tunnel only — how guacd reaches the Analysis PC via AWS adapter"},
     {"key": "tunnel_gateway_admin_url", "source": "RemoteAnalysisSettings", "default": "", "description": "Internal Reverse Tunnel Gateway admin HTTP URL"},
     {"key": "tunnel_gateway_wss_url", "source": "RemoteAnalysisSettings", "default": "", "description": "Public WSS URL for agent reverse tunnels"},
     {"key": "tunnel_adapter_hostname", "source": "RemoteAnalysisSettings", "default": "reverse-tunnel-gateway", "description": "Hostname guacd dials for the TCP adapter"},
@@ -46,7 +46,7 @@ CONFIGURATION_CATALOG: list[dict[str, str]] = [
     {"key": "CACHES", "source": "settings local|production", "default": "LocMem|Redis", "description": "Django cache backend"},
     # Phase 2 Guacamole env overlays (applied via settings_env / sync_remote_analysis_settings)
     {"key": "RA_MOCK_GUACAMOLE", "source": "environ", "default": "", "description": "Override mock_guacamole (true|false); empty = use DB setting"},
-    {"key": "RA_TRANSPORT", "source": "environ", "default": "", "description": "Override transport_mode (direct_rdp|reverse_tunnel)"},
+    {"key": "RA_TRANSPORT", "source": "environ", "default": "", "description": "Override transport_mode (reverse_tunnel only)"},
     {"key": "RA_TUNNEL_GATEWAY_ADMIN_URL", "source": "environ", "default": "", "description": "Override tunnel_gateway_admin_url"},
     {"key": "RA_TUNNEL_GATEWAY_WSS_URL", "source": "environ", "default": "", "description": "Override tunnel_gateway_wss_url"},
     {"key": "RA_TUNNEL_ADAPTER_HOSTNAME", "source": "environ", "default": "", "description": "Override tunnel_adapter_hostname"},

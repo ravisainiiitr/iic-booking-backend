@@ -37,8 +37,10 @@ def build_rdp_parameters(
         hostname = (tunnel.adapter_hostname or "").strip()
         port = str(tunnel.adapter_port)
     else:
-        hostname = (ws.ip_address or ws.hostname or "").strip()
-        port = str(secret.port if secret else 3389)
+        raise GuacamoleClientError(
+            "Reverse tunnel adapter hostname/port are required. "
+            "Direct RDP (guacd → workstation) is not supported."
+        )
     username = (secret.username if secret else "") or ""
     password = decrypt_password(secret.password_encrypted) if secret else ""
     domain = (secret.domain if secret else "") or ""
@@ -118,34 +120,31 @@ class ConnectionManager:
         Create temporary Guacamole user + RDP connection.
         Returns (GuacamoleConnection, temp_username, temp_password).
 
-        When transport_mode=reverse_tunnel, hostname/port point at the AWS
+        Always provisions a reverse tunnel so hostname/port point at the AWS
         GuacamoleSocketAdapter; the agent bridges to localhost:3389.
 
         Windows credentials come only from WorkstationRdpSecret (installer /
         admin). They are injected into Guacamole connection parameters
         server-side and never returned to the browser.
         """
-        from iic_booking.remote_analysis.constants import TransportMode
         from iic_booking.remote_analysis.tunnel import TunnelOrchestrator
 
-        tunnel = None
-        if self.settings.transport_mode == TransportMode.REVERSE_TUNNEL:
-            analysis_job = None
-            try:
-                from iic_booking.remote_analysis.workflow_models import AnalysisJob
+        analysis_job = None
+        try:
+            from iic_booking.remote_analysis.workflow_models import AnalysisJob
 
-                if session.booking_id:
-                    analysis_job = (
-                        AnalysisJob.objects.filter(booking_id=session.booking_id)
-                        .exclude(status__in={"COMPLETED", "CANCELLED", "FAILED"})
-                        .order_by("-created_at")
-                        .first()
-                    )
-            except Exception:  # noqa: BLE001
-                analysis_job = None
-            tunnel = TunnelOrchestrator(self.settings).provision_for_session(
-                session, analysis_job=analysis_job
-            )
+            if session.booking_id:
+                analysis_job = (
+                    AnalysisJob.objects.filter(booking_id=session.booking_id)
+                    .exclude(status__in={"COMPLETED", "CANCELLED", "FAILED"})
+                    .order_by("-created_at")
+                    .first()
+                )
+        except Exception:  # noqa: BLE001
+            analysis_job = None
+        tunnel = TunnelOrchestrator(self.settings).provision_for_session(
+            session, analysis_job=analysis_job
+        )
 
         params = build_rdp_parameters(session, self.settings, tunnel=tunnel)
         diag = _credential_diagnostics(session, params)

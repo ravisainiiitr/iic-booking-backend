@@ -57,7 +57,8 @@ def overlay_from_environ(settings_obj: RemoteAnalysisSettings) -> RemoteAnalysis
 
     if ENV_TRANSPORT in os.environ and os.environ[ENV_TRANSPORT].strip():
         mode = os.environ[ENV_TRANSPORT].strip().lower().replace("-", "_")
-        if mode in {"direct_rdp", "reverse_tunnel"}:
+        # Reverse Tunnel is the only supported transport; ignore retired values.
+        if mode == "reverse_tunnel":
             settings_obj.transport_mode = mode
 
     for env_key, attr in (
