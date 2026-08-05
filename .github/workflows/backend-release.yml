@@ -112,11 +112,32 @@ jobs:
         with:
           ref: refs/tags/${{ needs.verify_tag.outputs.tag }}
           fetch-depth: 0
+      - name: Inject Build Host local config
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = 'C:\iic-build\config\backend\.envs\.local\.django'
+          if (-not (Test-Path -LiteralPath $src)) {
+            throw "Build Host config missing: $src. Place non-production operator .django at that path (see C:\iic-build\config\backend)."
+          }
+          $destDir = Join-Path $env:GITHUB_WORKSPACE '.envs\.local'
+          New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+          $dest = Join-Path $destDir '.django'
+          Copy-Item -LiteralPath $src -Destination $dest -Force
+          if (-not (Test-Path -LiteralPath $dest)) {
+            throw "Failed to materialize workspace config at $dest"
+          }
+          Write-Host "Build Host config injected (presence only). dest_exists=True"
       - name: Test gate (no silent pass)
         id: gate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $workspaceDjango = Join-Path $env:GITHUB_WORKSPACE '.envs\.local\.django'
+          if (-not (Test-Path -LiteralPath $workspaceDjango)) {
+            throw "Pre-compose check failed: $workspaceDjango is missing after Build Host inject."
+          }
+          Write-Host 'Pre-compose .envs/.local/.django present=True'
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           $level = 'UNKNOWN'
           if (Test-Path docker-compose.local.yml) {
