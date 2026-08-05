@@ -41,6 +41,7 @@ permissions:
 env:
   DOCKER_BUILDKIT: '1'
   COMPOSE_DOCKER_CLI_BUILD: '1'
+  COMPOSE_PROJECT_NAME: iic-booking-backend
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
   ECR_REGISTRY: ${{ vars.ECR_REGISTRY }}
   ECR_PREFIX: ${{ vars.ECR_PREFIX || 'iic' }}
@@ -132,7 +133,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          docker compose -f docker-compose.local.yml down --remove-orphans
+          docker compose -p $env:COMPOSE_PROJECT_NAME -f docker-compose.local.yml down --remove-orphans
           if ($LASTEXITCODE -ne 0) {
             Write-Host "No existing compose environment to remove."
           }
@@ -149,7 +150,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts/release | Out-Null
           $level = 'UNKNOWN'
           if (Test-Path docker-compose.local.yml) {
-            docker compose -f docker-compose.local.yml run --rm django pytest -q
+            docker compose -p $env:COMPOSE_PROJECT_NAME -f docker-compose.local.yml run --rm django pytest -q
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             $level = 'FULL'
           } else {
@@ -182,7 +183,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          docker compose -f docker-compose.local.yml down --remove-orphans
+          docker compose -p $env:COMPOSE_PROJECT_NAME -f docker-compose.local.yml down --remove-orphans
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Post-test compose cleanup reported non-zero exit."
           }
