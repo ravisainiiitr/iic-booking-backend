@@ -19,6 +19,7 @@ from iic_booking.remote_analysis.scheduler_models import (
     AnalysisReservation,
     ReservationAudit,
     ReservationEvent,
+    ReservationQueue,
     SchedulerTelemetry,
 )
 from iic_booking.remote_analysis.services.allocation import AllocationService
