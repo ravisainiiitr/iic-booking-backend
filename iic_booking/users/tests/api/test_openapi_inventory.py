@@ -1,9 +1,12 @@
 from http import HTTPStatus
 
+import pytest
 
-def test_inventory_openapi_paths_present(admin_client):
+
+@pytest.mark.django_db
+def test_inventory_openapi_paths_present(openapi_admin_client):
     url = "/api/schema/"
-    response = admin_client.get(url)
+    response = openapi_admin_client.get(url)
     assert response.status_code == HTTPStatus.OK
 
     body = response.content.decode("utf-8")
@@ -19,9 +22,10 @@ def test_inventory_openapi_paths_present(admin_client):
         assert path in body
 
 
-def test_inventory_openapi_query_params_present(admin_client):
+@pytest.mark.django_db
+def test_inventory_openapi_query_params_present(openapi_admin_client):
     url = "/api/schema/"
-    response = admin_client.get(url)
+    response = openapi_admin_client.get(url)
     assert response.status_code == HTTPStatus.OK
 
     body = response.content.decode("utf-8")
@@ -32,9 +36,10 @@ def test_inventory_openapi_query_params_present(admin_client):
     assert "status" in body
 
 
-def test_inventory_openapi_tag_present(admin_client):
+@pytest.mark.django_db
+def test_inventory_openapi_tag_present(openapi_admin_client):
     url = "/api/schema/"
-    response = admin_client.get(url)
+    response = openapi_admin_client.get(url)
     assert response.status_code == HTTPStatus.OK
 
     body = response.content.decode("utf-8")
