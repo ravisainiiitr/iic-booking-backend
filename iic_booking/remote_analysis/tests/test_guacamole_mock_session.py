@@ -30,7 +30,7 @@ def test_session_create_launch_connect_terminate(
         requested_end=end,
         created_by=ra_user,
     )
-    assert reservation.status == ReservationStatus.RESERVED
+    assert reservation.status == ReservationStatus.AWAITING_CHECKIN
 
     orch = SessionOrchestrator()
     session = orch.create_session(reservation=reservation, user=ra_user, client_ip="127.0.0.1")

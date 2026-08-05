@@ -82,7 +82,7 @@ def test_session_guard_paths(ra_user, eligible_workstation, reservation_window, 
         requested_end=timezone.now() + timedelta(hours=2),
         created_by=ra_user,
     )
-    assert reserved2.status == ReservationStatus.RESERVED
+    assert reserved2.status == ReservationStatus.AWAITING_CHECKIN
     s1 = orch.create_session(reservation=reserved2, user=ra_user)
     s2 = orch.create_session(reservation=reserved2, user=ra_user)
     assert s1.id == s2.id

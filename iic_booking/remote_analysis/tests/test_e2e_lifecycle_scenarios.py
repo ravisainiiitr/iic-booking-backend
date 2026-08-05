@@ -13,6 +13,7 @@ from iic_booking.remote_analysis.models import AnalysisWorkstation
 from iic_booking.remote_analysis.services.reservation import ReservationService
 from iic_booking.remote_analysis.services.scheduler import SchedulerService
 from iic_booking.remote_analysis.services.tokens import issue_agent_token
+from iic_booking.remote_analysis.tests.conftest import complete_user_checkin
 from iic_booking.users.tests.factories import UserFactory
 
 
@@ -23,7 +24,7 @@ def test_scenario_happy_path_book_launch_end(ra_user, eligible_workstation, rese
     reservation = ReservationService().create_reservation(
         user=ra_user, requested_start=start, requested_end=end, created_by=ra_user
     )
-    assert reservation.status == ReservationStatus.RESERVED
+    assert reservation.status == ReservationStatus.AWAITING_CHECKIN
 
     orch = SessionOrchestrator()
     session = orch.create_session(reservation=reservation, user=ra_user)
@@ -64,7 +65,7 @@ def test_scenario_queue_then_allocate(ra_user, reservation_window):
     issue_agent_token(ws)
     SchedulerService().process_queue()
     reservation.refresh_from_db()
-    assert reservation.status == ReservationStatus.RESERVED
+    assert reservation.status == ReservationStatus.AWAITING_CHECKIN
 
 
 @pytest.mark.django_db
@@ -86,6 +87,7 @@ def test_scenario_extend_active_window(ra_user, eligible_workstation, reservatio
     reservation = ReservationService().create_reservation(
         user=ra_user, requested_start=start, requested_end=end, created_by=ra_user
     )
+    complete_user_checkin(reservation, actor=ra_user)
     extended = ReservationService().extend(reservation, end + timedelta(minutes=45), actor=ra_user)
     assert extended.reserved_end > end
 
@@ -119,7 +121,7 @@ def test_scenario_second_user_queues_while_busy(ra_user, eligible_workstation, r
     first = ReservationService().create_reservation(
         user=ra_user, requested_start=start, requested_end=end, created_by=ra_user
     )
-    assert first.status == ReservationStatus.RESERVED
+    assert first.status == ReservationStatus.AWAITING_CHECKIN
 
     other = UserFactory(user_type="admin", is_staff=True, is_superuser=True)
     second = ReservationService().create_reservation(

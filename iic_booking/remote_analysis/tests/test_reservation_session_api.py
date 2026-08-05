@@ -10,6 +10,7 @@ from rest_framework.test import APIClient
 
 from iic_booking.remote_analysis.constants import ReservationStatus
 from iic_booking.remote_analysis.services.reservation import ReservationService
+from iic_booking.remote_analysis.tests.conftest import complete_user_checkin
 
 
 @pytest.fixture
@@ -33,7 +34,10 @@ def test_create_reservation_api(api, eligible_workstation, reservation_window):
     )
     assert response.status_code in (200, 201)
     body = response.json()
-    assert body["status"] in {ReservationStatus.RESERVED, ReservationStatus.QUEUED}
+    assert body["status"] in {
+        ReservationStatus.AWAITING_CHECKIN,
+        ReservationStatus.QUEUED,
+    }
     assert body["id"]
 
 
@@ -75,6 +79,7 @@ def test_extend_reservation_api(api, ra_user, eligible_workstation, reservation_
         requested_end=end,
         created_by=ra_user,
     )
+    complete_user_checkin(reservation, actor=ra_user)
     new_end = end + timedelta(hours=1)
     response = api.post(
         f"/api/v1/analysis/reservations/{reservation.id}/extend/",

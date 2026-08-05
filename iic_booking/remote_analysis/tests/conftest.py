@@ -7,11 +7,34 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from iic_booking.remote_analysis.constants import WorkstationStatus
+from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus
 from iic_booking.remote_analysis.models import AnalysisWorkstation
+from iic_booking.remote_analysis.services.reservation import ReservationService
 from iic_booking.remote_analysis.services.tokens import issue_agent_token
 from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
 from iic_booking.users.tests.factories import UserFactory
+
+
+def complete_user_checkin(reservation, *, actor=None):
+    """
+    Advance allocation hold to post-check-in RESERVED.
+
+    Auto-allocate ends in AWAITING_CHECKIN. Call this when a test needs
+    post-check-in behaviour (extend, release-on-cancel, etc.).
+    """
+    reservation.refresh_from_db()
+    if reservation.status != ReservationStatus.AWAITING_CHECKIN:
+        return reservation
+    ReservationService().transition(
+        reservation,
+        ReservationStatus.RESERVED,
+        reason="User checked in",
+        actor=actor,
+    )
+    reservation.checkin_expires_at = None
+    reservation.save(update_fields=["checkin_expires_at", "updated_at"])
+    reservation.refresh_from_db()
+    return reservation
 
 
 @pytest.fixture
