@@ -15,9 +15,9 @@ from django.utils.translation import gettext_lazy as _
 from iic_booking.users.forms import UserAdminChangeForm
 from iic_booking.users.models import User
 from iic_booking.users.tests.factories import UserFactory
-from iic_booking.users.views import UserRedirectView
-from iic_booking.users.views import UserUpdateView
 from iic_booking.users.views import user_detail_view
+from iic_booking.users.views.django_views import UserRedirectView
+from iic_booking.users.views.django_views import UserUpdateView
 
 pytestmark = pytest.mark.django_db
 
