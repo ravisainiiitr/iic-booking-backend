@@ -181,7 +181,7 @@ services:
 
   guacamole:
     profiles: ["guacamole"]
-    image: guacamole/guacamole:1.5.5
+    image: guacamole/guacamole:1.6.0
     restart: unless-stopped
     depends_on:
       guacd:
