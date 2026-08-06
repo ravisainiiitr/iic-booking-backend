@@ -22,7 +22,7 @@ on:
 
 jobs:
   publish:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     permissions:
       contents: read
     steps:
