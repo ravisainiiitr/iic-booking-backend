@@ -1,0 +1,36 @@
+name: Probe Equipment PC Wizard Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Verify wizard release via Django + API
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          import json
+          from django.test import Client
+          from iic_booking.deployment.models import EquipmentPcWizardRelease
+          from iic_booking.deployment.views import _serialize_wizard
+          rel = EquipmentPcWizardRelease.objects.filter(is_latest=True).first()
+          print('DB', json.dumps({
+            'version': rel.version if rel else None,
+            'channel': rel.channel if rel else None,
+            'sha256': rel.sha256 if rel else None,
+            'size': rel.download_size_bytes if rel else None,
+            'has_file': bool(rel and rel.file),
+            'notes': (rel.release_notes or '')[:180] if rel else None,
+            'serialized': _serialize_wizard(rel) if rel else None,
+          }, indent=2, default=str))
+          c = Client(HTTP_HOST='equip.iitr.ac.in')
+          # anonymous may 401; still useful if AllowAny
+          r = c.get('/api/v1/deployment/center/')
+          print('API_STATUS', r.status_code)
+          body = r.content.decode('utf-8', errors='replace')
+          print('API_BODY', body[:2500])
+          "
