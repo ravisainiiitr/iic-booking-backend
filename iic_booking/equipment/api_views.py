@@ -12358,16 +12358,45 @@ def set_booking_sample_status(request, booking_id):
                 status=status.HTTP_403_FORBIDDEN,
             )
         else:
-            # External bookings: staff may only Hold / Forward for now (Sample Sent still OK above).
+            # External bookings: office Hold/Forward first; lab operators may then accept/reject/process.
             snap = (getattr(booking, "user_type_snapshot", None) or "").strip()
             if snap in UserType.get_external_user_codes():
-                if status_value not in (SampleTraceStatus.HELD_AT_OFFICE, SampleTraceStatus.FORWARDED_TO_LAB):
+                office_statuses = {
+                    SampleTraceStatus.HELD_AT_OFFICE,
+                    SampleTraceStatus.FORWARDED_TO_LAB,
+                }
+                lab_followup_statuses = {
+                    SampleTraceStatus.SAMPLE_ACCEPTED,
+                    SampleTraceStatus.SAMPLE_REJECTED,
+                    SampleTraceStatus.PROCESSING,
+                }
+                if status_value not in (office_statuses | lab_followup_statuses):
                     return Response(
                         {
-                            "error": "Only Hold Booking (Held at Office) or Forward to Laboratory is allowed for external bookings at this time."
+                            "error": (
+                                "For external bookings, staff may Hold at Office, Forward to "
+                                "Laboratory, or (after receipt) Accept / Reject / mark Processing."
+                            )
                         },
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+                if status_value in lab_followup_statuses:
+                    received = booking.sample_trace_events.filter(
+                        status__in=(
+                            SampleTraceStatus.HELD_AT_OFFICE,
+                            SampleTraceStatus.FORWARDED_TO_LAB,
+                        )
+                    ).exists()
+                    if not received:
+                        return Response(
+                            {
+                                "error": (
+                                    "External bookings must be Held at Office or Forwarded to "
+                                    "Laboratory before sample acceptance."
+                                )
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
 
     sample_identifiers = (request.data.get('sample_identifiers') or '').strip() if status_value == SampleTraceStatus.SAMPLE_SENT else ''
     tracking_id = (request.data.get('tracking_id') or '').strip() if status_value == SampleTraceStatus.SAMPLE_SENT else ''
