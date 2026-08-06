@@ -4208,7 +4208,11 @@ def _book_equipment_impl(request, pk):
             
     except ValueError as e:
         err_msg = str(e)
-        transaction.set_rollback(True)
+        if connection.in_atomic_block:
+            try:
+                transaction.set_rollback(True)
+            except TransactionManagementError:
+                pass
         _create_booking_attempt_log(
             request, equipment, BookingAttemptOutcome.FAILED,
             failure_reason=f"Invalid input values for calculation: {str(e)}",
@@ -4222,7 +4226,11 @@ def _book_equipment_impl(request, pk):
         )
     except Exception as e:
         import traceback
-        transaction.set_rollback(True)
+        if connection.in_atomic_block:
+            try:
+                transaction.set_rollback(True)
+            except TransactionManagementError:
+                pass
         error_details = str(e)
         # Provide more specific error message for Decimal conversion errors
         if 'ConversionSyntax' in str(type(e)) or 'invalid literal' in error_details.lower():
