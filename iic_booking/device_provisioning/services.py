@@ -153,6 +153,8 @@ def create_session(*, payload: dict, request=None, actor=None) -> tuple[Provisio
 
     Phase R.2.3: when an authenticated administrator creates a DSA session and the
     department policy permits, the session is auto-approved in the same request.
+    Departments missing a policy row receive a lazy TRUSTED_AUTO_APPROVE default
+    (IIT Roorkee) so Install → Login → Finish works without a Pending wait.
     """
     from iic_booking.device_provisioning import policy as policy_mod
     from iic_booking.users.models import Department
@@ -193,6 +195,17 @@ def create_session(*, payload: dict, request=None, actor=None) -> tuple[Provisio
         department = getattr(actor, "department", None)
 
     dept_policy = policy_mod.get_policy(department) if department else None
+    # Departments that predate R.2.3 have no policy row and previously fell back to
+    # MANUAL_APPROVAL, which broke Install → Login → Finish. Lazy-create the IITR
+    # default (TRUSTED_AUTO_APPROVE) when an authenticated admin registers a session.
+    # Explicit Manual / Device Code / Restricted rows are never overwritten.
+    if (
+        department is not None
+        and dept_policy is None
+        and actor is not None
+        and getattr(actor, "is_authenticated", False)
+    ):
+        dept_policy = policy_mod.ensure_policy_for_new_department(department)
     client_ip = _client_ip(request)
 
     # Hard reject duplicate active identity (before creating a pending row).

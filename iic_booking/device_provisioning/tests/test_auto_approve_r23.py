@@ -116,6 +116,25 @@ def test_new_department_gets_trusted_default(department):
 
 
 @pytest.mark.django_db
+def test_missing_policy_lazy_trusted_backfill(dept_client, department, dept_admin):
+    """Departments that predate R.2.3 get TRUSTED on first authenticated create."""
+    DepartmentProvisioningPolicy.objects.filter(department=department).delete()
+    assert not DepartmentProvisioningPolicy.objects.filter(department=department).exists()
+
+    resp = dept_client.post(
+        "/api/v1/provisioning/sessions/",
+        _payload(department_id=department.id, machine_guid="GUID-LAZY-POLICY"),
+        format="json",
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["status"] == ProvisioningSessionStatus.APPROVED
+    assert body["auto_approved"] is True
+    policy = DepartmentProvisioningPolicy.objects.get(department=department)
+    assert policy.provisioning_mode == ProvisioningMode.TRUSTED_AUTO_APPROVE
+
+
+@pytest.mark.django_db
 def test_trusted_auto_approve_install_login_finish(dept_client, department, dept_admin):
     resp = dept_client.post(
         "/api/v1/provisioning/sessions/",

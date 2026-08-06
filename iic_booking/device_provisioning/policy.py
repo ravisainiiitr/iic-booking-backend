@@ -66,7 +66,9 @@ def ensure_policy_for_new_department(department) -> DepartmentProvisioningPolicy
 
 def resolve_effective_mode(department) -> str:
     """
-    Existing departments without a row behave as MANUAL_APPROVAL (backward compatible).
+    Existing departments without a row: lazy-create TRUSTED_AUTO_APPROVE on first
+    authenticated provisioning (see create_session). Until then, treat as MANUAL
+    when only inspecting mode without ensuring a row.
     New departments get a TRUSTED row via signal.
     """
     policy = get_policy(department)
