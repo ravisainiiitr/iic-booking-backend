@@ -30,15 +30,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.release_tag }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/eq-wizard
           cd /tmp/eq-wizard
           rm -f EquipmentPCConfigurationWizardSetup.exe
-          gh release download "$TAG" \
-            --repo "${{ github.repository }}" \
-            --pattern "EquipmentPCConfigurationWizardSetup.exe" \
-            --clobber
+          ASSET_API_URL="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | python3 -c 'import json,sys; r=json.load(sys.stdin); matches=[a["url"] for a in r.get("assets",[]) if a.get("name")=="EquipmentPCConfigurationWizardSetup.exe"]; assert matches, "asset not found"; print(matches[0])')"
+          echo "asset_api_url=$ASSET_API_URL"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o EquipmentPCConfigurationWizardSetup.exe \
+            "$ASSET_API_URL"
           ls -lh EquipmentPCConfigurationWizardSetup.exe
           sha256sum EquipmentPCConfigurationWizardSetup.exe
 
