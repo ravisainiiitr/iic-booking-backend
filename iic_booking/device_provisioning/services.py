@@ -23,6 +23,7 @@ from iic_booking.device_provisioning.models import (
     DeviceAuditLog,
     DeviceType,
     ProvisionedDevice,
+    ProvisioningMode,
     ProvisioningSession,
     ProvisioningSessionStatus,
 )
