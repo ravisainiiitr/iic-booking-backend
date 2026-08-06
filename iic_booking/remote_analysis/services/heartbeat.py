@@ -85,17 +85,40 @@ class HeartbeatService:
         workstation.current_command = str(data.get("CurrentCommand") or data.get("currentCommand") or "")
 
         agent_reported = (heartbeat.current_state or "").upper()
-        if workstation.enabled and workstation.status not in {
+        # Sticky operational statuses must not block recovery when the agent is idle again.
+        # Without this, CLEAN_WORKSTATION → AVAILABLE on the agent never clears portal BUSY,
+        # and the workstation deadlocks for allocation.
+        sticky_operational = {
+            WorkstationStatus.PREPARING,
+            WorkstationStatus.BUSY,
+            WorkstationStatus.RESERVED,
+            WorkstationStatus.CLEANING,
+        }
+        protected = {
             WorkstationStatus.MAINTENANCE,
             WorkstationStatus.CALIBRATION,
             WorkstationStatus.SOFTWARE_UPDATE,
             WorkstationStatus.HARDWARE_FAULT,
             WorkstationStatus.DISABLED,
-            WorkstationStatus.PREPARING,
-            WorkstationStatus.BUSY,
-            WorkstationStatus.RESERVED,
-            WorkstationStatus.CLEANING,
-        }:
+        }
+        idle_reported = agent_reported in {
+            WorkstationStatus.AVAILABLE,
+            WorkstationStatus.ONLINE,
+        }
+        if (
+            workstation.enabled
+            and workstation.status in sticky_operational
+            and idle_reported
+            and not _workstation_has_active_hold(workstation)
+        ):
+            WorkstationStateHistory.objects.create(
+                workstation=workstation,
+                from_status=workstation.status,
+                to_status=agent_reported,
+                reason="Agent heartbeat cleared sticky status (no active hold)",
+            )
+            workstation.status = agent_reported
+        elif workstation.enabled and workstation.status not in (protected | sticky_operational):
             if agent_reported in {s.value for s in WorkstationStatus}:
                 if workstation.status != agent_reported:
                     WorkstationStateHistory.objects.create(
@@ -205,6 +228,40 @@ def mark_stale_workstations_offline() -> int:
         )
         count += 1
     return count
+
+
+def _workstation_has_active_hold(workstation: AnalysisWorkstation) -> bool:
+    """True when a live reservation or desktop session still owns this workstation."""
+    from iic_booking.remote_analysis.constants import ReservationStatus, SessionStatus
+    from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+    from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+    if AnalysisReservation.objects.filter(
+        workstation=workstation,
+        status__in=[
+            ReservationStatus.RESERVED,
+            ReservationStatus.AWAITING_CHECKIN,
+            ReservationStatus.PREPARING,
+            ReservationStatus.READY,
+            ReservationStatus.ACTIVE,
+        ],
+    ).exists():
+        return True
+    return RemoteDesktopSession.objects.filter(
+        workstation=workstation,
+        status__in=[
+            SessionStatus.CREATED,
+            SessionStatus.PREPARING,
+            SessionStatus.READY,
+            SessionStatus.TOKEN_GENERATED,
+            SessionStatus.LAUNCHED,
+            SessionStatus.CONNECTING,
+            SessionStatus.CONNECTED,
+            SessionStatus.ACTIVE,
+            SessionStatus.IDLE,
+            SessionStatus.DISCONNECTING,
+        ],
+    ).exists()
 
 
 def _optional_float(value) -> float | None:

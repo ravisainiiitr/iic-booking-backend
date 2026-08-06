@@ -9,8 +9,13 @@ from typing import Any
 from django.db import transaction
 from django.utils import timezone
 
-from iic_booking.remote_analysis.constants import AuditCategory, CommandStatus, CommandType
-from iic_booking.remote_analysis.models import AnalysisWorkstation, CommandExecution, RemoteCommand
+from iic_booking.remote_analysis.constants import AuditCategory, CommandStatus, CommandType, WorkstationStatus
+from iic_booking.remote_analysis.models import (
+    AnalysisWorkstation,
+    CommandExecution,
+    RemoteCommand,
+    WorkstationStateHistory,
+)
 from iic_booking.remote_analysis.services.audit import record_event
 
 logger = logging.getLogger(__name__)
@@ -122,7 +127,40 @@ class CommandService:
         ws = command.workstation
         if ws.current_command == command.command_type:
             ws.current_command = ""
-            ws.save(update_fields=["current_command", "updated_at"])
+            update_fields = ["current_command", "updated_at"]
+            # Successful CLEAN must free the portal workstation even if the next
+            # agent heartbeat still reports a sticky BUSY (see HeartbeatService).
+            if success and command.command_type == CommandType.CLEAN_WORKSTATION:
+                if ws.status in {
+                    WorkstationStatus.BUSY,
+                    WorkstationStatus.CLEANING,
+                    WorkstationStatus.PREPARING,
+                    WorkstationStatus.RESERVED,
+                }:
+                    WorkstationStateHistory.objects.create(
+                        workstation=ws,
+                        from_status=ws.status,
+                        to_status=WorkstationStatus.AVAILABLE,
+                        reason="CLEAN_WORKSTATION completed",
+                    )
+                    ws.status = WorkstationStatus.AVAILABLE
+                    update_fields.append("status")
+            ws.save(update_fields=update_fields)
+        elif success and command.command_type == CommandType.CLEAN_WORKSTATION:
+            if ws.status in {
+                WorkstationStatus.BUSY,
+                WorkstationStatus.CLEANING,
+                WorkstationStatus.PREPARING,
+                WorkstationStatus.RESERVED,
+            }:
+                WorkstationStateHistory.objects.create(
+                    workstation=ws,
+                    from_status=ws.status,
+                    to_status=WorkstationStatus.AVAILABLE,
+                    reason="CLEAN_WORKSTATION completed",
+                )
+                ws.status = WorkstationStatus.AVAILABLE
+                ws.save(update_fields=["status", "updated_at"])
 
         record_event(
             category=AuditCategory.COMMANDS,
