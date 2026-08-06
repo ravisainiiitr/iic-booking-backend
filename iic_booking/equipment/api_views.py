@@ -3705,6 +3705,20 @@ def _book_equipment_impl(request, pk):
                     )
                     if not ext_quota.allowed:
                         raise ValueError(ext_quota.message or "External weekly slot quota exceeded.")
+                    # Re-validate group/legacy quotas under the same atomic block as the slot claim
+                    # so concurrent bookings cannot oversubscribe after the outer pre-check commits.
+                    if not booking_quota_should_skip(equipment) and not create_as_hold:
+                        quota_ok, quota_err = QuotaService.validate_booking_quota(
+                            user=booking_user,
+                            equipment=equipment,
+                            additional_time_minutes=total_time_minutes,
+                            additional_bookings=1,
+                            additional_charge=total_charge,
+                            booking_date=locked_slots[0].start_datetime if locked_slots else None,
+                            bypass_quota=False,
+                        )
+                        if not quota_ok:
+                            raise ValueError(quota_err or "Quota check failed.")
                 debit_transaction = None
                 wallet_applied = wallet_applied_precheck
                 amount_due = amount_due_precheck

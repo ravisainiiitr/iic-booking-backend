@@ -187,23 +187,26 @@ class SubWallet(Model):
         minimum_balance_after: lowest allowed balance after debit (default 0). Use a negative floor
         when an active credit facility allows temporary overdraft.
         """
+        from django.db import transaction
+
         amount_decimal = Decimal(str(amount))
         if amount_decimal <= 0:
             raise ValueError("Amount must be positive")
         floor = Decimal("0.00") if minimum_balance_after is None else Decimal(str(minimum_balance_after))
-        self.refresh_from_db()
-        new_balance = self.balance - amount_decimal
-        if new_balance < floor:
-            raise ValueError("Insufficient balance")
-        SubWallet.objects.filter(id=self.id).update(balance=F("balance") - amount_decimal)
-        self.refresh_from_db()
-        txn = SubWalletTransaction.objects.create(
-            sub_wallet=self,
-            transaction_type=SubWalletTransaction.TransactionType.DEBIT,
-            amount=amount_decimal,
-            description=description,
-            related_user=related_user,
-        )
+        with transaction.atomic():
+            locked = SubWallet.objects.select_for_update().get(pk=self.pk)
+            new_balance = locked.balance - amount_decimal
+            if new_balance < floor:
+                raise ValueError("Insufficient balance")
+            SubWallet.objects.filter(id=self.id).update(balance=F("balance") - amount_decimal)
+            self.refresh_from_db()
+            txn = SubWalletTransaction.objects.create(
+                sub_wallet=self,
+                transaction_type=SubWalletTransaction.TransactionType.DEBIT,
+                amount=amount_decimal,
+                description=description,
+                related_user=related_user,
+            )
         try:
             from iic_booking.users.department_faculty_credit_facility import on_subwallet_debited
 
