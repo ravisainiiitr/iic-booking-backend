@@ -204,6 +204,9 @@ def sessions_create(request):
     Unauthenticated → Pending Approval (manual / device-code path).
     Authenticated Department Admin+ with TRUSTED/RESTRICTED policy → may Auto Approve (DSA).
     """
+    from django.core.exceptions import ValidationError
+    from django.db import ProgrammingError
+
     actor = request.user if getattr(request.user, "is_authenticated", False) else None
     try:
         session, proof = services.create_session(
@@ -218,6 +221,30 @@ def sessions_create(request):
             {"error": {"code": code, "message": "Invalid registration payload."}},
             status=http,
         )
+    except ValidationError:
+        return Response(
+            {
+                "error": {
+                    "code": "invalid_client_metadata",
+                    "message": "Client metadata failed validation.",
+                }
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    except ProgrammingError as exc:
+        # Missing device_provisioning_* tables (migrations not applied) → actionable 503.
+        msg = str(exc).lower()
+        if "device_provisioning" in msg or "does not exist" in msg or "undefinedtable" in msg:
+            return Response(
+                {
+                    "error": {
+                        "code": "provisioning_schema_unavailable",
+                        "message": "Provisioning database schema is not ready. Apply device_provisioning migrations.",
+                    }
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        raise
     body = _ser_session(session)
     body["session_proof"] = proof  # once; installer stores DPAPI — never log secrets
     if session.status == ProvisioningSessionStatus.APPROVED:

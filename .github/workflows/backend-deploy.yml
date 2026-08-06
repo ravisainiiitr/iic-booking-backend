@@ -266,6 +266,30 @@ jobs:
           fi
 
           echo "PASS R.2.6 compatibility smoke"
+
+          echo "=== Provisioning sessions smoke ==="
+          CID="$(docker compose -f "$COMPOSE_FILE" ps --format '{{.Name}}' 2>/dev/null | grep -E 'django' | head -n 1 || true)"
+          if [[ -n "$CID" ]]; then
+            docker exec -w /app "$CID" python manage.py showmigrations device_provisioning || true
+            docker exec -w /app "$CID" python manage.py migrate device_provisioning --noinput || true
+          fi
+          cat > /tmp/prov_sess.json <<'EOF'
+          {"device_type":"dsa","machine_guid":"GUID-DEPLOY-SMOKE","hostname":"DEPLOY-SMOKE","windows_version":"Windows 11","cpu":"Intel","ram_gb":8,"mac_addresses":["aa:bb:cc:dd:ee:88"],"local_ips":["10.0.0.88"],"application_version":"1.0.2","bootstrap_public_key":"ssh-test"}
+          EOF
+          sess_code="$(curl -sS -o /tmp/prov_sess_out.txt -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -H 'Host: equip.iitr.ac.in' \
+            --data-binary @/tmp/prov_sess.json \
+            http://127.0.0.1:8080/api/v1/provisioning/sessions/ || true)"
+          echo "sessions_create http=$sess_code"
+          cat /tmp/prov_sess_out.txt; echo
+          case "$sess_code" in
+            201|409) echo "PASS provisioning sessions smoke" ;;
+            *)
+              rollback "provisioning sessions smoke failed http=$sess_code"
+              exit 1
+              ;;
+          esac
+
           echo "PASS deployed $RELEASE_TAG at $(git rev-parse --short HEAD)"
 
           echo "=== Rollback metadata ==="

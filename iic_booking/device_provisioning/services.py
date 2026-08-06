@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import secrets
 from datetime import timedelta
 from typing import Any
@@ -46,12 +47,30 @@ def _prefix(value: str, n: int = 8) -> str:
 
 
 def _client_ip(request) -> str | None:
+    """Return a DB-safe IP (GenericIPAddressField) or None.
+
+    Proxies sometimes send non-IP tokens (unknown, obfuscated) in
+    X-Forwarded-For; never pass those into model fields.
+    """
     if request is None:
         return None
+
+    candidates: list[str] = []
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR")
+        candidates.extend(part.strip() for part in forwarded.split(",") if part.strip())
+    remote = request.META.get("REMOTE_ADDR")
+    if remote:
+        candidates.append(str(remote).strip())
+    for raw in candidates:
+        # Strip optional :port on IPv4 (rare but seen behind some L7 proxies).
+        if raw.count(":") == 1 and raw.rsplit(":", 1)[-1].isdigit():
+            raw = raw.rsplit(":", 1)[0]
+        try:
+            return str(ipaddress.ip_address(raw))
+        except ValueError:
+            continue
+    return None
 
 
 def compute_fingerprint(
