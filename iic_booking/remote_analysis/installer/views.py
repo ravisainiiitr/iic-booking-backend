@@ -164,6 +164,23 @@ def _try_bind_agent_auth(request) -> None:
         request.user, request.auth = result
 
 
+def _try_bind_portal_token(request) -> None:
+    """Attach Django user when Authorization: Token … is present (zero-touch installer)."""
+    from rest_framework.authentication import TokenAuthentication
+
+    if getattr(request.user, "is_authenticated", False):
+        return
+    auth_header = request.META.get("HTTP_AUTHORIZATION") or ""
+    if not auth_header.lower().startswith("token "):
+        return
+    try:
+        result = TokenAuthentication().authenticate(request)
+    except Exception:
+        return
+    if result:
+        request.user, request.auth = result
+
+
 @api_view(["GET"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -417,9 +434,11 @@ def catalog_software(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def equipment_tree(request):
-    """Enrollment-keyed department → equipment tree (RA-enabled only)."""
-    ok, err = verify_enrollment_key(request)
-    if not ok:
+    """Enrollment key, portal admin Token, or agent bearer → department/equipment tree."""
+    _try_bind_agent_auth(request)
+    _try_bind_portal_token(request)
+    allowed, err = _agent_or_enrollment_or_manage(request)
+    if not allowed:
         return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
     from iic_booking.equipment.models import Equipment
     from iic_booking.users.models import Department
@@ -448,7 +467,6 @@ def equipment_tree(request):
                 "enable_remote_analysis": True,
             }
         )
-    # Include empty departments that exist (optional clarity)
     for d in Department.objects.all().order_by("name")[:200]:
         did = str(d.id)
         if did not in by_dept:
@@ -460,9 +478,11 @@ def equipment_tree(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def link_equipment(request):
-    """After register: link workstation to equipment, store RDP secret, attach software."""
-    ok, err = verify_enrollment_key(request)
-    if not ok:
+    """After register/claim: link workstation to equipment, store RDP secret, attach software."""
+    _try_bind_agent_auth(request)
+    _try_bind_portal_token(request)
+    allowed, err = _agent_or_enrollment_or_manage(request)
+    if not allowed:
         return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
 
     data = request.data if isinstance(request.data, dict) else {}
@@ -473,6 +493,7 @@ def link_equipment(request):
         return Response({"detail": "equipment_id is required"}, status=status.HTTP_400_BAD_REQUEST)
 
     from iic_booking.equipment.models import Equipment
+    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
     from iic_booking.remote_analysis.models import AnalysisWorkstation
 
     ws = None
@@ -480,6 +501,8 @@ def link_equipment(request):
         ws = AnalysisWorkstation.objects.filter(pk=workstation_id).first()
     if ws is None and agent_id:
         ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
+    if ws is None and isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
+        ws = request.user.workstation
     if ws is None:
         return Response({"detail": "Workstation not found. Register the agent first."}, status=status.HTTP_404_NOT_FOUND)
 
