@@ -603,6 +603,25 @@ FRONTEND_URL = env(
     "FRONTEND_URL",
     default="http://localhost:8080",
 )
+
+# Platform compatibility / version manifest (Phase R.2.6)
+# ------------------------------------------------------------------------------
+PORTAL_VERSION = env("PORTAL_VERSION", default="2.5.2")
+GIT_SHA = env("GIT_SHA", default="")
+BACKEND_GIT_COMMIT = env("BACKEND_GIT_COMMIT", default=GIT_SHA)
+FRONTEND_VERSION = env("FRONTEND_VERSION", default="")
+FRONTEND_GIT_COMMIT = env("FRONTEND_GIT_COMMIT", default="")
+BUILD_DATE = env("BUILD_DATE", default="")
+PROVISIONING_VERSION = env("PROVISIONING_VERSION", default="2.0")
+PROVISIONING_ENABLED = env.bool("PROVISIONING_ENABLED", default=True)
+RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.0.0")
+RESEARCH_COPILOT_ENABLED = env.bool("RESEARCH_COPILOT_ENABLED", default=False)
+COMPATIBLE_FRONTEND_MIN = env("COMPATIBLE_FRONTEND_MIN", default="2.5.2-r2")
+COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
+# Optional JSON override for installer matrix, e.g.
+# {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}
+SUPPORTED_INSTALLERS = env.json("SUPPORTED_INSTALLERS", default=None) or {}
+
 # Optional: for AI-powered chat assistant. If set, chat uses OpenAI; otherwise falls back to FAQ.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 OPENAI_CHAT_MODEL = env("OPENAI_CHAT_MODEL", default="gpt-4o-mini")

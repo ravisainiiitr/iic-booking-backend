@@ -25,6 +25,9 @@ from iic_booking.device_provisioning.models import (
 )
 from iic_booking.device_provisioning import policy as policy_mod
 from iic_booking.device_provisioning import services
+from iic_booking.platform_compat.manifest import build_capabilities_payload
+from iic_booking.platform_compat.semver import compare_installer, traffic_light
+from iic_booking.platform_compat.views import deployment_self_test as provisioning_self_test
 from iic_booking.sync.permissions import CanManageDepartmentSync
 
 _MANAGE = [IsAuthenticated, CanManageDepartmentSync]
@@ -138,6 +141,28 @@ def _ser_audit(row: DeviceAuditLog) -> dict:
         "client_ip": row.client_ip,
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def capabilities(request):
+    """
+    GET /api/v1/provisioning/capabilities/
+
+    Public capability discovery for installers (Phase R.2.6).
+    Replaces the static /iic-device-provisioning.json marker.
+    """
+    payload = build_capabilities_payload()
+    product = (request.query_params.get("product") or "").strip()
+    installer_version = (request.query_params.get("installer_version") or "").strip()
+    if product:
+        compat = compare_installer(
+            product, installer_version or "0", payload.get("supported_installers") or {}
+        )
+        compat["traffic_light"] = traffic_light(compat["status"])
+        payload["installer_compatibility"] = compat
+    return Response(payload)
 
 
 @api_view(["GET"])
