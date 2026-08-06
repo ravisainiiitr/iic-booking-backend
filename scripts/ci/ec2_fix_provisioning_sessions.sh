@@ -100,17 +100,26 @@ esac
 
 if [ "$RESTART_RUNNER" = "true" ]; then
   echo "=== restart GitHub Actions runner ==="
-  if [ -x /home/ubuntu/actions-runner/svc.sh ]; then
-    sudo /home/ubuntu/actions-runner/svc.sh stop || true
-    sudo /home/ubuntu/actions-runner/svc.sh start || true
-    sudo /home/ubuntu/actions-runner/svc.sh status || true
-  elif systemctl list-units --type=service --all 2>/dev/null | grep -qi 'actions.runner'; then
-    UNIT=$(systemctl list-units --type=service --all | awk '/actions\.runner/ {print $1; exit}')
+  set +e
+  UNIT=$(systemctl list-units --type=service --all 2>/dev/null | awk '/actions\.runner/ {print $1; exit}')
+  if [ -n "${UNIT:-}" ]; then
     echo "unit=$UNIT"
-    sudo systemctl restart "$UNIT" || true
+    sudo systemctl restart "$UNIT"
     sudo systemctl status "$UNIT" --no-pager || true
+  elif [ -d /home/ubuntu/actions-runner ]; then
+    echo "restarting via svc.sh from runner root"
+    (
+      cd /home/ubuntu/actions-runner
+      sudo ./svc.sh stop || true
+      sudo ./svc.sh start || true
+      sudo ./svc.sh status || true
+    )
   else
     echo "WARN: could not locate actions-runner service"
     ls -la /home/ubuntu/actions-runner 2>/dev/null || true
+    systemctl list-units --type=service --all 2>/dev/null | grep -i runner || true
   fi
+  set -e
+  echo "=== runner restart attempted (best-effort) ==="
 fi
+echo "=== done ==="
