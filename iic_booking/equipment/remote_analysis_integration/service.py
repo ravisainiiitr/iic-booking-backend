@@ -211,18 +211,23 @@ class BookingRemoteAnalysisService:
                 slug=software_slug,
             )
 
-        # Always hard-require every catalog software mapped to this equipment.
         caps = dict(requested_capabilities or {})
-        required_names = SoftwareMappingService().required_software_names(booking.equipment)
-        if required_names:
-            caps["required_software_names"] = required_names
-            # Prefer a PC that already has the full set when multiple are needed.
-            if len(required_names) > 1 and not caps.get("prefer_workstation_id"):
-                from iic_booking.remote_analysis.services.allocation import AllocationService
+        if not caps.get("required_software_names"):
+            selected_name = (getattr(software_profile, "software", None) or "").strip()
+            if selected_name:
+                caps["required_software_names"] = [selected_name]
+            else:
+                required_names = SoftwareMappingService().required_software_names(booking.equipment)
+                if required_names:
+                    caps["required_software_names"] = required_names
 
-                preferred = AllocationService().find_workstation_with_all_software(required_names)
-                if preferred is not None:
-                    caps["prefer_workstation_id"] = str(preferred.id)
+        required_names = list(caps.get("required_software_names") or [])
+        if len(required_names) > 1 and not caps.get("prefer_workstation_id"):
+            from iic_booking.remote_analysis.services.allocation import AllocationService
+
+            preferred = AllocationService().find_workstation_with_all_software(required_names)
+            if preferred is not None:
+                caps["prefer_workstation_id"] = str(preferred.id)
 
         duration_hours = int(getattr(booking.equipment, "analysis_access_duration", 72) or 72)
         if software_profile is not None:

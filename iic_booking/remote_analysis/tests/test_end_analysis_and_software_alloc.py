@@ -115,3 +115,21 @@ def test_software_mapping_required_names(db):
         EquipmentAnalysisSoftware.objects.create(equipment=eq, catalog=cat, is_default=(name == "CasaXPS"))
     names = SoftwareMappingService().required_software_names(eq)
     assert names == ["CasaXPS", "Avantage"] or set(names) == {"CasaXPS", "Avantage"}
+
+
+@pytest.mark.django_db
+def test_resolve_selected_software_slug(db):
+    """R6: equipment may map multiple apps; resolve by slug returns that catalog profile only."""
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog, EquipmentAnalysisSoftware
+
+    eq = Equipment.objects.create(name="XPS", code="XPS-TEST-SW-2", status="ACTIVE")
+    for name in ("CasaXPS", "Avantage"):
+        cat = AnalysisSoftwareCatalog.objects.create(name=name, slug=name.lower(), is_active=True)
+        EquipmentAnalysisSoftware.objects.create(equipment=eq, catalog=cat, is_default=(name == "CasaXPS"))
+    row, req = SoftwareMappingService().resolve(eq, slug="avantage")
+    assert row is not None
+    assert row.catalog.slug == "avantage"
+    assert req is not None
+    assert req.software == "Avantage"

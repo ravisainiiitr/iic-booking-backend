@@ -229,12 +229,37 @@ from iic_booking.remote_analysis.catalog_models import (  # noqa: E402
 
 @admin.register(AnalysisSoftwareCatalog)
 class AnalysisSoftwareCatalogAdmin(admin.ModelAdmin):
-    list_display = ("name", "slug", "vendor", "version_constraint", "max_concurrent", "is_active", "updated_at")
-    list_filter = ("is_active", "license_type")
+    list_display = (
+        "name",
+        "slug",
+        "vendor",
+        "license_type",
+        "version_constraint",
+        "max_concurrent",
+        "is_active",
+        "updated_at",
+    )
+    list_filter = ("is_active", "license_type", "category")
     search_fields = ("name", "slug", "vendor")
     filter_horizontal = ("supported_departments", "capabilities")
     autocomplete_fields = ("software_requirement",)
     prepopulated_fields = {"slug": ("name",)}
+    fieldsets = (
+        (None, {"fields": ("name", "slug", "vendor", "description", "category", "icon_url", "is_active")}),
+        (
+            "Licensing & scheduling",
+            {"fields": ("license_type", "max_concurrent", "version_constraint", "default_session_duration_hours", "software_requirement")},
+        ),
+        ("Departments & capabilities", {"fields": ("supported_departments", "capabilities")}),
+        (
+            "AI readiness (reserved)",
+            {
+                "classes": ("collapse",),
+                "fields": ("ai_tags", "ai_metadata"),
+                "description": "Prepare metadata only — do not wire AI recommenders in R6.",
+            },
+        ),
+    )
 
 
 @admin.register(EquipmentAnalysisSoftware)

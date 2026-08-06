@@ -12,6 +12,13 @@ from django.utils.translation import gettext_lazy as _
 class AnalysisSoftwareCatalog(models.Model):
     """Admin-managed analysis software package (user-facing catalog)."""
 
+    class LicenseType(models.TextChoices):
+        CONCURRENT = "concurrent", _("Concurrent seats")
+        NETWORK = "network", _("Network / license server")
+        UNLIMITED = "unlimited", _("Unlimited")
+        NODE_LOCKED = "node_locked", _("Node-locked")
+        OTHER = "other", _("Other")
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, unique=True)
@@ -22,10 +29,27 @@ class AnalysisSoftwareCatalog(models.Model):
         default="",
         help_text=_("Minimum / preferred version string matched against inventory."),
     )
-    license_type = models.CharField(max_length=128, blank=True, default="")
+    license_type = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        choices=LicenseType.choices,
+        help_text=_("License model for scheduling and seat checks (AI/ops metadata)."),
+    )
     max_concurrent = models.PositiveIntegerField(
         default=0,
         help_text=_("Max concurrent sessions using this software (0 = unlimited)."),
+    )
+    # Reserved AI-ready catalog metadata (no recommender consumers yet).
+    ai_tags = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=_("Optional tags for future AI software recommendation (e.g. technique, file type)."),
+    )
+    ai_metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=_("Opaque AI-ready metadata blob; do not implement consumers in R6."),
     )
     supported_departments = models.ManyToManyField(
         "users.Department",
