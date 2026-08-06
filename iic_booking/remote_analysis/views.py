@@ -367,11 +367,48 @@ def workstation_create_command(request, workstation_id):
 @api_view(["GET"])
 @permission_classes(_VIEW)
 def software_list(request):
+    """GET /api/v1/analysis/software/ — fleet installed software with search/filter."""
+    from django.db.models import Q
+
+    from iic_booking.remote_analysis.models import InstalledSoftware
+
+    qs = InstalledSoftware.objects.filter(is_present=True).select_related("workstation", "workstation__department")
     workstation_id = request.query_params.get("workstation")
-    ws = None
     if workstation_id:
-        ws = get_object_or_404(AnalysisWorkstation, pk=workstation_id)
-    return Response(InstalledSoftwareSerializer(selectors.installed_software(ws)[:500], many=True).data)
+        qs = qs.filter(workstation_id=workstation_id)
+    q = (request.query_params.get("q") or request.query_params.get("search") or "").strip()
+    if q:
+        qs = qs.filter(
+            Q(software_name__icontains=q)
+            | Q(publisher__icontains=q)
+            | Q(version__icontains=q)
+            | Q(workstation__hostname__icontains=q)
+        )
+    category = (request.query_params.get("category") or "").strip()
+    if category:
+        qs = qs.filter(category__iexact=category)
+    licensed = (request.query_params.get("licensed") or "").strip().lower()
+    if licensed in {"1", "true", "yes"}:
+        qs = qs.filter(licensed=True)
+    elif licensed in {"0", "false", "no"}:
+        qs = qs.filter(licensed=False)
+    dept = request.query_params.get("department") or request.query_params.get("department_id")
+    if dept:
+        qs = qs.filter(workstation__department_id=dept)
+    limit = min(int(request.query_params.get("limit") or 500), 1000)
+    objs = list(qs.order_by("software_name")[:limit])
+    rows = InstalledSoftwareSerializer(objs, many=True).data
+    for row, obj in zip(rows, objs):
+        row["department_id"] = obj.workstation.department_id
+        row["department_name"] = obj.workstation.department_name or (
+            getattr(obj.workstation.department, "name", None) if obj.workstation.department_id else None
+        )
+        row["workstation_status"] = obj.workstation.status
+        row["workstation_health"] = obj.workstation.health_score
+        row["last_seen"] = (
+            obj.workstation.last_heartbeat.isoformat() if obj.workstation.last_heartbeat else None
+        )
+    return Response(rows)
 
 
 @api_view(["GET"])

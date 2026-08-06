@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from django.db.models import Prefetch, Q
+from django.db.models import Q
 from django.utils import timezone
 
 from iic_booking.remote_analysis.constants import HEARTBEAT_OFFLINE_SECONDS, ReservationStatus, WorkstationStatus
@@ -42,8 +42,23 @@ def fleet_inventory(*, department_id: int | None = None, status: str | None = No
         )
     }
 
+    # Load present software in bulk (avoid N+1 and Prefetch slice quirks)
+    present_by_ws: dict = {}
+    for s in InstalledSoftware.objects.filter(
+        workstation_id__in=qs.values_list("id", flat=True), is_present=True
+    ).order_by("software_name")[:5000]:
+        present_by_ws.setdefault(s.workstation_id, []).append(s)
+
+    from iic_booking.remote_analysis.models import SoftwareLicense
+
+    license_by_ws: dict = {}
+    for lic in SoftwareLicense.objects.filter(workstation_id__in=qs.values_list("id", flat=True)).order_by(
+        "software"
+    )[:5000]:
+        license_by_ws.setdefault(lic.workstation_id, []).append(lic)
+
     rows = []
-    for ws in qs:
+    for ws in qs.select_related("department"):
         hb = (
             WorkstationHeartbeat.objects.filter(workstation=ws)
             .order_by("-received_at")
@@ -57,6 +72,26 @@ def fleet_inventory(*, department_id: int | None = None, status: str | None = No
         hb_age = None
         if ws.last_heartbeat:
             hb_age = int((now - ws.last_heartbeat).total_seconds())
+        soft_list = present_by_ws.get(ws.id, [])[:40]
+        software_rows = [
+            {
+                "name": s.software_name,
+                "version": s.version,
+                "publisher": s.publisher,
+                "licensed": s.licensed,
+                "license_type": s.license_type,
+            }
+            for s in soft_list
+        ]
+        license_rows = [
+            {
+                "software": lic.software,
+                "status": lic.status,
+                "seats": lic.seats,
+                "license_server": lic.license_server,
+            }
+            for lic in license_by_ws.get(ws.id, [])[:40]
+        ]
         rows.append(
             {
                 "id": str(ws.id),
@@ -69,13 +104,27 @@ def fleet_inventory(*, department_id: int | None = None, status: str | None = No
                 "health_score": ws.health_score,
                 "agent_version": ws.agent_version,
                 "operating_system": ws.operating_system or ws.windows_version,
+                "department_id": ws.department_id,
+                "department_name": getattr(ws.department, "name", None) if ws.department_id else ws.department_name,
+                "cpu_model": ws.cpu,
+                "cpu_cores": ws.cpu_cores,
+                "memory_gb": ws.memory_gb,
+                "storage_gb": ws.storage_gb,
+                "gpu": ws.gpu,
                 "last_heartbeat": ws.last_heartbeat.isoformat() if ws.last_heartbeat else None,
+                "last_seen": ws.last_heartbeat.isoformat() if ws.last_heartbeat else None,
                 "heartbeat_age_seconds": hb_age,
                 "online": bool(hb_age is not None and hb_age <= HEARTBEAT_OFFLINE_SECONDS),
                 "software_inventory_age_seconds": inventory_age,
                 "cpu": getattr(hb, "cpu", None),
                 "memory": getattr(hb, "memory", None),
                 "disk": getattr(hb, "disk", None),
+                "load": {
+                    "cpu": getattr(hb, "cpu", None),
+                    "memory": getattr(hb, "memory", None),
+                    "disk": getattr(hb, "disk", None),
+                    "gpu": getattr(hb, "gpu", None),
+                },
                 "current_user": (
                     (getattr(hb, "logged_in_user", None) or (hb.raw_payload or {}).get("LoggedInUser"))
                     if hb
@@ -84,12 +133,16 @@ def fleet_inventory(*, department_id: int | None = None, status: str | None = No
                 "current_booking": getattr(getattr(res, "booking", None), "virtual_booking_id", None)
                 or (str(res.booking_id) if res and res.booking_id else None),
                 "current_user_email": getattr(getattr(res, "user", None), "email", None),
+                "session_status": res.status if res else None,
                 "reservation_status": res.status if res else None,
                 "tunnel_status": tun.status if tun else None,
                 "rdp_status": "SESSION_ACTIVE"
                 if res and res.status == ReservationStatus.ACTIVE
                 else ("RESERVED" if res else "IDLE"),
                 "workspace_status": None,
+                "installed_software": software_rows,
+                "installed_software_count": len(present_by_ws.get(ws.id, [])),
+                "licenses": license_rows,
             }
         )
 

@@ -237,18 +237,45 @@ class AnalysisSoftwareCatalogAdmin(admin.ModelAdmin):
         "version_constraint",
         "max_concurrent",
         "is_active",
+        "is_archived",
         "updated_at",
     )
-    list_filter = ("is_active", "license_type", "category")
+    list_filter = ("is_active", "is_archived", "license_type", "category")
     search_fields = ("name", "slug", "vendor")
     filter_horizontal = ("supported_departments", "capabilities")
     autocomplete_fields = ("software_requirement",)
     prepopulated_fields = {"slug": ("name",)}
     fieldsets = (
-        (None, {"fields": ("name", "slug", "vendor", "description", "category", "icon_url", "is_active")}),
+        (
+            None,
+            {
+                "fields": (
+                    "name",
+                    "slug",
+                    "vendor",
+                    "description",
+                    "typical_usage",
+                    "accepted_file_types",
+                    "category",
+                    "icon_url",
+                    "is_active",
+                    "is_archived",
+                )
+            },
+        ),
         (
             "Licensing & scheduling",
-            {"fields": ("license_type", "max_concurrent", "version_constraint", "default_session_duration_hours", "software_requirement")},
+            {
+                "fields": (
+                    "license_type",
+                    "max_concurrent",
+                    "license_seats",
+                    "license_server_url",
+                    "version_constraint",
+                    "default_session_duration_hours",
+                    "software_requirement",
+                )
+            },
         ),
         ("Departments & capabilities", {"fields": ("supported_departments", "capabilities")}),
         (

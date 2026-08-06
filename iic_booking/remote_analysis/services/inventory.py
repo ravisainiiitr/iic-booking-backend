@@ -45,7 +45,23 @@ def _content_hash(item: dict[str, Any]) -> str:
 class InventoryService:
     @transaction.atomic
     def synchronize(self, workstation: AnalysisWorkstation, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        Upsert inventory from agent/installer.
+
+        sync_mode:
+          - "full" (default): software[] is the full present set; missing → soft-remove
+          - "delta": apply added/updated lists and removed keys only; never wipe absent titles
+        """
+        sync_mode = str(payload.get("syncMode") or payload.get("sync_mode") or "full").strip().lower()
         software_list = payload.get("software") or payload.get("installedSoftware") or []
+        if sync_mode == "delta":
+            added_items = payload.get("added") or payload.get("updated") or []
+            if isinstance(added_items, list) and added_items:
+                software_list = list(software_list) + list(added_items)
+            removed_items = payload.get("removed") or []
+        else:
+            removed_items = []
+
         licenses = payload.get("licenses") or payload.get("softwareLicenses") or []
         hardware = payload.get("hardware") or payload.get("workstation") or {}
         now = timezone.now()
@@ -57,6 +73,11 @@ class InventoryService:
         existing = {
             (s.software_name.lower(), s.version.lower(), s.publisher.lower()): s
             for s in InstalledSoftware.objects.filter(workstation=workstation, is_present=True)
+        }
+        # Also index soft-removed rows so delta/full can revive them without duplicates
+        existing_any = {
+            (s.software_name.lower(), s.version.lower(), s.publisher.lower()): s
+            for s in InstalledSoftware.objects.filter(workstation=workstation)
         }
         seen_keys: set[tuple[str, str, str]] = set()
         added = removed = version_changed = 0
@@ -75,7 +96,13 @@ class InventoryService:
             if isinstance(install_date, str):
                 install_date = parse_datetime(install_date)
 
-            content_hash = item.get("contentHash") or item.get("ContentHash") or _content_hash(item)
+            content_hash = (
+                item.get("contentHash")
+                or item.get("ContentHash")
+                or item.get("sha256")
+                or item.get("hash")
+                or _content_hash(item)
+            )
 
             # Detect version change by name+publisher ignoring version
             prior_same_name = [
@@ -84,16 +111,17 @@ class InventoryService:
                 if n == name.lower() and p == publisher.lower() and _v != version.lower()
             ]
 
-            if key in existing:
-                row = existing[key]
+            row = existing.get(key) or existing_any.get(key)
+            if row is not None:
                 changed = False
                 for field, value in (
                     ("executable", str(item.get("executable") or "")),
                     ("install_path", str(item.get("installPath") or item.get("install_path") or "")),
-                    ("category", str(item.get("category") or "")),
+                    ("category", str(item.get("category") or row.category or "")),
                     ("licensed", bool(item.get("isLicensed") or item.get("licensed") or False)),
-                    ("license_type", str(item.get("licenseType") or item.get("license_type") or "")),
+                    ("license_type", str(item.get("licenseType") or item.get("license_type") or row.license_type or "")),
                     ("content_hash", content_hash),
+                    ("is_present", True),
                 ):
                     if getattr(row, field) != value:
                         setattr(row, field, value)
@@ -103,6 +131,15 @@ class InventoryService:
                     changed = True
                 if changed:
                     row.save()
+                if key not in existing:
+                    added += 1
+                    SoftwareInventoryHistory.objects.create(
+                        workstation=workstation,
+                        software_name=name,
+                        change_type=InventoryChangeType.ADDED,
+                        new_version=version,
+                        details=f"Publisher={publisher};mode={sync_mode}",
+                    )
             else:
                 InstalledSoftware.objects.create(
                     workstation=workstation,
@@ -124,7 +161,7 @@ class InventoryService:
                     software_name=name,
                     change_type=InventoryChangeType.ADDED,
                     new_version=version,
-                    details=f"Publisher={publisher}",
+                    details=f"Publisher={publisher};mode={sync_mode}",
                 )
                 if prior_same_name:
                     version_changed += 1
@@ -137,8 +174,27 @@ class InventoryService:
                         new_version=version,
                     )
 
-        for key, row in existing.items():
-            if key not in seen_keys:
+        # Explicit delta removals
+        for item in removed_items:
+            if isinstance(item, str):
+                name = item.strip()
+                version = publisher = ""
+            elif isinstance(item, dict):
+                name = str(item.get("displayName") or item.get("software_name") or "").strip()
+                version = str(item.get("version") or "").strip()
+                publisher = str(item.get("publisher") or "").strip()
+            else:
+                continue
+            if not name:
+                continue
+            qs = InstalledSoftware.objects.filter(
+                workstation=workstation, is_present=True, software_name__iexact=name
+            )
+            if version:
+                qs = qs.filter(version__iexact=version)
+            if publisher:
+                qs = qs.filter(publisher__iexact=publisher)
+            for row in qs:
                 row.is_present = False
                 row.save(update_fields=["is_present", "last_updated"])
                 removed += 1
@@ -147,7 +203,22 @@ class InventoryService:
                     software_name=row.software_name,
                     change_type=InventoryChangeType.REMOVED,
                     old_version=row.version,
+                    details="delta_remove",
                 )
+
+        # Full sync: soft-remove titles absent from payload (never on delta)
+        if sync_mode != "delta":
+            for key, row in existing.items():
+                if key not in seen_keys:
+                    row.is_present = False
+                    row.save(update_fields=["is_present", "last_updated"])
+                    removed += 1
+                    SoftwareInventoryHistory.objects.create(
+                        workstation=workstation,
+                        software_name=row.software_name,
+                        change_type=InventoryChangeType.REMOVED,
+                        old_version=row.version,
+                    )
 
         for lic in licenses:
             if not isinstance(lic, dict):
@@ -185,7 +256,7 @@ class InventoryService:
         inventory.license_count = SoftwareLicense.objects.filter(workstation=workstation).count()
         inventory.last_synced_at = now
         inventory.content_hash = hashlib.sha256(
-            f"{present_count}:{added}:{removed}:{version_changed}".encode()
+            f"{present_count}:{added}:{removed}:{version_changed}:{sync_mode}".encode()
         ).hexdigest()
         inventory.save()
 
@@ -196,12 +267,16 @@ class InventoryService:
         record_event(
             category=AuditCategory.INVENTORY,
             action="Synchronized",
-            details=f"added={added} removed={removed} version_changed={version_changed} total={present_count}",
+            details=(
+                f"mode={sync_mode} added={added} removed={removed} "
+                f"version_changed={version_changed} total={present_count}"
+            ),
             workstation=workstation,
         )
 
         return {
             "accepted": True,
+            "sync_mode": sync_mode,
             "added": added,
             "removed": removed,
             "version_changed": version_changed,

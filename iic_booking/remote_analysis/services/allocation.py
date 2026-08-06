@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -17,6 +18,8 @@ from iic_booking.remote_analysis.scheduler_models import (
     SoftwareRequirement,
 )
 from iic_booking.remote_analysis.services.availability import AvailabilityEngine
+
+logger = logging.getLogger("remote_analysis.scheduler")
 
 
 @dataclass
@@ -99,6 +102,37 @@ class AllocationService:
         available = avail.available
 
         # License seat / catalog max concurrent (admin-maintained)
+        catalog_license_type = ""
+        catalog_obj = None
+        if software_name:
+            from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+
+            catalog_obj = (
+                AnalysisSoftwareCatalog.objects.filter(name__iexact=software_name, is_active=True)
+                .order_by("-updated_at")
+                .first()
+            )
+            if catalog_obj is None:
+                catalog_obj = (
+                    AnalysisSoftwareCatalog.objects.filter(name__icontains=software_name, is_active=True)
+                    .order_by("-updated_at")
+                    .first()
+                )
+            if catalog_obj is not None:
+                catalog_license_type = (catalog_obj.license_type or "").strip().lower()
+                if catalog_license_type == AnalysisSoftwareCatalog.LicenseType.EXPIRED:
+                    available = False
+                    reasons.append("catalog_license_expired")
+                seats_cap = int(catalog_obj.license_seats or 0) or int(catalog_max_concurrent or 0) or int(
+                    catalog_obj.max_concurrent or 0
+                )
+                if seats_cap <= 0:
+                    seats_cap = int(catalog_max_concurrent or 0)
+                if catalog_license_type == AnalysisSoftwareCatalog.LicenseType.UNLIMITED:
+                    seats_cap = 0  # unlimited — skip seat gate
+                if seats_cap and seats_cap > 0 and catalog_license_type != AnalysisSoftwareCatalog.LicenseType.UNLIMITED:
+                    catalog_max_concurrent = seats_cap
+
         if catalog_max_concurrent and catalog_max_concurrent > 0 and software_name:
             from iic_booking.remote_analysis.session_models import RemoteDesktopSession
 
@@ -127,26 +161,44 @@ class AllocationService:
                 .order_by("-updated_at")
                 .first()
             )
-            if lic and lic.seats is not None:
-                from iic_booking.remote_analysis.session_models import RemoteDesktopSession
-
-                open_statuses = {
-                    SessionStatus.PREPARING,
-                    SessionStatus.READY,
-                    SessionStatus.TOKEN_GENERATED,
-                    SessionStatus.LAUNCHED,
-                    SessionStatus.CONNECTING,
-                    SessionStatus.CONNECTED,
-                    SessionStatus.ACTIVE,
-                    SessionStatus.IDLE,
-                }
-                active = RemoteDesktopSession.objects.filter(
-                    workstation=workstation,
-                    status__in=open_statuses,
-                ).count()
-                if active >= int(lic.seats):
+            if lic:
+                if str(lic.status or "").lower() == "expired":
                     available = False
-                    reasons.append("license_seats_exhausted")
+                    reasons.append("workstation_license_expired")
+                elif lic.seats is not None:
+                    from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+                    open_statuses = {
+                        SessionStatus.PREPARING,
+                        SessionStatus.READY,
+                        SessionStatus.TOKEN_GENERATED,
+                        SessionStatus.LAUNCHED,
+                        SessionStatus.CONNECTING,
+                        SessionStatus.CONNECTED,
+                        SessionStatus.ACTIVE,
+                        SessionStatus.IDLE,
+                    }
+                    active = RemoteDesktopSession.objects.filter(
+                        workstation=workstation,
+                        status__in=open_statuses,
+                    ).count()
+                    if active >= int(lic.seats):
+                        available = False
+                        reasons.append("license_seats_exhausted")
+            # Node-locked / dongle: require a non-expired SoftwareLicense row when catalog says so
+            if catalog_license_type in {"node_locked", "dongle"} and lic is None:
+                # Soft: only reject when license_required on requirement
+                if requirement and getattr(requirement, "license_required", False):
+                    available = False
+                    reasons.append(f"missing_{catalog_license_type}_license")
+            # Network / floating: require license_server_url configured OR per-WS license_server
+            if catalog_license_type in {"network", "floating"} and catalog_obj is not None:
+                server = (catalog_obj.license_server_url or "").strip()
+                ws_server = (lic.license_server if lic else "") or ""
+                if not server and not str(ws_server).strip():
+                    if requirement and getattr(requirement, "license_required", False):
+                        available = False
+                        reasons.append("license_server_not_configured")
 
         weights = self.scoring_weights(department_id=department_id, user=user)
         breakdown: dict[str, float] = {}
@@ -332,9 +384,43 @@ class AllocationService:
             )
             for ws in qs
         ]
+
+        # Diagnostic logs: every accept/reject decision (R6.1 scheduler transparency)
+        soft_label = software_name or (requirement.software if requirement else "") or "-"
+        for s in scored:
+            decision = "ACCEPT" if s.available else "REJECT"
+            logger.info(
+                "scheduler_decision decision=%s workstation=%s hostname=%s score=%.2f "
+                "software=%s department=%s reasons=%s breakdown=%s",
+                decision,
+                s.workstation.id,
+                s.workstation.hostname,
+                s.score,
+                soft_label,
+                department_id,
+                s.reasons or ["eligible"],
+                {k: round(v, 2) for k, v in s.breakdown.items()},
+            )
+
         if not include_unavailable:
             scored = [s for s in scored if s.available]
         scored.sort(key=lambda s: s.score, reverse=True)
+        if scored:
+            best = scored[0]
+            logger.info(
+                "scheduler_selected workstation=%s hostname=%s score=%.2f software=%s",
+                best.workstation.id,
+                best.workstation.hostname,
+                best.score,
+                soft_label,
+            )
+        else:
+            logger.info(
+                "scheduler_no_candidate software=%s department=%s evaluated=%s",
+                soft_label,
+                department_id,
+                len(qs) if hasattr(qs, "__len__") else "n/a",
+            )
         return scored
 
     def select_best(self, **kwargs) -> CandidateScore | None:

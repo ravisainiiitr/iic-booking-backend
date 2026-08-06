@@ -13,10 +13,13 @@ class AnalysisSoftwareCatalog(models.Model):
     """Admin-managed analysis software package (user-facing catalog)."""
 
     class LicenseType(models.TextChoices):
-        CONCURRENT = "concurrent", _("Concurrent seats")
-        NETWORK = "network", _("Network / license server")
         UNLIMITED = "unlimited", _("Unlimited")
-        NODE_LOCKED = "node_locked", _("Node-locked")
+        NODE_LOCKED = "node_locked", _("Node Locked")
+        CONCURRENT = "concurrent", _("Concurrent")
+        FLOATING = "floating", _("Floating")
+        NETWORK = "network", _("Network License Server")
+        DONGLE = "dongle", _("Dongle")
+        EXPIRED = "expired", _("Expired")
         OTHER = "other", _("Other")
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -40,6 +43,16 @@ class AnalysisSoftwareCatalog(models.Model):
         default=0,
         help_text=_("Max concurrent sessions using this software (0 = unlimited)."),
     )
+    license_server_url = models.CharField(
+        max_length=512,
+        blank=True,
+        default="",
+        help_text=_("Optional license server URL / host for network or floating licenses."),
+    )
+    license_seats = models.PositiveIntegerField(
+        default=0,
+        help_text=_("Configured seats for network/floating/concurrent (0 = use max_concurrent)."),
+    )
     # Reserved AI-ready catalog metadata (no recommender consumers yet).
     ai_tags = models.JSONField(
         default=list,
@@ -57,6 +70,16 @@ class AnalysisSoftwareCatalog(models.Model):
         related_name="ra_software_catalog",
     )
     description = models.TextField(blank=True, default="")
+    typical_usage = models.TextField(
+        blank=True,
+        default="",
+        help_text=_("Short typical-usage blurb shown in Analysis Workspace."),
+    )
+    accepted_file_types = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=_("File extensions / types this software typically accepts (e.g. ['.raw', '.xy'])."),
+    )
     category = models.CharField(
         max_length=128,
         blank=True,
@@ -70,6 +93,10 @@ class AnalysisSoftwareCatalog(models.Model):
     )
     default_session_duration_hours = models.PositiveIntegerField(default=4)
     is_active = models.BooleanField(default=True)
+    is_archived = models.BooleanField(
+        default=False,
+        help_text=_("Archived catalog entries are hidden from new mappings but retained for history."),
+    )
     capabilities = models.ManyToManyField(
         "remote_analysis.AnalysisCapability",
         blank=True,

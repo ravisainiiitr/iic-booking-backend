@@ -1,49 +1,51 @@
-# Phase R.6 — Remote Analysis Software-Centric Architecture
+# Phase R.6.1 — Complete the Software-Centric Remote Analysis Platform
 
 | Field | Value |
 |-------|--------|
-| Mode | Assessment + targeted redesign |
-| Status | **Docs complete** · vertical slice implemented on `feature/r6-remote-analysis-software-centric` |
-| Depends on | R.2 / R.3 Remote Analysis baseline |
-| Rule | **Assess first.** Reuse existing modules. No duplicate catalog/APIs/admin pages. Preserve backward compatibility. |
+| Mode | Gap closure (not redesign) |
+| Status | **Implemented** on `feature/r6-remote-analysis-software-centric` |
+| Depends on | R6.0 assessment + R6 vertical slice |
+| Rule | Reuse catalog/mapping/inventory/scheduler. No parallel models/APIs. Preserve bookings/agents/queues. |
 
-## Primary home
-
-This folder in **`iic-booking-backend-deploy`** is the primary R6 documentation home (same pattern as phase-R2 / phase-R3).
-
-Cross-repo pointers:
-
-| Repo | Location |
-|------|----------|
-| Portal backend (primary) | `docs/release/phase-R6/` (this folder) |
-| Remote Analysis Agent | `RemoteAnalysisAgent/docs/release/phase-R6/` (agent discovery focus + pointer) |
-| Portal frontend | `iic-booking-frontend/docs/release/phase-R6/README.md` (UI pointer) |
-
-## Index
+## Index (R6.1 admin & ops docs)
 
 | Doc | Purpose |
 |-----|---------|
-| [R6.0 Current State Assessment](R6.0-Current-State-Assessment.md) | What exists vs partial vs missing (with file paths) |
-| [R6.1 Gap Analysis](R6.1-Gap-Analysis.md) | Desired software-centric model vs reality |
-| [R6.2 Proposed Architecture](R6.2-Proposed-Architecture.md) | Target topology and dual-read / reuse plan |
-| [R6.3 Software Discovery](R6.3-Software-Discovery.md) | Agent + installer discovery and inventory sync |
-| [R6.4 Scheduler](R6.4-Scheduler.md) | Equipment → software → best RA PC |
-| [R6.5 Database](R6.5-Database.md) | Tables / migrations (reuse first) |
-| [R6.6 APIs](R6.6-APIs.md) | Existing endpoints + R6 deltas |
-| [R6.7 Administrator Guide](R6.7-Administrator-Guide.md) | Catalog, mappings, inventory ops |
-| [R6.8 User Workflow](R6.8-User-Workflow.md) | Analyze Data without picking a PC |
-| [R6.9 AI Readiness](R6.9-AI-Readiness.md) | Metadata only — no recommender |
+| [R6.0 Current State Assessment](R6.0-Current-State-Assessment.md) | Baseline (pre–R6.1) |
+| [R6.0.1 Updated Assessment (delta)](R6.0.1-Updated-Assessment-Delta.md) | What changed vs R6.0 |
+| [R6.1 Software Catalog Administration](R6.1-Software-Catalog-Administration.md) | SPA CRUD + API |
+| [R6.2 Equipment Mapping](R6.2-Equipment-Mapping.md) | Dept → Equipment → Software matrix |
+| [R6.3 Inventory](R6.3-Inventory.md) | RA inventory admin |
+| [R6.4 Discovery Engine](R6.4-Discovery-Engine.md) | Multi-scanner + delta sync |
+| [R6.5 Scheduler](R6.5-Scheduler.md) | Allocation order + diagnostic logs |
+| [R6.6 License Management](R6.6-License-Management.md) | License types + scheduler hooks |
+| [R6.7 Analysis Workspace](R6.7-Analysis-Workspace.md) | Researcher UX (no PC identity) |
+| [R6.8 AI Readiness](R6.8-AI-Readiness.md) | Metadata only |
+| [R6.9 API Reference](R6.9-API-Reference.md) | Single source of truth |
+| [Gap Closure Report](R6.1-Gap-Closure-Report.md) | Priority gaps closed / deferred |
+| [Migration Report](R6.1-Migration-Report.md) | `0023` + dual-read notes |
+| [Regression Report](R6.1-Regression-Report.md) | Compatibility checks |
+| [Production Readiness](R6.1-Production-Readiness-Recommendation.md) | Go / no-go |
 
-## Assessment headline
+## Legacy R6 planning docs (still valid for architecture)
 
-**Most of the software-centric stack already exists** in the portal backend and RA agent. R6 does **not** introduce a second catalog, scheduler, or inventory pipeline.
+R6.1–R6.9 **filenames above replace the old planning index names** for operator docs. Original planning files remain for history:
 
-| Already solid | Needs enhancement | Deferred (documented) |
-|---------------|-------------------|------------------------|
-| Catalog, equipment↔software, inventory sync, auto-allocate, queue | Workspace software selection → allocation; license_type choices; AI metadata fields | SPA catalog CRUD; deep license server integration; GPU util; AI recommender |
+- `R6.1-Gap-Analysis.md`, `R6.2-Proposed-Architecture.md`, `R6.3-Software-Discovery.md`, `R6.4-Scheduler.md` (planning), `R6.5-Database.md`, `R6.6-APIs.md`, `R6.7-Administrator-Guide.md`, `R6.8-User-Workflow.md`, `R6.9-AI-Readiness.md` (planning)
 
-## R6 implementation slice (this branch)
+Prefer the **R6.1-named administration docs** for day-to-day ops.
 
-1. Allocation uses **selected** catalog software (not always every mapped app).
-2. Analysis Workspace lets researchers **select** equipment-mapped software; still never picks an RA PC.
-3. Catalog `license_type` choices + reserved `ai_tags` / `ai_metadata` (migration `0022`).
+## Headline
+
+| Area | R6.1 result |
+|------|-------------|
+| Catalog SPA CRUD | Shipped (`/remote-analysis/software-catalog`) |
+| Equipment↔Software matrix SPA | Shipped (`/remote-analysis/equipment-software`) |
+| Inventory admin richness | Improved (search/filter + fleet enrichment) |
+| Agent discovery parity | Multi-scanner (registry, Start Menu, PF/PF(x86), portable) |
+| Incremental sync | Client delta + server `sync_mode=delta\|full` upsert |
+| Scheduler diagnostics | Per-candidate ACCEPT/REJECT logs |
+| License types | Extended enum + seat/server hooks |
+| Workspace UX | Description, typical usage, file types, AI tags |
+| AI recommender | Still deferred (metadata only) |
+| Network license server product | Model/hooks only — not a full license server |
