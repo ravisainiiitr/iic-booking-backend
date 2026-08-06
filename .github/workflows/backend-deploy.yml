@@ -221,6 +221,89 @@ jobs:
             exit 1
           fi
           echo "PASS health $HEALTH_URL"
+
+          echo "=== R.2.6 version + capabilities smoke ==="
+          VERSION_URL="http://127.0.0.1:8080/api/version/"
+          CAPS_URL="http://127.0.0.1:8080/api/v1/provisioning/capabilities/"
+          FRONTEND_BASE="${FRONTEND_URL:-https://equip.iitr.ac.in}"
+          FRONTEND_BASE="${FRONTEND_BASE%/}"
+
+          # Stamp runtime version into compose env for next restart visibility
+          export GIT_SHA="$(git rev-parse HEAD)"
+          export BACKEND_GIT_COMMIT="$GIT_SHA"
+          export BUILD_DATE="$(date -u +%Y-%m-%d)"
+          export PORTAL_VERSION="${PORTAL_VERSION:-2.5.2}"
+
+          code="$(curl -sS -o /tmp/api_version.json -w '%{http_code}' --max-time 10 "$VERSION_URL" || true)"
+          if [[ "$code" != "200" ]]; then
+            rollback "R.2.6 /api/version failed http=$code"
+            exit 1
+          fi
+          python3 - <<'PY' || { echo "version payload invalid"; exit 1; }
+import json,sys
+d=json.load(open("/tmp/api_version.json"))
+assert d.get("portal_version"), d
+assert d.get("provisioning_version"), d
+assert "supported_installers" in d and "dsa" in d["supported_installers"], d
+print("PASS /api/version", d.get("portal_version"), d.get("provisioning_version"))
+PY
+
+          code="$(curl -sS -o /tmp/api_caps.json -w '%{http_code}' --max-time 10 "$CAPS_URL" || true)"
+          if [[ "$code" != "200" ]]; then
+            rollback "R.2.6 capabilities failed http=$code"
+            exit 1
+          fi
+          python3 - <<'PY' || { echo "capabilities payload invalid"; exit 1; }
+import json,sys
+d=json.load(open("/tmp/api_caps.json"))
+assert d.get("installer_auth") is True, d
+assert d.get("zero_touch") is True, d
+assert d.get("links",{}).get("installer_auth"), d
+print("PASS capabilities installer_auth/zero_touch")
+PY
+
+          echo "=== Frontend compatibility gate ==="
+          # Backend deploy fails if frontend cannot serve installer-auth route marker
+          # Prefer capabilities-driven static probe via public SPA path presence in JS is fragile;
+          # require either new capability-aligned frontend (installer-auth page loads SPA shell)
+          # AND optional FRONTEND_VERSION env match against COMPATIBLE_FRONTEND_MIN.
+          fe_code="$(curl -sS -o /tmp/fe_installer_auth.html -w '%{http_code}' --max-time 15 \
+            "$FRONTEND_BASE/device-provisioning/installer-auth" || true)"
+          if [[ "$fe_code" != "200" ]]; then
+            rollback "frontend installer-auth unreachable http=$fe_code at $FRONTEND_BASE (deploy matching frontend first)"
+            exit 1
+          fi
+          # Reject obvious nginx hard 404 pages (SPA returns 200+index). Soft-check title/body for route chunk later.
+          if grep -qi 'nginx' /tmp/fe_installer_auth.html && grep -qi '404' /tmp/fe_installer_auth.html; then
+            rollback "frontend returned nginx 404 for installer-auth"
+            exit 1
+          fi
+
+          # If FRONTEND_VERSION is set on the host, enforce min compatibility against backend settings expectation
+          if [[ -n "${FRONTEND_VERSION:-}" ]]; then
+            python3 - <<PY
+from pathlib import Path
+import os, re
+fe=os.environ.get("FRONTEND_VERSION","")
+minimum=os.environ.get("COMPATIBLE_FRONTEND_MIN","2.5.2-r2")
+
+def parse(v):
+    v=(v or "").lstrip("vV")
+    nums=[]
+    for t in re.split(r"[.\\-+_]+", v):
+        m=re.match(r"(\\d+)", t or "")
+        if m: nums.append(int(m.group(1)))
+        elif nums: break
+    return tuple(nums) or (0,)
+if parse(fe) < parse(minimum):
+    raise SystemExit(f"FRONTEND_VERSION {fe} < COMPATIBLE_FRONTEND_MIN {minimum}")
+print("PASS frontend version gate", fe, ">=", minimum)
+PY
+          else
+            echo "WARN FRONTEND_VERSION unset — skipping numeric frontend gate (SPA reachability checked)"
+          fi
+
+          echo "PASS R.2.6 compatibility smoke"
           echo "PASS deployed $RELEASE_TAG at $(git rev-parse --short HEAD)"
 
           echo "=== Rollback metadata ==="

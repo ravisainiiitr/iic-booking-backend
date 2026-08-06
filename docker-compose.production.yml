@@ -15,6 +15,19 @@ services:
       - ./.envs/.production/.django
     environment:
       TZ: Asia/Kolkata
+      PORTAL_VERSION: ${PORTAL_VERSION:-2.5.2}
+      GIT_SHA: ${GIT_SHA:-}
+      BACKEND_GIT_COMMIT: ${BACKEND_GIT_COMMIT:-}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-}
+      FRONTEND_GIT_COMMIT: ${FRONTEND_GIT_COMMIT:-}
+      BUILD_DATE: ${BUILD_DATE:-}
+      PROVISIONING_VERSION: ${PROVISIONING_VERSION:-2.0}
+      PROVISIONING_ENABLED: ${PROVISIONING_ENABLED:-true}
+      COMPATIBLE_FRONTEND_MIN: ${COMPATIBLE_FRONTEND_MIN:-2.5.2-r2}
+      COMPATIBLE_BACKEND_MIN: ${COMPATIBLE_BACKEND_MIN:-2.5.2}
+      RESEARCH_COPILOT_ENABLED: ${RESEARCH_COPILOT_ENABLED:-false}
+      RESEARCH_COPILOT_VERSION: ${RESEARCH_COPILOT_VERSION:-0.0.0}
+      FRONTEND_URL: ${FRONTEND_URL:-https://equip.iitr.ac.in}
     # Named volume is for migration leftovers only. Equipment images MUST live in S3
     # (ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK=False in production). Never run
     # `docker compose down -v` — and do not treat this volume as the image source of truth.

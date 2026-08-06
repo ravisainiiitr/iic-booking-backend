@@ -7,6 +7,8 @@ from iic_booking.device_provisioning import views
 app_name = "device_provisioning"
 
 urlpatterns = [
+    path("capabilities/", views.capabilities, name="capabilities"),
+    path("self-test/", views.provisioning_self_test, name="self-test"),
     path("console/", views.console_summary, name="console"),
     path("sessions/", views.sessions_create, name="sessions-create"),
     path("sessions/<uuid:session_id>/", views.session_detail, name="session-detail"),

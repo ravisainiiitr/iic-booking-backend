@@ -9,6 +9,7 @@ from django.views import defaults as default_views
 from drf_spectacular.views import SpectacularAPIView
 from drf_spectacular.views import SpectacularSwaggerView
 from iic_booking.equipment.views import serve_equipment_image
+from iic_booking.platform_compat.views import api_version
 from iic_booking.users.api.auth_views import obtain_auth_token_single_session
 
 
@@ -60,6 +61,9 @@ if settings.DEBUG:
 
 # API URLS
 urlpatterns += [
+    # Public platform version manifest (Phase R.2.6) — outside /api/v1/
+    path("api/version/", api_version, name="api-version"),
+    path("api/version", api_version),
     # API base url
     path("api/", include("config.api_router")),
     # DRF auth token (single-session: invalidates previous logins)
