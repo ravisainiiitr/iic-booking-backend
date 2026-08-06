@@ -273,52 +273,23 @@ def release_download_by_ticket(request, token: str):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def equipment_tree(request):
-    """Agent UUID + enrollment secret → department → equipment tree for wizard."""
+    """
+    Legacy DSA installer equipment tree.
+
+    Accepts Agent UUID + enrollment secret (break-glass) OR claim Bearer /
+    X-Agent-Access-Token (zero-touch). Prefer /api/v1/provisioning/dsa/equipment-tree/
+    for new installers.
+    """
+    from iic_booking.sync.installer.services import build_equipment_tree_for_department
+
     ok, err, agent = resolve_installer_agent(request, allow_access_token=True)
     if not ok:
         return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
 
-    from iic_booking.equipment.models import Equipment
-
-    equipment_qs = Equipment.objects.select_related("internal_department").order_by("name")
-    # Prefer agent department when set (pre-created agent scoping).
-    if getattr(agent, "department_id", None):
-        scoped = equipment_qs.filter(internal_department_id=agent.department_id)
-        if scoped.exists():
-            equipment_qs = scoped
-
-    by_dept: dict[str, dict] = {}
-    for eq in equipment_qs[:500]:
-        dept = eq.internal_department
-        dept_id = str(dept.id) if dept else "unassigned"
-        dept_name = dept.name if dept else "Unassigned"
-        if dept_id not in by_dept:
-            by_dept[dept_id] = {
-                "id": dept_id,
-                "name": dept_name,
-                "equipment": [],
-            }
-        lab_name = ""
-        lab = getattr(eq, "laboratory", None) or getattr(eq, "lab", None)
-        if lab is not None:
-            lab_name = getattr(lab, "name", "") or str(lab)
-        by_dept[dept_id]["equipment"].append(
-            {
-                "id": eq.pk,
-                "name": eq.name,
-                "code": getattr(eq, "code", "") or "",
-                "laboratory": lab_name,
-            }
-        )
-
-    return Response(
-        {
-            "count": len(by_dept),
-            "agent_uuid": str(agent.agent_uuid),
-            "department_id": str(agent.department_id) if agent.department_id else None,
-            "departments": list(by_dept.values()),
-        }
-    )
+    tree = build_equipment_tree_for_department(getattr(agent, "department_id", None))
+    tree["agent_uuid"] = str(agent.agent_uuid)
+    tree["department_id"] = str(agent.department_id) if agent.department_id else None
+    return Response(tree)
 
 
 @api_view(["POST"])

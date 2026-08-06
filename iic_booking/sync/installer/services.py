@@ -48,6 +48,13 @@ def _extract_credentials(request) -> tuple[str, str, str]:
     access_token = ""
     if isinstance(auth_header, str) and auth_header.lower().startswith("bearer "):
         access_token = auth_header.split(" ", 1)[1].strip()
+    # Prefer dedicated header — some reverse proxies strip Authorization on GET.
+    if not access_token:
+        access_token = (
+            request.META.get("HTTP_X_AGENT_ACCESS_TOKEN")
+            or request.headers.get("X-Agent-Access-Token")
+            or ""
+        ).strip()
     if not access_token:
         access_token = str(data.get("access_token") or data.get("accessToken") or "").strip()
     return str(agent_uuid).strip(), str(secret).strip(), access_token
@@ -55,20 +62,38 @@ def _extract_credentials(request) -> tuple[str, str, str]:
 
 def resolve_installer_agent(request, *, allow_access_token: bool = True) -> tuple[bool, str, Any]:
     """
-    Resolve DSA agent for installer bootstrap.
+    Resolve DSA agent for installer bootstrap (legacy + post-claim).
 
-    1. Agent UUID + enrollment secret (pre-enroll: equipment-tree)
-    2. Agent UUID + Bearer access token (post-enroll: link) — no request signing
+    1. Agent UUID + enrollment secret (break-glass / upgrades)
+    2. Agent UUID + Bearer / X-Agent-Access-Token (zero-touch claim)
+    3. Access token alone via ProvisionedDevice bridge (R.2.x zero-touch)
     """
     from iic_booking.sync.models import AgentLifecycleStatus, DepartmentSyncAgent
 
     agent_uuid, secret, access_token = _extract_credentials(request)
-    if not agent_uuid:
-        return False, "Agent UUID is required.", None
 
-    agent = DepartmentSyncAgent.objects.filter(agent_uuid=agent_uuid).first()
-    if agent is None:
-        return False, "Invalid agent credentials.", None
+    agent = None
+    if agent_uuid:
+        agent = DepartmentSyncAgent.objects.filter(agent_uuid=agent_uuid).first()
+        if agent is None:
+            return False, "Invalid agent credentials.", None
+    elif allow_access_token and access_token:
+        # Prefer Device Provisioning bridge (O(1) prefix lookup) over scanning DSA rows.
+        try:
+            from iic_booking.device_provisioning.services import authenticate_device_token
+
+            device = authenticate_device_token(access_token)
+        except Exception:
+            device = None
+        if device is not None and getattr(device, "legacy_dsa_id", None):
+            agent = DepartmentSyncAgent.objects.filter(pk=device.legacy_dsa_id).first()
+        if agent is None and device is not None:
+            agent = DepartmentSyncAgent.objects.filter(agent_uuid=device.id).first()
+        if agent is None:
+            return False, "Invalid or expired access token.", None
+    else:
+        return False, "Agent UUID and enrollment secret (or access token) are required.", None
+
     if agent.status in {AgentLifecycleStatus.DISABLED, AgentLifecycleStatus.REVOKED}:
         return False, "Agent is disabled or revoked.", None
 
@@ -85,6 +110,46 @@ def resolve_installer_agent(request, *, allow_access_token: bool = True) -> tupl
         return True, "", agent
 
     return False, "Agent UUID and enrollment secret (or access token) are required.", None
+
+
+def build_equipment_tree_for_department(department_id: int | None = None) -> dict:
+    """Shared department→equipment tree shape for DSA installer / provisioning."""
+    from iic_booking.equipment.models import Equipment
+
+    equipment_qs = Equipment.objects.select_related("internal_department").order_by("name")
+    if department_id is not None:
+        scoped = equipment_qs.filter(internal_department_id=department_id)
+        if scoped.exists():
+            equipment_qs = scoped
+
+    by_dept: dict[str, dict] = {}
+    for eq in equipment_qs[:500]:
+        dept = eq.internal_department
+        dept_id = str(dept.id) if dept else "unassigned"
+        dept_name = dept.name if dept else "Unassigned"
+        if dept_id not in by_dept:
+            by_dept[dept_id] = {
+                "id": dept_id,
+                "name": dept_name,
+                "equipment": [],
+            }
+        lab_name = ""
+        lab = getattr(eq, "laboratory", None) or getattr(eq, "lab", None)
+        if lab is not None:
+            lab_name = getattr(lab, "name", "") or str(lab)
+        by_dept[dept_id]["equipment"].append(
+            {
+                "id": eq.pk,
+                "name": eq.name,
+                "code": getattr(eq, "code", "") or "",
+                "laboratory": lab_name,
+            }
+        )
+
+    return {
+        "count": len(by_dept),
+        "departments": list(by_dept.values()),
+    }
 
 
 @transaction.atomic

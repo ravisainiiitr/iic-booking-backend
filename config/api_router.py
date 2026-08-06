@@ -441,6 +441,9 @@ urlpatterns = router.urls + [
     path("v1/deployment/", include("iic_booking.deployment.urls")),
     # Laboratory Infrastructure — enterprise fleet lifecycle (Phase 2)
     path("v1/lab/", include("iic_booking.lab_infrastructure.urls")),
+    # Unified Device Provisioning (Phase R.2.1)
+    path("v1/provisioning/", include("iic_booking.device_provisioning.urls")),
+    path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     # Booking ↔ Remote Analysis integration
     path(
         "v1/bookings/analysis/dashboard/",

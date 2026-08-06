@@ -107,6 +107,7 @@ LOCAL_APPS = [
     "iic_booking.remote_analysis.apps.RemoteAnalysisConfig",
     "iic_booking.deployment.apps.DeploymentConfig",
     "iic_booking.lab_infrastructure.apps.LabInfrastructureConfig",
+    "iic_booking.device_provisioning.apps.DeviceProvisioningConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -532,6 +533,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         # DRF throttle format example: "5/min", "1/hour"
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
+        "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
     },
 }
 
@@ -604,6 +606,7 @@ FRONTEND_URL = env(
 # Optional: for AI-powered chat assistant. If set, chat uses OpenAI; otherwise falls back to FAQ.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 OPENAI_CHAT_MODEL = env("OPENAI_CHAT_MODEL", default="gpt-4o-mini")
+
 OMNIPORT_REDIRECT_URI = env(
     "OMNIPORT_REDIRECT_URI",
     default="http://localhost:8000/api/auth/omniport/callback/",
