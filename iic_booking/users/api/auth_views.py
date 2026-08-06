@@ -1761,88 +1761,33 @@ def _is_admin_user(user):
 @permission_classes([IsAuthenticated])
 def auth_settings(request):
     """
-    GET: Return auth settings. Admin only.
-    Response: { "global_inactivity_timeout_seconds": 1800, "by_user_type": { "student": 1800, ... } }
-    PATCH: Update auth settings. Admin only. Body: { "global_inactivity_timeout_seconds": 1800, "by_user_type": { "student": 1800, ... } }
+    GET/PATCH: Return current authentication configuration. Admin only.
+
+    Token inactivity expiry is intentionally disabled platform-wide. This endpoint
+    reports that policy and does not mutate obsolete timeout cache keys.
     """
     if not _is_admin_user(request.user):
         return Response(
             {"error": "Only Admin users can view or edit auth settings."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    from iic_booking.users.models import AuthSettings, UserTypeInactivityTimeout
-    from iic_booking.users.api.token_auth import (
-        CACHE_KEY_GLOBAL_TIMEOUT,
-        CACHE_KEY_TYPE_TIMEOUT_PREFIX,
-    )
 
-    if request.method == "GET":
-        obj = AuthSettings.get_singleton()
-        by_user_type = {}
-        for row in UserTypeInactivityTimeout.objects.all():
-            by_user_type[row.user_type] = row.inactivity_timeout_seconds
-        return Response(
-            {
-                "global_inactivity_timeout_seconds": obj.inactivity_timeout_seconds,
-                "by_user_type": by_user_type,
-                "user_type_choices": [{"code": c[0], "name": str(c[1])} for c in UserType.get_choices()],
-            },
-            status=status.HTTP_200_OK,
+    payload = {
+        "inactivity_timeout_enabled": False,
+        "single_session": True,
+        "token_type": "Token",
+        "message": (
+            "Token inactivity expiry is disabled. Tokens do not expire due to inactivity. "
+            "Single-session login is enforced by regenerating the auth token on each login."
+        ),
+    }
+    if request.method == "PATCH":
+        # Timeout settings are not applied; report current architecture unchanged.
+        payload["patch_applied"] = False
+        payload["patch_note"] = (
+            "Inactivity timeout configuration is disabled and cannot be changed via this API."
         )
-
-    # PATCH
-    data = request.data or {}
-    if "global_inactivity_timeout_seconds" in data:
-        try:
-            seconds = int(data["global_inactivity_timeout_seconds"])
-            if seconds < 60 or seconds > 86400 * 7:
-                return Response(
-                    {"error": "global_inactivity_timeout_seconds must be between 60 and 604800 (7 days)."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            obj = AuthSettings.get_singleton()
-            obj.inactivity_timeout_seconds = seconds
-            obj.save(update_fields=["inactivity_timeout_seconds"])
-            cache.delete(CACHE_KEY_GLOBAL_TIMEOUT)
-        except (TypeError, ValueError):
-            return Response(
-                {"error": "global_inactivity_timeout_seconds must be a number."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-    by_user_type = data.get("by_user_type")
-    if isinstance(by_user_type, dict):
-        valid_types = {c[0] for c in UserType.get_choices()}
-        for user_type, seconds in list(by_user_type.items()):
-            if user_type not in valid_types:
-                continue
-            if seconds is None or (isinstance(seconds, (int, float)) and int(seconds) <= 0):
-                UserTypeInactivityTimeout.objects.filter(user_type=user_type).delete()
-                cache.delete(f"{CACHE_KEY_TYPE_TIMEOUT_PREFIX}{user_type}")
-            else:
-                try:
-                    sec = int(seconds)
-                    if sec < 60 or sec > 86400 * 7:
-                        continue
-                    UserTypeInactivityTimeout.objects.update_or_create(
-                        user_type=user_type,
-                        defaults={"inactivity_timeout_seconds": sec},
-                    )
-                    cache.delete(f"{CACHE_KEY_TYPE_TIMEOUT_PREFIX}{user_type}")
-                except (TypeError, ValueError):
-                    pass
-
-    obj = AuthSettings.get_singleton()
-    by_user_type_resp = {}
-    for row in UserTypeInactivityTimeout.objects.all():
-        by_user_type_resp[row.user_type] = row.inactivity_timeout_seconds
-    return Response(
-        {
-            "global_inactivity_timeout_seconds": obj.inactivity_timeout_seconds,
-            "by_user_type": by_user_type_resp,
-        },
-        status=status.HTTP_200_OK,
-    )
+    return Response(payload, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])

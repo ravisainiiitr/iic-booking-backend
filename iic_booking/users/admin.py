@@ -693,10 +693,8 @@ class AuthSettingsAdmin(admin.ModelAdmin):
         return redirect("admin:users_authsettings_change", object_id=obj.pk)
 
     def save_model(self, request, obj, form, change):
+        # Inactivity timeout is disabled in token auth; no cache keys to invalidate.
         super().save_model(request, obj, form, change)
-        from django.core.cache import cache
-        from iic_booking.users.api.token_auth import CACHE_KEY_GLOBAL_TIMEOUT
-        cache.delete(CACHE_KEY_GLOBAL_TIMEOUT)
 
 
 @admin.register(WalletCreditFacilitySettings)
@@ -948,10 +946,8 @@ class UserTypeInactivityTimeoutAdmin(admin.ModelAdmin):
     timeout_minutes_display.short_description = _("Minutes")
 
     def save_model(self, request, obj, form, change):
+        # Inactivity timeout is disabled in token auth; no cache keys to invalidate.
         super().save_model(request, obj, form, change)
-        from django.core.cache import cache
-        from iic_booking.users.api.token_auth import CACHE_KEY_TYPE_TIMEOUT_PREFIX
-        cache.delete(f"{CACHE_KEY_TYPE_TIMEOUT_PREFIX}{obj.user_type}")
 
 
 @admin.register(Department)
