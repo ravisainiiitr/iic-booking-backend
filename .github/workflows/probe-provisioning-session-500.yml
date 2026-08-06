@@ -1,0 +1,70 @@
+name: Probe Provisioning Session 500
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Traceback POST /api/v1/provisioning/sessions/
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "container=$CID"
+          test -n "$CID"
+
+          echo "=== curl loopback ==="
+          cat > /tmp/prov.json <<'EOF'
+          {"device_type":"dsa","machine_guid":"GUID-DIAG-002","hostname":"LAB-DSA-DIAG2","windows_version":"Windows 11","cpu":"Intel","ram_gb":16,"mac_addresses":["aa:bb:cc:dd:ee:01"],"local_ips":["10.0.0.22"],"application_version":"1.0.2","bootstrap_public_key":"ssh-test"}
+          EOF
+          code=$(curl -sS -o /tmp/prov_out.txt -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/json' -H 'Host: equip.iitr.ac.in' \
+            --data-binary @/tmp/prov.json \
+            http://127.0.0.1:8080/api/v1/provisioning/sessions/ || true)
+          echo "http=$code"
+          cat /tmp/prov_out.txt; echo
+
+          echo "=== migration check ==="
+          docker exec -w /app "$CID" python manage.py showmigrations device_provisioning 2>&1 || true
+
+          echo "=== in-container traceback ==="
+          docker exec -w /app "$CID" python - <<'PY'
+          import os, django, traceback, json
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.test import Client
+          payload = {
+            "device_type": "dsa",
+            "machine_guid": "GUID-DIAG-003",
+            "hostname": "LAB-DSA-DIAG3",
+            "windows_version": "Windows 11",
+            "cpu": "Intel",
+            "ram_gb": 16,
+            "mac_addresses": ["aa:bb:cc:dd:ee:02"],
+            "local_ips": ["10.0.0.23"],
+            "application_version": "1.0.2",
+            "bootstrap_public_key": "ssh-test",
+          }
+          c = Client(HTTP_HOST="equip.iitr.ac.in", raise_request_exception=True)
+          try:
+              r = c.post("/api/v1/provisioning/sessions/", data=payload, content_type="application/json")
+              print("status", r.status_code)
+              print("body", r.content[:2000])
+          except Exception:
+              print("REQUEST FAIL")
+              traceback.print_exc()
+          try:
+              from iic_booking.device_provisioning import services
+              from django.test import RequestFactory
+              rf = RequestFactory()
+              req = rf.post("/api/v1/provisioning/sessions/", data=json.dumps(payload), content_type="application/json")
+              session, proof = services.create_session(payload=payload, request=req, actor=None)
+              print("create_session OK", session.id, session.status)
+          except Exception:
+              print("create_session FAIL")
+              traceback.print_exc()
+          PY
+
+          echo "=== recent django logs ==="
+          docker logs --tail 120 "$CID" 2>&1 | tail -n 120
