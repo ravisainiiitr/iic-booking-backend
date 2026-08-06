@@ -23,7 +23,7 @@ x-logging: &default-logging
 
 services:
   guacd:
-    image: guacamole/guacd:1.5.5
+    image: guacamole/guacd:1.6.0
     restart: unless-stopped
     volumes:
       - guac_drive:/drive

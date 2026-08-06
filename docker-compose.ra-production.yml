@@ -143,7 +143,7 @@ services:
   # --- Guacamole (browser RDP gateway) ---
   guacd:
     profiles: ["guacamole"]
-    image: guacamole/guacd:1.5.5
+    image: guacamole/guacd:1.6.0
     restart: unless-stopped
     volumes:
       - guac_drive:/drive
