@@ -260,16 +260,7 @@ jobs:
           fi
 
           if [[ -n "${FRONTEND_VERSION:-}" ]]; then
-            python3 -c 'import os,re
-fe=os.environ.get("FRONTEND_VERSION",""); minimum=os.environ.get("COMPATIBLE_FRONTEND_MIN","2.5.2-r2")
-def parse(v):
-  v=(v or "").lstrip("vV"); nums=[]
-  for t in re.split(r"[.\-+_]+", v):
-    m=re.match(r"(\d+)", t or "")
-    if m: nums.append(int(m.group(1)))
-    elif nums: break
-  return tuple(nums) or (0,)
-assert parse(fe)>=parse(minimum), (fe,minimum); print("PASS frontend version gate",fe,">=",minimum)'
+            python3 -c "import os,re;fe=os.environ.get('FRONTEND_VERSION','');minimum=os.environ.get('COMPATIBLE_FRONTEND_MIN','2.5.2-r2');parse=lambda v: tuple(int(m.group(1)) for m in [re.match(r'(\\d+)',t) for t in re.split(r'[.\\-+_]+', (v or '').lstrip('vV'))] if m) or (0,);assert parse(fe)>=parse(minimum),(fe,minimum);print('PASS frontend version gate',fe,'>=',minimum)"
           else
             echo "WARN FRONTEND_VERSION unset — skipping numeric frontend gate (SPA reachability checked)"
           fi
