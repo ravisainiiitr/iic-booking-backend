@@ -38,13 +38,19 @@ fi
 if [[ "${VERIFY_RESTORE_DB:-0}" == "1" && -f "$SRC/db/portal.sql.gz" ]]; then
   TMPDB="ra_restore_verify_$(date +%s)"
   log "Creating temp DB $TMPDB"
-  compose exec -T postgres sh -c "createdb -U \"\$POSTGRES_USER\" $TMPDB" || true
-  if gunzip -c "$SRC/db/portal.sql.gz" | compose exec -T postgres sh -c "psql -U \"\$POSTGRES_USER\" -d $TMPDB" >/tmp/ra_restore_verify.log 2>&1; then
-    ok "db test restore into $TMPDB"
+  if compose ps postgres 2>/dev/null | grep -q postgres; then
+    compose exec -T postgres sh -c "createdb -U \"\$POSTGRES_USER\" $TMPDB" || true
+    if gunzip -c "$SRC/db/portal.sql.gz" | compose exec -T postgres sh -c "psql -U \"\$POSTGRES_USER\" -d $TMPDB" >/tmp/ra_restore_verify.log 2>&1; then
+      ok "db test restore into $TMPDB"
+    else
+      bad "db test restore failed (see /tmp/ra_restore_verify.log)"
+    fi
+    compose exec -T postgres sh -c "dropdb -U \"\$POSTGRES_USER\" --if-exists $TMPDB" || true
+  elif [[ -x /home/ubuntu/bin/iic-restore-verify.sh ]]; then
+    VERIFY_RESTORE_DB=1 /home/ubuntu/bin/iic-restore-verify.sh "$SRC" && ok "db test restore (RDS helper)" || bad "db test restore (RDS helper)"
   else
-    bad "db test restore failed (see /tmp/ra_restore_verify.log)"
+    bad "no compose postgres and no /home/ubuntu/bin/iic-restore-verify.sh"
   fi
-  compose exec -T postgres sh -c "dropdb -U \"\$POSTGRES_USER\" --if-exists $TMPDB" || true
 else
   echo "SKIP  live DB restore test (set VERIFY_RESTORE_DB=1)"
 fi

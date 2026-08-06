@@ -11,6 +11,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 ensure_dirs
+
+# Load DATABASE_URL from production env file when not already set (RDS / external Postgres).
+if [[ -z "${DATABASE_URL:-}" && -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source <(grep -E '^DATABASE_URL=' "$ENV_FILE" | sed 's/\r$//')
+  set +a
+fi
 DO_DB=1
 DO_MEDIA=1
 DO_CFG=1
