@@ -1,0 +1,75 @@
+name: Publish Equipment PC Wizard
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub release tag containing EquipmentPCConfigurationWizardSetup.exe"
+        required: true
+        default: "equipment-pc-wizard-1.0.0"
+      version:
+        description: "Portal release version"
+        required: true
+        default: "1.0.0"
+      channel:
+        description: "Release channel"
+        required: true
+        default: "stable"
+      notes:
+        description: "Release notes shown in Deployment Center"
+        required: true
+        default: "Equipment PC Configuration Wizard 1.0.0 — configures Equipment PCs only (identity, UUID, folders, share, local config). Does not install DSA, Remote Analysis Agent, or Portal services. Discovery: mDNS → UDP → previously paired → Manual IP (Advanced)."
+
+jobs:
+  publish:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    steps:
+      - name: Download wizard Setup.exe from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/eq-wizard
+          cd /tmp/eq-wizard
+          rm -f EquipmentPCConfigurationWizardSetup.exe
+          gh release download "$TAG" \
+            --repo "${{ github.repository }}" \
+            --pattern "EquipmentPCConfigurationWizardSetup.exe" \
+            --clobber
+          ls -lh EquipmentPCConfigurationWizardSetup.exe
+          sha256sum EquipmentPCConfigurationWizardSetup.exe
+
+      - name: Publish into Django (Deployment Center)
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          test -n "$CID"
+          docker cp /tmp/eq-wizard/EquipmentPCConfigurationWizardSetup.exe \
+            "$CID:/tmp/EquipmentPCConfigurationWizardSetup.exe"
+          docker exec -w /app "$CID" python manage.py migrate deployment --noinput
+          docker exec -w /app "$CID" python manage.py publish_equipment_wizard \
+            /tmp/EquipmentPCConfigurationWizardSetup.exe \
+            --release-version "$VERSION" \
+            --channel "$CHANNEL" \
+            --notes "$NOTES"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.deployment.models import EquipmentPcWizardRelease
+          rel = EquipmentPcWizardRelease.objects.filter(is_latest=True).first()
+          assert rel is not None, 'no latest wizard release'
+          print('OK version', rel.version)
+          print('OK channel', rel.channel)
+          print('OK sha256', rel.sha256)
+          print('OK size', rel.download_size_bytes)
+          print('OK has_file', bool(rel.file))
+          print('OK is_latest', rel.is_latest)
+          print('OK is_active', rel.is_active)
+          print('OK notes', (rel.release_notes or '')[:200])
+          "

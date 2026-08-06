@@ -100,6 +100,7 @@ def _serialize_wizard(rel: EquipmentPcWizardRelease) -> dict:
         "signature_status_display": rel.get_signature_status_display(),
         "has_file": bool(rel.file),
         "has_offline_file": False,
+        "offline_status": "Not available",
         "has_repair_file": bool(getattr(rel, "repair_file", None)),
         "has_emergency_file": bool(getattr(rel, "emergency_file", None)),
         "compatibility": getattr(rel, "compatibility", None) or {},
