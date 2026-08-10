@@ -46,9 +46,14 @@ No new migrations in AI.4. Existing:
 - `research_copilot` 0001/0002
 - `communication.0053_pushdevice`
 
-## Commits / SHAs (to be filled after git push)
+## Commits / SHAs
 
-See git log below after commit.
+| Repo | Branch | SHA | Notes |
+|------|--------|-----|-------|
+| Backend (`iic-booking-backend-deploy`) | `feature/ai-copilot-android` | `e63078f` | Docs AI.4 assessment + report (pushed) |
+| Backend prior Copilot work | `feature/ai-copilot-android` | `ef4eba8` | Copilot + PushDevice (prior) |
+| Frontend | `feature/r6-remote-analysis-software-centric` | `86cb60d` | Unchanged this phase (Copilot UI already wired) |
+| Android (`iic-booking-android`) | `master` | `408a4d9` | AI.4 runtime completion; pushed to `ravisainiiitr/iic-booking-android` |
 
 ## Blockers
 
