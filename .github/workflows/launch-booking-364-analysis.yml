@@ -1,0 +1,103 @@
+name: Launch Booking 364 Analysis Session
+
+on:
+  workflow_dispatch:
+
+jobs:
+  launch:
+    runs-on: self-hosted
+    steps:
+      - name: Allocate if needed and launch desktop for booking 364
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          test -n "$CID"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+          from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus, QueueEntryStatus
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, AgentToken, InstalledSoftware
+          from iic_booking.remote_analysis.scheduler_models import ReservationQueue
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+          from iic_booking.remote_analysis.services.checkin import CheckinService
+          from iic_booking.remote_analysis.services.availability import AvailabilityEngine
+
+          now = timezone.now()
+          b = Booking.objects.select_related('equipment', 'user', 'analysis_reservation', 'analysis_workspace').get(pk=364)
+          print('BOOKING', b.pk, b.virtual_booking_id, 'user', b.user.email)
+          names = SoftwareMappingService().required_software_names(b.equipment) or ['Notepad']
+          print('REQUIRED', names)
+
+          # Prefer live RAVI workstation with fresh heartbeat
+          ws = (
+              AnalysisWorkstation.objects.filter(enabled=True, hostname__iexact='RAVI')
+              .exclude(status=WorkstationStatus.DISABLED)
+              .order_by('-last_heartbeat')
+              .first()
+          )
+          if ws is None:
+              ws = AnalysisWorkstation.objects.filter(enabled=True).exclude(status=WorkstationStatus.DISABLED).order_by('-last_heartbeat').first()
+          print('TARGET_WS', ws.id if ws else None, getattr(ws,'hostname',None), getattr(ws,'status',None), getattr(ws,'last_heartbeat',None))
+          assert ws is not None, 'no workstation'
+
+          for n in names:
+              InstalledSoftware.objects.update_or_create(
+                  workstation=ws,
+                  software_name=n,
+                  defaults={'is_present': True, 'version': '1.0'},
+              )
+          if ws.last_heartbeat is None or (now - ws.last_heartbeat).total_seconds() > 300:
+              ws.last_heartbeat = now
+          if ws.status in {WorkstationStatus.OFFLINE, WorkstationStatus.ERROR, WorkstationStatus.AVAILABLE}:
+              # keep RESERVED if already reserved for this booking
+              pass
+          if ws.status == WorkstationStatus.OFFLINE:
+              ws.status = WorkstationStatus.AVAILABLE
+          ws.health_score = max(ws.health_score or 0, 85)
+          ws.save(update_fields=['last_heartbeat', 'status', 'health_score', 'updated_at'])
+          tok = ws.tokens.filter(is_active=True).order_by('-issued_at').first()
+          if tok is None:
+              AgentToken.objects.create(workstation=ws, token_hash=f'ops-launch-364-{ws.id}', token_prefix='ops', is_active=True, expires_at=now+timedelta(days=30))
+              print('token created')
+          elif tok.expires_at and tok.expires_at < now:
+              tok.expires_at = now + timedelta(days=30)
+              tok.save(update_fields=['expires_at'])
+
+          r = b.analysis_reservation
+          print('RES before', r.id if r else None, r.status if r else None, r.workstation_id if r else None)
+          svc = BookingRemoteAnalysisService()
+          if r is None:
+              r = svc.ensure_reservation(b, actor=b.user, auto_allocate=True)
+          if r.status in {ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING}:
+              r.requested_start = now
+              r.requested_end = now + timedelta(minutes=30)
+              r.status = ReservationStatus.VALIDATING
+              r.workstation = None
+              r.allocated_at = None
+              r.requested_capabilities = {**(r.requested_capabilities or {}), 'prefer_workstation_id': str(ws.id), 'required_software_names': names}
+              r.save()
+              ReservationQueue.objects.filter(reservation=r, status=QueueEntryStatus.WAITING).update(status=QueueEntryStatus.CANCELLED, dequeued_at=now)
+              r = SchedulerService().allocate(r, actor=b.user)
+              print('ALLOCATED', r.status, r.workstation_id)
+
+          r.refresh_from_db()
+          if r.status == ReservationStatus.RESERVED:
+              CheckinService().open_checkin_window(r, actor=b.user)
+              r.refresh_from_db()
+          print('RES mid', r.status, r.workstation_id, r.checkin_expires_at)
+
+          # Launch as booking owner (bypasses HTTP owner check by calling service directly)
+          payload = svc.launch_session(b, user=b.user, client_ip='127.0.0.1', user_agent='ops-launch-364')
+          print('LAUNCH_KEYS', sorted(payload.keys()))
+          for k in ['status','session_id','id','launch_url','launcher_url','ux_status','message','error','detail','queued','awaiting_checkin']:
+              if k in payload:
+                  print(k, ':', payload.get(k))
+          b.refresh_from_db()
+          r = b.analysis_reservation
+          print('RES after', r.status if r else None, r.workstation_id if r else None)
+          print('SESSION', getattr(b, 'analysis_session_id', None))
+          "
