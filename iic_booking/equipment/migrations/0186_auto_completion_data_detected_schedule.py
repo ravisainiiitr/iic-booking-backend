@@ -20,7 +20,6 @@ def create_auto_completion_schedule(apps, schema_editor):
             task="equipment.auto_complete_bookings_with_data_after_end",
             crontab=crontab,
             enabled=True,
-            timezone="Asia/Kolkata",
         )
 
 
