@@ -1,0 +1,113 @@
+name: Publish Remote Analysis Agent Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub release tag containing RemoteAnalysisAgentSetup.exe"
+        required: true
+        default: "raa-installer-1.0.4"
+      version:
+        description: "Portal release version"
+        required: true
+        default: "1.0.4"
+      channel:
+        description: "Release channel"
+        required: true
+        default: "stable"
+      notes:
+        description: "Release notes shown in Deployment Center / Agent Installer"
+        required: true
+        default: "1.0.4 — R.2.5 zero-touch provisioning client hardening; publish for lab testing"
+      raa_repo:
+        description: "GitHub owner/name hosting the release assets"
+        required: true
+        default: "ravisainiiitr/RemoteAnalysisAgent"
+
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux]
+    permissions:
+      contents: read
+    steps:
+      - name: Download RAA Setup.exe from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          REPO: ${{ inputs.raa_repo }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/raa-installer
+          cd /tmp/raa-installer
+          rm -f RemoteAnalysisAgentSetup.exe RemoteAnalysisAgentSetup-*-win-x64-offline.zip
+          ASSET_API_URL="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | python3 -c 'import json,sys; r=json.load(sys.stdin); matches=[a["url"] for a in r.get("assets",[]) if a.get("name")=="RemoteAnalysisAgentSetup.exe"]; assert matches, "RemoteAnalysisAgentSetup.exe asset not found"; print(matches[0])')"
+          echo "asset_api_url=$ASSET_API_URL"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o RemoteAnalysisAgentSetup.exe \
+            "$ASSET_API_URL"
+          ls -lh RemoteAnalysisAgentSetup.exe
+          sha256sum RemoteAnalysisAgentSetup.exe
+
+          OFFLINE_API_URL="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | python3 -c 'import json,sys; r=json.load(sys.stdin); matches=[a["url"] for a in r.get("assets",[]) if "offline.zip" in a.get("name","")]; print(matches[0] if matches else "")')"
+          if [ -n "$OFFLINE_API_URL" ]; then
+            curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/octet-stream" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -o RemoteAnalysisAgentSetup-offline.zip \
+              "$OFFLINE_API_URL"
+            ls -lh RemoteAnalysisAgentSetup-offline.zip
+          fi
+
+      - name: Publish into Django (Deployment Center)
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          test -n "$CID"
+          docker cp /tmp/raa-installer/RemoteAnalysisAgentSetup.exe \
+            "$CID:/tmp/RemoteAnalysisAgentSetup.exe"
+          OFFLINE_ARGS=()
+          if [ -f /tmp/raa-installer/RemoteAnalysisAgentSetup-offline.zip ]; then
+            docker cp /tmp/raa-installer/RemoteAnalysisAgentSetup-offline.zip \
+              "$CID:/tmp/RemoteAnalysisAgentSetup-offline.zip"
+            OFFLINE_ARGS=(--offline /tmp/RemoteAnalysisAgentSetup-offline.zip)
+          fi
+          docker exec -w /app "$CID" python manage.py migrate remote_analysis --noinput
+          docker exec -w /app "$CID" python manage.py publish_ra_installer \
+            /tmp/RemoteAnalysisAgentSetup.exe \
+            --release-version "$VERSION" \
+            --channel "$CHANNEL" \
+            --notes "$NOTES" \
+            "${OFFLINE_ARGS[@]}"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.remote_analysis.installer.models import AgentInstallerRelease
+          rel = AgentInstallerRelease.objects.filter(is_latest=True).first()
+          assert rel is not None, 'no latest RA installer release'
+          print('OK version', rel.version)
+          print('OK channel', rel.channel)
+          print('OK sha256', rel.sha256)
+          print('OK size', rel.download_size_bytes)
+          print('OK has_file', bool(rel.file))
+          print('OK has_offline', bool(rel.offline_file))
+          print('OK is_latest', rel.is_latest)
+          print('OK is_active', rel.is_active)
+          print('OK notes', (rel.release_notes or '')[:200])
+          "
