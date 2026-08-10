@@ -196,7 +196,7 @@ Recorded after commits in the closing section of the agent run / `git rev-parse`
 
 ### Recorded SHAs (this commit series)
 
-- Backend: `348bde3`
+- Backend tip: `9190837` (migration/tests `348bde3` + docs SHA note)
 - Android: `cf5a373`
 - Frontend: `86cb60d` (unchanged)
 
