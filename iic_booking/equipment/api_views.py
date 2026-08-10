@@ -9636,27 +9636,25 @@ def complete_booking(request, booking_id):
         )
 
     try:
-        booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
-    except Booking.DoesNotExist:
-        return Response(
-            {"error": "Booking not found."},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-
-    if booking.status not in [BookingStatus.PENDING, BookingStatus.BOOKED]:
-        return Response(
-            {"error": f"Cannot complete booking with status '{booking.status}'. Only PENDING or BOOKED bookings can be completed."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    previous_status = booking.status
-
-    try:
         from django.utils import timezone
-        # Update booking status first so it always persists even if file/email logic fails
-        booking.status = BookingStatus.COMPLETED
-        booking.completed_at = timezone.now()
-        booking.save()
+        with transaction.atomic():
+            try:
+                booking = Booking.objects.select_for_update().select_related("equipment", "user").get(booking_id=booking_id)
+            except Booking.DoesNotExist:
+                return Response(
+                    {"error": "Booking not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            if booking.status not in [BookingStatus.PENDING, BookingStatus.BOOKED]:
+                return Response(
+                    {"error": f"Cannot complete booking with status '{booking.status}'. Only PENDING or BOOKED bookings can be completed."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            previous_status = booking.status
+            # Persist completion transition first so manual and scheduled paths stay race-safe.
+            booking.status = BookingStatus.COMPLETED
+            booking.completed_at = timezone.now()
+            booking.save(update_fields=["status", "completed_at", "updated_at"])
 
         # Mirror former Sample Lifecycle "Analyzed" milestone on Complete
         try:
@@ -9699,9 +9697,10 @@ def complete_booking(request, booking_id):
         completion_comment = "Booking marked as completed."
         if file_count:
             completion_comment += f" {file_count} file(s) sent to user email: " + ", ".join(uploaded_names)
-        completion_metadata = {}
+        completion_metadata = {"completion_method": "MANUAL_COMPLETION"}
         if file_count:
-            completion_metadata = {"uploaded_files": uploaded_names, "uploaded_files_count": file_count}
+            completion_metadata["uploaded_files"] = uploaded_names
+            completion_metadata["uploaded_files_count"] = file_count
 
         # Create booking event (no automatic email; we send one email with attachments below)
         create_booking_event(
@@ -11455,22 +11454,17 @@ def _get_s3_client_and_results_keys(virtual_booking_id):
 
 
 def _apply_results_available_event_and_completed_status(booking):
-    """DB-only: booking event + status COMPLETED. Caller must hold row lock and verified notified_at is unset."""
+    """DB-only: audit that results are available. Caller must hold row lock and verified notified_at is unset."""
     detected_at = timezone.now()
     detected_str = detected_at.strftime("%d %b %Y, %I:%M %p")
-    previous_status = booking.status
-    comment = f"Results are now available for this booking. Detected on {detected_str}. Booking status set to Complete."
+    comment = f"Results are now available for this booking. Detected on {detected_str}."
     create_booking_event(
         booking=booking,
-        event_type=BookingEventType.STATUS_CHANGED,
-        previous_status=previous_status,
-        new_status=BookingStatus.COMPLETED,
+        event_type=BookingEventType.COMMENT,
         comment=comment,
         created_by=booking.user,
         send_notification=False,
     )
-    booking.status = BookingStatus.COMPLETED
-    booking.save(update_fields=["status"])
 
 
 def _send_results_available_push_and_email(booking):

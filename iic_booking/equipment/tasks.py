@@ -600,6 +600,107 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
     return marked
 
 
+@shared_task(name="equipment.auto_complete_bookings_with_data_after_end")
+def auto_complete_bookings_with_data_after_end() -> int:
+    """
+    Auto-complete bookings only after slot end when synchronized material result data exists.
+
+    Rules:
+    - Booking must still be in a non-terminal active state.
+    - Booking must have a sync workspace record (source folder expected on equipment side).
+    - Booking must contain at least one non-control result file (workspace-ready alone is ignored).
+    - Transition is idempotent and row-locked to avoid races with manual completion.
+    """
+    from .api_views import _send_completion_email_with_attachments
+    from .booking_results_service import has_material_result_files
+    from .booking_events import create_booking_event
+    from .models import BookingEventType
+    from iic_booking.sync.models import BookingWorkspace
+
+    now = timezone.now()
+    completed = 0
+    scanned = 0
+    skipped_workspace_missing = 0
+    skipped_no_data = 0
+
+    candidates = (
+        Booking.objects.filter(
+            status__in=[BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING],
+            daily_slots__end_datetime__lte=now,
+        )
+        .select_related("equipment", "user")
+        .distinct()
+    )
+
+    for booking in candidates:
+        scanned += 1
+        has_workspace = BookingWorkspace.objects.filter(booking_id=booking.pk).exists()
+        if not has_workspace:
+            skipped_workspace_missing += 1
+            logger.info(
+                "auto_complete_bookings_with_data_after_end: skip booking_id=%s reason=WORKSPACE_NOT_FOUND",
+                booking.booking_id,
+            )
+            continue
+        if not has_material_result_files(booking):
+            skipped_no_data += 1
+            logger.info(
+                "auto_complete_bookings_with_data_after_end: skip booking_id=%s reason=NO_RESULT_DATA",
+                booking.booking_id,
+            )
+            continue
+
+        try:
+            with transaction.atomic():
+                locked = (
+                    Booking.objects.select_for_update()
+                    .select_related("equipment", "user")
+                    .get(pk=booking.pk)
+                )
+                if locked.status not in [BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING]:
+                    continue
+                previous_status = locked.status
+                locked.status = BookingStatus.COMPLETED
+                locked.completed_at = timezone.now()
+                locked.save(update_fields=["status", "completed_at", "updated_at"])
+                create_booking_event(
+                    booking=locked,
+                    event_type=BookingEventType.COMPLETED,
+                    previous_status=previous_status,
+                    new_status=BookingStatus.COMPLETED,
+                    comment="Booking automatically completed after slot end because synchronized result data was detected.",
+                    metadata={"completion_method": "AUTO_COMPLETION_DATA_DETECTED"},
+                    created_by=locked.user,
+                    send_notification=False,
+                )
+                booking_id = locked.booking_id
+        except Exception:
+            logger.exception(
+                "auto_complete_bookings_with_data_after_end: failed booking_id=%s",
+                booking.booking_id,
+            )
+            continue
+
+        completed += 1
+        try:
+            refreshed = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
+            _send_completion_email_with_attachments(refreshed, [])
+        except Exception:
+            logger.exception(
+                "auto_complete_bookings_with_data_after_end: completion email failed booking_id=%s",
+                booking_id,
+            )
+
+    logger.info(
+        "auto_complete_bookings_with_data_after_end: scanned=%d completed=%d skipped_workspace=%d skipped_no_data=%d",
+        scanned,
+        completed,
+        skipped_workspace_missing,
+        skipped_no_data,
+    )
+    return completed
+
+
 @shared_task(name="equipment.auto_mark_operator_absent_disruption_after_booking_end")
 def auto_mark_operator_absent_disruption_after_booking_end() -> int:
     """
