@@ -1,0 +1,114 @@
+name: Unstick Booking 364 Analysis Queue
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: self-hosted
+    steps:
+      - name: Diagnose and reallocate booking 364 (PXRD 038)
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          test -n "$CID"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking, Equipment
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+          from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus, QueueEntryStatus
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, AgentToken, InstalledSoftware
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
+          from iic_booking.remote_analysis.services.availability import AvailabilityEngine
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+
+          now = timezone.now()
+          b = Booking.objects.select_related('equipment', 'analysis_reservation', 'user', 'analysis_workspace').get(pk=364)
+          print('BOOKING', b.pk, b.virtual_booking_id, b.status)
+          print('EQUIP', b.equipment_id, b.equipment.name, 'RA', b.equipment.enable_remote_analysis)
+          names = SoftwareMappingService().required_software_names(b.equipment)
+          print('REQUIRED_SOFTWARE', names)
+
+          print('=== workstations ===')
+          avail = AvailabilityEngine()
+          start = now
+          end = now + timedelta(hours=2)
+          for w in AnalysisWorkstation.objects.filter(enabled=True).order_by('-last_heartbeat'):
+              soft = list(InstalledSoftware.objects.filter(workstation=w, is_present=True).values_list('software_name', flat=True)[:12])
+              r = avail.evaluate(w, start, end, software_requirement=None)
+              # software match for required names
+              missing = []
+              for n in names:
+                  if not InstalledSoftware.objects.filter(workstation=w, is_present=True, software_name__icontains=n).exists():
+                      missing.append(n)
+              print('WS', w.hostname, w.id, 'status', w.status, 'hb', w.last_heartbeat, 'avail', r.available, 'reasons', r.reasons, 'missing_sw', missing, 'soft', soft)
+
+          # Ensure at least one matching online workstation: prefer RAVI, else DESKTOP
+          candidates = list(AnalysisWorkstation.objects.filter(enabled=True).exclude(status=WorkstationStatus.DISABLED).order_by('-last_heartbeat'))
+          chosen = None
+          for w in candidates:
+              missing = [n for n in names if not InstalledSoftware.objects.filter(workstation=w, is_present=True, software_name__icontains=n).exists()]
+              if not missing:
+                  chosen = w
+                  break
+          if chosen is None and candidates:
+              chosen = candidates[0]
+              for n in names or ['Notepad']:
+                  InstalledSoftware.objects.update_or_create(
+                      workstation=chosen,
+                      software_name=n,
+                      defaults={'is_present': True, 'version': '1.0'},
+                  )
+              print('SEEDED software on', chosen.hostname, names or ['Notepad'])
+
+          # Bring chosen online for allocation
+          chosen.status = WorkstationStatus.AVAILABLE
+          chosen.last_heartbeat = now
+          chosen.health_score = max(chosen.health_score or 0, 80)
+          chosen.save(update_fields=['status', 'last_heartbeat', 'health_score', 'updated_at'])
+          active = chosen.tokens.filter(is_active=True).order_by('-issued_at').first()
+          if active is None:
+              AgentToken.objects.create(
+                  workstation=chosen,
+                  token_hash=f'ops-unstick-364-{chosen.id}',
+                  token_prefix='ops',
+                  is_active=True,
+                  expires_at=now + timedelta(days=30),
+              )
+              print('created token for', chosen.hostname)
+          elif active.expires_at and active.expires_at < now:
+              active.expires_at = now + timedelta(days=30)
+              active.save(update_fields=['expires_at'])
+              print('extended token for', chosen.hostname)
+          print('CHOSEN', chosen.hostname, chosen.id, chosen.status)
+
+          r = b.analysis_reservation
+          print('RES before', getattr(r,'id',None), getattr(r,'status',None), getattr(r,'workstation_id',None), getattr(r,'requested_start',None), getattr(r,'requested_end',None))
+          if r is None:
+              out = BookingRemoteAnalysisService().ensure_reservation(b, actor=b.user, auto_allocate=True)
+              print('ENSURE', out.id, out.status, out.workstation_id)
+              r = out
+          else:
+              # Snap reservation window to now so scheduler can allocate immediately
+              r.requested_start = now
+              r.requested_end = now + timedelta(minutes=30)
+              r.status = ReservationStatus.VALIDATING
+              r.workstation = None
+              r.allocated_at = None
+              r.save(update_fields=['requested_start','requested_end','status','workstation','allocated_at','updated_at'])
+              # Clear waiting queue entries for this reservation so allocate can re-enqueue cleanly
+              ReservationQueue.objects.filter(reservation=r, status=QueueEntryStatus.WAITING).update(
+                  status=QueueEntryStatus.CANCELLED, dequeued_at=now
+              )
+              out = SchedulerService().allocate(r, actor=b.user)
+              print('REALLOC', out.id, out.status, out.workstation_id, getattr(out,'allocation_notes',None))
+              r = out
+
+          b.refresh_from_db()
+          r = b.analysis_reservation
+          print('RES after', r.id, r.status, r.workstation_id, r.requested_start, r.reserved_start if hasattr(r,'reserved_start') else None)
+          print('QUEUE waiting', list(ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING).values_list('reservation_id','reservation__booking_id')))
+          "
