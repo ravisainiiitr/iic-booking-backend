@@ -2,7 +2,15 @@
 
 **Date:** 2026-08-10  
 **Mode:** AUTO MODE — evidence-based validation (no fabricated PASS)  
-**Baseline:** AI.4 SHAs Backend `5d9752f` · Frontend `86cb60d` · Android `408a4d9`
+**Baseline:** AI.4 SHAs Backend `5d9752f` · Frontend `86cb60d` · Android `408a4d9`  
+
+**AI.5 SHAs (this phase):**
+
+| Repo | Branch | SHA |
+|------|--------|-----|
+| Backend | `feature/ai-copilot-android` | `7bb80fc` |
+| Frontend | unchanged | `86cb60d` |
+| Android | `master` | `06478e6` |
 
 ---
 
