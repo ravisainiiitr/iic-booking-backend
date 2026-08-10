@@ -224,6 +224,10 @@ class AvailabilityEngine:
             reasons.append("Workstation disabled")
         if workstation.status in BLOCKING_STATUSES:
             reasons.append(f"Status {workstation.status} not allocatable")
+        if (getattr(workstation, "cleanup_status", "") or "").lower() == "failed":
+            reasons.append("Workstation cleanup failed — not ready for next user")
+        if getattr(workstation, "disk_low", False):
+            reasons.append("Disk space critically low on Data Root volume")
         if workstation.health_score < MIN_HEALTH_SCORE_FOR_ALLOCATION:
             reasons.append(f"Health score {workstation.health_score} below threshold")
         if not self.agent_online(workstation):

@@ -710,6 +710,14 @@ class Equipment(models.Model):
         verbose_name=_("Analysis session extension (minutes)"),
         help_text=_("Extra minutes when the user extends and no one is waiting (default 15)."),
     )
+    analysis_extension_grace_minutes = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("Extension grace when others are waiting (minutes)"),
+        help_text=_(
+            "Optional one-shot short extension when another user is waiting. "
+            "0 = deny (default fair-access policy)."
+        ),
+    )
     analysis_auto_archive = models.BooleanField(
         default=True,
         verbose_name=_("Workspace auto archive"),

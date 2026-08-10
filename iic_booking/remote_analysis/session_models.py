@@ -248,6 +248,10 @@ class RemoteDesktopSession(models.Model):
     connected_at = models.DateTimeField(null=True, blank=True)
     disconnected_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
+    extension_grace_used = models.BooleanField(
+        default=False,
+        help_text=_("True after a one-shot grace extension while others were waiting (R9)."),
+    )
     idle_timeout_minutes = models.PositiveIntegerField(default=15)
     termination_reason = models.CharField(max_length=512, blank=True, default="")
     client_ip = models.GenericIPAddressField(null=True, blank=True)

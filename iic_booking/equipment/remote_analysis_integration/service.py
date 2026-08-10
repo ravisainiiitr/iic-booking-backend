@@ -1092,8 +1092,8 @@ class BookingRemoteAnalysisService:
                 code="end_failed",
             ) from exc
 
-    def extend_analysis(self, booking, *, user) -> dict:
-        """Extend active session when nobody else is waiting."""
+    def extend_analysis(self, booking, *, user, admin_override: bool = False, reason: str = "") -> dict:
+        """Extend active session; respect queue + optional grace / admin override."""
         from datetime import timedelta
 
         from django.utils import timezone
@@ -1104,7 +1104,11 @@ class BookingRemoteAnalysisService:
         from iic_booking.remote_analysis.scheduler_models import ReservationQueue
         from iic_booking.remote_analysis.session_models import RemoteDesktopSession
 
-        if booking.user_id != getattr(user, "pk", None) and not getattr(user, "is_superuser", False):
+        is_admin = bool(
+            getattr(user, "is_superuser", False)
+            or getattr(user, "is_staff", False)
+        )
+        if booking.user_id != getattr(user, "pk", None) and not is_admin:
             raise SessionError("Only the booking owner may extend analysis.", code="forbidden")
 
         session = (
@@ -1127,21 +1131,53 @@ class BookingRemoteAnalysisService:
         others = ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING).exclude(
             reservation_id=session.reservation_id
         )
-        if others.exists():
-            raise SessionError(
-                "Another analysis request is currently waiting. "
-                "Session extension is unavailable to ensure fair access.",
-                code="queue_blocked",
-            )
-
+        others_waiting = others.exists()
+        grace_minutes = int(getattr(booking.equipment, "analysis_extension_grace_minutes", None) or 0)
         minutes = int(getattr(booking.equipment, "analysis_extension_minutes", None) or 15)
+        used_grace = False
+        decision = "approved"
+        policy = "no_waiting"
+
+        if others_waiting and not (admin_override and is_admin):
+            if grace_minutes > 0 and not getattr(session, "extension_grace_used", False):
+                minutes = grace_minutes
+                used_grace = True
+                policy = "grace_while_waiting"
+            else:
+                self.audit.log(
+                    booking,
+                    "AnalysisExtendDenied",
+                    details=(
+                        f"queue_blocked workstation={session.workstation_id} "
+                        f"grace={grace_minutes} grace_used={getattr(session, 'extension_grace_used', False)}"
+                    ),
+                    actor=user,
+                )
+                raise SessionError(
+                    "Another user is waiting for this workstation. "
+                    "Extension cannot be granted under the fair-access policy.",
+                    code="queue_blocked",
+                )
+        elif others_waiting and admin_override and is_admin:
+            policy = "admin_override"
+            decision = "admin_approved"
+            minutes = int(getattr(booking.equipment, "analysis_extension_minutes", None) or 15)
+
         base = session.expires_at if session.expires_at and session.expires_at > timezone.now() else timezone.now()
         session.expires_at = base + timedelta(minutes=max(1, minutes))
-        session.save(update_fields=["expires_at", "updated_at"])
+        update_fields = ["expires_at", "updated_at"]
+        if used_grace:
+            session.extension_grace_used = True
+            update_fields.append("extension_grace_used")
+        session.save(update_fields=update_fields)
         self.audit.log(
             booking,
             "AnalysisExtended",
-            details=f"+{minutes}m expires_at={session.expires_at.isoformat()}",
+            details=(
+                f"decision={decision} policy={policy} +{minutes}m "
+                f"expires_at={session.expires_at.isoformat()} "
+                f"others_waiting={others_waiting} reason={reason or '-'}"
+            ),
             actor=user,
         )
         return {
@@ -1149,7 +1185,17 @@ class BookingRemoteAnalysisService:
             "extended_minutes": minutes,
             "expires_at": session.expires_at.isoformat(),
             "remaining_seconds": max(0, int((session.expires_at - timezone.now()).total_seconds())),
-            "message": "No users are waiting. Your analysis session has been extended.",
+            "policy": policy,
+            "others_waiting": others_waiting,
+            "message": (
+                "No users are waiting. Your analysis session has been extended."
+                if not others_waiting
+                else (
+                    f"Short grace extension of {minutes} minute(s) granted while another user is waiting."
+                    if used_grace
+                    else f"Admin override: session extended by {minutes} minute(s)."
+                )
+            ),
         }
 
     def upload_past_data(self, booking, *, user, uploaded_file, folder: str = "RawData") -> dict:

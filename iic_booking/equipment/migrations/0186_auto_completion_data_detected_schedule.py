@@ -33,10 +33,11 @@ def remove_auto_completion_schedule(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("equipment", "0184_equipment_analysis_checkin_policy"),
+        ("equipment", "0185_r9_extension_grace_minutes"),
         ("django_celery_beat", "0001_initial"),
     ]
 
     operations = [
         migrations.RunPython(create_auto_completion_schedule, remove_auto_completion_schedule),
     ]
+

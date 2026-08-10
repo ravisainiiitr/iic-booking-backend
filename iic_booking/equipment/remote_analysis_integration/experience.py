@@ -141,6 +141,7 @@ class AnalysisExperienceBuilder:
             or 30
         )
         extension_minutes = int(getattr(equipment, "analysis_extension_minutes", None) or 15)
+        grace_minutes = int(getattr(equipment, "analysis_extension_grace_minutes", None) or 0)
 
         # Environment pool (logical counts only — no hostnames)
         from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
@@ -221,18 +222,43 @@ class AnalysisExperienceBuilder:
             expires_at = session.expires_at
             remaining_seconds = max(0, int((session.expires_at - now).total_seconds()))
 
-        can_extend = bool(
-            session
-            and session.status in ACTIVE_DESKTOP
-            and not others_waiting
-            and remaining_seconds is not None
-        )
+        grace_already_used = bool(getattr(session, "extension_grace_used", False)) if session else False
+        can_extend = False
         extend_blocked_reason = None
-        if session and session.status in ACTIVE_DESKTOP and others_waiting:
-            extend_blocked_reason = (
-                "Another analysis request is currently waiting. "
-                "Session extension is unavailable to ensure fair access."
-            )
+        if session and session.status in ACTIVE_DESKTOP and remaining_seconds is not None:
+            if not others_waiting:
+                can_extend = True
+            elif grace_minutes > 0 and not grace_already_used:
+                can_extend = True
+                extend_blocked_reason = None
+            else:
+                extend_blocked_reason = (
+                    "Another user is waiting for this workstation. "
+                    "Extension cannot be granted under the fair-access policy."
+                )
+
+        # Resolve workstation for R9 data paths (safe local FS only)
+        ws = None
+        if session and getattr(session, "workstation_id", None):
+            ws = AnalysisWorkstation.objects.filter(id=session.workstation_id).first()
+        if ws is None and reservation and getattr(reservation, "workstation_id", None):
+            ws = AnalysisWorkstation.objects.filter(id=reservation.workstation_id).first()
+
+        data_workspace = {
+            "data_root": (ws.data_root if ws else "") or "",
+            "input_path": (ws.input_path if ws else "") or "",
+            "output_path": (ws.output_path if ws else "") or "",
+            "input_hint": "Copy raw/source data here before starting analysis.",
+            "output_hint": (
+                "Save processed results here. Output files will be synchronized to the "
+                "booking portal/S3 after your session."
+            ),
+            "cleanup_status": (ws.cleanup_status if ws else "") or "idle",
+            "disk_free_bytes": ws.workspace_disk_free_bytes if ws else None,
+            "input_bytes": ws.input_bytes if ws else None,
+            "output_bytes": ws.output_bytes if ws else None,
+        }
+
 
         sync_phase = getattr(workspace, "sync_phase", None) if workspace else None
         sync_progress = int(getattr(workspace, "sync_progress_percent", 0) or 0) if workspace else 0
@@ -344,6 +370,9 @@ class AnalysisExperienceBuilder:
                 "status": session.status if session else None,
                 "default_duration_minutes": default_session_minutes,
                 "extension_minutes": extension_minutes,
+                "grace_minutes": grace_minutes,
+                "grace_already_used": grace_already_used,
+                "warning_minutes": [15, 10, 5],
                 "expires_at": _ts(expires_at),
                 "remaining_seconds": remaining_seconds,
                 "warnings": [10, 5, 2, 1],
@@ -351,6 +380,7 @@ class AnalysisExperienceBuilder:
                 "extend_blocked_reason": extend_blocked_reason,
                 "others_waiting": others_waiting,
             },
+            "data_workspace": data_workspace,
             "workspace": {
                 "label": "Booking Workspace",
                 "status": getattr(workspace, "status", None) if workspace else None,
