@@ -193,3 +193,10 @@ Recorded after commits in the closing section of the agent run / `git rev-parse`
 
 **Production Copilot:** OFF  
 **Production FCM:** OFF  
+
+### Recorded SHAs (this commit series)
+
+- Backend: `348bde3`
+- Android: `cf5a373`
+- Frontend: `86cb60d` (unchanged)
+
