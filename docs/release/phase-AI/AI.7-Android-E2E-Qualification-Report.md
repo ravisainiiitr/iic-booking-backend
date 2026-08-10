@@ -328,4 +328,12 @@ Core booking path on emulator + local backend is largely proven, but AI.7 produc
 
 ## Git / SHAs (post AI.7 commits)
 
-Recorded in commit message after push. Frontend remains **`86cb60d`**.
+Backend **509697** · Android **5e5e7b** · Frontend **86cb60d**.
+
+### Final SHAs
+
+| Repo | SHA |
+|------|-----|
+| Backend | a509697 |
+| Android | f5e5e7b |
+| Frontend | 86cb60d |
