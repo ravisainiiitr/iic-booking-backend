@@ -13,7 +13,15 @@ SECRET_KEY = env(
     default="2inj6sSD7LwIN5aTcUjTJkxhRqRYimCXlXs0TtATLpgoy47W56vF4YQzql7mRbCf",
 )
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts
-ALLOWED_HOSTS = ["localhost", "0.0.0.0", "127.0.0.1"]  # noqa: S104
+# Include 10.0.2.2 so Android emulator → host Django (http://10.0.2.2:8000) is accepted.
+ALLOWED_HOSTS = [
+    "localhost",
+    "0.0.0.0",
+    "127.0.0.1",
+    "10.0.2.2",
+    "testserver",
+    "host.docker.internal",
+]  # noqa: S104
 
 # CACHES
 # ------------------------------------------------------------------------------

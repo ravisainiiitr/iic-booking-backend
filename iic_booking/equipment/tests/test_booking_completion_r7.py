@@ -304,6 +304,55 @@ def test_manual_completion_before_slot_end_exposes_results_immediately(tmp_path,
 
 
 @pytest.mark.django_db
+@override_settings(AWS_STORAGE_BUCKET_NAME="")
+def test_manual_completion_email_has_no_result_attachments(tmp_path, settings, monkeypatch):
+    """AI.7: completion email must not attach uploaded result files."""
+    import iic_booking.equipment.api_views as api_views
+
+    owner = UserFactory()
+    admin = UserFactory(user_type=UserType.ADMIN)
+    equipment = _equipment()
+    booking = _booking(owner, equipment, status=BookingStatus.BOOKED)
+
+    now = timezone.now()
+    slot_master = SlotMaster.objects.create(
+        equipment=equipment,
+        slot_number=1,
+        open_time=(now - timedelta(minutes=30)).time().replace(microsecond=0),
+        close_time=(now + timedelta(hours=1)).time().replace(microsecond=0),
+        is_active=True,
+    )
+    DailySlot.objects.create(
+        slot_master=slot_master,
+        date=now.date(),
+        start_datetime=now - timedelta(minutes=30),
+        end_datetime=now + timedelta(hours=1),
+        status="BOOKED",
+        booking=booking,
+    )
+
+    calls = {"files_len": None}
+
+    def _fake_email(_booking, files, context_extra=None):
+        calls["files_len"] = len(files or [])
+
+    monkeypatch.setattr(api_views, "_send_completion_email_with_attachments", _fake_email)
+
+    operator_client = APIClient()
+    operator_client.force_authenticate(user=admin)
+    complete = operator_client.post(f"/api/bookings/{booking.pk}/complete/", {})
+    assert complete.status_code == 200
+    assert calls["files_len"] == 0
+
+    # Source-level guard: manual complete must email with empty attachment list.
+    from pathlib import Path
+
+    api_src = Path(api_views.__file__).read_text(encoding="utf-8")
+    assert "_send_completion_email_with_attachments(booking, [])" in api_src
+    assert "_send_completion_email_with_attachments(booking, result_file_list)" not in api_src
+
+
+@pytest.mark.django_db
 def test_results_available_event_does_not_force_complete():
     owner = UserFactory()
     equipment = _equipment()

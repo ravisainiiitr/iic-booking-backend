@@ -9696,13 +9696,17 @@ def complete_booking(request, booking_id):
         file_count = len(uploaded_names)
         completion_comment = "Booking marked as completed."
         if file_count:
-            completion_comment += f" {file_count} file(s) sent to user email: " + ", ".join(uploaded_names)
+            # Results are stored for portal/app download; completion email must NOT attach them.
+            completion_comment += (
+                f" {file_count} result file(s) uploaded (available in portal/app, not emailed as attachments): "
+                + ", ".join(uploaded_names)
+            )
         completion_metadata = {"completion_method": "MANUAL_COMPLETION"}
         if file_count:
             completion_metadata["uploaded_files"] = uploaded_names
             completion_metadata["uploaded_files_count"] = file_count
 
-        # Create booking event (no automatic email; we send one email with attachments below)
+        # Create booking event (no automatic email; we send one completion email without attachments below)
         create_booking_event(
             booking=booking,
             event_type=BookingEventType.COMPLETED,
@@ -9714,11 +9718,11 @@ def complete_booking(request, booking_id):
             send_notification=False,
         )
 
-        # Send completion email to user (with result files as attachments if any)
+        # Send completion email to user WITHOUT result attachments (download via portal/app only).
         try:
-            _send_completion_email_with_attachments(booking, result_file_list)
+            _send_completion_email_with_attachments(booking, [])
         except Exception as e:
-            logger.exception("Failed to send completion email with attachments")
+            logger.exception("Failed to send completion email")
             return Response(
                 {
                     "message": "Booking marked as completed. Result files saved, but sending email failed: " + str(e),
@@ -9730,7 +9734,14 @@ def complete_booking(request, booking_id):
 
         return Response(
             {
-                "message": "Booking marked as completed." + (f" {len(uploaded_names)} file(s) sent to user email." if uploaded_names else ""),
+                "message": (
+                    "Booking marked as completed."
+                    + (
+                        f" {len(uploaded_names)} result file(s) uploaded for portal/app download (not emailed as attachments)."
+                        if uploaded_names
+                        else ""
+                    )
+                ),
                 "booking": BookingSerializer(booking).data,
                 "uploaded_files": uploaded_names,
             },
