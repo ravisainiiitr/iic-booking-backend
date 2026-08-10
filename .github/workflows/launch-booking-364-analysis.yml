@@ -12,8 +12,8 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID"
-          test -n ""
-          docker exec -w /app "" python manage.py shell -c "
+          test -n "$CID"
+          docker exec -w /app "$CID" python manage.py shell -c "
           from datetime import timedelta
           from django.utils import timezone
           from iic_booking.equipment.models import Booking
@@ -56,7 +56,7 @@ jobs:
           ws.save(update_fields=['last_heartbeat', 'status', 'health_score', 'updated_at'])
           tok = ws.tokens.filter(is_active=True).order_by('-issued_at').first()
           if tok is None:
-              AgentToken.objects.create(workstation=ws, token_hash=f'ops-launch-364-{ws.id}', token_prefix='ops', is_active=True, expires_at=now+timedelta(days=30))
+              AgentToken.objects.create(workstation=ws, token_hash='ops-launch-364-' + str(ws.id), token_prefix='ops', is_active=True, expires_at=now+timedelta(days=30))
               print('token created')
           elif tok.expires_at and tok.expires_at < now:
               tok.expires_at = now + timedelta(days=30)
