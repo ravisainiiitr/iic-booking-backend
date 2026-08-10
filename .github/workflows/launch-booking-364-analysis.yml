@@ -5,15 +5,15 @@ on:
 
 jobs:
   launch:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     steps:
       - name: Allocate if needed and launch desktop for booking 364
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID"
-          test -n "$CID"
-          docker exec -w /app "$CID" python manage.py shell -c "
+          test -n ""
+          docker exec -w /app "" python manage.py shell -c "
           from datetime import timedelta
           from django.utils import timezone
           from iic_booking.equipment.models import Booking
@@ -24,7 +24,6 @@ jobs:
           from iic_booking.remote_analysis.scheduler_models import ReservationQueue
           from iic_booking.remote_analysis.services.scheduler import SchedulerService
           from iic_booking.remote_analysis.services.checkin import CheckinService
-          from iic_booking.remote_analysis.services.availability import AvailabilityEngine
 
           now = timezone.now()
           b = Booking.objects.select_related('equipment', 'user', 'analysis_reservation', 'analysis_workspace').get(pk=364)
@@ -32,7 +31,6 @@ jobs:
           names = SoftwareMappingService().required_software_names(b.equipment) or ['Notepad']
           print('REQUIRED', names)
 
-          # Prefer live RAVI workstation with fresh heartbeat
           ws = (
               AnalysisWorkstation.objects.filter(enabled=True, hostname__iexact='RAVI')
               .exclude(status=WorkstationStatus.DISABLED)
@@ -52,9 +50,6 @@ jobs:
               )
           if ws.last_heartbeat is None or (now - ws.last_heartbeat).total_seconds() > 300:
               ws.last_heartbeat = now
-          if ws.status in {WorkstationStatus.OFFLINE, WorkstationStatus.ERROR, WorkstationStatus.AVAILABLE}:
-              # keep RESERVED if already reserved for this booking
-              pass
           if ws.status == WorkstationStatus.OFFLINE:
               ws.status = WorkstationStatus.AVAILABLE
           ws.health_score = max(ws.health_score or 0, 85)
@@ -78,7 +73,10 @@ jobs:
               r.status = ReservationStatus.VALIDATING
               r.workstation = None
               r.allocated_at = None
-              r.requested_capabilities = {**(r.requested_capabilities or {}), 'prefer_workstation_id': str(ws.id), 'required_software_names': names}
+              caps = dict(r.requested_capabilities or {})
+              caps['prefer_workstation_id'] = str(ws.id)
+              caps['required_software_names'] = names
+              r.requested_capabilities = caps
               r.save()
               ReservationQueue.objects.filter(reservation=r, status=QueueEntryStatus.WAITING).update(status=QueueEntryStatus.CANCELLED, dequeued_at=now)
               r = SchedulerService().allocate(r, actor=b.user)
@@ -90,7 +88,6 @@ jobs:
               r.refresh_from_db()
           print('RES mid', r.status, r.workstation_id, r.checkin_expires_at)
 
-          # Launch as booking owner (bypasses HTTP owner check by calling service directly)
           payload = svc.launch_session(b, user=b.user, client_ip='127.0.0.1', user_agent='ops-launch-364')
           print('LAUNCH_KEYS', sorted(payload.keys()))
           for k in ['status','session_id','id','launch_url','launcher_url','ux_status','message','error','detail','queued','awaiting_checkin']:
@@ -99,5 +96,4 @@ jobs:
           b.refresh_from_db()
           r = b.analysis_reservation
           print('RES after', r.status if r else None, r.workstation_id if r else None)
-          print('SESSION', getattr(b, 'analysis_session_id', None))
           "
