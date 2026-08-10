@@ -57,17 +57,16 @@ def test_compare_installer_matrix():
     assert new["status"] == "compatible"
 
 
-def test_urlconf_loads_without_research_copilot_app(settings):
-    """Regression: R.2 PR must not include research_copilot URLs without INSTALLED_APPS."""
-    assert "iic_booking.research_copilot" not in settings.INSTALLED_APPS
-    assert not any("research_copilot" in str(a) for a in settings.INSTALLED_APPS)
+def test_urlconf_loads_with_research_copilot_app(settings):
+    """Research Copilot is installed; APIs remain feature-flag gated."""
+    assert any("research_copilot" in str(a) for a in settings.INSTALLED_APPS)
     from django.urls import clear_url_caches, get_resolver, resolve
 
     clear_url_caches()
-    # Force full URLconf import (previously crashed on research_copilot.models).
     assert get_resolver().url_patterns
     assert resolve("/api/version/").url_name == "api-version"
     assert resolve("/api/v1/provisioning/capabilities/").url_name == "capabilities"
+    assert resolve("/api/v1/research-copilot/bootstrap/").url_name == "bootstrap"
 
 
 @pytest.mark.django_db

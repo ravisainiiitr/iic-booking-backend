@@ -1,0 +1,188 @@
+"""HTTP API for IIC Research Copilot (Phase AI.1)."""
+
+from __future__ import annotations
+
+import json
+
+from django.http import StreamingHttpResponse
+from django.shortcuts import get_object_or_404
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
+from iic_booking.research_copilot.models import Conversation, FeedbackRating
+from iic_booking.research_copilot.services import conversation as conv_svc
+from iic_booking.research_copilot.services.context_builder import build_context
+from iic_booking.research_copilot.constants import SUGGESTED_PROMPTS
+
+
+def _feature_gate():
+    if not conv_svc.feature_enabled():
+        return Response(
+            {
+                "error": {
+                    "code": "research_copilot_disabled",
+                    "message": "IIC Research Copilot is not enabled on this environment.",
+                }
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return None
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def bootstrap(request):
+    """Public config for the Copilot UI (still requires auth)."""
+    gated = _feature_gate()
+    if gated:
+        # Still return bootstrap shape with enabled=false for UI to hide gracefully
+        ctx = build_context(request.user)
+        return Response(
+            {
+                "enabled": False,
+                "assistant_name": "IIC Research Copilot",
+                "role_bucket": ctx.role_bucket,
+                "suggested_prompts": SUGGESTED_PROMPTS.get(ctx.role_bucket) or SUGGESTED_PROMPTS["default"],
+                "tools_available": [],
+                "capabilities": ctx.capabilities,
+            }
+        )
+    return Response(conv_svc.bootstrap_payload(user=request.user))
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def conversations_collection(request):
+    gated = _feature_gate()
+    if gated:
+        return gated
+
+    if request.method == "GET":
+        rows = conv_svc.list_conversations(user=request.user)
+        return Response(
+            {
+                "count": len(rows),
+                "results": [conv_svc.serialize_conversation(c) for c in rows],
+            }
+        )
+
+    title = (request.data.get("title") or "").strip()
+    conv = conv_svc.create_conversation(user=request.user, title=title)
+    ctx = build_context(request.user)
+    return Response(
+        {
+            "conversation": conv_svc.serialize_conversation(conv, include_messages=True),
+            "suggested_prompts": SUGGESTED_PROMPTS.get(ctx.role_bucket) or SUGGESTED_PROMPTS["default"],
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def conversation_detail(request, conversation_id):
+    gated = _feature_gate()
+    if gated:
+        return gated
+    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    return Response(conv_svc.serialize_conversation(conv, include_messages=True))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def conversation_messages(request, conversation_id):
+    gated = _feature_gate()
+    if gated:
+        return gated
+    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    content = request.data.get("content") or request.data.get("message") or ""
+    try:
+        payload = conv_svc.send_message(user=request.user, conversation=conv, content=content)
+    except ValueError as exc:
+        return Response(
+            {"error": {"code": str(exc), "message": "Invalid message."}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def conversation_messages_stream(request, conversation_id):
+    gated = _feature_gate()
+    if gated:
+        return gated
+    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    content = request.data.get("content") or request.data.get("message") or ""
+
+    def event_stream():
+        try:
+            for item in conv_svc.stream_message_deltas(
+                user=request.user,
+                conversation=conv,
+                content=content,
+            ):
+                ev = item.get("event", "message")
+                data = json.dumps(item.get("data") or {})
+                yield f"event: {ev}\ndata: {data}\n\n"
+        except ValueError as exc:
+            yield f"event: error\ndata: {json.dumps({'code': str(exc)})}\n\n"
+        except Exception:
+            yield f"event: error\ndata: {json.dumps({'code': 'stream_failed'})}\n\n"
+
+    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def conversation_feedback(request, conversation_id):
+    gated = _feature_gate()
+    if gated:
+        return gated
+    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    rating = (request.data.get("rating") or "").strip().lower()
+    if rating not in {FeedbackRating.UP, FeedbackRating.DOWN}:
+        return Response(
+            {"error": {"code": "invalid_rating", "message": "rating must be up or down."}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    fb = conv_svc.add_feedback(
+        user=request.user,
+        conversation=conv,
+        rating=rating,
+        comment=request.data.get("comment") or "",
+        message_id=request.data.get("message_id"),
+    )
+    return Response({"id": str(fb.id), "rating": fb.rating}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def execute_tool(request):
+    """Execute a Copilot tool (read-only or confirmation action-card)."""
+    gated = _feature_gate()
+    if gated:
+        return gated
+    from iic_booking.research_copilot.services import tools as tools_svc
+
+    name = (request.data.get("name") or request.data.get("tool") or "").strip()
+    arguments = request.data.get("arguments") or request.data.get("args") or {}
+    if not name:
+        return Response(
+            {"error": {"code": "missing_tool", "message": "name is required"}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not isinstance(arguments, dict):
+        return Response(
+            {"error": {"code": "invalid_arguments", "message": "arguments must be an object"}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    result = tools_svc.execute_tool(name=name, arguments=arguments, user=request.user)
+    code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
+    return Response(result, status=code)
+

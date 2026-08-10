@@ -131,6 +131,60 @@ def delete_notification(request, notification_id):
         )
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def register_push_device(request):
+    """
+    Register or refresh an Android/iOS push device token.
+
+    Body: { "token": "...", "platform": "android|ios|web", "device_name": "...", "app_version": "..." }
+    """
+    from django.utils import timezone
+
+    from .models import PushDevice
+
+    token = (request.data.get("token") or "").strip()
+    if not token:
+        return Response({"error": "token is required"}, status=status.HTTP_400_BAD_REQUEST)
+    platform = (request.data.get("platform") or PushDevice.Platform.ANDROID).strip().lower()
+    if platform not in {c.value for c in PushDevice.Platform}:
+        return Response({"error": "invalid platform"}, status=status.HTTP_400_BAD_REQUEST)
+
+    device, created = PushDevice.objects.update_or_create(
+        user=request.user,
+        token=token,
+        defaults={
+            "platform": platform,
+            "device_name": (request.data.get("device_name") or "")[:255],
+            "app_version": (request.data.get("app_version") or "")[:64],
+            "is_active": True,
+            "last_seen_at": timezone.now(),
+        },
+    )
+    return Response(
+        {
+            "id": device.id,
+            "created": created,
+            "platform": device.platform,
+            "is_active": device.is_active,
+        },
+        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def unregister_push_device(request):
+    """Deactivate a device token for the current user."""
+    from .models import PushDevice
+
+    token = (request.data.get("token") or "").strip()
+    if not token:
+        return Response({"error": "token is required"}, status=status.HTTP_400_BAD_REQUEST)
+    updated = PushDevice.objects.filter(user=request.user, token=token).update(is_active=False)
+    return Response({"deactivated": updated}, status=status.HTTP_200_OK)
+
+
 # Notice Board API Views
 
 @api_view(["GET", "POST"])

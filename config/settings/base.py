@@ -108,6 +108,7 @@ LOCAL_APPS = [
     "iic_booking.deployment.apps.DeploymentConfig",
     "iic_booking.lab_infrastructure.apps.LabInfrastructureConfig",
     "iic_booking.device_provisioning.apps.DeviceProvisioningConfig",
+    "iic_booking.research_copilot.apps.ResearchCopilotConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -614,8 +615,16 @@ FRONTEND_GIT_COMMIT = env("FRONTEND_GIT_COMMIT", default="")
 BUILD_DATE = env("BUILD_DATE", default="")
 PROVISIONING_VERSION = env("PROVISIONING_VERSION", default="2.0")
 PROVISIONING_ENABLED = env.bool("PROVISIONING_ENABLED", default=True)
-RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.0.0")
+RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.1.0")
 RESEARCH_COPILOT_ENABLED = env.bool("RESEARCH_COPILOT_ENABLED", default=False)
+RESEARCH_COPILOT_MODEL = env("RESEARCH_COPILOT_MODEL", default="")
+RESEARCH_COPILOT_EMBEDDING_PROVIDER = env("RESEARCH_COPILOT_EMBEDDING_PROVIDER", default="local")
+RESEARCH_COPILOT_EMBEDDING_MODEL = env("RESEARCH_COPILOT_EMBEDDING_MODEL", default="text-embedding-3-small")
+RESEARCH_COPILOT_VECTOR_STORE = env("RESEARCH_COPILOT_VECTOR_STORE", default="orm")
+RESEARCH_COPILOT_SCAN_LIMIT = env.int("RESEARCH_COPILOT_SCAN_LIMIT", default=500)
+# Android / FCM push (optional — when unset, push stays in-app + email)
+FCM_SERVER_KEY = env("FCM_SERVER_KEY", default="")
+FIREBASE_CREDENTIALS_JSON = env("FIREBASE_CREDENTIALS_JSON", default="")
 COMPATIBLE_FRONTEND_MIN = env("COMPATIBLE_FRONTEND_MIN", default="2.5.2-r2")
 COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # Optional JSON override for installer matrix, e.g.

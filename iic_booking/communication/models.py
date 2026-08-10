@@ -556,3 +556,47 @@ class Notice(models.Model):
 
     def __str__(self) -> str:
         return self.title
+
+
+class PushDevice(models.Model):
+    """Registered mobile device for FCM/APNS delivery (Android/iOS)."""
+
+    class Platform(models.TextChoices):
+        ANDROID = "android", _("Android")
+        IOS = "ios", _("iOS")
+        WEB = "web", _("Web")
+
+    user = ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="push_devices",
+        verbose_name=_("User"),
+    )
+    token = CharField(_("Device Token"), max_length=512, db_index=True)
+    platform = CharField(
+        _("Platform"),
+        max_length=16,
+        choices=Platform.choices,
+        default=Platform.ANDROID,
+        db_index=True,
+    )
+    device_name = CharField(_("Device Name"), max_length=255, blank=True)
+    app_version = CharField(_("App Version"), max_length=64, blank=True)
+    is_active = BooleanField(_("Active"), default=True, db_index=True)
+    last_seen_at = DateTimeField(_("Last Seen"), default=timezone.now)
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+
+    class Meta:
+        verbose_name = _("Push Device")
+        verbose_name_plural = _("Push Devices")
+        constraints = [
+            models.UniqueConstraint(fields=["user", "token"], name="uniq_push_device_user_token"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "is_active"]),
+            models.Index(fields=["platform", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.platform}:{self.device_name or self.token[:12]}"

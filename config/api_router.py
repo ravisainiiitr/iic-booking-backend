@@ -328,6 +328,8 @@ from iic_booking.communication.api_views import (
     mark_notification_as_read,
     mark_all_notifications_as_read,
     delete_notification,
+    register_push_device,
+    unregister_push_device,
     notice_list,
     notice_detail,
     list_inbox_folders,
@@ -443,6 +445,8 @@ urlpatterns = router.urls + [
     path("v1/lab/", include("iic_booking.lab_infrastructure.urls")),
     # Unified Device Provisioning (Phase R.2.1)
     path("v1/provisioning/", include("iic_booking.device_provisioning.urls")),
+    # IIC Research Copilot (feature-flagged in views)
+    path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     # Booking ↔ Remote Analysis integration
     path(
         "v1/bookings/analysis/dashboard/",
@@ -1129,6 +1133,8 @@ urlpatterns = router.urls + [
     path("notifications/<int:notification_id>/mark-read/", mark_notification_as_read, name="notification-mark-read"),
     path("notifications/mark-all-read/", mark_all_notifications_as_read, name="notifications-mark-all-read"),
     path("notifications/<int:notification_id>/", delete_notification, name="notification-delete"),
+    path("notifications/devices/register/", register_push_device, name="notifications-device-register"),
+    path("notifications/devices/unregister/", unregister_push_device, name="notifications-device-unregister"),
     
     # Notice Board endpoints
     path("notices/", notice_list, name="notice-list"),  # GET (public) and POST (admin)

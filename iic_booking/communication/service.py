@@ -591,22 +591,34 @@ class CommunicationService:
             metadata=metadata or {},
             created_by=created_by or get_current_user(),
         )
-        
-        # TODO: Implement actual push notification sending logic (e.g., FCM, APNS)
-        # For now, just log it
+
         try:
-            # Placeholder for push notification sending
-            # push_provider.send(recipient, title, message, push_data)
-            
+            # Deliver to registered mobile devices (FCM) when configured.
+            try:
+                from .fcm import deliver_to_user_devices
+
+                fcm_result = deliver_to_user_devices(
+                    user=recipient,
+                    title=title or "",
+                    message=message or "",
+                    metadata=metadata or {},
+                )
+                meta = dict(communication_log.metadata or {})
+                meta["fcm"] = fcm_result
+                communication_log.metadata = meta
+                communication_log.save(update_fields=["metadata"])
+            except Exception as fcm_error:  # noqa: BLE001
+                logger.warning("FCM delivery failed: %s", fcm_error)
+
             # Update log status to sent
             communication_log.status = CommunicationLog.CommunicationStatus.SENT
             communication_log.sent_at = timezone.now()
-            communication_log.save(update_fields=['status', 'sent_at'])
-            
+            communication_log.save(update_fields=["status", "sent_at"])
+
             # Send WebSocket notification for real-time delivery
             try:
                 from .websocket_utils import send_notification_from_communication_log
-                # Determine notification type from metadata
+
                 notification_type = (metadata or {}).get("notification_type", "info")
                 link = (metadata or {}).get("link")
                 send_notification_from_communication_log(
@@ -615,18 +627,16 @@ class CommunicationService:
                     link=link,
                 )
             except Exception as ws_error:
-                # Don't fail the push notification if WebSocket fails
                 logger.warning(f"Failed to send WebSocket notification: {str(ws_error)}")
-            
+
             logger.info(f"Push notification logged for {recipient.email}: {title}")
             return communication_log
-            
+
         except Exception as e:
             error_message = str(e)
             communication_log.status = CommunicationLog.CommunicationStatus.FAILED
             communication_log.error_message = error_message
-            communication_log.save(update_fields=['status', 'error_message'])
-            
+            communication_log.save(update_fields=["status", "error_message"])
             logger.error(f"Failed to send push notification to {recipient.email}: {error_message}")
             raise
 
