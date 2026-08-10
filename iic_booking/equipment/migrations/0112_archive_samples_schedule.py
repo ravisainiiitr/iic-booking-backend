@@ -1,5 +1,7 @@
 from django.db import migrations
 
+from iic_booking.compat.celery_crontab import crontab_get_or_create
+
 
 def create_sample_archive_schedule(apps, schema_editor):
     """Create CrontabSchedule and PeriodicTask for archive_expired_samples."""
@@ -8,7 +10,8 @@ def create_sample_archive_schedule(apps, schema_editor):
     BookingBufferConfig = apps.get_model("equipment", "BookingBufferConfig")
 
     # 19:00 daily in project timezone (Asia/Kolkata)
-    crontab, _ = CrontabSchedule.objects.get_or_create(
+    crontab, _ = crontab_get_or_create(
+        CrontabSchedule,
         minute="0",
         hour="19",
         day_of_week="*",
@@ -39,7 +42,7 @@ def remove_sample_archive_schedule(apps, schema_editor):
 class Migration(migrations.Migration):
     dependencies = [
         ("equipment", "0111_bookingbufferconfig_sample_retention"),
-        ("django_celery_beat", "0001_initial"),
+        ("django_celery_beat", "0016_alter_crontabschedule_timezone"),
     ]
 
     operations = [

@@ -20,11 +20,22 @@ def _table_columns(schema_editor, table: str) -> set[str]:
 def _index_names(schema_editor, table: str) -> set[str]:
     connection = schema_editor.connection
     with connection.cursor() as cursor:
-        return {
-            idx["name"]
-            for idx in connection.introspection.get_indexes(cursor, table)
-            if idx.get("name")
-        }
+        # Django 4.2+ removed get_indexes(); prefer get_constraints when available.
+        introspection = connection.introspection
+        if hasattr(introspection, "get_constraints"):
+            constraints = introspection.get_constraints(cursor, table)
+            return {
+                name
+                for name, meta in constraints.items()
+                if meta.get("index") or meta.get("unique")
+            }
+        if hasattr(introspection, "get_indexes"):
+            return {
+                idx["name"]
+                for idx in introspection.get_indexes(cursor, table)
+                if idx.get("name")
+            }
+    return set()
 
 
 def restore_reverse_tunnel_transport(apps, schema_editor):
@@ -121,9 +132,11 @@ def restore_reverse_tunnel_transport(apps, schema_editor):
     TunnelEvent = apps.get_model("remote_analysis", "TunnelEvent")
     TunnelMetric = apps.get_model("remote_analysis", "TunnelMetric")
 
+    created_tunnel_session = False
     if TunnelSession._meta.db_table not in table_names:
         schema_editor.create_model(TunnelSession)
         table_names.add(TunnelSession._meta.db_table)
+        created_tunnel_session = True
     if TunnelMetric._meta.db_table not in table_names:
         schema_editor.create_model(TunnelMetric)
         table_names.add(TunnelMetric._meta.db_table)
@@ -131,13 +144,15 @@ def restore_reverse_tunnel_transport(apps, schema_editor):
         schema_editor.create_model(TunnelEvent)
         table_names.add(TunnelEvent._meta.db_table)
 
-    if TunnelSession._meta.db_table in table_names:
+    # create_model already installs Meta.indexes; only backfill indexes on pre-existing tables.
+    if TunnelSession._meta.db_table in table_names and not created_tunnel_session:
         existing_indexes = _index_names(schema_editor, TunnelSession._meta.db_table)
         for index in TunnelSession._meta.indexes:
             if index.name not in existing_indexes:
                 try:
                     schema_editor.add_index(TunnelSession, index)
                 except Exception:
+                    # Idempotent: index may already exist under an alternate introspection path.
                     pass
 
 
@@ -402,8 +417,9 @@ class Migration(migrations.Migration):
                     index=models.Index(fields=["workstation", "status"], name="remote_anal_worksta_aaf3ec_idx"),
                 ),
             ],
-            database_operations=[
-                migrations.RunPython(restore_reverse_tunnel_transport, noop_reverse),
-            ],
+            database_operations=[],
         ),
+        # After state_operations so historical apps registry includes TunnelSession.
+        # Idempotent for hosts that already have reverse-tunnel tables.
+        migrations.RunPython(restore_reverse_tunnel_transport, noop_reverse),
     ]

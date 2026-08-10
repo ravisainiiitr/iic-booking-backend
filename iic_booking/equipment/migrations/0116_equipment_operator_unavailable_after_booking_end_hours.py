@@ -1,11 +1,14 @@
 from django.db import migrations, models
 
+from iic_booking.compat.celery_crontab import crontab_get_or_create
+
 
 def create_auto_operator_unavailable_schedule(apps, schema_editor):
     CrontabSchedule = apps.get_model("django_celery_beat", "CrontabSchedule")
     PeriodicTask = apps.get_model("django_celery_beat", "PeriodicTask")
 
-    crontab, _ = CrontabSchedule.objects.get_or_create(
+    crontab, _ = crontab_get_or_create(
+        CrontabSchedule,
         minute="30",
         hour="20",
         day_of_week="*",
@@ -31,7 +34,7 @@ def remove_auto_operator_unavailable_schedule(apps, schema_editor):
 class Migration(migrations.Migration):
     dependencies = [
         ("equipment", "0115_equipment_results_base_location"),
-        ("django_celery_beat", "0001_initial"),
+        ("django_celery_beat", "0016_alter_crontabschedule_timezone"),
     ]
 
     operations = [

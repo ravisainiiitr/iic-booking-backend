@@ -25,11 +25,15 @@ User = get_user_model()
 
 @pytest.fixture
 def student(db):
+    # Token auth requires is_active=True (project create_user defaults inactive).
     return User.objects.create_user(
         email="ai2-student@example.com",
         password="test-pass-12345",
         user_type=UserType.STUDENT,
         name="AI2 Student",
+        is_active=True,
+        email_verified=True,
+        admin_approved=True,
     )
 
 
@@ -41,6 +45,9 @@ def admin_user(db):
         user_type=UserType.ADMIN,
         name="AI2 Admin",
         is_staff=True,
+        is_active=True,
+        email_verified=True,
+        admin_approved=True,
     )
 
 

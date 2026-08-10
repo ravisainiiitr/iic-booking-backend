@@ -2,6 +2,8 @@
 
 from django.db import migrations
 
+from iic_booking.compat.celery_crontab import crontab_get_or_create
+
 
 def create_buffer_check_schedule(apps, schema_editor):
     """Create CrontabSchedule and PeriodicTask for check_booking_not_utilized at 20:00 daily."""
@@ -10,7 +12,8 @@ def create_buffer_check_schedule(apps, schema_editor):
     BookingBufferConfig = apps.get_model("equipment", "BookingBufferConfig")
 
     # 20:00 daily in project timezone
-    crontab, _ = CrontabSchedule.objects.get_or_create(
+    crontab, _ = crontab_get_or_create(
+        CrontabSchedule,
         minute="0",
         hour="20",
         day_of_week="*",
@@ -42,7 +45,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("equipment", "0061_bookingbufferconfig"),
-        ("django_celery_beat", "0001_initial"),
+        ("django_celery_beat", "0016_alter_crontabschedule_timezone"),
     ]
 
     operations = [

@@ -2,13 +2,16 @@
 
 from django.db import migrations
 
+from iic_booking.compat.celery_crontab import crontab_get_or_create
+
 
 def create_wallet_low_balance_schedule(apps, schema_editor):
     """Create CrontabSchedule and PeriodicTask for send_wallet_low_balance_alerts at 11:00 AM daily."""
     CrontabSchedule = apps.get_model("django_celery_beat", "CrontabSchedule")
     PeriodicTask = apps.get_model("django_celery_beat", "PeriodicTask")
 
-    crontab, _ = CrontabSchedule.objects.get_or_create(
+    crontab, _ = crontab_get_or_create(
+        CrontabSchedule,
         minute="0",
         hour="11",
         day_of_week="*",
@@ -36,7 +39,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("users", "0036_user_wallet_low_balance_alert"),
-        ("django_celery_beat", "0001_initial"),
+        ("django_celery_beat", "0016_alter_crontabschedule_timezone"),
     ]
 
     operations = [
