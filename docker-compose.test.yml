@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: iic_booking_test_postgres
+    environment:
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: iic_booking_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d iic_booking_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  django:
+    depends_on:
+      postgres:
+        condition: service_healthy

@@ -8,7 +8,7 @@ from datetime import datetime, timezone as dt_timezone
 from django.db import transaction
 from django.utils import timezone
 
-from iic_booking.equipment.models import Booking, BookingStatus
+from iic_booking.equipment.models import Booking
 from iic_booking.sync.exceptions import SyncControlPlaneError
 from iic_booking.sync.models import (
     DepartmentSyncAgent,
@@ -64,20 +64,9 @@ class ResultCompletionService:
             job.started_at = job.started_at or timezone.now()
             job.save(update_fields=["status", "started_at", "updated_at"])
 
-        # BOOKING → PROCESSING → COMPLETED
-        if booking.status not in {
-            BookingStatus.COMPLETED,
-            BookingStatus.CANCELLED,
-            BookingStatus.REFUNDED,
-            BookingStatus.BOOKING_NOT_UTILIZED,
-        }:
-            if booking.status != BookingStatus.PROCESSING:
-                booking.status = BookingStatus.PROCESSING
-                booking.save(update_fields=["status"])
-
-            booking.status = BookingStatus.COMPLETED
-            booking.completed_at = timezone.now()
-            booking.save(update_fields=["status", "completed_at"])
+        # Transport finalization no longer changes booking lifecycle state.
+        # Booking completion is handled by explicit manual completion or end-time
+        # auto-completion logic based on stable result availability.
 
         if processing_duration_ms is not None:
             result.processing_duration_ms = processing_duration_ms
@@ -115,7 +104,7 @@ class ResultCompletionService:
         )
 
         return {
-            "decision": "completed",
+            "decision": "finalized",
             "booking_id": booking.booking_id,
             "booking_status": booking.status,
             "completed_at": (booking.completed_at or datetime.now(tz=dt_timezone.utc)).isoformat(),

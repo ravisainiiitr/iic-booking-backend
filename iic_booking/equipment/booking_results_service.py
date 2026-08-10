@@ -16,6 +16,14 @@ from iic_booking.sync.services.upload import _storage_root
 
 logger = logging.getLogger(__name__)
 
+CONTROL_RESULT_FILE_NAMES = {
+    "workspace-ready",
+    "workspace.ready",
+    ".workspace-ready",
+    ".workspace_ready",
+    "workspace_ready",
+}
+
 
 def booking_has_results_annotation():
     """ORM annotation: operator complete files OR DSA-imported attachments."""
@@ -197,6 +205,28 @@ def merge_booking_result_files(
         _add(f)
 
     return merged
+
+
+def has_material_result_files(booking: Booking) -> bool:
+    """
+    True when booking has at least one usable user/equipment data file.
+
+    Ignores known control/marker files (e.g. workspace-ready) and missing/empty entries.
+    Uses the existing unified result-source merge (S3 + DSA + operator uploads).
+    """
+    merged = merge_booking_result_files(booking=booking, s3_files=[], request=None)
+    for entry in merged:
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        leaf = Path(name).name.strip().lower()
+        if leaf in CONTROL_RESULT_FILE_NAMES:
+            continue
+        size = int(entry.get("size_bytes") or 0)
+        if size <= 0:
+            continue
+        return True
+    return False
 
 
 def iter_dsa_zip_members(booking: Booking):
