@@ -425,13 +425,33 @@ class WorkstationRdpSecretForm(forms.ModelForm):
     password_plaintext = forms.CharField(
         label="Windows password",
         required=False,
-        widget=forms.PasswordInput(render_value=False),
-        help_text="Enter to set/replace the stored password. Leave blank to keep the existing secret.",
+        widget=forms.PasswordInput(render_value=False, attrs={"autocomplete": "new-password"}),
+        help_text=(
+            "Required when creating a new secret. "
+            "To replace an existing password, type a new value. "
+            "Leave blank only to keep an already-stored password."
+        ),
     )
 
     class Meta:
         model = WorkstationRdpSecret
         fields = ("workstation", "username", "domain", "port", "security")
+
+    def clean(self):
+        cleaned = super().clean()
+        username = (cleaned.get("username") or "").strip()
+        plaintext = (cleaned.get("password_plaintext") or "").strip()
+        instance = getattr(self, "instance", None)
+        has_existing_pw = bool(instance and instance.pk and (instance.password_encrypted or "").strip())
+        if not username:
+            self.add_error("username", "Windows username is required for Guacamole automatic login.")
+        if not plaintext and not has_existing_pw:
+            self.add_error(
+                "password_plaintext",
+                "Windows password is required. Leaving this blank does not save a password.",
+            )
+        cleaned["username"] = username
+        return cleaned
 
     def save(self, commit=True):
         obj = super().save(commit=False)
@@ -547,9 +567,14 @@ class RemoteAnalysisSettingsAdmin(admin.ModelAdmin):
 class WorkstationRdpSecretInline(admin.StackedInline):
     model = WorkstationRdpSecret
     form = WorkstationRdpSecretForm
-    extra = 0
+    # Show one empty form so admins can enter credentials without clicking "Add another".
+    extra = 1
+    max_num = 1
+    can_delete = True
     fields = ("username", "password_plaintext", "domain", "port", "security", "updated_at")
     readonly_fields = ("updated_at",)
+    verbose_name = "Workstation RDP Secret (required for Guacamole)"
+    verbose_name_plural = "Workstation RDP Secret (required for Guacamole)"
 
 
 # Attach RDP secret inline to workstation admin
@@ -610,18 +635,25 @@ class SessionRecordingAdmin(admin.ModelAdmin):
 @admin.register(WorkstationRdpSecret)
 class WorkstationRdpSecretAdmin(admin.ModelAdmin):
     form = WorkstationRdpSecretForm
-    list_display = ("workstation", "username", "domain", "port", "updated_at")
-    readonly_fields = ("password_encrypted", "updated_at")
+    list_display = ("workstation", "username", "has_password", "domain", "port", "updated_at")
+    list_filter = ("security",)
+    search_fields = ("workstation__hostname", "workstation__agent_id", "username")
+    readonly_fields = ("password_encrypted", "updated_at", "has_password")
     fields = (
         "workstation",
         "username",
         "password_plaintext",
+        "has_password",
         "password_encrypted",
         "domain",
         "port",
         "security",
         "updated_at",
     )
+
+    @admin.display(boolean=True, description="Password saved")
+    def has_password(self, obj):
+        return bool(obj and (obj.password_encrypted or "").strip())
 
 
 from iic_booking.remote_analysis.tunnel_models import TunnelEvent, TunnelMetric, TunnelSession  # noqa: E402
