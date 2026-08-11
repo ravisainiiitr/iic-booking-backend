@@ -828,7 +828,15 @@ def admin_api_router():
         def list(self, request, *args, **kwargs):
             from config.admin_panel_access_api import assert_admin_section_module
 
-            assert_admin_section_module(request.user, "users")
+            # Book-on-behalf picker (Manage Equipment) must work for OIC/Dept Admin
+            # even when the Admin Settings → Users module is not granted.
+            for_booking = str(request.query_params.get("for_booking", "")).lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if not for_booking:
+                assert_admin_section_module(request.user, "users")
             return super().list(request, *args, **kwargs)
 
         def retrieve(self, request, *args, **kwargs):
@@ -1222,25 +1230,86 @@ def admin_api_router():
 
         @action(detail=True, methods=["get"], url_path="booking-info")
         def booking_info(self, request, pk=None):
-            """Return user info needed for admin 'Book slots for user': email, department, Supervisor, balance."""
-            user = self.get_object()
-            wallet = user.get_accessible_wallet()
-            department_name = user.department.name if user.department else None
+            """Return user info needed for admin 'Book slots for user': email, department, Supervisor, balance.
+
+            Intentionally does NOT use for_booking-filtered get_queryset()/get_object(),
+            which can 404 when query flags disagree with list filters. Authorization is
+            enforced here for Admin / OIC / Dept Admin (and Org Admin for own org).
+            """
+            actor = request.user
+            actor_type = getattr(actor, "user_type", None)
+            allowed = {
+                UserType.ADMIN,
+                UserType.MANAGER,
+                UserType.DEPT_ADMIN,
+                UserType.ORG_ADMIN,
+            }
+            if actor_type not in allowed and not getattr(actor, "is_staff", False):
+                raise PermissionDenied("Only Admin, OIC, or Department Administrator can view booking user details.")
+
+            try:
+                user = User.objects.select_related("department").get(pk=pk)
+            except (User.DoesNotExist, ValueError, TypeError):
+                return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            # Scope: OIC → own department; Dept Admin → institute-wide (same as for_booking list);
+            # Org Admin → own organization; Main Admin → unrestricted.
+            if actor_type == UserType.MANAGER:
+                scope_id = _request_user_scope_id(request)
+                if scope_id is None or user.department_id != scope_id:
+                    raise PermissionDenied("OIC can only view users in their own department.")
+            elif actor_type == UserType.ORG_ADMIN:
+                if user.department_id != getattr(actor, "department_id", None):
+                    raise PermissionDenied("Organization Administrators can only view users in their organization.")
+
             wallet_balance = "0.00"
             wallet_faculty_owner = None
+            try:
+                wallet = user.get_accessible_wallet()
+            except Exception:
+                wallet = None
             if wallet:
-                wallet_balance = str(wallet.total_balance)
-                if wallet.user_id != user.id:
-                    wallet_faculty_owner = {
-                        "name": wallet.user.name or wallet.user.email or "",
-                        "email": wallet.user.email or "",
-                    }
-                else:
-                    wallet_faculty_owner = {"name": "Self", "email": user.email or ""}
+                try:
+                    wallet_balance = f"{wallet.total_balance:.2f}"
+                except Exception:
+                    wallet_balance = "0.00"
+                try:
+                    if wallet.user_id != user.id:
+                        owner = getattr(wallet, "user", None)
+                        wallet_faculty_owner = {
+                            "name": (getattr(owner, "name", None) or getattr(owner, "email", None) or "") if owner else "",
+                            "email": (getattr(owner, "email", None) or "") if owner else "",
+                        }
+                    else:
+                        wallet_faculty_owner = {"name": "Self", "email": user.email or ""}
+                except Exception:
+                    wallet_faculty_owner = None
+
+            # Prefer equipment department sub-wallet when equipment_id is provided (booking debit target).
+            equipment_id = request.query_params.get("equipment_id")
+            if equipment_id and wallet:
+                try:
+                    from iic_booking.equipment.models import Equipment
+
+                    eq = Equipment.objects.filter(equipment_id=int(equipment_id)).only(
+                        "equipment_id", "internal_department_id"
+                    ).first()
+                    dept_id = getattr(eq, "internal_department_id", None) if eq else None
+                    if dept_id:
+                        sw = SubWallet.objects.filter(wallet=wallet, department_id=dept_id).first()
+                        if sw is not None:
+                            wallet_balance = f"{sw.balance:.2f}"
+                except Exception:
+                    pass
+
+            department_name = user.department.name if user.department else None
             return Response({
+                "id": user.id,
+                "name": user.name or "",
                 "email": user.email or "",
                 "department_name": department_name or "",
                 "phone_number": getattr(user, "phone_number", None) or "",
+                "user_type": user.user_type or "",
                 "wallet_faculty_owner": wallet_faculty_owner,
                 "wallet_balance": wallet_balance,
             })
