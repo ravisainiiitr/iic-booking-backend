@@ -1,0 +1,63 @@
+# Non-destructive backup integrity check on EC2.
+# Default: gzip integrity via iic-restore-verify.sh WITHOUT VERIFY_RESTORE_DB.
+# Optional temp DB restore creates/drops iic_restore_verify_* — never overwrites production DB.
+name: AI12 Backup Integrity Verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow_temp_restore:
+        description: "Set true ONLY to run VERIFY_RESTORE_DB=1 temp DB restore"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate verify script and latest backup
+        id: loc
+        run: |
+          set -euo pipefail
+          SCRIPT=""
+          for p in \
+            /home/ubuntu/bin/iic-restore-verify.sh \
+            /home/ubuntu/iic-booking-backend/scripts/ops/iic-restore-verify.sh \
+            /home/ubuntu/iic-booking-backend/scripts/deploy/restore-verify.sh
+          do
+            if [ -f "$p" ]; then
+              SCRIPT="$p"
+              break
+            fi
+          done
+          if [ -z "$SCRIPT" ]; then
+            echo "FAIL: restore-verify script not found"
+            exit 1
+          fi
+          LATEST="/home/ubuntu/backups/nightly/latest"
+          if [ ! -e "$LATEST" ]; then
+            echo "FAIL: latest backup symlink missing"
+            exit 1
+          fi
+          echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Using script=$SCRIPT"
+          echo "Using latest=$(readlink -f "$LATEST" 2>/dev/null || readlink "$LATEST" || echo "$LATEST")"
+          ls -la "$LATEST" || true
+          ls -la "$LATEST/db" 2>/dev/null || true
+
+      - name: Integrity verify (no production overwrite)
+        run: |
+          set -euo pipefail
+          SCRIPT="${{ steps.loc.outputs.script }}"
+          LATEST="${{ steps.loc.outputs.latest }}"
+          echo "Running: bash $SCRIPT $LATEST (allow_temp_restore=${{ inputs.allow_temp_restore }})"
+          if [ "${{ inputs.allow_temp_restore }}" = "true" ]; then
+            VERIFY_RESTORE_DB=1 bash "$SCRIPT" "$LATEST"
+          else
+            bash "$SCRIPT" "$LATEST"
+          fi
