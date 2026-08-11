@@ -1,0 +1,112 @@
+name: Diagnose Booking Launch Sync Stuck
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_id:
+        required: true
+        default: "IICPXRD [A]202600040"
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Session / workspace / prepare diagnosis
+        env:
+          BID: ${{ github.event.inputs.booking_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          mkdir -p docs/release/phase-RX
+          OUT="docs/release/phase-RX/ra-launch-diag-${{ github.run_id }}.txt"
+          docker exec -e BID="$BID" -w /app "$CID" python manage.py shell -c "
+          import os, json, traceback
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, RemoteCommand
+          from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+
+          bid=os.environ['BID'].strip()
+          b=Booking.objects.select_related('user','equipment').filter(virtual_booking_id=bid).first()
+          print('=== BOOKING ===', json.dumps({'pk':b.pk,'virtual':b.virtual_booking_id,'status':str(b.status)}, default=str) if b else None)
+          r=AnalysisReservation.objects.filter(booking=b).order_by('-created_at').first() if b else None
+          print('=== RESERVATION ===')
+          print(json.dumps({'id':str(r.id),'status':r.status,'ws':str(r.workstation_id),'reserved_start':str(r.reserved_start),'reserved_end':str(r.reserved_end)} if r else None, default=str))
+          sessions=list(RemoteDesktopSession.objects.filter(booking=b).order_by('-created_at')[:5]) if b else []
+          print('=== SESSIONS ===')
+          for s in sessions:
+              print(json.dumps({
+                'id':str(s.id),'status':s.status,'failure':s.failure_detail[:500] if s.failure_detail else '',
+                'prepare_command_id':str(s.prepare_command_id) if s.prepare_command_id else None,
+                'extension_grace_used':getattr(s,'extension_grace_used',None),
+                'created_at':str(s.created_at),'updated_at':str(s.updated_at),
+                'ws':str(s.workstation_id),
+              }, default=str))
+          print('=== WORKSPACES ===')
+          wqs=AnalysisWorkspace.objects.filter(booking=b).order_by('-created_at')[:5] if b else []
+          for w in wqs:
+              print(json.dumps({
+                'id':str(w.id),'status':getattr(w,'status',None),'sync_phase':getattr(w,'sync_phase',None),
+                'sync_progress_percent':getattr(w,'sync_progress_percent',None),
+                'sync_message':getattr(w,'sync_message',None),
+                'local_agent_path':getattr(w,'local_agent_path',None),
+                'workstation_id':str(getattr(w,'workstation_id',None)),
+                'updated_at':str(getattr(w,'updated_at',None)),
+              }, default=str))
+          print('=== PREPARE COMMANDS ===')
+          for s in sessions:
+              if not s.prepare_command_id: continue
+              c=RemoteCommand.objects.filter(pk=s.prepare_command_id).first()
+              if not c: print('MISSING_CMD', s.prepare_command_id); continue
+              print(json.dumps({
+                'id':str(c.id),'type':getattr(c,'command_type',None) or getattr(c,'type',None),
+                'status':c.status,'created_at':str(c.created_at),'updated_at':str(getattr(c,'updated_at',None)),
+                'acked_at':str(getattr(c,'acked_at',None)),'completed_at':str(getattr(c,'completed_at',None)),
+                'error': (getattr(c,'error_message',None) or getattr(c,'result_message',None) or '')[:800],
+                'payload_keys': list((c.payload or {}).keys()) if isinstance(getattr(c,'payload',None), dict) else None,
+              }, default=str))
+          if r and r.workstation_id:
+              ws=AnalysisWorkstation.objects.filter(pk=r.workstation_id).first()
+              print('=== WORKSTATION ===')
+              print(json.dumps({'hostname':ws.hostname,'status':ws.status,'last_heartbeat':str(ws.last_heartbeat),'agent_version':ws.agent_version,'enabled':ws.enabled}, default=str))
+              pending=list(RemoteCommand.objects.filter(workstation=ws).order_by('-created_at')[:8])
+              print('=== WS RECENT COMMANDS ===')
+              for c in pending:
+                  print(json.dumps({'id':str(c.id),'type':getattr(c,'command_type',None) or getattr(c,'type',None),'status':c.status,'created':str(c.created_at)}, default=str))
+          print('=== SUMMARY EXPERIENCE ===')
+          try:
+              summary=BookingRemoteAnalysisService().get_summary(b, actor=b.user)
+              exp=(summary or {}).get('experience') or {}
+              print(json.dumps({
+                'ux_status': (summary or {}).get('ux_status'),
+                'session': (summary or {}).get('session'),
+                'desktop_prepare': exp.get('desktop_prepare') or exp.get('prepare') or exp.get('launch'),
+                'workspace': exp.get('workspace'),
+                'progress': exp.get('progress'),
+              }, default=str)[:6000])
+          except TypeError:
+              try:
+                  summary=BookingRemoteAnalysisService().get_summary(b)
+                  print(json.dumps(summary, default=str)[:6000])
+              except Exception as e:
+                  print('SUMMARY_ERR', type(e).__name__, e); traceback.print_exc()
+          except Exception as e:
+              print('SUMMARY_ERR', type(e).__name__, e); traceback.print_exc()
+          " | tee "$OUT"
+          if [[ -s "$OUT" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$OUT"
+            git commit -m "ops: RA launch sync diagnosis for ${{ github.event.inputs.booking_id }} (run ${{ github.run_id }})" || true
+            git push origin HEAD:master || true
+          fi
+          grep -q '=== BOOKING ===' "$OUT"
