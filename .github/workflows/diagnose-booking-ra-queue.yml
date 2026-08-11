@@ -10,22 +10,20 @@ on:
 
 jobs:
   diagnose:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - name: Full RA queue / fleet / candidate diagnosis
+        env:
+          BID: ${{ github.event.inputs.booking_id }}
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          OUT="/tmp/ra_diag_${{ github.run_id }}.txt"
-          SCRIPT="/tmp/ra_diag_${{ github.run_id }}.py"
-          cat > "$SCRIPT" <<'PY'
+          docker exec -e BID="$BID" -w /app "$CID" python manage.py shell -c "
           import os, json, traceback
           from datetime import timedelta
           from django.utils import timezone
           from iic_booking.equipment.models import Booking
-          from iic_booking.remote_analysis.models import (
-              AnalysisWorkstation, InstalledSoftware, EquipmentAnalysisPool,
-          )
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware, EquipmentAnalysisPool
           from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware
           from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
           from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
@@ -33,7 +31,6 @@ jobs:
           from iic_booking.remote_analysis.services.allocation import AllocationService
           from iic_booking.remote_analysis.services.maintenance import MaintenanceService
           from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
-
           bid = os.environ['BID'].strip()
           qs = Booking.objects.select_related('equipment', 'user', 'equipment__internal_department')
           b = qs.filter(virtual_booking_id=bid).first() or qs.filter(virtual_booking_id__iexact=bid).first()
@@ -43,139 +40,57 @@ jobs:
               tail = ''.join(ch for ch in bid if ch.isalnum())[-12:]
               b = qs.filter(virtual_booking_id__icontains=tail).order_by('-pk').first()
           if b is None:
-              print('NOT_FOUND', bid)
-              raise SystemExit(1)
-
+              print('NOT_FOUND', bid); raise SystemExit(1)
           eq = b.equipment
           print('=== BOOKING ===')
-          print(json.dumps({
-              'pk': b.pk, 'virtual': b.virtual_booking_id, 'status': str(b.status),
-              'user': getattr(b.user, 'email', None),
-              'equipment': eq.name, 'equipment_id': eq.pk,
-              'dept_id': getattr(getattr(eq, 'internal_department', None), 'id', None),
-          }, default=str))
-
+          print(json.dumps({'pk': b.pk, 'virtual': b.virtual_booking_id, 'status': str(b.status), 'user': getattr(b.user,'email',None), 'equipment': eq.name, 'equipment_id': eq.pk, 'dept_id': getattr(getattr(eq,'internal_department',None),'id',None)}, default=str))
           required = SoftwareMappingService().required_software_names(eq)
           print('=== REQUIRED_SOFTWARE ===', required)
-          maps = list(
-              EquipmentAnalysisSoftware.objects.filter(equipment=eq).select_related('software').values_list(
-                  'software__name', 'is_active', 'software__slug'
-              )
-          )
+          maps = list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).select_related('software').values_list('software__name','is_active','software__slug'))
           print('=== EQUIPMENT_SOFTWARE_MAP ===', maps)
-          pool = list(
-              EquipmentAnalysisPool.objects.filter(equipment=eq).select_related('workstation').values(
-                  'workstation_id', 'workstation__hostname', 'workstation__status', 'priority_boost', 'is_active'
-              )
-          )
+          pool = list(EquipmentAnalysisPool.objects.filter(equipment=eq).select_related('workstation').values('workstation_id','workstation__hostname','workstation__status','priority_boost','is_active'))
           print('=== EQUIPMENT_POOL ===', json.dumps(pool, default=str))
-
           print('=== FLEET ===')
           for w in AnalysisWorkstation.objects.all().order_by('-last_heartbeat'):
-              inv = list(
-                  InstalledSoftware.objects.filter(workstation=w, is_present=True).values_list('software_name', flat=True)[:30]
-              )
+              inv = list(InstalledSoftware.objects.filter(workstation=w, is_present=True).values_list('software_name', flat=True)[:30])
               soft_ok = True
               if required:
-                  soft_ok = all(
-                      InstalledSoftware.objects.filter(
-                          workstation=w, is_present=True, software_name__icontains=n
-                      ).exists()
-                      for n in required
-                  )
-              age = None
-              if w.last_heartbeat:
-                  age = int((timezone.now() - w.last_heartbeat).total_seconds())
-              print(json.dumps({
-                  'id': str(w.id), 'hostname': w.hostname, 'status': w.status, 'enabled': w.enabled,
-                  'department_id': w.department_id, 'health_score': w.health_score,
-                  'last_heartbeat': str(w.last_heartbeat), 'hb_age_s': age,
-                  'agent_version': getattr(w, 'agent_version', None),
-                  'cleanup_status': getattr(w, 'cleanup_status', None),
-                  'disk_low': getattr(w, 'disk_low', None),
-                  'software_ok_for_required': soft_ok,
-                  'installed_software': inv,
-              }, default=str))
-
+                  soft_ok = all(InstalledSoftware.objects.filter(workstation=w, is_present=True, software_name__icontains=n).exists() for n in required)
+              age = int((timezone.now()-w.last_heartbeat).total_seconds()) if w.last_heartbeat else None
+              print(json.dumps({'id': str(w.id), 'hostname': w.hostname, 'status': w.status, 'enabled': w.enabled, 'department_id': w.department_id, 'health_score': w.health_score, 'last_heartbeat': str(w.last_heartbeat), 'hb_age_s': age, 'agent_version': getattr(w,'agent_version',None), 'cleanup_status': getattr(w,'cleanup_status',None), 'disk_low': getattr(w,'disk_low',None), 'software_ok_for_required': soft_ok, 'installed_software': inv}, default=str))
           reservation = AnalysisReservation.objects.filter(booking=b).order_by('-created_at').first()
           print('=== RESERVATION ===')
           if reservation:
-              caps = getattr(reservation, 'requested_capabilities', None) or {}
-              print(json.dumps({
-                  'id': str(reservation.id), 'status': reservation.status,
-                  'workstation_id': str(reservation.workstation_id) if reservation.workstation_id else None,
-                  'department_id': reservation.department_id,
-                  'requested_start': str(reservation.requested_start),
-                  'requested_end': str(reservation.requested_end),
-                  'requested_capabilities': caps,
-              }, default=str))
+              caps = getattr(reservation,'requested_capabilities',None) or {}
+              print(json.dumps({'id': str(reservation.id), 'status': reservation.status, 'workstation_id': str(reservation.workstation_id) if reservation.workstation_id else None, 'department_id': reservation.department_id, 'requested_start': str(reservation.requested_start), 'requested_end': str(reservation.requested_end), 'requested_capabilities': caps}, default=str))
           else:
               print('NONE')
-
           qe = ReservationQueue.objects.filter(reservation=reservation).order_by('-enqueued_at').first() if reservation else None
           print('=== QUEUE_ENTRY ===')
           if qe:
-              print(json.dumps({
-                  'id': str(qe.id), 'status': qe.status, 'priority': qe.priority,
-                  'enqueued_at': str(qe.enqueued_at),
-                  'allocation_attempts': getattr(qe, 'allocation_attempts', None),
-                  'last_error': getattr(qe, 'last_error', None) or getattr(qe, 'failure_reason', None),
-              }, default=str))
+              print(json.dumps({'id': str(qe.id), 'status': qe.status, 'priority': qe.priority, 'enqueued_at': str(qe.enqueued_at), 'allocation_attempts': getattr(qe,'allocation_attempts',None), 'last_error': getattr(qe,'last_error',None) or getattr(qe,'failure_reason',None)}, default=str))
           else:
               print('NONE')
-
           print('=== CANDIDATE TRACE ===')
           if reservation:
-              engine = AvailabilityEngine()
-              alloc = AllocationService()
+              engine = AvailabilityEngine(); alloc = AllocationService()
               start = reservation.requested_start or timezone.now()
               end = reservation.requested_end or (timezone.now() + timedelta(hours=2))
               caps = reservation.requested_capabilities or {}
               for w in AnalysisWorkstation.objects.filter(enabled=True).order_by('hostname'):
                   try:
-                      ev = engine.evaluate(
-                          w, start, end,
-                          requested_capabilities=caps,
-                          exclude_reservation_id=reservation.id,
-                      )
-                      score = alloc.score_workstation(
-                          w, start=start, end=end,
-                          requested_capabilities=caps,
-                          department_id=reservation.department_id,
-                          equipment=eq,
-                          required_software_names=caps.get('required_software_names') or required,
-                          exclude_reservation_id=reservation.id,
-                      )
-                      print(json.dumps({
-                          'hostname': w.hostname, 'status': w.status,
-                          'ACCEPT': ev.available, 'reasons': ev.reasons,
-                          'score_available': getattr(score, 'available', None),
-                          'score_total': getattr(score, 'total', None),
-                          'score_reasons': getattr(score, 'reasons', None),
-                      }, default=str))
+                      ev = engine.evaluate(w, start, end, requested_capabilities=caps, exclude_reservation_id=reservation.id)
+                      score = alloc.score_workstation(w, start=start, end=end, requested_capabilities=caps, department_id=reservation.department_id, equipment=eq, required_software_names=caps.get('required_software_names') or required, exclude_reservation_id=reservation.id)
+                      print(json.dumps({'hostname': w.hostname, 'status': w.status, 'ACCEPT': ev.available, 'reasons': ev.reasons, 'score_available': getattr(score,'available',None), 'score_total': getattr(score,'total',None), 'score_reasons': getattr(score,'reasons',None)}, default=str))
                   except Exception as e:
                       print(json.dumps({'hostname': w.hostname, 'EVAL_ERR': f'{type(e).__name__}:{e}'}, default=str))
-                      traceback.print_exc()
-
           print('=== MAINTENANCE_HINT ===')
           matching_ids = []
           if required:
               for w in AnalysisWorkstation.objects.filter(enabled=True).only('id'):
-                  if all(
-                      InstalledSoftware.objects.filter(
-                          workstation_id=w.id, is_present=True, software_name__icontains=n
-                      ).exists()
-                      for n in required
-                  ):
+                  if all(InstalledSoftware.objects.filter(workstation_id=w.id, is_present=True, software_name__icontains=n).exists() for n in required):
                       matching_ids.append(w.id)
-          print(json.dumps(
-              MaintenanceService().next_compatible_availability(
-                  required_software=required or None,
-                  matching_workstation_ids=matching_ids if required else None,
-              ),
-              default=str,
-          ))
-
+          print(json.dumps(MaintenanceService().next_compatible_availability(required_software=required or None, matching_workstation_ids=matching_ids if required else None), default=str))
           print('=== EXPERIENCE_QUEUE ===')
           try:
               summary = BookingRemoteAnalysisService().get_summary(b, actor=b.user)
@@ -184,22 +99,5 @@ jobs:
               print('WORKSPACE_TILE', json.dumps(exp.get('workspace'), default=str)[:1500])
               print('RESERVATION_STATUS_IN_SUMMARY', (summary or {}).get('reservation'))
           except Exception as e:
-              print('SUMMARY_ERR', type(e).__name__, e)
-              traceback.print_exc()
-          PY
-          docker cp "$SCRIPT" "$CID:/tmp/ra_diag_script.py"
-          docker exec -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" \
-            python manage.py shell < /tmp/ra_diag_${{ github.run_id }}.py > "$OUT" 2>&1 || true
-          # Prefer in-container execution of copied script via -c exec
-          docker exec -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" \
-            bash -lc 'python manage.py shell < /tmp/ra_diag_script.py' > "$OUT" 2>&1
-          echo '==== DIAG OUTPUT ===='
-          cat "$OUT"
-          {
-            echo '## RA Queue Diagnosis'
-            echo '```'
-            cat "$OUT"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          # Persist on runner for operators
-          cp "$OUT" "/home/ubuntu/ra_diag_${{ github.run_id }}.txt" 2>/dev/null || true
+              print('SUMMARY_ERR', type(e).__name__, e); traceback.print_exc()
+          "
