@@ -95,6 +95,13 @@ class AvailabilityEngine:
             return False
         return True
 
+    def heartbeat_fresh(self, workstation: AnalysisWorkstation) -> bool:
+        """True only when a recent heartbeat was received (agent is actively polling)."""
+        if workstation.last_heartbeat is None:
+            return False
+        age = (timezone.now() - workstation.last_heartbeat).total_seconds()
+        return age <= HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS
+
     def agent_online(self, workstation: AnalysisWorkstation) -> bool:
         """
         True when the agent is considered reachable for allocation.
@@ -103,10 +110,8 @@ class AvailabilityEngine:
         active agent token exists, allow allocation even when heartbeat is missing
         or briefly stale (common when agents restart or heartbeats lag).
         """
-        if workstation.last_heartbeat is not None:
-            age = (timezone.now() - workstation.last_heartbeat).total_seconds()
-            if age <= HEARTBEAT_TIMEOUT_FOR_RESERVATION_SECONDS:
-                return True
+        if self.heartbeat_fresh(workstation):
+            return True
 
         if workstation.status in {
             WorkstationStatus.AVAILABLE,
