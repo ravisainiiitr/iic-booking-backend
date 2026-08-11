@@ -295,34 +295,11 @@ class AnalysisExperienceBuilder:
                 "is_queued": bool(
                     (reservation and reservation.status in QUEUED_RESERVATION) or queue_position
                 ),
-                "title": (
-                    "No compatible Analysis Workstation is currently available"
-                    if maintenance_hint.get("all_under_maintenance") and matching_available == 0
-                    else (
-                        "Waiting for an Analysis PC with the required software"
-                        if required_software
-                        else "Analysis Environment Currently Unavailable"
-                    )
-                ),
-                "body": (
-                    [
-                        f"Reason: {maintenance_hint.get('reason') or 'Scheduled Maintenance'}",
-                        f"Estimated Availability: {maintenance_hint.get('estimated_availability_display') or 'Unknown'}",
-                        "Your request remains in the queue and will be allocated automatically.",
-                        "You may safely leave this page.",
-                    ]
-                    if maintenance_hint.get("all_under_maintenance") and matching_available == 0
-                    else [
-                        (
-                            "No Analysis PC with the required software is free right now."
-                            if required_software
-                            else "All available Analysis Environments are currently processing other requests."
-                        ),
-                        "Your request has been placed in the Remote Analysis queue.",
-                        "A matching Analysis PC will be allocated automatically when one becomes available.",
-                        "You may safely leave this page.",
-                        "You will receive notifications when your analysis starts.",
-                    ]
+                **self._queue_messaging(
+                    required_software=required_software,
+                    matching_available=matching_available,
+                    matching_total=matching_total,
+                    maintenance_hint=maintenance_hint,
                 ),
                 "required_software": required_software,
                 "position": queue_position,
@@ -416,6 +393,102 @@ class AnalysisExperienceBuilder:
         if status == "running":
             return "Cleaning workspace to protect previous user data…"
         return ""
+
+    def _queue_messaging(
+        self,
+        *,
+        required_software: list[str],
+        matching_available: int,
+        matching_total: int,
+        maintenance_hint: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build queue title/body without claiming Scheduled Maintenance unless true."""
+        reason = (maintenance_hint.get("reason") or "").strip()
+        est = maintenance_hint.get("estimated_availability_display") or "Unknown"
+        soft_label = ", ".join(required_software) if required_software else ""
+
+        if matching_available == 0 and maintenance_hint.get("all_under_maintenance"):
+            return {
+                "title": "No compatible Analysis Workstation is currently available",
+                "body": [
+                    f"Reason: {reason or 'Scheduled Maintenance'}",
+                    f"Estimated Availability: {est}",
+                    "Your request remains in the queue and will be allocated automatically.",
+                    "You may safely leave this page.",
+                ],
+            }
+
+        if matching_available == 0 and maintenance_hint.get("all_offline"):
+            return {
+                "title": "No Analysis Workstation is online right now",
+                "body": [
+                    f"Reason: {reason or 'Offline'}",
+                    (
+                        f"Required software: {soft_label}."
+                        if soft_label
+                        else "A compatible Analysis PC must come online."
+                    ),
+                    "Your request remains in the queue and will be allocated automatically when an Analysis PC reconnects.",
+                    "You may safely leave this page.",
+                ],
+            }
+
+        if matching_available == 0 and maintenance_hint.get("no_compatible_workstation"):
+            return {
+                "title": "No compatible Analysis Workstation is configured",
+                "body": [
+                    f"Reason: {reason or 'No compatible Analysis Workstation'}",
+                    (
+                        f"No Analysis PC currently reports the required software ({soft_label})."
+                        if soft_label
+                        else "No Analysis PC is currently eligible for this equipment."
+                    ),
+                    "Ask laboratory staff to verify Remote Analysis Agent registration and software inventory.",
+                    "Your request remains in the queue.",
+                ],
+            }
+
+        if matching_available == 0 and matching_total == 0 and required_software:
+            return {
+                "title": "Waiting for an Analysis PC with the required software",
+                "body": [
+                    f"Required software: {soft_label}.",
+                    "No Analysis PC currently reports this software as installed.",
+                    "Your request remains in the queue and will be allocated automatically when a matching PC is available.",
+                    "You may safely leave this page.",
+                ],
+            }
+
+        if matching_available == 0 and reason:
+            return {
+                "title": "Analysis Environment Currently Unavailable",
+                "body": [
+                    f"Reason: {reason}",
+                    f"Estimated Availability: {est}",
+                    "Your request has been placed in the Remote Analysis queue.",
+                    "A matching Analysis PC will be allocated automatically when one becomes available.",
+                    "You may safely leave this page.",
+                ],
+            }
+
+        return {
+            "title": (
+                "Waiting for an Analysis PC with the required software"
+                if required_software
+                else "Analysis Environment Currently Unavailable"
+            ),
+            "body": [
+                (
+                    "No Analysis PC with the required software is free right now."
+                    if required_software
+                    else "All available Analysis Environments are currently processing other requests."
+                ),
+                "Your request has been placed in the Remote Analysis queue.",
+                "A matching Analysis PC will be allocated automatically when one becomes available.",
+                "You may safely leave this page.",
+                "You will receive notifications when your analysis starts.",
+            ],
+        }
 
     def _journey(self, **kw) -> list[dict[str, Any]]:
         booking = kw["booking"]

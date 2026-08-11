@@ -101,3 +101,27 @@ def test_next_compatible_availability_when_all_in_maintenance(eligible_workstati
     assert hint["all_under_maintenance"] is True
     assert hint["reason"]
     assert hint.get("estimated_availability_display")
+
+
+@pytest.mark.django_db
+def test_next_compatible_availability_all_offline_not_maintenance(eligible_workstation):
+    """R8.5: offline fleet must not be labeled Scheduled Maintenance."""
+    eligible_workstation.status = WorkstationStatus.OFFLINE
+    eligible_workstation.save(update_fields=["status", "updated_at"])
+    hint = MaintenanceService().next_compatible_availability(
+        matching_workstation_ids=[eligible_workstation.id]
+    )
+    assert hint.get("all_under_maintenance") is False
+    assert hint.get("all_offline") is True
+    assert hint.get("reason") == "Offline"
+    assert "Scheduled Maintenance" not in (hint.get("reason") or "")
+
+
+@pytest.mark.django_db
+def test_next_compatible_availability_no_matching_workstations():
+    hint = MaintenanceService().next_compatible_availability(
+        matching_workstation_ids=[]
+    )
+    assert hint.get("all_under_maintenance") is False
+    assert hint.get("no_compatible_workstation") is True or hint.get("reason")
+    assert (hint.get("reason") or "") != "Scheduled Maintenance"
