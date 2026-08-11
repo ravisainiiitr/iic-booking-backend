@@ -11,12 +11,11 @@ jobs:
       - name: Host CPU / RAM / disk / GPU (read-only)
         run: |
           set -euo pipefail
-          echo "=== uname ==="
-          uname -a || true
-          echo "=== nproc ==="
-          nproc || true
-          echo "=== loadavg ==="
-          cat /proc/loadavg || true
+          # Prefix scalar outputs — bare numeric lines can be dropped from Actions logs.
+          echo "uname=$(uname -a 2>/dev/null || echo unavailable)"
+          echo "nproc=$(nproc 2>/dev/null || echo unavailable)"
+          echo "cpuinfo_processors=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo unavailable)"
+          echo "loadavg=$(cat /proc/loadavg 2>/dev/null || echo unavailable)"
           echo "=== meminfo (selected) ==="
           awk '/MemTotal|MemAvailable|MemFree|SwapTotal|SwapFree/{print}' /proc/meminfo || true
           echo "=== df -h / ==="
@@ -36,17 +35,17 @@ jobs:
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           echo "django_container=$CID"
           if [ -n "$CID" ]; then
-            docker exec -w /app "$CID" python - <<'PY' || true
+            docker exec -w /app "$CID" python -c "
           import os
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.production')
           import django
           django.setup()
           from django.conf import settings
           from django.apps import apps
-          print("INSTALLED_APPS_has_research_copilot=", apps.is_installed("iic_booking.research_copilot"))
-          print("RESEARCH_COPILOT_ENABLED=", bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)))
-          print("COPILOT_PROVIDER=", (getattr(settings, "COPILOT_PROVIDER", None) or getattr(settings, "COPILOT_LLM_PROVIDER", None) or "")[:40] or "(unset)")
-          print("OLLAMA_MODEL_configured=", bool(str(getattr(settings, "OLLAMA_MODEL", "") or "").strip()))
-          print("OPENAI_API_KEY_configured=", bool(str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()))
-          PY
+          print('INSTALLED_APPS_has_research_copilot=', apps.is_installed('iic_booking.research_copilot'))
+          print('RESEARCH_COPILOT_ENABLED=', bool(getattr(settings, 'RESEARCH_COPILOT_ENABLED', False)))
+          print('COPILOT_PROVIDER=', (getattr(settings, 'COPILOT_PROVIDER', None) or getattr(settings, 'COPILOT_LLM_PROVIDER', None) or '')[:40] or '(unset)')
+          print('OLLAMA_MODEL_configured=', bool(str(getattr(settings, 'OLLAMA_MODEL', '') or '').strip()))
+          print('OPENAI_API_KEY_configured=', bool(str(getattr(settings, 'OPENAI_API_KEY', '') or '').strip()))
+          " || true
           fi

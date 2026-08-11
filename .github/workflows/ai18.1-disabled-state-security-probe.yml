@@ -1,0 +1,67 @@
+# AI.18.1 — Disabled-state security + health smoke (no enablement, no secrets, no invented credentials).
+name: AI18.1 Disabled State Security Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate Django
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Flag OFF + unauthenticated Copilot endpoints
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+
+          docker exec -w /app "$CID" python -c "
+          import os
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django
+          django.setup()
+          from django.conf import settings
+          from django.apps import apps
+          assert apps.is_installed('iic_booking.research_copilot'), 'research_copilot must be installed'
+          assert getattr(settings,'RESEARCH_COPILOT_ENABLED', True) is False, 'flag must be False'
+          pilot = str(getattr(settings,'RESEARCH_COPILOT_PILOT_EMAILS','') or '').strip()
+          assert pilot == '', 'pilot emails must be empty'
+          print('PASS RESEARCH_COPILOT_ENABLED=False')
+          print('PASS PILOT_EMAILS empty')
+          print('PASS app installed')
+          "
+
+          # Unauthenticated API must not leak Copilot data (expect 401/403).
+          for path in \
+            /api/v1/research-copilot/conversations/ \
+            /api/v1/research-copilot/knowledge/search/
+          do
+            code="$(curl -sS -o /tmp/rc_body.json -w '%{http_code}' --max-time 10 "http://127.0.0.1:8080${path}" || echo 000)"
+            echo "unauth ${path} http=${code}"
+            echo "$code" | grep -Eq '^(401|403)$' || { echo "FAIL expected 401/403 for $path got $code"; exit 1; }
+          done
+          echo "PASS unauthenticated Copilot endpoints gated"
+
+      - name: Core portal health regression
+        run: |
+          set -euo pipefail
+          ready="$(curl -sS -o /tmp/ready.json -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || echo 000)"
+          ver="$(curl -sS -o /tmp/version.json -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/api/version/ || echo 000)"
+          echo "ready_http=$ready"
+          echo "version_http=$ver"
+          test "$ready" = "200"
+          test "$ver" = "200"
+          python3 - <<'PY'
+          import json
+          d=json.load(open("/tmp/ready.json"))
+          assert d.get("status") == "ready", d
+          print("PASS ready status=ready")
+          v=json.load(open("/tmp/version.json"))
+          print("PASS version research_copilot_version=", v.get("research_copilot_version"))
+          PY

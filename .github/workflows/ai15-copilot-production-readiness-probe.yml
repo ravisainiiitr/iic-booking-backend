@@ -22,34 +22,34 @@ jobs:
         run: |
           set -euo pipefail
           CID="${{ steps.find.outputs.container }}"
-          docker exec -w /app "$CID" python - <<'PY'
+          docker exec -w /app "$CID" python -c "
           import os
           import django
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.production')
           django.setup()
           from django.conf import settings
           from django.apps import apps
 
-          def present(name: str) -> bool:
+          def present(name):
               v = getattr(settings, name, None)
               if v is None:
                   v = os.environ.get(name)
               if isinstance(v, bool):
                   return v
-              return bool(str(v or "").strip())
+              return bool(str(v or '').strip())
 
-          print("INSTALLED_APPS_has_research_copilot=", apps.is_installed("iic_booking.research_copilot"))
-          print("RESEARCH_COPILOT_ENABLED=", bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)))
-          print("OPENAI_API_KEY_configured=", present("OPENAI_API_KEY"))
-          pilot = (getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", None) or os.environ.get("RESEARCH_COPILOT_PILOT_EMAILS") or "").strip()
-          emails = [e.strip() for e in pilot.split(",") if e.strip()]
-          print("RESEARCH_COPILOT_PILOT_EMAILS_configured=", bool(emails))
-          print("RESEARCH_COPILOT_PILOT_EMAILS_count=", len(emails))
-          print("RESEARCH_COPILOT_MODEL=", (getattr(settings, "RESEARCH_COPILOT_MODEL", None) or getattr(settings, "OPENAI_CHAT_MODEL", None) or "")[:80] or "(default)")
-          print("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS=", getattr(settings, "RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", None))
-          print("RESEARCH_COPILOT_MAX_TOKENS=", getattr(settings, "RESEARCH_COPILOT_MAX_TOKENS", None))
-          print("git_describe=", os.environ.get("GIT_COMMIT", "") or os.environ.get("BACKEND_COMMIT", "") or "(unset)")
-          PY
+          print('INSTALLED_APPS_has_research_copilot=', apps.is_installed('iic_booking.research_copilot'))
+          print('RESEARCH_COPILOT_ENABLED=', bool(getattr(settings, 'RESEARCH_COPILOT_ENABLED', False)))
+          print('OPENAI_API_KEY_configured=', present('OPENAI_API_KEY'))
+          pilot = (getattr(settings, 'RESEARCH_COPILOT_PILOT_EMAILS', None) or os.environ.get('RESEARCH_COPILOT_PILOT_EMAILS') or '').strip()
+          emails = [e.strip() for e in pilot.split(',') if e.strip()]
+          print('RESEARCH_COPILOT_PILOT_EMAILS_configured=', bool(emails))
+          print('RESEARCH_COPILOT_PILOT_EMAILS_count=', len(emails))
+          print('RESEARCH_COPILOT_MODEL=', (getattr(settings, 'RESEARCH_COPILOT_MODEL', None) or getattr(settings, 'OPENAI_CHAT_MODEL', None) or '')[:80] or '(default)')
+          print('RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS=', getattr(settings, 'RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS', None))
+          print('RESEARCH_COPILOT_MAX_TOKENS=', getattr(settings, 'RESEARCH_COPILOT_MAX_TOKENS', None))
+          print('git_describe=', os.environ.get('GIT_COMMIT', '') or os.environ.get('BACKEND_COMMIT', '') or '(unset)')
+          "
 
           echo "=== showmigrations research_copilot ==="
           docker exec -w /app "$CID" python manage.py showmigrations research_copilot 2>&1 | tee /tmp/ai15-rc-mig.txt || true
@@ -64,9 +64,10 @@ jobs:
       - name: Public capability check from host
         run: |
           set -euo pipefail
-          curl -fsS http://127.0.0.1:8080/api/v1/provisioning/capabilities/ | python3 - <<'PY'
-          import json,sys
-          d=json.load(sys.stdin)
+          curl -fsS -o /tmp/caps.json http://127.0.0.1:8080/api/v1/provisioning/capabilities/
+          python3 - <<'PY'
+          import json
+          d=json.load(open("/tmp/caps.json"))
           print("research_copilot=", d.get("research_copilot"))
           print("portal_version=", d.get("portal_version"))
           PY
