@@ -20,7 +20,7 @@ from iic_booking.research_copilot.models import (
 )
 from iic_booking.research_copilot.services import audit as audit_svc
 from iic_booking.research_copilot.services.context_builder import build_context
-from iic_booking.research_copilot.services.llm_gateway import get_gateway
+from iic_booking.research_copilot.services.llm_gateway import default_max_tokens, get_gateway
 from iic_booking.research_copilot.services.prompt_builder import (
     append_retrieval_context,
     build_messages_for_llm,
@@ -130,6 +130,13 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     text = (content or "").strip()
     if not text:
         raise ValueError("empty_message")
+    max_chars = int(getattr(settings, "RESEARCH_COPILOT_MAX_INPUT_CHARS", 4000) or 4000)
+    if len(text) > max_chars:
+        raise ValueError("message_too_long")
+    max_user_msgs = int(getattr(settings, "RESEARCH_COPILOT_MAX_USER_MESSAGES", 40) or 40)
+    user_msg_count = conversation.messages.filter(role=MessageRole.USER).count()
+    if user_msg_count >= max_user_msgs:
+        raise ValueError("conversation_limit_reached")
 
     ctx = build_context(user)
     Message.objects.create(
@@ -162,7 +169,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
 
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
     gateway = get_gateway()
-    result = gateway.complete(llm_messages)
+    result = gateway.complete(llm_messages, max_tokens=default_max_tokens())
     raw = (result.text if result else "") or (
         "I could not generate a reply right now. Please try again or open **Tickets** for human support.\n"
         + ESCALATE_MARKER
@@ -236,6 +243,12 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     text = (content or "").strip()
     if not text:
         raise ValueError("empty_message")
+    max_chars = int(getattr(settings, "RESEARCH_COPILOT_MAX_INPUT_CHARS", 4000) or 4000)
+    if len(text) > max_chars:
+        raise ValueError("message_too_long")
+    max_user_msgs = int(getattr(settings, "RESEARCH_COPILOT_MAX_USER_MESSAGES", 40) or 40)
+    if conversation.messages.filter(role=MessageRole.USER).count() >= max_user_msgs:
+        raise ValueError("conversation_limit_reached")
 
     ctx = build_context(user)
     Message.objects.create(conversation=conversation, role=MessageRole.USER, content=text)

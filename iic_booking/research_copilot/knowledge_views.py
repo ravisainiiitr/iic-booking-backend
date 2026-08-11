@@ -21,6 +21,7 @@ from iic_booking.research_copilot.models import (
 )
 from iic_booking.research_copilot.services.context_builder import build_context
 from iic_booking.research_copilot.services.ingestion import index_document, rebuild_all_indexes, upsert_document
+from iic_booking.research_copilot.services import conversation as conv_svc
 from iic_booking.research_copilot.services import rag as rag_svc
 from iic_booking.research_copilot.services.seed_knowledge import seed_baseline_knowledge
 from iic_booking.users.models.user_type import UserType
@@ -35,6 +36,20 @@ class IsCopilotKnowledgeAdmin(BasePermission):
             return True
         ut = str(getattr(user, "user_type", "") or "").lower()
         return ut in {UserType.ADMIN, "admin"}
+
+
+def _feature_gate():
+    if not conv_svc.feature_enabled():
+        return Response(
+            {
+                "error": {
+                    "code": "research_copilot_disabled",
+                    "message": "IIC Research Copilot is not enabled on this environment.",
+                }
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return None
 
 
 def _ser_doc(doc: KnowledgeDocument) -> dict:
@@ -65,6 +80,9 @@ def _ser_doc(doc: KnowledgeDocument) -> dict:
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_documents(request):
+    gated = _feature_gate()
+    if gated:
+        return gated
     if request.method == "GET":
         qs = KnowledgeDocument.objects.all()
         cat = request.query_params.get("category")
@@ -111,6 +129,9 @@ def knowledge_documents(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_document_detail(request, document_id):
+    gated = _feature_gate()
+    if gated:
+        return gated
     doc = get_object_or_404(KnowledgeDocument, id=document_id)
     if request.method == "GET":
         data = _ser_doc(doc)
@@ -143,6 +164,9 @@ def knowledge_document_detail(request, document_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_document_reindex(request, document_id):
+    gated = _feature_gate()
+    if gated:
+        return gated
     doc = get_object_or_404(KnowledgeDocument, id=document_id)
     job = index_document(doc)
     return Response({"job_id": str(job.id), "status": job.status, "document": _ser_doc(doc)})
@@ -151,6 +175,9 @@ def knowledge_document_reindex(request, document_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_rebuild_index(request):
+    gated = _feature_gate()
+    if gated:
+        return gated
     result = rebuild_all_indexes()
     return Response(result)
 
@@ -158,6 +185,9 @@ def knowledge_rebuild_index(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_seed(request):
+    gated = _feature_gate()
+    if gated:
+        return gated
     force = bool(request.data.get("force", False))
     return Response(seed_baseline_knowledge(force=force))
 
@@ -165,6 +195,9 @@ def knowledge_seed(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_jobs(request):
+    gated = _feature_gate()
+    if gated:
+        return gated
     rows = [
         {
             "id": str(j.id),
@@ -184,6 +217,9 @@ def knowledge_jobs(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_analytics(request):
+    gated = _feature_gate()
+    if gated:
+        return gated
     total_docs = KnowledgeDocument.objects.count()
     indexed = KnowledgeDocument.objects.filter(index_status=IndexStatus.INDEXED).count()
     failed = KnowledgeDocument.objects.filter(index_status=IndexStatus.FAILED).count()

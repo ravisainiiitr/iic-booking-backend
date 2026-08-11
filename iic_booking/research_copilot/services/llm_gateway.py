@@ -30,15 +30,19 @@ class LLMGateway:
 
 
 class OpenAIGateway(LLMGateway):
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, *, timeout_seconds: float = 30.0):
         self.api_key = api_key
         self.model = model
+        self.timeout_seconds = timeout_seconds
+
+    def _client(self):
+        from openai import OpenAI
+
+        return OpenAI(api_key=self.api_key, timeout=self.timeout_seconds)
 
     def complete(self, messages: list[dict], *, max_tokens: int = 800) -> LLMResult | None:
         try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=self.api_key)
+            client = self._client()
             response = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -54,9 +58,7 @@ class OpenAIGateway(LLMGateway):
 
     def stream(self, messages: list[dict], *, max_tokens: int = 800) -> Iterator[str]:
         try:
-            from openai import OpenAI
-
-            client = OpenAI(api_key=self.api_key)
+            client = self._client()
             stream = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -119,6 +121,11 @@ def get_gateway() -> LLMGateway:
         or getattr(settings, "OPENAI_CHAT_MODEL", None)
         or "gpt-4o-mini"
     )
+    timeout = float(getattr(settings, "RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", 30) or 30)
     if api_key:
-        return OpenAIGateway(api_key=api_key, model=model)
+        return OpenAIGateway(api_key=api_key, model=model, timeout_seconds=timeout)
     return FallbackGateway()
+
+
+def default_max_tokens() -> int:
+    return int(getattr(settings, "RESEARCH_COPILOT_MAX_TOKENS", 800) or 800)

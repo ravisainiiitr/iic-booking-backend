@@ -342,7 +342,8 @@ def _prepare_create_booking(*, arguments: dict, user) -> dict:
                 "label": "Book Equipment",
                 "href": href,
                 "enabled": True,
-                "hint": "Uses existing booking APIs; Copilot does not bypass authorization.",
+                "requires_confirmation": True,
+                "hint": "Opens the booking flow — confirm in the portal. Copilot does not create bookings itself.",
             }
         ],
     )
@@ -372,7 +373,8 @@ def _prepare_cancel_booking(*, arguments: dict, user) -> dict:
                 "label": "Cancel Booking",
                 "href": f"/my-bookings?booking={booking.pk}&action=cancel",
                 "enabled": True,
-                "hint": "Opens booking details for policy-aware cancellation.",
+                "requires_confirmation": True,
+                "hint": "Opens booking details — confirm cancellation in the portal under your permissions.",
             }
         ],
     )
@@ -400,6 +402,8 @@ def _prepare_launch_remote_analysis(*, arguments: dict, user) -> dict:
                 "label": "Open Analysis Workspace",
                 "href": f"/analysis-workspace/{booking.pk}",
                 "enabled": True,
+                "requires_confirmation": True,
+                "hint": "Opens Analysis Workspace — reservation/session starts only after portal confirmation.",
             }
         ],
     )
@@ -409,7 +413,16 @@ def _create_support_ticket(*, arguments: dict, user) -> dict:
     _ = (arguments, user)
     return _ok(
         {"requires_confirmation": True, "message": "Open Tickets to create a support request with conversation context."},
-        actions=[{"id": "create_support_ticket", "label": "Open Tickets", "href": "/tickets", "enabled": True}],
+        actions=[
+            {
+                "id": "create_support_ticket",
+                "label": "Open Tickets",
+                "href": "/tickets",
+                "enabled": True,
+                "requires_confirmation": True,
+                "hint": "Opens Tickets — create the support request yourself in the portal.",
+            }
+        ],
     )
 
 
@@ -479,7 +492,16 @@ def enrich_actions_from_message(*, user, text: str, base_actions: list[dict] | N
             seen.add(action["id"])
 
     if any(w in lower for w in ("book", "slot", "availability", "sem", "fesem", "tem", "xrd")):
-        add({"id": "book_equipment", "label": "Book Equipment", "href": "/book-equipment", "enabled": True})
+        add(
+            {
+                "id": "book_equipment",
+                "label": "Book Equipment",
+                "href": "/book-equipment",
+                "enabled": True,
+                "requires_confirmation": True,
+                "hint": "Suggestion only — confirm booking in the portal booking flow.",
+            }
+        )
         add({"id": "open_equipments", "label": "Browse Equipments", "href": "/equipments", "enabled": True})
     if any(w in lower for w in ("software", "digitalmicrograph", "imagej", "origin", "matlab", "analyze")):
         add(

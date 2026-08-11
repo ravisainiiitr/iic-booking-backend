@@ -7,18 +7,27 @@ import json
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from iic_booking.research_copilot.models import Conversation, FeedbackRating
+from iic_booking.research_copilot.models import AuditAction, Conversation, FeedbackRating
+from iic_booking.research_copilot.services import audit as audit_svc
 from iic_booking.research_copilot.services import conversation as conv_svc
 from iic_booking.research_copilot.services.context_builder import build_context
 from iic_booking.research_copilot.constants import SUGGESTED_PROMPTS
+from iic_booking.research_copilot.throttles import ResearchCopilotToolThrottle, ResearchCopilotUserThrottle
 
 
-def _feature_gate():
+def _feature_gate(*, user=None, audit: bool = True):
     if not conv_svc.feature_enabled():
+        if audit and user is not None:
+            audit_svc.write_audit(
+                action=AuditAction.FEATURE_DISABLED,
+                message="Research Copilot feature flag disabled",
+                user=user,
+                detail={"endpoint": "gated"},
+            )
         return Response(
             {
                 "error": {
@@ -33,10 +42,10 @@ def _feature_gate():
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
 def bootstrap(request):
     """Public config for the Copilot UI (still requires auth)."""
-    gated = _feature_gate()
-    if gated:
+    if not conv_svc.feature_enabled():
         # Still return bootstrap shape with enabled=false for UI to hide gracefully
         ctx = build_context(request.user)
         return Response(
@@ -54,8 +63,9 @@ def bootstrap(request):
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
 def conversations_collection(request):
-    gated = _feature_gate()
+    gated = _feature_gate(user=request.user)
     if gated:
         return gated
 
@@ -82,8 +92,9 @@ def conversations_collection(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
 def conversation_detail(request, conversation_id):
-    gated = _feature_gate()
+    gated = _feature_gate(user=request.user)
     if gated:
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
@@ -92,8 +103,9 @@ def conversation_detail(request, conversation_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
 def conversation_messages(request, conversation_id):
-    gated = _feature_gate()
+    gated = _feature_gate(user=request.user)
     if gated:
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
@@ -110,8 +122,9 @@ def conversation_messages(request, conversation_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
 def conversation_messages_stream(request, conversation_id):
-    gated = _feature_gate()
+    gated = _feature_gate(user=request.user)
     if gated:
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
@@ -140,8 +153,9 @@ def conversation_messages_stream(request, conversation_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
 def conversation_feedback(request, conversation_id):
-    gated = _feature_gate()
+    gated = _feature_gate(user=request.user)
     if gated:
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
@@ -163,9 +177,10 @@ def conversation_feedback(request, conversation_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotToolThrottle])
 def execute_tool(request):
     """Execute a Copilot tool (read-only or confirmation action-card)."""
-    gated = _feature_gate()
+    gated = _feature_gate(user=request.user)
     if gated:
         return gated
     from iic_booking.research_copilot.services import tools as tools_svc
@@ -185,4 +200,3 @@ def execute_tool(request):
     result = tools_svc.execute_tool(name=name, arguments=arguments, user=request.user)
     code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
     return Response(result, status=code)
-

@@ -17,16 +17,15 @@
 | AI.10 | [AI.10-Pilot-Checklist.md](./AI.10-Pilot-Checklist.md) | Pilot checklist |
 | AI.11 | [AI.11-Pilot-Closure-and-Promotion-Report.md](./AI.11-Pilot-Closure-and-Promotion-Report.md) | Pilot closure / promotion gates |
 | AI.12 | [AI.12-Live-Pilot-Qualification-Report.md](./AI.12-Live-Pilot-Qualification-Report.md) | Live qualification — LIMITED EXTENDED |
+| AI.13 | [AI.13-Copilot-Assessment.md](./AI.13-Copilot-Assessment.md) | Copilot inventory |
+| AI.13 | [AI.13-Copilot-Production-Deployment-Report.md](./AI.13-Copilot-Production-Deployment-Report.md) | Copilot → LIMITED PILOT READY (flag OFF) |
 
-## Current production posture (AI.12)
+## Current production posture (AI.13)
 
 | Layer | Status |
 |-------|--------|
-| CORE PLATFORM | READY FOR LIMITED PRODUCTION PILOT — EXTENDED |
-| BACKUP / RESTORE | PASS (gzip + temp DB restore) |
-| DSA / Equipment live | PARTIAL / BLOCKED |
-| SIGNED APK | BLOCKED |
-| S3 LIVE E2E | BLOCKED |
-| COPILOT | NOT READY — keep OFF |
+| CORE PLATFORM | READY FOR LIMITED PRODUCTION PILOT — EXTENDED (AI.12) |
+| RESEARCH COPILOT | **READY FOR LIMITED PRODUCTION PILOT** — keep `RESEARCH_COPILOT_ENABLED=false` until ops enablement + live E2E |
+| COPILOT ROLLOUT | Global flag only (user-scoped rollout = additional work) |
 | FCM | BLOCKED |
 | Broader production | NOT READY |

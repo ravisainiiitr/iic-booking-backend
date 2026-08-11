@@ -535,6 +535,9 @@ REST_FRAMEWORK = {
         # DRF throttle format example: "5/min", "1/hour"
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
+        # Research Copilot only (portal-wide traffic is not throttled by these)
+        "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="60/hour"),
+        "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="30/hour"),
     },
 }
 
@@ -622,6 +625,11 @@ RESEARCH_COPILOT_EMBEDDING_PROVIDER = env("RESEARCH_COPILOT_EMBEDDING_PROVIDER",
 RESEARCH_COPILOT_EMBEDDING_MODEL = env("RESEARCH_COPILOT_EMBEDDING_MODEL", default="text-embedding-3-small")
 RESEARCH_COPILOT_VECTOR_STORE = env("RESEARCH_COPILOT_VECTOR_STORE", default="orm")
 RESEARCH_COPILOT_SCAN_LIMIT = env.int("RESEARCH_COPILOT_SCAN_LIMIT", default=500)
+# Cost / reliability controls (additive assistant — must not affect core portal)
+RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", default=30)
+RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=800)
+RESEARCH_COPILOT_MAX_USER_MESSAGES = env.int("RESEARCH_COPILOT_MAX_USER_MESSAGES", default=40)
+RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", default=4000)
 # Android / FCM push (optional — when unset, push stays in-app + email)
 FCM_SERVER_KEY = env("FCM_SERVER_KEY", default="")
 FIREBASE_CREDENTIALS_JSON = env("FIREBASE_CREDENTIALS_JSON", default="")
