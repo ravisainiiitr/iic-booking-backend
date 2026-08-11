@@ -1,0 +1,86 @@
+name: Backfill RA Inventory And Requeue
+
+# One-shot ops: seed InstalledSoftware for pool workstations missing required
+# catalog software, then re-run scheduler queue processing.
+# Does NOT invent bookings or bypass eligibility beyond restoring installer intent.
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_id:
+        description: "Human booking id to requeue after backfill"
+        required: true
+        default: "IICPXRD [A]202600040"
+      hostname:
+        description: "Optional workstation hostname (default: all in equipment pool)"
+        required: false
+        default: "DESKTOP-CSMH6BU"
+
+jobs:
+  backfill:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Backfill inventory from equipment catalog + process queue
+        env:
+          BID: ${{ github.event.inputs.booking_id }}
+          HOST: ${{ github.event.inputs.hostname }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -e BID="$BID" -e HOST="$HOST" -w /app "$CID" python manage.py shell -c "
+          import os, json
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware, EquipmentAnalysisPool
+          from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
+          from iic_booking.remote_analysis.constants import ReservationStatus, QueueEntryStatus
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+
+          bid = os.environ['BID'].strip()
+          host = (os.environ.get('HOST') or '').strip()
+          b = Booking.objects.select_related('equipment').filter(virtual_booking_id=bid).first()
+          if b is None:
+              print('NOT_FOUND', bid); raise SystemExit(1)
+          eq = b.equipment
+          required = SoftwareMappingService().required_software_names(eq)
+          print('BOOKING', b.pk, b.virtual_booking_id, 'REQUIRED', required)
+
+          pool_ws_ids = list(EquipmentAnalysisPool.objects.filter(equipment=eq).values_list('workstation_id', flat=True))
+          qs = AnalysisWorkstation.objects.filter(id__in=pool_ws_ids) if pool_ws_ids else AnalysisWorkstation.objects.none()
+          if host:
+              qs = AnalysisWorkstation.objects.filter(hostname__iexact=host)
+          seeded = []
+          for w in qs:
+              for name in required:
+                  obj = InstalledSoftware.objects.filter(workstation=w, software_name__iexact=name).order_by('-is_present','-id').first()
+                  created = False
+                  if obj is None:
+                      obj = InstalledSoftware.objects.create(workstation=w, software_name=name, version='', publisher='', category='catalog', is_present=True)
+                      created = True
+                  elif not obj.is_present:
+                      obj.is_present = True
+                      obj.save(update_fields=['is_present', 'last_updated'])
+                  seeded.append({'hostname': w.hostname, 'software': name, 'created': created, 'id': str(obj.id)})
+              # Ensure status remains allocatable if previously AVAILABLE
+              print(json.dumps({'ws': w.hostname, 'status': w.status, 'enabled': w.enabled, 'hb': str(w.last_heartbeat)}, default=str))
+          print('SEEDED', json.dumps(seeded, default=str))
+
+          reservation = AnalysisReservation.objects.filter(booking=b).order_by('-created_at').first()
+          print('RESERVATION_BEFORE', reservation.status if reservation else None, getattr(reservation, 'workstation_id', None))
+          if reservation and reservation.status in {ReservationStatus.QUEUED, ReservationStatus.REQUESTED}:
+              # Ensure waiting queue entry
+              ReservationQueue.objects.filter(reservation=reservation).exclude(status=QueueEntryStatus.WAITING).update(status=QueueEntryStatus.WAITING)
+              ReservationQueue.objects.get_or_create(
+                  reservation=reservation,
+                  defaults={'status': QueueEntryStatus.WAITING, 'priority': 100, 'enqueued_at': timezone.now()},
+              )
+              result = SchedulerService().process_queue(limit=20)
+              print('PROCESS_QUEUE', result)
+              reservation.refresh_from_db()
+          print('RESERVATION_AFTER', reservation.status if reservation else None, str(getattr(reservation, 'workstation_id', None)))
+          if reservation and reservation.workstation_id:
+              w = AnalysisWorkstation.objects.filter(id=reservation.workstation_id).first()
+              print('ALLOCATED_HOST', getattr(w, 'hostname', None))
+          "

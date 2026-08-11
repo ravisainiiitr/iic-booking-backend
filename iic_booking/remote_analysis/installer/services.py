@@ -109,6 +109,26 @@ def link_workstation_to_equipment(
             defaults={"sort_order": 0},
         )
         linked_software.append(catalog.slug)
+        # Seed workstation inventory so the scheduler can match required software
+        # immediately after installer link (inventory POST may lag or be empty).
+        from iic_booking.remote_analysis.models import InstalledSoftware
+
+        name = (catalog.name or "").strip()
+        if name:
+            existing_sw = InstalledSoftware.objects.filter(
+                workstation=workstation,
+                software_name__iexact=name,
+                is_present=True,
+            ).first()
+            if existing_sw is None:
+                InstalledSoftware.objects.create(
+                    workstation=workstation,
+                    software_name=name,
+                    publisher=(catalog.vendor or "")[:255],
+                    version="",
+                    category=(getattr(catalog, "category", None) or "catalog")[:64],
+                    is_present=True,
+                )
 
     return {
         "pool_id": str(pool.id),
