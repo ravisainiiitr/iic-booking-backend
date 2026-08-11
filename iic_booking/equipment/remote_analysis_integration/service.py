@@ -64,6 +64,10 @@ class BookingRemoteAnalysisService:
             "analysis_last_session": booking.analysis_last_session.isoformat()
             if booking.analysis_last_session
             else None,
+            "analysis_closed_at": booking.analysis_closed_at.isoformat()
+            if getattr(booking, "analysis_closed_at", None)
+            else None,
+            "analysis_ended": bool(getattr(booking, "analysis_closed_at", None)),
             "reservation": self._serialize_reservation(
                 reservation, expose_infrastructure=expose_infrastructure
             ),
@@ -319,6 +323,7 @@ class BookingRemoteAnalysisService:
             and software_configured
             and (raw_ready or not require_raw)
             and can_launch
+            and not bool(getattr(booking, "analysis_closed_at", None))
         )
         reservation = booking.analysis_reservation
         queued = bool(
@@ -341,6 +346,10 @@ class BookingRemoteAnalysisService:
             "require_raw_files": require_raw,
             "can_analyze": can_analyze,
             "can_launch": can_launch,
+            "analysis_ended": bool(getattr(booking, "analysis_closed_at", None)),
+            "analysis_closed_at": booking.analysis_closed_at.isoformat()
+            if getattr(booking, "analysis_closed_at", None)
+            else None,
             "queued": queued,
             "queue_message": (
                 "An Analysis Environment is busy. Your request is queued and will start automatically."
@@ -388,6 +397,11 @@ class BookingRemoteAnalysisService:
 
         if not ctx["can_launch"]:
             raise SessionError("Only the booking owner may start Analyze Data.", code="forbidden")
+        if ctx.get("analysis_ended") or getattr(booking, "analysis_closed_at", None):
+            raise SessionError(
+                "Remote analysis session is over for this booking.",
+                code="analysis_ended",
+            )
         if not ctx["software_configured"] and not (workflow_id or mapping_id or catalog_id or software_slug):
             raise SessionError("No analysis workflow or software is configured for this equipment.", code="no_software")
         if settings_obj.analyze_data_require_s3_files and not ctx["raw_ready"]:
@@ -1189,16 +1203,62 @@ class BookingRemoteAnalysisService:
 
     def upload_past_data(self, booking, *, user, uploaded_file, folder: str = "RawData") -> dict:
         """Upload extra/past files into workspace RawData and sync to agent Input when possible."""
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
         from iic_booking.remote_analysis.guacamole.session import SessionError
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
         from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
         from iic_booking.remote_analysis.workspace.transfer import TransferError, TransferManager
 
         if booking.user_id != getattr(user, "pk", None) and not getattr(user, "is_superuser", False):
             raise SessionError("Only the booking owner may upload analysis files.", code="forbidden")
+        if getattr(booking, "analysis_closed_at", None):
+            raise SessionError(
+                "Remote analysis session is over for this booking.",
+                code="analysis_ended",
+            )
 
         workspace = self.workspace.get_for_booking(booking)
         if workspace is None:
-            raise SessionError("No analysis workspace for this booking yet.", code="no_workspace")
+            # Ensure reservation + portal workspace so uploads work before Start Analysis.
+            try:
+                reservation = self.ensure_reservation(booking, actor=user, auto_allocate=False)
+            except Exception as exc:  # noqa: BLE001
+                raise SessionError(
+                    "No analysis workspace for this booking yet. Start Analyze Data once, then upload.",
+                    code="no_workspace",
+                ) from exc
+            try:
+                workspace = WorkspaceSyncService().ensure_for_reservation(
+                    reservation, actor=user, ingest=False
+                )
+                self._link_booking(booking, reservation)
+            except Exception as exc:  # noqa: BLE001
+                raise SessionError(
+                    "Could not create analysis workspace for uploads.",
+                    code="no_workspace",
+                ) from exc
+
+        # Bind workstation from reservation / open session so late sync can reach the agent.
+        if not workspace.workstation_id:
+            ws = None
+            reservation = getattr(workspace, "reservation", None) or booking.analysis_reservation
+            if reservation is not None and getattr(reservation, "workstation_id", None):
+                ws = reservation.workstation
+            if ws is None:
+                open_session = (
+                    RemoteDesktopSession.objects.filter(
+                        booking_id=booking.pk,
+                        status__in=OPEN_SESSION_STATUSES,
+                    )
+                    .select_related("workstation")
+                    .order_by("-created_at")
+                    .first()
+                )
+                if open_session is not None:
+                    ws = open_session.workstation
+            if ws is not None:
+                workspace.workstation = ws
+                workspace.save(update_fields=["workstation", "updated_at"])
 
         folder = (folder or "RawData").strip() or "RawData"
         try:
@@ -1225,6 +1285,14 @@ class BookingRemoteAnalysisService:
                     actor=user,
                     success=False,
                 )
+        else:
+            self.audit.log(
+                booking,
+                "PastDataSyncDeferred",
+                details="No workstation assigned yet; file will sync on prepare/launch",
+                actor=user,
+                success=True,
+            )
 
         self.audit.log(
             booking,

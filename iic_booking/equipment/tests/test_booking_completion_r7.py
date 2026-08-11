@@ -304,14 +304,81 @@ def test_manual_completion_before_slot_end_exposes_results_immediately(tmp_path,
 
 
 @pytest.mark.django_db
-def test_results_available_event_does_not_force_complete():
+def test_completion_email_never_attaches_result_files(monkeypatch):
+    """Operator-uploaded completion files must not be emailed as attachments."""
     owner = UserFactory()
     equipment = _equipment()
-    booking = _booking(owner, equipment, status=BookingStatus.BOOKED)
+    booking = _booking(owner, equipment, status=BookingStatus.COMPLETED)
 
-    from iic_booking.equipment.api_views import _apply_results_available_event_and_completed_status
+    captured = {"attached": []}
 
-    _apply_results_available_event_and_completed_status(booking)
-    booking.refresh_from_db()
-    assert booking.status == BookingStatus.BOOKED
+    class _FakeEmail:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def attach_alternative(self, *args, **kwargs):
+            return None
+
+        def attach(self, filename, content, mimetype=None):
+            captured["attached"].append(filename)
+
+        def send(self, fail_silently=False):
+            return 1
+
+    class _FakeFile:
+        name = "result.bin"
+
+        def open(self, *_a, **_k):
+            return None
+
+        def read(self):
+            return b"secret-bytes"
+
+        def close(self):
+            return None
+
+    class _FakeResult:
+        pk = 1
+        file = _FakeFile()
+        original_name = "should-not-attach.bin"
+
+    class _FakeTemplate:
+        subject = "Done"
+        body = "ok"
+        html_body = "<p>ok</p>"
+
+    import iic_booking.equipment.api_views as api_views
+    from iic_booking.communication.service import CommunicationService
+
+    monkeypatch.setattr("django.core.mail.EmailMultiAlternatives", _FakeEmail)
+    monkeypatch.setattr(
+        CommunicationService,
+        "get_template",
+        classmethod(lambda cls, **kwargs: _FakeTemplate()),
+    )
+    monkeypatch.setattr(
+        CommunicationService,
+        "render_template",
+        classmethod(
+            lambda cls, template, context=None: {
+                "subject": template.subject,
+                "message": template.body,
+                "html_message": template.html_body,
+            }
+        ),
+    )
+    monkeypatch.setattr(api_views, "_build_sample_notice_context", lambda _b: {
+        "sample_collection_notice": False,
+        "sample_collection_deadline_hours": None,
+        "sample_collection_deadline_at": None,
+        "sample_collection_deadline_display": None,
+        "is_external_user": False,
+        "sample_preserve_yes_url": "",
+        "sample_preserve_no_url": "",
+    })
+    monkeypatch.setattr(api_views, "_append_sample_notice_plaintext", lambda msg, _ctx: msg)
+    monkeypatch.setattr(api_views, "_append_sample_notice_html", lambda msg, _ctx: msg)
+
+    api_views._send_completion_email_with_attachments(booking, [_FakeResult()])
+    assert captured["attached"] == []
 

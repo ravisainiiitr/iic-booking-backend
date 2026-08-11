@@ -49,6 +49,16 @@ class SessionCleanupService:
         if session.status in TERMINAL_STATUSES and getattr(session, "termination", None):
             return session
 
+        # Capture pre-terminal state for one-shot close policy (1A).
+        try:
+            from iic_booking.equipment.remote_analysis_integration.session_close import (
+                maybe_close_booking_analysis_after_session,
+            )
+
+            maybe_close_booking_analysis_after_session(session, final_status=final_status)
+        except Exception:
+            logger.exception("maybe_close_booking_analysis_after_session failed for %s", session.id)
+
         guac_ok = False
         cleanup_cmd_ok = False
         released = False
