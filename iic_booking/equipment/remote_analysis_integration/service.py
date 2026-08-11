@@ -623,7 +623,17 @@ class BookingRemoteAnalysisService:
 
         # Explicit check-in required before Guacamole / tunnel allocation.
         if reservation.status == ReservationStatus.AWAITING_CHECKIN:
+            from iic_booking.remote_analysis.guacamole.session import SessionError
+            from iic_booking.remote_analysis.services.checkin import CheckinService
             from iic_booking.remote_analysis.services.reservation import ReservationService
+
+            if reservation.checkin_expires_at and reservation.checkin_expires_at < timezone.now():
+                CheckinService().expire_due(limit=50)
+                reservation.refresh_from_db()
+                raise SessionError(
+                    "Check-in window expired. Please request analysis again.",
+                    code="checkin_expired",
+                )
 
             ReservationService().transition(
                 reservation,
