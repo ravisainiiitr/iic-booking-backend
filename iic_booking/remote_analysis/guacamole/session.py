@@ -166,6 +166,7 @@ class SessionOrchestrator:
             user=reservation.user,
             workstation=ws,
             status=SessionStatus.CREATED,
+            extension_grace_used=False,
             client_ip=client_ip,
             browser=(browser or "")[:255],
             client_platform=(client_platform or "")[:255],
