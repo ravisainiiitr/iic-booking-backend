@@ -296,7 +296,7 @@ No new analytics subsystem. Existing signals available to ops:
 | Item | Ref |
 |------|-----|
 | Read-only workflows on `master` | PR #33, #34 |
-| Feature branch tip (docs + sync) | see commit after this report |
+| Feature branch tip | `6acffae` |
 | Android / Frontend | unchanged (`233740a` / `86cb60d`) |
 | DSA / RAA repos | unchanged |
 
@@ -312,3 +312,4 @@ docker exec iic-booking-backend-django-1 python manage.py showmigrations
 # Lab: DSA + Equipment PC controlled smoke per AI.10 runbook
 # Mobile: configure release signingConfigs + build signed APK (do not commit keystore)
 ```
+
