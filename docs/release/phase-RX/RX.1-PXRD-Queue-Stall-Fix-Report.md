@@ -86,10 +86,11 @@ Runs: backfill `31461629190`, recover `31462280102`
 
 | Suite | Result |
 |-------|--------|
-| `test_maintenance_mode.py` | **7 passed** (includes offline ≠ Scheduled Maintenance) |
-| `test_agent_online_reserved_status_with_token` | added |
+| `test_maintenance_mode.py` | **PASS** in prior CI/local runs (offline ≠ Scheduled Maintenance); local docker re-run **ERROR**ed here due to test DB schema drift (`cleanup_status` NOT NULL vs model) — **NOT a production defect** |
+| `test_agent_online_reserved_status_with_token` | added on master; same local docker schema issue blocked create |
 | Full Guacamole / portal UI regression | **NOT fully re-run** in this phase |
 | Frontend build | **NOT RUN** (no FE code change required for root cause) |
+| Live diagnose after recover | `ra-diag-31462613479.txt` — reservation **AWAITING_CHECKIN**, maintenance hint **“All matching environments busy”** (not Scheduled Maintenance) |
 
 ---
 
