@@ -26,6 +26,7 @@ urlpatterns = [
         name="conversation-feedback",
     ),
     path("tools/execute/", api_views.execute_tool, name="tools-execute"),
+    path("llm/health/", api_views.llm_provider_health, name="llm-provider-health"),
     # Knowledge Engine (AI.2)
     path("knowledge/search/", knowledge_views.knowledge_search, name="knowledge-search"),
     path("knowledge/documents/", knowledge_views.knowledge_documents, name="knowledge-documents"),

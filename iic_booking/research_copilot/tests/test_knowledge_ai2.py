@@ -177,7 +177,7 @@ def test_knowledge_admin_apis(admin_client, student_client):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", RESEARCH_COPILOT_EMBEDDING_PROVIDER="local")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback", RESEARCH_COPILOT_EMBEDDING_PROVIDER="local")
 def test_conversation_includes_citations(student_client):
     seed_baseline_knowledge(force=True)
     created = student_client.post("/api/v1/research-copilot/conversations/", {}, format="json")

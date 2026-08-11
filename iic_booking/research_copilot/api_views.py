@@ -200,3 +200,40 @@ def execute_tool(request):
     result = tools_svc.execute_tool(name=name, arguments=arguments, user=request.user)
     code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
     return Response(result, status=code)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotUserThrottle])
+def llm_provider_health(request):
+    """
+    Staff/admin LLM provider diagnostics (AI.17).
+
+    Returns provider/model/status only — never API keys or internal URLs.
+    """
+    from iic_booking.research_copilot.knowledge_views import IsCopilotKnowledgeAdmin
+    from iic_booking.research_copilot.services.llm_gateway import (
+        configured_provider_name,
+        openai_model_name,
+        ollama_model_name,
+        provider_health,
+    )
+
+    if not IsCopilotKnowledgeAdmin().has_permission(request, None):
+        return Response(
+            {"error": {"code": "forbidden", "message": "Admin access required."}},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    health = provider_health()
+    payload = health.as_public_dict()
+    payload["configured_provider"] = configured_provider_name()
+    # Model expected by config (not secrets)
+    if configured_provider_name() == "openai":
+        payload["configured_model"] = openai_model_name()
+    elif configured_provider_name() == "ollama":
+        payload["configured_model"] = ollama_model_name()
+    # Boolean only — never the key value
+    from django.conf import settings as dj_settings
+
+    payload["openai_api_key_configured"] = bool((getattr(dj_settings, "OPENAI_API_KEY", None) or "").strip())
+    return Response(payload)

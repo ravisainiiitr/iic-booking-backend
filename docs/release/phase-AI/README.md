@@ -23,16 +23,19 @@
 | AI.14 | [AI.14-Full-Copilot-Implementation-Report.md](./AI.14-Full-Copilot-Implementation-Report.md) | Full implementation — LIMITED PILOT READY (flag OFF) |
 | AI.15 | [AI.15-Copilot-Live-Pilot-Qualification.md](./AI.15-Copilot-Live-Pilot-Qualification.md) | Live qualification — **NOT READY** (pre-deploy) |
 | AI.16 | [AI.16-Copilot-Production-Enablement-Report.md](./AI.16-Copilot-Production-Enablement-Report.md) | **DEPLOYED — PILOT BLOCKED** (OpenAI + pilot account) |
+| AI.17 | [AI.17-Ollama-Assessment.md](./AI.17-Ollama-Assessment.md) | Ollama / provider inventory |
+| AI.17 | [AI.17-Ollama-Setup.md](./AI.17-Ollama-Setup.md) | Local Ollama setup |
+| AI.17 | [AI.17-Ollama-Implementation-and-Pilot-Report.md](./AI.17-Ollama-Implementation-and-Pilot-Report.md) | **OLLAMA READY FOR LIMITED PILOT** (flag OFF; live E2E blocked) |
 
-## Current production posture (AI.16)
+## Current production posture (AI.17)
 
 | Layer | Status |
 |-------|--------|
-| CORE PLATFORM | Smoke PASS after Copilot deploy (flag OFF) |
-| RESEARCH COPILOT code | **Deployed** (`v2.5.5-ai16-research-copilot` / `7a3f552`) |
-| research_copilot app | **Installed**; migrations `0001`+`0002` applied |
-| RESEARCH_COPILOT_ENABLED | **false** |
-| OPENAI_API_KEY | **Not configured** |
+| CORE PLATFORM | Unchanged; Copilot additive |
+| RESEARCH COPILOT (prod) | Still AI.16 tag `7a3f552` — flag **false** |
+| LLM provider (code) | **Ollama default** via `COPILOT_LLM_PROVIDER` (AI.17 on feature branch) |
+| OPENAI_API_KEY | Optional when provider=ollama |
+| Live Ollama on prod | **Not deployed** |
 | Pilot allowlist | **Empty** |
 | Live pilot E2E | **BLOCKED** |
 | FCM | BLOCKED |

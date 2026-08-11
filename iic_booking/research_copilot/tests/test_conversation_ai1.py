@@ -54,7 +54,7 @@ def test_disabled_gate(auth_client):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_create_conversation_and_message(auth_client, student):
     created = auth_client.post("/api/v1/research-copilot/conversations/", {"title": ""}, format="json")
     assert created.status_code == 201
@@ -83,7 +83,7 @@ def test_create_conversation_and_message(auth_client, student):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_guest_denied():
     client = APIClient()
     resp = client.post("/api/v1/research-copilot/conversations/", {}, format="json")
@@ -91,7 +91,7 @@ def test_guest_denied():
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_escalate_hint_on_human_request(auth_client):
     created = auth_client.post("/api/v1/research-copilot/conversations/", {}, format="json")
     conv_id = created.json()["conversation"]["id"]
@@ -105,7 +105,7 @@ def test_escalate_hint_on_human_request(auth_client):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_feedback(auth_client):
     created = auth_client.post("/api/v1/research-copilot/conversations/", {}, format="json")
     conv_id = created.json()["conversation"]["id"]

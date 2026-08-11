@@ -52,6 +52,24 @@ def feature_enabled(*, user=None) -> bool:
     return email in allowed
 
 
+def _reply_from_llm_result(result) -> str:
+    """Map gateway result to user-visible text without exposing stack traces."""
+    text = (result.text if result else "") or ""
+    if text.strip():
+        return text
+    category = getattr(result, "error_category", "") if result else ""
+    if category:
+        return (
+            "Research Copilot is temporarily unavailable. "
+            "Please try again shortly, or open **Tickets** for human support.\n"
+            + ESCALATE_MARKER
+        )
+    return (
+        "I could not generate a reply right now. Please try again or open **Tickets** for human support.\n"
+        + ESCALATE_MARKER
+    )
+
+
 def _append_sources_footer(reply: str, citations: list) -> str:
     if not citations:
         return reply
@@ -197,10 +215,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
     gateway = get_gateway()
     result = gateway.complete(llm_messages, max_tokens=default_max_tokens())
-    raw = (result.text if result else "") or (
-        "I could not generate a reply right now. Please try again or open **Tickets** for human support.\n"
-        + ESCALATE_MARKER
-    )
+    raw = _reply_from_llm_result(result)
     reply, escalate = _strip_escalate(raw)
     reply = _append_sources_footer(reply, citations)
     provider = result.provider if result else "none"
@@ -212,6 +227,8 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         hit_count=len(citations) + len(grounding.get("tool_results") or []),
     )
     if confidence < CONFIDENCE_ESCALATE_THRESHOLD or retrieval.low_confidence:
+        escalate = True
+    if result and getattr(result, "error_category", "") and not (result.text or "").strip():
         escalate = True
 
     base_actions = _static_actions(escalate=escalate)
@@ -237,6 +254,10 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             "model": result.model if result else "",
             "intent": retrieval.intent,
             "retrieval_latency_ms": retrieval.latency_ms,
+            "llm_latency_ms": getattr(result, "latency_ms", 0) if result else 0,
+            "llm_error_category": getattr(result, "error_category", "") if result else "",
+            "prompt_tokens": getattr(result, "prompt_tokens", None) if result else None,
+            "completion_tokens": getattr(result, "completion_tokens", None) if result else None,
             "portal_tools": grounding.get("tool_results") or [],
             "response_modes": grounding.get("modes") or [],
         },
@@ -424,6 +445,8 @@ def serialize_message(m: Message) -> dict:
         "suggested_actions": m.suggested_actions or [],
         "escalate_hint": bool(m.escalate_hint),
         "created_at": m.created_at.isoformat() if m.created_at else None,
+        # Provider metrics (AI.17) — no secrets; used by UI/admin diagnostics
+        "metadata": m.metadata or {},
     }
 
 
@@ -442,7 +465,10 @@ def serialize_conversation(c: Conversation, *, include_messages: bool = False) -
 
 
 def bootstrap_payload(*, user) -> dict:
+    from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
+
     ctx = build_context(user)
+    # Ordinary users see provider family only — no base URL / secrets.
     return {
         "enabled": feature_enabled(user=user),
         "assistant_name": "IIC Research Copilot",
@@ -450,6 +476,7 @@ def bootstrap_payload(*, user) -> dict:
         "suggested_prompts": _suggested_for(ctx),
         "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
         "capabilities": ctx.capabilities,
+        "llm_provider": configured_provider_name(),
         "command_actions": [
             {"id": "my_bookings", "label": "My Bookings", "href": "/my-bookings"},
             {"id": "find_equipment", "label": "Find Equipment", "href": "/equipments"},

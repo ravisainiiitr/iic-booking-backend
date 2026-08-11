@@ -241,6 +241,7 @@ def knowledge_analytics(request):
         for g in KnowledgeGap.objects.order_by("-created_at")[:50]
     ]
     from iic_booking.research_copilot.models import Conversation, CopilotAuditEvent, Message, MessageFeedback
+    from iic_booking.research_copilot.services.llm_gateway import provider_health
 
     tool_counts = list(
         CopilotAuditEvent.objects.filter(action__in=["tool_executed", "tool_denied"])
@@ -248,6 +249,7 @@ def knowledge_analytics(request):
         .annotate(c=Count("id"))
         .order_by("-c")[:20]
     )
+    llm = provider_health().as_public_dict()
     return Response(
         {
             "documents": {"total": total_docs, "indexed": indexed, "failed": failed},
@@ -264,6 +266,7 @@ def knowledge_analytics(request):
                 "audit_events": CopilotAuditEvent.objects.count(),
                 "tool_actions": tool_counts,
             },
+            "llm_provider": llm,
             "categories": [{"value": c.value, "label": c.label} for c in DocumentCategory],
             "security_levels": [{"value": s.value, "label": s.label} for s in SecurityLevel],
         }

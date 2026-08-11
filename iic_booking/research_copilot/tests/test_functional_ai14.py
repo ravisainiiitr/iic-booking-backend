@@ -96,7 +96,7 @@ def test_create_booking_still_requires_confirmation():
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="pilot@example.com", OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="pilot@example.com", OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_pilot_allowlist_blocks_non_pilot():
     user = _user("outsider@example.com")
     Token.objects.get_or_create(user=user)
@@ -108,7 +108,7 @@ def test_pilot_allowlist_blocks_non_pilot():
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="pilot@example.com", OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="pilot@example.com", OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_pilot_allowlist_allows_pilot():
     user = _user("pilot@example.com")
     Token.objects.get_or_create(user=user)
@@ -121,7 +121,7 @@ def test_pilot_allowlist_allows_pilot():
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_message_runs_portal_grounding_metadata():
     user = _user("ground@example.com")
     Token.objects.get_or_create(user=user)

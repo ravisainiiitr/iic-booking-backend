@@ -626,13 +626,19 @@ RESEARCH_COPILOT_EMBEDDING_MODEL = env("RESEARCH_COPILOT_EMBEDDING_MODEL", defau
 RESEARCH_COPILOT_VECTOR_STORE = env("RESEARCH_COPILOT_VECTOR_STORE", default="orm")
 RESEARCH_COPILOT_SCAN_LIMIT = env.int("RESEARCH_COPILOT_SCAN_LIMIT", default=500)
 # Cost / reliability controls (additive assistant — must not affect core portal)
-RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", default=30)
+# Default 60s suits local Ollama; override via env for cloud providers if needed.
+RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", default=60)
 RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=800)
 RESEARCH_COPILOT_MAX_USER_MESSAGES = env.int("RESEARCH_COPILOT_MAX_USER_MESSAGES", default=40)
 RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", default=4000)
 # Optional comma-separated emails for controlled pilot when RESEARCH_COPILOT_ENABLED=true.
 # Empty = all authenticated users (global). Flag false = nobody.
 RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
+# LLM provider selection (AI.17). Default ollama — does NOT require OPENAI_API_KEY.
+# Supported: ollama | openai | fallback | auto
+COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default="ollama")
+OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://127.0.0.1:11434")
+OLLAMA_MODEL = env("OLLAMA_MODEL", default="llama3.2:3b")
 # Android / FCM push (optional — when unset, push stays in-app + email)
 FCM_SERVER_KEY = env("FCM_SERVER_KEY", default="")
 FIREBASE_CREDENTIALS_JSON = env("FIREBASE_CREDENTIALS_JSON", default="")
@@ -642,7 +648,8 @@ COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}
 SUPPORTED_INSTALLERS = env.json("SUPPORTED_INSTALLERS", default=None) or {}
 
-# Optional: for AI-powered chat assistant. If set, chat uses OpenAI; otherwise falls back to FAQ.
+# Optional OpenAI (support chat + Copilot when COPILOT_LLM_PROVIDER=openai).
+# Not required when COPILOT_LLM_PROVIDER=ollama.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 OPENAI_CHAT_MODEL = env("OPENAI_CHAT_MODEL", default="gpt-4o-mini")
 

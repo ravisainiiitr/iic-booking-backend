@@ -66,7 +66,7 @@ def test_bootstrap_returns_enabled_false_when_off(user_a):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback")
 def test_conversation_isolation_user_a_cannot_read_user_b(user_a, user_b):
     client_b = _auth_client(user_b)
     created = client_b.post("/api/v1/research-copilot/conversations/", {"title": "B private"}, format="json")
@@ -87,7 +87,7 @@ def test_conversation_isolation_user_a_cannot_read_user_b(user_a, user_b):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", RESEARCH_COPILOT_MAX_INPUT_CHARS=50)
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback", RESEARCH_COPILOT_MAX_INPUT_CHARS=50)
 def test_message_too_long_rejected(user_a):
     client = _auth_client(user_a)
     created = client.post("/api/v1/research-copilot/conversations/", {}, format="json")
@@ -102,7 +102,7 @@ def test_message_too_long_rejected(user_a):
 
 
 @pytest.mark.django_db
-@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", RESEARCH_COPILOT_MAX_USER_MESSAGES=1)
+@override_settings(RESEARCH_COPILOT_ENABLED=True, OPENAI_API_KEY="", COPILOT_LLM_PROVIDER="fallback", RESEARCH_COPILOT_MAX_USER_MESSAGES=1)
 def test_conversation_limit_reached(user_a):
     client = _auth_client(user_a)
     created = client.post("/api/v1/research-copilot/conversations/", {}, format="json")
