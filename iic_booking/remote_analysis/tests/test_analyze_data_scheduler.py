@@ -60,6 +60,13 @@ def test_software_mapping_resolve_default_for_equipment():
     options = SoftwareMappingService().serialize_options(eq)
     assert len(options) == 2
     assert options[0]["name"] in {"OriginPro", "ImageJ"}
+    for row in options:
+        assert "installed_count" in row
+        assert "online_count" in row
+        assert "available_count" in row
+        assert "busy_count" in row
+        assert "maintenance_count" in row
+        assert "offline_count" in row
 
 
 @pytest.mark.django_db
