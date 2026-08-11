@@ -1,0 +1,56 @@
+name: Probe Catalog SPA APIs
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: self-hosted
+    steps:
+      - name: Probe catalog endpoints inside django
+        shell: bash
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "container=$CID"
+          docker exec "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.test import RequestFactory
+          from django.contrib.auth import get_user_model
+          from iic_booking.remote_analysis import catalog_admin_views as v
+          from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+          from iic_booking.remote_analysis.models import InstalledSoftware
+          User = get_user_model()
+          print("catalog_count", AnalysisSoftwareCatalog.objects.count())
+          print("active_catalog", AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False).count())
+          print("installed_present", InstalledSoftware.objects.filter(is_present=True).count())
+          try:
+            print("has allocation_enabled", InstalledSoftware._meta.get_field("allocation_enabled"))
+          except Exception as e:
+            print("allocation_enabled missing", e)
+          admin = User.objects.filter(user_type="admin", is_active=True).order_by("id").first()
+          print("admin", getattr(admin, "email", None), getattr(admin, "user_type", None))
+          rf = RequestFactory()
+          req = rf.get("/api/v1/analysis/catalog/software/?active=1&archived=0")
+          req.user = admin
+          try:
+            resp = v.catalog_collection(req)
+            print("catalog_status", resp.status_code)
+            data = resp.data if hasattr(resp, "data") else None
+            print("catalog_count_resp", (data or {}).get("count") if isinstance(data, dict) else type(data))
+            if isinstance(data, dict):
+              print("first", (data.get("results") or [None])[0])
+          except Exception as e:
+            import traceback; traceback.print_exc(); print("catalog_exc", e)
+          req2 = rf.get("/api/v1/analysis/catalog/equipment-software/matrix/")
+          req2.user = admin
+          try:
+            resp2 = v.mapping_matrix(req2)
+            print("matrix_status", resp2.status_code)
+            data2 = resp2.data if hasattr(resp2, "data") else None
+            if isinstance(data2, dict):
+              print("matrix_catalogs", len(data2.get("catalogs") or []))
+              print("matrix_equipment", len(data2.get("equipment") or []))
+          except Exception as e:
+            import traceback; traceback.print_exc(); print("matrix_exc", e)
+          PY
