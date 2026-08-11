@@ -230,6 +230,12 @@ No new alert stack invented.
 
 ---
 
-## SHAs (post-commit)
+## SHAs
 
-Reported after git commit in the closing section of the AI.13 handoff.
+| Repo | SHA |
+|------|-----|
+| Backend | `2fe7d12` |
+| Frontend | `31121ba` |
+| Android | `233740a` (unchanged) |
+
+Production enablement: **not performed** (`research_copilot=false` on live probe).
