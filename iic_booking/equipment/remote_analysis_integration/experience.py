@@ -115,21 +115,30 @@ class AnalysisExperienceBuilder:
                     for f in files
                 ]
 
-        booking_raw = [
+        all_raw_files = [
             f
             for f in files
             if str(f.get("relative_path") or "").startswith("RawData/")
         ]
-        # Treat portal uploads after staging as "additional" when source=portal and name not from ingest —
-        # UI also lets user pick; stats: all RawData vs Processed
-        raw_stats = _file_stats(files, prefix="RawData/")
-        extra_stats = _file_stats(
-            [f for f in files if str(f.get("relative_path") or "").startswith("RawData/") and f.get("source") == "portal"],
-            prefix=None,
-        )
-        # If we cannot distinguish, show all RawData as booking RAW and additional as count of portal-only beyond first wave
-        if extra_stats["file_count"] == raw_stats["file_count"] and raw_stats["file_count"]:
-            # Prefer listing booking RAW as all RawData; additional starts empty until user uploads more
+        portal_sources = {"portal", "past_data", "user"}
+        booking_raw_files = [
+            f
+            for f in all_raw_files
+            if str(f.get("source") or "").lower() not in portal_sources
+        ]
+        additional_files = [
+            f
+            for f in all_raw_files
+            if str(f.get("source") or "").lower() in portal_sources
+        ]
+        if booking_raw_files:
+            raw_stats = _file_stats(booking_raw_files, prefix=None)
+            extra_stats = _file_stats(additional_files, prefix=None)
+        else:
+            # Legacy workspaces tagged booking RAW as source=portal. Until re-staged,
+            # show all RawData as booking RAW so the Start path still works; new
+            # staging uses source=booking_raw so subsequent portal uploads count as additional.
+            raw_stats = _file_stats(all_raw_files, prefix=None)
             extra_stats = {"file_count": 0, "total_size_bytes": 0, "last_updated": None}
         output_stats = _file_stats(files, prefix="Processed/")
         if output_stats["file_count"] == 0:

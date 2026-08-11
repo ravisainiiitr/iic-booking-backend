@@ -76,6 +76,31 @@ class BookingAnalysisEligibilityService:
             return EligibilityResult(False, "Analysis access has expired", checks)
         checks["not_expired"] = True
 
+        if getattr(booking, "analysis_closed_at", None):
+            checks["analysis_open"] = False
+            return EligibilityResult(
+                False,
+                "Remote analysis session is over for this booking",
+                checks,
+            )
+        try:
+            from iic_booking.equipment.remote_analysis_integration.session_close import (
+                ensure_analysis_closed_from_history,
+            )
+
+            if ensure_analysis_closed_from_history(booking):
+                booking.refresh_from_db(fields=["analysis_closed_at"])
+                if getattr(booking, "analysis_closed_at", None):
+                    checks["analysis_open"] = False
+                    return EligibilityResult(
+                        False,
+                        "Remote analysis session is over for this booking",
+                        checks,
+                    )
+        except Exception:
+            pass
+        checks["analysis_open"] = True
+
         limit = int(getattr(equipment, "analysis_session_limit", 0) or 0)
         if limit > 0 and int(booking.analysis_session_count or 0) >= limit:
             checks["session_limit"] = False

@@ -9399,11 +9399,20 @@ def send_bulk_email(request):
 
 
 def _send_completion_email_with_attachments(booking, result_files, context_extra=None):
-    """Send booking completed email to the booking user with result files as attachments."""
+    """
+    Send booking completed email to the booking user.
+
+    Result files must NEVER be attached to email — they are only accessible via Booking Details.
+    The result_files argument is accepted for call-site compatibility but intentionally ignored.
+    """
     from django.core.mail import EmailMultiAlternatives
     from django.conf import settings
     from iic_booking.communication.service import CommunicationService
     from iic_booking.communication.models import CommunicationTemplate
+
+    # Explicitly discard attachments: results stay portal-only.
+    _ = result_files  # accepted for call-site compatibility
+    result_files = []
 
     user = booking.user
     equipment = booking.equipment
@@ -9696,13 +9705,16 @@ def complete_booking(request, booking_id):
         file_count = len(uploaded_names)
         completion_comment = "Booking marked as completed."
         if file_count:
-            completion_comment += f" {file_count} file(s) sent to user email: " + ", ".join(uploaded_names)
+            completion_comment += (
+                f" {file_count} file(s) uploaded for portal download via Booking Details"
+                " (not emailed as attachments): " + ", ".join(uploaded_names)
+            )
         completion_metadata = {"completion_method": "MANUAL_COMPLETION"}
         if file_count:
             completion_metadata["uploaded_files"] = uploaded_names
             completion_metadata["uploaded_files_count"] = file_count
 
-        # Create booking event (no automatic email; we send one email with attachments below)
+        # Create booking event (no automatic email; we send one email without attachments below)
         create_booking_event(
             booking=booking,
             event_type=BookingEventType.COMPLETED,
@@ -9714,9 +9726,10 @@ def complete_booking(request, booking_id):
             send_notification=False,
         )
 
-        # Send completion email to user (with result files as attachments if any)
+        # Send completion email to user. Results are never email attachments —
+        # they remain available from Booking Details only.
         try:
-            _send_completion_email_with_attachments(booking, result_file_list)
+            _send_completion_email_with_attachments(booking, [])
         except Exception as e:
             logger.exception("Failed to send completion email with attachments")
             return Response(
@@ -9730,7 +9743,12 @@ def complete_booking(request, booking_id):
 
         return Response(
             {
-                "message": "Booking marked as completed." + (f" {len(uploaded_names)} file(s) sent to user email." if uploaded_names else ""),
+                "message": "Booking marked as completed."
+                + (
+                    f" {len(uploaded_names)} file(s) saved for download from Booking Details."
+                    if uploaded_names
+                    else ""
+                ),
                 "booking": BookingSerializer(booking).data,
                 "uploaded_files": uploaded_names,
             },

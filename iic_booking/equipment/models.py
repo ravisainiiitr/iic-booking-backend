@@ -2354,6 +2354,15 @@ class Booking(models.Model):
         blank=True,
         verbose_name=_("Last analysis session at"),
     )
+    analysis_closed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("Remote analysis closed at"),
+        help_text=_(
+            "Set when a live remote analysis session ends (user End or timer expiry). "
+            "Blocks starting a new remote analysis session for this booking."
+        ),
+    )
     analysis_reservation = models.ForeignKey(
         "remote_analysis.AnalysisReservation",
         null=True,

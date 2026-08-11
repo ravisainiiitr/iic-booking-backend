@@ -80,6 +80,9 @@ class BookingRawStagingService:
                 .first()
             )
             if existing and existing.sha256 and existing.sha256.lower() == sha256.lower():
+                if (existing.source or "").strip().lower() in {"", "portal"}:
+                    existing.source = "booking_raw"
+                    existing.save(update_fields=["source", "modified_at"])
                 skipped += 1
                 continue
 
@@ -91,7 +94,7 @@ class BookingRawStagingService:
                     folder="RawData",
                     actor=actor,
                     expected_sha256=sha256,
-                    source="portal",
+                    source="booking_raw",
                     relative_name=name,
                     override_quota=True,
                 )
