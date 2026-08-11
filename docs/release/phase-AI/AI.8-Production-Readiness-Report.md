@@ -245,4 +245,8 @@ Do **not** enable production Copilot or FCM based on AI.8.
 
 ## Git / SHAs (post AI.8)
 
-Recorded after commit/push below.
+| Repo | SHA |
+|------|-----|
+| Backend | `392130c` |
+| Android | `7a20a81` |
+| Frontend | `86cb60d` |
