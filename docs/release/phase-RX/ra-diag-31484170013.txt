@@ -1,0 +1,53 @@
+306 objects imported automatically (use -v 2 for details).
+
+=== BOOKING ===
+{"pk": 367, "virtual": "IICPXRD [A]202600041", "status": "COMPLETED", "user": "test.student@iic-booking.test", "equipment": "Powder X-Ray Diffractometer (PXRD) [A]", "equipment_id": 1, "dept_id": 33}
+=== REQUIRED_SOFTWARE === ['Notepad']
+=== EQUIPMENT_SOFTWARE_MAP === [('Notepad', True, 'notepad')]
+=== EQUIPMENT_POOL === [{"workstation_id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "workstation__hostname": "DESKTOP-CSMH6BU", "workstation__status": "RESERVED", "priority_boost": 10}]
+=== FLEET ===
+{"id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "hostname": "DESKTOP-CSMH6BU", "status": "RESERVED", "enabled": true, "department_id": 33, "health_score": 65, "last_heartbeat": "None", "hb_age_s": null, "agent_version": "1.0.1", "cleanup_status": null, "disk_low": null, "software_ok_for_required": true, "installed_software": ["Notepad"]}
+{"id": "820de355-410b-4ab1-951e-e42ad3ba942d", "hostname": "RAVI", "status": "RESERVED", "enabled": true, "department_id": null, "health_score": 100, "last_heartbeat": "2026-08-11 10:53:13.098358+00:00", "hb_age_s": 28, "agent_version": "1.0.6", "cleanup_status": null, "disk_low": null, "software_ok_for_required": true, "installed_software": ["Notepad"]}
+=== RESERVATION ===
+{"id": "3891ea25-60d4-49f4-a756-dbd6efb871db", "status": "AWAITING_CHECKIN", "workstation_id": "820de355-410b-4ab1-951e-e42ad3ba942d", "department_id": 33, "requested_start": "2026-08-11 10:52:36.561329+00:00", "requested_end": "2026-08-11 14:52:36.561329+00:00", "requested_capabilities": {"required_software_names": ["Notepad"]}}
+=== QUEUE_ENTRY ===
+NONE
+=== CANDIDATE TRACE ===
+{"hostname": "DESKTOP-CSMH6BU", "status": "RESERVED", "ACCEPT": false, "reasons": ["Status RESERVED not allocatable"], "score_available": false, "score_total": null, "score_reasons": ["Status RESERVED not allocatable"]}
+{"hostname": "RAVI", "status": "RESERVED", "ACCEPT": false, "reasons": ["Status RESERVED not allocatable"], "score_available": false, "score_total": null, "score_reasons": ["Status RESERVED not allocatable"]}
+=== MAINTENANCE_HINT ===
+{"all_under_maintenance": false, "all_offline": false, "all_busy": true, "estimated_available_at": null, "estimated_availability_display": "Unknown", "reason": "All matching environments busy"}
+=== EXPERIENCE_QUEUE ===
+{
+  "is_queued": false,
+  "title": "Analysis Environment Allocated",
+  "body": [
+    "A compatible Analysis PC has been allocated.",
+    "Complete check-in/start to begin the session."
+  ],
+  "required_software": [
+    "Notepad"
+  ],
+  "position": null,
+  "queue_size": 0,
+  "people_ahead": 0,
+  "estimated_wait_minutes": null,
+  "expected_start_at": null,
+  "maintenance": {
+    "all_under_maintenance": false,
+    "all_offline": false,
+    "all_busy": true,
+    "estimated_available_at": null,
+    "estimated_availability_display": "Unknown",
+    "reason": "All matching environments busy"
+  },
+  "environments": {
+    "total": 2,
+    "matching": 2,
+    "available": 0,
+    "busy": 2,
+    "waiting": 0
+  }
+}
+WORKSPACE_TILE {"label": "Booking Workspace", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=1 skipped=0 failed=0", "input": {"label": "Input Folder", "logical_name": "Uploaded Input Data", "file_count": 1, "total_size_bytes": 380293, "last_updated": "2026-08-11T10:52:40.343262+00:00"}, "output": {"label": "Output Folder", "logical_name": "Generated Results", "file_count": 0, "total_size_bytes": 0, "last_updated": null}, "last_synced_at": null, "raw_data_directory": "D:\\PXRD\\RAW", "results_directory": "D:\\PXRD\\RESULTS", "instructions": ["Raw files have already been copied to your Booking Folder under the Raw Data directory (when configured for this equipment).", "Please save all analyzed files inside your Booking Folder under the Analyzed Data directory: D:\\PXRD\\RESULTS\\IICPXRD [A]202600041.", "After End Analysis, all results are uploaded to the booking and local copies are securely deleted."]}
+RESERVATION_STATUS_IN_SUMMARY {'id': '3891ea25-60d4-49f4-a756-dbd6efb871db', 'status': 'AWAITING_CHECKIN', 'allocated': True, 'requested_start': '2026-08-11T10:52:36.561329+00:00', 'requested_end': '2026-08-11T14:52:36.561329+00:00'}
