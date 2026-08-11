@@ -33,6 +33,14 @@ def _software_key(item: dict[str, Any]) -> str:
     return f"{name}|{version}|{publisher}"
 
 
+def _clip(value: Any, max_len: int) -> str:
+    """Truncate strings to model field limits so one oversized path cannot abort sync."""
+    text = str(value or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len]
+
+
 def _content_hash(item: dict[str, Any]) -> str:
     raw = "|".join(
         [
@@ -50,7 +58,7 @@ def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str =
     """R11: auto-populate global Software Catalog from RAA inventory (one row per slug)."""
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
 
-    clean = (name or "").strip()
+    clean = _clip(name, 255)
     if not clean:
         return None
     base_slug = slugify(clean)[:200] or "software"
@@ -60,21 +68,31 @@ def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str =
     )
     if existing:
         if publisher and not (existing.vendor or "").strip():
-            existing.vendor = publisher.strip()[:255]
+            existing.vendor = _clip(publisher, 255)
             existing.save(update_fields=["vendor", "updated_at"])
         return existing
-    try:
-        return AnalysisSoftwareCatalog.objects.create(
-            name=clean[:255],
-            slug=base_slug,
-            vendor=(publisher or "").strip()[:255],
-            is_active=True,
-            is_archived=False,
-            description=f"Auto-discovered from RAA inventory (version={version or 'unknown'}).",
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("ensure_catalog_for_install failed for %s", clean)
-        return AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
+    # Unique slug races / collisions: append numeric suffix then retry.
+    for attempt in range(8):
+        slug = base_slug if attempt == 0 else f"{base_slug[:190]}-{attempt}"
+        try:
+            return AnalysisSoftwareCatalog.objects.create(
+                name=clean,
+                slug=slug,
+                vendor=_clip(publisher, 255),
+                is_active=True,
+                is_archived=False,
+                description=f"Auto-discovered from RAA inventory (version={_clip(version, 64) or 'unknown'}).",
+            )
+        except Exception:  # noqa: BLE001
+            hit = (
+                AnalysisSoftwareCatalog.objects.filter(slug=slug).first()
+                or AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
+            )
+            if hit:
+                return hit
+            if attempt == 7:
+                logger.exception("ensure_catalog_for_install failed for %s", clean)
+    return AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
 
 
 class InventoryService:
@@ -121,19 +139,28 @@ class InventoryService:
         for item in software_list:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("displayName") or item.get("software_name") or "").strip()
+            name = _clip(item.get("displayName") or item.get("software_name") or "", 512)
             if not name:
                 continue
-            version = str(item.get("version") or "").strip()
-            publisher = str(item.get("publisher") or "").strip()
+            version = _clip(item.get("version") or "", 128)
+            publisher = _clip(item.get("publisher") or "", 512)
             key = (name.lower(), version.lower(), publisher.lower())
+            if key in seen_keys:
+                continue
             seen_keys.add(key)
             install_date = item.get("installDate") or item.get("install_date")
             if isinstance(install_date, str):
                 install_date = parse_datetime(install_date)
 
-            content_hash = item.get("contentHash") or item.get("ContentHash") or _content_hash(item)
-            catalog = ensure_catalog_for_install(name=name, publisher=publisher, version=version)
+            content_hash = _clip(
+                item.get("contentHash") or item.get("ContentHash") or _content_hash(item),
+                128,
+            )
+            try:
+                catalog = ensure_catalog_for_install(name=name, publisher=publisher, version=version)
+            except Exception:  # noqa: BLE001
+                logger.exception("catalog promote failed for %s", name)
+                catalog = None
 
             # Detect version change by name+publisher ignoring version
             prior_same_name = [
@@ -142,66 +169,82 @@ class InventoryService:
                 if n == name.lower() and p == publisher.lower() and _v != version.lower()
             ]
 
-            if key in existing:
-                row = existing[key]
-                changed = False
-                for field, value in (
-                    ("executable", str(item.get("executable") or "")),
-                    ("install_path", str(item.get("installPath") or item.get("install_path") or "")),
-                    ("category", str(item.get("category") or "")),
-                    ("licensed", bool(item.get("isLicensed") or item.get("licensed") or False)),
-                    ("license_type", str(item.get("licenseType") or item.get("license_type") or "")),
-                    ("content_hash", content_hash),
-                ):
-                    if getattr(row, field) != value:
-                        setattr(row, field, value)
-                        changed = True
-                if install_date and row.install_date != install_date:
-                    row.install_date = install_date
-                    changed = True
-                if catalog is not None and getattr(row, "catalog_id", None) != catalog.id:
-                    row.catalog = catalog
-                    changed = True
-                    catalog_linked += 1
-                if changed:
-                    row.save()
-            else:
-                InstalledSoftware.objects.create(
-                    workstation=workstation,
-                    software_name=name,
-                    publisher=publisher,
-                    version=version,
-                    executable=str(item.get("executable") or ""),
-                    install_path=str(item.get("installPath") or item.get("install_path") or ""),
-                    install_date=install_date,
-                    licensed=bool(item.get("isLicensed") or item.get("licensed") or False),
-                    license_type=str(item.get("licenseType") or item.get("license_type") or ""),
-                    category=str(item.get("category") or ""),
-                    content_hash=content_hash,
-                    is_present=True,
-                    allocation_enabled=True,
-                    catalog=catalog,
+            executable = _clip(item.get("executable") or "", 1024)
+            install_path = _clip(item.get("installPath") or item.get("install_path") or "", 1024)
+            category = _clip(item.get("category") or "", 128)
+            license_type = _clip(item.get("licenseType") or item.get("license_type") or "", 128)
+            licensed = bool(item.get("isLicensed") or item.get("licensed") or False)
+
+            try:
+                with transaction.atomic():
+                    if key in existing:
+                        row = existing[key]
+                        changed = False
+                        for field, value in (
+                            ("executable", executable),
+                            ("install_path", install_path),
+                            ("category", category),
+                            ("licensed", licensed),
+                            ("license_type", license_type),
+                            ("content_hash", content_hash),
+                        ):
+                            if getattr(row, field) != value:
+                                setattr(row, field, value)
+                                changed = True
+                        if install_date and row.install_date != install_date:
+                            row.install_date = install_date
+                            changed = True
+                        if catalog is not None and getattr(row, "catalog_id", None) != catalog.id:
+                            row.catalog = catalog
+                            changed = True
+                            catalog_linked += 1
+                        if changed:
+                            row.save()
+                    else:
+                        InstalledSoftware.objects.create(
+                            workstation=workstation,
+                            software_name=name,
+                            publisher=publisher,
+                            version=version,
+                            executable=executable,
+                            install_path=install_path,
+                            install_date=install_date,
+                            licensed=licensed,
+                            license_type=license_type,
+                            category=category,
+                            content_hash=content_hash,
+                            is_present=True,
+                            allocation_enabled=True,
+                            catalog=catalog,
+                        )
+                        added += 1
+                        if catalog:
+                            catalog_linked += 1
+                        SoftwareInventoryHistory.objects.create(
+                            workstation=workstation,
+                            software_name=name,
+                            change_type=InventoryChangeType.ADDED,
+                            new_version=version,
+                            details=f"Publisher={publisher}",
+                        )
+                        if prior_same_name:
+                            version_changed += 1
+                            old = prior_same_name[0]
+                            SoftwareInventoryHistory.objects.create(
+                                workstation=workstation,
+                                software_name=name,
+                                change_type=InventoryChangeType.VERSION_CHANGED,
+                                old_version=old.version,
+                                new_version=version,
+                            )
+            except Exception:  # noqa: BLE001
+                # One bad title must not abort the whole inventory transaction.
+                logger.exception(
+                    "InstalledSoftware upsert failed workstation=%s name=%s",
+                    workstation.pk,
+                    name,
                 )
-                added += 1
-                if catalog:
-                    catalog_linked += 1
-                SoftwareInventoryHistory.objects.create(
-                    workstation=workstation,
-                    software_name=name,
-                    change_type=InventoryChangeType.ADDED,
-                    new_version=version,
-                    details=f"Publisher={publisher}",
-                )
-                if prior_same_name:
-                    version_changed += 1
-                    old = prior_same_name[0]
-                    SoftwareInventoryHistory.objects.create(
-                        workstation=workstation,
-                        software_name=name,
-                        change_type=InventoryChangeType.VERSION_CHANGED,
-                        old_version=old.version,
-                        new_version=version,
-                    )
+                continue
 
         # Explicit removals from delta payloads.
         for item in removed_items:

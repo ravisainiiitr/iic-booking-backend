@@ -513,9 +513,12 @@ def link_equipment(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    software = data.get("software_slugs") or data.get("softwareSlugs") or data.get("software") or []
+    software = data.get("software_slugs") or data.get("softwareSlugs") or []
     if isinstance(software, str):
         software = [s.strip() for s in software.split(",") if s.strip()]
+    software_items = data.get("software_items") or data.get("softwareItems") or data.get("software") or []
+    if isinstance(software_items, str):
+        software_items = []
 
     result = link_workstation_to_equipment(
         workstation=ws,
@@ -524,7 +527,8 @@ def link_equipment(request):
         rdp_password=str(data.get("rdp_password") or data.get("rdpPassword") or ""),
         rdp_domain=str(data.get("rdp_domain") or data.get("rdpDomain") or "").strip(),
         rdp_port=int(data.get("rdp_port") or data.get("rdpPort") or 3389),
-        software_slugs=list(software),
+        software_slugs=list(software) if isinstance(software, list) else [],
+        software_items=list(software_items) if isinstance(software_items, list) else [],
         priority_boost=int(data.get("priority_boost") or data.get("priorityBoost") or 10),
     )
     return Response({"accepted": True, **result})

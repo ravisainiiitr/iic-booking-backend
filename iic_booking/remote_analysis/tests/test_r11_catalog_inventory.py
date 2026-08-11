@@ -8,6 +8,7 @@ from django.utils import timezone
 from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
 from iic_booking.remote_analysis.constants import WorkstationStatus
 from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
+from iic_booking.remote_analysis.services.catalog_sync import backfill_catalog_from_installed
 from iic_booking.remote_analysis.services.inventory import InventoryService, ensure_catalog_for_install
 
 
@@ -45,6 +46,103 @@ def test_inventory_sync_promotes_catalog_and_links():
     assert row is not None
     assert row.catalog_id is not None
     assert row.allocation_enabled is True
+
+
+@pytest.mark.django_db
+def test_inventory_sync_promotes_all_titles_and_truncates_paths():
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-multi",
+        hostname="RAVI-MULTI",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+        last_heartbeat=timezone.now(),
+    )
+    long_path = "C:\\" + ("VeryLong\\" * 80) + "app.exe"
+    result = InventoryService().synchronize(
+        ws,
+        {
+            "software": [
+                {"displayName": "OriginPro", "version": "2024", "publisher": "OriginLab"},
+                {"displayName": "ImageJ", "version": "1.54", "publisher": "NIH", "installPath": long_path},
+                {"displayName": "CasaXPS", "version": "2.3", "publisher": "Casa"},
+            ]
+        },
+    )
+    assert result["accepted"] is True
+    assert result["added"] == 3
+    assert result["catalog_linked"] >= 3
+    names = set(
+        InstalledSoftware.objects.filter(workstation=ws, is_present=True).values_list(
+            "software_name", flat=True
+        )
+    )
+    assert names == {"OriginPro", "ImageJ", "CasaXPS"}
+    assert AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False).count() >= 3
+    img = InstalledSoftware.objects.get(workstation=ws, software_name="ImageJ")
+    assert len(img.install_path) <= 1024
+
+
+@pytest.mark.django_db
+def test_backfill_catalog_from_orphan_installs():
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-bf",
+        hostname="RAVI-BF",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    InstalledSoftware.objects.create(
+        workstation=ws,
+        software_name="Avantage",
+        publisher="Thermo",
+        version="5",
+        is_present=True,
+        catalog=None,
+    )
+    InstalledSoftware.objects.create(
+        workstation=ws,
+        software_name="Avantage",
+        publisher="Thermo",
+        version="6",
+        is_present=True,
+        catalog=None,
+    )
+    result = backfill_catalog_from_installed()
+    assert result["catalog_links_updated"] >= 2
+    assert AnalysisSoftwareCatalog.objects.filter(name__iexact="Avantage").count() == 1
+    assert InstalledSoftware.objects.filter(workstation=ws, catalog__isnull=False).count() == 2
+
+
+@pytest.mark.django_db
+def test_installer_link_creates_catalog_for_unknown_slugs():
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.remote_analysis.installer.services import link_workstation_to_equipment
+
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-link",
+        hostname="RAVI-LINK",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    eq = Equipment.objects.create(
+        name="FE-SEM Test",
+        code="FESEM-R11",
+        status="ACTIVE",
+        enable_remote_analysis=True,
+    )
+    result = link_workstation_to_equipment(
+        workstation=ws,
+        equipment=eq,
+        software_slugs=["originpro", "imagej"],
+        software_items=[
+            {"displayName": "OriginPro", "slug": "originpro", "publisher": "OriginLab"},
+            {"displayName": "ImageJ", "slug": "imagej", "publisher": "NIH"},
+        ],
+        map_selected_to_equipment=True,
+    )
+    assert result["catalog_created"] >= 2
+    assert AnalysisSoftwareCatalog.objects.filter(slug="originpro").exists()
+    assert AnalysisSoftwareCatalog.objects.filter(slug="imagej").exists()
+    assert InstalledSoftware.objects.filter(workstation=ws, is_present=True).count() >= 2
 
 
 @pytest.mark.django_db

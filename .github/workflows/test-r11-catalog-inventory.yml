@@ -1,0 +1,32 @@
+name: Test R11 Catalog Inventory
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "iic_booking/remote_analysis/services/inventory.py"
+      - "iic_booking/remote_analysis/services/catalog_sync.py"
+      - "iic_booking/remote_analysis/installer/services.py"
+      - "iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py"
+
+jobs:
+  test:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pytest R11 catalog inventory in django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          # Copy changed modules into the running container and run tests against a throwaway sqlite
+          docker cp iic_booking/remote_analysis/services/inventory.py "$CID":/app/iic_booking/remote_analysis/services/inventory.py
+          docker cp iic_booking/remote_analysis/services/catalog_sync.py "$CID":/app/iic_booking/remote_analysis/services/catalog_sync.py
+          docker cp iic_booking/remote_analysis/installer/services.py "$CID":/app/iic_booking/remote_analysis/installer/services.py
+          docker cp iic_booking/remote_analysis/catalog_admin_views.py "$CID":/app/iic_booking/remote_analysis/catalog_admin_views.py
+          docker cp iic_booking/remote_analysis/urls.py "$CID":/app/iic_booking/remote_analysis/urls.py
+          docker cp iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py "$CID":/app/iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py
+          docker exec -w /app "$CID" mkdir -p /app/iic_booking/remote_analysis/management/commands
+          docker cp iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py "$CID":/app/iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.test "$CID" \
+            pytest iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py -q --tb=short

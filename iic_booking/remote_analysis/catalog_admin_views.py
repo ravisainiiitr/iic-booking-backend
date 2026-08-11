@@ -697,5 +697,82 @@ def mapping_matrix(request):
                 for c in catalogs
             ],
             "equipment": equipment_rows,
+            "inventory_summary": _safe_inventory_summary(),
         }
+    )
+
+
+def _safe_inventory_summary() -> dict:
+    try:
+        from iic_booking.remote_analysis.services.catalog_sync import inventory_discovery_summary
+
+        return inventory_discovery_summary()
+    except Exception:
+        return {}
+
+
+@api_view(["POST"])
+@permission_classes(_MANAGE)
+def catalog_sync_from_inventory(request):
+    """
+    R11 ops: backfill AnalysisSoftwareCatalog from present InstalledSoftware rows,
+    optionally enqueue REFRESH_SOFTWARE so online agents re-push full inventory.
+    """
+    body = request.data if isinstance(request.data, dict) else {}
+    refresh_agents = bool(body.get("refresh_agents") or body.get("refreshAgents"))
+    limit = body.get("limit")
+    try:
+        limit_i = int(limit) if limit is not None else 50_000
+    except (TypeError, ValueError):
+        return Response({"detail": "limit must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+
+    from iic_booking.remote_analysis.services.catalog_sync import (
+        backfill_catalog_from_installed,
+        inventory_discovery_summary,
+    )
+
+    before = inventory_discovery_summary()
+    backfill = backfill_catalog_from_installed(limit=limit_i)
+
+    refresh = {"enqueued": 0, "workstation_ids": []}
+    if refresh_agents:
+        from iic_booking.remote_analysis.constants import CommandType
+        from iic_booking.remote_analysis.models import AnalysisWorkstation
+        from iic_booking.remote_analysis.services.commands import CommandService
+
+        svc = CommandService()
+        ids: list[str] = []
+        for ws in AnalysisWorkstation.objects.filter(enabled=True).order_by("hostname")[:200]:
+            try:
+                cmd = svc.create_command(
+                    ws,
+                    CommandType.REFRESH_SOFTWARE,
+                    created_by=request.user if getattr(request.user, "is_authenticated", False) else None,
+                )
+                ids.append(str(ws.id))
+                refresh["enqueued"] += 1
+                _ = cmd
+            except Exception:
+                continue
+        refresh["workstation_ids"] = ids
+
+    after = inventory_discovery_summary()
+    from iic_booking.remote_analysis.constants import AuditCategory
+    from iic_booking.remote_analysis.services.audit import record_event
+
+    record_event(
+        category=AuditCategory.INVENTORY,
+        action="CatalogSyncFromInventory",
+        details=f"backfill={backfill} refresh={refresh['enqueued']}",
+        actor=request.user if getattr(request.user, "is_authenticated", False) else None,
+    )
+    return Response(
+        {
+            "accepted": True,
+            "before": before,
+            "backfill": backfill,
+            "after": after,
+            "refresh_agents": refresh,
+        }
+    )        }
     )
