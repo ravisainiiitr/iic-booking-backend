@@ -1,0 +1,63 @@
+# Read-only production log sample + backup path presence for AI.11 closure.
+# Does NOT restart services. Does NOT restore/delete backups. Redacts common secret patterns in output.
+name: AI11 Production Observability Sample
+
+on:
+  workflow_dispatch:
+
+jobs:
+  observe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Container health snapshot
+        run: |
+          set -euo pipefail
+          docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}' | head -n 40 || true
+          curl -fsS -o /tmp/ready.json -w 'ready_http=%{http_code}\n' http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true
+          curl -fsS -o /tmp/version.json -w 'version_http=%{http_code}\n' http://127.0.0.1:8080/api/version/ || true
+          python3 - <<'PY'
+          import json,re
+          for p in ("/tmp/ready.json","/tmp/version.json"):
+            try:
+              raw=open(p,encoding="utf-8",errors="ignore").read()
+            except FileNotFoundError:
+              print(p,"MISSING"); continue
+            raw=re.sub(r'(?i)("(key|token|secret|password|dsn|authorization)"\s*:\s*")[^"]*','\\1***',raw)
+            print(p, raw[:400])
+          PY
+
+      - name: Recent django log sample (redacted)
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "container=$CID"
+          test -n "$CID"
+          docker logs --tail 200 "$CID" 2>&1 | \
+            sed -E 's/(Bearer |token=|password=|secret=|AKIA[0-9A-Z]{16})[^[:space:]]+/\\1***/Ig' | \
+            tee /tmp/django-tail.txt | tail -n 80
+          echo "=== 5xx / ERROR counts in sample ==="
+          grep -Eic 'HTTP/[0-9.]+" 5[0-9]{2}| ERROR |Traceback' /tmp/django-tail.txt || true
+
+      - name: Backup path presence (no restore)
+        run: |
+          set -euo pipefail
+          echo "Checking documented backup locations (existence only)."
+          for p in \
+            /home/ubuntu/backups/nightly/latest \
+            /var/log/iic-nightly-backup.log \
+            /home/ubuntu/bin/iic-nightly-backup-cron.sh \
+            /home/ubuntu/bin/iic-restore-verify.sh
+          do
+            if [ -e "$p" ]; then
+              echo "PRESENT $p"
+              if [ -L "$p" ]; then echo "  symlink -> $(readlink "$p" || true)"; fi
+              if [ -f "$p" ]; then ls -la "$p" | awk '{print " ",$0}'; fi
+              if [ -d "$p" ]; then ls -la "$p" | head -n 15; fi
+            else
+              echo "ABSENT  $p"
+            fi
+          done
+          if [ -f /var/log/iic-nightly-backup.log ]; then
+            echo "=== last 30 lines of nightly backup log (redacted) ==="
+            tail -n 30 /var/log/iic-nightly-backup.log | sed -E 's/(password|secret|token)=[^[:space:]]+/\\1***/Ig' || true
+          fi
