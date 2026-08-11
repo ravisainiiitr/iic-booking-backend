@@ -1560,15 +1560,47 @@ def admin_api_router():
 
         @action(detail=True, methods=["get"], url_path="transaction-history")
         def transaction_history(self, request, pk=None):
-            """Return aggregated sub-wallet transaction history for this user (admin/OIC). Used to verify debit after booking."""
+            """Return aggregated sub-wallet transaction history for this user (admin/OIC).
+
+            Used to verify debit after booking. Resolves the user directly (same pattern as
+            booking-info) so for_booking list filters cannot 404 the detail action.
+            """
             from iic_booking.users.models import SubWalletTransaction
             from iic_booking.users.repositories.wallet_repository import (
                 SubWalletRepository,
                 SubWalletTransactionRepository,
             )
 
-            user = self.get_object()
-            wallet = user.get_accessible_wallet()
+            actor = request.user
+            actor_type = getattr(actor, "user_type", None)
+            allowed = {
+                UserType.ADMIN,
+                UserType.MANAGER,
+                UserType.DEPT_ADMIN,
+                UserType.ORG_ADMIN,
+                UserType.FINANCE,
+            }
+            if actor_type not in allowed and not getattr(actor, "is_staff", False):
+                raise PermissionDenied("Only Admin, OIC, Dept Admin, or Accounts can view transaction history.")
+
+            try:
+                user = User.objects.select_related("department").get(pk=pk)
+            except (User.DoesNotExist, ValueError, TypeError):
+                return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if actor_type == UserType.MANAGER:
+                scope_id = _request_user_scope_id(request)
+                if scope_id is None or user.department_id != scope_id:
+                    raise PermissionDenied("OIC can only view users in their own department.")
+            elif actor_type == UserType.ORG_ADMIN:
+                if user.department_id != getattr(actor, "department_id", None):
+                    raise PermissionDenied("Organization Administrators can only view users in their organization.")
+
+            wallet = None
+            try:
+                wallet = user.get_accessible_wallet()
+            except Exception:
+                wallet = None
             limit = min(int(request.query_params.get("limit", 50)), 100)
             offset = int(request.query_params.get("offset", 0))
 
@@ -1580,6 +1612,7 @@ def admin_api_router():
                     "count": 0,
                     "limit": limit,
                     "offset": offset,
+                    "has_wallet": False,
                 }, status=status.HTTP_200_OK)
 
             sub_wallets = list(SubWalletRepository.get_by_wallet(wallet))
@@ -1613,6 +1646,7 @@ def admin_api_router():
                 "count": total_count,
                 "limit": limit,
                 "offset": offset,
+                "has_wallet": True,
             }, status=status.HTTP_200_OK)
 
     class UserGroupViewSet(ModelViewSet):

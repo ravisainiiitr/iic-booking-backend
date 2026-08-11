@@ -1,0 +1,82 @@
+# Probe book-for-user-info + transaction-history (read-only)
+name: Probe Book For User Info
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              echo "django=$CID"
+              test -n "$CID"
+              docker exec "$CID" sh -lc 'grep -n "equipment_book_for_user_info\|book-for-user-info" /app/config/api_router.py /app/iic_booking/equipment/api_views.py | head -n 20 || echo MISSING'
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, json, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from rest_framework.test import force_authenticate, APIRequestFactory
+          from iic_booking.equipment.api_views import equipment_book_for_user_info
+          from iic_booking.equipment.models import Equipment
+
+          User = get_user_model()
+          target = (
+              User.objects.filter(name__icontains="Test IITR Student").first()
+              or User.objects.filter(name__icontains="Kushagra").first()
+              or User.objects.filter(email__icontains="kushagra").first()
+          )
+          print(
+              "target=",
+              getattr(target, "id", None),
+              getattr(target, "email", None),
+              getattr(target, "name", None),
+              getattr(target, "department_id", None),
+              getattr(getattr(target, "department", None), "name", None),
+          )
+          if not target:
+              raise SystemExit(2)
+          eq = Equipment.objects.filter(equipment_id=1).first()
+          print("equipment=", getattr(eq, "equipment_id", None), getattr(eq, "internal_department_id", None))
+          actor = User.objects.filter(user_type="admin", is_active=True).order_by("id").first()
+          print("actor=", actor.id, actor.email, actor.user_type)
+          rf = APIRequestFactory()
+          req = rf.get("/api/equipments/1/book-for-user-info/", {"user_id": target.id})
+          force_authenticate(req, user=actor)
+          resp = equipment_book_for_user_info(req, pk=1)
+          print("book_for_user_info_status=", resp.status_code)
+          print("book_for_user_info_body=", json.dumps(getattr(resp, "data", None), default=str)[:1500])
+
+          from config.admin_api import admin_api_router
+          vs = None
+          for prefix, cls, basename in admin_api_router().registry:
+              if basename == "admin-user":
+                  vs = cls
+                  break
+          view = vs.as_view({"get": "transaction_history"})
+          req2 = rf.get(f"/api/admin/users/{target.id}/transaction-history/")
+          force_authenticate(req2, user=actor)
+          resp2 = view(req2, pk=str(target.id))
+          data2 = getattr(resp2, "data", None)
+          print("txn_status=", resp2.status_code)
+          print("txn_count=", (data2 or {}).get("count") if isinstance(data2, dict) else None)
+          print("txn_keys=", list(data2.keys()) if isinstance(data2, dict) else type(data2))
+          print("txn_body=", json.dumps(data2, default=str)[:800])
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
