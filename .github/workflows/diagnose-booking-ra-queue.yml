@@ -17,7 +17,7 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           OUT="/tmp/ra_diag_${{ github.run_id }}.txt"
-          docker exec -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" python manage.py shell <<'PY' > "$OUT" 2>&1
+          docker exec -i -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" python manage.py shell <<'PY' > "$OUT" 2>&1
           import os, json, traceback
           from django.utils import timezone
           from iic_booking.equipment.models import Booking
