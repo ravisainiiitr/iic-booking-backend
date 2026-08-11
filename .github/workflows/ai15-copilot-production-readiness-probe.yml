@@ -1,0 +1,73 @@
+# AI.15 — Read-only production Copilot readiness probe.
+# Does NOT enable Copilot. Does NOT migrate. Does NOT print secrets.
+name: AI15 Copilot Production Readiness Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate Django container
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+          echo "Using $CID"
+
+      - name: Copilot / OpenAI / migrations inventory (no secret values)
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from django.apps import apps
+
+          def present(name: str) -> bool:
+              v = getattr(settings, name, None)
+              if v is None:
+                  v = os.environ.get(name)
+              if isinstance(v, bool):
+                  return v
+              return bool(str(v or "").strip())
+
+          print("INSTALLED_APPS_has_research_copilot=", apps.is_installed("iic_booking.research_copilot"))
+          print("RESEARCH_COPILOT_ENABLED=", bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)))
+          print("OPENAI_API_KEY_configured=", present("OPENAI_API_KEY"))
+          pilot = (getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", None) or os.environ.get("RESEARCH_COPILOT_PILOT_EMAILS") or "").strip()
+          emails = [e.strip() for e in pilot.split(",") if e.strip()]
+          print("RESEARCH_COPILOT_PILOT_EMAILS_configured=", bool(emails))
+          print("RESEARCH_COPILOT_PILOT_EMAILS_count=", len(emails))
+          print("RESEARCH_COPILOT_MODEL=", (getattr(settings, "RESEARCH_COPILOT_MODEL", None) or getattr(settings, "OPENAI_CHAT_MODEL", None) or "")[:80] or "(default)")
+          print("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS=", getattr(settings, "RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", None))
+          print("RESEARCH_COPILOT_MAX_TOKENS=", getattr(settings, "RESEARCH_COPILOT_MAX_TOKENS", None))
+          print("git_describe=", os.environ.get("GIT_COMMIT", "") or os.environ.get("BACKEND_COMMIT", "") or "(unset)")
+          PY
+
+          echo "=== showmigrations research_copilot ==="
+          docker exec -w /app "$CID" python manage.py showmigrations research_copilot 2>&1 | tee /tmp/ai15-rc-mig.txt || true
+          if grep -qi "No installed app with label 'research_copilot'" /tmp/ai15-rc-mig.txt; then
+            echo "RESULT=research_copilot_app_not_installed"
+          elif grep -E '^\s*\[ \]' /tmp/ai15-rc-mig.txt; then
+            echo "RESULT=research_copilot_pending_migrations"
+          else
+            echo "RESULT=research_copilot_migrations_applied_or_empty"
+          fi
+
+      - name: Public capability check from host
+        run: |
+          set -euo pipefail
+          curl -fsS http://127.0.0.1:8080/api/v1/provisioning/capabilities/ | python3 - <<'PY'
+          import json,sys
+          d=json.load(sys.stdin)
+          print("research_copilot=", d.get("research_copilot"))
+          print("portal_version=", d.get("portal_version"))
+          PY
+          curl -fsS -o /dev/null -w 'ready_http=%{http_code}\n' http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true
