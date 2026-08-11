@@ -111,6 +111,9 @@ class WorkstationHeartbeatSerializer(serializers.ModelSerializer):
 
 class InstalledSoftwareSerializer(serializers.ModelSerializer):
     workstation_hostname = serializers.CharField(source="workstation.hostname", read_only=True)
+    catalog_id = serializers.UUIDField(source="catalog.id", allow_null=True, read_only=True)
+    catalog_name = serializers.CharField(source="catalog.name", allow_null=True, read_only=True)
+    catalog_status = serializers.SerializerMethodField()
 
     class Meta:
         model = InstalledSoftware
@@ -128,9 +131,23 @@ class InstalledSoftwareSerializer(serializers.ModelSerializer):
             "license_type",
             "category",
             "is_present",
+            "allocation_enabled",
+            "catalog_id",
+            "catalog_name",
+            "catalog_status",
             "last_updated",
             "first_seen_at",
         ]
+
+    def get_catalog_status(self, obj) -> str:
+        cat = getattr(obj, "catalog", None)
+        if cat is None:
+            return "unlinked"
+        if getattr(cat, "is_archived", False):
+            return "archived"
+        if not getattr(cat, "is_active", True):
+            return "disabled"
+        return "active"
 
 
 class RemoteCommandSerializer(serializers.ModelSerializer):

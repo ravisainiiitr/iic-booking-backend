@@ -11,7 +11,6 @@ def create_auto_operator_unavailable_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="*",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     if not PeriodicTask.objects.filter(name="Auto operator unavailable after booking end 20:30").exists():

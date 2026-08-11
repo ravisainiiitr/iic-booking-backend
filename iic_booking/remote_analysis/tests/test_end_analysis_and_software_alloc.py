@@ -63,13 +63,15 @@ def test_required_software_hard_filter_accepts_full_coverage(db):
     from datetime import timedelta
 
     ws.last_heartbeat = timezone.now()
-    ws.save(update_fields=["last_heartbeat"])
+    ws.last_inventory_update = timezone.now()
+    ws.save(update_fields=["last_heartbeat", "last_inventory_update"])
     for name in ("CasaXPS", "Avantage"):
         InstalledSoftware.objects.create(
             workstation=ws,
             software_name=name,
             version="1.0",
             is_present=True,
+            allocation_enabled=True,
         )
     # Need agent token for evaluate to pass token check
     from iic_booking.remote_analysis.models import AgentToken

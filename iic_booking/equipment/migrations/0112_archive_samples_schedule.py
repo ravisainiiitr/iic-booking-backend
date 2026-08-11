@@ -14,7 +14,6 @@ def create_sample_archive_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="*",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     if not PeriodicTask.objects.filter(name="Daily sample auto-archive 19:00").exists():

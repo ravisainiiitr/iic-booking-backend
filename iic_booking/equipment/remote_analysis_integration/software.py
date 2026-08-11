@@ -86,7 +86,11 @@ class SoftwareMappingService:
             }
 
         ws_ids = list(
-            InstalledSoftware.objects.filter(is_present=True, software_name__icontains=name)
+            InstalledSoftware.objects.filter(
+                is_present=True,
+                allocation_enabled=True,
+                software_name__icontains=name,
+            )
             .values_list("workstation_id", flat=True)
             .distinct()
         )

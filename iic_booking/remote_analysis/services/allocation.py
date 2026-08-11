@@ -247,7 +247,10 @@ class AllocationService:
         hits = 0
         for name in names:
             if InstalledSoftware.objects.filter(
-                workstation=workstation, is_present=True, software_name__icontains=name
+                workstation=workstation,
+                is_present=True,
+                allocation_enabled=True,
+                software_name__icontains=name,
             ).exists():
                 hits += 1
         return hits / float(len(names))
@@ -270,7 +273,10 @@ class AllocationService:
         for ws in qs:
             if all(
                 InstalledSoftware.objects.filter(
-                    workstation=ws, is_present=True, software_name__icontains=n
+                    workstation=ws,
+                    is_present=True,
+                    allocation_enabled=True,
+                    software_name__icontains=n,
                 ).exists()
                 for n in names
             ):
@@ -306,12 +312,9 @@ class AllocationService:
     ) -> list[CandidateScore]:
         qs = AnalysisWorkstation.objects.select_related("capabilities", "department").filter(enabled=True)
         pool_boost = self._pool_boost_map(equipment)
-        # When a pool is defined, prefer scoring all but boost pool members; do not hard-filter
-        # (empty pool = global). Hard-filter only if AllocationRule EQUIPMENT_PRIORITY active and pool non-empty.
-        if pool_boost and AllocationRule.objects.filter(
-            is_active=True, rule_type="EQUIPMENT_PRIORITY"
-        ).exists():
-            qs = qs.filter(id__in=list(pool_boost.keys()))
+        # R11: RAA identity is NOT equipment-bound. Pool members get a soft score boost only.
+        # Never hard-filter the candidate set to a single equipment pool — that would prevent
+        # allocating RAA-02 when RAA-01 (pool member) is busy.
 
         scored = [
             self.score_workstation(

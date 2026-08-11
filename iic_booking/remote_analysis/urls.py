@@ -255,6 +255,11 @@ urlpatterns = [
         catalog_admin_views.mapping_detail,
         name="catalog-equipment-software-detail",
     ),
+    path(
+        "catalog/installed-software/<int:install_id>/allocation/",
+        catalog_admin_views.workstation_software_allocation,
+        name="catalog-installed-software-allocation",
+    ),
     # Agent Installer distribution + enrollment-keyed bootstrap
     path("installer/releases/", installer_views.releases_collection, name="installer-releases"),
     path("installer/releases/latest/", installer_views.release_latest, name="installer-release-latest"),

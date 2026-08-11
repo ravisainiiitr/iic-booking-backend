@@ -20,11 +20,21 @@ def _table_columns(schema_editor, table: str) -> set[str]:
 def _index_names(schema_editor, table: str) -> set[str]:
     connection = schema_editor.connection
     with connection.cursor() as cursor:
-        return {
-            idx["name"]
-            for idx in connection.introspection.get_indexes(cursor, table)
-            if idx.get("name")
-        }
+        introspection = connection.introspection
+        if hasattr(introspection, "get_constraints"):
+            constraints = introspection.get_constraints(cursor, table) or {}
+            names: set[str] = set()
+            for name, meta in constraints.items():
+                if meta.get("index") or meta.get("unique") or meta.get("primary_key"):
+                    names.add(name)
+            return names
+        if hasattr(introspection, "get_indexes"):
+            return {
+                idx["name"]
+                for idx in introspection.get_indexes(cursor, table)
+                if idx.get("name")
+            }
+        return set()
 
 
 def restore_reverse_tunnel_transport(apps, schema_editor):
@@ -117,9 +127,18 @@ def restore_reverse_tunnel_transport(apps, schema_editor):
             # Column type unchanged; choices-only updates are state-level on some backends.
             pass
 
-    TunnelSession = apps.get_model("remote_analysis", "TunnelSession")
-    TunnelEvent = apps.get_model("remote_analysis", "TunnelEvent")
-    TunnelMetric = apps.get_model("remote_analysis", "TunnelMetric")
+    try:
+        TunnelSession = apps.get_model("remote_analysis", "TunnelSession")
+        TunnelEvent = apps.get_model("remote_analysis", "TunnelEvent")
+        TunnelMetric = apps.get_model("remote_analysis", "TunnelMetric")
+    except LookupError:
+        # SeparateDatabaseAndState: CreateModel lives in state_operations, so
+        # historical apps during database_operations may not yet expose these.
+        from django.apps import apps as django_apps
+
+        TunnelSession = django_apps.get_model("remote_analysis", "TunnelSession")
+        TunnelEvent = django_apps.get_model("remote_analysis", "TunnelEvent")
+        TunnelMetric = django_apps.get_model("remote_analysis", "TunnelMetric")
 
     if TunnelSession._meta.db_table not in table_names:
         schema_editor.create_model(TunnelSession)

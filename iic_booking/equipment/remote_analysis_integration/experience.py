@@ -475,9 +475,9 @@ class AnalysisExperienceBuilder:
             return {
                 "title": "Remote Analysis is not configured for this equipment",
                 "body": [
-                    "No Remote Analysis software has been mapped to this equipment.",
-                    "Users cannot start Remote Analysis until at least one compatible software is configured.",
-                    "Ask laboratory staff to configure Equipment ↔ Analysis Software mapping.",
+                    "No analysis software has been configured for this equipment.",
+                    "Please contact the laboratory administrator.",
+                    "Remote Analysis cannot start until at least one software is mapped.",
                 ],
             }
 
@@ -486,6 +486,7 @@ class AnalysisExperienceBuilder:
                 "title": "No compatible Analysis Workstation is currently available",
                 "body": [
                     f"Reason: {reason or 'Scheduled Maintenance'}",
+                    f"Required software: {soft_label}." if soft_label else "",
                     f"Estimated Availability: {est}",
                     "Your request remains in the queue and will be allocated automatically.",
                     "You may safely leave this page.",
@@ -493,43 +494,53 @@ class AnalysisExperienceBuilder:
             }
 
         if matching_available == 0 and maintenance_hint.get("all_offline"):
+            installed = int(maintenance_hint.get("installed_count") or matching_total or 0)
             return {
-                "title": "No Analysis Workstation is online right now",
+                "title": "No compatible Analysis PC is currently available",
                 "body": [
-                    f"Reason: {reason or 'Offline'}",
-                    (
-                        f"Required software: {soft_label}."
-                        if soft_label
-                        else "A compatible Analysis PC must come online."
-                    ),
-                    "Your request remains in the queue and will be allocated automatically when an Analysis PC reconnects.",
+                    f"Required software: {soft_label}." if soft_label else "Required software is configured.",
+                    f"Installed on: {installed} PC(s)." if installed else "Installed on: 0 PCs.",
+                    "Online: 0 · Available: 0 · Offline: all matching Analysis PCs.",
+                    "Your request remains in the queue and will start automatically when a PC reconnects.",
                     "You may safely leave this page.",
                 ],
             }
 
         if matching_available == 0 and maintenance_hint.get("no_compatible_workstation"):
             return {
-                "title": "No compatible Analysis Workstation is configured",
+                "title": "No compatible Analysis PC is currently available",
                 "body": [
-                    f"Reason: {reason or 'No compatible Analysis Workstation'}",
+                    f"Required software: {soft_label}." if soft_label else "Required software is configured.",
                     (
                         f"No Analysis PC currently reports the required software ({soft_label})."
                         if soft_label
                         else "No Analysis PC is currently eligible for this equipment."
                     ),
                     "Ask laboratory staff to verify Remote Analysis Agent registration and software inventory.",
-                    "Your request remains in the queue.",
+                ],
+            }
+
+        if matching_available == 0 and (
+            maintenance_hint.get("all_busy") or (matching_total > 0 and reason.lower().find("busy") >= 0)
+        ):
+            return {
+                "title": "No compatible Analysis PC is currently available",
+                "body": [
+                    f"Required software: {soft_label}." if soft_label else "Required software is configured.",
+                    f"Installed on: {matching_total} PC(s).",
+                    f"Online: {matching_total} · Available: 0 · Busy: {matching_total}.",
+                    "Your request remains in the queue and will start automatically when a PC becomes free.",
+                    "You may safely leave this page.",
                 ],
             }
 
         if matching_available == 0 and matching_total == 0 and required_software:
             return {
-                "title": "Waiting for an Analysis PC with the required software",
+                "title": "No compatible Analysis PC is currently available",
                 "body": [
                     f"Required software: {soft_label}.",
-                    "No Analysis PC currently reports this software as installed.",
-                    "Your request remains in the queue and will be allocated automatically when a matching PC is available.",
-                    "You may safely leave this page.",
+                    "Installed on: 0 PCs.",
+                    "Ask laboratory staff to install the required software on a Remote Analysis Agent PC.",
                 ],
             }
 

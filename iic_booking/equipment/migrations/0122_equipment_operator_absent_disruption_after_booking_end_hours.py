@@ -11,7 +11,6 @@ def create_auto_operator_absent_disruption_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="*",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     name = "Auto operator absent disruption after booking end 20:35"
