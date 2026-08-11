@@ -1,0 +1,56 @@
+name: Smoke Create Desktop Session for Booking
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_id:
+        required: true
+        default: "IICPXRD [A]202600040"
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: ORM create RemoteDesktopSession (extension_grace_used)
+        env:
+          BID: ${{ github.event.inputs.booking_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -e BID="$BID" -w /app "$CID" python manage.py shell -c "
+          import os, traceback
+          from django.utils import timezone
+          from datetime import timedelta
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+          from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+          from iic_booking.remote_analysis.constants import SessionStatus
+
+          bid=os.environ['BID'].strip()
+          b=Booking.objects.select_related('user').filter(virtual_booking_id=bid).first()
+          assert b, 'booking missing'
+          field=RemoteDesktopSession._meta.get_field('extension_grace_used')
+          print('FIELD_OK', field.default)
+          r=AnalysisReservation.objects.filter(booking=b).order_by('-created_at').first()
+          print('RESERVATION', getattr(r,'id',None), getattr(r,'status',None), getattr(r,'workstation_id',None))
+          assert r and r.workstation_id, 'need allocated reservation'
+          try:
+              s=RemoteDesktopSession(
+                  reservation=r,
+                  booking=b,
+                  user=b.user,
+                  workstation=r.workstation,
+                  status=SessionStatus.CREATED,
+                  expires_at=timezone.now()+timedelta(minutes=30),
+              )
+              s.save()
+              s.refresh_from_db()
+              print('CREATE_OK', s.id, s.status, 'extension_grace_used=', s.extension_grace_used)
+              # cleanup smoke row so UI create can proceed cleanly
+              s.delete()
+              print('CLEANED')
+          except Exception as e:
+              print('CREATE_ERR', type(e).__name__, e)
+              traceback.print_exc()
+              raise
+          "
