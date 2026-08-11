@@ -8,16 +8,24 @@ on:
         required: true
         default: "IICPXRD [A]202600040"
 
+permissions:
+  contents: write
+
 jobs:
   diagnose:
     runs-on: [self-hosted, Linux, X64]
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
       - name: Full RA queue / fleet / candidate diagnosis
         env:
           BID: ${{ github.event.inputs.booking_id }}
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          mkdir -p docs/release/phase-RX
+          OUT="docs/release/phase-RX/ra-diag-${{ github.run_id }}.txt"
           docker exec -e BID="$BID" -w /app "$CID" python manage.py shell -c "
           import os, json, traceback
           from datetime import timedelta
@@ -46,7 +54,7 @@ jobs:
           print(json.dumps({'pk': b.pk, 'virtual': b.virtual_booking_id, 'status': str(b.status), 'user': getattr(b.user,'email',None), 'equipment': eq.name, 'equipment_id': eq.pk, 'dept_id': getattr(getattr(eq,'internal_department',None),'id',None)}, default=str))
           required = SoftwareMappingService().required_software_names(eq)
           print('=== REQUIRED_SOFTWARE ===', required)
-          maps = list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).select_related('software').values_list('software__name','is_active','software__slug'))
+          maps = list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).select_related('catalog').values_list('catalog__name','is_active','catalog__slug'))
           print('=== EQUIPMENT_SOFTWARE_MAP ===', maps)
           pool = list(EquipmentAnalysisPool.objects.filter(equipment=eq).select_related('workstation').values('workstation_id','workstation__hostname','workstation__status','priority_boost','is_active'))
           print('=== EQUIPMENT_POOL ===', json.dumps(pool, default=str))
@@ -100,4 +108,9 @@ jobs:
               print('RESERVATION_STATUS_IN_SUMMARY', (summary or {}).get('reservation'))
           except Exception as e:
               print('SUMMARY_ERR', type(e).__name__, e); traceback.print_exc()
-          "
+          " | tee "$OUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$OUT"
+          git commit -m "ops: RA queue diagnosis for ${{ github.event.inputs.booking_id }} (run ${{ github.run_id }})" || echo "no commit"
+          git push origin HEAD:master || git push origin HEAD:docs/ra-diag-${{ github.run_id }}
