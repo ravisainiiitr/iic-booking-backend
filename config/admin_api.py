@@ -1058,176 +1058,6 @@ def admin_api_router():
             user.save(update_fields=["password"])
             return Response({"detail": "Password has been set."})
 
-    class PermissionDefinitionViewSet(ModelViewSet):
-        permission_classes = [IsAdminPanelUser]
-        queryset = PermissionDefinition.objects.all().order_by("code")
-        serializer_class = PermissionDefinitionSerializer
-        http_method_names = ["get"]
-
-        def get_queryset(self):
-            from iic_booking.users.rbac import ensure_default_permission_definitions
-
-            ensure_default_permission_definitions()
-            return super().get_queryset()
-
-    class DeptAdminPermissionGrantViewSet(ViewSet):
-        permission_classes = [IsAdminPanelUser]
-
-        def list(self, request):
-            qs = DeptAdminPermissionGrant.objects.select_related("permission", "dept_admin", "department").order_by(
-                "dept_admin__email", "permission__code"
-            )
-            department_id = request.query_params.get("department_id")
-            dept_admin_id = request.query_params.get("dept_admin_id")
-            if is_department_admin(request.user):
-                qs = qs.filter(
-                    department_id=request.user.department_id,
-                    dept_admin=request.user,
-                )
-            if department_id:
-                qs = qs.filter(department_id=department_id)
-            if dept_admin_id:
-                qs = qs.filter(dept_admin_id=dept_admin_id)
-            serializer = DeptAdminPermissionGrantSerializer(qs, many=True)
-            return Response(serializer.data)
-
-        @action(detail=False, methods=["post"], url_path="sync")
-        def sync(self, request):
-            if getattr(request.user, "user_type", None) != UserType.ADMIN:
-                raise PermissionDenied("Only Main Admin can update Department Admin permission caps.")
-            dept_admin_id = request.data.get("dept_admin_id")
-            permission_codes = request.data.get("permission_codes") or []
-            if not dept_admin_id:
-                return Response({"error": "dept_admin_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                dept_admin = User.objects.select_related("department").get(
-                    id=int(dept_admin_id),
-                    user_type=UserType.DEPT_ADMIN,
-                    department__department_type=DepartmentType.INTERNAL,
-                )
-            except (User.DoesNotExist, ValueError, TypeError):
-                return Response({"error": "Department Administrator not found."}, status=status.HTTP_404_NOT_FOUND)
-            permissions = list(PermissionDefinition.objects.filter(code__in=permission_codes))
-            DeptAdminPermissionGrant.objects.filter(
-                dept_admin=dept_admin,
-                department_id=dept_admin.department_id,
-            ).exclude(permission__in=permissions).delete()
-            existing_ids = set(
-                DeptAdminPermissionGrant.objects.filter(
-                    dept_admin=dept_admin,
-                    department_id=dept_admin.department_id,
-                ).values_list("permission_id", flat=True)
-            )
-            DeptAdminPermissionGrant.objects.bulk_create(
-                [
-                    DeptAdminPermissionGrant(
-                        department_id=dept_admin.department_id,
-                        dept_admin=dept_admin,
-                        permission=permission,
-                        granted_by=request.user,
-                    )
-                    for permission in permissions
-                    if permission.id not in existing_ids
-                ],
-                ignore_conflicts=True,
-            )
-            serializer = DeptAdminPermissionGrantSerializer(
-                DeptAdminPermissionGrant.objects.filter(
-                    dept_admin=dept_admin,
-                    department_id=dept_admin.department_id,
-                ).select_related("permission", "dept_admin", "department"),
-                many=True,
-            )
-            return Response(serializer.data)
-
-    class StaffPermissionGrantViewSet(ViewSet):
-        permission_classes = [IsAdminPanelUser]
-
-        def list(self, request):
-            qs = StaffPermissionGrant.objects.select_related("permission", "dept_admin", "staff_user", "department").order_by(
-                "staff_user__email", "permission__code"
-            )
-            department_id = request.query_params.get("department_id")
-            staff_user_id = request.query_params.get("staff_user_id")
-            if is_department_admin(request.user):
-                qs = qs.filter(department_id=request.user.department_id)
-            if department_id:
-                qs = qs.filter(department_id=department_id)
-            if staff_user_id:
-                qs = qs.filter(staff_user_id=staff_user_id)
-            serializer = StaffPermissionGrantSerializer(qs, many=True)
-            return Response(serializer.data)
-
-        @action(detail=False, methods=["post"], url_path="sync")
-        def sync(self, request):
-            actor = request.user
-            staff_user_id = request.data.get("staff_user_id")
-            permission_codes = request.data.get("permission_codes") or []
-            if not staff_user_id:
-                return Response({"error": "staff_user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                staff_user = User.objects.select_related("department").get(id=int(staff_user_id))
-            except (User.DoesNotExist, ValueError, TypeError):
-                return Response({"error": "Staff user not found."}, status=status.HTTP_404_NOT_FOUND)
-
-            if getattr(actor, "user_type", None) == UserType.ADMIN:
-                dept_admin = User.objects.filter(
-                    user_type=UserType.DEPT_ADMIN,
-                    department_id=staff_user.department_id,
-                ).order_by("id").first()
-                if dept_admin is None:
-                    return Response({"error": "No Department Administrator is mapped for this department."}, status=status.HTTP_400_BAD_REQUEST)
-            else:
-                if not is_department_admin(actor):
-                    raise PermissionDenied("Only Main Admin or Department Administrator can update staff grants.")
-                _require_admin_or_dept_permission(request, "permissions.manage_staff", department_id=actor.department_id)
-                if staff_user.department_id != actor.department_id:
-                    raise PermissionDenied("Staff grants can only be managed inside your department.")
-                if staff_user.user_type not in STAFF_ROLE_CODES:
-                    raise PermissionDenied("Only OIC, Lab In-Charge, and Accounts users can receive subordinate grants.")
-                dept_admin = actor
-
-            allowed_codes = set(
-                DeptAdminPermissionGrant.objects.filter(
-                    dept_admin=dept_admin,
-                    department_id=dept_admin.department_id,
-                ).values_list("permission__code", flat=True)
-            )
-            requested_codes = [code for code in permission_codes if code in allowed_codes]
-            permissions = list(PermissionDefinition.objects.filter(code__in=requested_codes))
-            StaffPermissionGrant.objects.filter(
-                staff_user=staff_user,
-                department_id=dept_admin.department_id,
-            ).exclude(permission__in=permissions).delete()
-            existing_ids = set(
-                StaffPermissionGrant.objects.filter(
-                    staff_user=staff_user,
-                    department_id=dept_admin.department_id,
-                ).values_list("permission_id", flat=True)
-            )
-            StaffPermissionGrant.objects.bulk_create(
-                [
-                    StaffPermissionGrant(
-                        department_id=dept_admin.department_id,
-                        dept_admin=dept_admin,
-                        staff_user=staff_user,
-                        permission=permission,
-                        granted_by=actor,
-                    )
-                    for permission in permissions
-                    if permission.id not in existing_ids
-                ],
-                ignore_conflicts=True,
-            )
-            serializer = StaffPermissionGrantSerializer(
-                StaffPermissionGrant.objects.filter(
-                    staff_user=staff_user,
-                    department_id=dept_admin.department_id,
-                ).select_related("permission", "dept_admin", "staff_user", "department"),
-                many=True,
-            )
-            return Response(serializer.data)
-
         @action(detail=True, methods=["get"], url_path="booking-info")
         def booking_info(self, request, pk=None):
             """Return user info needed for admin 'Book slots for user': email, department, Supervisor, balance.
@@ -1648,6 +1478,176 @@ def admin_api_router():
                 "offset": offset,
                 "has_wallet": True,
             }, status=status.HTTP_200_OK)
+    class PermissionDefinitionViewSet(ModelViewSet):
+        permission_classes = [IsAdminPanelUser]
+        queryset = PermissionDefinition.objects.all().order_by("code")
+        serializer_class = PermissionDefinitionSerializer
+        http_method_names = ["get"]
+
+        def get_queryset(self):
+            from iic_booking.users.rbac import ensure_default_permission_definitions
+
+            ensure_default_permission_definitions()
+            return super().get_queryset()
+
+    class DeptAdminPermissionGrantViewSet(ViewSet):
+        permission_classes = [IsAdminPanelUser]
+
+        def list(self, request):
+            qs = DeptAdminPermissionGrant.objects.select_related("permission", "dept_admin", "department").order_by(
+                "dept_admin__email", "permission__code"
+            )
+            department_id = request.query_params.get("department_id")
+            dept_admin_id = request.query_params.get("dept_admin_id")
+            if is_department_admin(request.user):
+                qs = qs.filter(
+                    department_id=request.user.department_id,
+                    dept_admin=request.user,
+                )
+            if department_id:
+                qs = qs.filter(department_id=department_id)
+            if dept_admin_id:
+                qs = qs.filter(dept_admin_id=dept_admin_id)
+            serializer = DeptAdminPermissionGrantSerializer(qs, many=True)
+            return Response(serializer.data)
+
+        @action(detail=False, methods=["post"], url_path="sync")
+        def sync(self, request):
+            if getattr(request.user, "user_type", None) != UserType.ADMIN:
+                raise PermissionDenied("Only Main Admin can update Department Admin permission caps.")
+            dept_admin_id = request.data.get("dept_admin_id")
+            permission_codes = request.data.get("permission_codes") or []
+            if not dept_admin_id:
+                return Response({"error": "dept_admin_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                dept_admin = User.objects.select_related("department").get(
+                    id=int(dept_admin_id),
+                    user_type=UserType.DEPT_ADMIN,
+                    department__department_type=DepartmentType.INTERNAL,
+                )
+            except (User.DoesNotExist, ValueError, TypeError):
+                return Response({"error": "Department Administrator not found."}, status=status.HTTP_404_NOT_FOUND)
+            permissions = list(PermissionDefinition.objects.filter(code__in=permission_codes))
+            DeptAdminPermissionGrant.objects.filter(
+                dept_admin=dept_admin,
+                department_id=dept_admin.department_id,
+            ).exclude(permission__in=permissions).delete()
+            existing_ids = set(
+                DeptAdminPermissionGrant.objects.filter(
+                    dept_admin=dept_admin,
+                    department_id=dept_admin.department_id,
+                ).values_list("permission_id", flat=True)
+            )
+            DeptAdminPermissionGrant.objects.bulk_create(
+                [
+                    DeptAdminPermissionGrant(
+                        department_id=dept_admin.department_id,
+                        dept_admin=dept_admin,
+                        permission=permission,
+                        granted_by=request.user,
+                    )
+                    for permission in permissions
+                    if permission.id not in existing_ids
+                ],
+                ignore_conflicts=True,
+            )
+            serializer = DeptAdminPermissionGrantSerializer(
+                DeptAdminPermissionGrant.objects.filter(
+                    dept_admin=dept_admin,
+                    department_id=dept_admin.department_id,
+                ).select_related("permission", "dept_admin", "department"),
+                many=True,
+            )
+            return Response(serializer.data)
+
+    class StaffPermissionGrantViewSet(ViewSet):
+        permission_classes = [IsAdminPanelUser]
+
+        def list(self, request):
+            qs = StaffPermissionGrant.objects.select_related("permission", "dept_admin", "staff_user", "department").order_by(
+                "staff_user__email", "permission__code"
+            )
+            department_id = request.query_params.get("department_id")
+            staff_user_id = request.query_params.get("staff_user_id")
+            if is_department_admin(request.user):
+                qs = qs.filter(department_id=request.user.department_id)
+            if department_id:
+                qs = qs.filter(department_id=department_id)
+            if staff_user_id:
+                qs = qs.filter(staff_user_id=staff_user_id)
+            serializer = StaffPermissionGrantSerializer(qs, many=True)
+            return Response(serializer.data)
+
+        @action(detail=False, methods=["post"], url_path="sync")
+        def sync(self, request):
+            actor = request.user
+            staff_user_id = request.data.get("staff_user_id")
+            permission_codes = request.data.get("permission_codes") or []
+            if not staff_user_id:
+                return Response({"error": "staff_user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                staff_user = User.objects.select_related("department").get(id=int(staff_user_id))
+            except (User.DoesNotExist, ValueError, TypeError):
+                return Response({"error": "Staff user not found."}, status=status.HTTP_404_NOT_FOUND)
+
+            if getattr(actor, "user_type", None) == UserType.ADMIN:
+                dept_admin = User.objects.filter(
+                    user_type=UserType.DEPT_ADMIN,
+                    department_id=staff_user.department_id,
+                ).order_by("id").first()
+                if dept_admin is None:
+                    return Response({"error": "No Department Administrator is mapped for this department."}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                if not is_department_admin(actor):
+                    raise PermissionDenied("Only Main Admin or Department Administrator can update staff grants.")
+                _require_admin_or_dept_permission(request, "permissions.manage_staff", department_id=actor.department_id)
+                if staff_user.department_id != actor.department_id:
+                    raise PermissionDenied("Staff grants can only be managed inside your department.")
+                if staff_user.user_type not in STAFF_ROLE_CODES:
+                    raise PermissionDenied("Only OIC, Lab In-Charge, and Accounts users can receive subordinate grants.")
+                dept_admin = actor
+
+            allowed_codes = set(
+                DeptAdminPermissionGrant.objects.filter(
+                    dept_admin=dept_admin,
+                    department_id=dept_admin.department_id,
+                ).values_list("permission__code", flat=True)
+            )
+            requested_codes = [code for code in permission_codes if code in allowed_codes]
+            permissions = list(PermissionDefinition.objects.filter(code__in=requested_codes))
+            StaffPermissionGrant.objects.filter(
+                staff_user=staff_user,
+                department_id=dept_admin.department_id,
+            ).exclude(permission__in=permissions).delete()
+            existing_ids = set(
+                StaffPermissionGrant.objects.filter(
+                    staff_user=staff_user,
+                    department_id=dept_admin.department_id,
+                ).values_list("permission_id", flat=True)
+            )
+            StaffPermissionGrant.objects.bulk_create(
+                [
+                    StaffPermissionGrant(
+                        department_id=dept_admin.department_id,
+                        dept_admin=dept_admin,
+                        staff_user=staff_user,
+                        permission=permission,
+                        granted_by=actor,
+                    )
+                    for permission in permissions
+                    if permission.id not in existing_ids
+                ],
+                ignore_conflicts=True,
+            )
+            serializer = StaffPermissionGrantSerializer(
+                StaffPermissionGrant.objects.filter(
+                    staff_user=staff_user,
+                    department_id=dept_admin.department_id,
+                ).select_related("permission", "dept_admin", "staff_user", "department"),
+                many=True,
+            )
+            return Response(serializer.data)
+
 
     class UserGroupViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
