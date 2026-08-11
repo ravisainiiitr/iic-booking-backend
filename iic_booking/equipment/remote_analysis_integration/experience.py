@@ -261,6 +261,7 @@ class AnalysisExperienceBuilder:
         )
 
         desktop_prepare = self._desktop_prepare(
+            reservation=reservation,
             session=session,
             workspace=workspace,
             sync_phase=sync_phase,
@@ -406,6 +407,16 @@ class AnalysisExperienceBuilder:
         reason = (maintenance_hint.get("reason") or "").strip()
         est = maintenance_hint.get("estimated_availability_display") or "Unknown"
         soft_label = ", ".join(required_software) if required_software else ""
+
+        if not required_software:
+            return {
+                "title": "Remote Analysis is not configured for this equipment",
+                "body": [
+                    "No Remote Analysis software has been mapped to this equipment.",
+                    "Users cannot start Remote Analysis until at least one compatible software is configured.",
+                    "Ask laboratory staff to configure Equipment ↔ Analysis Software mapping.",
+                ],
+            }
 
         if matching_available == 0 and maintenance_hint.get("all_under_maintenance"):
             return {
@@ -673,7 +684,7 @@ class AnalysisExperienceBuilder:
             row("download_ready", "Ready for download", "done" if out["file_count"] else "pending"),
         ]
 
-    def _desktop_prepare(self, *, session, workspace, sync_phase, sync_progress) -> list[dict[str, Any]]:
+    def _desktop_prepare(self, *, reservation, session, workspace, sync_phase, sync_progress) -> list[dict[str, Any]]:
         sync_phase = str(sync_phase or "")
         preparing = bool(session and session.status == SessionStatus.PREPARING)
         failed = bool(session and session.status in {SessionStatus.FAILED, SessionStatus.TERMINATED, SessionStatus.EXPIRED})
@@ -695,7 +706,12 @@ class AnalysisExperienceBuilder:
             "UploadVerified",
             "Completed",
         } or ready
-        allocated = bool(session or workspace)
+        # Allocation must reflect reservation/session state — workspace creation alone does not
+        # mean a workstation is allocated yet.
+        allocated = bool(
+            (reservation and reservation.workstation_id)
+            or (session and session.workstation_id)
+        )
 
         def step(sid, label, status):
             return {"id": sid, "label": label, "status": status}

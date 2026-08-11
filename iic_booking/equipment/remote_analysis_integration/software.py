@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from django.db.models import Max
+
 from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog, EquipmentAnalysisSoftware
+from iic_booking.remote_analysis.constants import WorkstationStatus
+from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
 from iic_booking.remote_analysis.scheduler_models import SoftwareRequirement
+from iic_booking.remote_analysis.services.availability import AvailabilityEngine
 from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
 
 
@@ -38,9 +43,11 @@ class SoftwareMappingService:
     def serialize_options(self, equipment, *, settings_obj: RemoteAnalysisSettings | None = None) -> list[dict]:
         settings_obj = settings_obj or RemoteAnalysisSettings.get_solo()
         default_label = (settings_obj.analyze_data_button_label or "Analyze Data").strip() or "Analyze Data"
+        availability = AvailabilityEngine()
         options = []
         for row in self.list_for_equipment(equipment):
             cat = row.catalog
+            stats = self._catalog_availability_stats(cat.name, availability=availability)
             options.append(
                 {
                     "id": str(row.id),
@@ -52,9 +59,97 @@ class SoftwareMappingService:
                     "is_default": bool(row.is_default),
                     "button_label": (row.button_label_override or default_label).strip() or default_label,
                     "default_session_duration_hours": cat.default_session_duration_hours,
+                    "installed_count": stats["installed_count"],
+                    "online_count": stats["online_count"],
+                    "available_count": stats["available_count"],
+                    "busy_count": stats["busy_count"],
+                    "maintenance_count": stats["maintenance_count"],
+                    "offline_count": stats["offline_count"],
+                    "last_inventory_update": stats["last_inventory_update"],
+                    "availability_status": stats["availability_status"],
                 }
             )
         return options
+
+    def _catalog_availability_stats(self, software_name: str, *, availability: AvailabilityEngine) -> dict:
+        name = (software_name or "").strip()
+        if not name:
+            return {
+                "installed_count": 0,
+                "online_count": 0,
+                "available_count": 0,
+                "busy_count": 0,
+                "maintenance_count": 0,
+                "offline_count": 0,
+                "last_inventory_update": None,
+                "availability_status": "unconfigured",
+            }
+
+        ws_ids = list(
+            InstalledSoftware.objects.filter(is_present=True, software_name__icontains=name)
+            .values_list("workstation_id", flat=True)
+            .distinct()
+        )
+        if not ws_ids:
+            return {
+                "installed_count": 0,
+                "online_count": 0,
+                "available_count": 0,
+                "busy_count": 0,
+                "maintenance_count": 0,
+                "offline_count": 0,
+                "last_inventory_update": None,
+                "availability_status": "none_installed",
+            }
+
+        workstations = list(AnalysisWorkstation.objects.filter(id__in=ws_ids, enabled=True))
+        installed_count = len(workstations)
+        online_count = sum(1 for ws in workstations if availability.heartbeat_fresh(ws))
+        available_count = sum(
+            1
+            for ws in workstations
+            if availability.heartbeat_fresh(ws)
+            and ws.status in {WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE}
+        )
+        busy_count = sum(
+            1
+            for ws in workstations
+            if ws.status in {WorkstationStatus.BUSY, WorkstationStatus.PREPARING, WorkstationStatus.RESERVED}
+        )
+        maintenance_count = sum(
+            1
+            for ws in workstations
+            if ws.status
+            in {
+                WorkstationStatus.MAINTENANCE,
+                WorkstationStatus.CALIBRATION,
+                WorkstationStatus.SOFTWARE_UPDATE,
+                WorkstationStatus.HARDWARE_FAULT,
+                WorkstationStatus.CLEANING,
+                WorkstationStatus.DISABLED,
+                WorkstationStatus.ERROR,
+                WorkstationStatus.UNKNOWN,
+            }
+        )
+        offline_count = max(installed_count - online_count, 0)
+        last_inventory_update = (
+            AnalysisWorkstation.objects.filter(id__in=[ws.id for ws in workstations]).aggregate(
+                last=Max("last_inventory_update")
+            )["last"]
+            if workstations
+            else None
+        )
+        status = "available" if available_count > 0 else ("busy" if busy_count > 0 else "offline")
+        return {
+            "installed_count": installed_count,
+            "online_count": online_count,
+            "available_count": available_count,
+            "busy_count": busy_count,
+            "maintenance_count": maintenance_count,
+            "offline_count": offline_count,
+            "last_inventory_update": last_inventory_update,
+            "availability_status": status,
+        }
 
     def resolve(
         self,
