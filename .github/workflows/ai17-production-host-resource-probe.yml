@@ -1,0 +1,52 @@
+# AI.17 — Read-only EC2 host resource snapshot (no install, no restart, no secrets).
+name: AI17 Production Host Resource Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Host CPU / RAM / disk / GPU (read-only)
+        run: |
+          set -euo pipefail
+          echo "=== uname ==="
+          uname -a || true
+          echo "=== nproc ==="
+          nproc || true
+          echo "=== loadavg ==="
+          cat /proc/loadavg || true
+          echo "=== meminfo (selected) ==="
+          awk '/MemTotal|MemAvailable|MemFree|SwapTotal|SwapFree/{print}' /proc/meminfo || true
+          echo "=== df -h / ==="
+          df -h / || true
+          echo "=== gpu ==="
+          if command -v nvidia-smi >/dev/null 2>&1; then
+            nvidia-smi --query-gpu=name,memory.total,memory.used,utilization.gpu --format=csv || true
+          else
+            echo "nvidia-smi_absent"
+          fi
+          echo "=== docker stats snapshot (no stream) ==="
+          docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/dev/null | head -n 40 || true
+          echo "=== ollama process/container (presence only) ==="
+          docker ps --format '{{.Names}}' | grep -i ollama || echo "no_ollama_container"
+          pgrep -a ollama || echo "no_ollama_process"
+          echo "=== RESEARCH_COPILOT flag (boolean only) ==="
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          if [ -n "$CID" ]; then
+            docker exec -w /app "$CID" python - <<'PY' || true
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          from django.apps import apps
+          print("INSTALLED_APPS_has_research_copilot=", apps.is_installed("iic_booking.research_copilot"))
+          print("RESEARCH_COPILOT_ENABLED=", bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)))
+          print("COPILOT_PROVIDER=", (getattr(settings, "COPILOT_PROVIDER", None) or getattr(settings, "COPILOT_LLM_PROVIDER", None) or "")[:40] or "(unset)")
+          print("OLLAMA_MODEL_configured=", bool(str(getattr(settings, "OLLAMA_MODEL", "") or "").strip()))
+          print("OPENAI_API_KEY_configured=", bool(str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()))
+          PY
+          fi
