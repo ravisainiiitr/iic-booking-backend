@@ -298,6 +298,42 @@ def catalog_archive(request, catalog_id):
     return Response(_serialize_catalog(cat))
 
 
+@api_view(["POST"])
+@permission_classes(_MANAGE)
+def workstation_software_allocation(request, install_id):
+    """
+    R11: enable/disable a specific InstalledSoftware row for allocation
+    without uninstalling from the RAA PC.
+    """
+    from iic_booking.remote_analysis.models import InstalledSoftware
+    from iic_booking.remote_analysis.services.audit import record_event
+    from iic_booking.remote_analysis.constants import AuditCategory
+
+    row = get_object_or_404(InstalledSoftware, pk=install_id)
+    body = request.data or {}
+    if "allocation_enabled" not in body:
+        return Response({"detail": "allocation_enabled required"}, status=status.HTTP_400_BAD_REQUEST)
+    old = bool(row.allocation_enabled)
+    row.allocation_enabled = bool(body.get("allocation_enabled"))
+    row.save(update_fields=["allocation_enabled", "last_updated"])
+    record_event(
+        category=AuditCategory.INVENTORY,
+        action="AllocationEligibilityChanged",
+        details=f"{row.software_name}: {old} → {row.allocation_enabled}",
+        workstation=row.workstation,
+        actor=request.user if getattr(request.user, "is_authenticated", False) else None,
+    )
+    return Response(
+        {
+            "id": row.id,
+            "software_name": row.software_name,
+            "workstation_id": str(row.workstation_id),
+            "allocation_enabled": row.allocation_enabled,
+            "is_present": row.is_present,
+        }
+    )
+
+
 @api_view(["GET"])
 @permission_classes(_VIEW)
 def catalog_usage(request, catalog_id):
@@ -316,12 +352,18 @@ def catalog_usage(request, catalog_id):
     ]
     installed = [
         {
-            "id": str(s.id),
+            "id": s.id,
             "software_name": s.software_name,
             "version": s.version,
+            "publisher": s.publisher,
             "workstation_id": str(s.workstation_id),
             "workstation_hostname": s.workstation.hostname,
+            "workstation_status": s.workstation.status,
             "licensed": s.licensed,
+            "allocation_enabled": bool(getattr(s, "allocation_enabled", True)),
+            "catalog_id": str(s.catalog_id) if s.catalog_id else None,
+            "last_updated": s.last_updated.isoformat() if s.last_updated else None,
+            "discovery_source": "raa_inventory",
         }
         for s in InstalledSoftware.objects.filter(
             is_present=True, software_name__icontains=cat.name
@@ -418,6 +460,15 @@ def mapping_collection(request):
             EquipmentAnalysisSoftware.objects.filter(equipment=equipment).exclude(pk=row.pk).update(
                 is_default=False
             )
+        from iic_booking.remote_analysis.constants import AuditCategory
+        from iic_booking.remote_analysis.services.audit import record_event
+
+        record_event(
+            category=AuditCategory.INVENTORY,
+            action="EquipmentSoftwareMappingAdded",
+            details=f"equipment={equipment.id} catalog={catalog.name}",
+            actor=request.user if getattr(request.user, "is_authenticated", False) else None,
+        )
         return Response(_serialize_mapping(row), status=status.HTTP_201_CREATED)
 
     qs = EquipmentAnalysisSoftware.objects.select_related(
@@ -457,7 +508,17 @@ def mapping_detail(request, mapping_id):
     if not CanManageRemoteAnalysis().has_permission(request, None):
         return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
     if request.method == "DELETE":
+        from iic_booking.remote_analysis.constants import AuditCategory
+        from iic_booking.remote_analysis.services.audit import record_event
+
+        details = f"equipment={row.equipment_id} catalog={row.catalog.name}"
         row.delete()
+        record_event(
+            category=AuditCategory.INVENTORY,
+            action="EquipmentSoftwareMappingRemoved",
+            details=details,
+            actor=request.user if getattr(request.user, "is_authenticated", False) else None,
+        )
         return Response({"ok": True, "deleted": True})
     body = request.data or {}
     if "is_default" in body:
@@ -529,6 +590,15 @@ def mapping_matrix(request):
             row = existing[str(default_id)]
             row.is_default = True
             row.save(update_fields=["is_default", "updated_at"])
+        from iic_booking.remote_analysis.constants import AuditCategory
+        from iic_booking.remote_analysis.services.audit import record_event
+
+        record_event(
+            category=AuditCategory.INVENTORY,
+            action="EquipmentSoftwareMappingReplaced",
+            details=f"equipment={equipment.id} catalogs={sorted(wanted)}",
+            actor=request.user if getattr(request.user, "is_authenticated", False) else None,
+        )
         return Response(
             {
                 "equipment_id": equipment.id,
@@ -550,6 +620,19 @@ def mapping_matrix(request):
     catalogs = list(
         AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False).order_by("name")
     )
+    # R11: enrich catalog columns with live RAA availability for mapping UI cards.
+    availability_by_name: dict[str, dict] = {}
+    try:
+        from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+        from iic_booking.remote_analysis.services.availability import AvailabilityEngine
+
+        svc = SoftwareMappingService()
+        engine = AvailabilityEngine()
+        for c in catalogs:
+            availability_by_name[str(c.id)] = svc._catalog_availability_stats(c.name, availability=engine)
+    except Exception:
+        availability_by_name = {}
+
     mappings = EquipmentAnalysisSoftware.objects.filter(equipment__in=eq_qs).select_related("catalog")
     by_eq: dict[int, set[str]] = {}
     defaults: dict[int, str] = {}
@@ -582,6 +665,23 @@ def mapping_matrix(request):
                     "vendor": c.vendor,
                     "category": c.category,
                     "license_type": c.license_type,
+                    **{
+                        k: v
+                        for k, v in (availability_by_name.get(str(c.id)) or {}).items()
+                        if k != "last_inventory_update"
+                    },
+                    "last_inventory_update": (
+                        (
+                            (availability_by_name.get(str(c.id)) or {}).get("last_inventory_update").isoformat()
+                            if hasattr(
+                                (availability_by_name.get(str(c.id)) or {}).get("last_inventory_update"),
+                                "isoformat",
+                            )
+                            else (availability_by_name.get(str(c.id)) or {}).get("last_inventory_update")
+                        )
+                        if (availability_by_name.get(str(c.id)) or {}).get("last_inventory_update")
+                        else None
+                    ),
                 }
                 for c in catalogs
             ],

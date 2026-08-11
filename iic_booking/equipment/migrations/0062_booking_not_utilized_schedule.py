@@ -16,7 +16,6 @@ def create_buffer_check_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="*",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     if not PeriodicTask.objects.filter(name="Daily booking not utilized check 20:00").exists():

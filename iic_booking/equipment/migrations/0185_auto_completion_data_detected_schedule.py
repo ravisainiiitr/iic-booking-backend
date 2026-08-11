@@ -15,12 +15,13 @@ def create_auto_completion_schedule(apps, schema_editor):
 
     name = "Auto complete bookings after end when result data exists"
     if not PeriodicTask.objects.filter(name=name).exists():
+        # Do not pass timezone= here: this migration depends on django_celery_beat
+        # 0001_initial historical state which may not include PeriodicTask.timezone.
         PeriodicTask.objects.create(
             name=name,
             task="equipment.auto_complete_bookings_with_data_after_end",
             crontab=crontab,
             enabled=True,
-            timezone="Asia/Kolkata",
         )
 
 

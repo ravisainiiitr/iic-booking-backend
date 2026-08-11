@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from typing import Any
 
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.utils.text import slugify
 
 from iic_booking.remote_analysis.constants import AuditCategory, InventoryChangeType
 from iic_booking.remote_analysis.models import (
@@ -20,6 +22,8 @@ from iic_booking.remote_analysis.models import (
 )
 from iic_booking.remote_analysis.services.audit import record_event
 from iic_booking.remote_analysis.services.health import update_workstation_health
+
+logger = logging.getLogger(__name__)
 
 
 def _software_key(item: dict[str, Any]) -> str:
@@ -42,10 +46,63 @@ def _content_hash(item: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str = ""):
+    """R11: auto-populate global Software Catalog from RAA inventory (one row per slug)."""
+    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+
+    clean = (name or "").strip()
+    if not clean:
+        return None
+    base_slug = slugify(clean)[:200] or "software"
+    existing = (
+        AnalysisSoftwareCatalog.objects.filter(slug=base_slug).first()
+        or AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
+    )
+    if existing:
+        if publisher and not (existing.vendor or "").strip():
+            existing.vendor = publisher.strip()[:255]
+            existing.save(update_fields=["vendor", "updated_at"])
+        return existing
+    try:
+        return AnalysisSoftwareCatalog.objects.create(
+            name=clean[:255],
+            slug=base_slug,
+            vendor=(publisher or "").strip()[:255],
+            is_active=True,
+            is_archived=False,
+            description=f"Auto-discovered from RAA inventory (version={version or 'unknown'}).",
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("ensure_catalog_for_install failed for %s", clean)
+        return AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
+
+
 class InventoryService:
     @transaction.atomic
     def synchronize(self, workstation: AnalysisWorkstation, payload: dict[str, Any]) -> dict[str, Any]:
         software_list = payload.get("software") or payload.get("installedSoftware") or []
+        if not isinstance(software_list, list):
+            software_list = []
+        # R11: honor delta sync payloads from the agent (top-level or nested under "delta").
+        sync_mode = str(payload.get("syncMode") or payload.get("sync_mode") or "full").lower()
+        is_delta = sync_mode == "delta"
+        delta_blob = payload.get("delta") if isinstance(payload.get("delta"), dict) else {}
+        removed_items: list[dict[str, Any]] = []
+        if is_delta:
+            merged: list[dict[str, Any]] = []
+            for key in ("added", "updated", "software"):
+                for source in (payload, delta_blob):
+                    chunk = source.get(key) if isinstance(source, dict) else None
+                    if isinstance(chunk, list):
+                        merged.extend(x for x in chunk if isinstance(x, dict))
+            if not software_list:
+                software_list = merged
+            else:
+                software_list = list(software_list) + merged
+            for source in (payload, delta_blob):
+                chunk = source.get("removed") if isinstance(source, dict) else None
+                if isinstance(chunk, list):
+                    removed_items.extend(x for x in chunk if isinstance(x, dict))
         licenses = payload.get("licenses") or payload.get("softwareLicenses") or []
         hardware = payload.get("hardware") or payload.get("workstation") or {}
         now = timezone.now()
@@ -59,7 +116,7 @@ class InventoryService:
             for s in InstalledSoftware.objects.filter(workstation=workstation, is_present=True)
         }
         seen_keys: set[tuple[str, str, str]] = set()
-        added = removed = version_changed = 0
+        added = removed = version_changed = catalog_linked = 0
 
         for item in software_list:
             if not isinstance(item, dict):
@@ -76,6 +133,7 @@ class InventoryService:
                 install_date = parse_datetime(install_date)
 
             content_hash = item.get("contentHash") or item.get("ContentHash") or _content_hash(item)
+            catalog = ensure_catalog_for_install(name=name, publisher=publisher, version=version)
 
             # Detect version change by name+publisher ignoring version
             prior_same_name = [
@@ -101,6 +159,10 @@ class InventoryService:
                 if install_date and row.install_date != install_date:
                     row.install_date = install_date
                     changed = True
+                if catalog is not None and getattr(row, "catalog_id", None) != catalog.id:
+                    row.catalog = catalog
+                    changed = True
+                    catalog_linked += 1
                 if changed:
                     row.save()
             else:
@@ -117,8 +179,12 @@ class InventoryService:
                     category=str(item.get("category") or ""),
                     content_hash=content_hash,
                     is_present=True,
+                    allocation_enabled=True,
+                    catalog=catalog,
                 )
                 added += 1
+                if catalog:
+                    catalog_linked += 1
                 SoftwareInventoryHistory.objects.create(
                     workstation=workstation,
                     software_name=name,
@@ -137,12 +203,24 @@ class InventoryService:
                         new_version=version,
                     )
 
-        for key, row in existing.items():
-            if key not in seen_keys:
-                # Do not wipe inventory when the agent posts an empty software list
-                # (heartbeat-only payloads / discovery failures).
-                if not software_list:
-                    break
+        # Explicit removals from delta payloads.
+        for item in removed_items:
+            name = str(item.get("displayName") or item.get("software_name") or "").strip()
+            if not name:
+                continue
+            version = str(item.get("version") or "").strip()
+            publisher = str(item.get("publisher") or "").strip()
+            key = (name.lower(), version.lower(), publisher.lower())
+            row = existing.get(key)
+            if row is None:
+                # Fall back to name(+publisher) match when version omitted.
+                candidates = [
+                    s
+                    for (n, _v, p), s in existing.items()
+                    if n == name.lower() and (not publisher or p == publisher.lower())
+                ]
+                row = candidates[0] if candidates else None
+            if row is not None and row.is_present:
                 row.is_present = False
                 row.save(update_fields=["is_present", "last_updated"])
                 removed += 1
@@ -152,6 +230,24 @@ class InventoryService:
                     change_type=InventoryChangeType.REMOVED,
                     old_version=row.version,
                 )
+
+        # Full sync only: mark missing titles absent. Delta must never wipe unrelated installs.
+        if not is_delta:
+            for key, row in existing.items():
+                if key not in seen_keys:
+                    # Do not wipe inventory when the agent posts an empty software list
+                    # (heartbeat-only payloads / discovery failures).
+                    if not software_list:
+                        break
+                    row.is_present = False
+                    row.save(update_fields=["is_present", "last_updated"])
+                    removed += 1
+                    SoftwareInventoryHistory.objects.create(
+                        workstation=workstation,
+                        software_name=row.software_name,
+                        change_type=InventoryChangeType.REMOVED,
+                        old_version=row.version,
+                    )
 
         for lic in licenses:
             if not isinstance(lic, dict):
@@ -200,7 +296,10 @@ class InventoryService:
         record_event(
             category=AuditCategory.INVENTORY,
             action="Synchronized",
-            details=f"added={added} removed={removed} version_changed={version_changed} total={present_count}",
+            details=(
+                f"added={added} removed={removed} version_changed={version_changed} "
+                f"catalog_linked={catalog_linked} total={present_count} mode={sync_mode}"
+            ),
             workstation=workstation,
         )
 
@@ -209,5 +308,6 @@ class InventoryService:
             "added": added,
             "removed": removed,
             "version_changed": version_changed,
+            "catalog_linked": catalog_linked,
             "software_count": present_count,
         }

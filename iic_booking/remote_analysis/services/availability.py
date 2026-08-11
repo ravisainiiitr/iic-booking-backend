@@ -144,6 +144,7 @@ class AvailabilityEngine:
             qs = InstalledSoftware.objects.filter(
                 workstation=workstation,
                 is_present=True,
+                allocation_enabled=True,
                 software_name__icontains=requirement.software,
             )
             if requirement.minimum_version:
@@ -236,6 +237,16 @@ class AvailabilityEngine:
             reasons.append("Agent offline / heartbeat timeout")
         if self.token_expired(workstation):
             reasons.append("Agent token expired or missing")
+        # R11 stale inventory safety — prefer correct allocation over optimistic.
+        from iic_booking.remote_analysis.constants import INVENTORY_STALE_SECONDS
+
+        inv_at = getattr(workstation, "last_inventory_update", None)
+        if inv_at is None:
+            reasons.append("Software inventory never published")
+        else:
+            age = (timezone.now() - inv_at).total_seconds()
+            if age > INVENTORY_STALE_SECONDS:
+                reasons.append("Software inventory stale")
         if self.is_under_maintenance(workstation, start, end):
             reasons.append("Maintenance window")
         if self.has_reservation_overlap(workstation, start, end, exclude_reservation_id=exclude_reservation_id):
@@ -271,6 +282,7 @@ class AvailabilityEngine:
                 if not InstalledSoftware.objects.filter(
                     workstation=workstation,
                     is_present=True,
+                    allocation_enabled=True,
                     software_name__icontains=name,
                 ).exists()
             ]

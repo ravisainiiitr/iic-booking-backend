@@ -136,6 +136,7 @@ def eligible_workstation(db):
         enabled=True,
         health_score=95,
         last_heartbeat=timezone.now(),
+        last_inventory_update=timezone.now(),
         supports_rdp=True,
         memory_gb=32,
         cpu_cores=8,

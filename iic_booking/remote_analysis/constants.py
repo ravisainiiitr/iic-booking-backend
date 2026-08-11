@@ -10,6 +10,9 @@ SCHEMA_VERSION = 1
 DEFAULT_TOKEN_LIFETIME_DAYS = 90
 HEARTBEAT_OFFLINE_SECONDS = 300
 HEARTBEAT_STALE_SECONDS = 120
+# R11: exclude workstations whose software inventory is older than this (seconds).
+# Default 2× preferred 30-minute inventory refresh = 60 minutes.
+INVENTORY_STALE_SECONDS = 60 * 60
 HIGH_CPU_THRESHOLD = 90.0
 LOW_MEMORY_THRESHOLD = 90.0  # percent used
 DISK_FULL_THRESHOLD = 95.0

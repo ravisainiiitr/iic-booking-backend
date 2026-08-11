@@ -11,7 +11,6 @@ def create_booking_not_utilized_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="*",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     name = "Auto booking not utilized 20:00 IST (weekdays per task logic)"

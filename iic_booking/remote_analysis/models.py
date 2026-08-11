@@ -247,6 +247,19 @@ class InstalledSoftware(models.Model):
     category = models.CharField(max_length=128, blank=True, default="")
     content_hash = models.CharField(max_length=128, blank=True, default="", db_index=True)
     is_present = models.BooleanField(default=True)
+    # R11: per-workstation allocation eligibility (disable without uninstalling).
+    allocation_enabled = models.BooleanField(
+        default=True,
+        help_text=_("When False, this install is ignored by the Remote Analysis allocator."),
+    )
+    catalog = models.ForeignKey(
+        "remote_analysis.AnalysisSoftwareCatalog",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="installed_on",
+        help_text=_("Canonical catalog entry discovered/linked from this install."),
+    )
     last_updated = models.DateTimeField(auto_now=True)
     first_seen_at = models.DateTimeField(auto_now_add=True)
 

@@ -15,7 +15,6 @@ def create_booking_reminder_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="*",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     if not PeriodicTask.objects.filter(name="Daily booking reminders 8:30 AM").exists():

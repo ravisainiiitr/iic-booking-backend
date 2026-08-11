@@ -14,7 +14,6 @@ def create_oic_report_schedule(apps, schema_editor):
         day_of_week="*",
         day_of_month="1",
         month_of_year="*",
-        timezone="Asia/Kolkata",
     )
 
     if not PeriodicTask.objects.filter(name="OIC monthly equipment report (1st of month)").exists():
