@@ -22,7 +22,22 @@ class AnalysisSoftwareCatalog(models.Model):
         default="",
         help_text=_("Minimum / preferred version string matched against inventory."),
     )
-    license_type = models.CharField(max_length=128, blank=True, default="")
+    license_type = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        choices=[
+            ("unlimited", "Unlimited"),
+            ("node_locked", "Node Locked"),
+            ("concurrent", "Concurrent"),
+            ("floating", "Floating"),
+            ("network", "Network License Server"),
+            ("dongle", "Dongle"),
+            ("expired", "Expired"),
+            ("other", "Other"),
+        ],
+        help_text=_("License model for scheduling and seat checks (AI/ops metadata)."),
+    )
     max_concurrent = models.PositiveIntegerField(
         default=0,
         help_text=_("Max concurrent sessions using this software (0 = unlimited)."),
@@ -46,6 +61,40 @@ class AnalysisSoftwareCatalog(models.Model):
     )
     default_session_duration_hours = models.PositiveIntegerField(default=4)
     is_active = models.BooleanField(default=True)
+    is_archived = models.BooleanField(
+        default=False,
+        help_text=_("Archived catalog entries are hidden from new mappings but retained for history."),
+    )
+    typical_usage = models.TextField(
+        blank=True,
+        default="",
+        help_text=_("Short typical-usage blurb shown in Analysis Workspace."),
+    )
+    accepted_file_types = models.JSONField(
+        blank=True,
+        default=list,
+        help_text=_("File extensions / types this software typically accepts (e.g. ['.raw', '.xy'])."),
+    )
+    license_server_url = models.CharField(
+        max_length=512,
+        blank=True,
+        default="",
+        help_text=_("Optional license server URL / host for network or floating licenses."),
+    )
+    license_seats = models.PositiveIntegerField(
+        default=0,
+        help_text=_("Configured seats for network/floating/concurrent (0 = use max_concurrent)."),
+    )
+    ai_tags = models.JSONField(
+        blank=True,
+        default=list,
+        help_text=_("Optional tags for future AI software recommendation (e.g. technique, file type)."),
+    )
+    ai_metadata = models.JSONField(
+        blank=True,
+        default=dict,
+        help_text=_("Opaque AI-ready metadata blob."),
+    )
     capabilities = models.ManyToManyField(
         "remote_analysis.AnalysisCapability",
         blank=True,
