@@ -238,6 +238,9 @@ class AnalysisExperienceBuilder:
         sync_progress = int(getattr(workspace, "sync_progress_percent", 0) or 0) if workspace else 0
         sync_message = (getattr(workspace, "sync_message", "") or "") if workspace else ""
 
+        awaiting_checkin = bool(
+            reservation and reservation.status == ReservationStatus.AWAITING_CHECKIN
+        )
         journey = self._journey(
             booking=booking,
             reservation=reservation,
@@ -245,7 +248,13 @@ class AnalysisExperienceBuilder:
             workspace=workspace,
             raw_stats=raw_stats,
             output_stats=output_stats,
-            queued=bool(reservation and reservation.status in QUEUED_RESERVATION) or queue_position is not None,
+            queued=bool(
+                (reservation and reservation.status in QUEUED_RESERVATION)
+                or (
+                    queue_position is not None
+                    and not (reservation and reservation.workstation_id)
+                )
+            ),
             remaining_seconds=remaining_seconds,
         )
 
@@ -283,6 +292,7 @@ class AnalysisExperienceBuilder:
             "equipment_code": getattr(equipment, "code", ""),
             "current_stage": next((s["id"] for s in reversed(journey) if s["status"] in {"active", "done"}), "booking"),
             "journey": journey,
+            "awaiting_checkin": awaiting_checkin,
             "checkin": checkin,
             "input_choice": {
                 "prompt": "What data would you like to analyze?",
@@ -372,6 +382,7 @@ class AnalysisExperienceBuilder:
             },
             "poll_interval_seconds": 5 if (
                 (reservation and reservation.status in QUEUED_RESERVATION)
+                or awaiting_checkin
                 or (session and session.status in OPEN_SESSION - {SessionStatus.ACTIVE})
                 or (session and session.status == SessionStatus.ACTIVE)
             ) else 15,
@@ -699,6 +710,9 @@ class AnalysisExperienceBuilder:
 
     def _desktop_prepare(self, *, reservation, session, workspace, sync_phase, sync_progress) -> list[dict[str, Any]]:
         sync_phase = str(sync_phase or "")
+        awaiting_checkin = bool(
+            reservation and reservation.status == ReservationStatus.AWAITING_CHECKIN
+        )
         preparing = bool(session and session.status == SessionStatus.PREPARING)
         failed = bool(session and session.status in {SessionStatus.FAILED, SessionStatus.TERMINATED, SessionStatus.EXPIRED})
         ready = bool(
@@ -734,7 +748,12 @@ class AnalysisExperienceBuilder:
             launch_status = "pending"
             ready_status = "pending"
         else:
-            sync_status = "done" if input_ready else ("active" if preparing or sync_phase == "DownloadingInput" else "pending")
+            # Hold state: PC allocated but user has not started — do not show pre-launch sync as active.
+            sync_active = (
+                not awaiting_checkin
+                and (preparing or sync_phase == "DownloadingInput")
+            )
+            sync_status = "done" if input_ready else ("active" if sync_active else "pending")
             launch_status = (
                 "done"
                 if session and session.status in ACTIVE_DESKTOP | {SessionStatus.LAUNCHED, SessionStatus.TOKEN_GENERATED}
