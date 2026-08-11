@@ -1,0 +1,21 @@
+306 objects imported automatically (use -v 2 for details).
+
+=== BOOKING ===
+{"pk": 367, "virtual": "IICPXRD [A]202600041", "status": "COMPLETED", "user": "test.student@iic-booking.test", "equipment": "Powder X-Ray Diffractometer (PXRD) [A]", "equipment_id": 1, "dept_id": 33}
+=== REQUIRED_SOFTWARE === ['Notepad']
+=== EQUIPMENT_SOFTWARE_MAP === [('Notepad', True, 'notepad')]
+=== EQUIPMENT_POOL === [{"workstation_id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "workstation__hostname": "DESKTOP-CSMH6BU", "workstation__status": "RESERVED", "priority_boost": 10}]
+=== FLEET ===
+{"id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "hostname": "DESKTOP-CSMH6BU", "status": "RESERVED", "enabled": true, "department_id": 33, "health_score": 65, "last_heartbeat": "None", "hb_age_s": null, "agent_version": "1.0.1", "cleanup_status": null, "disk_low": null, "software_ok_for_required": true, "installed_software": ["Notepad"]}
+{"id": "820de355-410b-4ab1-951e-e42ad3ba942d", "hostname": "RAVI", "status": "AVAILABLE", "enabled": true, "department_id": null, "health_score": 100, "last_heartbeat": "2026-08-11 09:39:43.338844+00:00", "hb_age_s": 18, "agent_version": "1.0.6", "cleanup_status": null, "disk_low": null, "software_ok_for_required": false, "installed_software": []}
+=== RESERVATION ===
+{"id": "81c8a447-889b-46c4-b794-4af988584815", "status": "QUEUED", "workstation_id": null, "department_id": 33, "requested_start": "2026-08-11 09:25:47.005849+00:00", "requested_end": "2026-08-11 13:25:47.005849+00:00", "requested_capabilities": {"required_software_names": ["Notepad"]}}
+=== QUEUE_ENTRY ===
+{"id": "fefb724d-69ee-4a83-8b10-918ec53f68dc", "status": "WAITING", "priority": 100, "enqueued_at": "2026-08-11 09:25:47.174232+00:00", "allocation_attempts": null, "last_error": null}
+=== CANDIDATE TRACE ===
+{"hostname": "DESKTOP-CSMH6BU", "status": "RESERVED", "ACCEPT": false, "reasons": ["Status RESERVED not allocatable"], "score_available": false, "score_total": null, "score_reasons": ["Status RESERVED not allocatable"]}
+{"hostname": "RAVI", "status": "AVAILABLE", "ACCEPT": false, "reasons": ["Missing required software: Notepad"], "score_available": false, "score_total": null, "score_reasons": ["Missing required software: Notepad"]}
+=== MAINTENANCE_HINT ===
+{"all_under_maintenance": false, "all_offline": false, "all_busy": true, "estimated_available_at": null, "estimated_availability_display": "Unknown", "reason": "All matching environments busy"}
+=== EXPERIENCE_QUEUE ===
+SUMMARY_ERR TypeError BookingRemoteAnalysisService.get_summary() got an unexpected keyword argument 'actor'
