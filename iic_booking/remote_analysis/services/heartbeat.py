@@ -84,6 +84,46 @@ class HeartbeatService:
         workstation.last_heartbeat = now
         workstation.current_command = str(data.get("CurrentCommand") or data.get("currentCommand") or "")
 
+        # R9 safe path / cleanup metadata (local FS only — no secrets)
+        update_fields = [
+            "last_heartbeat",
+            "current_command",
+            "status",
+            "updated_at",
+        ]
+        if "dataRoot" in data or "data_root" in data:
+            workstation.data_root = str(data.get("dataRoot") or data.get("data_root") or "")[:1024]
+            update_fields.append("data_root")
+        if "inputPath" in data or "input_path" in data:
+            workstation.input_path = str(data.get("inputPath") or data.get("input_path") or "")[:1024]
+            update_fields.append("input_path")
+        if "outputPath" in data or "output_path" in data:
+            workstation.output_path = str(data.get("outputPath") or data.get("output_path") or "")[:1024]
+            update_fields.append("output_path")
+        if "workspaceDiskFreeBytes" in data or "workspace_disk_free_bytes" in data:
+            workstation.workspace_disk_free_bytes = _optional_int(
+                data.get("workspaceDiskFreeBytes") or data.get("workspace_disk_free_bytes")
+            )
+            update_fields.append("workspace_disk_free_bytes")
+        if "inputBytes" in data or "input_bytes" in data:
+            workstation.input_bytes = _optional_int(data.get("inputBytes") or data.get("input_bytes"))
+            update_fields.append("input_bytes")
+        if "outputBytes" in data or "output_bytes" in data:
+            workstation.output_bytes = _optional_int(data.get("outputBytes") or data.get("output_bytes"))
+            update_fields.append("output_bytes")
+        if "cleanupStatus" in data or "cleanup_status" in data:
+            workstation.cleanup_status = str(
+                data.get("cleanupStatus") or data.get("cleanup_status") or "idle"
+            )[:32]
+            update_fields.append("cleanup_status")
+        if "lastSyncAt" in data or "last_sync_at" in data:
+            raw_sync = data.get("lastSyncAt") or data.get("last_sync_at")
+            workstation.last_sync_at = _optional_dt(raw_sync)
+            update_fields.append("last_sync_at")
+        if "diskLow" in data or "disk_low" in data:
+            workstation.disk_low = bool(data.get("diskLow") if "diskLow" in data else data.get("disk_low"))
+            update_fields.append("disk_low")
+
         agent_reported = (heartbeat.current_state or "").upper()
         # Sticky operational statuses must not block recovery when the agent is idle again.
         # Without this, CLEAN_WORKSTATION → AVAILABLE on the agent never clears portal BUSY,
@@ -137,14 +177,19 @@ class HeartbeatService:
                 )
                 workstation.status = WorkstationStatus.ONLINE
 
-        workstation.save(
-            update_fields=[
-                "last_heartbeat",
-                "current_command",
-                "status",
-                "updated_at",
-            ]
-        )
+        # Keep ERROR if cleanup failed so allocation stays blocked.
+        if (getattr(workstation, "cleanup_status", "") or "").lower() == "failed":
+            if workstation.status not in {
+                WorkstationStatus.BUSY,
+                WorkstationStatus.PREPARING,
+                WorkstationStatus.CLEANING,
+                WorkstationStatus.MAINTENANCE,
+                WorkstationStatus.DISABLED,
+                WorkstationStatus.RESERVED,
+            }:
+                workstation.status = WorkstationStatus.ERROR
+
+        workstation.save(update_fields=list(dict.fromkeys(update_fields)))
 
         for metric, value, unit in (
             ("cpu", heartbeat.cpu, "%"),
@@ -176,6 +221,8 @@ def mark_stale_workstations_offline() -> int:
     Workstations with an in-flight reservation are left alone so a brief agent
     pause cannot yank an already-allocated session back into the queue.
     """
+    from django.db.models import Q
+
     from iic_booking.remote_analysis.constants import ReservationStatus
     from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
 
@@ -184,6 +231,7 @@ def mark_stale_workstations_offline() -> int:
         AnalysisReservation.objects.filter(
             status__in=[
                 ReservationStatus.RESERVED,
+                ReservationStatus.AWAITING_CHECKIN,
                 ReservationStatus.PREPARING,
                 ReservationStatus.READY,
                 ReservationStatus.ACTIVE,
@@ -192,10 +240,9 @@ def mark_stale_workstations_offline() -> int:
         ).values_list("workstation_id", flat=True)
     )
     qs = (
-        AnalysisWorkstation.objects.filter(
-            enabled=True,
-            last_heartbeat__lt=cutoff,
-        )
+        AnalysisWorkstation.objects.filter(enabled=True)
+        .filter(Q(last_heartbeat__lt=cutoff) | Q(last_heartbeat__isnull=True))
+        .exclude(status=WorkstationStatus.REGISTERING)
         .exclude(
             status__in=[
                 WorkstationStatus.OFFLINE,
@@ -270,4 +317,26 @@ def _optional_float(value) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_dt(value):
+    if value is None or value == "":
+        return None
+    if hasattr(value, "isoformat"):
+        return value
+    try:
+        from django.utils.dateparse import parse_datetime
+
+        return parse_datetime(str(value).replace("Z", "+00:00"))
+    except Exception:
         return None

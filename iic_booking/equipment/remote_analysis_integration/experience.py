@@ -241,6 +241,17 @@ class AnalysisExperienceBuilder:
         awaiting_checkin = bool(
             reservation and reservation.status == ReservationStatus.AWAITING_CHECKIN
         )
+        # Defensive: if Celery beat lag leaves a past-due hold, expire it before UX build.
+        if (
+            awaiting_checkin
+            and reservation.checkin_expires_at
+            and reservation.checkin_expires_at < now
+        ):
+            from iic_booking.remote_analysis.services.checkin import CheckinService
+
+            CheckinService().expire_due(limit=50)
+            reservation.refresh_from_db()
+            awaiting_checkin = reservation.status == ReservationStatus.AWAITING_CHECKIN
         journey = self._journey(
             booking=booking,
             reservation=reservation,
@@ -285,6 +296,24 @@ class AnalysisExperienceBuilder:
             (reservation and reservation.status in QUEUED_RESERVATION) or queue_position
         )
 
+        # R9 data workspace paths from allocated workstation heartbeat (safe local FS only)
+        ws = None
+        if session and getattr(session, "workstation_id", None):
+            ws = AnalysisWorkstation.objects.filter(id=session.workstation_id).first()
+        if ws is None and reservation and getattr(reservation, "workstation_id", None):
+            ws = AnalysisWorkstation.objects.filter(id=reservation.workstation_id).first()
+        data_workspace = {
+            "data_root": (getattr(ws, "data_root", "") if ws else "") or "",
+            "input_path": (getattr(ws, "input_path", "") if ws else "") or "",
+            "output_path": (getattr(ws, "output_path", "") if ws else "") or "",
+            "input_hint": "Place files you want to analyze here.",
+            "output_hint": "Save analysis results here.",
+            "cleanup_status": (getattr(ws, "cleanup_status", "") if ws else "") or "idle",
+            "disk_free_bytes": getattr(ws, "workspace_disk_free_bytes", None) if ws else None,
+            "input_bytes": getattr(ws, "input_bytes", None) if ws else None,
+            "output_bytes": getattr(ws, "output_bytes", None) if ws else None,
+        }
+
         return {
             "virtual_booking_id": (getattr(booking, "virtual_booking_id", None) or "")
             or str(booking.booking_id),
@@ -294,6 +323,7 @@ class AnalysisExperienceBuilder:
             "journey": journey,
             "awaiting_checkin": awaiting_checkin,
             "checkin": checkin,
+            "data_workspace": data_workspace,
             "input_choice": {
                 "prompt": "What data would you like to analyze?",
                 "booking_raw": {
