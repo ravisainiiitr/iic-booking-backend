@@ -359,27 +359,101 @@ class MaintenanceService:
             ]
         )
         if operational.filter(status__in=[WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE]).exists():
-            return {"all_under_maintenance": False, "estimated_available_at": None, "reason": None}
+            return {
+                "all_under_maintenance": False,
+                "all_offline": False,
+                "estimated_available_at": None,
+                "reason": None,
+            }
 
+        # Distinguish real maintenance windows from offline / no-match fleets.
+        # Misleading "Scheduled Maintenance" when agents are simply offline was R8.1/R8.5.
         windows = (
             MaintenanceWindow.objects.filter(active=True, end__gte=now)
             .filter(Q(workstation__in=qs) | Q(workstation__isnull=True))
             .order_by("end")
         )
         soonest = windows.first()
-        if soonest is None:
+        if soonest is not None:
             return {
                 "all_under_maintenance": True,
-                "estimated_available_at": None,
-                "reason": "Scheduled Maintenance",
-                "estimated_availability_display": "Unknown",
+                "all_offline": False,
+                "estimated_available_at": soonest.end.isoformat(),
+                "estimated_availability_display": format_availability(soonest.end),
+                "reason": friendly_reason_label(kind=soonest.kind),
+                "window_id": str(soonest.id),
             }
+
+        # No active MaintenanceWindow — classify by workstation status among matches.
+        statuses = list(qs.values_list("status", flat=True))
+        if not statuses:
+            return {
+                "all_under_maintenance": False,
+                "all_offline": False,
+                "no_compatible_workstation": True,
+                "estimated_available_at": None,
+                "estimated_availability_display": "Unknown",
+                "reason": "No compatible Analysis Workstation",
+            }
+
+        maintenance_like = {
+            WorkstationStatus.MAINTENANCE,
+            WorkstationStatus.CALIBRATION,
+            WorkstationStatus.SOFTWARE_UPDATE,
+            WorkstationStatus.HARDWARE_FAULT,
+            WorkstationStatus.CLEANING,
+        }
+        offline_like = {
+            WorkstationStatus.OFFLINE,
+            WorkstationStatus.ERROR,
+            WorkstationStatus.DISABLED,
+            WorkstationStatus.REGISTERING,
+            WorkstationStatus.UNKNOWN,
+        }
+        busy_like = {
+            WorkstationStatus.BUSY,
+            WorkstationStatus.PREPARING,
+            WorkstationStatus.RESERVED,
+        }
+
+        if statuses and all(s in maintenance_like for s in statuses):
+            # Statuses imply maintenance even without an open MaintenanceWindow row.
+            dominant = statuses[0]
+            return {
+                "all_under_maintenance": True,
+                "all_offline": False,
+                "estimated_available_at": None,
+                "estimated_availability_display": "Unknown",
+                "reason": friendly_reason_label(status=dominant),
+            }
+
+        if statuses and all(s in offline_like for s in statuses):
+            return {
+                "all_under_maintenance": False,
+                "all_offline": True,
+                "estimated_available_at": None,
+                "estimated_availability_display": "Unknown",
+                "reason": "Offline",
+            }
+
+        if statuses and all(s in busy_like | offline_like | maintenance_like for s in statuses):
+            if any(s in busy_like for s in statuses):
+                return {
+                    "all_under_maintenance": False,
+                    "all_offline": False,
+                    "all_busy": True,
+                    "estimated_available_at": None,
+                    "estimated_availability_display": "Unknown",
+                    "reason": "All matching environments busy",
+                }
+
+        # Mixed / unknown — do NOT claim Scheduled Maintenance without evidence.
         return {
-            "all_under_maintenance": True,
-            "estimated_available_at": soonest.end.isoformat(),
-            "estimated_availability_display": format_availability(soonest.end),
-            "reason": friendly_reason_label(kind=soonest.kind),
-            "window_id": str(soonest.id),
+            "all_under_maintenance": False,
+            "all_offline": any(s in offline_like for s in statuses),
+            "estimated_available_at": None,
+            "estimated_availability_display": "Unknown",
+            "reason": "No Analysis Environment currently available",
         }
 
     def _notify_queued_users_for_workstation(
