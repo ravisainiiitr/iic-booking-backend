@@ -108,6 +108,7 @@ LOCAL_APPS = [
     "iic_booking.deployment.apps.DeploymentConfig",
     "iic_booking.lab_infrastructure.apps.LabInfrastructureConfig",
     "iic_booking.device_provisioning.apps.DeviceProvisioningConfig",
+    "iic_booking.research_copilot.apps.ResearchCopilotConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -534,6 +535,9 @@ REST_FRAMEWORK = {
         # DRF throttle format example: "5/min", "1/hour"
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
+        # Research Copilot only (portal-wide traffic is not throttled by these)
+        "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="60/hour"),
+        "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="30/hour"),
     },
 }
 
@@ -614,15 +618,35 @@ FRONTEND_GIT_COMMIT = env("FRONTEND_GIT_COMMIT", default="")
 BUILD_DATE = env("BUILD_DATE", default="")
 PROVISIONING_VERSION = env("PROVISIONING_VERSION", default="2.0")
 PROVISIONING_ENABLED = env.bool("PROVISIONING_ENABLED", default=True)
-RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.0.0")
+RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.1.0")
 RESEARCH_COPILOT_ENABLED = env.bool("RESEARCH_COPILOT_ENABLED", default=False)
+RESEARCH_COPILOT_MODEL = env("RESEARCH_COPILOT_MODEL", default="")
+RESEARCH_COPILOT_EMBEDDING_PROVIDER = env("RESEARCH_COPILOT_EMBEDDING_PROVIDER", default="local")
+RESEARCH_COPILOT_EMBEDDING_MODEL = env("RESEARCH_COPILOT_EMBEDDING_MODEL", default="text-embedding-3-small")
+RESEARCH_COPILOT_VECTOR_STORE = env("RESEARCH_COPILOT_VECTOR_STORE", default="orm")
+RESEARCH_COPILOT_SCAN_LIMIT = env.int("RESEARCH_COPILOT_SCAN_LIMIT", default=500)
+# Cost / reliability controls (additive assistant — must not affect core portal)
+RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", default=60)
+RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=800)
+RESEARCH_COPILOT_MAX_USER_MESSAGES = env.int("RESEARCH_COPILOT_MAX_USER_MESSAGES", default=40)
+RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", default=4000)
+RESEARCH_COPILOT_MAX_CONCURRENT = env.int("RESEARCH_COPILOT_MAX_CONCURRENT", default=2)
+# Optional comma-separated emails for controlled pilot when RESEARCH_COPILOT_ENABLED=true.
+RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
+# LLM provider (AI.17/AI.18). Default ollama — does NOT require OPENAI_API_KEY.
+# Preferred: COPILOT_PROVIDER. Legacy alias: COPILOT_LLM_PROVIDER.
+COPILOT_PROVIDER = env("COPILOT_PROVIDER", default="") or env("COPILOT_LLM_PROVIDER", default="ollama")
+COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default=COPILOT_PROVIDER or "ollama")
+OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://127.0.0.1:11434")
+OLLAMA_MODEL = env("OLLAMA_MODEL", default="llama3.2:3b")
 COMPATIBLE_FRONTEND_MIN = env("COMPATIBLE_FRONTEND_MIN", default="2.5.2-r2")
 COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # Optional JSON override for installer matrix, e.g.
 # {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}
 SUPPORTED_INSTALLERS = env.json("SUPPORTED_INSTALLERS", default=None) or {}
 
-# Optional: for AI-powered chat assistant. If set, chat uses OpenAI; otherwise falls back to FAQ.
+# Optional OpenAI (support chat + Copilot when COPILOT_PROVIDER=openai).
+# Not required when COPILOT_PROVIDER=ollama.
 OPENAI_API_KEY = env("OPENAI_API_KEY", default="")
 OPENAI_CHAT_MODEL = env("OPENAI_CHAT_MODEL", default="gpt-4o-mini")
 
