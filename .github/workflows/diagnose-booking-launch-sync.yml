@@ -84,7 +84,7 @@ jobs:
                   print(json.dumps({'id':str(c.id),'type':getattr(c,'command_type',None) or getattr(c,'type',None),'status':c.status,'created':str(c.created_at)}, default=str))
           print('=== SUMMARY EXPERIENCE ===')
           try:
-              summary=BookingRemoteAnalysisService().get_summary(b, actor=b.user)
+              summary=BookingRemoteAnalysisService().get_summary(b, user=b.user)
               exp=(summary or {}).get('experience') or {}
               print(json.dumps({
                 'ux_status': (summary or {}).get('ux_status'),

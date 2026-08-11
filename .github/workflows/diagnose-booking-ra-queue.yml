@@ -101,7 +101,7 @@ jobs:
           print(json.dumps(MaintenanceService().next_compatible_availability(required_software=required or None, matching_workstation_ids=matching_ids if required else None), default=str))
           print('=== EXPERIENCE_QUEUE ===')
           try:
-              summary = BookingRemoteAnalysisService().get_summary(b, actor=b.user)
+              summary = BookingRemoteAnalysisService().get_summary(b, user=b.user)
               exp = (summary or {}).get('experience') or {}
               print(json.dumps(exp.get('queue'), default=str, indent=2)[:5000])
               print('WORKSPACE_TILE', json.dumps(exp.get('workspace'), default=str)[:1500])
