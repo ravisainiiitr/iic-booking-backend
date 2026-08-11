@@ -21,15 +21,19 @@
 | AI.13 | [AI.13-Copilot-Production-Deployment-Report.md](./AI.13-Copilot-Production-Deployment-Report.md) | Copilot → LIMITED PILOT READY (flag OFF) |
 | AI.14 | [AI.14-Implementation-Assessment.md](./AI.14-Implementation-Assessment.md) | Full functional inventory |
 | AI.14 | [AI.14-Full-Copilot-Implementation-Report.md](./AI.14-Full-Copilot-Implementation-Report.md) | Full implementation — LIMITED PILOT READY (flag OFF) |
-| AI.15 | [AI.15-Copilot-Live-Pilot-Qualification.md](./AI.15-Copilot-Live-Pilot-Qualification.md) | Live qualification — **NOT READY** (deploy/OpenAI/pilot account blocked) |
+| AI.15 | [AI.15-Copilot-Live-Pilot-Qualification.md](./AI.15-Copilot-Live-Pilot-Qualification.md) | Live qualification — **NOT READY** (pre-deploy) |
+| AI.16 | [AI.16-Copilot-Production-Enablement-Report.md](./AI.16-Copilot-Production-Enablement-Report.md) | **DEPLOYED — PILOT BLOCKED** (OpenAI + pilot account) |
 
-## Current production posture (AI.15)
+## Current production posture (AI.16)
 
 | Layer | Status |
 |-------|--------|
-| CORE PLATFORM | READY FOR LIMITED PRODUCTION PILOT — EXTENDED (AI.12); smoke 200 |
-| RESEARCH COPILOT (code AI.14) | READY FOR LIMITED PRODUCTION PILOT (implementation) |
-| RESEARCH COPILOT (live AI.15) | **NOT READY** — AI.14 not deployed; OpenAI unset; no pilot account; flag remains `false` |
-| COPILOT ROLLOUT | Keep OFF; allowlist required before any enablement |
+| CORE PLATFORM | Smoke PASS after Copilot deploy (flag OFF) |
+| RESEARCH COPILOT code | **Deployed** (`v2.5.5-ai16-research-copilot` / `7a3f552`) |
+| research_copilot app | **Installed**; migrations `0001`+`0002` applied |
+| RESEARCH_COPILOT_ENABLED | **false** |
+| OPENAI_API_KEY | **Not configured** |
+| Pilot allowlist | **Empty** |
+| Live pilot E2E | **BLOCKED** |
 | FCM | BLOCKED |
 | Broader production | NOT READY |
