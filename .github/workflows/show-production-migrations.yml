@@ -22,12 +22,18 @@ jobs:
           echo "Using container: $CID"
           echo "container=$CID" >> "$GITHUB_OUTPUT"
 
-      - name: showmigrations (AI / RA / notifications / provisioning / sync)
+      - name: showmigrations (RA / notifications / provisioning / sync / equipment)
         run: |
           set -euo pipefail
           CID="${{ steps.find.outputs.container }}"
+          # research_copilot may be absent on production while the feature remains OFF / undeployed.
+          set +e
+          docker exec -w /app "$CID" python manage.py showmigrations research_copilot > /tmp/showmigrations-copilot.txt 2>&1
+          rc_copilot=$?
+          set -e
+          echo "=== research_copilot (optional while Copilot OFF) exit=$rc_copilot ==="
+          cat /tmp/showmigrations-copilot.txt || true
           docker exec -w /app "$CID" python manage.py showmigrations \
-            research_copilot \
             communication \
             remote_analysis \
             device_provisioning \
@@ -41,4 +47,4 @@ jobs:
         run: |
           set -euo pipefail
           df -h / | head -n 5 || true
-          docker exec "${{ steps.find.outputs.container }}" python -c "import django; from django.conf import settings; print('DJANGO_SETTINGS_MODULE ok'); print('RESEARCH_COPILOT_ENABLED=', getattr(settings,'RESEARCH_COPILOT_ENABLED',None)); print('FCM_SERVER_KEY_configured=', bool(getattr(settings,'FCM_SERVER_KEY','')))"
+          docker exec "${{ steps.find.outputs.container }}" python -c "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production'); import django; django.setup(); from django.conf import settings; print('RESEARCH_COPILOT_ENABLED=', getattr(settings,'RESEARCH_COPILOT_ENABLED',None)); print('FCM_SERVER_KEY_configured=', bool(getattr(settings,'FCM_SERVER_KEY',''))); print('INSTALLED_APPS_has_research_copilot=', any('research_copilot' in str(a) for a in settings.INSTALLED_APPS))"
