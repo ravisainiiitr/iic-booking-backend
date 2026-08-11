@@ -308,4 +308,8 @@ Do **not** treat live production S3 as newly proven in AI.9.
 
 ## Git SHAs (post AI.9)
 
-Filled after commit/push in the closing section of this gate.
+| Repo | Branch | SHA |
+|------|--------|-----|
+| Backend | `feature/ai-copilot-android` | `97666dc` |
+| Android | `master` | `233740a` |
+| Frontend | `feature/r6-remote-analysis-software-centric` | `86cb60d` (unchanged) |
