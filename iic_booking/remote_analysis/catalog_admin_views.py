@@ -774,5 +774,4 @@ def catalog_sync_from_inventory(request):
             "after": after,
             "refresh_agents": refresh,
         }
-    )        }
     )
