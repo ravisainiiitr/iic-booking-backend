@@ -86,6 +86,21 @@ def test_evaluate_stale_heartbeat_online_status_soft_online(db, reservation_wind
 
 
 @pytest.mark.django_db
+def test_agent_online_reserved_status_with_token(db):
+    """RESERVED + valid token remains online for expire_stale (check-in hold)."""
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="reserved-soft-online",
+        hostname="RESERVED-SOFT",
+        status=WorkstationStatus.RESERVED,
+        enabled=True,
+        health_score=90,
+        last_heartbeat=None,
+    )
+    issue_agent_token(ws)
+    assert AvailabilityEngine().agent_online(ws) is True
+
+
+@pytest.mark.django_db
 def test_evaluate_stale_heartbeat_without_token(db, reservation_window):
     """Stale heartbeat without a usable agent token is not allocatable."""
     start, end = reservation_window

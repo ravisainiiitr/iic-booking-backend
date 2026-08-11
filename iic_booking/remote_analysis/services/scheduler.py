@@ -358,7 +358,11 @@ class SchedulerService:
         ).exclude(pk=reservation.pk)
         if others.exists():
             return
-        if ws.status == WorkstationStatus.BUSY:
+        if ws.status in {
+            WorkstationStatus.BUSY,
+            WorkstationStatus.RESERVED,
+            WorkstationStatus.PREPARING,
+        }:
             from iic_booking.remote_analysis.models import WorkstationStateHistory
 
             WorkstationStateHistory.objects.create(
