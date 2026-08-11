@@ -1,0 +1,47 @@
+# AI.16 — Read-only: report production checkout SHA/tag (no deploy).
+name: AI16 Production Git Pointer Probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Report production git pointer
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              echo "DEPLOY_PATH=$d"
+              cd "$d"
+              git rev-parse HEAD || true
+              git rev-parse --short HEAD || true
+              git describe --tags --always || true
+              git status -sb || true
+              test -f .deploy-state/current_release_tag && echo "current_release_tag=$(cat .deploy-state/current_release_tag)" || true
+              test -f .deploy-state/previous_release_tag && echo "previous_release_tag=$(cat .deploy-state/previous_release_tag)" || true
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              echo "django_container=$CID"
+              if [[ -n "$CID" ]]; then
+                docker exec -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          print("INSTALLED_APPS_has_research_copilot=", any("research_copilot" in str(a) for a in settings.INSTALLED_APPS))
+          print("RESEARCH_COPILOT_ENABLED=", bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)))
+          print("OPENAI_API_KEY_configured=", bool(str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()))
+          pilot = str(getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", "") or "").strip()
+          print("PILOT_EMAILS_count=", len([e for e in pilot.split(",") if e.strip()]))
+          PY
+              fi
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
