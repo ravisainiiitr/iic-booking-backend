@@ -16,12 +16,17 @@
 | AI.10 | [AI.10-Pilot-Support-Matrix.md](./AI.10-Pilot-Support-Matrix.md) | Support matrix |
 | AI.10 | [AI.10-Pilot-Checklist.md](./AI.10-Pilot-Checklist.md) | Pilot checklist |
 | AI.11 | [AI.11-Pilot-Closure-and-Promotion-Report.md](./AI.11-Pilot-Closure-and-Promotion-Report.md) | Pilot closure / promotion gates |
+| AI.12 | [AI.12-Live-Pilot-Qualification-Report.md](./AI.12-Live-Pilot-Qualification-Report.md) | Live qualification — LIMITED EXTENDED |
 
-## Current production posture (AI.11)
+## Current production posture (AI.12)
 
 | Layer | Status |
 |-------|--------|
 | CORE PLATFORM | READY FOR LIMITED PRODUCTION PILOT — EXTENDED |
+| BACKUP / RESTORE | PASS (gzip + temp DB restore) |
+| DSA / Equipment live | PARTIAL / BLOCKED |
+| SIGNED APK | BLOCKED |
+| S3 LIVE E2E | BLOCKED |
 | COPILOT | NOT READY — keep OFF |
-| FCM | BLOCKED BY CREDENTIALS |
-| Broader production | NOT YET — see AI.11 gates |
+| FCM | BLOCKED |
+| Broader production | NOT READY |
