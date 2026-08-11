@@ -272,6 +272,10 @@ class AnalysisExperienceBuilder:
 
         checkin = CheckinService().checkin_payload(reservation)
 
+        is_queued = bool(
+            (reservation and reservation.status in QUEUED_RESERVATION) or queue_position
+        )
+
         return {
             "virtual_booking_id": (getattr(booking, "virtual_booking_id", None) or "")
             or str(booking.booking_id),
@@ -293,10 +297,9 @@ class AnalysisExperienceBuilder:
                 "sync_note": "Selected data will be synchronized to the Analysis Environment before the desktop session begins.",
             },
             "queue": {
-                "is_queued": bool(
-                    (reservation and reservation.status in QUEUED_RESERVATION) or queue_position
-                ),
+                "is_queued": is_queued,
                 **self._queue_messaging(
+                    is_queued=is_queued,
                     required_software=required_software,
                     matching_available=matching_available,
                     matching_total=matching_total,
@@ -398,12 +401,22 @@ class AnalysisExperienceBuilder:
     def _queue_messaging(
         self,
         *,
+        is_queued: bool,
         required_software: list[str],
         matching_available: int,
         matching_total: int,
         maintenance_hint: dict[str, Any],
     ) -> dict[str, Any]:
         """Build queue title/body without claiming Scheduled Maintenance unless true."""
+        if not is_queued:
+            return {
+                "title": "Analysis Environment Allocated",
+                "body": [
+                    "A compatible Analysis PC has been allocated.",
+                    "Complete check-in/start to begin the session.",
+                ],
+            }
+
         reason = (maintenance_hint.get("reason") or "").strip()
         est = maintenance_hint.get("estimated_availability_display") or "Unknown"
         soft_label = ", ".join(required_software) if required_software else ""
