@@ -6,7 +6,7 @@ Mounted at /api/v1/analysis/
 
 from django.urls import path
 
-from iic_booking.remote_analysis import reservation_views, views, workflow_views
+from iic_booking.remote_analysis import catalog_admin_views, reservation_views, views, workflow_views
 from iic_booking.remote_analysis.guacamole import views as session_views
 from iic_booking.remote_analysis.workspace import views as workspace_views
 from iic_booking.remote_analysis.operations import views as ops_views
@@ -212,6 +212,49 @@ urlpatterns = [
     path("workflows/<uuid:workflow_id>/publish/", workflow_views.workflow_publish, name="workflow-publish"),
     path("workflows/<uuid:workflow_id>/steps/", workflow_views.workflow_steps, name="workflow-steps"),
     path("workflows/<uuid:workflow_id>/map-equipment/", workflow_views.workflow_map_equipment, name="workflow-map-equipment"),
+    # R6.1 — Software catalog + equipment mapping SPA
+    path("catalog/software/", catalog_admin_views.catalog_collection, name="catalog-software"),
+    path("catalog/software/import/", catalog_admin_views.catalog_import, name="catalog-software-import"),
+    path(
+        "catalog/software/<uuid:catalog_id>/",
+        catalog_admin_views.catalog_detail,
+        name="catalog-software-detail",
+    ),
+    path(
+        "catalog/software/<uuid:catalog_id>/disable/",
+        catalog_admin_views.catalog_disable,
+        name="catalog-software-disable",
+    ),
+    path(
+        "catalog/software/<uuid:catalog_id>/enable/",
+        catalog_admin_views.catalog_enable,
+        name="catalog-software-enable",
+    ),
+    path(
+        "catalog/software/<uuid:catalog_id>/archive/",
+        catalog_admin_views.catalog_archive,
+        name="catalog-software-archive",
+    ),
+    path(
+        "catalog/software/<uuid:catalog_id>/usage/",
+        catalog_admin_views.catalog_usage,
+        name="catalog-software-usage",
+    ),
+    path(
+        "catalog/equipment-software/",
+        catalog_admin_views.mapping_collection,
+        name="catalog-equipment-software",
+    ),
+    path(
+        "catalog/equipment-software/matrix/",
+        catalog_admin_views.mapping_matrix,
+        name="catalog-equipment-software-matrix",
+    ),
+    path(
+        "catalog/equipment-software/<uuid:mapping_id>/",
+        catalog_admin_views.mapping_detail,
+        name="catalog-equipment-software-detail",
+    ),
     # Agent Installer distribution + enrollment-keyed bootstrap
     path("installer/releases/", installer_views.releases_collection, name="installer-releases"),
     path("installer/releases/latest/", installer_views.release_latest, name="installer-release-latest"),
