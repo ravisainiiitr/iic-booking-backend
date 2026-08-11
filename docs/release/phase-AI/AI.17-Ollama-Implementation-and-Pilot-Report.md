@@ -245,7 +245,7 @@ OpenAI remains optional (`COPILOT_LLM_PROVIDER=openai` + key).
 
 | Repo | SHA |
 |------|-----|
-| Backend feature tip | *(post-commit)* |
+| Backend feature tip | $TIP |
 | Frontend | `e9fa789` (unchanged) |
 | Android | `233740a` (unchanged) |
 | Production deployed | still `7a3f552` / `v2.5.5-ai16-research-copilot` until AI.17 is released |
