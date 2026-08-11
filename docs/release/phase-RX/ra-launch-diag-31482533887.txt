@@ -1,0 +1,18 @@
+306 objects imported automatically (use -v 2 for details).
+
+=== BOOKING === {"pk": 367, "virtual": "IICPXRD [A]202600041", "status": "COMPLETED"}
+=== RESERVATION ===
+{"id": "bdccb023-428c-4526-b072-4e09d81e2622", "status": "AWAITING_CHECKIN", "ws": "820de355-410b-4ab1-951e-e42ad3ba942d", "reserved_start": "2026-08-11 09:55:09.733019+00:00", "reserved_end": "2026-08-11 13:55:09.733019+00:00"}
+=== SESSIONS ===
+=== WORKSPACES ===
+{"id": "c9c37c2b-4935-4f20-bf3a-08f3233fd428", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=1 skipped=0 failed=0", "local_agent_path": "workspaces\\ws-bdccb023428c4526-9db8f3f6", "workstation_id": "820de355-410b-4ab1-951e-e42ad3ba942d", "updated_at": "2026-08-11 09:55:14.584132+00:00"}
+{"id": "d6f5b8a8-09ac-43a8-9d2b-01959b9205ab", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=1 skipped=0 failed=0", "local_agent_path": "workspaces\\ws-d3c2ecc3d9a44487-bb129e39", "workstation_id": "820de355-410b-4ab1-951e-e42ad3ba942d", "updated_at": "2026-08-11 09:45:43.528534+00:00"}
+{"id": "ee9458ad-34d8-428b-83d8-36dd67e1f494", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=0 skipped=1 failed=0", "local_agent_path": "workspaces\\ws-81c8a447889b46c4-655a6972", "workstation_id": "None", "updated_at": "2026-08-11 09:25:49.454269+00:00"}
+{"id": "68d39147-b174-4f80-b34b-35465f6a6b90", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=0 skipped=1 failed=0", "local_agent_path": "workspaces\\ws-e301ef3fa8de49d4-f3a6168c", "workstation_id": "None", "updated_at": "2026-08-11 09:24:47.269590+00:00"}
+{"id": "4e7733e9-8a33-4bc5-9a0e-eb5c36d55efd", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=0 skipped=1 failed=0", "local_agent_path": "workspaces\\ws-c4c3dd04c9924021-75200b17", "workstation_id": "None", "updated_at": "2026-08-11 08:53:47.635834+00:00"}
+=== PREPARE COMMANDS ===
+=== WORKSTATION ===
+{"hostname": "RAVI", "status": "RESERVED", "last_heartbeat": "2026-08-11 10:30:41.395173+00:00", "agent_version": "1.0.6", "enabled": true}
+=== WS RECENT COMMANDS ===
+=== SUMMARY EXPERIENCE ===
+{"ux_status": null, "session": null, "desktop_prepare": [{"id": "booking", "label": "Booking confirmed", "status": "done"}, {"id": "allocated", "label": "Analysis Environment allocated", "status": "done"}, {"id": "sync_input", "label": "Synchronizing input data", "status": "pending"}, {"id": "launch_desktop", "label": "Launching Analysis Environment", "status": "pending"}, {"id": "ready", "label": "Ready", "status": "pending"}], "workspace": {"label": "Booking Workspace", "status": "READY", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=1 skipped=0 failed=0", "input": {"label": "Input Folder", "logical_name": "Uploaded Input Data", "file_count": 1, "total_size_bytes": 380293, "last_updated": "2026-08-11T09:55:13.254592+00:00"}, "output": {"label": "Output Folder", "logical_name": "Generated Results", "file_count": 0, "total_size_bytes": 0, "last_updated": null}, "last_synced_at": null, "raw_data_directory": "D:\\PXRD\\RAW", "results_directory": "D:\\PXRD\\RESULTS", "instructions": ["Raw files have already been copied to your Booking Folder under the Raw Data directory (when configured for this equipment).", "Please save all analyzed files inside your Booking Folder under the Analyzed Data directory: D:\\PXRD\\RESULTS\\IICPXRD [A]202600041.", "After End Analysis, all results are uploaded to the booking and local copies are securely deleted."]}, "progress": null}
