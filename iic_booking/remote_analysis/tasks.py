@@ -79,7 +79,7 @@ def advance_preparing_sessions() -> dict:
     """Advance PREPARING sessions after agent prepare ack / mock fast-path; fail on timeout."""
     from django.utils import timezone
 
-    from iic_booking.remote_analysis.constants import SessionStatus
+    from iic_booking.remote_analysis.constants import CommandStatus, SessionStatus
     from iic_booking.remote_analysis.guacamole.session import SessionOrchestrator
     from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings, RemoteDesktopSession
 
@@ -95,7 +95,25 @@ def advance_preparing_sessions() -> dict:
             continue
         age = (now - session.created_at).total_seconds()
         if age >= settings_obj.prepare_timeout_seconds:
-            orch.fail_session(session, "Preparation timeout")
+            reason = "Preparation timeout"
+            ws = session.workstation
+            cmd = session.prepare_command
+            if ws is not None and getattr(ws, "last_heartbeat", None) is None:
+                reason = (
+                    "Preparation timeout: Analysis PC agent has never reported a heartbeat. "
+                    "Start the Remote Analysis Agent service on the workstation and retry."
+                )
+            elif ws is not None:
+                from iic_booking.remote_analysis.services.availability import AvailabilityEngine
+
+                if not AvailabilityEngine().heartbeat_fresh(ws):
+                    reason = (
+                        "Preparation timeout: Analysis PC agent is offline (stale/missing heartbeat). "
+                        "PREPARE_WORKSTATION was not acknowledged. Start the agent service and retry."
+                    )
+            if cmd is not None and cmd.status == CommandStatus.PENDING:
+                reason = f"{reason} (prepare command still PENDING)"
+            orch.fail_session(session, reason)
             timed_out += 1
     return {"advanced": advanced, "timed_out": timed_out}
 

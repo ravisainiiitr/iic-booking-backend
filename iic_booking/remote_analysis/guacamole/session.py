@@ -150,7 +150,12 @@ class SessionOrchestrator:
                 actor=user,
                 correlation_id=str(reservation.id),
             )
-            raise SessionError("Workstation is not healthy or agent is offline", code="workstation_unhealthy")
+            raise SessionError(
+                "Analysis PC agent is offline (no recent heartbeat). "
+                "Start the Remote Analysis Agent Windows service on the allocated "
+                "workstation, confirm it can reach the portal, then retry launch.",
+                code="workstation_unhealthy",
+            )
 
         open_count = RemoteDesktopSession.objects.filter(status__in=OPEN_SESSION_STATUSES).count()
         if open_count >= self.settings.max_concurrent_sessions:

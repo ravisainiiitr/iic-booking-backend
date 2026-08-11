@@ -10,15 +10,19 @@ from iic_booking.remote_analysis.session_models import RemoteDesktopSession, Ses
 
 
 def workstation_agent_online(workstation) -> bool:
-    """Prefer fresh heartbeat; fall back to AVAILABLE/ONLINE + valid agent token."""
+    """Soft-online: fresh heartbeat OR allocatable status + valid agent token."""
     return AvailabilityEngine().agent_online(workstation)
 
 
 def workstation_healthy_for_session(workstation) -> bool:
+    """
+    Session prepare/Guacamole require a live agent that can pull commands.
+    Soft-online (token without heartbeat) is enough for allocation holds, but not
+    for PREPARE_WORKSTATION / input sync.
+    """
     if not workstation.enabled:
         return False
-    # AvailabilityEngine already rejects OFFLINE / disabled / token-missing cases.
-    return AvailabilityEngine().agent_online(workstation)
+    return AvailabilityEngine().heartbeat_fresh(workstation)
 
 
 def refresh_session_health(session: RemoteDesktopSession) -> SessionHealth:
