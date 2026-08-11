@@ -310,6 +310,6 @@ Do **not** treat live production S3 as newly proven in AI.9.
 
 | Repo | Branch | SHA |
 |------|--------|-----|
-| Backend | `feature/ai-copilot-android` | `97666dc` |
+| Backend | `feature/ai-copilot-android` | `b0b44aa` |
 | Android | `master` | `233740a` |
 | Frontend | `feature/r6-remote-analysis-software-centric` | `86cb60d` (unchanged) |
