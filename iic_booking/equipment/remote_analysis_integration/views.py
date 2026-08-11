@@ -236,8 +236,20 @@ def booking_analysis_launch(request, booking_id: int):
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden", "booking_ineligible"} else status.HTTP_400_BAD_REQUEST
+        detail = str(exc)
         return Response(
-            {"detail": str(exc), "code": exc.code, "eligible": False},
+            {
+                "detail": detail,
+                "code": exc.code,
+                "eligible": False,
+                "failure": {
+                    "user_message": detail,
+                    "failure_category": "credentials"
+                    if exc.code == "rdp_credentials_missing" or "credentials" in detail.lower()
+                    else "launch",
+                    "failed_stage": "preflight" if exc.code == "rdp_credentials_missing" else "launch",
+                },
+            },
             status=http,
         )
     except Exception as exc:
