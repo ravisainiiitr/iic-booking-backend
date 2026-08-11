@@ -11,9 +11,11 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           echo "container=$CID"
+          docker exec "$CID" printenv DJANGO_SETTINGS_MODULE || true
+          docker exec "$CID" ls /app | head
           cat > /tmp/probe_catalog_r11.py <<'PY'
           import os, django, traceback
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", os.environ.get("DJANGO_SETTINGS_MODULE") or "config.settings.production")
           django.setup()
           from django.test import RequestFactory
           from django.contrib.auth import get_user_model
@@ -56,5 +58,6 @@ jobs:
               traceback.print_exc()
               print("matrix_exc", e)
           PY
+          # Preserve host env DJANGO_SETTINGS_MODULE when copying into container by wrapping
           docker cp /tmp/probe_catalog_r11.py "$CID":/tmp/probe_catalog_r11.py
-          docker exec "$CID" python /tmp/probe_catalog_r11.py
+          docker exec -e DJANGO_SETTINGS_MODULE="$(docker exec "$CID" printenv DJANGO_SETTINGS_MODULE)" "$CID" python /tmp/probe_catalog_r11.py
