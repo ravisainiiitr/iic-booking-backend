@@ -353,8 +353,20 @@ def equipment_department_wallet_balance(request):
     target_user = request.user
     user_id_raw = request.query_params.get("user_id")
     if user_id_raw not in (None, ""):
-        if getattr(request.user, "user_type", None) != UserType.ADMIN:
-            return Response({"error": "Only admin can query another user's balance."}, status=status.HTTP_403_FORBIDDEN)
+        actor_type = str(getattr(request.user, "user_type", None) or "").strip().lower()
+        if actor_type not in {UserType.ADMIN, UserType.MANAGER, UserType.DEPT_ADMIN}:
+            return Response(
+                {"error": "Only Admin, OIC, or Department Administrator can query another user's balance."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Dept Admin: only for equipment in their department (same rule as book-on-behalf).
+        if actor_type == UserType.DEPT_ADMIN:
+            dept_id = getattr(request.user, "department_id", None)
+            if not dept_id or getattr(equipment, "internal_department_id", None) != dept_id:
+                return Response(
+                    {"error": "You can only query balances for equipment in your assigned department."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         try:
             target_user = User.objects.get(pk=int(user_id_raw))
         except (TypeError, ValueError, User.DoesNotExist):

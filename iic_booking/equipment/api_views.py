@@ -18,6 +18,7 @@ from django.db.models.deletion import ProtectedError, RestrictedError
 from django.db.transaction import TransactionManagementError
 from django.http import FileResponse, HttpResponse, HttpResponseRedirect
 from django.db.models import Q, Min, Max, Sum, Count, Subquery, OuterRef, DecimalField, Exists, Prefetch
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date as parse_date_iso
 from django.core.files.storage import default_storage
@@ -244,6 +245,92 @@ def _actor_may_book_on_behalf(actor, equipment) -> str | None:
             return "You can only book on behalf of users for equipment in your assigned department."
         return None
     return "You don't have permission to book on behalf of another user."
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def equipment_book_for_user_info(request, pk: int):
+    """
+    Selected-user details for Manage Equipment → Book for user.
+
+    Authorized the same way as booking on behalf (Admin / OIC / Dept Admin).
+    Does not depend on Admin Settings → Users module.
+    """
+    from iic_booking.users.models import User
+    from iic_booking.users.repositories.wallet_repository import WalletRepository
+
+    equipment = get_object_or_404(
+        Equipment.objects.select_related("internal_department"),
+        pk=pk,
+    )
+    behalf_err = _actor_may_book_on_behalf(request.user, equipment)
+    if behalf_err:
+        return Response({"error": behalf_err}, status=status.HTTP_403_FORBIDDEN)
+
+    user_id_raw = request.query_params.get("user_id")
+    if user_id_raw in (None, ""):
+        return Response({"error": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        target = User.objects.select_related("department").get(pk=int(user_id_raw))
+    except (TypeError, ValueError, User.DoesNotExist):
+        return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    wallet_balance = "0.00"
+    wallet_faculty_owner = None
+    try:
+        wallet = target.get_accessible_wallet()
+    except Exception:
+        wallet = None
+
+    # Prefer the same department sub-wallet that booking would debit.
+    booking_target = None
+    try:
+        booking_target, _is_sub = WalletRepository.get_booking_wallet_target(
+            target,
+            equipment.internal_department,
+        )
+    except Exception:
+        booking_target = None
+
+    if booking_target is not None:
+        try:
+            wallet_balance = f"{Decimal(str(booking_target.balance)).quantize(Decimal('0.01')):.2f}"
+        except Exception:
+            wallet_balance = "0.00"
+    elif wallet is not None:
+        try:
+            wallet_balance = f"{wallet.total_balance:.2f}"
+        except Exception:
+            wallet_balance = "0.00"
+
+    if wallet is not None:
+        try:
+            if wallet.user_id != target.id:
+                owner = getattr(wallet, "user", None)
+                wallet_faculty_owner = {
+                    "name": (getattr(owner, "name", None) or getattr(owner, "email", None) or "") if owner else "",
+                    "email": (getattr(owner, "email", None) or "") if owner else "",
+                }
+            else:
+                wallet_faculty_owner = {"name": "Self", "email": target.email or ""}
+        except Exception:
+            wallet_faculty_owner = None
+
+    department_name = target.department.name if target.department else ""
+    return Response(
+        {
+            "id": target.id,
+            "name": target.name or "",
+            "email": target.email or "",
+            "department_name": department_name or "",
+            "phone_number": getattr(target, "phone_number", None) or "",
+            "user_type": target.user_type or "",
+            "wallet_faculty_owner": wallet_faculty_owner,
+            "wallet_balance": wallet_balance,
+            "equipment_id": equipment.equipment_id,
+            "equipment_department_id": getattr(equipment, "internal_department_id", None),
+        }
+    )
 
 
 # User-facing message when slot(s) were taken by another user (concurrent booking)

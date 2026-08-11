@@ -18,6 +18,9 @@ jobs:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Probe booking-info path inside django
+        env:
+          PROBE_EMAIL: ${{ github.event.inputs.user_email }}
+          PROBE_EQ: ${{ github.event.inputs.equipment_id }}
         run: |
           set -euo pipefail
           for d in \
@@ -36,15 +39,12 @@ jobs:
               test -n "$CID"
               echo "=== grep booking_info marker in image ==="
               docker exec "$CID" sh -lc 'grep -n "Intentionally does NOT use for_booking" /app/config/admin_api.py | head -n 3 || echo MARKER_MISSING'
-              EMAIL='${{ github.event.inputs.user_email }}'
-              EQ='${{ github.event.inputs.equipment_id }}'
-              docker exec -e PROBE_EMAIL="$EMAIL" -e PROBE_EQ="$EQ" -w /app "$CID" python - <<'PY'
+              docker exec -i -e PROBE_EMAIL="$PROBE_EMAIL" -e PROBE_EQ="$PROBE_EQ" -w /app "$CID" python - <<'PY'
           import os, json, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
-          from django.test import RequestFactory
           from django.contrib.auth import get_user_model
-          from rest_framework.test import force_authenticate
+          from rest_framework.test import force_authenticate, APIRequestFactory
           from config.admin_api import admin_api_router
 
           User = get_user_model()
@@ -75,23 +75,25 @@ jobs:
                   viewset = viewset_cls
                   break
           assert viewset is not None, "admin-user viewset missing"
-          # Prefer an admin actor; else manager/dept_admin
-          actor = (
-              User.objects.filter(user_type="admin", is_active=True).order_by("id").first()
-              or User.objects.filter(user_type="manager", is_active=True).order_by("id").first()
-              or User.objects.filter(user_type="dept_admin", is_active=True).order_by("id").first()
-          )
-          print("actor_id=", getattr(actor, "id", None), "actor_type=", getattr(actor, "user_type", None), "actor_email=", getattr(actor, "email", None))
-          rf = RequestFactory()
-          path = f"/api/admin/users/{target.id}/booking-info/"
-          query = f"?equipment_id={eq}" if eq else ""
-          req = rf.get(path + query)
-          force_authenticate(req, user=actor)
-          view = viewset.as_view({"get": "booking_info"})
-          resp = view(req, pk=str(target.id))
-          print("http_status=", resp.status_code)
-          data = getattr(resp, "data", None)
-          print("response=", json.dumps(data, default=str)[:2000])
+          for actor_type in ("admin", "manager", "dept_admin"):
+              actor = User.objects.filter(user_type=actor_type, is_active=True).order_by("id").first()
+              if not actor:
+                  print("actor_missing_type=", actor_type)
+                  continue
+              rf = APIRequestFactory()
+              path = f"/api/admin/users/{target.id}/booking-info/"
+              query = {"equipment_id": eq} if eq else None
+              django_req = rf.get(path, query)
+              force_authenticate(django_req, user=actor)
+              view = viewset.as_view({"get": "booking_info"})
+              resp = view(django_req, pk=str(target.id))
+              data = getattr(resp, "data", None)
+              print(
+                  "actor_type=", actor_type,
+                  "actor_id=", actor.id,
+                  "http_status=", resp.status_code,
+                  "response=", json.dumps(data, default=str)[:1200],
+              )
           PY
               exit 0
             fi
