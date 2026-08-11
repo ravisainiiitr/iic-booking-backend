@@ -17,7 +17,10 @@
 | GPU | **`nvidia-smi_absent`** | CPU-only inference only |
 | Ollama container | **Absent** | `no_ollama_container` |
 | Ollama process | **Absent** | `no_ollama_process` |
-| `nproc` / `uname` / `loadavg` | **Not captured as bare lines** in Actions log | Probe updated in AI.18.1 docs PR to emit `nproc=` / `uname=` prefixes; re-run after merge for exact core count |
+| `nproc` | **4** | Confirmed `nproc=4` on re-probe `31521083962` |
+| `uname` | Linux ip-10-0-1-153 6.8.0-1047-aws … x86_64 | |
+| `loadavg` | `0.65 0.80 1.05` | Light at probe time |
+
 
 ## Docker memory snapshot (post-deploy)
 

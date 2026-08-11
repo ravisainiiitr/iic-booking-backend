@@ -50,9 +50,11 @@ Prior tag `v2.5.20-ai18-research-copilot-off` failed because it shipped a **synt
 | Check | Result |
 |-------|--------|
 | Flag false after migrate | **PASS** |
-| Unauthenticated Copilot HTTP 401/403 | Exercised via new workflow `AI18.1 Disabled State Security Probe` (dispatch after docs PR merges) |
-| Unit tests (`test_disabled_gate`, `test_feature_disabled_writes_audit`) | Local compose attempt blocked by postgres networking/`--no-deps`; **not claimed PASS** in this run |
+| Unauthenticated Copilot HTTP 401/403 | **PASS** — AI18.1 Disabled State Security Probe `31521079127` |
+| Unit tests (`test_disabled_gate`, `test_feature_disabled_writes_audit`) | Local compose blocked by container name conflicts; production disabled probe used instead |
 | Pilot / credentials invented | **No** |
+| AI15 readiness | **PASS** `31521087822` — app installed, flag false, pilot count 0, migrations applied, capabilities `research_copilot=False`, ready 200 |
+
 
 ## EC2 / Ollama
 
@@ -90,23 +92,24 @@ See `AI.18.1-EC2-Resource-Qualification.md`.
 | T4 | research_copilot migrate 0001/0002 | **PASS** (already applied / no-op) |
 | T5 | Flag remains false | **PASS** |
 | T6 | Portal ready/version regression | **PASS** |
-| T7 | EC2 resource probe | **PASS** (RAM/disk/GPU/Ollama presence); nproc bare-line gap noted |
+| T7 | EC2 resource probe | **PASS** — nproc=4, ~15.5GiB RAM, no GPU, no Ollama (`31521083962`) |
 | T8 | Ollama suitability | **BLOCKED** co-resident |
 | T9 | Ollama install / failure isolation | **SKIPPED** (blocked) |
 | T10 | Copilot enable / pilot | **SKIPPED** (forbidden this phase) |
 | T11 | FE npm build | **PASS** |
 | T12 | Android gradle test | **PASS** |
 | T13 | DuplicateTable classification | **PASS** (documented) |
-| T14 | Disabled HTTP security probe workflow | **READY** (new workflow; run after merge) |
+| T14 | Disabled HTTP security probe | **PASS** `31521079127` |
 | T15 | Backend Release Windows tag verify | **FAIL** (pre-existing; non-blocking for Linux Deploy Backend) |
+| T16 | AI15 readiness | **PASS** `31521087822` |
 
 ## Blockers remaining
 
-1. **Co-resident Ollama blocked** on production EC2 (no swap, disk 72%, Guacamole footprint, CPU contention).  
-2. **nproc** exact value pending re-probe with prefixed logging.  
-3. **Windows Backend Release verify** still broken (process debt).  
-4. **Virgin-DB DuplicateTable** blocks full local migrate suites.  
-5. Local disabled unit pytest not re-proven in this session (infra conflict).
+1. **Co-resident Ollama blocked** on production EC2 (4 vCPU, no swap, disk 72%, Guacamole footprint, CPU contention).  
+2. **Windows Backend Release verify** still broken (process debt).  
+3. **Virgin-DB DuplicateTable** blocks full local migrate suites.  
+4. Live prod tip is still `v2.5.21` (`639fee2`); docs/probe merge `530e452` is on master but not required for runtime.
+
 
 ## Next operator action
 
