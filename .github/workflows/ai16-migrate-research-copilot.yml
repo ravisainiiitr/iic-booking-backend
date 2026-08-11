@@ -1,0 +1,49 @@
+# AI.16 — Apply research_copilot migrations only (after Copilot is in INSTALLED_APPS).
+# Does NOT enable RESEARCH_COPILOT_ENABLED. Does NOT print secrets.
+name: AI16 Migrate Research Copilot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate Django
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Before — showmigrations research_copilot
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py showmigrations research_copilot 2>&1 | tee /tmp/rc-before.txt || true
+          docker exec -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          print("INSTALLED_APPS_has_research_copilot=", any("research_copilot" in str(a) for a in settings.INSTALLED_APPS))
+          print("RESEARCH_COPILOT_ENABLED=", bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)))
+          print("OPENAI_API_KEY_configured=", bool(str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()))
+          PY
+
+      - name: Migrate research_copilot
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py migrate research_copilot --noinput
+
+      - name: After — showmigrations research_copilot
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py showmigrations research_copilot 2>&1 | tee /tmp/rc-after.txt
+          echo "=== pending? ==="
+          grep -E '^\s*\[ \]' /tmp/rc-after.txt || echo "No pending research_copilot migrations"
+          # Keep flag OFF check
+          docker exec -w /app "$CID" python -c "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production'); import django; django.setup(); from django.conf import settings; assert getattr(settings,'RESEARCH_COPILOT_ENABLED',False) is False, 'Copilot must remain disabled after migrate'; print('PASS RESEARCH_COPILOT_ENABLED still False')"
