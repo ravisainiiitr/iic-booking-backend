@@ -139,6 +139,10 @@ class InventoryService:
 
         for key, row in existing.items():
             if key not in seen_keys:
+                # Do not wipe inventory when the agent posts an empty software list
+                # (heartbeat-only payloads / discovery failures).
+                if not software_list:
+                    break
                 row.is_present = False
                 row.save(update_fields=["is_present", "last_updated"])
                 removed += 1
