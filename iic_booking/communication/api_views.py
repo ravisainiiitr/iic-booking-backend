@@ -24,17 +24,27 @@ def get_notifications(request):
         communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
     ).order_by("-created_at")
     
-    # Transform to API format
+    # Transform to API format.
+    # Expose real_booking_id so mobile clients can deep-link to Booking Detail
+    # without inventing a second navigation system (links still use virtual ids).
     notification_list = []
     for notification in notifications:
+        meta = notification.metadata or {}
+        real_booking_id = meta.get("real_booking_id")
+        try:
+            real_booking_id = int(real_booking_id) if real_booking_id is not None else None
+        except (TypeError, ValueError):
+            real_booking_id = None
         notification_list.append({
             "id": notification.id,
             "title": notification.subject or "Notification",
             "message": notification.message or "",
-            "type": notification.metadata.get("notification_type", "info") if notification.metadata else "info",
+            "type": meta.get("notification_type", "info"),
             "read": notification.status == CommunicationLog.CommunicationStatus.READ,
             "created_at": notification.created_at.isoformat() if notification.created_at else None,
-            "link": notification.metadata.get("link") if notification.metadata else None,
+            "link": meta.get("link"),
+            "real_booking_id": real_booking_id,
+            "virtual_booking_id": meta.get("booking_display_id") or meta.get("booking_id"),
         })
     
     return Response(notification_list, status=status.HTTP_200_OK)
