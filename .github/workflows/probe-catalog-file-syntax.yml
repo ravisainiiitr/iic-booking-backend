@@ -1,0 +1,18 @@
+name: Probe Catalog File Syntax
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo CID=$CID
+          docker exec -w /app $CID sed -n '770,790p' iic_booking/remote_analysis/catalog_admin_views.py || true
+          docker exec -w /app $CID python -c "import ast; ast.parse(open('iic_booking/remote_analysis/catalog_admin_views.py').read()); print('syntax-ok')"
+          docker exec -w /app $CID cat .deploy-state/current_release_tag 2>/dev/null || true
+          cat /home/ubuntu/iic-booking-backend/.deploy-state/current_release_tag 2>/dev/null || true
+          sed -n '770,790p' /home/ubuntu/iic-booking-backend/iic_booking/remote_analysis/catalog_admin_views.py 2>/dev/null || true
