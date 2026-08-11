@@ -122,15 +122,22 @@ Production Django start script runs:
 python /app/manage.py migrate --noinput
 ```
 
-Manual / workflow equivalent:
+**Read-only inventory (preferred before applying anything):**
+
+GitHub Actions → **Show Production Migrations** (`workflow_dispatch` on `master`).
+
+Manual / apply workflow equivalent:
 
 ```bash
 # On production host (existing process)
+docker compose -f docker-compose.production.yml exec django python manage.py showmigrations
 docker compose -f docker-compose.production.yml exec django python manage.py migrate --noinput
-# or GitHub Actions: migrate-production.yml
+# or GitHub Actions: migrate-production.yml (applies migrations — use deliberately)
 ```
 
 Do **not** hand-edit the production database.
+
+See also AI.11 promotion gates in `AI.11-Pilot-Closure-and-Promotion-Report.md`.
 
 ---
 
