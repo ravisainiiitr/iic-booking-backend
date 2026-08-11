@@ -371,7 +371,7 @@ Do **not** promote to broader production until checklist host items (migrations 
 
 | Repo | Branch | SHA |
 |------|--------|-----|
-| Backend | `feature/ai-copilot-android` | `23166b4` (+ follow-up SHA note commit if any) |
+| Backend | `feature/ai-copilot-android` | `9026580` |
 | Android | `master` | `233740a` (unchanged) |
 | Frontend | `feature/r6-remote-analysis-software-centric` | `86cb60d` (unchanged) |
 | DSA / RAA | — | unchanged in AI.10 |
