@@ -165,6 +165,22 @@ class SessionOrchestrator:
         if existing:
             return existing
 
+        # Fail fast: Guacamole cannot auto-login without stored Windows credentials.
+        # Do not spend prepare/sync cycles only to fail after InputReady.
+        if not self.settings.mock_guacamole:
+            from iic_booking.remote_analysis.session_models import WorkstationRdpSecret
+
+            secret = WorkstationRdpSecret.objects.filter(workstation=ws).first()
+            username_ok = bool(secret and (secret.username or "").strip())
+            password_ok = bool(secret and (secret.password_encrypted or "").strip())
+            if not username_ok or not password_ok:
+                raise SessionError(
+                    "Workstation Windows credentials are not configured. "
+                    "Re-run the Remote Analysis Agent installer (or set Workstation RDP Secret "
+                    "in Django Admin) so automatic login can succeed.",
+                    code="rdp_credentials_missing",
+                )
+
         session = RemoteDesktopSession(
             reservation=reservation,
             booking=reservation.booking,

@@ -699,6 +699,19 @@ class BookingRemoteAnalysisService:
             "mock": bool(orch.settings.mock_guacamole),
         }
 
+        if session.status == SessionStatus.FAILED:
+            detail = (session.failure_detail or "Analysis Environment preparation failed.").strip()
+            payload["launch_pending"] = False
+            payload["detail"] = detail
+            payload["failure"] = {
+                "user_message": detail,
+                "failure_category": "credentials"
+                if "credentials" in detail.lower() or "rdp" in detail.lower()
+                else "prepare",
+                "failed_stage": "guacamole" if "credentials" in detail.lower() else "prepare",
+            }
+            return payload
+
         try:
             if session.status in {
                 SessionStatus.TOKEN_GENERATED,
@@ -710,6 +723,18 @@ class BookingRemoteAnalysisService:
                 SessionStatus.IDLE,
             } or orch.try_advance_after_prepare(session):
                 session.refresh_from_db()
+                if session.status == SessionStatus.FAILED:
+                    detail = (session.failure_detail or "Analysis Environment preparation failed.").strip()
+                    payload["status"] = session.status
+                    payload["detail"] = detail
+                    payload["failure"] = {
+                        "user_message": detail,
+                        "failure_category": "credentials"
+                        if "credentials" in detail.lower() or "rdp" in detail.lower()
+                        else "prepare",
+                        "failed_stage": "guacamole" if "credentials" in detail.lower() else "prepare",
+                    }
+                    return payload
                 if request_absolute_uri_builder:
                     launch = GuacamoleIntegrationService().launch(
                         session,
