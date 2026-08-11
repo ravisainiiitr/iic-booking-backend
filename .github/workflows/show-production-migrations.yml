@@ -1,0 +1,44 @@
+# Read-only production migration inventory for pilot closure / promotion gates.
+# Does NOT run migrate. Does NOT modify the database.
+name: Show Production Migrations
+
+on:
+  workflow_dispatch:
+
+jobs:
+  show:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate production Django container
+        id: find
+        run: |
+          set -euo pipefail
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | head -n 40 || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          if [ -z "$CID" ]; then
+            echo "No running django container."
+            exit 1
+          fi
+          echo "Using container: $CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: showmigrations (AI / RA / notifications / provisioning / sync)
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py showmigrations \
+            research_copilot \
+            communication \
+            remote_analysis \
+            device_provisioning \
+            sync \
+            equipment \
+            | tee /tmp/showmigrations-ai11.txt
+          echo "=== pending lines (if any) ==="
+          grep -E '^\s*\[ \]' /tmp/showmigrations-ai11.txt || echo "No pending migrations listed for selected apps."
+
+      - name: Container / disk sanity (non-destructive)
+        run: |
+          set -euo pipefail
+          df -h / | head -n 5 || true
+          docker exec "${{ steps.find.outputs.container }}" python -c "import django; from django.conf import settings; print('DJANGO_SETTINGS_MODULE ok'); print('RESEARCH_COPILOT_ENABLED=', getattr(settings,'RESEARCH_COPILOT_ENABLED',None)); print('FCM_SERVER_KEY_configured=', bool(getattr(settings,'FCM_SERVER_KEY','')))"
