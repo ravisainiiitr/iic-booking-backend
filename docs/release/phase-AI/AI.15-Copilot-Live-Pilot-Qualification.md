@@ -172,7 +172,7 @@ Rollback: set `RESEARCH_COPILOT_ENABLED=false`.
 
 | Repo | SHA | Notes |
 |------|-----|-------|
-| Backend feature tip | `7485aca` (+ docs commit) | AI.15 probe workflow on feature |
+| Backend feature tip | `e4152d9` | AI.15 report + readiness probes |
 | Backend master | includes PR #36 readiness probes | |
 | Frontend | `e9fa789` | unchanged |
 | Android | `233740a` | unchanged |
