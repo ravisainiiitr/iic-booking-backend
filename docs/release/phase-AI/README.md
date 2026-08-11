@@ -19,13 +19,15 @@
 | AI.12 | [AI.12-Live-Pilot-Qualification-Report.md](./AI.12-Live-Pilot-Qualification-Report.md) | Live qualification — LIMITED EXTENDED |
 | AI.13 | [AI.13-Copilot-Assessment.md](./AI.13-Copilot-Assessment.md) | Copilot inventory |
 | AI.13 | [AI.13-Copilot-Production-Deployment-Report.md](./AI.13-Copilot-Production-Deployment-Report.md) | Copilot → LIMITED PILOT READY (flag OFF) |
+| AI.14 | [AI.14-Implementation-Assessment.md](./AI.14-Implementation-Assessment.md) | Full functional inventory |
+| AI.14 | [AI.14-Full-Copilot-Implementation-Report.md](./AI.14-Full-Copilot-Implementation-Report.md) | Full implementation — LIMITED PILOT READY (flag OFF) |
 
-## Current production posture (AI.13)
+## Current production posture (AI.14)
 
 | Layer | Status |
 |-------|--------|
 | CORE PLATFORM | READY FOR LIMITED PRODUCTION PILOT — EXTENDED (AI.12) |
-| RESEARCH COPILOT | **READY FOR LIMITED PRODUCTION PILOT** — keep `RESEARCH_COPILOT_ENABLED=false` until ops enablement + live E2E |
-| COPILOT ROLLOUT | Global flag only (user-scoped rollout = additional work) |
+| RESEARCH COPILOT | **READY FOR LIMITED PRODUCTION PILOT** — keep OFF until ops enable + optional `RESEARCH_COPILOT_PILOT_EMAILS` + live E2E |
+| COPILOT ROLLOUT | Global flag + optional email allowlist (no department/group framework) |
 | FCM | BLOCKED |
 | Broader production | NOT READY |

@@ -630,6 +630,9 @@ RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SEC
 RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=800)
 RESEARCH_COPILOT_MAX_USER_MESSAGES = env.int("RESEARCH_COPILOT_MAX_USER_MESSAGES", default=40)
 RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", default=4000)
+# Optional comma-separated emails for controlled pilot when RESEARCH_COPILOT_ENABLED=true.
+# Empty = all authenticated users (global). Flag false = nobody.
+RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
 # Android / FCM push (optional — when unset, push stays in-app + email)
 FCM_SERVER_KEY = env("FCM_SERVER_KEY", default="")
 FIREBASE_CREDENTIALS_JSON = env("FIREBASE_CREDENTIALS_JSON", default="")

@@ -38,8 +38,9 @@ class IsCopilotKnowledgeAdmin(BasePermission):
         return ut in {UserType.ADMIN, "admin"}
 
 
-def _feature_gate():
-    if not conv_svc.feature_enabled():
+def _feature_gate(request=None):
+    user = getattr(request, "user", None) if request is not None else None
+    if not conv_svc.feature_enabled(user=user):
         return Response(
             {
                 "error": {
@@ -80,7 +81,7 @@ def _ser_doc(doc: KnowledgeDocument) -> dict:
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_documents(request):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     if request.method == "GET":
@@ -129,7 +130,7 @@ def knowledge_documents(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_document_detail(request, document_id):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     doc = get_object_or_404(KnowledgeDocument, id=document_id)
@@ -164,7 +165,7 @@ def knowledge_document_detail(request, document_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_document_reindex(request, document_id):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     doc = get_object_or_404(KnowledgeDocument, id=document_id)
@@ -175,7 +176,7 @@ def knowledge_document_reindex(request, document_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_rebuild_index(request):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     result = rebuild_all_indexes()
@@ -185,7 +186,7 @@ def knowledge_rebuild_index(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_seed(request):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     force = bool(request.data.get("force", False))
@@ -195,7 +196,7 @@ def knowledge_seed(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_jobs(request):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     rows = [
@@ -217,7 +218,7 @@ def knowledge_jobs(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
 def knowledge_analytics(request):
-    gated = _feature_gate()
+    gated = _feature_gate(request)
     if gated:
         return gated
     total_docs = KnowledgeDocument.objects.count()
@@ -239,6 +240,14 @@ def knowledge_analytics(request):
         }
         for g in KnowledgeGap.objects.order_by("-created_at")[:50]
     ]
+    from iic_booking.research_copilot.models import Conversation, CopilotAuditEvent, Message, MessageFeedback
+
+    tool_counts = list(
+        CopilotAuditEvent.objects.filter(action__in=["tool_executed", "tool_denied"])
+        .values("action")
+        .annotate(c=Count("id"))
+        .order_by("-c")[:20]
+    )
     return Response(
         {
             "documents": {"total": total_docs, "indexed": indexed, "failed": failed},
@@ -248,6 +257,13 @@ def knowledge_analytics(request):
                 "top_queries": top_queries,
             },
             "knowledge_gaps": gaps,
+            "copilot_usage": {
+                "conversations": Conversation.objects.count(),
+                "messages": Message.objects.count(),
+                "feedback": MessageFeedback.objects.count(),
+                "audit_events": CopilotAuditEvent.objects.count(),
+                "tool_actions": tool_counts,
+            },
             "categories": [{"value": c.value, "label": c.label} for c in DocumentCategory],
             "security_levels": [{"value": s.value, "label": s.label} for s in SecurityLevel],
         }
@@ -260,7 +276,7 @@ def knowledge_search(request):
     """Authenticated hybrid search (permission-filtered) for Copilot / debugging."""
     from iic_booking.research_copilot.services import conversation as conv_svc
 
-    if not conv_svc.feature_enabled():
+    if not conv_svc.feature_enabled(user=request.user):
         return Response(
             {"error": {"code": "research_copilot_disabled", "message": "Copilot disabled"}},
             status=503,

@@ -20,7 +20,7 @@ from iic_booking.research_copilot.throttles import ResearchCopilotToolThrottle, 
 
 
 def _feature_gate(*, user=None, audit: bool = True):
-    if not conv_svc.feature_enabled():
+    if not conv_svc.feature_enabled(user=user):
         if audit and user is not None:
             audit_svc.write_audit(
                 action=AuditAction.FEATURE_DISABLED,
@@ -45,7 +45,7 @@ def _feature_gate(*, user=None, audit: bool = True):
 @throttle_classes([ResearchCopilotUserThrottle])
 def bootstrap(request):
     """Public config for the Copilot UI (still requires auth)."""
-    if not conv_svc.feature_enabled():
+    if not conv_svc.feature_enabled(user=request.user):
         # Still return bootstrap shape with enabled=false for UI to hide gracefully
         ctx = build_context(request.user)
         return Response(

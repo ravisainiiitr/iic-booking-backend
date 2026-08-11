@@ -39,6 +39,9 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
             f"DSA={'yes' if getattr(eq, 'dsa_enabled', False) else 'no'}",
             f"RemoteAnalysis={'yes' if getattr(eq, 'enable_remote_analysis', False) else 'no'}",
         ]
+        loc = (getattr(eq, "location", None) or "").strip()
+        if loc:
+            snippet_parts.append(f"Location: {loc}")
         if spec_txt:
             snippet_parts.append(f"Specs: {spec_txt}")
         if accessories:

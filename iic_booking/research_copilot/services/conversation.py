@@ -30,8 +30,26 @@ from iic_booking.research_copilot.services import rag as rag_svc
 from iic_booking.research_copilot.services import tools as tools_svc
 
 
-def feature_enabled() -> bool:
-    return bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False))
+def feature_enabled(*, user=None) -> bool:
+    """
+    Global enable via RESEARCH_COPILOT_ENABLED.
+
+    Optional pilot allowlist: RESEARCH_COPILOT_PILOT_EMAILS (comma-separated).
+    When the allowlist is non-empty, only those emails may use Copilot while the
+    global flag is true. Empty allowlist = all authenticated users (global).
+    """
+    if not bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)):
+        return False
+    raw = (getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", None) or "").strip()
+    if not raw:
+        return True
+    allowed = {e.strip().lower() for e in raw.split(",") if e.strip()}
+    if not allowed:
+        return True
+    if user is None:
+        return False
+    email = (getattr(user, "email", None) or "").strip().lower()
+    return email in allowed
 
 
 def _append_sources_footer(reply: str, citations: list) -> str:
@@ -98,7 +116,8 @@ def _strip_escalate(text: str) -> tuple[str, bool]:
 
 def _static_actions(*, escalate: bool) -> list[dict]:
     actions = [
-        {"id": "open_equipments", "label": "Open Equipments", "href": "/equipments", "enabled": True},
+        {"id": "open_equipments", "label": "Find Equipment", "href": "/equipments", "enabled": True},
+        {"id": "open_my_bookings", "label": "My Bookings", "href": "/my-bookings", "enabled": True},
         {"id": "open_wallet", "label": "Open Wallet", "href": "/wallet", "enabled": True},
         {"id": "open_tickets", "label": "Support Tickets", "href": "/tickets", "enabled": True},
     ]
@@ -110,16 +129,17 @@ def _static_actions(*, escalate: bool) -> list[dict]:
                 "label": "Create support ticket",
                 "href": "/tickets",
                 "enabled": True,
-                "hint": "AI.5 will auto-create with conversation attached",
+                "hint": "Open Tickets to escalate with conversation context.",
             },
         )
-    # Future action cards (disabled)
     actions.append(
         {
             "id": "book_equipment",
-            "label": "Book equipment",
-            "enabled": False,
-            "hint": "Requires AI.4 action execution + confirmation",
+            "label": "Book Equipment",
+            "href": "/book-equipment",
+            "enabled": True,
+            "requires_confirmation": True,
+            "hint": "Opens the portal booking flow — confirm there before anything is created.",
         }
     )
     return actions
@@ -153,6 +173,11 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     # history includes the new user message as last — pass prior only
     prior = history[:-1]
 
+    from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
+    from iic_booking.research_copilot.services.prompt_builder import append_portal_context
+
+    grounding = run_portal_grounding(user=user, text=text)
+
     retrieval = rag_svc.retrieve(
         query=text,
         role_bucket=ctx.role_bucket,
@@ -161,8 +186,10 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         conversation=conversation,
     )
     citations = retrieval.citations
+    system = build_system_prompt(ctx)
+    system = append_portal_context(system, portal_block=grounding.get("block") or "")
     system = append_retrieval_context(
-        build_system_prompt(ctx),
+        system,
         context_block=retrieval.context_block,
         citations=citations,
     )
@@ -182,10 +209,16 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         provider=provider,
         text=reply,
         retrieval_low=retrieval.low_confidence,
-        hit_count=len(citations),
+        hit_count=len(citations) + len(grounding.get("tool_results") or []),
     )
     if confidence < CONFIDENCE_ESCALATE_THRESHOLD or retrieval.low_confidence:
         escalate = True
+
+    base_actions = _static_actions(escalate=escalate)
+    # Prefer portal tool actions first
+    for a in reversed(grounding.get("actions") or []):
+        if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
+            base_actions.insert(0, a)
 
     assistant = Message.objects.create(
         conversation=conversation,
@@ -196,7 +229,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         suggested_actions=tools_svc.enrich_actions_from_message(
             user=user,
             text=text,
-            base_actions=_static_actions(escalate=escalate),
+            base_actions=base_actions,
         ),
         escalate_hint=escalate,
         metadata={
@@ -204,6 +237,8 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             "model": result.model if result else "",
             "intent": retrieval.intent,
             "retrieval_latency_ms": retrieval.latency_ms,
+            "portal_tools": grounding.get("tool_results") or [],
+            "response_modes": grounding.get("modes") or [],
         },
     )
 
@@ -258,6 +293,11 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
         if m.role in {MessageRole.USER, MessageRole.ASSISTANT}
     ][:-1]
 
+    from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
+    from iic_booking.research_copilot.services.prompt_builder import append_portal_context
+
+    grounding = run_portal_grounding(user=user, text=text)
+
     retrieval = rag_svc.retrieve(
         query=text,
         role_bucket=ctx.role_bucket,
@@ -266,8 +306,10 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
         conversation=conversation,
     )
     citations = retrieval.citations
+    system = build_system_prompt(ctx)
+    system = append_portal_context(system, portal_block=grounding.get("block") or "")
     system = append_retrieval_context(
-        build_system_prompt(ctx),
+        system,
         context_block=retrieval.context_block,
         citations=citations,
     )
@@ -297,10 +339,15 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
         provider="stream",
         text=reply,
         retrieval_low=retrieval.low_confidence,
-        hit_count=len(citations),
+        hit_count=len(citations) + len(grounding.get("tool_results") or []),
     )
     if confidence < CONFIDENCE_ESCALATE_THRESHOLD or retrieval.low_confidence:
         escalate = True
+
+    base_actions = _static_actions(escalate=escalate)
+    for a in reversed(grounding.get("actions") or []):
+        if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
+            base_actions.insert(0, a)
 
     assistant = Message.objects.create(
         conversation=conversation,
@@ -311,10 +358,15 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
         suggested_actions=tools_svc.enrich_actions_from_message(
             user=user,
             text=text,
-            base_actions=_static_actions(escalate=escalate),
+            base_actions=base_actions,
         ),
         escalate_hint=escalate,
-        metadata={"streamed": True, "intent": retrieval.intent},
+        metadata={
+            "streamed": True,
+            "intent": retrieval.intent,
+            "portal_tools": grounding.get("tool_results") or [],
+            "response_modes": grounding.get("modes") or [],
+        },
     )
     if not conversation.title or conversation.title == "New conversation":
         conversation.title = text[:80]
@@ -392,10 +444,18 @@ def serialize_conversation(c: Conversation, *, include_messages: bool = False) -
 def bootstrap_payload(*, user) -> dict:
     ctx = build_context(user)
     return {
-        "enabled": feature_enabled(),
+        "enabled": feature_enabled(user=user),
         "assistant_name": "IIC Research Copilot",
         "role_bucket": ctx.role_bucket,
         "suggested_prompts": _suggested_for(ctx),
         "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
         "capabilities": ctx.capabilities,
+        "command_actions": [
+            {"id": "my_bookings", "label": "My Bookings", "href": "/my-bookings"},
+            {"id": "find_equipment", "label": "Find Equipment", "href": "/equipments"},
+            {"id": "sample_status", "label": "Check Sample Status", "prompt": "What is the sample status of my latest booking?"},
+            {"id": "software", "label": "Find Analysis Software", "href": "/remote-analysis/software-catalog"},
+            {"id": "results", "label": "My Results", "prompt": "Are results available for my latest completed booking?"},
+            {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
+        ],
     }

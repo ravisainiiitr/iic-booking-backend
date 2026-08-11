@@ -95,21 +95,22 @@ class FallbackGateway(LLMGateway):
             )
         elif any(k in lower for k in ("wallet", "recharge", "balance")):
             reply = (
-                "For wallet balance, recharge, and credit facility, open the **Wallet** section. "
-                "I cannot read live balances until tool calling (AI.3) is enabled. "
-                "Tell me what you need (balance, recharge, grant, refund) and I will guide the steps."
+                "For wallet balance and recharge, open the **Wallet** section. "
+                "When Copilot tools are available I will summarize your accessible balance from portal data. "
+                "I will not invent balances or perform wallet mutations."
             )
         elif any(k in lower for k in ("book", "slot", "fesem", "afm", "tem")):
             reply = (
                 "To book equipment: open **Equipments**, pick the instrument, review slots, and confirm. "
                 "Describe your sample and measurement need if you want advisory guidance "
-                "(e.g. elemental mapping → FESEM+EDS). I will not invent availability."
+                "(e.g. elemental mapping → FESEM+EDS). I will not invent availability — "
+                "use Review & Confirm in the portal before any booking is created."
             )
         else:
             reply = (
                 "I am **IIC Research Copilot**. Ask about booking, equipment selection, sample status, "
-                "wallet, Remote Analysis, DSA (department admins), or documentation. "
-                "Live data actions require upcoming tool integrations — I will not fabricate results."
+                "results, wallet, Remote Analysis software, or documentation. "
+                "Live answers use portal data and institute documents when available — I will not fabricate results."
             )
         return LLMResult(text=reply, model="fallback", provider="local")
 
