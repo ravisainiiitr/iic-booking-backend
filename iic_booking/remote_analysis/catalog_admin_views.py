@@ -18,6 +18,16 @@ _VIEW = [IsAuthenticated, CanViewRemoteAnalysis]
 _MANAGE = [IsAuthenticated, CanManageRemoteAnalysis]
 
 
+def _license_type_choices() -> list[tuple[str, str]]:
+    field = AnalysisSoftwareCatalog._meta.get_field("license_type")
+    return list(getattr(field, "choices", None) or [])
+
+
+def _equipment_pk(equipment) -> int:
+    """Equipment uses equipment_id as PK (not Django's default .id)."""
+    return int(getattr(equipment, "pk", None) or getattr(equipment, "equipment_id"))
+
+
 def _serialize_catalog(cat: AnalysisSoftwareCatalog, *, usage: dict | None = None) -> dict:
     usage = usage or {}
     return {
@@ -55,7 +65,7 @@ def _serialize_mapping(row: EquipmentAnalysisSoftware) -> dict:
     eq = row.equipment
     return {
         "id": str(row.id),
-        "equipment_id": eq.id,
+        "equipment_id": _equipment_pk(eq),
         "equipment_name": getattr(eq, "name", "") or "",
         "equipment_code": getattr(eq, "code", "") or "",
         "department_id": getattr(eq, "internal_department_id", None),
@@ -96,7 +106,7 @@ def _apply_catalog_body(cat: AnalysisSoftwareCatalog, body: dict, *, creating: b
             setattr(cat, field, str(body.get(field) or ""))
     if "license_type" in body:
         value = str(body.get("license_type") or "").strip()
-        valid = {c.value for c in AnalysisSoftwareCatalog.LicenseType}
+        valid = {c[0] for c in _license_type_choices()}
         if value and value not in valid:
             errors.append(f"license_type must be one of: {', '.join(sorted(valid))}")
         else:
@@ -222,7 +232,7 @@ def catalog_collection(request):
             "count": len(results),
             "results": results,
             "license_types": [
-                {"value": c.value, "label": str(c.label)} for c in AnalysisSoftwareCatalog.LicenseType
+                {"value": value, "label": str(label)} for value, label in _license_type_choices()
             ],
         }
     )
@@ -466,7 +476,7 @@ def mapping_collection(request):
         record_event(
             category=AuditCategory.INVENTORY,
             action="EquipmentSoftwareMappingAdded",
-            details=f"equipment={equipment.id} catalog={catalog.name}",
+            details=f"equipment={_equipment_pk(equipment)} catalog={catalog.name}",
             actor=request.user if getattr(request.user, "is_authenticated", False) else None,
         )
         return Response(_serialize_mapping(row), status=status.HTTP_201_CREATED)
@@ -596,12 +606,12 @@ def mapping_matrix(request):
         record_event(
             category=AuditCategory.INVENTORY,
             action="EquipmentSoftwareMappingReplaced",
-            details=f"equipment={equipment.id} catalogs={sorted(wanted)}",
+            details=f"equipment={_equipment_pk(equipment)} catalogs={sorted(wanted)}",
             actor=request.user if getattr(request.user, "is_authenticated", False) else None,
         )
         return Response(
             {
-                "equipment_id": equipment.id,
+                "equipment_id": _equipment_pk(equipment),
                 "mappings": [
                     _serialize_mapping(m)
                     for m in EquipmentAnalysisSoftware.objects.filter(equipment=equipment)
@@ -643,15 +653,16 @@ def mapping_matrix(request):
 
     equipment_rows = []
     for eq in eq_qs[:500]:
+        eq_pk = _equipment_pk(eq)
         equipment_rows.append(
             {
-                "id": eq.id,
+                "id": eq_pk,
                 "name": eq.name,
                 "code": getattr(eq, "code", "") or "",
                 "department_id": getattr(eq, "internal_department_id", None),
                 "department_name": getattr(getattr(eq, "internal_department", None), "name", None),
-                "catalog_ids": sorted(by_eq.get(eq.id, set())),
-                "default_catalog_id": defaults.get(eq.id),
+                "catalog_ids": sorted(by_eq.get(eq_pk, set())),
+                "default_catalog_id": defaults.get(eq_pk),
             }
         )
 
