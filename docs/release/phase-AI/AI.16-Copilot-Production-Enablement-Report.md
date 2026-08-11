@@ -217,6 +217,6 @@ Do **not** claim live E2E. Do **not** enable globally.
 | Repo | SHA |
 |------|-----|
 | Backend (deployed tag peel) | `7a3f552` (`v2.5.5-ai16-research-copilot`) |
-| Backend feature tip (docs) | `209c035` |
+| Backend feature tip (docs) | `922723b` |
 | Frontend | `e9fa789` |
 | Android | `233740a` (unchanged) |
