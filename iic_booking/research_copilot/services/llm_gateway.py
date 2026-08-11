@@ -60,6 +60,10 @@ class LLMGateway:
     def complete(self, messages: list[dict], *, max_tokens: int = 800) -> LLMResult | None:
         raise NotImplementedError
 
+    def generate(self, messages: list[dict], *, max_tokens: int = 800) -> LLMResult | None:
+        """Preferred alias for complete() (AI.17 provider surface)."""
+        return self.complete(messages, max_tokens=max_tokens)
+
     def stream(self, messages: list[dict], *, max_tokens: int = 800) -> Iterator[str]:
         result = self.complete(messages, max_tokens=max_tokens)
         if result and result.text:
@@ -71,6 +75,41 @@ class LLMGateway:
             model=getattr(self, "model", "") or "",
             status="available",
         )
+
+    def model_available(self) -> bool:
+        health = self.health()
+        return health.status in {"available", "fallback"}
+
+
+class FakeInferenceProvider(LLMGateway):
+    """
+    Deterministic provider for unit tests (AI.17).
+
+    Does not call network. Configure via get_gateway() when
+    COPILOT_PROVIDER / COPILOT_LLM_PROVIDER = fake.
+    """
+
+    provider_name = "fake"
+    model = "fake-test"
+
+    def __init__(self, *, reply: str | None = None):
+        self.reply = reply
+        self.calls: list[list[dict]] = []
+
+    def complete(self, messages: list[dict], *, max_tokens: int = 800) -> LLMResult | None:
+        self.calls.append(list(messages))
+        text = self.reply
+        if text is None:
+            user_text = ""
+            for m in reversed(messages):
+                if m.get("role") == "user":
+                    user_text = (m.get("content") or "").strip()
+                    break
+            text = f"[fake] {user_text[:200]}" if user_text else "[fake] ok"
+        return LLMResult(text=text, model=self.model, provider="fake", finish_reason="stop", latency_ms=1)
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth(provider="fake", model=self.model, status="available", detail="test double")
 
 
 class OpenAIGateway(LLMGateway):
@@ -361,8 +400,18 @@ class FallbackGateway(LLMGateway):
 
 
 def configured_provider_name() -> str:
-    raw = (getattr(settings, "COPILOT_LLM_PROVIDER", None) or "ollama").strip().lower()
-    if raw in {"ollama", "openai", "fallback", "auto"}:
+    """
+    Resolve provider from COPILOT_PROVIDER (preferred) or COPILOT_LLM_PROVIDER.
+
+    Default: ollama — production inference must not require OPENAI_API_KEY.
+    """
+    raw = (
+        getattr(settings, "COPILOT_PROVIDER", None)
+        or getattr(settings, "COPILOT_LLM_PROVIDER", None)
+        or "ollama"
+    )
+    raw = str(raw).strip().lower()
+    if raw in {"ollama", "openai", "fallback", "auto", "fake"}:
         return raw
     return "ollama"
 
@@ -396,6 +445,7 @@ def get_gateway() -> LLMGateway:
     - ollama (default): does NOT require OPENAI_API_KEY
     - openai: requires OPENAI_API_KEY; otherwise FallbackGateway
     - fallback: always deterministic
+    - fake: FakeInferenceProvider (unit tests only)
     - auto: openai if key present else ollama if base URL set else fallback
     """
     provider = configured_provider_name()
@@ -406,9 +456,12 @@ def get_gateway() -> LLMGateway:
     if provider == "fallback":
         return FallbackGateway()
 
+    if provider == "fake":
+        return FakeInferenceProvider()
+
     if provider == "openai":
         if not api_key:
-            logger.warning("COPILOT_LLM_PROVIDER=openai but OPENAI_API_KEY missing; using fallback")
+            logger.warning("COPILOT_PROVIDER=openai but OPENAI_API_KEY missing; using fallback")
             return FallbackGateway()
         return OpenAIGateway(api_key=api_key, model=openai_model_name(), timeout_seconds=timeout)
 

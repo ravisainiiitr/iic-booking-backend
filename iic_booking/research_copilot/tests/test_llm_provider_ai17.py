@@ -53,6 +53,7 @@ def plain_user(db):
 
 
 @override_settings(
+    COPILOT_PROVIDER="ollama",
     COPILOT_LLM_PROVIDER="ollama",
     OPENAI_API_KEY="",
     OLLAMA_BASE_URL="http://ollama.test:11434",
@@ -64,25 +65,26 @@ def test_provider_selection_ollama_without_openai_key():
     assert gw.model == "llama3.2:3b"
 
 
-@override_settings(COPILOT_LLM_PROVIDER="openai", OPENAI_API_KEY="sk-test", RESEARCH_COPILOT_MODEL="gpt-4o-mini")
+@override_settings(COPILOT_PROVIDER="openai", COPILOT_LLM_PROVIDER="openai", OPENAI_API_KEY="sk-test", RESEARCH_COPILOT_MODEL="gpt-4o-mini")
 def test_provider_selection_openai():
     gw = get_gateway()
     assert isinstance(gw, OpenAIGateway)
     assert gw.model == "gpt-4o-mini"
 
 
-@override_settings(COPILOT_LLM_PROVIDER="openai", OPENAI_API_KEY="")
+@override_settings(COPILOT_PROVIDER="openai", COPILOT_LLM_PROVIDER="openai", OPENAI_API_KEY="")
 def test_openai_provider_missing_key_uses_fallback():
     gw = get_gateway()
     assert isinstance(gw, FallbackGateway)
 
 
-@override_settings(COPILOT_LLM_PROVIDER="fallback", OPENAI_API_KEY="sk-ignored")
+@override_settings(COPILOT_PROVIDER="fallback", COPILOT_LLM_PROVIDER="fallback", OPENAI_API_KEY="sk-ignored")
 def test_provider_selection_fallback():
     assert isinstance(get_gateway(), FallbackGateway)
 
 
 @override_settings(
+    COPILOT_PROVIDER="ollama",
     COPILOT_LLM_PROVIDER="ollama",
     OPENAI_API_KEY="",
     OLLAMA_BASE_URL="http://127.0.0.1:9",
@@ -181,6 +183,7 @@ def test_ollama_health_available():
 
 
 @override_settings(
+    COPILOT_PROVIDER="ollama",
     COPILOT_LLM_PROVIDER="ollama",
     OLLAMA_BASE_URL="http://ollama.test:11434",
     OLLAMA_MODEL="llama3.2:3b",
@@ -192,7 +195,7 @@ def test_provider_health_unavailable():
     assert h.status == "unavailable"
 
 
-@override_settings(RESEARCH_COPILOT_ENABLED=True, COPILOT_LLM_PROVIDER="fallback")
+@override_settings(RESEARCH_COPILOT_ENABLED=True, COPILOT_PROVIDER="fallback", COPILOT_LLM_PROVIDER="fallback")
 def test_llm_health_endpoint_admin_only(admin_user, plain_user):
     client = APIClient()
     client.force_authenticate(user=plain_user)
@@ -203,13 +206,15 @@ def test_llm_health_endpoint_admin_only(admin_user, plain_user):
     ok = client.get("/api/v1/research-copilot/llm/health/")
     assert ok.status_code == 200
     body = ok.json()
-    assert body["provider"] in {"fallback", "ollama", "openai"}
+    assert body["provider"] in {"fallback", "ollama", "openai", "fake"}
+    assert "concurrency" in body
     assert "openai_api_key_configured" in body
     assert "sk-" not in json.dumps(body)
 
 
 @override_settings(
     RESEARCH_COPILOT_ENABLED=True,
+    COPILOT_PROVIDER="ollama",
     COPILOT_LLM_PROVIDER="ollama",
     OPENAI_API_KEY="",
     OLLAMA_BASE_URL="http://ollama.test:11434",
@@ -226,3 +231,52 @@ def test_send_message_graceful_when_ollama_down(plain_user):
     assert "temporarily unavailable" in content or "could not generate" in content
     assert message["metadata"].get("provider") == "ollama"
     assert message["metadata"].get("llm_error_category")
+
+
+@override_settings(COPILOT_PROVIDER="fake", COPILOT_LLM_PROVIDER="ollama", OPENAI_API_KEY="")
+def test_copilot_provider_alias_prefers_copilot_provider():
+    from iic_booking.research_copilot.services.llm_gateway import FakeInferenceProvider, configured_provider_name
+
+    assert configured_provider_name() == "fake"
+    gw = get_gateway()
+    assert isinstance(gw, FakeInferenceProvider)
+    result = gw.generate([{"role": "user", "content": "ping"}])
+    assert result is not None
+    assert result.provider == "fake"
+    assert "ping" in result.text
+
+
+@override_settings(COPILOT_PROVIDER="fake", RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_MAX_CONCURRENT=1)
+def test_concurrency_busy_does_not_raise(plain_user):
+    """When saturated, Copilot returns a busy message — booking path untouched."""
+    import threading
+    import time
+
+    from iic_booking.research_copilot.services import conversation as conv_svc
+    from iic_booking.research_copilot.services.inference_concurrency import acquire_generation_slot
+    from iic_booking.research_copilot.services.llm_gateway import FakeInferenceProvider
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def _hold():
+        with acquire_generation_slot(wait=False):
+            held.set()
+            release.wait(timeout=5)
+
+    t = threading.Thread(target=_hold, daemon=True)
+    t.start()
+    assert held.wait(timeout=2)
+
+    with patch(
+        "iic_booking.research_copilot.services.conversation.get_gateway",
+        return_value=FakeInferenceProvider(reply="should-not-run"),
+    ):
+        conv = conv_svc.create_conversation(user=plain_user, title="busy")
+        payload = conv_svc.send_message(user=plain_user, conversation=conv, content="Are you busy?")
+    release.set()
+    t.join(timeout=2)
+
+    content = payload["message"]["content"]
+    assert "temporarily busy" in content.lower()
+    assert payload["message"]["metadata"].get("busy") is True

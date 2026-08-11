@@ -61,6 +61,7 @@ def _reply_from_llm_result(result) -> str:
     if category:
         return (
             "Research Copilot is temporarily unavailable. "
+            "Your booking and other portal operations are unaffected. "
             "Please try again shortly, or open **Tickets** for human support.\n"
             + ESCALATE_MARKER
         )
@@ -163,8 +164,15 @@ def _static_actions(*, escalate: bool) -> list[dict]:
     return actions
 
 
-@transaction.atomic
 def send_message(*, user, conversation: Conversation, content: str) -> dict:
+    """
+    Persist user message, run portal grounding + RAG, then call LLM.
+
+    Critical path isolation (AI.17):
+    - No long-lived DB transaction around Ollama/OpenAI.
+    - Concurrency gate rejects overload with a friendly busy message.
+    - Failures stay inside Copilot; booking/DSA/RAA are untouched.
+    """
     text = (content or "").strip()
     if not text:
         raise ValueError("empty_message")
@@ -177,22 +185,28 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         raise ValueError("conversation_limit_reached")
 
     ctx = build_context(user)
-    Message.objects.create(
-        conversation=conversation,
-        role=MessageRole.USER,
-        content=text,
-    )
+    with transaction.atomic():
+        Message.objects.create(
+            conversation=conversation,
+            role=MessageRole.USER,
+            content=text,
+        )
 
     history = [
         {"role": m.role, "content": m.content}
         for m in conversation.messages.order_by("created_at")
         if m.role in {MessageRole.USER, MessageRole.ASSISTANT}
     ]
-    # history includes the new user message as last — pass prior only
     prior = history[:-1]
 
     from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
     from iic_booking.research_copilot.services.prompt_builder import append_portal_context
+    from iic_booking.research_copilot.services.inference_concurrency import (
+        BUSY_USER_MESSAGE,
+        CopilotBusyError,
+        acquire_generation_slot,
+    )
+    from iic_booking.research_copilot.models import AuditAction
 
     grounding = run_portal_grounding(user=user, text=text)
 
@@ -214,10 +228,27 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
 
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
     gateway = get_gateway()
-    result = gateway.complete(llm_messages, max_tokens=default_max_tokens())
+    result = None
+    busy = False
+    try:
+        with acquire_generation_slot(wait=False):
+            # generate() preferred; complete() remains available on all gateways
+            result = gateway.generate(llm_messages, max_tokens=default_max_tokens())
+    except CopilotBusyError:
+        busy = True
+        audit_svc.write_audit(
+            action=AuditAction.BUSY,
+            message="COPILOT_BUSY",
+            user=user,
+            conversation=conversation,
+            detail={"code": "copilot_busy"},
+        )
+        result = type("R", (), {"text": BUSY_USER_MESSAGE + "\n" + ESCALATE_MARKER, "provider": "none", "model": "", "error_category": "busy", "latency_ms": 0, "prompt_tokens": None, "completion_tokens": None})()
+
     raw = _reply_from_llm_result(result)
     reply, escalate = _strip_escalate(raw)
-    reply = _append_sources_footer(reply, citations)
+    if not busy:
+        reply = _append_sources_footer(reply, citations)
     provider = result.provider if result else "none"
     confidence = _estimate_confidence(
         escalate=escalate,
@@ -228,61 +259,66 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     )
     if confidence < CONFIDENCE_ESCALATE_THRESHOLD or retrieval.low_confidence:
         escalate = True
-    if result and getattr(result, "error_category", "") and not (result.text or "").strip():
+    if result and getattr(result, "error_category", "") and not (getattr(result, "text", "") or "").strip():
         escalate = True
+    if busy:
+        escalate = False
+        confidence = 0.5
 
     base_actions = _static_actions(escalate=escalate)
-    # Prefer portal tool actions first
     for a in reversed(grounding.get("actions") or []):
         if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
             base_actions.insert(0, a)
 
-    assistant = Message.objects.create(
-        conversation=conversation,
-        role=MessageRole.ASSISTANT,
-        content=reply,
-        confidence=confidence,
-        citations=rag_svc.citations_as_dicts(citations),
-        suggested_actions=tools_svc.enrich_actions_from_message(
-            user=user,
-            text=text,
-            base_actions=base_actions,
-        ),
-        escalate_hint=escalate,
-        metadata={
-            "provider": provider,
-            "model": result.model if result else "",
-            "intent": retrieval.intent,
-            "retrieval_latency_ms": retrieval.latency_ms,
-            "llm_latency_ms": getattr(result, "latency_ms", 0) if result else 0,
-            "llm_error_category": getattr(result, "error_category", "") if result else "",
-            "prompt_tokens": getattr(result, "prompt_tokens", None) if result else None,
-            "completion_tokens": getattr(result, "completion_tokens", None) if result else None,
-            "portal_tools": grounding.get("tool_results") or [],
-            "response_modes": grounding.get("modes") or [],
-        },
-    )
-
-    if not conversation.title or conversation.title == "New conversation":
-        conversation.title = text[:80]
-    conversation.updated_at = timezone.now()
-    conversation.save(update_fields=["title", "updated_at"])
-
-    if escalate or retrieval.low_confidence:
-        KnowledgeGap.objects.create(
+    with transaction.atomic():
+        assistant = Message.objects.create(
             conversation=conversation,
-            user=user,
-            query_summary=text[:512],
-            reason="escalate_hint" if escalate else "low_retrieval",
-            suggested_faq=f"Q: {text[:200]}\nA: (needs documentation)",
+            role=MessageRole.ASSISTANT,
+            content=reply,
+            confidence=confidence,
+            citations=rag_svc.citations_as_dicts(citations) if not busy else [],
+            suggested_actions=tools_svc.enrich_actions_from_message(
+                user=user,
+                text=text,
+                base_actions=base_actions,
+            ),
+            escalate_hint=escalate,
+            metadata={
+                "provider": provider,
+                "model": getattr(result, "model", "") if result else "",
+                "intent": retrieval.intent,
+                "retrieval_latency_ms": retrieval.latency_ms,
+                "llm_latency_ms": getattr(result, "latency_ms", 0) if result else 0,
+                "llm_error_category": getattr(result, "error_category", "") if result else "",
+                "prompt_tokens": getattr(result, "prompt_tokens", None) if result else None,
+                "completion_tokens": getattr(result, "completion_tokens", None) if result else None,
+                "portal_tools": grounding.get("tool_results") or [],
+                "response_modes": grounding.get("modes") or [],
+                "busy": busy,
+            },
         )
 
-    audit_svc.audit_message_replied(
-        user=user,
-        conversation=conversation,
-        confidence=confidence,
-        escalate=escalate,
-    )
+        if not conversation.title or conversation.title == "New conversation":
+            conversation.title = text[:80]
+        conversation.updated_at = timezone.now()
+        conversation.save(update_fields=["title", "updated_at"])
+
+        if not busy and (escalate or retrieval.low_confidence):
+            KnowledgeGap.objects.create(
+                conversation=conversation,
+                user=user,
+                query_summary=text[:512],
+                reason="escalate_hint" if escalate else "low_retrieval",
+                suggested_faq=f"Q: {text[:200]}\nA: (needs documentation)",
+            )
+
+    if not busy:
+        audit_svc.audit_message_replied(
+            user=user,
+            conversation=conversation,
+            confidence=confidence,
+            escalate=escalate,
+        )
 
     return {
         "conversation_id": str(conversation.id),
@@ -337,6 +373,11 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
     gateway = get_gateway()
     from iic_booking.research_copilot.models import AuditAction
+    from iic_booking.research_copilot.services.inference_concurrency import (
+        BUSY_USER_MESSAGE,
+        CopilotBusyError,
+        acquire_generation_slot,
+    )
 
     audit_svc.write_audit(
         action=AuditAction.STREAM_STARTED,
@@ -346,12 +387,18 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     )
 
     pieces: list[str] = []
-    for delta in gateway.stream(llm_messages):
-        pieces.append(delta)
-        yield {"event": "delta", "data": {"text": delta}}
+    try:
+        with acquire_generation_slot(wait=False):
+            for delta in gateway.stream(llm_messages):
+                pieces.append(delta)
+                yield {"event": "delta", "data": {"text": delta}}
+    except CopilotBusyError:
+        yield {"event": "delta", "data": {"text": BUSY_USER_MESSAGE}}
+        pieces = [BUSY_USER_MESSAGE]
 
     raw = "".join(pieces).strip() or (
-        "I could not stream a reply. Please try again.\n" + ESCALATE_MARKER
+        "Research Copilot is temporarily unavailable. "
+        "Your booking and other portal operations are unaffected.\n" + ESCALATE_MARKER
     )
     reply, escalate = _strip_escalate(raw)
     reply = _append_sources_footer(reply, citations)
@@ -478,11 +525,15 @@ def bootstrap_payload(*, user) -> dict:
         "capabilities": ctx.capabilities,
         "llm_provider": configured_provider_name(),
         "command_actions": [
-            {"id": "my_bookings", "label": "My Bookings", "href": "/my-bookings"},
-            {"id": "find_equipment", "label": "Find Equipment", "href": "/equipments"},
-            {"id": "sample_status", "label": "Check Sample Status", "prompt": "What is the sample status of my latest booking?"},
+            {"id": "next_booking", "label": "My next booking", "prompt": "What is my next booking?"},
+            {"id": "my_bookings", "label": "My bookings", "href": "/my-bookings", "prompt": "List my recent bookings."},
+            {"id": "booking_status", "label": "Check booking status", "prompt": "What is the status of my latest booking?"},
+            {"id": "sample_status", "label": "Check sample status", "prompt": "What is the sample status of my latest booking?"},
+            {"id": "results", "label": "Check results", "prompt": "Are results available for my latest completed booking?"},
+            {"id": "find_equipment", "label": "Find equipment", "href": "/equipments", "prompt": "Help me find suitable equipment for my sample."},
+            {"id": "search_slots", "label": "Search available slots", "prompt": "Search available slots for FESEM this week."},
+            {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
             {"id": "software", "label": "Find Analysis Software", "href": "/remote-analysis/software-catalog"},
-            {"id": "results", "label": "My Results", "prompt": "Are results available for my latest completed booking?"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
     }

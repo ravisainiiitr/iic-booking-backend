@@ -101,6 +101,10 @@ class AuditAction(models.TextChoices):
     FEATURE_DISABLED = "feature_disabled", _("Feature Disabled")
     TOOL_EXECUTED = "tool_executed", _("Tool Executed")
     TOOL_DENIED = "tool_denied", _("Tool Denied")
+    ERROR = "error", _("Error")
+    PROVIDER_UNAVAILABLE = "provider_unavailable", _("Provider Unavailable")
+    TIMEOUT = "timeout", _("Timeout")
+    BUSY = "busy", _("Busy")
 
 
 class CopilotAuditEvent(models.Model):

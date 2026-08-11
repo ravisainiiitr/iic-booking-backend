@@ -232,8 +232,12 @@ def llm_provider_health(request):
         payload["configured_model"] = openai_model_name()
     elif configured_provider_name() == "ollama":
         payload["configured_model"] = ollama_model_name()
+        payload["model_available"] = health.status == "available"
     # Boolean only — never the key value
     from django.conf import settings as dj_settings
 
     payload["openai_api_key_configured"] = bool((getattr(dj_settings, "OPENAI_API_KEY", None) or "").strip())
+    from iic_booking.research_copilot.services.inference_concurrency import snapshot as concurrency_snapshot
+
+    payload["concurrency"] = concurrency_snapshot().as_public_dict()
     return Response(payload)

@@ -44,6 +44,9 @@ services:
     # Host bind for local debugging only; remove host mapping on shared/prod hosts.
     ports:
       - "11434:11434"
+    # Hard caps so local AI cannot starve Django/Redis/Celery on the same machine.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-4g}
+    cpus: ${OLLAMA_CPUS:-2.0}
     # Uncomment when NVIDIA Container Toolkit is available:
     # deploy:
     #   resources:

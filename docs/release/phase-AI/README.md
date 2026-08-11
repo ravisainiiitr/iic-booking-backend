@@ -23,20 +23,27 @@
 | AI.14 | [AI.14-Full-Copilot-Implementation-Report.md](./AI.14-Full-Copilot-Implementation-Report.md) | Full implementation — LIMITED PILOT READY (flag OFF) |
 | AI.15 | [AI.15-Copilot-Live-Pilot-Qualification.md](./AI.15-Copilot-Live-Pilot-Qualification.md) | Live qualification — **NOT READY** (pre-deploy) |
 | AI.16 | [AI.16-Copilot-Production-Enablement-Report.md](./AI.16-Copilot-Production-Enablement-Report.md) | **DEPLOYED — PILOT BLOCKED** (OpenAI + pilot account) |
-| AI.17 | [AI.17-Ollama-Assessment.md](./AI.17-Ollama-Assessment.md) | Ollama / provider inventory |
+| AI.17 | [AI.17-Implementation-Assessment.md](./AI.17-Implementation-Assessment.md) | Source inventory before completion |
+| AI.17 | [AI.17-Ollama-Architecture.md](./AI.17-Ollama-Architecture.md) | Provider + isolation architecture |
+| AI.17 | [AI.17-Production-Deployment.md](./AI.17-Production-Deployment.md) | Deploy order / pilot / rollback |
+| AI.17 | [AI.17-Security.md](./AI.17-Security.md) | AuthZ, injection, audit |
+| AI.17 | [AI.17-Performance.md](./AI.17-Performance.md) | Limits + isolation |
+| AI.17 | [AI.17-Test-Report.md](./AI.17-Test-Report.md) | Test evidence |
+| AI.17 | [AI.17-Copilot-Implementation-Report.md](./AI.17-Copilot-Implementation-Report.md) | **PARTIAL — BLOCKED** (code ready; prod pilot blocked) |
+| AI.17 | [AI.17-Ollama-Assessment.md](./AI.17-Ollama-Assessment.md) | Earlier Ollama inventory |
 | AI.17 | [AI.17-Ollama-Setup.md](./AI.17-Ollama-Setup.md) | Local Ollama setup |
-| AI.17 | [AI.17-Ollama-Implementation-and-Pilot-Report.md](./AI.17-Ollama-Implementation-and-Pilot-Report.md) | **OLLAMA READY FOR LIMITED PILOT** (flag OFF; live E2E blocked) |
+| AI.17 | [AI.17-Ollama-Implementation-and-Pilot-Report.md](./AI.17-Ollama-Implementation-and-Pilot-Report.md) | Prior Ollama provider report |
 
-## Current production posture (AI.17)
+## Current production posture (AI.17 complete pass)
 
 | Layer | Status |
 |-------|--------|
 | CORE PLATFORM | Unchanged; Copilot additive |
-| RESEARCH COPILOT (prod) | Still AI.16 tag `7a3f552` — flag **false** |
-| LLM provider (code) | **Ollama default** via `COPILOT_LLM_PROVIDER` (AI.17 on feature branch) |
-| OPENAI_API_KEY | Optional when provider=ollama |
+| RESEARCH COPILOT on current prod pointer | **App not installed** (AI15 `RESULT=research_copilot_app_not_installed`) — flag **false** |
+| LLM provider (code on feature branch) | **Ollama default** via `COPILOT_PROVIDER` / `COPILOT_LLM_PROVIDER` |
+| OPENAI_API_KEY | Not required for Ollama path |
+| Local Ollama smoke | PASS (`llama3.2:1b`, ~33s) |
 | Live Ollama on prod | **Not deployed** |
 | Pilot allowlist | **Empty** |
-| Live pilot E2E | **BLOCKED** |
-| FCM | BLOCKED |
+| Controlled pilot | **BLOCKED** |
 | Broader production | NOT READY |

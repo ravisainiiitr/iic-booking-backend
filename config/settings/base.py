@@ -631,12 +631,16 @@ RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SEC
 RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=800)
 RESEARCH_COPILOT_MAX_USER_MESSAGES = env.int("RESEARCH_COPILOT_MAX_USER_MESSAGES", default=40)
 RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", default=4000)
+# Cap concurrent LLM generations per Django process (AI.17 resource isolation).
+RESEARCH_COPILOT_MAX_CONCURRENT = env.int("RESEARCH_COPILOT_MAX_CONCURRENT", default=2)
 # Optional comma-separated emails for controlled pilot when RESEARCH_COPILOT_ENABLED=true.
 # Empty = all authenticated users (global). Flag false = nobody.
 RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
 # LLM provider selection (AI.17). Default ollama — does NOT require OPENAI_API_KEY.
-# Supported: ollama | openai | fallback | auto
-COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default="ollama")
+# Preferred: COPILOT_PROVIDER. Legacy alias: COPILOT_LLM_PROVIDER.
+# Supported: ollama | openai | fallback | auto | fake
+COPILOT_PROVIDER = env("COPILOT_PROVIDER", default="") or env("COPILOT_LLM_PROVIDER", default="ollama")
+COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default=COPILOT_PROVIDER or "ollama")
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://127.0.0.1:11434")
 OLLAMA_MODEL = env("OLLAMA_MODEL", default="llama3.2:3b")
 # Android / FCM push (optional — when unset, push stays in-app + email)
