@@ -47,8 +47,77 @@ class CancellationValidationError(Exception):
 
 
 def user_may_cancel_started_slots(user) -> bool:
-    """Officer in charge (manager) and admin may cancel slots that have already started."""
-    return getattr(user, "user_type", None) in (UserType.MANAGER, UserType.ADMIN)
+    """Admin, Department Administrator, and OIC may cancel slots that have already started."""
+    return getattr(user, "user_type", None) in (
+        UserType.ADMIN,
+        UserType.DEPT_ADMIN,
+        UserType.MANAGER,
+    )
+
+
+def actor_may_cancel_booking(actor, booking) -> str | None:
+    """
+    Authorize privileged cancellation of a booking (typically another user's).
+
+    Scopes (source of truth for staff cancel API):
+    - Main Administrator: any booking
+    - Department Administrator: equipment.internal_department matches actor.department
+    - Officer in Charge (manager): equipment assigned via EquipmentManager / temporary OIC
+
+    Returns None when allowed, otherwise an error message for HTTP 403.
+    Does not apply owner self-cancel rules (threshold windows, etc.).
+    """
+    if not actor or not getattr(actor, "is_authenticated", False):
+        return "Authentication required."
+    if booking is None:
+        return "Booking not found."
+
+    ut = str(getattr(actor, "user_type", None) or "").strip().lower()
+    if getattr(actor, "is_superuser", False) or ut == UserType.ADMIN:
+        return None
+
+    equipment = getattr(booking, "equipment", None)
+    eq_id = getattr(booking, "equipment_id", None)
+    if eq_id is None and equipment is not None:
+        eq_id = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
+
+    if ut == UserType.DEPT_ADMIN:
+        dept_id = getattr(actor, "department_id", None)
+        if not dept_id:
+            return "Your account has no department assigned."
+        eq_dept = getattr(equipment, "internal_department_id", None) if equipment is not None else None
+        if eq_dept is None and eq_id is not None:
+            from .models import Equipment
+
+            eq_dept = (
+                Equipment.objects.filter(pk=eq_id)
+                .values_list("internal_department_id", flat=True)
+                .first()
+            )
+        if eq_dept != dept_id:
+            return (
+                "You can only cancel bookings for equipment in your assigned department."
+            )
+        return None
+
+    if ut == UserType.MANAGER:
+        if eq_id is None:
+            return "Booking equipment is not available."
+        from .reports import get_equipment_ids_managed_by_oic
+
+        allowed = set(get_equipment_ids_managed_by_oic(actor.id))
+        if int(eq_id) not in allowed:
+            return (
+                "You can only cancel bookings for equipment you are assigned to "
+                "as Officer in Charge."
+            )
+        return None
+
+    return (
+        "You don't have permission to cancel this booking. "
+        "Only Main Administrators, Department Administrators, and Officers in Charge "
+        "can cancel other users' bookings within their scope."
+    )
 
 
 def slot_duration_minutes(slot) -> int:

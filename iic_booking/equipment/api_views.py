@@ -174,6 +174,7 @@ from .booking_timing import BookingRequestTimer, attach_booking_performance_head
 from .booking_events import create_booking_event
 from .booking_cancellation import (
     CancellationValidationError,
+    actor_may_cancel_booking,
     parse_cancellation_request,
     perform_booking_cancellation,
     preview_partial_cancellation,
@@ -10727,11 +10728,15 @@ def reschedule_booking(request, booking_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cancel_booking(request, booking_id):
-    """Cancel a booking.
-    
-    This endpoint requires operator, manager, or admin permissions.
-    Changes booking status to CANCELLED and frees up the slots.
-    Optionally refunds the booking amount.
+    """Cancel a booking (privileged staff cancel).
+
+    Authorized roles and scopes (server-side source of truth):
+    - Main Administrator: any booking
+    - Department Administrator: bookings for equipment in their assigned department
+    - Officer in Charge (manager): bookings for equipment they are assigned to
+
+    Does not apply owner self-cancel time-window restrictions. Changes booking status
+    to CANCELLED and frees up the slots. Optionally refunds the booking amount.
     
     Args:
         booking_id: Primary key of the booking
@@ -10745,18 +10750,19 @@ def cancel_booking(request, booking_id):
     Returns:
         Response: Updated booking information
     """
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "You don't have permission to perform this action. Only operators, managers, and admins can cancel bookings."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    
     try:
-        booking = Booking.objects.get(booking_id=booking_id)
+        booking = Booking.objects.select_related("equipment").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response(
             {"error": "Booking not found."},
             status=status.HTTP_404_NOT_FOUND,
+        )
+
+    scope_err = actor_may_cancel_booking(request.user, booking)
+    if scope_err:
+        return Response(
+            {"error": scope_err},
+            status=status.HTTP_403_FORBIDDEN,
         )
     
     # Don't allow cancelling already cancelled or refunded bookings
@@ -10833,13 +10839,14 @@ def partial_cancel_preview(request, booking_id):
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    is_owner = booking.user == request.user
-    is_staff = check_operator_permission(request.user)
-    if not is_owner and not is_staff:
-        return Response(
-            {"error": "You don't have permission to preview cancellation for this booking."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    is_owner = booking.user_id == request.user.id
+    if not is_owner:
+        scope_err = actor_may_cancel_booking(request.user, booking)
+        if scope_err:
+            return Response(
+                {"error": scope_err},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
     reduced = request.data.get("reduced_input_values")
     raw_slot_ids = request.data.get("slot_ids")
