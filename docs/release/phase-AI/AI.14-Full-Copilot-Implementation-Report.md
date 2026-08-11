@@ -155,6 +155,8 @@ Department/group scoped flags: **not** implemented (would be a new framework).
 
 | Repo | SHA |
 |------|-----|
-| Backend | *(post-commit)* |
-| Frontend | *(post-commit)* |
+| Backend | `4cd084b` |
+| Frontend | `e9fa789` |
 | Android | `233740a` (unchanged) |
+
+Production enablement: **not performed** (`research_copilot=false` on live probe).
