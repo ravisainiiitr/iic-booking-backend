@@ -1,0 +1,100 @@
+# Probe: Selected User booking-info (read-only)
+name: Probe Selected User Booking Info
+
+on:
+  workflow_dispatch:
+    inputs:
+      user_email:
+        description: Target user email for booking-info
+        required: true
+        default: "kushagra@iic.iitr.ac.in"
+      equipment_id:
+        description: Equipment id (optional, for sub-wallet)
+        required: false
+        default: "1"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe booking-info path inside django
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              echo "DEPLOY_PATH=$d"
+              cd "$d"
+              echo "HEAD=$(git rev-parse --short HEAD 2>/dev/null || true)"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              test -f .deploy-state/current_release_tag && echo "current_release_tag=$(cat .deploy-state/current_release_tag)" || true
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              echo "django_container=$CID"
+              test -n "$CID"
+              echo "=== grep booking_info marker in image ==="
+              docker exec "$CID" sh -lc 'grep -n "Intentionally does NOT use for_booking" /app/config/admin_api.py | head -n 3 || echo MARKER_MISSING'
+              EMAIL='${{ github.event.inputs.user_email }}'
+              EQ='${{ github.event.inputs.equipment_id }}'
+              docker exec -e PROBE_EMAIL="$EMAIL" -e PROBE_EQ="$EQ" -w /app "$CID" python - <<'PY'
+          import os, json, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.test import RequestFactory
+          from django.contrib.auth import get_user_model
+          from rest_framework.test import force_authenticate
+          from config.admin_api import admin_api_router
+
+          User = get_user_model()
+          email = (os.environ.get("PROBE_EMAIL") or "").strip()
+          eq = (os.environ.get("PROBE_EQ") or "").strip()
+          target = User.objects.filter(email__iexact=email).select_related("department").first()
+          print("target_found=", bool(target))
+          if not target:
+              raise SystemExit(2)
+          print("target_id=", target.id)
+          print("target_email=", target.email)
+          print("target_department_id=", target.department_id)
+          print("target_department_name=", getattr(target.department, "name", None))
+          print("target_phone=", getattr(target, "phone_number", None))
+          print("target_user_type=", target.user_type)
+          try:
+              w = target.get_accessible_wallet()
+              print("wallet=", bool(w), "wallet_user_id=", getattr(w, "user_id", None) if w else None)
+              if w:
+                  print("wallet_total=", str(w.total_balance))
+          except Exception as e:
+              print("wallet_error=", type(e).__name__, str(e)[:200])
+
+          router = admin_api_router()
+          viewset = None
+          for prefix, viewset_cls, basename in router.registry:
+              if basename == "admin-user":
+                  viewset = viewset_cls
+                  break
+          assert viewset is not None, "admin-user viewset missing"
+          # Prefer an admin actor; else manager/dept_admin
+          actor = (
+              User.objects.filter(user_type="admin", is_active=True).order_by("id").first()
+              or User.objects.filter(user_type="manager", is_active=True).order_by("id").first()
+              or User.objects.filter(user_type="dept_admin", is_active=True).order_by("id").first()
+          )
+          print("actor_id=", getattr(actor, "id", None), "actor_type=", getattr(actor, "user_type", None), "actor_email=", getattr(actor, "email", None))
+          rf = RequestFactory()
+          path = f"/api/admin/users/{target.id}/booking-info/"
+          query = f"?equipment_id={eq}" if eq else ""
+          req = rf.get(path + query)
+          force_authenticate(req, user=actor)
+          view = viewset.as_view({"get": "booking_info"})
+          resp = view(req, pk=str(target.id))
+          print("http_status=", resp.status_code)
+          data = getattr(resp, "data", None)
+          print("response=", json.dumps(data, default=str)[:2000])
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
