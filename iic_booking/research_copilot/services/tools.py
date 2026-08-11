@@ -156,25 +156,38 @@ def _search_slots(*, arguments: dict, user) -> dict:
 def _search_bookings(*, arguments: dict, user) -> dict:
     from iic_booking.equipment.models import Booking
 
+    # Hard scope to authenticated caller — ignore any attempted foreign user selectors.
+    for banned in ("user_id", "user", "email", "owner", "owner_id", "target_user"):
+        if banned in (arguments or {}):
+            return _err(
+                "forbidden",
+                "Bookings are scoped to the authenticated user only.",
+            )
+
     status_filter = (arguments.get("status") or "").strip().upper()
-    qs = Booking.objects.filter(user=user).select_related("equipment").order_by("-start_datetime")[:30]
+    # Booking PK is booking_id; schedule lives on related daily_slots (no start_datetime column).
+    qs = list(
+        Booking.objects.filter(user=user)
+        .select_related("equipment")
+        .prefetch_related("daily_slots")
+        .order_by("-created_at")[:30]
+    )
     if status_filter:
         qs = [b for b in qs if str(getattr(b, "status", "")).upper() == status_filter]
     rows = []
     for b in qs[:20]:
         eq = getattr(b, "equipment", None)
+        slots = list(getattr(b, "daily_slots", []).all()) if hasattr(getattr(b, "daily_slots", None), "all") else []
+        start = slots[0].start_datetime if slots else None
+        end = slots[-1].end_datetime if slots else None
         rows.append(
             {
-                "booking_id": b.id,
+                "booking_id": b.pk,
                 "equipment": getattr(eq, "name", None),
                 "status": getattr(b, "status", None),
-                "start": getattr(b, "start_datetime", None).isoformat()
-                if getattr(b, "start_datetime", None)
-                else None,
-                "end": getattr(b, "end_datetime", None).isoformat()
-                if getattr(b, "end_datetime", None)
-                else None,
-                "url": f"/my-bookings?booking={b.id}",
+                "start": start.isoformat() if start else None,
+                "end": end.isoformat() if end else None,
+                "url": f"/my-bookings?booking={b.pk}",
             }
         )
     return _ok(
@@ -192,7 +205,9 @@ def _search_bookings(*, arguments: dict, user) -> dict:
 
 
 def _get_wallet(*, arguments: dict, user) -> dict:
-    _ = arguments
+    for banned in ("user_id", "user", "email", "owner", "owner_id", "target_user"):
+        if banned in (arguments or {}):
+            return _err("forbidden", "Wallet is scoped to the authenticated user only.")
     try:
         from iic_booking.users.models import Wallet
 
@@ -346,7 +361,7 @@ def _prepare_cancel_booking(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "requires_confirmation": True,
-            "booking_id": booking.id,
+            "booking_id": booking.pk,
             "equipment": getattr(booking.equipment, "name", None),
             "status": getattr(booking, "status", None),
             "message": "Cancellation uses the existing portal cancellation API and policy. Confirm in My Bookings.",
@@ -355,7 +370,7 @@ def _prepare_cancel_booking(*, arguments: dict, user) -> dict:
             {
                 "id": "cancel_booking",
                 "label": "Cancel Booking",
-                "href": f"/my-bookings?booking={booking.id}&action=cancel",
+                "href": f"/my-bookings?booking={booking.pk}&action=cancel",
                 "enabled": True,
                 "hint": "Opens booking details for policy-aware cancellation.",
             }
@@ -376,14 +391,14 @@ def _prepare_launch_remote_analysis(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "requires_confirmation": True,
-            "booking_id": booking.id,
+            "booking_id": booking.pk,
             "message": "Full desktop Remote Analysis continues through Analysis Workspace.",
         },
         actions=[
             {
                 "id": "launch_remote_analysis",
                 "label": "Open Analysis Workspace",
-                "href": f"/analysis-workspace/{booking.id}",
+                "href": f"/analysis-workspace/{booking.pk}",
                 "enabled": True,
             }
         ],
@@ -412,15 +427,44 @@ _HANDLERS = {
 }
 
 
+def _role_bucket_for_user(user) -> str:
+    from iic_booking.research_copilot.services.context_builder import _role_bucket
+
+    user_type = getattr(user, "user_type", None) or getattr(user, "role", None) or ""
+    if hasattr(user_type, "value"):
+        user_type = user_type.value
+    return _role_bucket(str(user_type or ""))
+
+
 def execute_tool(*, name: str, arguments: dict, user) -> dict:
     """Execute a registered tool. Mutating tools only prepare authorized portal action cards."""
+    from iic_booking.research_copilot.services.audit import audit_tool_executed
+
     handler = _HANDLERS.get(name)
     if not handler:
-        return _err("unknown_tool", f"Tool '{name}' is not registered")
+        result = _err("unknown_tool", f"Tool '{name}' is not registered")
+        audit_tool_executed(user=user, name=name, ok=False, arguments=arguments, result=result)
+        return result
+
+    spec = next((t for t in TOOL_REGISTRY if t.name == name), None)
+    role = _role_bucket_for_user(user)
+    if spec and "*" not in spec.roles and role not in spec.roles and role != "admin":
+        result = _err("forbidden", f"Tool '{name}' is not available for role '{role}'")
+        audit_tool_executed(user=user, name=name, ok=False, arguments=arguments, result=result)
+        return result
+
     try:
-        return handler(arguments=arguments or {}, user=user)
+        result = handler(arguments=arguments or {}, user=user)
     except Exception as exc:  # noqa: BLE001 — tool boundary
-        return _err("tool_failed", f"Tool '{name}' failed: {exc}")
+        result = _err("tool_failed", f"Tool '{name}' failed: {exc}")
+    audit_tool_executed(
+        user=user,
+        name=name,
+        ok=bool(result.get("ok")),
+        arguments=arguments,
+        result=result,
+    )
+    return result
 
 
 def enrich_actions_from_message(*, user, text: str, base_actions: list[dict] | None = None) -> list[dict]:

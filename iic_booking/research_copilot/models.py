@@ -99,6 +99,8 @@ class AuditAction(models.TextChoices):
     FEEDBACK = "feedback", _("Feedback")
     ESCALATE_HINT = "escalate_hint", _("Escalate Hint")
     FEATURE_DISABLED = "feature_disabled", _("Feature Disabled")
+    TOOL_EXECUTED = "tool_executed", _("Tool Executed")
+    TOOL_DENIED = "tool_denied", _("Tool Denied")
 
 
 class CopilotAuditEvent(models.Model):

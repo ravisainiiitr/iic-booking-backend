@@ -38,7 +38,7 @@ def _role_bucket(user_type: str) -> str:
         return "faculty"
     if t in {"external", "external_user", "industry"}:
         return "external"
-    if t in {"student", "phd", "mtech", "btech", "project_student"}:
+    if t in {"student", "phd", "mtech", "btech", "project_student", "individual_student"}:
         return "student"
     return "default"
 

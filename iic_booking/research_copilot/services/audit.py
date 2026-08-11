@@ -42,3 +42,24 @@ def audit_message_replied(*, user, conversation, confidence: float | None, escal
             "escalate_hint": escalate,
         },
     )
+
+
+def audit_tool_executed(*, user, name: str, ok: bool, arguments: dict | None = None, result: dict | None = None) -> None:
+    """Record Copilot tool execution (read or confirmation-card prepare)."""
+    safe_args = {
+        k: v
+        for k, v in (arguments or {}).items()
+        if k.lower() not in {"password", "token", "secret", "authorization"}
+    }
+    write_audit(
+        action=AuditAction.TOOL_EXECUTED if ok else AuditAction.TOOL_DENIED,
+        message=f"Tool {name} {'ok' if ok else 'denied/failed'}"[:512],
+        user=user,
+        detail={
+            "tool": name,
+            "ok": ok,
+            "arguments": safe_args,
+            "error": (result or {}).get("error"),
+            "message": (result or {}).get("message"),
+        },
+    )

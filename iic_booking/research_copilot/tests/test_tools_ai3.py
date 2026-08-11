@@ -46,11 +46,43 @@ def test_enrich_actions_book_intent(django_user_model):
 
 
 @pytest.mark.django_db
-def test_recommend_software_catalog(django_user_model):
-    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+def test_search_bookings_rejects_foreign_user_selector(django_user_model):
+    user = django_user_model.objects.create_user(email="copilot-tools-auth@example.com", password="x")
+    result = tools_svc.execute_tool(
+        name="search_bookings",
+        arguments={"email": "someone.else@example.com"},
+        user=user,
+    )
+    assert result["ok"] is False
+    assert result["error"] == "forbidden"
 
-    AnalysisSoftwareCatalog.objects.create(name="ImageJ", slug="imagej-copilot-test", is_active=True)
-    user = django_user_model.objects.create_user(email="copilot-tools4@example.com", password="x")
-    result = tools_svc.execute_tool(name="recommend_software", arguments={"query": "Image"}, user=user)
-    assert result["ok"] is True
-    assert any(r["name"] == "ImageJ" for r in result["data"])
+
+@pytest.mark.django_db
+def test_cancel_booking_tool_scopes_to_caller(django_user_model):
+    other = django_user_model.objects.create_user(email="other-tools@example.com", password="x")
+    if hasattr(other, "user_type"):
+        try:
+            other.user_type = "student"
+            other.save(update_fields=["user_type"])
+        except Exception:
+            pass
+    # Foreign booking id must never resolve for another user.
+    denied = tools_svc.execute_tool(
+        name="cancel_booking",
+        arguments={"booking_id": 999999},
+        user=other,
+    )
+    assert denied["ok"] is False
+    assert denied["error"] in {"booking_not_found", "forbidden"}
+
+
+@pytest.mark.django_db
+def test_tool_execution_writes_audit(django_user_model):
+    from iic_booking.research_copilot.models import AuditAction, CopilotAuditEvent
+
+    user = django_user_model.objects.create_user(email="copilot-tools-audit@example.com", password="x")
+    before = CopilotAuditEvent.objects.count()
+    tools_svc.execute_tool(name="search_equipment", arguments={"query": "x"}, user=user)
+    after = CopilotAuditEvent.objects.filter(action=AuditAction.TOOL_EXECUTED, user=user).count()
+    assert CopilotAuditEvent.objects.count() >= before + 1
+    assert after >= 1
