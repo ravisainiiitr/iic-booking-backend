@@ -17,8 +17,10 @@ jobs:
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           OUT="/tmp/ra_diag_${{ github.run_id }}.txt"
-          docker exec -i -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" python manage.py shell <<'PY' > "$OUT" 2>&1
+          SCRIPT="/tmp/ra_diag_${{ github.run_id }}.py"
+          cat > "$SCRIPT" <<'PY'
           import os, json, traceback
+          from datetime import timedelta
           from django.utils import timezone
           from iic_booking.equipment.models import Booking
           from iic_booking.remote_analysis.models import (
@@ -26,8 +28,7 @@ jobs:
           )
           from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware
           from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
-          from iic_booking.remote_analysis.constants import ReservationStatus
-          from iic_booking.remote_analysis.services.software_mapping import SoftwareMappingService
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
           from iic_booking.remote_analysis.services.availability import AvailabilityEngine
           from iic_booking.remote_analysis.services.allocation import AllocationService
           from iic_booking.remote_analysis.services.maintenance import MaintenanceService
@@ -128,7 +129,7 @@ jobs:
               engine = AvailabilityEngine()
               alloc = AllocationService()
               start = reservation.requested_start or timezone.now()
-              end = reservation.requested_end or (timezone.now() + timezone.timedelta(hours=2))
+              end = reservation.requested_end or (timezone.now() + timedelta(hours=2))
               caps = reservation.requested_capabilities or {}
               for w in AnalysisWorkstation.objects.filter(enabled=True).order_by('hostname'):
                   try:
@@ -186,6 +187,12 @@ jobs:
               print('SUMMARY_ERR', type(e).__name__, e)
               traceback.print_exc()
           PY
+          docker cp "$SCRIPT" "$CID:/tmp/ra_diag_script.py"
+          docker exec -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" \
+            python manage.py shell < /tmp/ra_diag_${{ github.run_id }}.py > "$OUT" 2>&1 || true
+          # Prefer in-container execution of copied script via -c exec
+          docker exec -e BID="${{ github.event.inputs.booking_id }}" -w /app "$CID" \
+            bash -lc 'python manage.py shell < /tmp/ra_diag_script.py' > "$OUT" 2>&1
           echo '==== DIAG OUTPUT ===='
           cat "$OUT"
           {
@@ -194,3 +201,5 @@ jobs:
             cat "$OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # Persist on runner for operators
+          cp "$OUT" "/home/ubuntu/ra_diag_${{ github.run_id }}.txt" 2>/dev/null || true
