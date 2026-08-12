@@ -153,6 +153,11 @@ def seed_workstation_software_from_selection(
         if prior is None:
             catalog_created += 1
 
+        if catalog.is_archived or not catalog.is_active:
+            catalog.is_archived = False
+            catalog.is_active = True
+            catalog.save(update_fields=["is_archived", "is_active", "updated_at"])
+
         linked_software.append(catalog.slug)
 
         name = (catalog.name or item["name"] or "").strip()

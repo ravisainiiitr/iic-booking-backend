@@ -126,9 +126,16 @@ def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str =
         or AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
     )
     if existing:
+        changed = False
         if publisher and not (existing.vendor or "").strip():
             existing.vendor = _clip(publisher, 255)
-            existing.save(update_fields=["vendor", "updated_at"])
+            changed = True
+        if existing.is_archived or not existing.is_active:
+            existing.is_archived = False
+            existing.is_active = True
+            changed = True
+        if changed:
+            existing.save(update_fields=["vendor", "is_archived", "is_active", "updated_at"])
         return existing
     # Unique slug races / collisions: append numeric suffix then retry.
     for attempt in range(8):

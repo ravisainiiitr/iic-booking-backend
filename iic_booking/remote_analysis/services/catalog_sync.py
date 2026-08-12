@@ -75,6 +75,21 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
     }
 
 
+def archive_infrastructure_catalog_entries() -> dict[str, int]:
+    """Archive auto-created catalog rows for Windows/.NET infrastructure noise."""
+    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+    from iic_booking.remote_analysis.services.inventory import is_infrastructure_inventory_noise
+
+    archived = 0
+    for cat in AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False):
+        if is_infrastructure_inventory_noise(name=cat.name, publisher=cat.vendor or ""):
+            cat.is_active = False
+            cat.is_archived = True
+            cat.save(update_fields=["is_active", "is_archived", "updated_at"])
+            archived += 1
+    return {"infrastructure_archived": archived}
+
+
 def inventory_discovery_summary() -> dict[str, Any]:
     """Fleet inventory vs catalog coverage for SPA empty/partial UX."""
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog

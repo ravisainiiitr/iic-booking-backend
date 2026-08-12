@@ -727,12 +727,14 @@ def catalog_sync_from_inventory(request):
         return Response({"detail": "limit must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
 
     from iic_booking.remote_analysis.services.catalog_sync import (
+        archive_infrastructure_catalog_entries,
         backfill_catalog_from_installed,
         inventory_discovery_summary,
     )
 
     before = inventory_discovery_summary()
     backfill = backfill_catalog_from_installed(limit=limit_i)
+    cleanup = archive_infrastructure_catalog_entries()
 
     refresh = {"enqueued": 0, "workstation_ids": []}
     if refresh_agents:
@@ -771,6 +773,7 @@ def catalog_sync_from_inventory(request):
             "accepted": True,
             "before": before,
             "backfill": backfill,
+            "cleanup": cleanup,
             "after": after,
             "refresh_agents": refresh,
         }
