@@ -82,6 +82,19 @@ def test_create_session_pending(anon_client):
 
 
 @pytest.mark.django_db
+def test_create_session_invalid_token_falls_back_to_anonymous(anon_client):
+    """Installer may send a stale portal token; must not 401 (R11 RAA install)."""
+    resp = anon_client.post(
+        "/api/v1/provisioning/sessions/",
+        _register_payload(hostname="STALE-TOKEN-PC"),
+        format="json",
+        HTTP_AUTHORIZATION="Token not-a-real-token-key",
+    )
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "pending"
+
+
+@pytest.mark.django_db
 def test_pending_requires_admin(anon_client, admin_client):
     assert anon_client.get("/api/v1/provisioning/pending/").status_code in {401, 403}
     assert admin_client.get("/api/v1/provisioning/pending/").status_code == 200

@@ -8,7 +8,7 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
-from rest_framework.authentication import TokenAuthentication
+from iic_booking.users.api.token_auth import OptionalTokenAuthentication
 
 from django.utils import timezone
 
@@ -195,6 +195,7 @@ def console_summary(request):
 
 
 @api_view(["POST"])
+@authentication_classes([OptionalTokenAuthentication])
 @permission_classes([AllowAny])
 @throttle_classes([ProvisioningSessionThrottle])
 def sessions_create(request):
