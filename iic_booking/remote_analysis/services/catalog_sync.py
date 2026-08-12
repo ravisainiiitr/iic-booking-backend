@@ -15,7 +15,10 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
     """
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
     from iic_booking.remote_analysis.models import InstalledSoftware
-    from iic_booking.remote_analysis.services.inventory import ensure_catalog_for_install
+    from iic_booking.remote_analysis.services.inventory import (
+        ensure_catalog_for_install,
+        is_infrastructure_inventory_noise,
+    )
 
     qs = (
         InstalledSoftware.objects.filter(is_present=True)
@@ -30,6 +33,9 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
         scanned += 1
         name = (row.software_name or "").strip()
         if not name:
+            skipped += 1
+            continue
+        if is_infrastructure_inventory_noise(name=name, publisher=row.publisher or ""):
             skipped += 1
             continue
         catalog = ensure_catalog_for_install(

@@ -41,6 +41,65 @@ def _clip(value: Any, max_len: int) -> str:
     return text[:max_len]
 
 
+def is_infrastructure_inventory_noise(*, name: str, publisher: str = "") -> bool:
+    """
+    Windows/registry titles that must not auto-enter the Analysis Software Catalog
+    (runtimes, SDKs, hosting packs). Installer explicit selection may still seed these.
+    """
+    import re
+
+    text = f"{name} {publisher}".strip().lower()
+    if not text:
+        return False
+    patterns = (
+        r"microsoft\s+\.net",
+        r"microsoft\s+asp\.net",
+        r"windows desktop runtime",
+        r"windows server hosting",
+        r"\.net sdk",
+        r"\.net runtime",
+        r"visual c\+\+",
+        r"windows sdk",
+        r"microsoft visual studio setup",
+        r"vs_\d{4}",
+    )
+    return any(re.search(p, text) for p in patterns)
+
+
+def resolve_catalog_for_inventory(
+    *,
+    name: str,
+    publisher: str = "",
+    version: str = "",
+    category: str = "",
+):
+    """
+    Agent inventory sync: link existing catalog rows; auto-create only for analysis/scientific
+    titles. Never auto-create infrastructure noise (.NET runtimes, etc.).
+    """
+    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+
+    clean = _clip(name, 255)
+    if not clean:
+        return None
+
+    existing = (
+        AnalysisSoftwareCatalog.objects.filter(name__iexact=clean).first()
+        or AnalysisSoftwareCatalog.objects.filter(slug=slugify(clean)[:200]).first()
+    )
+    if existing:
+        return existing
+
+    if is_infrastructure_inventory_noise(name=clean, publisher=publisher):
+        return None
+
+    cat = (category or "").strip().lower()
+    if cat not in {"analysis", "scientific", "catalog"}:
+        return None
+
+    return ensure_catalog_for_install(name=clean, publisher=publisher, version=version)
+
+
 def _content_hash(item: dict[str, Any]) -> str:
     raw = "|".join(
         [
@@ -157,7 +216,12 @@ class InventoryService:
                 128,
             )
             try:
-                catalog = ensure_catalog_for_install(name=name, publisher=publisher, version=version)
+                catalog = resolve_catalog_for_inventory(
+                    name=name,
+                    publisher=publisher,
+                    version=version,
+                    category=category,
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("catalog promote failed for %s", name)
                 catalog = None
@@ -214,7 +278,7 @@ class InventoryService:
                             category=category,
                             content_hash=content_hash,
                             is_present=True,
-                            allocation_enabled=True,
+                            allocation_enabled=catalog is not None,
                             catalog=catalog,
                         )
                         added += 1

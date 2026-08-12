@@ -142,6 +142,11 @@ def seed_workstation_software_from_selection(
             publisher=item["publisher"],
             version=item["version"],
         )
+        if catalog and item.get("slug") and catalog.slug != item["slug"]:
+            # Prefer installer/catalog slug when seeding explicit user selection.
+            if not AnalysisSoftwareCatalog.objects.filter(slug=item["slug"]).exclude(pk=catalog.pk).exists():
+                catalog.slug = item["slug"][:200]
+                catalog.save(update_fields=["slug", "updated_at"])
         if catalog is None:
             continue
         if prior is None:

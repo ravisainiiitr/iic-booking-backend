@@ -9,7 +9,12 @@ from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
 from iic_booking.remote_analysis.constants import WorkstationStatus
 from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
 from iic_booking.remote_analysis.services.catalog_sync import backfill_catalog_from_installed
-from iic_booking.remote_analysis.services.inventory import InventoryService, ensure_catalog_for_install
+from iic_booking.remote_analysis.services.inventory import (
+    InventoryService,
+    ensure_catalog_for_install,
+    is_infrastructure_inventory_noise,
+    resolve_catalog_for_inventory,
+)
 
 
 @pytest.mark.django_db
@@ -34,8 +39,8 @@ def test_inventory_sync_promotes_catalog_and_links():
         ws,
         {
             "software": [
-                {"displayName": "Notepad", "version": "10.0", "publisher": "Microsoft"},
-                {"displayName": "Notepad", "version": "10.0", "publisher": "Microsoft"},
+                {"displayName": "Notepad", "version": "10.0", "publisher": "Microsoft", "category": "analysis"},
+                {"displayName": "Notepad", "version": "10.0", "publisher": "Microsoft", "category": "analysis"},
             ]
         },
     )
@@ -62,9 +67,9 @@ def test_inventory_sync_promotes_all_titles_and_truncates_paths():
         ws,
         {
             "software": [
-                {"displayName": "OriginPro", "version": "2024", "publisher": "OriginLab"},
-                {"displayName": "ImageJ", "version": "1.54", "publisher": "NIH", "installPath": long_path},
-                {"displayName": "CasaXPS", "version": "2.3", "publisher": "Casa"},
+                {"displayName": "OriginPro", "version": "2024", "publisher": "OriginLab", "category": "analysis"},
+                {"displayName": "ImageJ", "version": "1.54", "publisher": "NIH", "installPath": long_path, "category": "scientific"},
+                {"displayName": "CasaXPS", "version": "2.3", "publisher": "Casa", "category": "analysis"},
             ]
         },
     )
@@ -143,6 +148,59 @@ def test_installer_link_creates_catalog_for_unknown_slugs():
     assert AnalysisSoftwareCatalog.objects.filter(slug="originpro").exists()
     assert AnalysisSoftwareCatalog.objects.filter(slug="imagej").exists()
     assert InstalledSoftware.objects.filter(workstation=ws, is_present=True).count() >= 2
+
+
+@pytest.mark.django_db
+def test_inventory_sync_skips_dotnet_runtime_catalog_promotion():
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-dotnet",
+        hostname="RAVI-DOTNET",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+        last_heartbeat=timezone.now(),
+    )
+    result = InventoryService().synchronize(
+        ws,
+        {
+            "software": [
+                {
+                    "displayName": "Microsoft Windows Desktop Runtime - 8.0.30 (x64)",
+                    "version": "8.0.30",
+                    "publisher": "Microsoft Corporation",
+                    "category": "general",
+                },
+                {
+                    "displayName": "Altium Designer",
+                    "version": "24",
+                    "publisher": "Altium Limited",
+                    "category": "analysis",
+                },
+            ]
+        },
+    )
+    assert result["accepted"] is True
+    assert is_infrastructure_inventory_noise(
+        name="Microsoft Windows Desktop Runtime - 8.0.30 (x64)",
+        publisher="Microsoft Corporation",
+    )
+    dotnet = InstalledSoftware.objects.filter(
+        workstation=ws,
+        software_name__icontains="Windows Desktop Runtime",
+        is_present=True,
+    ).first()
+    assert dotnet is not None
+    assert dotnet.catalog_id is None
+    assert dotnet.allocation_enabled is False
+    altium = InstalledSoftware.objects.filter(
+        workstation=ws, software_name__icontains="Altium", is_present=True
+    ).first()
+    assert altium is not None
+    assert altium.catalog_id is not None
+    assert AnalysisSoftwareCatalog.objects.filter(name__icontains="Altium").count() == 1
+    assert (
+        AnalysisSoftwareCatalog.objects.filter(name__icontains="Windows Desktop Runtime").count()
+        == 0
+    )
 
 
 @pytest.mark.django_db
