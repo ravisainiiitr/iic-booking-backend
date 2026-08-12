@@ -1,0 +1,115 @@
+name: Diagnose Latest RA Queue
+
+# Lists recent QUEUED reservations + fleet eligibility (no booking id required).
+
+on:
+  workflow_dispatch:
+    inputs:
+      workstation_id:
+        description: "Optional workstation UUID to focus"
+        required: false
+        default: "9570917c-2dfb-4b09-8cb5-f19e89759736"
+      limit:
+        description: "Max queued reservations to print"
+        required: false
+        default: "15"
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Diagnose latest queued analysis reservations
+        env:
+          WS: ${{ github.event.inputs.workstation_id }}
+          LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          mkdir -p docs/release/phase-RX
+          OUT="docs/release/phase-RX/ra-queue-latest-${{ github.run_id }}.txt"
+          docker exec -e WS="$WS" -e LIMIT="$LIMIT" -w /app "$CID" python manage.py shell -c "
+          import json, os
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
+          from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware, AnalysisSoftwareCatalog
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
+          from iic_booking.remote_analysis.constants import ReservationStatus, INVENTORY_STALE_SECONDS
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+          from iic_booking.remote_analysis.services.availability import AvailabilityEngine
+          from iic_booking.remote_analysis.services.allocation import AllocationService
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+
+          limit = int(os.environ.get('LIMIT') or 15)
+          focus = (os.environ.get('WS') or '').strip()
+          print('=== FOCUS_WS ===', focus)
+          qs = AnalysisWorkstation.objects.all().order_by('-last_heartbeat')
+          for w in qs:
+              age_hb = int((timezone.now()-w.last_heartbeat).total_seconds()) if w.last_heartbeat else None
+              age_inv = int((timezone.now()-w.last_inventory_update).total_seconds()) if w.last_inventory_update else None
+              present = list(InstalledSoftware.objects.filter(workstation=w, is_present=True).values('software_name','allocation_enabled','catalog_id')[:40])
+              print(json.dumps({
+                'id': str(w.id), 'hostname': w.hostname, 'display': w.display_name, 'status': w.status,
+                'enabled': w.enabled, 'health': w.health_score, 'hb_age_s': age_hb, 'inv_age_s': age_inv,
+                'inv_stale': (age_inv is None) or (age_inv > INVENTORY_STALE_SECONDS),
+                'agent_version': getattr(w,'agent_version',None),
+                'present_software': present,
+              }, default=str))
+          print('=== CATALOG_ACTIVE (sample) ===')
+          for c in AnalysisSoftwareCatalog.objects.filter(is_active=True).order_by('name')[:40]:
+              print(json.dumps({'id': str(c.id), 'name': c.name, 'slug': c.slug, 'category': getattr(c,'category',None)}, default=str))
+          print('=== QUEUED_RESERVATIONS ===')
+          queued = (AnalysisReservation.objects
+            .filter(status__in=[ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING])
+            .select_related('booking','booking__equipment','user','software_profile')
+            .order_by('-created_at')[:limit])
+          engine = AvailabilityEngine(); alloc = AllocationService()
+          for r in queued:
+              b = r.booking
+              eq = getattr(b, 'equipment', None) if b else None
+              required = SoftwareMappingService().required_software_names(eq) if eq else []
+              maps = []
+              if eq:
+                  maps = list(EquipmentAnalysisSoftware.objects.filter(equipment=eq).select_related('catalog').values_list('catalog__name','catalog__slug','is_default'))
+              qe = ReservationQueue.objects.filter(reservation=r).order_by('-enqueued_at').first()
+              print('---')
+              print(json.dumps({
+                'reservation': str(r.id), 'status': r.status, 'created': str(r.created_at),
+                'booking_pk': getattr(b,'pk',None), 'virtual': getattr(b,'virtual_booking_id',None),
+                'equipment': getattr(eq,'name',None), 'equipment_id': getattr(eq,'pk',None),
+                'user': getattr(getattr(r,'user',None),'email',None),
+                'profile_software': getattr(r.software_profile,'software',None) if r.software_profile_id else None,
+                'required_software': required, 'equipment_maps': maps,
+                'caps': r.requested_capabilities,
+                'queue': {'status': getattr(qe,'status',None), 'attempts': getattr(qe,'allocation_attempts',None), 'last_error': getattr(qe,'last_error',None) or getattr(qe,'failure_reason',None)} if qe else None,
+              }, default=str))
+              start = r.requested_start or timezone.now()
+              end = r.requested_end or (timezone.now() + timedelta(hours=2))
+              caps = dict(r.requested_capabilities or {})
+              if required and 'required_software_names' not in caps:
+                  caps['required_software_names'] = required
+              focus_ws = AnalysisWorkstation.objects.filter(id=focus).first() if focus else None
+              targets = [focus_ws] if focus_ws else list(AnalysisWorkstation.objects.filter(enabled=True).order_by('hostname')[:12])
+              for w in targets:
+                  if w is None: continue
+                  ev = engine.evaluate(w, start, end, requirement=r.software_profile, requested_capabilities=caps, exclude_reservation_id=r.id)
+                  print(json.dumps({'eval_host': w.hostname, 'ACCEPT': ev.available, 'reasons': ev.reasons}, default=str))
+          print('=== PROCESS_QUEUE_DRY ===')
+          # Do not allocate here — diagnosis only. Operator can run recover workflow.
+          waiting = ReservationQueue.objects.filter(status='WAITING').count()
+          print(json.dumps({'waiting_queue_entries': waiting, 'queued_reservations': queued.count() if hasattr(queued,'count') else len(list(queued))}, default=str))
+          " | tee "$OUT"
+          if [[ -s "$OUT" ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$OUT"
+            git commit -m "ops: latest RA queue diagnosis (run ${{ github.run_id }})" || echo "no commit"
+            git push origin HEAD:master || true
+          fi
+          test -s "$OUT"
