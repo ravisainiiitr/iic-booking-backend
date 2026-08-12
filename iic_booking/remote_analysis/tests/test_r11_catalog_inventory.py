@@ -202,7 +202,34 @@ def test_installer_seed_inventory_api():
 
 
 @pytest.mark.django_db
-def test_disabled_install_excluded_from_software_match():
+def test_installer_seed_inventory_api_bearer_from_body_without_agent_header(monkeypatch):
+    from rest_framework.test import APIRequestFactory
+
+    from iic_booking.remote_analysis.installer.views import seed_inventory
+    from iic_booking.remote_analysis.services.tokens import issue_agent_token
+
+    monkeypatch.setenv("RA_AGENT_ENROLLMENT_KEY", "prod-enrollment-key-required")
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-seed-bearer",
+        hostname="DESKTOP-SEED-BEARER",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    _token_row, plaintext = issue_agent_token(ws)
+    factory = APIRequestFactory()
+    req = factory.post(
+        "/api/v1/analysis/installer/seed-inventory/",
+        {
+            "workstationId": str(ws.id),
+            "softwareItems": [{"displayName": "OriginLab", "publisher": "OriginLab Corporation"}],
+        },
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {plaintext}",
+    )
+    resp = seed_inventory(req)
+    assert resp.status_code == 200
+    assert resp.data["inventory_seeded"] >= 1
+    assert InstalledSoftware.objects.filter(workstation=ws, software_name__icontains="Origin").exists()
     from iic_booking.remote_analysis.scheduler_models import SoftwareRequirement
     from iic_booking.remote_analysis.services.availability import AvailabilityEngine
 
