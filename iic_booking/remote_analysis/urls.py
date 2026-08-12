@@ -296,6 +296,7 @@ urlpatterns = [
     path("installer/catalog/software/", installer_views.catalog_software, name="installer-catalog-software"),
     path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
     path("installer/link/", installer_views.link_equipment, name="installer-link"),
+    path("installer/seed-inventory/", installer_views.seed_inventory, name="installer-seed-inventory"),
     # Phase 2.5 — RAA update discovery/report (agent or enrollment auth)
     path("updates/report/", installer_views.agent_update_report, name="agent-update-report"),
     path("updates/discover/", installer_views.release_latest, name="agent-update-discover"),

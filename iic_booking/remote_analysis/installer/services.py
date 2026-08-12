@@ -113,6 +113,88 @@ def _normalize_software_selection(
 
 
 @transaction.atomic
+def seed_workstation_software_from_selection(
+    *,
+    workstation,
+    software_slugs: list | None = None,
+    software_items: list | None = None,
+) -> dict[str, Any]:
+    """
+    R11: seed InstalledSoftware + Software Catalog from installer selection
+    without requiring equipment link (wizard no longer prompts for equipment).
+    """
+    from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
+    from iic_booking.remote_analysis.models import InstalledSoftware
+    from iic_booking.remote_analysis.services.inventory import ensure_catalog_for_install
+
+    selection = _normalize_software_selection(software_slugs, software_items)
+    linked_software: list[str] = []
+    catalog_created = 0
+    inventory_seeded = 0
+
+    for item in selection:
+        prior = (
+            AnalysisSoftwareCatalog.objects.filter(slug=item["slug"]).first()
+            or AnalysisSoftwareCatalog.objects.filter(name__iexact=item["name"]).first()
+        )
+        catalog = ensure_catalog_for_install(
+            name=item["name"],
+            publisher=item["publisher"],
+            version=item["version"],
+        )
+        if catalog is None:
+            continue
+        if prior is None:
+            catalog_created += 1
+
+        linked_software.append(catalog.slug)
+
+        name = (catalog.name or item["name"] or "").strip()
+        if not name:
+            continue
+        existing_sw = InstalledSoftware.objects.filter(
+            workstation=workstation,
+            software_name__iexact=name,
+            is_present=True,
+        ).first()
+        if existing_sw is None:
+            InstalledSoftware.objects.create(
+                workstation=workstation,
+                software_name=name[:512],
+                publisher=(catalog.vendor or item["publisher"] or "")[:255],
+                version=(item["version"] or "")[:128],
+                category=(getattr(catalog, "category", None) or "catalog")[:64],
+                is_present=True,
+                allocation_enabled=True,
+                catalog=catalog,
+            )
+            inventory_seeded += 1
+        else:
+            changed = False
+            if getattr(existing_sw, "catalog_id", None) != catalog.id:
+                existing_sw.catalog = catalog
+                changed = True
+            if not existing_sw.publisher and (catalog.vendor or item["publisher"]):
+                existing_sw.publisher = (catalog.vendor or item["publisher"])[:255]
+                changed = True
+            if changed:
+                existing_sw.save()
+
+    if inventory_seeded or linked_software:
+        from django.utils import timezone
+
+        workstation.last_inventory_update = timezone.now()
+        workstation.save(update_fields=["last_inventory_update", "updated_at"])
+
+    return {
+        "software_slugs": linked_software,
+        "catalog_created": catalog_created,
+        "inventory_seeded": inventory_seeded,
+        "workstation_id": str(workstation.id),
+    }
+
+
+@transaction.atomic
 def link_workstation_to_equipment(
     *,
     workstation,
@@ -127,13 +209,10 @@ def link_workstation_to_equipment(
     map_selected_to_equipment: bool = True,
 ) -> dict[str, Any]:
     from iic_booking.remote_analysis.catalog_models import (
-        AnalysisSoftwareCatalog,
         EquipmentAnalysisPool,
         EquipmentAnalysisSoftware,
     )
     from iic_booking.remote_analysis.guacamole.secrets import encrypt_password
-    from iic_booking.remote_analysis.models import InstalledSoftware
-    from iic_booking.remote_analysis.services.inventory import ensure_catalog_for_install
     from iic_booking.remote_analysis.session_models import WorkstationRdpSecret
 
     pool, pool_created = EquipmentAnalysisPool.objects.update_or_create(
@@ -166,73 +245,32 @@ def link_workstation_to_equipment(
         )
         rdp_updated = True
 
-    selection = _normalize_software_selection(software_slugs, software_items)
-    linked_software: list[str] = []
-    catalog_created = 0
-    inventory_seeded = 0
+    seed = seed_workstation_software_from_selection(
+        workstation=workstation,
+        software_slugs=software_slugs,
+        software_items=software_items,
+    )
 
-    for item in selection:
-        prior = (
-            AnalysisSoftwareCatalog.objects.filter(slug=item["slug"]).first()
-            or AnalysisSoftwareCatalog.objects.filter(name__iexact=item["name"]).first()
-        )
-        catalog = ensure_catalog_for_install(
-            name=item["name"],
-            publisher=item["publisher"],
-            version=item["version"],
-        )
-        if catalog is None:
-            continue
-        if prior is None:
-            catalog_created += 1
+    if map_selected_to_equipment:
+        from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
 
-        linked_software.append(catalog.slug)
-
-        if map_selected_to_equipment:
+        for slug in seed["software_slugs"]:
+            catalog = AnalysisSoftwareCatalog.objects.filter(slug=slug).first()
+            if catalog is None:
+                continue
             EquipmentAnalysisSoftware.objects.get_or_create(
                 equipment=equipment,
                 catalog=catalog,
                 defaults={"sort_order": 0},
             )
 
-        # Seed workstation inventory so scheduler/catalog can use titles immediately.
-        name = (catalog.name or item["name"] or "").strip()
-        if name:
-            existing_sw = InstalledSoftware.objects.filter(
-                workstation=workstation,
-                software_name__iexact=name,
-                is_present=True,
-            ).first()
-            if existing_sw is None:
-                InstalledSoftware.objects.create(
-                    workstation=workstation,
-                    software_name=name[:512],
-                    publisher=(catalog.vendor or item["publisher"] or "")[:255],
-                    version=(item["version"] or "")[:128],
-                    category=(getattr(catalog, "category", None) or "catalog")[:64],
-                    is_present=True,
-                    allocation_enabled=True,
-                    catalog=catalog,
-                )
-                inventory_seeded += 1
-            else:
-                changed = False
-                if getattr(existing_sw, "catalog_id", None) != catalog.id:
-                    existing_sw.catalog = catalog
-                    changed = True
-                if not existing_sw.publisher and (catalog.vendor or item["publisher"]):
-                    existing_sw.publisher = (catalog.vendor or item["publisher"])[:255]
-                    changed = True
-                if changed:
-                    existing_sw.save()
-
     return {
         "pool_id": str(pool.id),
         "pool_created": pool_created,
         "rdp_secret_updated": rdp_updated,
-        "software_slugs": linked_software,
-        "catalog_created": catalog_created,
-        "inventory_seeded": inventory_seeded,
+        "software_slugs": seed["software_slugs"],
+        "catalog_created": seed["catalog_created"],
+        "inventory_seeded": seed["inventory_seeded"],
         "workstation_id": str(workstation.id),
         "equipment_id": equipment.pk,
     }
