@@ -1,0 +1,147 @@
+name: Verify Multi-PC Software Allocation
+
+# Proves: busy RAA is skipped; next free PC with same mapped software is chosen;
+# queue only when all matching PCs are occupied.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Run allocation scenarios in django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          import json
+          from datetime import timedelta
+          from django.utils import timezone
+          from django.contrib.auth import get_user_model
+          from iic_booking.remote_analysis.constants import ReservationStatus, WorkstationStatus, QueueEntryStatus
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
+          from iic_booking.remote_analysis.services.allocation import AllocationService
+          from iic_booking.remote_analysis.services.reservation import ReservationService
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+          from iic_booking.remote_analysis.services.tokens import issue_agent_token
+
+          User = get_user_model()
+          user, _ = User.objects.get_or_create(
+              email='ra-multipc-verify@iic-booking.test',
+              defaults={'name': 'RA MultiPC Verify'},
+          )
+          if hasattr(user, 'set_password'):
+              user.set_password('x')
+              user.save()
+
+          def mk(agent, host, status):
+              ws, created = AnalysisWorkstation.objects.get_or_create(
+                  agent_id=agent,
+                  defaults={
+                      'hostname': host,
+                      'display_name': host,
+                      'status': status,
+                      'enabled': True,
+                      'health_score': 95,
+                      'last_heartbeat': timezone.now(),
+                      'last_inventory_update': timezone.now(),
+                      'supports_rdp': True,
+                      'memory_gb': 32,
+                      'cpu_cores': 8,
+                      'storage_gb': 500,
+                  },
+              )
+              if not created:
+                  ws.hostname = host
+                  ws.status = status
+                  ws.enabled = True
+                  ws.health_score = 95
+                  ws.last_heartbeat = timezone.now()
+                  ws.last_inventory_update = timezone.now()
+                  ws.save()
+              if not ws.tokens.filter(is_active=True).exists():
+                  issue_agent_token(ws)
+              return ws
+
+          def seed_soft(ws, name):
+              InstalledSoftware.objects.update_or_create(
+                  workstation=ws,
+                  software_name=name,
+                  defaults={'version': '1', 'is_present': True, 'allocation_enabled': True, 'category': 'analysis'},
+              )
+
+          # Cleanup prior verify artifacts
+          AnalysisReservation.objects.filter(user=user).delete()
+          AnalysisWorkstation.objects.filter(agent_id__startswith='verify-mp-').delete()
+
+          busy = mk('verify-mp-busy', 'VERIFY-BUSY', WorkstationStatus.BUSY)
+          free = mk('verify-mp-free', 'VERIFY-FREE', WorkstationStatus.AVAILABLE)
+          wrong = mk('verify-mp-wrong', 'VERIFY-WRONG', WorkstationStatus.AVAILABLE)
+          for ws in (busy, free):
+              seed_soft(ws, 'Altium Designer 26')
+          seed_soft(wrong, 'OriginPro')
+
+          start = timezone.now()
+          end = start + timedelta(hours=1)
+          caps = {'required_software_names': ['Altium Designer 26']}
+
+          # Scenario A: rank/select_best
+          ranked = AllocationService().rank_candidates(
+              start, end,
+              required_software_names=['Altium Designer 26'],
+              requested_capabilities=caps,
+              include_unavailable=True,
+          )
+          available = [c for c in ranked if c.available]
+          assert available and available[0].workstation_id == free.id, [(c.workstation.hostname, c.available, c.reasons) for c in ranked]
+          busy_row = next(c for c in ranked if c.workstation_id == busy.id)
+          assert busy_row.available is False
+          print('PASS_A_rank_skips_busy_picks_free', free.hostname)
+
+          # Scenario B: allocate()
+          r1 = ReservationService().create_reservation(
+              user=user, requested_start=start, requested_end=end, created_by=user,
+              auto_allocate=False, requested_capabilities=caps,
+          )
+          out1 = SchedulerService().allocate(r1, actor=user)
+          out1.refresh_from_db()
+          assert out1.status == ReservationStatus.AWAITING_CHECKIN, out1.status
+          assert out1.workstation_id == free.id, out1.workstation_id
+          print('PASS_B_allocate_picks_next_free', str(out1.workstation_id))
+
+          # Scenario C: all matching busy/reserved -> queue (wrong software free must not win)
+          free.status = WorkstationStatus.BUSY
+          free.save(update_fields=['status','updated_at'])
+          reserved = mk('verify-mp-reserved', 'VERIFY-RESERVED', WorkstationStatus.RESERVED)
+          seed_soft(reserved, 'Altium Designer 26')
+          r2 = ReservationService().create_reservation(
+              user=user, requested_start=start, requested_end=end + timedelta(minutes=5),
+              created_by=user, auto_allocate=False, requested_capabilities=caps,
+          )
+          out2 = SchedulerService().allocate(r2, actor=user)
+          out2.refresh_from_db()
+          assert out2.status == ReservationStatus.QUEUED, out2.status
+          assert out2.workstation_id is None
+          assert ReservationQueue.objects.filter(reservation=out2, status=QueueEntryStatus.WAITING).exists()
+          print('PASS_C_queue_only_when_all_matching_busy')
+
+          # Scenario D: free a matching PC -> process_queue allocates
+          reserved.status = WorkstationStatus.AVAILABLE
+          reserved.last_heartbeat = timezone.now()
+          reserved.last_inventory_update = timezone.now()
+          reserved.save(update_fields=['status','last_heartbeat','last_inventory_update','updated_at'])
+          ReservationQueue.objects.filter(reservation=out2).update(status=QueueEntryStatus.WAITING)
+          stats = SchedulerService().process_queue(limit=10)
+          out2.refresh_from_db()
+          assert out2.status == ReservationStatus.AWAITING_CHECKIN, (out2.status, stats)
+          assert out2.workstation_id == reserved.id, out2.workstation_id
+          print('PASS_D_process_queue_after_pc_frees', reserved.hostname, stats)
+
+          # Cleanup verify workstations/reservations
+          AnalysisReservation.objects.filter(user=user).delete()
+          AnalysisWorkstation.objects.filter(agent_id__startswith='verify-mp-').delete()
+          print(json.dumps({'result': 'ALL_PASS', 'scenarios': ['A','B','C','D']}))
+          "
