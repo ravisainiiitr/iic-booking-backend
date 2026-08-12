@@ -109,7 +109,12 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
         return None
 
     def get_equipment_name(self, obj: SubWalletTransaction) -> str | None:
-        """Extract equipment from description; return full equipment name (resolve code to name when possible)."""
+        """Extract equipment from description; return full equipment name (resolve code to name when possible).
+
+        Booking debit descriptions use ``Booking #{equipment.code} - {equipment.name} (N minutes)``.
+        Equipment codes may include spaces/brackets (e.g. ``PXRD [A]``), so code capture must not
+        be limited to ``[A-Za-z0-9_]+``.
+        """
         import re
         from iic_booking.equipment.models import Equipment
 
@@ -121,17 +126,19 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
             """If parsed looks like an equipment code, return equipment name; else return parsed."""
             if not parsed:
                 return parsed
+            code = parsed.strip()
             try:
-                eq = Equipment.objects.filter(code=parsed).first()
+                eq = Equipment.objects.filter(code=code).first()
                 if eq and getattr(eq, "name", None):
                     return eq.name
             except Exception:
                 pass
-            return parsed
+            return code
 
         # Debit for new booking: "Booking #CODE - Full Name (may include parentheses) (N minutes)"
+        # CODE may include spaces/brackets (e.g. "PXRD [A]").
         m = re.search(
-            r"Booking #([A-Za-z0-9_]+)\s*[-–]\s*(.+?)\s*\(\s*(\d+)\s*minutes\s*\)",
+            r"Booking #(.+?)\s*[-–]\s*(.+?)\s*\(\s*(\d+)\s*minutes\s*\)",
             desc,
             re.I,
         )
@@ -143,7 +150,7 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
 
         # Urgent approval debit: "Urgent approval: Booking #CODE - Name (Hold converted) ..."
         m = re.search(
-            r"Urgent approval:\s*Booking #([A-Za-z0-9_]+)\s*[-–]\s*(.+?)\s*\(\s*Hold converted\s*\)",
+            r"Urgent approval:\s*Booking #(.+?)\s*[-–]\s*(.+?)\s*\(\s*Hold converted\s*\)",
             desc,
             re.I,
         )
@@ -157,8 +164,12 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
         m = re.search(r"Refund for (.+?) and Booking", desc, re.I)
         if m:
             return m.group(1).strip()
-        # Refund variants that end with "Booking #N - CODE" (code only)
-        m = re.search(r"Refund(?: for cancelled)?(?: \(Operator Unavailable\))? for Booking #\d+\s*[-–]\s*([A-Za-z0-9_]+)", desc, re.I)
+        # Refund variants that end with "Booking #N - CODE" (code may include spaces/brackets)
+        m = re.search(
+            r"Refund(?: for cancelled)?(?: \(Operator Unavailable\))? for Booking #\d+\s*[-–]\s*(.+?)(?:\s*\||\s*$)",
+            desc,
+            re.I,
+        )
         if m:
             return resolve_to_name(m.group(1).strip())
 
@@ -167,11 +178,22 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
         if m:
             return resolve_to_name(m.group(1).strip())
         # "Charge recalculation for Booking #N - CODE" or older "... - {code}"
-        m = re.search(r"Booking #?\d+\s*[-–]\s*([A-Za-z0-9_]+)", desc)
+        m = re.search(r"Booking #?\d+\s*[-–]\s*(.+?)(?:\s*\||\s*$)", desc)
         if m:
             return resolve_to_name(m.group(1).strip())
+        # Fallback: non-numeric booking code without minutes (stop before Student/Ref)
+        m = re.search(
+            r"Booking #(?!\d+\b)(.+?)\s*[-–]\s*(.+?)(?:\s*-\s*Student:|\s*\|\s*Ref:|$)",
+            desc,
+            re.I,
+        )
+        if m:
+            name_part = m.group(2).strip()
+            if name_part:
+                return name_part
+            return resolve_to_name(m.group(1).strip())
         # "Debit/Credit for ... Equipment: CODE" style
-        m = re.search(r"[Ee]quipment[:\s]+([A-Za-z0-9_]+)", desc)
+        m = re.search(r"[Ee]quipment[:\s]+([A-Za-z0-9_ \[\]-]+)", desc)
         if m:
             return resolve_to_name(m.group(1).strip())
         return None
