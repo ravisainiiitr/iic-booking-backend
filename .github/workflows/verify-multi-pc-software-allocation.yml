@@ -96,8 +96,8 @@ jobs:
               include_unavailable=True,
           )
           available = [c for c in ranked if c.available]
-          assert available and available[0].workstation_id == free.id, [(c.workstation.hostname, c.available, c.reasons) for c in ranked]
-          busy_row = next(c for c in ranked if c.workstation_id == busy.id)
+          assert available and available[0].workstation.id == free.id, [(c.workstation.hostname, c.available, c.reasons) for c in ranked]
+          busy_row = next(c for c in ranked if c.workstation.id == busy.id)
           assert busy_row.available is False
           print('PASS_A_rank_skips_busy_picks_free', free.hostname)
 
