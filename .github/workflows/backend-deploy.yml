@@ -142,7 +142,7 @@ jobs:
               return 1
             fi
             echo "Rolling back to $PREV_TAG"
-            git fetch --all --tags
+            git fetch --all --tags --force
             git checkout "$PREV_TAG"
             git submodule update --init --recursive || true
             compose down || true
@@ -152,7 +152,8 @@ jobs:
           }
 
           echo "=== Fetch / checkout $RELEASE_TAG ==="
-          git fetch --all --tags
+          # --force: allow retagged release names (ops often moves vX.Y.Z-* tips)
+          git fetch --all --tags --force
           git checkout "$RELEASE_TAG"
           git submodule update --init --recursive || true
           git rev-parse HEAD > "$CUR_REF_FILE"

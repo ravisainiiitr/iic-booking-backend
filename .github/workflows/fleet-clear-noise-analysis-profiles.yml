@@ -27,7 +27,7 @@ jobs:
           from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
 
           cleared_profiles = []
-          for eq in Equipment.objects.all().only('id','name','analysis_profile'):
+          for eq in Equipment.objects.all().only('equipment_id','name','analysis_profile'):
               profile = (eq.analysis_profile or '').strip()
               if profile and is_consumer_desktop_noise(name=profile):
                   cleared_profiles.append({'id': eq.pk, 'name': eq.name, 'was': profile})
