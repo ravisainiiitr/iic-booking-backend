@@ -22,21 +22,29 @@ class SoftwareMappingService:
 
     def required_software_names(self, equipment) -> list[str]:
         """All active catalog software names mapped to this equipment (deduped, ordered)."""
+        from iic_booking.remote_analysis.services.inventory import is_consumer_desktop_noise
+
         names: list[str] = []
         seen: set[str] = set()
         for row in self.list_for_equipment(equipment):
             name = (row.catalog.name or "").strip()
             if not name:
                 continue
+            # Archived noise may still linger as inactive; list_for_equipment already
+            # filters is_active, but skip consumer desktop titles if they slipped through.
+            if is_consumer_desktop_noise(name=name):
+                continue
             key = name.lower()
             if key in seen:
                 continue
             seen.add(key)
             names.append(name)
-        # Legacy free-text profile when no catalog mappings exist
+        # Legacy free-text profile when no catalog mappings exist.
+        # Do not treat Notepad/Chrome/etc. as allocatable requirements — that caused
+        # permanent "Waiting in queue" after R11 denylisted those titles from catalog.
         if not names:
             profile = (getattr(equipment, "analysis_profile", None) or "").strip()
-            if profile:
+            if profile and not is_consumer_desktop_noise(name=profile):
                 names.append(profile)
         return names
 
@@ -178,9 +186,11 @@ class SoftwareMappingService:
             row = qs.filter(is_default=True).first() or qs.first()
 
         if row is None:
-            # Legacy fallback: free-text analysis_profile
+            # Legacy fallback: free-text analysis_profile (never Notepad/desktop noise)
+            from iic_booking.remote_analysis.services.inventory import is_consumer_desktop_noise
+
             profile = (getattr(equipment, "analysis_profile", None) or "").strip()
-            if not profile:
+            if not profile or is_consumer_desktop_noise(name=profile):
                 return None, None
             req = SoftwareRequirement.objects.filter(software__iexact=profile).first()
             if req is None:

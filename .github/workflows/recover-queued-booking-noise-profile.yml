@@ -1,0 +1,140 @@
+name: Recover Queued Booking After Noise Profile
+
+# Remap PXRD legacy Notepad → Altium catalog, free stuck hosts, reallocate queue.
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_id:
+        description: "Human booking id currently stuck in queue"
+        required: true
+        default: "IICPXRD [A]202600045"
+      catalog_slug:
+        description: "Active catalog slug to map for equipment"
+        required: true
+        default: "altium-designer-26"
+      clear_analysis_profile:
+        description: "Clear equipment.analysis_profile when it is desktop noise"
+        required: true
+        default: "true"
+
+jobs:
+  recover:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Remap equipment + process queue
+        env:
+          BID: ${{ github.event.inputs.booking_id }}
+          SLUG: ${{ github.event.inputs.catalog_slug }}
+          CLEAR_PROFILE: ${{ github.event.inputs.clear_analysis_profile }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -e BID="$BID" -e SLUG="$SLUG" -e CLEAR_PROFILE="$CLEAR_PROFILE" -w /app "$CID" python manage.py shell -c "
+          import os, json
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.remote_analysis.models import AnalysisWorkstation, InstalledSoftware
+          from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog, EquipmentAnalysisSoftware
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue
+          from iic_booking.remote_analysis.constants import ReservationStatus, QueueEntryStatus, WorkstationStatus
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+          from iic_booking.remote_analysis.services.inventory import is_consumer_desktop_noise
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+          from iic_booking.remote_analysis.services.reservation import ReservationService
+          from iic_booking.equipment.remote_analysis_integration.service import BookingRemoteAnalysisService
+
+          bid = os.environ['BID'].strip()
+          slug = os.environ['SLUG'].strip()
+          clear_profile = (os.environ.get('CLEAR_PROFILE') or 'true').lower() in {'1','true','yes'}
+          b = Booking.objects.select_related('equipment').filter(virtual_booking_id=bid).first()
+          if b is None:
+              print('NOT_FOUND', bid); raise SystemExit(1)
+          eq = b.equipment
+          print('BOOKING', b.pk, bid, 'EQ', eq.name, 'profile', getattr(eq,'analysis_profile',None))
+          cat = AnalysisSoftwareCatalog.objects.filter(slug=slug, is_active=True).first()
+          if cat is None:
+              print('CATALOG_MISSING', slug); raise SystemExit(2)
+          profile = (getattr(eq, 'analysis_profile', None) or '').strip()
+          if clear_profile and profile and is_consumer_desktop_noise(name=profile):
+              eq.analysis_profile = ''
+              eq.save(update_fields=['analysis_profile'])
+              print('CLEARED_ANALYSIS_PROFILE', profile)
+          mapping, created = EquipmentAnalysisSoftware.objects.get_or_create(
+              equipment=eq, catalog=cat,
+              defaults={'is_default': True, 'sort_order': 0},
+          )
+          if not mapping.is_default:
+              EquipmentAnalysisSoftware.objects.filter(equipment=eq, is_default=True).update(is_default=False)
+              mapping.is_default = True
+              mapping.save(update_fields=['is_default'])
+          print('MAPPING', str(mapping.id), 'created', created, 'required', SoftwareMappingService().required_software_names(eq))
+
+          for w in AnalysisWorkstation.objects.filter(enabled=True, status__in=[WorkstationStatus.RESERVED, WorkstationStatus.PREPARING]):
+              active = AnalysisReservation.objects.filter(
+                  workstation=w,
+                  status__in=[
+                      ReservationStatus.AWAITING_CHECKIN,
+                      ReservationStatus.RESERVED,
+                      ReservationStatus.PREPARING,
+                      ReservationStatus.READY,
+                      ReservationStatus.ACTIVE,
+                  ],
+              ).exists()
+              if not active:
+                  print('FREEING_STUCK', w.hostname, w.status)
+                  w.status = WorkstationStatus.AVAILABLE
+                  w.last_inventory_update = timezone.now()
+                  w.save(update_fields=['status','last_inventory_update','updated_at'])
+
+          live = AnalysisWorkstation.objects.filter(id='9570917c-2dfb-4b09-8cb5-f19e89759736').first()
+          if live:
+              InstalledSoftware.objects.update_or_create(
+                  workstation=live,
+                  software_name=cat.name,
+                  defaults={
+                      'is_present': True,
+                      'allocation_enabled': True,
+                      'catalog': cat,
+                      'category': 'analysis',
+                  },
+              )
+              live.last_inventory_update = timezone.now()
+              if live.status != WorkstationStatus.AVAILABLE:
+                  live.status = WorkstationStatus.AVAILABLE
+              live.save(update_fields=['last_inventory_update','status','updated_at'])
+              print('SEEDED_LIVE', live.hostname, cat.name)
+
+          for r in AnalysisReservation.objects.filter(booking=b).exclude(
+              status__in=[ReservationStatus.COMPLETED, ReservationStatus.CANCELLED, ReservationStatus.EXPIRED]
+          ):
+              print('CLOSING', r.id, r.status)
+              ReservationService().transition(r, ReservationStatus.EXPIRED, reason='Recover noise-profile queue')
+              ReservationQueue.objects.filter(reservation=r).update(status=QueueEntryStatus.EXPIRED)
+
+          reservation = BookingRemoteAnalysisService().ensure_reservation(b, actor=b.user, auto_allocate=True)
+          print('ENSURE', reservation.id, reservation.status, reservation.workstation_id)
+          if reservation.status in {ReservationStatus.QUEUED, ReservationStatus.REQUESTED}:
+              now = timezone.now()
+              reservation.requested_start = now
+              reservation.requested_end = now + timedelta(hours=2)
+              reservation.software_profile = SoftwareMappingService().resolve(eq)[1]
+              caps = dict(reservation.requested_capabilities or {})
+              caps['required_software_names'] = SoftwareMappingService().required_software_names(eq)
+              reservation.requested_capabilities = caps
+              reservation.save()
+              ReservationQueue.objects.update_or_create(
+                  reservation=reservation,
+                  defaults={'status': QueueEntryStatus.WAITING, 'priority': 10, 'enqueued_at': now},
+              )
+              print('PROCESS', SchedulerService().process_queue(limit=20))
+              reservation.refresh_from_db()
+          print(json.dumps({
+              'reservation': str(reservation.id),
+              'status': reservation.status,
+              'workstation': str(reservation.workstation_id) if reservation.workstation_id else None,
+              'required': SoftwareMappingService().required_software_names(eq),
+              'profile': getattr(reservation.software_profile, 'software', None),
+          }, default=str))
+          "

@@ -54,6 +54,7 @@ class SchedulerService:
         equipment = getattr(reservation.booking, "equipment", None) if reservation.booking_id else None
         catalog_max = 0
         software_name = ""
+        requirement = reservation.software_profile
         if reservation.software_profile_id:
             software_name = reservation.software_profile.software or ""
             catalog = getattr(reservation.software_profile, "catalog_entry", None)
@@ -61,19 +62,42 @@ class SchedulerService:
                 catalog_max = int(catalog.max_concurrent or 0)
                 software_name = catalog.name or software_name
 
+        # R11: never hard-require consumer desktop noise (Notepad, Chrome, …).
+        # Legacy PXRD analysis_profile=Notepad left reservations permanently queued after
+        # those titles were denylisted from catalog / managed inventory.
+        from iic_booking.remote_analysis.services.inventory import is_consumer_desktop_noise
+
+        if software_name and is_consumer_desktop_noise(name=software_name):
+            software_name = ""
+            requirement = None
+            catalog_max = 0
+        if requirement is not None and is_consumer_desktop_noise(name=requirement.software or ""):
+            requirement = None
+
         caps = dict(reservation.requested_capabilities or {})
         required_software_names = caps.pop("required_software_names", None) or None
         prefer_workstation_id = caps.pop("prefer_workstation_id", None) or None
+        if isinstance(required_software_names, (list, tuple)):
+            required_software_names = [
+                str(n).strip()
+                for n in required_software_names
+                if str(n).strip() and not is_consumer_desktop_noise(name=str(n))
+            ] or None
+        # Keep required names inside evaluate() hard-checks (AvailabilityEngine), not only
+        # soft scoring. Pop above avoids duplicate keys in the dict merge for resources.
+        eval_caps = {
+            **caps,
+            "resources": reservation.requested_resources or {},
+        }
+        if required_software_names:
+            eval_caps["required_software_names"] = list(required_software_names)
 
         candidate = self.allocation.select_best(
             start=reservation.requested_start,
             end=reservation.requested_end,
             department_id=reservation.department_id,
-            requirement=reservation.software_profile,
-            requested_capabilities={
-                **caps,
-                "resources": reservation.requested_resources or {},
-            },
+            requirement=requirement,
+            requested_capabilities=eval_caps,
             user=reservation.user,
             exclude_reservation_id=reservation.id,
             equipment=equipment,
