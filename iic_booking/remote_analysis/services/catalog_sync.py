@@ -22,15 +22,15 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
 
     "Sync from RAA" must NOT dump every Windows registry title into the catalog.
     Eligible rows:
-      - already linked to a catalog entry (re-activate if needed), or
+      - already linked AND analysis-category (re-activate if needed), or
       - category in analysis / scientific / catalog
-    Infrastructure noise (.NET runtimes, etc.) is always skipped.
+    Desktop / infrastructure noise (Notepad, Chrome, .NET, …) is always skipped.
     """
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
     from iic_booking.remote_analysis.models import InstalledSoftware
     from iic_booking.remote_analysis.services.inventory import (
         ensure_catalog_for_install,
-        is_infrastructure_inventory_noise,
+        is_catalog_auto_noise,
     )
 
     qs = (
@@ -39,7 +39,7 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
         .order_by("id")[: max(1, int(limit))]
     )
 
-    linked = already = skipped = 0
+    linked = already = skipped = unlinked = 0
     names_promoted: set[str] = set()
     scanned = 0
     for row in qs:
@@ -48,12 +48,24 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
         if not name:
             skipped += 1
             continue
-        if is_infrastructure_inventory_noise(name=name, publisher=row.publisher or ""):
+        if is_catalog_auto_noise(name=name, publisher=row.publisher or ""):
+            if getattr(row, "catalog_id", None):
+                row.catalog = None
+                row.allocation_enabled = False
+                row.save(update_fields=["catalog", "allocation_enabled", "last_updated"])
+                unlinked += 1
             skipped += 1
             continue
 
-        # Keep existing catalog links (and re-activate if archived).
+        # Keep existing catalog links only for analysis categories.
         if getattr(row, "catalog_id", None):
+            if not _is_analysis_category(row.category):
+                row.catalog = None
+                row.allocation_enabled = False
+                row.save(update_fields=["catalog", "allocation_enabled", "last_updated"])
+                unlinked += 1
+                skipped += 1
+                continue
             catalog = row.catalog
             if catalog is not None and (catalog.is_archived or not catalog.is_active):
                 catalog.is_archived = False
@@ -97,6 +109,7 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
         "install_rows_scanned": scanned,
         "catalog_links_updated": linked,
         "already_linked": already,
+        "unlinked_noise": unlinked,
         "skipped": skipped,
         "distinct_names_promoted": len(names_promoted),
         "distinct_present_install_names": distinct_present,
@@ -110,11 +123,11 @@ def backfill_catalog_from_installed(*, limit: int = 50_000) -> dict[str, Any]:
 def archive_infrastructure_catalog_entries() -> dict[str, int]:
     """Archive auto-created catalog rows for Windows/.NET infrastructure noise."""
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
-    from iic_booking.remote_analysis.services.inventory import is_infrastructure_inventory_noise
+    from iic_booking.remote_analysis.services.inventory import is_catalog_auto_noise
 
     archived = 0
     for cat in AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False):
-        if is_infrastructure_inventory_noise(name=cat.name, publisher=cat.vendor or ""):
+        if is_catalog_auto_noise(name=cat.name, publisher=cat.vendor or ""):
             cat.is_active = False
             cat.is_archived = True
             cat.save(update_fields=["is_active", "is_archived", "updated_at"])
@@ -124,16 +137,16 @@ def archive_infrastructure_catalog_entries() -> dict[str, int]:
 
 def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
     """
-    Archive auto-discovered catalog rows that are not analysis/selected software.
+    Archive catalog rows that are not analysis/selected software.
 
     Keeps:
-      - admin-created entries (description does not start with Auto-discovered…)
-      - entries linked to a present install with analysis/scientific/catalog category
-      - entries whose name matches a present analysis-category install
+      - admin-created entries that are not desktop/infrastructure noise
+      - auto-discovered entries linked to a present analysis-category install
+        (and not desktop noise like Notepad)
     """
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
     from iic_booking.remote_analysis.models import InstalledSoftware
-    from iic_booking.remote_analysis.services.inventory import is_infrastructure_inventory_noise
+    from iic_booking.remote_analysis.services.inventory import is_catalog_auto_noise
 
     analysis_q = (
         Q(category__iexact="analysis")
@@ -142,7 +155,7 @@ def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
     )
     archived = 0
     for cat in AnalysisSoftwareCatalog.objects.filter(is_active=True, is_archived=False):
-        if is_infrastructure_inventory_noise(name=cat.name, publisher=cat.vendor or ""):
+        if is_catalog_auto_noise(name=cat.name, publisher=cat.vendor or ""):
             cat.is_active = False
             cat.is_archived = True
             cat.save(update_fields=["is_active", "is_archived", "updated_at"])
@@ -151,13 +164,14 @@ def archive_unmanaged_auto_catalog_entries() -> dict[str, int]:
 
         desc = (cat.description or "").strip()
         auto = desc.startswith("Auto-discovered from RAA")
-        if not auto:
-            continue
-
         keep = InstalledSoftware.objects.filter(is_present=True).filter(
             analysis_q
             & (Q(catalog_id=cat.id) | Q(software_name__iexact=cat.name))
         ).exists()
+
+        if not auto:
+            # Admin-created entry — keep unless it was somehow denylisted above.
+            continue
         if keep:
             continue
 

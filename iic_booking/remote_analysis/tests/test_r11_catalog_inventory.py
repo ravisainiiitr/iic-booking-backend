@@ -132,6 +132,46 @@ def test_backfill_catalog_from_orphan_installs():
 
 
 @pytest.mark.django_db
+def test_sync_archives_notepad_noise():
+    from iic_booking.remote_analysis.services.catalog_sync import (
+        archive_unmanaged_auto_catalog_entries,
+        backfill_catalog_from_installed,
+    )
+    from iic_booking.remote_analysis.services.inventory import is_consumer_desktop_noise
+
+    assert is_consumer_desktop_noise(name="Notepad")
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-notepad",
+        hostname="RAVI-NOTEPAD",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    junk = AnalysisSoftwareCatalog.objects.create(
+        name="Notepad",
+        slug="notepad",
+        description="Auto-discovered from RAA inventory (version=10.0).",
+        is_active=True,
+        is_archived=False,
+    )
+    InstalledSoftware.objects.create(
+        workstation=ws,
+        software_name="Notepad",
+        version="10.0",
+        publisher="Microsoft",
+        category="analysis",  # mis-tagged from older full selection
+        is_present=True,
+        allocation_enabled=True,
+        catalog=junk,
+    )
+    backfill = backfill_catalog_from_installed()
+    assert backfill["unlinked_noise"] >= 1
+    result = archive_unmanaged_auto_catalog_entries()
+    assert result["unmanaged_auto_archived"] >= 1
+    junk.refresh_from_db()
+    assert junk.is_active is False and junk.is_archived is True
+
+
+@pytest.mark.django_db
 def test_sync_archives_unmanaged_auto_catalog_entries():
     from iic_booking.remote_analysis.services.catalog_sync import (
         archive_unmanaged_auto_catalog_entries,

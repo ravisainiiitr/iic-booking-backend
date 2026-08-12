@@ -66,6 +66,51 @@ def is_infrastructure_inventory_noise(*, name: str, publisher: str = "") -> bool
     return any(re.search(p, text) for p in patterns)
 
 
+def is_consumer_desktop_noise(*, name: str, publisher: str = "") -> bool:
+    """
+    Common desktop apps that must never auto-enter the Analysis Software Catalog
+    (even if an older full inventory sync marked them category=analysis).
+    """
+    import re
+
+    text = (name or "").strip().lower()
+    if not text:
+        return False
+    patterns = (
+        r"^notepad$",
+        r"^notepad\s*\+",
+        r"google chrome",
+        r"microsoft edge",
+        r"mozilla firefox",
+        r"^firefox$",
+        r"microsoft teams",
+        r"zoom$",
+        r"zoom meetings",
+        r"skype",
+        r"discord",
+        r"slack$",
+        r"spotify",
+        r"whatsapp",
+        r"onedrive",
+        r"dropbox",
+        r"^paint$",
+        r"paint 3d",
+        r"windows media player",
+        r"calculator",
+        r"snipping tool",
+        r"cortana",
+        r"xbox",
+    )
+    return any(re.search(p, text) for p in patterns)
+
+
+def is_catalog_auto_noise(*, name: str, publisher: str = "") -> bool:
+    """Titles that Sync-from-RAA / inventory must never promote into the catalog."""
+    return is_infrastructure_inventory_noise(name=name, publisher=publisher) or is_consumer_desktop_noise(
+        name=name, publisher=publisher
+    )
+
+
 def resolve_catalog_for_inventory(
     *,
     name: str,
@@ -90,7 +135,7 @@ def resolve_catalog_for_inventory(
     if existing:
         return existing
 
-    if is_infrastructure_inventory_noise(name=clean, publisher=publisher):
+    if is_catalog_auto_noise(name=clean, publisher=publisher):
         return None
 
     cat = (category or "").strip().lower()
