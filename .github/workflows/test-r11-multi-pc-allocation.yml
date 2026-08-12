@@ -1,0 +1,27 @@
+name: Test R11 Multi-PC Allocation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "iic_booking/remote_analysis/services/allocation.py"
+      - "iic_booking/remote_analysis/services/availability.py"
+      - "iic_booking/remote_analysis/services/scheduler.py"
+      - "iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py"
+
+jobs:
+  test:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pytest multi-PC same-software failover
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker cp iic_booking/remote_analysis/services/allocation.py "$CID":/app/iic_booking/remote_analysis/services/allocation.py
+          docker cp iic_booking/remote_analysis/services/availability.py "$CID":/app/iic_booking/remote_analysis/services/availability.py
+          docker cp iic_booking/remote_analysis/services/scheduler.py "$CID":/app/iic_booking/remote_analysis/services/scheduler.py
+          docker cp iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py "$CID":/app/iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.test "$CID" \
+            pytest iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py -q --tb=short

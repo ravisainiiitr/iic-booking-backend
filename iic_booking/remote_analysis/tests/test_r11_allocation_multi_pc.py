@@ -77,6 +77,143 @@ def test_r11_busy_pc_selects_next_compatible_pc():
 
 
 @pytest.mark.django_db
+def test_allocate_skips_busy_pc_to_next_with_same_software(ra_user):
+    """Scheduler must pick the next free RAA with the mapped software — not queue early."""
+    from iic_booking.remote_analysis.constants import ReservationStatus
+    from iic_booking.remote_analysis.services.reservation import ReservationService
+    from iic_booking.remote_analysis.services.scheduler import SchedulerService
+
+    busy = _eligible_ws(agent_id="r11-alloc-busy", hostname="RAA-BUSY", status=WorkstationStatus.BUSY)
+    free = _eligible_ws(agent_id="r11-alloc-free", hostname="RAA-FREE", status=WorkstationStatus.AVAILABLE)
+    other = _eligible_ws(agent_id="r11-alloc-other", hostname="RAA-OTHER", status=WorkstationStatus.AVAILABLE)
+    for ws in (busy, free):
+        InstalledSoftware.objects.create(
+            workstation=ws,
+            software_name="Altium Designer 26",
+            version="26",
+            is_present=True,
+            allocation_enabled=True,
+        )
+    # Wrong software on an otherwise free PC — must not be chosen.
+    InstalledSoftware.objects.create(
+        workstation=other,
+        software_name="HighScore Plus",
+        version="1",
+        is_present=True,
+        allocation_enabled=True,
+    )
+
+    start = timezone.now()
+    end = start + timedelta(hours=1)
+    reservation = ReservationService().create_reservation(
+        user=ra_user,
+        requested_start=start,
+        requested_end=end,
+        created_by=ra_user,
+        auto_allocate=False,
+        requested_capabilities={"required_software_names": ["Altium Designer 26"]},
+    )
+    out = SchedulerService().allocate(reservation, actor=ra_user)
+    out.refresh_from_db()
+    assert out.status == ReservationStatus.AWAITING_CHECKIN
+    assert out.workstation_id == free.id
+    free.refresh_from_db()
+    assert free.status in {WorkstationStatus.BUSY, WorkstationStatus.RESERVED}
+
+
+@pytest.mark.django_db
+def test_allocate_queues_only_when_all_matching_pcs_busy(ra_user):
+    """When every RAA with the mapped software is occupied, queue — do not steal wrong software."""
+    from iic_booking.remote_analysis.constants import ReservationStatus, QueueEntryStatus
+    from iic_booking.remote_analysis.scheduler_models import ReservationQueue
+    from iic_booking.remote_analysis.services.reservation import ReservationService
+    from iic_booking.remote_analysis.services.scheduler import SchedulerService
+
+    a = _eligible_ws(agent_id="r11-all-busy-a", hostname="RAA-A", status=WorkstationStatus.BUSY)
+    b = _eligible_ws(agent_id="r11-all-busy-b", hostname="RAA-B", status=WorkstationStatus.RESERVED)
+    free_wrong = _eligible_ws(
+        agent_id="r11-all-busy-wrong", hostname="RAA-WRONG", status=WorkstationStatus.AVAILABLE
+    )
+    for ws in (a, b):
+        InstalledSoftware.objects.create(
+            workstation=ws,
+            software_name="Altium Designer 26",
+            version="26",
+            is_present=True,
+            allocation_enabled=True,
+        )
+    InstalledSoftware.objects.create(
+        workstation=free_wrong,
+        software_name="OriginPro",
+        version="2024",
+        is_present=True,
+        allocation_enabled=True,
+    )
+
+    start = timezone.now()
+    end = start + timedelta(hours=1)
+    reservation = ReservationService().create_reservation(
+        user=ra_user,
+        requested_start=start,
+        requested_end=end,
+        created_by=ra_user,
+        auto_allocate=False,
+        requested_capabilities={"required_software_names": ["Altium Designer 26"]},
+    )
+    out = SchedulerService().allocate(reservation, actor=ra_user)
+    out.refresh_from_db()
+    assert out.status == ReservationStatus.QUEUED
+    assert out.workstation_id is None
+    assert ReservationQueue.objects.filter(
+        reservation=out, status=QueueEntryStatus.WAITING
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_process_queue_allocates_when_matching_pc_becomes_free(ra_user):
+    """Queued request is allocated once a matching RAA returns to AVAILABLE."""
+    from iic_booking.remote_analysis.constants import ReservationStatus, QueueEntryStatus
+    from iic_booking.remote_analysis.scheduler_models import ReservationQueue
+    from iic_booking.remote_analysis.services.reservation import ReservationService
+    from iic_booking.remote_analysis.services.scheduler import SchedulerService
+
+    busy = _eligible_ws(agent_id="r11-q-busy", hostname="RAA-Q1", status=WorkstationStatus.BUSY)
+    later = _eligible_ws(agent_id="r11-q-later", hostname="RAA-Q2", status=WorkstationStatus.BUSY)
+    for ws in (busy, later):
+        InstalledSoftware.objects.create(
+            workstation=ws,
+            software_name="Altium Designer 26",
+            version="26",
+            is_present=True,
+            allocation_enabled=True,
+        )
+
+    start = timezone.now()
+    end = start + timedelta(hours=1)
+    reservation = ReservationService().create_reservation(
+        user=ra_user,
+        requested_start=start,
+        requested_end=end,
+        created_by=ra_user,
+        auto_allocate=False,
+        requested_capabilities={"required_software_names": ["Altium Designer 26"]},
+    )
+    out = SchedulerService().allocate(reservation, actor=ra_user)
+    out.refresh_from_db()
+    assert out.status == ReservationStatus.QUEUED
+
+    later.status = WorkstationStatus.AVAILABLE
+    later.save(update_fields=["status", "updated_at"])
+    ReservationQueue.objects.filter(reservation=out).update(status=QueueEntryStatus.WAITING)
+
+    stats = SchedulerService().process_queue(limit=5)
+    out.refresh_from_db()
+    assert stats["allocated"] >= 1
+    assert out.status == ReservationStatus.AWAITING_CHECKIN
+    assert out.workstation_id == later.id
+
+
+@pytest.mark.django_db
 def test_r11_stale_inventory_excluded():
     from iic_booking.remote_analysis.services.tokens import issue_agent_token
 
