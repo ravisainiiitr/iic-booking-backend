@@ -23,5 +23,7 @@ jobs:
           docker cp iic_booking/remote_analysis/services/availability.py "$CID":/app/iic_booking/remote_analysis/services/availability.py
           docker cp iic_booking/remote_analysis/services/scheduler.py "$CID":/app/iic_booking/remote_analysis/services/scheduler.py
           docker cp iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py "$CID":/app/iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py
+          # Production image may omit pytest — install into the container venv for this smoke run.
+          docker exec -w /app "$CID" /app/.venv/bin/python -m pip install -q pytest pytest-django
           docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.test "$CID" \
-            /app/.venv/bin/pytest iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py -q --tb=short
+            /app/.venv/bin/python -m pytest iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py -q --tb=short
