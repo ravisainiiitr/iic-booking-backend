@@ -204,6 +204,38 @@ def test_inventory_sync_skips_dotnet_runtime_catalog_promotion():
 
 
 @pytest.mark.django_db
+def test_inventory_installer_selection_promotes_catalog():
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-promote",
+        hostname="RAVI-PROMOTE",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+        last_heartbeat=timezone.now(),
+    )
+    result = InventoryService().synchronize(
+        ws,
+        {
+            "software": [
+                {
+                    "displayName": "Altium Designer 26",
+                    "version": "26.9.1.10",
+                    "publisher": "Altium Limited",
+                    "category": "application",
+                    "promoteToCatalog": True,
+                    "installerSelection": True,
+                }
+            ]
+        },
+    )
+    assert result["accepted"] is True
+    assert AnalysisSoftwareCatalog.objects.filter(name__icontains="Altium").exists()
+    row = InstalledSoftware.objects.filter(workstation=ws, software_name__icontains="Altium").first()
+    assert row is not None
+    assert row.catalog_id is not None
+    assert row.allocation_enabled is True
+
+
+@pytest.mark.django_db
 def test_installer_seed_inventory_without_equipment():
     from iic_booking.remote_analysis.installer.services import seed_workstation_software_from_selection
 

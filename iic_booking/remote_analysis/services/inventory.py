@@ -113,7 +113,7 @@ def _content_hash(item: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str = ""):
+def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str = "", category: str = "analysis"):
     """R11: auto-populate global Software Catalog from RAA inventory (one row per slug)."""
     from iic_booking.remote_analysis.catalog_models import AnalysisSoftwareCatalog
 
@@ -138,6 +138,7 @@ def ensure_catalog_for_install(*, name: str, publisher: str = "", version: str =
                 name=clean,
                 slug=slug,
                 vendor=_clip(publisher, 255),
+                category=_clip(category or "analysis", 128),
                 is_active=True,
                 is_archived=False,
                 description=f"Auto-discovered from RAA inventory (version={_clip(version, 64) or 'unknown'}).",
@@ -216,12 +217,25 @@ class InventoryService:
                 128,
             )
             try:
-                catalog = resolve_catalog_for_inventory(
-                    name=name,
-                    publisher=publisher,
-                    version=version,
-                    category=category,
+                promote = bool(
+                    item.get("promoteToCatalog")
+                    or item.get("promote_to_catalog")
+                    or item.get("installerSelection")
+                    or item.get("installer_selection")
                 )
+                if promote:
+                    catalog = ensure_catalog_for_install(
+                        name=name,
+                        publisher=publisher,
+                        version=version,
+                    )
+                else:
+                    catalog = resolve_catalog_for_inventory(
+                        name=name,
+                        publisher=publisher,
+                        version=version,
+                        category=category,
+                    )
             except Exception:  # noqa: BLE001
                 logger.exception("catalog promote failed for %s", name)
                 catalog = None

@@ -141,6 +141,7 @@ def seed_workstation_software_from_selection(
             name=item["name"],
             publisher=item["publisher"],
             version=item["version"],
+            category="analysis",
         )
         if catalog and item.get("slug") and catalog.slug != item["slug"]:
             # Prefer installer/catalog slug when seeding explicit user selection.
