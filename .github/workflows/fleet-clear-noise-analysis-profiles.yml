@@ -1,0 +1,96 @@
+name: Fleet Clear Noise Analysis Profiles
+
+# System-wide: clear consumer-desktop noise from equipment.analysis_profile,
+# deactivate Notepad (etc.) equipment↔catalog maps, scrub queued caps, process queue.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clear:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Clear noise profiles fleet-wide + reprocess queue
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          import json
+          from django.utils import timezone
+          from datetime import timedelta
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.remote_analysis.catalog_models import EquipmentAnalysisSoftware, AnalysisSoftwareCatalog
+          from iic_booking.remote_analysis.scheduler_models import AnalysisReservation, ReservationQueue, SoftwareRequirement
+          from iic_booking.remote_analysis.constants import ReservationStatus, QueueEntryStatus
+          from iic_booking.remote_analysis.services.inventory import is_consumer_desktop_noise
+          from iic_booking.remote_analysis.services.scheduler import SchedulerService
+          from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
+
+          cleared_profiles = []
+          for eq in Equipment.objects.all().only('id','name','analysis_profile'):
+              profile = (eq.analysis_profile or '').strip()
+              if profile and is_consumer_desktop_noise(name=profile):
+                  cleared_profiles.append({'id': eq.pk, 'name': eq.name, 'was': profile})
+                  eq.analysis_profile = ''
+                  eq.save(update_fields=['analysis_profile'])
+          print('CLEARED_PROFILES', json.dumps(cleared_profiles, default=str))
+
+          deactivated_maps = []
+          for row in EquipmentAnalysisSoftware.objects.select_related('catalog','equipment'):
+              cat = row.catalog
+              if cat is None:
+                  continue
+              if is_consumer_desktop_noise(name=cat.name or '', publisher=getattr(cat,'vendor','') or ''):
+                  deactivated_maps.append({'equipment': row.equipment.name, 'catalog': cat.name, 'slug': cat.slug, 'map_id': str(row.id)})
+                  # Soft-disable via catalog archive/inactive if still active
+                  if cat.is_active or not getattr(cat, 'is_archived', False):
+                      cat.is_active = False
+                      if hasattr(cat, 'is_archived'):
+                          cat.is_archived = True
+                      cat.save()
+          print('DEACTIVATED_NOISE_MAPS', json.dumps(deactivated_maps, default=str))
+
+          # Scrub open reservations that still require noise software
+          scrubbed = []
+          open_statuses = {
+              ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING,
+              ReservationStatus.AWAITING_CHECKIN, ReservationStatus.RESERVED, ReservationStatus.PREPARING,
+          }
+          for r in AnalysisReservation.objects.filter(status__in=open_statuses).select_related('software_profile','booking','booking__equipment'):
+              changed = False
+              caps = dict(r.requested_capabilities or {})
+              names = caps.get('required_software_names') or []
+              if isinstance(names, (list, tuple)):
+                  cleaned = [n for n in names if str(n).strip() and not is_consumer_desktop_noise(name=str(n))]
+                  if list(names) != cleaned:
+                      caps['required_software_names'] = cleaned
+                      r.requested_capabilities = caps
+                      changed = True
+              sp = r.software_profile
+              if sp is not None and is_consumer_desktop_noise(name=sp.software or ''):
+                  # Prefer equipment catalog resolve; else clear
+                  eq = getattr(r.booking, 'equipment', None)
+                  new_req = None
+                  if eq is not None:
+                      new_req = SoftwareMappingService().resolve(eq)[1]
+                  r.software_profile = new_req
+                  changed = True
+              if changed:
+                  r.save()
+                  scrubbed.append({'reservation': str(r.id), 'status': r.status, 'booking': getattr(getattr(r,'booking',None),'virtual_booking_id',None)})
+                  if r.status in {ReservationStatus.QUEUED, ReservationStatus.REQUESTED}:
+                      ReservationQueue.objects.update_or_create(
+                          reservation=r,
+                          defaults={'status': QueueEntryStatus.WAITING, 'priority': 20, 'enqueued_at': timezone.now()},
+                      )
+          print('SCRUBBED_RESERVATIONS', json.dumps(scrubbed, default=str))
+          print('PROCESS_QUEUE', SchedulerService().process_queue(limit=50))
+
+          # Summary: equipment still requiring software
+          sample = []
+          for eq in Equipment.objects.all().order_by('name')[:50]:
+              req = SoftwareMappingService().required_software_names(eq)
+              if req or (eq.analysis_profile or '').strip():
+                  sample.append({'equipment': eq.name, 'required': req, 'profile': eq.analysis_profile})
+          print('EQUIPMENT_REQUIRED_SAMPLE', json.dumps(sample, default=str)[:4000])
+          "

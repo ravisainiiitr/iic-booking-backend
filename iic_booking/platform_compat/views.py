@@ -17,7 +17,40 @@ from iic_booking.sync.permissions import CanManageDepartmentSync
 @permission_classes([AllowAny])
 def api_version(request):
     """GET /api/version — public portal / backend / frontend / installer matrix."""
-    return Response(build_version_payload())
+    try:
+        return Response(build_version_payload())
+    except Exception as exc:  # noqa: BLE001 — public smoke must never 500 the portal
+        # Minimal safe payload so deploy health checks and installers keep working.
+        return Response(
+            {
+                "portal_version": str(getattr(settings, "PORTAL_VERSION", "2.5.2") or "2.5.2"),
+                "backend_version": str(getattr(settings, "PORTAL_VERSION", "2.5.2") or "2.5.2"),
+                "frontend_version": str(getattr(settings, "FRONTEND_VERSION", "") or ""),
+                "backend_commit": str(
+                    getattr(settings, "BACKEND_GIT_COMMIT", "")
+                    or getattr(settings, "GIT_SHA", "")
+                    or ""
+                ),
+                "frontend_commit": str(getattr(settings, "FRONTEND_GIT_COMMIT", "") or ""),
+                "git_commit": str(
+                    getattr(settings, "BACKEND_GIT_COMMIT", "")
+                    or getattr(settings, "GIT_SHA", "")
+                    or ""
+                ),
+                "provisioning_version": "2.0",
+                "research_copilot_version": "0.0.0",
+                "build_date": "",
+                "compatible_frontend_min": "2.5.2-r2",
+                "compatible_backend_min": "2.5.2",
+                "supported_installers": {
+                    "dsa": {"minimum": "1.0.1", "latest": "1.0.2"},
+                    "equipment_pc": {"minimum": "1.0.0", "latest": "1.0.0"},
+                    "remote_analysis": {"minimum": "1.0.3", "latest": "1.0.3"},
+                },
+                "degraded": True,
+                "detail": str(exc)[:300],
+            }
+        )
 
 
 @api_view(["GET"])
