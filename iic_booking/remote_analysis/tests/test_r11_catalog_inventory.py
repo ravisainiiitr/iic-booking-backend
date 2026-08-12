@@ -146,6 +146,62 @@ def test_installer_link_creates_catalog_for_unknown_slugs():
 
 
 @pytest.mark.django_db
+def test_installer_seed_inventory_without_equipment():
+    from iic_booking.remote_analysis.installer.services import seed_workstation_software_from_selection
+
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-seed",
+        hostname="DESKTOP-CSMH6BU",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    result = seed_workstation_software_from_selection(
+        workstation=ws,
+        software_slugs=["originpro", "imagej"],
+        software_items=[
+            {"displayName": "OriginPro", "slug": "originpro", "publisher": "OriginLab", "version": "2024"},
+            {"displayName": "ImageJ", "slug": "imagej", "publisher": "NIH"},
+        ],
+    )
+    assert result["inventory_seeded"] >= 2
+    assert AnalysisSoftwareCatalog.objects.filter(slug="originpro").exists()
+    assert InstalledSoftware.objects.filter(workstation=ws, is_present=True).count() >= 2
+    ws.refresh_from_db()
+    assert ws.last_inventory_update is not None
+
+
+@pytest.mark.django_db
+def test_installer_seed_inventory_api():
+    from rest_framework.test import APIRequestFactory
+
+    from iic_booking.remote_analysis.installer.views import seed_inventory
+
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-seed-api",
+        hostname="DESKTOP-SEED-API",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    factory = APIRequestFactory()
+    req = factory.post(
+        "/api/v1/analysis/installer/seed-inventory/",
+        {
+            "workstationId": str(ws.id),
+            "agentId": ws.agent_id,
+            "softwareSlugs": ["casaxps"],
+            "softwareItems": [{"displayName": "CasaXPS", "slug": "casaxps", "publisher": "Casa"}],
+        },
+        format="json",
+        HTTP_X_ENROLLMENT_KEY="",
+    )
+    # Dev mode: empty enrollment key env allows unauthenticated seed when key unset
+    resp = seed_inventory(req)
+    assert resp.status_code == 200
+    assert resp.data["inventory_seeded"] >= 1
+    assert InstalledSoftware.objects.filter(workstation=ws, software_name__iexact="CasaXPS").exists()
+
+
+@pytest.mark.django_db
 def test_disabled_install_excluded_from_software_match():
     from iic_booking.remote_analysis.scheduler_models import SoftwareRequirement
     from iic_booking.remote_analysis.services.availability import AvailabilityEngine

@@ -23,6 +23,7 @@ from iic_booking.remote_analysis.permissions import CanManageRemoteAnalysis
 from iic_booking.remote_analysis.installer.models import AgentInstallerRelease
 from iic_booking.remote_analysis.installer.services import (
     link_workstation_to_equipment,
+    seed_workstation_software_from_selection,
     sha256_filefield,
     verify_enrollment_key,
 )
@@ -530,5 +531,54 @@ def link_equipment(request):
         software_slugs=list(software) if isinstance(software, list) else [],
         software_items=list(software_items) if isinstance(software_items, list) else [],
         priority_boost=int(data.get("priority_boost") or data.get("priorityBoost") or 10),
+    )
+    return Response({"accepted": True, **result})
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def seed_inventory(request):
+    """
+    R11: after register/claim, seed Software Catalog + InstalledSoftware from
+    installer selection when no equipment is linked (wizard no longer asks).
+    """
+    _try_bind_agent_auth(request)
+    _try_bind_portal_token(request)
+    allowed, err = _agent_or_enrollment_or_manage(request)
+    if not allowed:
+        return Response({"detail": err}, status=status.HTTP_403_FORBIDDEN)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    workstation_id = str(data.get("workstation_id") or data.get("workstationId") or "").strip()
+    agent_id = str(data.get("agent_id") or data.get("agentId") or "").strip()
+
+    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
+    from iic_booking.remote_analysis.models import AnalysisWorkstation
+
+    ws = None
+    if workstation_id:
+        ws = AnalysisWorkstation.objects.filter(pk=workstation_id).first()
+    if ws is None and agent_id:
+        ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
+    if ws is None and isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
+        ws = request.user.workstation
+    if ws is None:
+        return Response({"detail": "Workstation not found. Register the agent first."}, status=status.HTTP_404_NOT_FOUND)
+
+    software = data.get("software_slugs") or data.get("softwareSlugs") or []
+    if isinstance(software, str):
+        software = [s.strip() for s in software.split(",") if s.strip()]
+    software_items = data.get("software_items") or data.get("softwareItems") or data.get("software") or []
+    if isinstance(software_items, str):
+        software_items = []
+
+    if not software and not software_items:
+        return Response({"detail": "softwareSlugs or softwareItems required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = seed_workstation_software_from_selection(
+        workstation=ws,
+        software_slugs=list(software) if isinstance(software, list) else [],
+        software_items=list(software_items) if isinstance(software_items, list) else [],
     )
     return Response({"accepted": True, **result})
