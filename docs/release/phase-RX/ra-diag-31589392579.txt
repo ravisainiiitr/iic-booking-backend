@@ -1,0 +1,51 @@
+315 objects imported automatically (use -v 2 for details).
+
+=== BOOKING ===
+{"pk": 366, "virtual": "IICPXRD [A]202600040", "status": "COMPLETED", "user": "test.student@iic-booking.test", "equipment": "Powder X-Ray Diffractometer (PXRD) [A]", "equipment_id": 1, "dept_id": 33}
+=== REQUIRED_SOFTWARE === ['Notepad']
+=== EQUIPMENT_SOFTWARE_MAP === [('Notepad', True, 'notepad')]
+=== EQUIPMENT_POOL === [{"workstation_id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "workstation__hostname": "DESKTOP-CSMH6BU", "workstation__status": "RESERVED", "priority_boost": 10}]
+=== FLEET ===
+{"id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "hostname": "DESKTOP-CSMH6BU", "status": "RESERVED", "enabled": true, "department_id": 33, "health_score": 65, "last_heartbeat": "None", "hb_age_s": null, "agent_version": "1.0.1", "cleanup_status": "idle", "disk_low": false, "software_ok_for_required": true, "installed_software": ["Notepad"]}
+{"id": "820de355-410b-4ab1-951e-e42ad3ba942d", "hostname": "RAVI", "status": "AVAILABLE", "enabled": true, "department_id": null, "health_score": 65, "last_heartbeat": "2026-08-12 05:57:09.450560+00:00", "hb_age_s": 17774, "agent_version": "1.0.6", "cleanup_status": "idle", "disk_low": false, "software_ok_for_required": true, "installed_software": ["3DEXPERIENCE Exchange for SOLIDWORKS", "3DEXPERIENCE Marketplace for SOLIDWORKS", "Adobe Acrobat 9 Pro", "AltiumCoDesignerSOLIDWORKS 3.14.0.4", "Altium Designer 26", "Android Studio", "Arcus Technology, Inc. Performax USB 4.01.3", "Arduino IDE 2.3.10", "AWS Command Line Interface v2", "Bonjour", "Brother iPrint&Scan", "Browser for SQL Server 2022", "CEF for SOLIDWORKS Applications", "CorelDRAW Graphics Suite 2019 (64-Bit)", "Corel Graphics - Windows Shell Extension", "CrowdStrike Windows Sensor", "DBeaver 26.1.2", "Dell Command | Update for Windows Universal", "Dell Core Services", "Dell Display and Peripheral Manager", "Dell Optimizer", "Dell Pair", "Dell Peripheral Core", "Dell SupportAssist", "Dell SupportAssist OS Recovery Plugin for Dell Update", "Dell SupportAssist Remediation", "Dell Trusted Device", "Docker Desktop", "Dokan Library 2.3.0.1000 Bundle", "dpinst_amd64"]}
+=== RESERVATION ===
+{"id": "579a0586-88e9-4f2f-a8a9-d3b8d4389e26", "status": "PREPARING", "workstation_id": "8715e5a2-296d-41f1-a1f9-e2f5efc80612", "department_id": 33, "requested_start": "2026-08-14 08:00:00+00:00", "requested_end": "2026-08-14 08:30:00+00:00", "requested_capabilities": {"required_software_names": ["Notepad"]}}
+=== QUEUE_ENTRY ===
+NONE
+=== CANDIDATE TRACE ===
+{"hostname": "DESKTOP-CSMH6BU", "status": "RESERVED", "ACCEPT": false, "reasons": ["Status RESERVED not allocatable"], "score_available": false, "score_total": null, "score_reasons": ["Status RESERVED not allocatable"]}
+{"hostname": "RAVI", "status": "AVAILABLE", "ACCEPT": false, "reasons": ["Software inventory stale"], "score_available": false, "score_total": null, "score_reasons": ["Software inventory stale"]}
+=== MAINTENANCE_HINT ===
+{"all_under_maintenance": false, "all_offline": false, "estimated_available_at": null, "reason": null}
+=== EXPERIENCE_QUEUE ===
+{
+  "is_queued": false,
+  "title": "Analysis Environment Allocated",
+  "body": [
+    "A compatible Analysis PC has been allocated.",
+    "Complete check-in/start to begin the session."
+  ],
+  "required_software": [
+    "Notepad"
+  ],
+  "position": null,
+  "queue_size": 0,
+  "people_ahead": 0,
+  "estimated_wait_minutes": null,
+  "expected_start_at": null,
+  "maintenance": {
+    "all_under_maintenance": false,
+    "all_offline": false,
+    "estimated_available_at": null,
+    "reason": null
+  },
+  "environments": {
+    "total": 2,
+    "matching": 2,
+    "available": 1,
+    "busy": 1,
+    "waiting": 0
+  }
+}
+WORKSPACE_TILE {"label": "Booking Workspace", "status": "COLLECTING", "sync_phase": "Preparing", "sync_progress_percent": 15, "sync_message": "ingested=0 skipped=1 failed=0", "input": {"label": "Input Folder", "logical_name": "Uploaded Input Data", "file_count": 1, "total_size_bytes": 380293, "last_updated": "2026-08-11T06:01:44.201317+00:00"}, "output": {"label": "Output Folder", "logical_name": "Generated Results", "file_count": 0, "total_size_bytes": 0, "last_updated": null}, "last_synced_at": null, "raw_data_directory": "D:\\PXRD\\RAW", "results_directory": "D:\\PXRD\\RESULTS", "instructions": ["Raw files have already been copied to your Booking Folder under the Raw Data directory (when configured for this equipment).", "Please save all analyzed files inside your Booking Folder under the Analyzed Data directory: D:\\PXRD\\RESULTS\\IICPXRD [A]202600040.", "After End Analysis, all results are uploaded to the booking and local copies are securely deleted."]}
+RESERVATION_STATUS_IN_SUMMARY {'id': '579a0586-88e9-4f2f-a8a9-d3b8d4389e26', 'status': 'PREPARING', 'allocated': True, 'requested_start': '2026-08-14T08:00:00+00:00', 'requested_end': '2026-08-14T08:30:00+00:00'}
