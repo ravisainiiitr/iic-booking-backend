@@ -146,38 +146,60 @@ def _agent_or_enrollment_or_manage(request) -> tuple[bool, str | None]:
 
 
 def _try_bind_agent_auth(request) -> None:
-    """Attach RemoteAnalysisAgentUser when Bearer + X-Agent-Id are present."""
+    """Attach RemoteAnalysisAgentUser when Bearer token is valid for the agent/workstation."""
     from iic_booking.remote_analysis.authentication import (
         RemoteAnalysisAgentAuthentication,
         RemoteAnalysisAgentUser,
     )
+    from iic_booking.remote_analysis.models import AnalysisWorkstation
+    from iic_booking.remote_analysis.services.tokens import find_active_token
 
     if isinstance(getattr(request, "user", None), RemoteAnalysisAgentUser):
         return
     auth_header = request.META.get("HTTP_AUTHORIZATION") or ""
     if not auth_header.lower().startswith("bearer "):
         return
+
+    parts = auth_header.split()
+    if len(parts) != 2:
+        return
+    bearer = parts[1].strip()
+    if not bearer:
+        return
+
     try:
         result = RemoteAnalysisAgentAuthentication().authenticate(request)
     except Exception:
-        return
+        result = None
     if result:
         request.user, request.auth = result
+        return
+
+    # Installer post-claim: Bearer is valid but X-Agent-Id may be missing/wrong — resolve
+    # workstation from JSON body (workstationId / agentId) and bind auth.
+    data = request.data if isinstance(request.data, dict) else {}
+    ws_id = str(data.get("workstation_id") or data.get("workstationId") or "").strip()
+    agent_id = str(data.get("agent_id") or data.get("agentId") or "").strip()
+    ws = None
+    if ws_id:
+        ws = AnalysisWorkstation.objects.filter(pk=ws_id).first()
+    if ws is None and agent_id:
+        ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
+    if ws is not None and find_active_token(ws, bearer) is not None:
+        request.user = RemoteAnalysisAgentUser(ws)
+        request.auth = bearer
 
 
 def _try_bind_portal_token(request) -> None:
     """Attach Django user when Authorization: Token … is present (zero-touch installer)."""
-    from rest_framework.authentication import TokenAuthentication
+    from iic_booking.users.api.token_auth import OptionalTokenAuthentication
 
     if getattr(request.user, "is_authenticated", False):
         return
     auth_header = request.META.get("HTTP_AUTHORIZATION") or ""
     if not auth_header.lower().startswith("token "):
         return
-    try:
-        result = TokenAuthentication().authenticate(request)
-    except Exception:
-        return
+    result = OptionalTokenAuthentication().authenticate(request)
     if result:
         request.user, request.auth = result
 
