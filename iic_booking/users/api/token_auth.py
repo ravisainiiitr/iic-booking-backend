@@ -89,3 +89,22 @@ class TokenAuthenticationWithInactivity(authentication.TokenAuthentication):
             raise exceptions.AuthenticationFailed("User inactive or deleted.")
 
         return (token.user, token)
+
+
+class OptionalTokenAuthentication(TokenAuthenticationWithInactivity):
+    """
+    Token auth for installer endpoints that allow anonymous fallback.
+
+    Invalid or stale ``Authorization: Token …`` must not return HTTP 401 — treat as
+    anonymous so provisioning session create can proceed (pending approval path).
+    """
+
+    def authenticate(self, request):
+        auth = authentication.get_authorization_header(request).split()
+        if not auth or auth[0].lower() != b"token":
+            return None
+
+        try:
+            return super().authenticate(request)
+        except exceptions.AuthenticationFailed:
+            return None
