@@ -73,6 +73,20 @@ jobs:
           print("txn_status=", resp2.status_code)
           print("txn_count=", (data2 or {}).get("count") if isinstance(data2, dict) else None)
           print("txn_keys=", list(data2.keys()) if isinstance(data2, dict) else type(data2))
+          txns = (data2 or {}).get("transactions") if isinstance(data2, dict) else None
+          if isinstance(txns, list):
+              named = sum(1 for t in txns if (t or {}).get("equipment_name"))
+              blank = sum(1 for t in txns if not (t or {}).get("equipment_name"))
+              print("txn_equipment_named=", named, "blank=", blank, "page=", len(txns))
+              for t in txns[:5]:
+                  print(
+                      "txn_sample=",
+                      (t or {}).get("id"),
+                      "equipment_name=",
+                      (t or {}).get("equipment_name"),
+                      "desc=",
+                      ((t or {}).get("description_display") or (t or {}).get("description") or "")[:120],
+                  )
           print("txn_body=", json.dumps(data2, default=str)[:800])
           PY
               exit 0
