@@ -24,4 +24,4 @@ jobs:
           docker cp iic_booking/remote_analysis/services/scheduler.py "$CID":/app/iic_booking/remote_analysis/services/scheduler.py
           docker cp iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py "$CID":/app/iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py
           docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.test "$CID" \
-            pytest iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py -q --tb=short
+            /app/.venv/bin/pytest iic_booking/remote_analysis/tests/test_r11_allocation_multi_pc.py -q --tb=short

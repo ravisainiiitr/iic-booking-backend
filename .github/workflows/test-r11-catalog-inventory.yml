@@ -29,4 +29,4 @@ jobs:
           docker exec -w /app "$CID" mkdir -p /app/iic_booking/remote_analysis/management/commands
           docker cp iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py "$CID":/app/iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py
           docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.test "$CID" \
-            pytest iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py -q --tb=short
+            /app/.venv/bin/pytest iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py -q --tb=short
