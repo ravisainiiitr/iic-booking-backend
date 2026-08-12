@@ -100,6 +100,7 @@ def test_backfill_catalog_from_orphan_installs():
         software_name="Avantage",
         publisher="Thermo",
         version="5",
+        category="analysis",
         is_present=True,
         catalog=None,
     )
@@ -108,13 +109,80 @@ def test_backfill_catalog_from_orphan_installs():
         software_name="Avantage",
         publisher="Thermo",
         version="6",
+        category="analysis",
+        is_present=True,
+        catalog=None,
+    )
+    # General Windows apps must NOT be promoted by Sync from RAA.
+    InstalledSoftware.objects.create(
+        workstation=ws,
+        software_name="Google Chrome",
+        publisher="Google",
+        version="120",
+        category="general",
         is_present=True,
         catalog=None,
     )
     result = backfill_catalog_from_installed()
     assert result["catalog_links_updated"] >= 2
+    assert result["skipped"] >= 1
     assert AnalysisSoftwareCatalog.objects.filter(name__iexact="Avantage").count() == 1
+    assert AnalysisSoftwareCatalog.objects.filter(name__iexact="Google Chrome").count() == 0
     assert InstalledSoftware.objects.filter(workstation=ws, catalog__isnull=False).count() == 2
+
+
+@pytest.mark.django_db
+def test_sync_archives_unmanaged_auto_catalog_entries():
+    from iic_booking.remote_analysis.services.catalog_sync import (
+        archive_unmanaged_auto_catalog_entries,
+    )
+
+    ws = AnalysisWorkstation.objects.create(
+        agent_id="raa-r11-cleanup",
+        hostname="RAVI-CLEAN",
+        status=WorkstationStatus.AVAILABLE,
+        enabled=True,
+    )
+    keep = AnalysisSoftwareCatalog.objects.create(
+        name="Altium Designer 26",
+        slug="altium-designer-26",
+        vendor="Altium Limited",
+        category="analysis",
+        description="Auto-discovered from RAA inventory (version=26.9.1.10).",
+        is_active=True,
+        is_archived=False,
+    )
+    junk = AnalysisSoftwareCatalog.objects.create(
+        name="Google Chrome",
+        slug="google-chrome",
+        vendor="Google",
+        description="Auto-discovered from RAA inventory (version=120).",
+        is_active=True,
+        is_archived=False,
+    )
+    InstalledSoftware.objects.create(
+        workstation=ws,
+        software_name="Altium Designer 26",
+        publisher="Altium Limited",
+        category="analysis",
+        is_present=True,
+        allocation_enabled=True,
+        catalog=keep,
+    )
+    InstalledSoftware.objects.create(
+        workstation=ws,
+        software_name="Google Chrome",
+        publisher="Google",
+        category="general",
+        is_present=True,
+        catalog=junk,
+    )
+    result = archive_unmanaged_auto_catalog_entries()
+    assert result["unmanaged_auto_archived"] >= 1
+    keep.refresh_from_db()
+    junk.refresh_from_db()
+    assert keep.is_active is True and keep.is_archived is False
+    assert junk.is_active is False and junk.is_archived is True
 
 
 @pytest.mark.django_db

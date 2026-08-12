@@ -603,7 +603,13 @@ def seed_inventory(request):
         software_slugs=list(software) if isinstance(software, list) else [],
         software_items=list(software_items) if isinstance(software_items, list) else [],
     )
-    from iic_booking.remote_analysis.services.catalog_sync import archive_infrastructure_catalog_entries
+    from iic_booking.remote_analysis.services.catalog_sync import (
+        archive_infrastructure_catalog_entries,
+        archive_unmanaged_auto_catalog_entries,
+    )
 
-    cleanup = archive_infrastructure_catalog_entries()
+    cleanup = {
+        **archive_infrastructure_catalog_entries(),
+        **archive_unmanaged_auto_catalog_entries(),
+    }
     return Response({"accepted": True, **result, "cleanup": cleanup})
