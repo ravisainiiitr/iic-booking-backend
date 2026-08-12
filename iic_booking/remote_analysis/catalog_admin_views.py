@@ -260,11 +260,11 @@ def catalog_detail(request, catalog_id):
     if not CanManageRemoteAnalysis().has_permission(request, None):
         return Response({"detail": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
     if request.method == "DELETE":
-        # Soft-disable / archive — never hard-delete to preserve mappings & history
-        cat.is_active = False
-        cat.is_archived = True
-        cat.save(update_fields=["is_active", "is_archived", "updated_at"])
-        return Response({"ok": True, "archived": True, "id": str(cat.id)})
+        # Permanent delete — remove equipment mappings; InstalledSoftware.catalog is SET_NULL.
+        deleted_id = str(cat.id)
+        cat.equipment_mappings.all().delete()
+        cat.delete()
+        return Response({"ok": True, "deleted": True, "id": deleted_id})
 
     body = request.data or {}
     errors = _apply_catalog_body(cat, body)
@@ -277,6 +277,42 @@ def catalog_detail(request, catalog_id):
             cat.supported_departments.set(dept_ids)
     cat.ensure_software_requirement()
     return Response(_serialize_catalog(cat))
+
+
+@api_view(["POST"])
+@permission_classes(_MANAGE)
+def catalog_bulk_delete(request):
+    """Permanently delete one or more catalog entries by id."""
+    body = request.data if isinstance(request.data, dict) else {}
+    raw_ids = body.get("ids") or body.get("catalog_ids") or []
+    if isinstance(raw_ids, str):
+        raw_ids = [s.strip() for s in raw_ids.split(",") if s.strip()]
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return Response({"detail": "ids required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    ids = [str(x).strip() for x in raw_ids if str(x).strip()]
+    qs = AnalysisSoftwareCatalog.objects.filter(pk__in=ids)
+    found = list(qs.values_list("id", flat=True))
+    # Remove equipment mappings first (FK protect / cascade safety).
+    EquipmentAnalysisSoftware.objects.filter(catalog_id__in=found).delete()
+    deleted_count, _ = qs.delete()
+    from iic_booking.remote_analysis.constants import AuditCategory
+    from iic_booking.remote_analysis.services.audit import record_event
+
+    record_event(
+        category=AuditCategory.INVENTORY,
+        action="CatalogBulkDelete",
+        details=f"deleted={len(found)} requested={len(ids)}",
+        actor=request.user if getattr(request.user, "is_authenticated", False) else None,
+    )
+    return Response(
+        {
+            "ok": True,
+            "requested": len(ids),
+            "deleted": len(found),
+            "deleted_ids": [str(x) for x in found],
+        }
+    )
 
 
 @api_view(["POST"])

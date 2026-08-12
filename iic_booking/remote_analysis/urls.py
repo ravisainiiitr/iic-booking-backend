@@ -216,6 +216,11 @@ urlpatterns = [
     path("catalog/software/", catalog_admin_views.catalog_collection, name="catalog-software"),
     path("catalog/software/import/", catalog_admin_views.catalog_import, name="catalog-software-import"),
     path(
+        "catalog/software/bulk-delete/",
+        catalog_admin_views.catalog_bulk_delete,
+        name="catalog-software-bulk-delete",
+    ),
+    path(
         "catalog/software/sync-from-inventory/",
         catalog_admin_views.catalog_sync_from_inventory,
         name="catalog-software-sync-from-inventory",
