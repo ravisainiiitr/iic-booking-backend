@@ -82,24 +82,30 @@ def _resolve_charge_profile_for_user(equipment: Equipment, booking_user):
     user_type = getattr(booking_user, "user_type", None) or UserType.STUDENT
     is_external = UserType.is_external_user(user_type)
 
-    pricing_profile = ChargeProfilePricingProfile.STANDARD
-    if bool(getattr(booking_user, "use_discounted_charge_profile", False)):
-        from .models import UserDiscountedChargeEquipment
+    try:
+        from .pi_pricing import resolve_pricing_profile_for_user
 
-        overrides_exist = UserDiscountedChargeEquipment.objects.filter(
-            user=booking_user, is_active=True
-        ).exists()
-        if not overrides_exist:
-            pricing_profile = ChargeProfilePricingProfile.DISCOUNTED
-        else:
-            overridden = UserDiscountedChargeEquipment.objects.filter(
-                user=booking_user, equipment=equipment, is_active=True
+        pricing_profile = resolve_pricing_profile_for_user(booking_user, equipment)
+    except Exception:
+        # Safe fallback: legacy STANDARD / DISCOUNTED resolution.
+        pricing_profile = ChargeProfilePricingProfile.STANDARD
+        if bool(getattr(booking_user, "use_discounted_charge_profile", False)):
+            from .models import UserDiscountedChargeEquipment
+
+            overrides_exist = UserDiscountedChargeEquipment.objects.filter(
+                user=booking_user, is_active=True
             ).exists()
-            pricing_profile = (
-                ChargeProfilePricingProfile.DISCOUNTED
-                if overridden
-                else ChargeProfilePricingProfile.STANDARD
-            )
+            if not overrides_exist:
+                pricing_profile = ChargeProfilePricingProfile.DISCOUNTED
+            else:
+                overridden = UserDiscountedChargeEquipment.objects.filter(
+                    user=booking_user, equipment=equipment, is_active=True
+                ).exists()
+                pricing_profile = (
+                    ChargeProfilePricingProfile.DISCOUNTED
+                    if overridden
+                    else ChargeProfilePricingProfile.STANDARD
+                )
 
     try:
         charge_profile = ChargeProfile.objects.get(

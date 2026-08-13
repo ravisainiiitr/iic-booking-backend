@@ -549,33 +549,13 @@ def _get_charge_profile_pricing_profile_for_user(user, equipment) -> str:
     """
     Return ChargeProfilePricingProfile code for a user+equipment.
 
-    Backwards compatible behavior:
-    - if user.use_discounted_charge_profile is False => STANDARD
-    - if user.use_discounted_charge_profile is True and user has NO per-equipment overrides
-      in `UserDiscountedChargeEquipment` => DISCOUNTED for ALL equipment
-    - if per-equipment overrides exist => DISCOUNTED only for overridden equipment rows
+    Delegates to pi_pricing.resolve_pricing_profile_for_user (PI first when
+    billing identity is an Equipment PI and PI profiles exist; else STANDARD /
+    DISCOUNTED via UserDiscountedChargeEquipment).
     """
-    if not user:
-        return ChargeProfilePricingProfile.STANDARD
-    if not bool(getattr(user, "use_discounted_charge_profile", False)):
-        return ChargeProfilePricingProfile.STANDARD
+    from .pi_pricing import resolve_pricing_profile_for_user
 
-    if equipment is None:
-        # Treat as apply-to-all for defensive usage.
-        return ChargeProfilePricingProfile.DISCOUNTED
-
-    from .models import UserDiscountedChargeEquipment
-
-    overrides_exist = UserDiscountedChargeEquipment.objects.filter(
-        user=user, is_active=True
-    ).exists()
-    if not overrides_exist:
-        return ChargeProfilePricingProfile.DISCOUNTED
-
-    overridden = UserDiscountedChargeEquipment.objects.filter(
-        user=user, equipment=equipment, is_active=True
-    ).exists()
-    return ChargeProfilePricingProfile.DISCOUNTED if overridden else ChargeProfilePricingProfile.STANDARD
+    return resolve_pricing_profile_for_user(user, equipment)
 
 # Soft Navy Ocean calendar colours – professional, accessible, not oversaturated
 DEFAULT_CALENDAR_COLORS = {
@@ -1212,6 +1192,14 @@ def equipment_form_choices(request):
         .select_related("department")
         .order_by("name", "email")
     )
+    faculty = (
+        User.objects.filter(
+            user_type=UserType.FACULTY,
+            is_active=True,
+        )
+        .select_related("department")
+        .order_by("name", "email")
+    )
 
     dept_id_raw = (request.query_params.get("internal_department_id") or "").strip()
     if dept_id_raw and dept_id_raw.lower() not in ("none", "null", "all"):
@@ -1256,6 +1244,17 @@ def equipment_form_choices(request):
                 "department_code": (u.department.code if u.department_id else None),
             }
             for u in operators
+        ],
+        "faculty": [
+            {
+                "id": u.id,
+                "name": u.name or u.email or "",
+                "email": u.email or "",
+                "department_id": u.department_id,
+                "department_name": (u.department.name if u.department_id else None),
+                "department_code": (u.department.code if u.department_id else None),
+            }
+            for u in faculty
         ],
         "profile_type_choices": [
             {"value": c[0], "label": str(c[1])}
@@ -2253,6 +2252,65 @@ def equipment_calculate(request, pk):
             reward_discount_amount = Decimal("0.00")
 
     total_after_reward = quantize_money(max(Decimal("0"), Decimal(total_charge) - reward_discount_amount))
+
+    applied_profile_label = {
+        ChargeProfilePricingProfile.PI: "PI",
+        ChargeProfilePricingProfile.DISCOUNTED: "Discounted",
+        ChargeProfilePricingProfile.STANDARD: "Normal",
+    }.get(pricing_profile, "Normal")
+
+    normal_charge_value = Decimal(str(total_charge))
+    if pricing_profile != ChargeProfilePricingProfile.STANDARD:
+        try:
+            std_profile = ChargeProfile.objects.get(
+                equipment=equipment,
+                user_type=user_type,
+                pricing_profile=ChargeProfilePricingProfile.STANDARD,
+                is_active=True,
+            )
+            std_with_type = ChargeProfileWithType(std_profile, equipment)
+            std_base, _ = ChargeCalculationEngine.calculate_charge(
+                std_with_type,
+                input_values,
+                total_time_minutes,
+                selected_parameters=None,
+            )
+            std_total = Decimal(str(std_base))
+            if UserType.is_external_user(user_type):
+                sample_return_raw = request.query_params.get("sample_return_after_analysis")
+                sample_return = (
+                    str(sample_return_raw).strip().lower() in ("1", "true", "yes", "y")
+                    if sample_return_raw is not None
+                    else False
+                )
+                if sample_return:
+                    try:
+                        std_total = quantize_money(
+                            std_total + quantize_money(get_external_return_shipping_fee_amount())
+                        )
+                    except Exception:
+                        pass
+                std_gst_pct = get_external_gst_percent()
+                if std_gst_pct > 0:
+                    std_total = quantize_money(
+                        std_total + quantize_money(std_total * std_gst_pct / Decimal("100"))
+                    )
+            normal_charge_value = std_total
+        except Exception:
+            normal_charge_value = Decimal(str(total_charge))
+
+    from .pi_pricing import pricing_resolution_meta
+
+    pricing_meta = pricing_resolution_meta(booking_user, equipment) if booking_user else {
+        "billing_identity_is_pi": False,
+        "current_user_is_pi": False,
+        "wallet_owner_is_pi": False,
+        "equipment_has_pi_profiles": False,
+        "wallet_owner_id": None,
+        "wallet_owner_email": None,
+        "resolved_pricing_profile": pricing_profile,
+    }
+
     # Return results
     response_data = {
         "equipment_id": equipment.equipment_id,
@@ -2260,6 +2318,11 @@ def equipment_calculate(request, pk):
         "equipment_name": equipment.name,
         "user_type": user_type,
         "profile_type": equipment.profile_type,
+        "pricing_profile": pricing_profile,
+        "applied_profile": applied_profile_label,
+        "normal_charge": str(normal_charge_value),
+        "applied_charge": str(total_charge),
+        "pricing": pricing_meta,
         "input_values": input_values,
         "total_time_minutes": total_time_minutes,
         "base_charge": str(base_charge),

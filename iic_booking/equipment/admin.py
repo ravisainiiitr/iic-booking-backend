@@ -22,6 +22,7 @@ from .models import (
     EquipmentGroupQuota,
     EquipmentModeSchedule,
     EquipmentManager,
+    EquipmentPI,
     EquipmentOperator,
     ICPMSStandardSample,
     EquipmentSpecification,
@@ -125,6 +126,47 @@ class EquipmentManagerInline(admin.TabularInline):
                 is_active=True,
                 department__department_type=DepartmentType.INTERNAL,
             ).order_by('name', 'email')
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+
+class EquipmentPIInlineForm(forms.ModelForm):
+    """Faculty PI picker shows name instead of email."""
+
+    class Meta:
+        model = EquipmentPI
+        fields = "__all__"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "faculty" in self.fields:
+            from iic_booking.users.models.user import User
+            qs = User.objects.filter(
+                user_type=UserType.FACULTY,
+                is_active=True,
+            ).order_by("name", "email")
+            self.fields["faculty"].queryset = qs
+            self.fields["faculty"].label_from_instance = (
+                lambda obj: obj.name or obj.email or str(obj)
+            )
+
+
+class EquipmentPIInline(admin.TabularInline):
+    """Inline admin for Equipment Principal Investigators."""
+
+    model = EquipmentPI
+    form = EquipmentPIInlineForm
+    extra = 0
+    fields = ["faculty", "is_active", "assigned_by", "created_at", "updated_at"]
+    readonly_fields = ["assigned_by", "created_at", "updated_at"]
+    classes = ["collapse"]
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "faculty":
+            from iic_booking.users.models.user import User
+            kwargs["queryset"] = User.objects.filter(
+                user_type=UserType.FACULTY,
+                is_active=True,
+            ).order_by("name", "email")
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
@@ -668,6 +710,106 @@ class ChargeProfileInline(admin.StackedInline):
             'js/charge_profile_admin.js',
         )
 
+
+class PIChargeProfileForm(ChargeProfileForm):
+    """Charge profile form forced to PI pricing_profile."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.initial["pricing_profile"] = ChargeProfilePricingProfile.PI
+        if getattr(self.instance, "pk", None) is None:
+            self.instance.pricing_profile = ChargeProfilePricingProfile.PI
+        else:
+            self.instance.pricing_profile = ChargeProfilePricingProfile.PI
+
+    def clean(self):
+        cleaned = super().clean()
+        cleaned["pricing_profile"] = ChargeProfilePricingProfile.PI
+        return cleaned
+
+
+class PIChargeProfileInlineFormSet(forms.models.BaseInlineFormSet):
+    """Ensure new/updated rows persist as PI pricing profiles."""
+
+    def _construct_form(self, i, **kwargs):
+        kwargs["_parent_equipment"] = getattr(self, "instance", None)
+        return super()._construct_form(i, **kwargs)
+
+    def clean(self):
+        super().clean()
+        if any(form.errors for form in self.forms):
+            return
+        seen_user_types: list[str] = []
+        for form in self.forms:
+            if not hasattr(form, "cleaned_data") or not form.cleaned_data:
+                continue
+            if form.cleaned_data.get("DELETE"):
+                continue
+            ut = form.cleaned_data.get("user_type")
+            if not ut:
+                continue
+            if ut in seen_user_types:
+                raise forms.ValidationError(
+                    _(
+                        "Duplicate user type in PI charge profiles: each user type may only appear once "
+                        "in PI pricing for this equipment."
+                    )
+                )
+            seen_user_types.append(ut)
+
+    def save_new(self, form, commit=True):
+        obj = form.save(commit=False)
+        obj.pricing_profile = ChargeProfilePricingProfile.PI
+        setattr(obj, self.fk.get_attname(), self.instance.pk)
+        if commit:
+            obj.save()
+        return obj
+
+    def save_existing(self, form, instance, commit=True):
+        obj = form.save(commit=False)
+        obj.pricing_profile = ChargeProfilePricingProfile.PI
+        if commit:
+            obj.save()
+        return obj
+
+
+class PIChargeProfileInline(admin.StackedInline):
+    """Inline admin for PI Charge Profiles (independent of STANDARD rates)."""
+
+    form = PIChargeProfileForm
+    formset = PIChargeProfileInlineFormSet
+    model = ChargeProfile
+    extra = 0
+    fk_name = "equipment"
+    verbose_name = _("PI Charge Profile")
+    verbose_name_plural = _("PI Charge Profiles")
+    fields = [
+        "user_type",
+        "pricing_profile",
+        "is_active",
+        "require_istem_fbr",
+        "show_charge_breakdown",
+        "primary_unit_charge",
+        "secondary_unit_charge",
+        "breakpoint",
+        "time_formula",
+    ]
+    readonly_fields = ["created_at", "updated_at"]
+    ordering = ["user_type"]
+    classes = ["collapse"]
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        return qs.filter(pricing_profile=ChargeProfilePricingProfile.PI)
+
+    class Media:
+        js = (
+            "admin/js/jquery.init.js",
+            "js/dynamic_input_field.js",
+            "js/charge_profile_admin.js",
+        )
+
+
 class EquipmentCategoryFilter(SimpleListFilter):
     """Filter equipment by category."""
     title = _('Category')
@@ -939,6 +1081,8 @@ class EquipmentAdmin(admin.ModelAdmin):
     
     inlines = [
         EquipmentManagerInline,
+        EquipmentPIInline,
+        PIChargeProfileInline,
         EquipmentOperatorInline,
         EquipmentSpecificationInline,
         EquipmentAccessoryInline,

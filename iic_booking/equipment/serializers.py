@@ -28,6 +28,8 @@ from .models import (
     SlotStatus,
     EquipmentOperator,
     EquipmentManager,
+    EquipmentPI,
+    EquipmentPIAuditLog,
     Booking,
     BookingStatus,
     IstemFbrStatus,
@@ -531,6 +533,70 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
         if obj.manager:
             return obj.manager.get_profile_picture_url_or_none(request=self.context.get("request"))
         return None
+
+
+class EquipmentPISerializer(serializers.ModelSerializer):
+    """Read serializer for EquipmentPI assignments."""
+
+    faculty_name = serializers.SerializerMethodField()
+    faculty_email = serializers.SerializerMethodField()
+    faculty_phone = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EquipmentPI
+        fields = [
+            "equipment_pi_id",
+            "faculty",
+            "faculty_name",
+            "faculty_email",
+            "faculty_phone",
+            "is_active",
+            "assigned_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_faculty_name(self, obj):
+        if obj.faculty:
+            return obj.faculty.get_display_name()
+        return None
+
+    def get_faculty_email(self, obj):
+        return obj.faculty.email if obj.faculty else None
+
+    def get_faculty_phone(self, obj):
+        return obj.faculty.phone_number if obj.faculty else None
+
+
+class EquipmentPIWriteSerializer(serializers.Serializer):
+    faculty = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(
+            user_type=UserType.FACULTY,
+            is_active=True,
+        ).order_by("name", "email"),
+        required=True,
+    )
+    is_active = serializers.BooleanField(default=True, required=False)
+
+
+class PIChargeProfileWriteSerializer(serializers.Serializer):
+    """Write payload for PI ChargeProfile rows (pricing_profile forced to PI)."""
+
+    user_type = serializers.CharField(max_length=50)
+    is_active = serializers.BooleanField(default=True)
+    require_istem_fbr = serializers.BooleanField(default=False, required=False)
+    show_charge_breakdown = serializers.BooleanField(default=True, required=False)
+    primary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2)
+    secondary_unit_charge = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, default=0
+    )
+    breakpoint = serializers.DecimalField(
+        max_digits=10, decimal_places=2, allow_null=True, required=False
+    )
+    time_formula = serializers.CharField(
+        max_length=500, allow_blank=True, allow_null=True, required=False
+    )
 
 
 class EquipmentSpecificationSerializer(serializers.ModelSerializer):
@@ -1260,6 +1326,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     additional_accessories = serializers.SerializerMethodField()
     input_fields = serializers.SerializerMethodField()
     charge_profiles = serializers.SerializerMethodField()
+    equipment_pis = serializers.SerializerMethodField()
+    pi_charge_profiles = serializers.SerializerMethodField()
     slot_masters = SlotMasterSerializer(many=True, read_only=True)
     slot_options = MultiParamDefinitionSerializer(many=True, read_only=True, source='param_definitions')
     operators = serializers.SerializerMethodField()
@@ -1314,6 +1382,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'specifications',
             'accessories',
             'charge_profiles',
+            'equipment_pis',
+            'pi_charge_profiles',
             'slot_masters',
             'additional_accessories',
             'input_fields',
@@ -1462,6 +1532,14 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         serializer = ChargeProfileSerializer(qs, many=True, context=self.context)
         return serializer.data
 
+    def get_equipment_pis(self, obj):
+        qs = obj.equipment_pis.select_related("faculty", "assigned_by").order_by("faculty__name", "faculty__email")
+        return EquipmentPISerializer(qs, many=True, context=self.context).data
+
+    def get_pi_charge_profiles(self, obj):
+        qs = obj.charge_profiles.filter(pricing_profile=ChargeProfilePricingProfile.PI).order_by("user_type")
+        return ChargeProfileSerializer(qs, many=True, context=self.context).data
+
 
 # --- Admin write serializers (nested inlines for equipment create/update) ---
 
@@ -1561,12 +1639,14 @@ class MultiParamDefinitionWriteSerializer(serializers.Serializer):
 
 class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     equipment_managers = EquipmentManagerWriteSerializer(many=True, required=False, default=list)
+    equipment_pis = EquipmentPIWriteSerializer(many=True, required=False, default=list)
     equipment_operators = EquipmentOperatorWriteSerializer(many=True, required=False, default=list)
     equipment_specifications = EquipmentSpecificationWriteSerializer(many=True, required=False, default=list)
     equipment_accessories = EquipmentAccessoryWriteSerializer(many=True, required=False, default=list)
     equipment_additional_accessories = EquipmentAdditionalAccessoryWriteSerializer(many=True, required=False, default=list)
     input_fields = DynamicInputFieldWriteSerializer(many=True, required=False, default=list)
     charge_profiles = ChargeProfileWriteSerializer(many=True, required=False, default=list)
+    pi_charge_profiles = PIChargeProfileWriteSerializer(many=True, required=False, default=list)
     slot_masters = SlotMasterWriteSerializer(many=True, required=False, default=list)
     print_materials = PrintMaterialWriteSerializer(many=True, required=False, default=list)
     # Accept either name; detail API exposes these as slot_options.
@@ -1614,10 +1694,10 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'analysis_results_directory', 'analysis_auto_archive', 'analysis_profile',
             'analysis_requires_sample_acceptance', 'analysis_requires_experiment_completion',
             'analysis_notes',
-            'equipment_managers', 'equipment_operators',
+            'equipment_managers', 'equipment_pis', 'equipment_operators',
             'equipment_specifications', 'equipment_accessories',
             'equipment_additional_accessories', 'input_fields',
-            'charge_profiles', 'slot_masters', 'print_materials',
+            'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
             'param_definitions', 'slot_options',
         ]
 
@@ -1705,10 +1785,12 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         from django.db import transaction
+        request = self.context.get("request")
+        actor = getattr(request, "user", None) if request else None
         inlines = {k: validated_data.pop(k, []) for k in [
-            'equipment_managers', 'equipment_operators', 'equipment_specifications',
+            'equipment_managers', 'equipment_pis', 'equipment_operators', 'equipment_specifications',
             'equipment_accessories', 'equipment_additional_accessories',
-            'input_fields', 'charge_profiles', 'slot_masters', 'print_materials',
+            'input_fields', 'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
             'param_definitions', 'slot_options',
         ]}
         # Prefer explicit param_definitions; fall back to slot_options alias from the detail API.
@@ -1717,15 +1799,17 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         inlines.pop('slot_options', None)
         with transaction.atomic():
             equipment = Equipment.objects.create(**validated_data)
-            _create_related(equipment, inlines)
+            _create_related(equipment, inlines, actor=actor)
         return equipment
 
     def update(self, instance, validated_data):
         from django.db import transaction
+        request = self.context.get("request")
+        actor = getattr(request, "user", None) if request else None
         inlines = {k: validated_data.pop(k, None) for k in [
-            'equipment_managers', 'equipment_operators', 'equipment_specifications',
+            'equipment_managers', 'equipment_pis', 'equipment_operators', 'equipment_specifications',
             'equipment_accessories', 'equipment_additional_accessories',
-            'input_fields', 'charge_profiles', 'slot_masters', 'print_materials',
+            'input_fields', 'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
             'param_definitions', 'slot_options',
         ]}
         if inlines.get('param_definitions') is None and inlines.get('slot_options') is not None:
@@ -1735,18 +1819,33 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()
-            _sync_related(instance, inlines)
+            _sync_related(instance, inlines, actor=actor)
         return instance
 
 
-def _create_related(equipment, inlines):
+def _create_related(equipment, inlines, actor=None):
     from .models import (
         EquipmentManager, EquipmentOperator, EquipmentSpecification,
         EquipmentAccessory, EquipmentAdditionalAccessory, DynamicInputField,
         ChargeProfile, SlotMaster, PrintMaterial, MultiParamDefinition,
+        EquipmentPI, EquipmentPIAuditLog,
     )
     for item in inlines.get('equipment_managers', []):
         EquipmentManager.objects.create(equipment=equipment, manager=item['manager'])
+    for item in inlines.get('equipment_pis', []):
+        epi = EquipmentPI.objects.create(
+            equipment=equipment,
+            faculty=item['faculty'],
+            is_active=item.get('is_active', True),
+            assigned_by=actor if getattr(actor, "is_authenticated", False) else None,
+        )
+        EquipmentPIAuditLog.objects.create(
+            equipment=equipment,
+            faculty=epi.faculty,
+            action=EquipmentPIAuditLog.Action.ASSIGNED,
+            performed_by=actor if getattr(actor, "is_authenticated", False) else None,
+            details={"is_active": epi.is_active},
+        )
     for item in inlines.get('equipment_operators', []):
         EquipmentOperator.objects.create(
             equipment=equipment,
@@ -1807,6 +1906,31 @@ def _create_related(equipment, inlines):
             breakpoint=item.get('breakpoint'),
             time_formula=item.get('time_formula') or '',
         )
+    for item in inlines.get('pi_charge_profiles', []):
+        show_bd = item.get('show_charge_breakdown', True)
+        ChargeProfile.objects.create(
+            equipment=equipment,
+            user_type=item['user_type'],
+            pricing_profile=ChargeProfilePricingProfile.PI,
+            is_active=item.get('is_active', True),
+            require_istem_fbr=item.get('require_istem_fbr', False),
+            show_charge_breakdown=show_bd,
+            primary_unit_charge=item['primary_unit_charge'],
+            secondary_unit_charge=item.get('secondary_unit_charge', 0),
+            breakpoint=item.get('breakpoint'),
+            time_formula=item.get('time_formula') or '',
+        )
+        EquipmentPIAuditLog.objects.create(
+            equipment=equipment,
+            faculty=None,
+            action=EquipmentPIAuditLog.Action.CHARGE_PROFILE_UPDATED,
+            performed_by=actor if getattr(actor, "is_authenticated", False) else None,
+            details={
+                "user_type": item['user_type'],
+                "primary_unit_charge": str(item['primary_unit_charge']),
+                "created": True,
+            },
+        )
     for item in inlines.get('slot_masters', []):
         SlotMaster.objects.create(
             equipment=equipment, slot_number=item['slot_number'], slot_name=item.get('slot_name') or '',
@@ -1835,16 +1959,69 @@ def _create_related(equipment, inlines):
         )
 
 
-def _sync_related(equipment, inlines):
+def _sync_related(equipment, inlines, actor=None):
     from .models import (
         EquipmentManager, EquipmentOperator, EquipmentSpecification,
         EquipmentAccessory, EquipmentAdditionalAccessory, DynamicInputField,
         ChargeProfile, SlotMaster, PrintMaterial, MultiParamDefinition,
+        EquipmentPI, EquipmentPIAuditLog,
     )
     if inlines.get('equipment_managers') is not None:
         EquipmentManager.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_managers']:
             EquipmentManager.objects.create(equipment=equipment, manager=item['manager'])
+    if inlines.get('equipment_pis') is not None:
+        incoming = {}
+        for item in inlines['equipment_pis']:
+            faculty = item['faculty']
+            incoming[faculty.pk] = item
+        existing = {
+            epi.faculty_id: epi
+            for epi in EquipmentPI.objects.filter(equipment=equipment).select_related('faculty')
+        }
+        actor_user = actor if getattr(actor, "is_authenticated", False) else None
+        for faculty_id, epi in list(existing.items()):
+            if faculty_id not in incoming:
+                EquipmentPIAuditLog.objects.create(
+                    equipment=equipment,
+                    faculty=epi.faculty,
+                    action=EquipmentPIAuditLog.Action.REMOVED,
+                    performed_by=actor_user,
+                    details={},
+                )
+                epi.delete()
+        for faculty_id, item in incoming.items():
+            is_active = item.get('is_active', True)
+            if faculty_id in existing:
+                epi = existing[faculty_id]
+                if epi.is_active != is_active:
+                    epi.is_active = is_active
+                    epi.save(update_fields=['is_active', 'updated_at'])
+                    EquipmentPIAuditLog.objects.create(
+                        equipment=equipment,
+                        faculty=epi.faculty,
+                        action=(
+                            EquipmentPIAuditLog.Action.REACTIVATED
+                            if is_active
+                            else EquipmentPIAuditLog.Action.DEACTIVATED
+                        ),
+                        performed_by=actor_user,
+                        details={"is_active": is_active},
+                    )
+            else:
+                epi = EquipmentPI.objects.create(
+                    equipment=equipment,
+                    faculty=item['faculty'],
+                    is_active=is_active,
+                    assigned_by=actor_user,
+                )
+                EquipmentPIAuditLog.objects.create(
+                    equipment=equipment,
+                    faculty=epi.faculty,
+                    action=EquipmentPIAuditLog.Action.ASSIGNED,
+                    performed_by=actor_user,
+                    details={"is_active": is_active},
+                )
     if inlines.get('equipment_operators') is not None:
         EquipmentOperator.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_operators']:
@@ -1919,7 +2096,14 @@ def _sync_related(equipment, inlines):
     if inlines.get('charge_profiles') is not None:
         from django.db.models import Count
         payload_user_types = {item['user_type'] for item in inlines['charge_profiles']}
-        existing = ChargeProfile.objects.filter(equipment=equipment).annotate(
+        # Only touch STANDARD + DISCOUNTED — never delete PI rows accidentally.
+        existing = ChargeProfile.objects.filter(
+            equipment=equipment,
+            pricing_profile__in=[
+                ChargeProfilePricingProfile.STANDARD,
+                ChargeProfilePricingProfile.DISCOUNTED,
+            ],
+        ).annotate(
             booking_count=Count('bookings'),
         )
         for item in inlines['charge_profiles']:
@@ -1975,6 +2159,54 @@ def _sync_related(equipment, inlines):
                 discounted_profile.time_formula = item.get('time_formula') or ''
                 discounted_profile.save()
         for profile in existing:
+            if profile.user_type not in payload_user_types and profile.booking_count == 0:
+                profile.delete()
+    if inlines.get('pi_charge_profiles') is not None:
+        from django.db.models import Count
+        payload_user_types = {item['user_type'] for item in inlines['pi_charge_profiles']}
+        existing_pi = ChargeProfile.objects.filter(
+            equipment=equipment,
+            pricing_profile=ChargeProfilePricingProfile.PI,
+        ).annotate(booking_count=Count('bookings'))
+        actor_user = actor if getattr(actor, "is_authenticated", False) else None
+        for item in inlines['pi_charge_profiles']:
+            user_type = item['user_type']
+            show_bd = item.get('show_charge_breakdown', True)
+            profile, created = ChargeProfile.objects.get_or_create(
+                equipment=equipment,
+                user_type=user_type,
+                pricing_profile=ChargeProfilePricingProfile.PI,
+                defaults={
+                    'is_active': item.get('is_active', True),
+                    'require_istem_fbr': item.get('require_istem_fbr', False),
+                    'show_charge_breakdown': show_bd,
+                    'primary_unit_charge': item['primary_unit_charge'],
+                    'secondary_unit_charge': item.get('secondary_unit_charge', 0),
+                    'breakpoint': item.get('breakpoint'),
+                    'time_formula': item.get('time_formula') or '',
+                },
+            )
+            if not created:
+                profile.is_active = item.get('is_active', True)
+                profile.require_istem_fbr = item.get('require_istem_fbr', False)
+                profile.show_charge_breakdown = show_bd
+                profile.primary_unit_charge = item['primary_unit_charge']
+                profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
+                profile.breakpoint = item.get('breakpoint')
+                profile.time_formula = item.get('time_formula') or ''
+                profile.save()
+            EquipmentPIAuditLog.objects.create(
+                equipment=equipment,
+                faculty=None,
+                action=EquipmentPIAuditLog.Action.CHARGE_PROFILE_UPDATED,
+                performed_by=actor_user,
+                details={
+                    "user_type": user_type,
+                    "primary_unit_charge": str(item['primary_unit_charge']),
+                    "created": created,
+                },
+            )
+        for profile in existing_pi:
             if profile.user_type not in payload_user_types and profile.booking_count == 0:
                 profile.delete()
     if inlines.get('slot_masters') is not None:
