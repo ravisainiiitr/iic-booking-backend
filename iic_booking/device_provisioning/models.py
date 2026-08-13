@@ -64,12 +64,17 @@ class AuditAction(models.TextChoices):
     PROVISION_COMPLETED = "provision_completed", _("Provision Completed")
     PROVISION_FAILED = "provision_failed", _("Provision Failed")
     DEVICE_REPLACED = "device_replaced", _("Device Replaced")
+    DEVICE_REMOVED = "device_removed", _("Device Removed")
 
 
 class ProvisioningMode(models.TextChoices):
     MANUAL_APPROVAL = "manual_approval", _("Manual Approval")
     TRUSTED_AUTO_APPROVE = "trusted_auto_approve", _("Trusted Auto-Approve")
     RESTRICTED_AUTO_APPROVE = "restricted_auto_approve", _("Restricted Auto-Approve")
+    DEPARTMENT_ADMINISTRATOR_LOGIN = (
+        "department_administrator_login",
+        _("Department Administrator Login"),
+    )
     DEVICE_CODE = "device_code", _("Device Code Approval")
 
 
