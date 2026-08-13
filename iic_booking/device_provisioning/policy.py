@@ -93,6 +93,23 @@ def user_has_provisioning_rights(user, department) -> bool:
     return int(user_dept_id) == int(department.pk)
 
 
+def user_is_department_administrator(user, department) -> bool:
+    """
+    True when the authenticated user is the department's Administrator
+    (or Main Admin / superuser). Used by Department Administrator Login mode.
+    """
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(user, "is_superuser", False):
+        return True
+    user_type = str(getattr(user, "user_type", "") or "").lower()
+    if user_type == UserType.ADMIN:
+        return True
+    if user_type != UserType.DEPT_ADMIN:
+        return False
+    return user_belongs_to_department(user, department)
+
+
 def user_belongs_to_department(user, department) -> bool:
     if user is None or department is None:
         return False
@@ -242,6 +259,16 @@ def evaluate_auto_approve(
             policy_id=policy_id,
         )
 
+    if mode == ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN:
+        if not user_is_department_administrator(user, department):
+            return AutoApproveDecision(
+                allow=False,
+                reason="department_administrator_login_required",
+                mode=mode,
+                department_id=dept_id,
+                policy_id=policy_id,
+            )
+
     require_fp = True if policy is None else bool(policy.require_device_fingerprint)
     if require_fp and not (fingerprint or "").strip():
         return AutoApproveDecision(
@@ -298,6 +325,7 @@ def evaluate_auto_approve(
     if mode not in {
         ProvisioningMode.TRUSTED_AUTO_APPROVE,
         ProvisioningMode.RESTRICTED_AUTO_APPROVE,
+        ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN,
     }:
         return AutoApproveDecision(
             allow=False,
@@ -307,9 +335,16 @@ def evaluate_auto_approve(
             policy_id=policy_id,
         )
 
+    if mode == ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN:
+        reason = "department_administrator_login"
+    elif mode == ProvisioningMode.TRUSTED_AUTO_APPROVE:
+        reason = "trusted_auto_approve"
+    else:
+        reason = "restricted_auto_approve"
+
     return AutoApproveDecision(
         allow=True,
-        reason="trusted_auto_approve" if mode == ProvisioningMode.TRUSTED_AUTO_APPROVE else "restricted_auto_approve",
+        reason=reason,
         mode=mode,
         department_id=dept_id,
         policy_id=policy_id,

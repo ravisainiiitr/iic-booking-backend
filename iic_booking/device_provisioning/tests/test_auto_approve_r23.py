@@ -341,3 +341,89 @@ def test_ip_in_allowed_networks_helper():
         ["10.0.0.0/8"],
         extra_ips=["10.2.3.4"],
     )
+
+
+@pytest.mark.django_db
+def test_department_administrator_login_mode_allows_dept_admin(department, dept_admin):
+    policy, _ = DepartmentProvisioningPolicy.objects.get_or_create(
+        department=department,
+        defaults={"provisioning_mode": ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN},
+    )
+    policy.provisioning_mode = ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN
+    policy.save(update_fields=["provisioning_mode"])
+    decision = policy_mod.evaluate_auto_approve(
+        user=dept_admin,
+        department=department,
+        policy=policy,
+        fingerprint="fp-test",
+        client_ip="10.10.1.50",
+        local_ips=["10.10.1.50"],
+        device_type=DeviceType.DSA,
+        mfa_satisfied=False,
+    )
+    assert decision.allow is True, decision
+    assert decision.reason == "department_administrator_login"
+    assert decision.mode == ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN
+
+
+@pytest.mark.django_db
+def test_department_administrator_login_mode_rejects_oic(department, db):
+    oic = User.objects.create_user(
+        email="oic-r23@example.com",
+        password="test-pass-12345",
+        user_type=UserType.MANAGER,
+        name="OIC User",
+        department=department,
+    )
+    policy, _ = DepartmentProvisioningPolicy.objects.get_or_create(
+        department=department,
+        defaults={"provisioning_mode": ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN},
+    )
+    policy.provisioning_mode = ProvisioningMode.DEPARTMENT_ADMINISTRATOR_LOGIN
+    policy.save(update_fields=["provisioning_mode"])
+    decision = policy_mod.evaluate_auto_approve(
+        user=oic,
+        department=department,
+        policy=policy,
+        fingerprint="fp-oic",
+        client_ip="10.10.1.50",
+        local_ips=["10.10.1.50"],
+        device_type=DeviceType.DSA,
+        mfa_satisfied=False,
+    )
+    assert decision.allow is False
+    assert decision.reason == "department_administrator_login_required"
+
+
+@pytest.mark.django_db
+def test_remove_retired_device(admin_client, department):
+    device = ProvisionedDevice.objects.create(
+        device_type=DeviceType.DSA,
+        lifecycle=DeviceLifecycle.RETIRED,
+        display_name="Retired DSA",
+        hostname="RETIRED-HOST",
+        fingerprint="fp-retired-remove-1",
+        machine_guid="GUID-RETIRED-REMOVE",
+        department=department,
+    )
+    resp = admin_client.delete(f"/api/v1/provisioning/devices/{device.id}/remove/")
+    assert resp.status_code == 200
+    assert resp.json().get("ok") is True
+    assert not ProvisionedDevice.objects.filter(id=device.id).exists()
+    assert DeviceAuditLog.objects.filter(action=AuditAction.DEVICE_REMOVED).exists()
+
+
+@pytest.mark.django_db
+def test_remove_active_device_rejected(admin_client, department):
+    device = ProvisionedDevice.objects.create(
+        device_type=DeviceType.DSA,
+        lifecycle=DeviceLifecycle.ACTIVE,
+        display_name="Active DSA",
+        hostname="ACTIVE-HOST",
+        fingerprint="fp-active-remove-1",
+        machine_guid="GUID-ACTIVE-REMOVE",
+        department=department,
+    )
+    resp = admin_client.delete(f"/api/v1/provisioning/devices/{device.id}/remove/")
+    assert resp.status_code == 400
+    assert ProvisionedDevice.objects.filter(id=device.id).exists()
