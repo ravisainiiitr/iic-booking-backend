@@ -165,7 +165,10 @@ class AnalysisExperienceBuilder:
             for ws in ws_qs:
                 if all(
                     InstalledSoftware.objects.filter(
-                        workstation_id=ws.id, is_present=True, software_name__icontains=name
+                        workstation_id=ws.id,
+                        is_present=True,
+                        allocation_enabled=True,
+                        software_name__icontains=name,
                     ).exists()
                     for name in required_software
                 ):
