@@ -468,6 +468,117 @@ def booking_analysis_archive(request, booking_id: int):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_data_browser(request, booking_id: int):
+    """
+    GET /api/v1/bookings/{id}/analysis/data-browser/
+
+    Human-friendly Current + Previous analysis data browser (metadata only).
+    Query: q, equipment, sample, date_from, date_to, file_type, scope=current|previous|all,
+           page, page_size, prefix, file_offset, file_limit, source_booking_id
+    """
+    from iic_booking.equipment.remote_analysis_integration.data_browser import AnalysisDataBrowserService
+
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        booking_id=booking_id,
+    )
+    if not _can_access_analysis_files(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "data_browser_forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    qp = request.query_params
+    source_raw = (qp.get("source_booking_id") or "").strip()
+    source_booking_id = int(source_raw) if source_raw.isdigit() else None
+    file_limit_raw = (qp.get("file_limit") or "").strip()
+    file_limit = int(file_limit_raw) if file_limit_raw.isdigit() else None
+    try:
+        page = int(qp.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(qp.get("page_size") or 20)
+    except (TypeError, ValueError):
+        page_size = 20
+    try:
+        file_offset = int(qp.get("file_offset") or 0)
+    except (TypeError, ValueError):
+        file_offset = 0
+    payload = AnalysisDataBrowserService(can_access_files=_can_access_analysis_files).browse(
+        booking=booking,
+        user=request.user,
+        q=(qp.get("q") or "").strip(),
+        equipment=(qp.get("equipment") or "").strip(),
+        sample=(qp.get("sample") or "").strip(),
+        date_from=(qp.get("date_from") or "").strip(),
+        date_to=(qp.get("date_to") or "").strip(),
+        file_type=(qp.get("file_type") or "").strip(),
+        scope=(qp.get("scope") or "all").strip().lower(),
+        page=page,
+        page_size=page_size,
+        prefix=(qp.get("prefix") if "prefix" in qp else None),
+        file_offset=file_offset,
+        file_limit=file_limit,
+        source_booking_id=source_booking_id,
+    )
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_data_selection(request, booking_id: int):
+    """
+    POST /api/v1/bookings/{id}/analysis/data-selection/
+
+    Body: { source_booking_id, folder_path?, file_names?[], stage? }
+    Records selection and optionally stages selected files into workspace RawData.
+    """
+    from iic_booking.equipment.remote_analysis_integration.data_browser import AnalysisDataBrowserService
+
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking) and not _can_access_analysis_files(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "data_selection_forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    body = request.data if hasattr(request, "data") else {}
+    if not isinstance(body, dict):
+        body = {}
+    source_raw = body.get("source_booking_id") or body.get("source_booking_pk") or booking.booking_id
+    try:
+        source_booking_id = int(source_raw)
+    except (TypeError, ValueError):
+        return Response({"detail": "source_booking_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    file_names = body.get("file_names") or body.get("files") or []
+    if isinstance(file_names, str):
+        file_names = [file_names]
+    if not isinstance(file_names, list):
+        file_names = []
+    stage = body.get("stage", True)
+    try:
+        payload = AnalysisDataBrowserService(can_access_files=_can_access_analysis_files).select_and_stage(
+            booking=booking,
+            user=request.user,
+            source_booking_id=source_booking_id,
+            folder_path=str(body.get("folder_path") or body.get("path") or ""),
+            file_names=[str(x) for x in file_names],
+            request=request,
+            stage=bool(stage),
+        )
+    except PermissionError as exc:
+        return Response({"detail": str(exc), "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def booking_analysis_dashboard(request):
     """GET /api/v1/bookings/analysis/dashboard/?scope=user|faculty|lab"""
     scope = (request.query_params.get("scope") or "user").lower()

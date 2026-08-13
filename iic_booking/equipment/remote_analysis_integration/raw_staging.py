@@ -46,11 +46,18 @@ class BookingRawStagingService:
         *,
         actor=None,
         request=None,
+        entries: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Stage booking results into RawData.
+
+        ``entries`` accepts a caller-filtered subset of ``list_raw_entries`` output
+        (R12 data browser selection); when omitted every result file is staged.
+        """
         from iic_booking.remote_analysis.workspace.transfer import TransferError, TransferManager
         from iic_booking.remote_analysis.workspace_models import WorkspaceFile
 
-        entries = self.list_raw_entries(booking, request=request)
+        if entries is None:
+            entries = self.list_raw_entries(booking, request=request)
         staged = 0
         skipped = 0
         errors: list[str] = []
