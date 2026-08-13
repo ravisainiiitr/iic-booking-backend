@@ -198,7 +198,23 @@ class BookingAnalysisDataBrowserService:
 
     @staticmethod
     def _sample_name(booking: Booking) -> str:
-        """Best-effort human sample label from the equipment's dynamic input fields."""
+        """Best-effort human sample label from traces, notes, or dynamic inputs."""
+        # Prefer sample lifecycle identifiers when present.
+        try:
+            trace = (
+                booking.sample_trace_events.exclude(sample_identifiers="")
+                .order_by("-created_at")
+                .first()
+            )
+            if trace and (trace.sample_identifiers or "").strip():
+                return str(trace.sample_identifiers).strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+        notes = (getattr(booking, "notes", None) or "").strip()
+        if notes:
+            return notes[:120]
+
         values = booking.input_values or {}
         if not isinstance(values, dict) or not values:
             return ""
@@ -398,3 +414,7 @@ class BookingAnalysisDataBrowserService:
             return json.loads(row.details)
         except (TypeError, ValueError):
             return None
+
+# Compatibility alias for older imports.
+AnalysisDataBrowserService = BookingAnalysisDataBrowserService
+

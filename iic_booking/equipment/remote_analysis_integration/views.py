@@ -474,13 +474,14 @@ def booking_analysis_data_browser(request, booking_id: int):
     GET /api/v1/bookings/{id}/analysis/data-browser/
 
     Human-friendly Current + Previous analysis data browser (metadata only).
-    Query: q, equipment, sample, date_from, date_to, file_type, scope=current|previous|all,
-           page, page_size, prefix, file_offset, file_limit, source_booking_id
+    Query: q, equipment, sample, date_from, date_to, scope=current|previous|all
     """
-    from iic_booking.equipment.remote_analysis_integration.data_browser import AnalysisDataBrowserService
+    from iic_booking.equipment.remote_analysis_integration.data_browser import (
+        BookingAnalysisDataBrowserService,
+    )
 
     booking = get_object_or_404(
-        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        Booking.objects.select_related("equipment", "user"),
         booking_id=booking_id,
     )
     if not _can_access_analysis_files(request.user, booking):
@@ -489,38 +490,17 @@ def booking_analysis_data_browser(request, booking_id: int):
             status=status.HTTP_403_FORBIDDEN,
         )
     qp = request.query_params
-    source_raw = (qp.get("source_booking_id") or "").strip()
-    source_booking_id = int(source_raw) if source_raw.isdigit() else None
-    file_limit_raw = (qp.get("file_limit") or "").strip()
-    file_limit = int(file_limit_raw) if file_limit_raw.isdigit() else None
-    try:
-        page = int(qp.get("page") or 1)
-    except (TypeError, ValueError):
-        page = 1
-    try:
-        page_size = int(qp.get("page_size") or 20)
-    except (TypeError, ValueError):
-        page_size = 20
-    try:
-        file_offset = int(qp.get("file_offset") or 0)
-    except (TypeError, ValueError):
-        file_offset = 0
-    payload = AnalysisDataBrowserService(can_access_files=_can_access_analysis_files).browse(
-        booking=booking,
-        user=request.user,
+    payload = BookingAnalysisDataBrowserService().browse(
+        booking,
+        request.user,
         q=(qp.get("q") or "").strip(),
         equipment=(qp.get("equipment") or "").strip(),
         sample=(qp.get("sample") or "").strip(),
         date_from=(qp.get("date_from") or "").strip(),
         date_to=(qp.get("date_to") or "").strip(),
-        file_type=(qp.get("file_type") or "").strip(),
         scope=(qp.get("scope") or "all").strip().lower(),
-        page=page,
-        page_size=page_size,
-        prefix=(qp.get("prefix") if "prefix" in qp else None),
-        file_offset=file_offset,
-        file_limit=file_limit,
-        source_booking_id=source_booking_id,
+        request=request,
+        can_access=_can_access_analysis_files,
     )
     return Response(payload)
 
@@ -535,10 +515,12 @@ def booking_analysis_data_selection(request, booking_id: int):
     Body: { source_booking_id, folder_path?, file_names?[], stage? }
     Records selection and optionally stages selected files into workspace RawData.
     """
-    from iic_booking.equipment.remote_analysis_integration.data_browser import AnalysisDataBrowserService
+    from iic_booking.equipment.remote_analysis_integration.data_browser import (
+        BookingAnalysisDataBrowserService,
+    )
 
     booking = get_object_or_404(
-        Booking.objects.select_related("equipment", "user", "analysis_reservation", "analysis_workspace"),
+        Booking.objects.select_related("equipment", "user"),
         booking_id=booking_id,
     )
     if not _can_launch(request.user, booking) and not _can_access_analysis_files(request.user, booking):
@@ -561,19 +543,37 @@ def booking_analysis_data_selection(request, booking_id: int):
         file_names = []
     stage = body.get("stage", True)
     try:
-        payload = AnalysisDataBrowserService(can_access_files=_can_access_analysis_files).select_and_stage(
-            booking=booking,
-            user=request.user,
+        raw = BookingAnalysisDataBrowserService().select(
+            booking,
+            request.user,
             source_booking_id=source_booking_id,
             folder_path=str(body.get("folder_path") or body.get("path") or ""),
             file_names=[str(x) for x in file_names],
-            request=request,
             stage=bool(stage),
+            request=request,
+            can_access=_can_access_analysis_files,
         )
     except PermissionError as exc:
         return Response({"detail": str(exc), "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
     except ValueError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    selection = dict(raw.get("selection") or {})
+    selection["source_booking_id"] = selection.get("source_booking_pk") or source_booking_id
+    matched = selection.get("matched_file_names") or []
+    selection["file_count"] = len(matched) if matched else int(raw.get("selected_files") or 0)
+    staged = raw.get("staged")
+    staging = staged if isinstance(staged, dict) else {}
+    if not staging and staged is None:
+        staging = {"deferred": True}
+    payload = {
+        "ok": True,
+        "selection": selection,
+        "selected_files": raw.get("selected_files"),
+        "workspace_id": raw.get("workspace_id"),
+        "staging": staging,
+        "detail": raw.get("detail"),
+    }
     return Response(payload, status=status.HTTP_200_OK)
 
 
