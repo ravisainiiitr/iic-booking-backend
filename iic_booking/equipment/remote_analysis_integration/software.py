@@ -50,7 +50,7 @@ class SoftwareMappingService:
 
     def serialize_options(self, equipment, *, settings_obj: RemoteAnalysisSettings | None = None) -> list[dict]:
         settings_obj = settings_obj or RemoteAnalysisSettings.get_solo()
-        default_label = (settings_obj.analyze_data_button_label or "Analyze Data").strip() or "Analyze Data"
+        default_label = (settings_obj.analyze_data_button_label or "Open Analysis Workspace").strip() or "Open Analysis Workspace"
         availability = AvailabilityEngine()
         options = []
         for row in self.list_for_equipment(equipment):
@@ -211,7 +211,7 @@ class SoftwareMappingService:
 
     def button_label(self, equipment, *, settings_obj: RemoteAnalysisSettings | None = None) -> str:
         settings_obj = settings_obj or RemoteAnalysisSettings.get_solo()
-        default_label = (settings_obj.analyze_data_button_label or "Analyze Data").strip() or "Analyze Data"
+        default_label = (settings_obj.analyze_data_button_label or "Open Analysis Workspace").strip() or "Open Analysis Workspace"
         rows = self.list_for_equipment(equipment)
         if len(rows) == 1 and rows[0].button_label_override:
             return rows[0].button_label_override.strip() or default_label
