@@ -145,21 +145,43 @@ class HeartbeatService:
             WorkstationStatus.AVAILABLE,
             WorkstationStatus.ONLINE,
         }
-        if (
-            workstation.enabled
-            and workstation.status in sticky_operational
-            and idle_reported
-            and not _workstation_has_active_hold(workstation)
-        ):
-            WorkstationStateHistory.objects.create(
-                workstation=workstation,
-                from_status=workstation.status,
-                to_status=agent_reported,
-                reason="Agent heartbeat cleared sticky status (no active hold)",
+        has_hold = _workstation_has_active_hold(workstation)
+        # Ghost busy: portal RESERVED/BUSY with no reservation/session. Agent-state can keep
+        # reporting RESERVED forever and previously blocked recovery (required idle_reported).
+        if workstation.enabled and workstation.status in sticky_operational and not has_hold:
+            clear_to = (
+                agent_reported
+                if idle_reported
+                else WorkstationStatus.AVAILABLE
             )
-            workstation.status = agent_reported
+            if workstation.status != clear_to:
+                WorkstationStateHistory.objects.create(
+                    workstation=workstation,
+                    from_status=workstation.status,
+                    to_status=clear_to,
+                    reason=(
+                        "Agent heartbeat cleared sticky status (no active hold)"
+                        if idle_reported
+                        else "Cleared ghost sticky status (no active hold; agent still non-idle)"
+                    ),
+                )
+                workstation.status = clear_to
         elif workstation.enabled and workstation.status not in (protected | sticky_operational):
-            if agent_reported in {s.value for s in WorkstationStatus}:
+            # Do not let stale agent-state re-assert RESERVED/BUSY without a portal hold.
+            if agent_reported in sticky_operational and not has_hold:
+                if workstation.status in {
+                    WorkstationStatus.OFFLINE,
+                    WorkstationStatus.UNKNOWN,
+                    WorkstationStatus.ERROR,
+                }:
+                    WorkstationStateHistory.objects.create(
+                        workstation=workstation,
+                        from_status=workstation.status,
+                        to_status=WorkstationStatus.ONLINE,
+                        reason="Heartbeat received (ignored agent sticky without hold)",
+                    )
+                    workstation.status = WorkstationStatus.ONLINE
+            elif agent_reported in {s.value for s in WorkstationStatus}:
                 if workstation.status != agent_reported:
                     WorkstationStateHistory.objects.create(
                         workstation=workstation,
