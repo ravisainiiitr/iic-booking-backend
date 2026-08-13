@@ -151,15 +151,18 @@ class AnalysisExperienceBuilder:
         )
         extension_minutes = int(getattr(equipment, "analysis_extension_minutes", None) or 15)
 
-        # Environment pool (logical counts only — no hostnames)
+        # Environment pool — software match + live heartbeat/status (R13 diagnostics).
         from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
         from iic_booking.remote_analysis.models import InstalledSoftware
+        from iic_booking.remote_analysis.services.availability import AvailabilityEngine
 
         required_software = SoftwareMappingService().required_software_names(equipment)
+        availability = AvailabilityEngine()
         ws_qs = AnalysisWorkstation.objects.filter(enabled=True)
         matching_ids: list = []
+        matching_workstations: list[AnalysisWorkstation] = []
         if required_software:
-            for ws in ws_qs.only("id", "status"):
+            for ws in ws_qs:
                 if all(
                     InstalledSoftware.objects.filter(
                         workstation_id=ws.id, is_present=True, software_name__icontains=name
@@ -167,24 +170,54 @@ class AnalysisExperienceBuilder:
                     for name in required_software
                 ):
                     matching_ids.append(ws.id)
+                    matching_workstations.append(ws)
             matching_qs = ws_qs.filter(id__in=matching_ids) if matching_ids else ws_qs.none()
         else:
             matching_qs = ws_qs
+            matching_workstations = list(ws_qs)
+
         env_total = matching_qs.count() if required_software else ws_qs.count()
-        env_available = matching_qs.filter(
-            status__in=[WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE]
-        ).count()
-        env_busy = matching_qs.filter(
-            status__in=[
+        # Online = fresh heartbeat (not merely status AVAILABLE while stale).
+        env_online = sum(1 for ws in matching_workstations if availability.heartbeat_fresh(ws))
+        env_available = sum(
+            1
+            for ws in matching_workstations
+            if availability.heartbeat_fresh(ws)
+            and ws.status in {WorkstationStatus.AVAILABLE, WorkstationStatus.ONLINE}
+        )
+        env_busy = sum(
+            1
+            for ws in matching_workstations
+            if ws.status
+            in {
                 WorkstationStatus.BUSY,
                 WorkstationStatus.PREPARING,
                 WorkstationStatus.RESERVED,
-            ]
-        ).count()
+            }
+        )
         matching_total = env_total
         matching_busy = env_busy
         matching_available = env_available
+        matching_online = env_online
+        matching_offline = max(matching_total - matching_online, 0)
         all_env_total = ws_qs.count()
+
+        offline_pc_details: list[dict[str, Any]] = []
+        for ws in matching_workstations:
+            if availability.heartbeat_fresh(ws):
+                continue
+            age = None
+            if ws.last_heartbeat:
+                age = int((now - ws.last_heartbeat).total_seconds())
+            offline_pc_details.append(
+                {
+                    "hostname": ws.hostname or ws.display_name or str(ws.id)[:8],
+                    "status": ws.status,
+                    "last_heartbeat": _ts(ws.last_heartbeat) if hasattr(ws, "last_heartbeat") else None,
+                    "heartbeat_age_seconds": age,
+                    "never_heartbeat": ws.last_heartbeat is None,
+                }
+            )
 
         from iic_booking.remote_analysis.services.maintenance import MaintenanceService
 
@@ -192,6 +225,24 @@ class AnalysisExperienceBuilder:
             required_software=required_software or None,
             matching_workstation_ids=matching_ids if required_software else None,
         )
+        # Enrich with live heartbeat diagnostics for accurate queue UX (R13).
+        maintenance_hint = {
+            **maintenance_hint,
+            "installed_count": matching_total,
+            "online_count": matching_online,
+            "available_count": matching_available,
+            "busy_count": matching_busy,
+            "offline_count": matching_offline,
+            "offline_pcs": offline_pc_details,
+            # Treat "all matching have no fresh heartbeat" as offline for messaging,
+            # even if status was not yet flipped to OFFLINE by the 300s job.
+            "all_offline": bool(
+                matching_total > 0
+                and matching_online == 0
+                and matching_available == 0
+            )
+            or bool(maintenance_hint.get("all_offline")),
+        }
 
         waiting = list(
             ReservationQueue.objects.filter(status=QueueEntryStatus.WAITING)
@@ -364,9 +415,12 @@ class AnalysisExperienceBuilder:
                 "environments": {
                     "total": all_env_total,
                     "matching": matching_total,
+                    "online": matching_online,
                     "available": matching_available,
                     "busy": matching_busy,
+                    "offline": matching_offline,
                     "waiting": queue_total,
+                    "offline_pcs": offline_pc_details,
                 },
             },
             "session": {
@@ -495,14 +549,41 @@ class AnalysisExperienceBuilder:
 
         if matching_available == 0 and maintenance_hint.get("all_offline"):
             installed = int(maintenance_hint.get("installed_count") or matching_total or 0)
+            online = int(maintenance_hint.get("online_count") or 0)
+            offline = int(maintenance_hint.get("offline_count") or max(installed - online, 0))
+            offline_pcs = list(maintenance_hint.get("offline_pcs") or [])
+            if installed == 1 and offline_pcs:
+                pc = offline_pcs[0]
+                host = pc.get("hostname") or "Analysis PC"
+                if pc.get("never_heartbeat"):
+                    reason_line = (
+                        f"Analysis PC {host} has never sent a heartbeat to the portal "
+                        "(agent may be stopped or not registered)."
+                    )
+                elif pc.get("heartbeat_age_seconds") is not None:
+                    mins = max(1, int(pc["heartbeat_age_seconds"]) // 60)
+                    reason_line = (
+                        f"Analysis PC {host} has not reported recently "
+                        f"(last heartbeat ~{mins} min ago)."
+                    )
+                else:
+                    reason_line = f"Analysis PC {host} is currently offline."
+                title = "The compatible Analysis PC is currently offline"
+            elif installed > 1:
+                title = "Compatible Analysis PCs are currently offline"
+                hosts = ", ".join(str(p.get("hostname") or "PC") for p in offline_pcs[:5]) or "matching PCs"
+                reason_line = f"Offline PCs: {hosts}."
+            else:
+                title = "No compatible Analysis PC is currently online"
+                reason_line = "No matching Analysis PC has a fresh heartbeat."
             return {
-                "title": "No compatible Analysis PC is currently available",
+                "title": title,
                 "body": [
                     f"Required software: {soft_label}." if soft_label else "Required software is configured.",
-                    f"Installed on: {installed} PC(s)." if installed else "Installed on: 0 PCs.",
-                    "Online: 0 · Available: 0 · Offline: all matching Analysis PCs.",
-                    "Your request remains in the queue and will start automatically when a PC reconnects.",
-                    "You may safely leave this page.",
+                    f"Compatible PCs: {installed} · Online: {online} · Available: 0 · Offline: {offline}.",
+                    reason_line,
+                    "Your request remains in the queue and will start automatically when a compatible PC reconnects.",
+                    "You may safely leave this page — or continue selecting analysis data while you wait.",
                 ],
             }
 
