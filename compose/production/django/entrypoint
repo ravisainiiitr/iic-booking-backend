@@ -5,10 +5,14 @@ set -o pipefail
 set -o nounset
 
 # Named volume production_media is often root-owned; ensure the django user can
-# write sync_uploads (and other media) used by DSA resumable uploads.
+# write sync_uploads / remote_analysis workspaces used by DSA + RAA prepare.
 MEDIA_DIR="${APP_HOME:-/app}/iic_booking/media"
 if [ "$(id -u)" = "0" ]; then
-  mkdir -p "${MEDIA_DIR}/sync_uploads"
+  mkdir -p \
+    "${MEDIA_DIR}/sync_uploads" \
+    "${MEDIA_DIR}/remote_analysis/workspaces" \
+    "${MEDIA_DIR}/remote_analysis/uploads" \
+    "${MEDIA_DIR}/remote_analysis/archives"
   chown -R django:django "${MEDIA_DIR}" || true
 fi
 
