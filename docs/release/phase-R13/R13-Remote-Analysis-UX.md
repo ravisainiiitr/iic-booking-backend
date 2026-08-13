@@ -10,7 +10,9 @@
 
 ## Booking Details
 
-- Primary CTA defaults to **Open Analysis Workspace** (replaces “Analyze Data” as the start action).
+- **Actions** = file folders only: **Raw Data** and **Analyzed Data** (when files exist).
+  Do **not** put an Analyze Data / launch button in Actions — it looked like a download folder.
+- Primary start CTA is **Open Analysis Workspace** inside the Analysis Workspace card only.
 - **Analyzed Data** appears when analyzed files exist (download), separate from **Raw Data**.
 
 ## Status

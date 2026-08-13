@@ -157,8 +157,8 @@ class RemoteAnalysisSettings(models.Model):
     # Analyze Data (booking-facing post-analysis CTA)
     analyze_data_button_label = models.CharField(
         max_length=128,
-        default="Analyze Data",
-        help_text=_("Default user-facing CTA label on completed bookings."),
+        default="Open Analysis Workspace",
+        help_text=_("Default user-facing CTA label for opening Analysis Workspace."),
     )
     analyze_data_require_s3_files = models.BooleanField(
         default=True,
