@@ -1022,6 +1022,100 @@ class EquipmentManager(models.Model):
     def __str__(self):
         return f"{self.equipment.code} - {self.manager.name or self.manager.email}"
 
+
+class EquipmentPI(models.Model):
+    """Faculty Principal Investigator assignment for an equipment."""
+
+    equipment_pi_id = models.AutoField(primary_key=True)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="equipment_pis",
+    )
+    faculty = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="equipment_pi_assignments",
+        verbose_name=_("Principal Investigator"),
+        help_text=_("Faculty Principal Investigator for this equipment"),
+        limit_choices_to={"user_type": UserType.FACULTY},
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text=_("Soft-deactivate without removing the assignment row."),
+    )
+    assigned_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="equipment_pis_assigned",
+        help_text=_("Admin who assigned this PI."),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Equipment PI")
+        verbose_name_plural = _("Equipment PIs")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["equipment", "faculty"],
+                name="uniq_equipment_pi_faculty",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["equipment", "is_active"]),
+            models.Index(fields=["faculty", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.equipment.code} - {self.faculty.name or self.faculty.email}"
+
+
+class EquipmentPIAuditLog(models.Model):
+    """Audit trail for Equipment PI assignment and PI charge profile changes."""
+
+    class Action(models.TextChoices):
+        ASSIGNED = "ASSIGNED", _("Assigned")
+        REMOVED = "REMOVED", _("Removed")
+        DEACTIVATED = "DEACTIVATED", _("Deactivated")
+        REACTIVATED = "REACTIVATED", _("Reactivated")
+        CHARGE_PROFILE_UPDATED = "CHARGE_PROFILE_UPDATED", _("Charge Profile Updated")
+
+    id = models.BigAutoField(primary_key=True)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="pi_audit_logs",
+    )
+    faculty = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="equipment_pi_audit_logs",
+    )
+    action = models.CharField(max_length=32, choices=Action.choices)
+    performed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="equipment_pi_actions_performed",
+    )
+    details = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = _("Equipment PI Audit Log")
+        verbose_name_plural = _("Equipment PI Audit Logs")
+
+    def __str__(self):
+        return f"{self.equipment_id} {self.action} ({self.created_at})"
+
+
 class EquipmentOperator(models.Model):
     class Role(models.TextChoices):
         PRIMARY = "PRIMARY", _("Primary operator")
@@ -1250,6 +1344,7 @@ class EquipmentAdditionalAccessory(models.Model):
 class ChargeProfilePricingProfile(models.TextChoices):
     STANDARD = "standard", _("Standard Charge Profile")
     DISCOUNTED = "discounted", _("Discounted Charge Profile")
+    PI = "pi", _("PI Charge Profile")
 
 
 class ChargeProfile(models.Model):
@@ -1271,7 +1366,9 @@ class ChargeProfile(models.Model):
         choices=ChargeProfilePricingProfile.choices,
         default=ChargeProfilePricingProfile.STANDARD,
         db_index=True,
-        help_text=_("Pricing variant (discounted profiles return zero charges)."),
+        help_text=_(
+            "Pricing variant: standard, discounted (zero charges), or PI facility rate."
+        ),
     )
     
     is_active = models.BooleanField(
