@@ -1065,8 +1065,14 @@ class EquipmentPI(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=["equipment", "is_active"]),
-            models.Index(fields=["faculty", "is_active"]),
+            models.Index(
+                fields=["equipment", "is_active"],
+                name="equipment_e_equipme_pi_act_idx",
+            ),
+            models.Index(
+                fields=["faculty", "is_active"],
+                name="equipment_e_faculty_pi_act_idx",
+            ),
         ]
 
     def __str__(self):
