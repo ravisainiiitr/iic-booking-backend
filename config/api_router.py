@@ -542,6 +542,16 @@ urlpatterns = router.urls + [
         booking_ra_views.booking_analysis_archive,
         name="booking-analysis-archive",
     ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/data-browser/",
+        booking_ra_views.booking_analysis_data_browser,
+        name="booking-analysis-data-browser",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/data-selection/",
+        booking_ra_views.booking_analysis_data_selection,
+        name="booking-analysis-data-selection",
+    ),
     # Also expose under legacy /api/bookings/… for existing clients
     path(
         "bookings/analysis/dashboard/",
@@ -637,6 +647,16 @@ urlpatterns = router.urls + [
         "bookings/<int:booking_id>/analysis/archive/",
         booking_ra_views.booking_analysis_archive,
         name="booking-analysis-archive-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/data-browser/",
+        booking_ra_views.booking_analysis_data_browser,
+        name="booking-analysis-data-browser-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/data-selection/",
+        booking_ra_views.booking_analysis_data_selection,
+        name="booking-analysis-data-selection-legacy",
     ),
     path("auth/logout/", logout, name="logout"),
     path("auth/register/", register, name="register"),

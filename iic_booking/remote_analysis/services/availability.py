@@ -233,6 +233,9 @@ class AvailabilityEngine:
             reasons.append(f"Status {workstation.status} not allocatable")
         if workstation.health_score < MIN_HEALTH_SCORE_FOR_ALLOCATION:
             reasons.append(f"Health score {workstation.health_score} below threshold")
+        # R12 — a workstation short on disk cannot hold a workspace; do not allocate.
+        if getattr(workstation, "disk_low", False):
+            reasons.append("Disk space low")
         if not self.agent_online(workstation):
             reasons.append("Agent offline / heartbeat timeout")
         if self.token_expired(workstation):

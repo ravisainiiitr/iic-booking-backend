@@ -468,6 +468,117 @@ def booking_analysis_archive(request, booking_id: int):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_data_browser(request, booking_id: int):
+    """
+    GET /api/v1/bookings/{id}/analysis/data-browser/
+
+    Human-friendly Current + Previous analysis data browser (metadata only).
+    Query: q, equipment, sample, date_from, date_to, scope=current|previous|all
+    """
+    from iic_booking.equipment.remote_analysis_integration.data_browser import (
+        BookingAnalysisDataBrowserService,
+    )
+
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user"),
+        booking_id=booking_id,
+    )
+    if not _can_access_analysis_files(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "data_browser_forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    qp = request.query_params
+    payload = BookingAnalysisDataBrowserService().browse(
+        booking,
+        request.user,
+        q=(qp.get("q") or "").strip(),
+        equipment=(qp.get("equipment") or "").strip(),
+        sample=(qp.get("sample") or "").strip(),
+        date_from=(qp.get("date_from") or "").strip(),
+        date_to=(qp.get("date_to") or "").strip(),
+        scope=(qp.get("scope") or "all").strip().lower(),
+        request=request,
+        can_access=_can_access_analysis_files,
+    )
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_data_selection(request, booking_id: int):
+    """
+    POST /api/v1/bookings/{id}/analysis/data-selection/
+
+    Body: { source_booking_id, folder_path?, file_names?[], stage? }
+    Records selection and optionally stages selected files into workspace RawData.
+    """
+    from iic_booking.equipment.remote_analysis_integration.data_browser import (
+        BookingAnalysisDataBrowserService,
+    )
+
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking) and not _can_access_analysis_files(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "data_selection_forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    body = request.data if hasattr(request, "data") else {}
+    if not isinstance(body, dict):
+        body = {}
+    source_raw = body.get("source_booking_id") or body.get("source_booking_pk") or booking.booking_id
+    try:
+        source_booking_id = int(source_raw)
+    except (TypeError, ValueError):
+        return Response({"detail": "source_booking_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    file_names = body.get("file_names") or body.get("files") or []
+    if isinstance(file_names, str):
+        file_names = [file_names]
+    if not isinstance(file_names, list):
+        file_names = []
+    stage = body.get("stage", True)
+    try:
+        raw = BookingAnalysisDataBrowserService().select(
+            booking,
+            request.user,
+            source_booking_id=source_booking_id,
+            folder_path=str(body.get("folder_path") or body.get("path") or ""),
+            file_names=[str(x) for x in file_names],
+            stage=bool(stage),
+            request=request,
+            can_access=_can_access_analysis_files,
+        )
+    except PermissionError as exc:
+        return Response({"detail": str(exc), "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    except ValueError as exc:
+        return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    selection = dict(raw.get("selection") or {})
+    selection["source_booking_id"] = selection.get("source_booking_pk") or source_booking_id
+    matched = selection.get("matched_file_names") or []
+    selection["file_count"] = len(matched) if matched else int(raw.get("selected_files") or 0)
+    staged = raw.get("staged")
+    staging = staged if isinstance(staged, dict) else {}
+    if not staging and staged is None:
+        staging = {"deferred": True}
+    payload = {
+        "ok": True,
+        "selection": selection,
+        "selected_files": raw.get("selected_files"),
+        "workspace_id": raw.get("workspace_id"),
+        "staging": staging,
+        "detail": raw.get("detail"),
+    }
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def booking_analysis_dashboard(request):
     """GET /api/v1/bookings/analysis/dashboard/?scope=user|faculty|lab"""
     scope = (request.query_params.get("scope") or "user").lower()
