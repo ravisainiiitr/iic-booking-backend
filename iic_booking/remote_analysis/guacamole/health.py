@@ -18,11 +18,27 @@ def workstation_healthy_for_session(workstation) -> bool:
     """
     Session prepare/Guacamole require a live agent that can pull commands.
     Soft-online (token without heartbeat) is enough for allocation holds, but not
-    for PREPARE_WORKSTATION / input sync.
+    for cold PREPARE_WORKSTATION.
+
+    During BUSY/PREPARING/RESERVED, older agents may briefly stall heartbeats while
+    handling prepare; allow launch if a usable agent token still proves the service
+    is enrolled (agent_online), so Guacamole is not blocked after InputReady.
     """
-    if not workstation.enabled:
+    if not workstation or not workstation.enabled:
         return False
-    return AvailabilityEngine().heartbeat_fresh(workstation)
+    engine = AvailabilityEngine()
+    if engine.heartbeat_fresh(workstation):
+        return True
+    from iic_booking.remote_analysis.constants import WorkstationStatus
+
+    if workstation.status in {
+        WorkstationStatus.BUSY,
+        WorkstationStatus.PREPARING,
+        WorkstationStatus.RESERVED,
+        WorkstationStatus.CLEANING,
+    }:
+        return engine.agent_online(workstation)
+    return False
 
 
 def refresh_session_health(session: RemoteDesktopSession) -> SessionHealth:
