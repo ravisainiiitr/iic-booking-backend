@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from iic_booking.research_copilot.services import tools as tools_svc
+from iic_booking.research_copilot.services.query_intelligence import extract_num_samples
 
 
 def _wants(text: str, *needles: str) -> bool:
@@ -23,7 +24,7 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
     plans: list[tuple[str, dict[str, Any]]] = []
     lower = (text or "").lower()
 
-    # Extract optional booking id / equipment id / date / file extension
+    # Extract optional booking id / equipment id / date / file extension / samples
     booking_m = re.search(r"\bbooking\s*#?\s*(\d+)\b", lower) or re.search(r"\b#(\d{3,})\b", lower)
     booking_id = int(booking_m.group(1)) if booking_m else None
     eq_m = re.search(r"\bequipment(?:_id)?\s*[:=]?\s*(\d+)\b", lower)
@@ -32,6 +33,7 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
     day = date_m.group(1) if date_m else None
     ext_m = re.search(r"\.(dm3|dm4|tif|tiff|jpg|jpeg|png|csv|xlsx?|spc|raw|ser|emi|mrc|hdf5?)\b", lower)
     file_ext = ext_m.group(1) if ext_m else None
+    num_samples = extract_num_samples(text)
 
     if _wants(lower, "wallet", "balance", "recharge", "credit"):
         plans.append(("get_wallet", {}))
@@ -57,24 +59,66 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
 
     if booking_id and _wants(lower, "result", "download", "analysis file"):
         plans.append(("get_booking_results", {"booking_id": booking_id}))
-    elif _wants(lower, "my result", "results available", "download my result", "is my result"):
+    elif _wants(
+        lower,
+        "my result",
+        "results available",
+        "download my result",
+        "is my result",
+        "are my results",
+        "where are my results",
+        "where can i download",
+        "results ready",
+        "analyzed files",
+        "analyzed data",
+    ):
         plans.append(("get_booking_results", {"booking_id": booking_id} if booking_id else {}))
 
     if booking_id and _wants(lower, "deadline", "sample submission", "submit by"):
         plans.append(("get_sample_deadline", {"booking_id": booking_id}))
-    elif _wants(lower, "sample submission deadline", "submission deadline"):
+    elif _wants(
+        lower,
+        "sample submission deadline",
+        "submission deadline",
+        "when should i submit",
+        "submit my sample",
+        "sample deadline",
+    ):
         plans.append(("get_sample_deadline", {"booking_id": booking_id} if booking_id else {}))
 
-    if _wants(lower, "slot", "availability", "available tomorrow", "available today") and equipment_id:
+    if (
+        _wants(lower, "slot", "availability", "available tomorrow", "available today", "when can i book")
+        or (
+            _wants(lower, "when is", "available")
+            and not _wants(lower, "next booking", "my booking", "my sample", "my result")
+        )
+    ) and equipment_id:
         args: dict[str, Any] = {"equipment_id": equipment_id}
         if day:
             args["date"] = day
         plans.append(("search_slots", args))
 
-    if _wants(lower, "cost", "charge", "price", "fee", "how much") and equipment_id:
-        plans.append(("estimate_booking_cost", {"equipment_id": equipment_id}))
+    if _wants(lower, "cost", "charge", "price", "fee", "how much", "pi rate", "pi pricing") and equipment_id:
+        cost_args: dict[str, Any] = {"equipment_id": equipment_id}
+        if num_samples is not None:
+            cost_args["num_samples"] = num_samples
+        plans.append(("estimate_booking_cost", cost_args))
 
-    if _wants(lower, "software", "digitalmicrograph", "imagej", "origin", "matlab", "analyze", "dm4", "dm3") or file_ext:
+    remote_analysis_ask = _wants(
+        lower,
+        "remote analysis",
+        "analyze remotely",
+        "analysis pc",
+        "analysis workstation",
+        "guacamole",
+        "raa",
+        "remote desktop",
+    )
+    if (
+        _wants(lower, "software", "digitalmicrograph", "imagej", "origin", "matlab", "analyze", "dm4", "dm3")
+        or file_ext
+        or remote_analysis_ask
+    ):
         args = {}
         if equipment_id:
             args["equipment_id"] = equipment_id
@@ -362,8 +406,20 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
     """
     plans = plan_tool_calls(text=text)
     lower = (text or "").lower()
-    wants_cost = _wants(lower, "cost", "charge", "price", "fee", "how much")
-    wants_slots = _wants(lower, "slot", "availability", "available tomorrow", "available today", "when can i book")
+    wants_cost = _wants(lower, "cost", "charge", "price", "fee", "how much", "pi rate", "pi pricing")
+    wants_slots = _wants(
+        lower,
+        "slot",
+        "availability",
+        "available tomorrow",
+        "available today",
+        "when can i book",
+    ) or (
+        _wants(lower, "when is", "available")
+        and not _wants(lower, "next booking", "my booking", "my sample", "my result")
+        and any(h in lower for h in ("xrd", "pxrd", "fesem", "sem", "tem", "afm", "xps", "equipment", "instrument"))
+    )
+    num_samples = extract_num_samples(text)
     # If user names an instrument family without equipment_id, search first so pricing/slots
     # can use authoritative portal ids (AI.20) — never invent prices in the LLM.
     planned_names = {n for n, _ in plans}
@@ -412,7 +468,10 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
     # Chain authoritative pricing/slot tools once equipment id is known (server-side).
     if resolved_equipment_id:
         if wants_cost and "estimate_booking_cost" not in executed:
-            _run("estimate_booking_cost", {"equipment_id": resolved_equipment_id})
+            cost_args: dict[str, Any] = {"equipment_id": resolved_equipment_id}
+            if num_samples is not None:
+                cost_args["num_samples"] = num_samples
+            _run("estimate_booking_cost", cost_args)
         if wants_slots and "search_slots" not in executed:
             _run("search_slots", {"equipment_id": resolved_equipment_id})
 

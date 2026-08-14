@@ -441,22 +441,104 @@ def _get_sample_deadline(*, arguments: dict, user) -> dict:
 
 
 def _estimate_booking_cost(*, arguments: dict, user) -> dict:
+    """Authoritative cost estimate via portal ChargeCalculationEngine (AI.22).
+
+    Reuses equipment calculate / proforma line logic. Never invents prices in the LLM.
+    """
+    from iic_booking.equipment.api_views import (
+        _calculate_one_proforma_line,
+        _get_charge_profile_pricing_profile_for_user,
+    )
     from iic_booking.equipment.models import Equipment
 
     equipment_id = arguments.get("equipment_id")
     if not equipment_id:
         return _err("missing_equipment_id", "equipment_id is required")
     try:
-        eq = Equipment.objects.get(pk=int(equipment_id))
+        eq = Equipment.objects.prefetch_related("input_fields").get(pk=int(equipment_id))
     except Exception:
         return _err("equipment_not_found", f"Equipment {equipment_id} not found")
-    # Do not invent prices — point to portal calculate which applies full rules.
+
+    # Build inputs from DynamicInputField defaults; overlay sample count when provided.
+    input_values: dict[str, Any] = {}
+    samples_key = "A"
+    for field in eq.input_fields.all():
+        label = (getattr(field, "field_label", None) or "").lower()
+        if "sample" in label:
+            samples_key = field.field_key
+        default = getattr(field, "default_value", None)
+        if default is not None and str(default).strip() != "":
+            try:
+                input_values[field.field_key] = float(default)
+            except (TypeError, ValueError):
+                input_values[field.field_key] = default
+
+    raw_samples = arguments.get("num_samples", arguments.get("samples", arguments.get("A")))
+    if raw_samples is not None and str(raw_samples).strip() != "":
+        try:
+            input_values[samples_key] = float(raw_samples)
+        except (TypeError, ValueError):
+            return _err("invalid_num_samples", "num_samples must be numeric")
+
+    pricing_profile = _get_charge_profile_pricing_profile_for_user(user, eq)
+    user_type = getattr(user, "user_type", None) or "unknown"
+
+    line, err = _calculate_one_proforma_line(user, eq, input_values)
+    if err:
+        return _ok(
+            {
+                "equipment_id": eq.pk,
+                "equipment_name": eq.name,
+                "estimate": None,
+                "calculation_error": err,
+                "input_values": input_values,
+                "user_type": user_type,
+                "pricing_profile": pricing_profile,
+                "needs_more_inputs": True,
+                "note": (
+                    "Portal pricing engine could not complete with the provided/default inputs. "
+                    "Open the booking calculate flow for a full interactive estimate."
+                ),
+                "source": "PORTAL_DATA",
+            },
+            actions=[
+                {
+                    "id": "open_book_equipment",
+                    "label": f"Review charges — {eq.name}",
+                    "href": f"/book-equipment?equipment={eq.pk}",
+                    "enabled": True,
+                    "requires_confirmation": True,
+                    "hint": "Portal calculate is the source of truth for cost.",
+                }
+            ],
+        )
+
+    breakdown = line.get("charge_breakdown") or []
+    if isinstance(breakdown, list):
+        breakdown = breakdown[:6]
+
     return _ok(
         {
             "equipment_id": eq.pk,
             "equipment_name": eq.name,
-            "estimate": None,
-            "note": "Authoritative charges are computed by the portal booking/calculate APIs (user type, profile, slots, accessories). Open the equipment booking flow for a live estimate.",
+            "estimate": {
+                "amount": line.get("total_charge"),
+                "base_charge": line.get("base_charge"),
+                "currency": "INR",
+                "total_time_minutes": line.get("total_time_minutes"),
+                "gst_percent": line.get("gst_percent"),
+                "gst_amount": line.get("gst_amount"),
+                "breakdown": breakdown,
+                "charge_profile": f"{user_type}/{pricing_profile}",
+                "pricing_profile": pricing_profile,
+                "user_type": user_type,
+                "input_values": input_values,
+                "samples_field": samples_key,
+                "note": (
+                    "Authoritative portal ChargeCalculationEngine result for this authenticated "
+                    "user, charge profile, and stated/default inputs."
+                ),
+            },
             "source": "PORTAL_DATA",
         },
         actions=[

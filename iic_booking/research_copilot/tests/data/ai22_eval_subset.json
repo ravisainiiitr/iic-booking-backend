@@ -1,0 +1,75 @@
+[
+  {
+    "id": "Q-H-001",
+    "category": "H",
+    "question": "How much does 5 XRD samples cost?",
+    "expected_tools_any": ["search_equipment", "estimate_booking_cost"],
+    "must_pass_num_samples": 5,
+    "origin": "pilot-derived"
+  },
+  {
+    "id": "Q-E-001",
+    "category": "E",
+    "question": "What is my next booking?",
+    "expected_tools_any": ["get_next_booking"],
+    "origin": "pilot-derived"
+  },
+  {
+    "id": "Q-M-001",
+    "category": "M",
+    "question": "Are my results ready?",
+    "expected_tools_any": ["get_booking_results"],
+    "origin": "pilot-derived"
+  },
+  {
+    "id": "Q-W-001",
+    "category": "W",
+    "question": "Can I book it?",
+    "expect_clarification": true,
+    "origin": "synthetic"
+  },
+  {
+    "id": "Q-W-003",
+    "category": "W",
+    "question": "How much will it cost?",
+    "expect_clarification": true,
+    "origin": "synthetic"
+  },
+  {
+    "id": "Q-A-001",
+    "category": "A",
+    "question": "What is XRD?",
+    "expected_tools_none_of": ["search_equipment"],
+    "origin": "pilot-derived"
+  },
+  {
+    "id": "Q-O-001",
+    "category": "O",
+    "question": "What software can I use for PXRD?",
+    "expected_tools_any": ["recommend_software"],
+    "expected_tools_none_of": ["search_equipment"],
+    "origin": "pilot-derived"
+  },
+  {
+    "id": "Q-L-001",
+    "category": "L",
+    "question": "When should I submit my sample?",
+    "expected_tools_any": ["get_sample_deadline"],
+    "origin": "synthetic"
+  },
+  {
+    "id": "Q-P-001",
+    "category": "P",
+    "question": "Can I analyze my PXRD data remotely?",
+    "expected_tools_any": ["recommend_software"],
+    "origin": "synthetic"
+  },
+  {
+    "id": "Q-T-001",
+    "category": "T",
+    "question": "What should I prepare before my XRD booking?",
+    "expected_tools_any": ["search_documentation"],
+    "expected_tools_none_of": ["search_equipment"],
+    "origin": "pilot-derived"
+  }
+]

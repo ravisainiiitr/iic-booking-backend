@@ -44,8 +44,10 @@
 | AI.21 | [AI.21-Pilot-Observation-Report.md](./AI.21-Pilot-Observation-Report.md) | Observation log |
 | AI.21.1 | [AI.21.1-Test-Pilot-Enablement.md](./AI.21.1-Test-Pilot-Enablement.md) | **LIMITED PILOT ACTIVE** — `test.student@iic-booking.test` |
 | AI.21.2 | [AI.21.2-Copilot-Latency-Optimization.md](./AI.21.2-Copilot-Latency-Optimization.md) | **READY FOR PILOT CONTINUATION** — latency root-caused; 0 timeouts on matrix |
+| AI.22 | [AI.22-Copilot-Intelligence-Report.md](./AI.22-Copilot-Intelligence-Report.md) | **READY FOR PILOT CONTINUATION — IMPROVEMENTS REQUIRED** |
+| AI.22 | [AI.22-Copilot-Evaluation-Dataset.md](./AI.22-Copilot-Evaluation-Dataset.md) | Taxonomy + 70 evaluation queries |
 
-## Current production posture (AI.21.2)
+## Current production posture (AI.22)
 
 | Layer | Status |
 |-------|--------|
@@ -54,5 +56,6 @@
 | Non-pilot access | **Denied** |
 | Ollama | Private `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1 |
 | Max completion tokens | **`RESEARCH_COPILOT_MAX_TOKENS=160`** |
-| Latency | Tool path ≪ 1s; Ollama dominates; matrix **0 timeouts** (complex still ~20–50s on CPU 1b) |
+| Intelligence | Authoritative pricing engine wired; clarification + follow-up enrichment |
+| Latency | AI.21.2 envelope preserved; pricing live ~16s on subset |
 | Global Copilot | **Still NOT enabled** |

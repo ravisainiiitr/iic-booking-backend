@@ -110,6 +110,7 @@ def test_portal_grounding_chains_pricing_after_equipment_search(monkeypatch, dja
     assert "search_equipment" in names
     assert "estimate_booking_cost" in names
     assert any(args.get("equipment_id") == 42 for n, args in calls if n == "estimate_booking_cost")
+    assert any(args.get("num_samples") == 5 for n, args in calls if n == "estimate_booking_cost")
     assert "estimate_booking_cost" in {t.get("tool") for t in out["tool_results"]}
 
 

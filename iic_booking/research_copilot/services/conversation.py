@@ -210,14 +210,60 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     )
     from iic_booking.research_copilot.models import AuditAction
     from iic_booking.research_copilot.services.intent import detect_intent
+    from iic_booking.research_copilot.services.query_intelligence import (
+        clarification_question,
+        enrich_query_with_history,
+    )
+
+    prior_user_texts = [h["content"] for h in prior if h.get("role") == MessageRole.USER]
+    follow = enrich_query_with_history(text=text, prior_user_texts=prior_user_texts)
+    grounded_text = follow.get("text") or text
+
+    clarify = clarification_question(text=grounded_text)
+    if clarify:
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=clarify,
+                confidence=0.9,
+                citations=[],
+                suggested_actions=_static_actions(escalate=False),
+                escalate_hint=False,
+                metadata={
+                    "provider": "deterministic",
+                    "model": "",
+                    "intent": "clarification",
+                    "clarification": True,
+                    "followup_enriched": bool(follow.get("enriched")),
+                    "portal_tools": [],
+                    "llm_latency_ms": 0,
+                    "rag_skipped": True,
+                    "prompt_chars": len(clarify),
+                },
+            )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["updated_at"])
+        audit_svc.audit_message_replied(
+            user=user,
+            conversation=conversation,
+            confidence=0.9,
+            escalate=False,
+        )
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        }
 
     t0 = time.monotonic()
-    grounding = run_portal_grounding(user=user, text=text)
+    grounding = run_portal_grounding(user=user, text=grounded_text)
     t_ground_ms = int((time.monotonic() - t0) * 1000)
 
     # AI.21.2: skip heavy RAG when authoritative portal tools already ground the turn,
     # or the user asked a pure portal lookup (booking/wallet/sample/results).
-    intent = detect_intent(text)
+    intent = detect_intent(grounded_text)
     portal_tools = [t.get("tool") for t in (grounding.get("tool_results") or []) if t.get("tool")]
     portal_only_tools = {
         "get_next_booking",
@@ -237,7 +283,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     # Prefer portal documentation tool over duplicate RAG when both could fire.
     if "search_documentation" in portal_tools:
         skip_rag = True
-    lower = text.lower()
+    lower = grounded_text.lower()
     # Prepare/SOP without a docs tool still needs knowledge retrieval.
     if (
         any(k in lower for k in ("prepare", "sop", "manual", "guide", "documentation", "how should"))
@@ -262,7 +308,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         )
     else:
         retrieval = rag_svc.retrieve(
-            query=text,
+            query=grounded_text,
             role_bucket=ctx.role_bucket,
             department_id=ctx.department_id,
             user=user,
@@ -354,6 +400,8 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
                 "portal_tools": grounding.get("tool_results") or [],
                 "response_modes": grounding.get("modes") or [],
                 "busy": busy,
+                "followup_enriched": bool(follow.get("enriched")),
+                "clarification": False,
             },
         )
 
