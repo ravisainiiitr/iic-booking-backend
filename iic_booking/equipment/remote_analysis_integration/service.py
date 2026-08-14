@@ -78,6 +78,7 @@ class BookingRemoteAnalysisService:
             "session": self._serialize_session(session),
             "timeline": self.timeline.build(booking),
             "files": self.workspace.list_files(booking, limit=50) if include_files else [],
+            "analysis_data_selection": getattr(booking, "analysis_data_selection", None) or {},
         }
         try:
             from iic_booking.equipment.remote_analysis_integration.experience import AnalysisExperienceBuilder
@@ -528,10 +529,38 @@ class BookingRemoteAnalysisService:
                 raise SessionError(str(exc), code=exc.code) from exc
 
         staging_result = None
+        selection = getattr(booking, "analysis_data_selection", None) or {}
         if settings_obj.analyze_data_stage_raw_on_launch and workspace is not None:
-            staging_result = BookingRawStagingService().stage_into_workspace(
-                booking, workspace, actor=user, request=request
-            )
+            if (selection.get("source") or "").strip().lower() == "upload":
+                staging_result = {
+                    "staged": 0,
+                    "skipped": 0,
+                    "errors": [],
+                    "success": True,
+                    "note": "upload_selection",
+                }
+            else:
+                from iic_booking.equipment.remote_analysis_integration.data_browser import (
+                    AnalysisDataBrowserService,
+                )
+
+                source_booking = booking
+                source_pk = selection.get("source_booking_id")
+                if source_pk:
+                    resolved = AnalysisDataBrowserService().resolve_source_booking(
+                        booking, int(source_pk)
+                    )
+                    if resolved is not None:
+                        source_booking = resolved
+                staging_result = BookingRawStagingService().stage_into_workspace(
+                    booking,
+                    workspace,
+                    actor=user,
+                    request=request,
+                    source_booking=source_booking,
+                    allow_names=selection.get("file_names") or None,
+                    folder_prefix=selection.get("folder_path") or "",
+                )
             self.audit.log(
                 booking,
                 "RawStaged",
@@ -542,15 +571,21 @@ class BookingRemoteAnalysisService:
 
         if reservation.status in {ReservationStatus.QUEUED, ReservationStatus.REQUESTED, ReservationStatus.VALIDATING}:
             self.audit.log(booking, "AnalyzeQueued", details=str(reservation.id), actor=user)
+            queued_message = "An Analysis Environment is busy. Your request is queued."
+            if selection:
+                queued_message = (
+                    "Your data is ready. We are waiting for a compatible Analysis PC."
+                )
             return {
                 "eligible": True,
                 "queued": True,
                 "status": reservation.status,
                 "reservation_id": str(reservation.id),
-                "message": "An Analysis Environment is busy. Your request is queued.",
+                "message": queued_message,
                 "launcher_url": f"/api/v1/bookings/{booking.booking_id}/analysis/desktop/?view=html",
                 "workspace_url": f"/analysis-workspace/{booking.booking_id}",
                 "staging": staging_result,
+                "selection": selection or None,
                 "button_label": ctx["button_label"],
                 "job": engine.serialize_job(job) if job else None,
             }
@@ -1300,6 +1335,17 @@ class BookingRemoteAnalysisService:
             details=f"{file_row.relative_path}; sync={sync_command_id}",
             actor=user,
         )
+        from iic_booking.equipment.remote_analysis_integration.data_browser import (
+            AnalysisDataBrowserService,
+        )
+
+        existing = getattr(booking, "analysis_data_selection", None) or {}
+        names = list(existing.get("file_names") or [])
+        uploaded_name = file_row.original_name or file_row.relative_path
+        if uploaded_name and uploaded_name not in names:
+            names.append(uploaded_name)
+        AnalysisDataBrowserService().save_upload_selection(booking, user=user, file_names=names)
+        booking.refresh_from_db(fields=["analysis_data_selection"])
         return {
             "ok": True,
             "workspace_id": str(workspace.id),
@@ -1311,6 +1357,7 @@ class BookingRemoteAnalysisService:
             },
             "sync_command_id": sync_command_id,
             "agent_folder": "Input" if folder.replace("\\", "/").split("/")[0] in {"RawData", "Metadata"} else folder,
+            "selection": getattr(booking, "analysis_data_selection", None) or {},
         }
 
     def pause_analysis_job(self, booking, *, user) -> dict:

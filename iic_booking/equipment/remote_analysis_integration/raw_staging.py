@@ -46,11 +46,34 @@ class BookingRawStagingService:
         *,
         actor=None,
         request=None,
+        source_booking: Booking | None = None,
+        allow_names: list[str] | None = None,
+        folder_prefix: str = "",
     ) -> dict[str, Any]:
         from iic_booking.remote_analysis.workspace.transfer import TransferError, TransferManager
         from iic_booking.remote_analysis.workspace_models import WorkspaceFile
 
-        entries = self.list_raw_entries(booking, request=request)
+        source = source_booking or booking
+        entries = self.list_raw_entries(source, request=request)
+        allowed = {
+            str(n).replace("\\", "/").lstrip("/").lower()
+            for n in (allow_names or [])
+            if str(n).strip()
+        }
+        prefix = (folder_prefix or "").replace("\\", "/").strip("/")
+        if allowed:
+            entries = [
+                e
+                for e in entries
+                if str(e.get("name") or "").replace("\\", "/").lstrip("/").lower() in allowed
+            ]
+        elif prefix:
+            filtered = []
+            for e in entries:
+                name = str(e.get("name") or "").replace("\\", "/").lstrip("/")
+                if name.startswith(prefix + "/") or name.rsplit("/", 1)[0] == prefix:
+                    filtered.append(e)
+            entries = filtered
         staged = 0
         skipped = 0
         errors: list[str] = []

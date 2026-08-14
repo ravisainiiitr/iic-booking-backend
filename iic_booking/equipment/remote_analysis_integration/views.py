@@ -418,6 +418,90 @@ def booking_analysis_extend(request, booking_id: int):
     return Response(payload)
 
 
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_data_browser(request, booking_id: int):
+    """GET /api/v1/bookings/{id}/analysis/data-browser/ — authorized current/previous files."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user"),
+        booking_id=booking_id,
+    )
+    if not _can_access_analysis_files(request.user, booking):
+        return Response(
+            {"detail": "Permission denied.", "code": "forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    from iic_booking.equipment.remote_analysis_integration.data_browser import AnalysisDataBrowserService
+
+    params = request.query_params
+    source_raw = params.get("source_booking_id")
+    source_booking_id = int(source_raw) if str(source_raw or "").isdigit() else None
+    payload = AnalysisDataBrowserService().browse(
+        booking,
+        user=request.user,
+        q=params.get("q") or "",
+        scope=params.get("scope") or "current",
+        page=int(params.get("page") or 1),
+        page_size=int(params.get("page_size") or 20),
+        source_booking_id=source_booking_id,
+        prefix=params.get("prefix") or "",
+        file_offset=int(params.get("file_offset") or 0),
+        file_limit=int(params.get("file_limit") or 40),
+        file_type=params.get("file_type") or "",
+        request=request,
+    )
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_data_selection(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/data-selection/ — persist selection before allocation."""
+    booking = get_object_or_404(
+        Booking.objects.select_related("equipment", "user"),
+        booking_id=booking_id,
+    )
+    if not _can_launch(request.user, booking):
+        return Response(
+            {"detail": "Only the booking owner may select analysis data.", "code": "forbidden"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    body = request.data if hasattr(request, "data") else {}
+    from iic_booking.equipment.remote_analysis_integration.data_browser import AnalysisDataBrowserService
+
+    source_kind = str(body.get("source") or "").strip().lower()
+    svc = AnalysisDataBrowserService()
+    try:
+        if source_kind == "upload":
+            payload = svc.save_upload_selection(
+                booking,
+                user=request.user,
+                file_names=body.get("file_names") if isinstance(body.get("file_names"), list) else None,
+            )
+        else:
+            source_booking_id = body.get("source_booking_id")
+            if source_booking_id in (None, ""):
+                return Response(
+                    {"detail": "source_booking_id is required.", "code": "missing_source"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            payload = svc.save_selection(
+                booking,
+                user=request.user,
+                source_booking_id=int(source_booking_id),
+                folder_path=str(body.get("folder_path") or ""),
+                file_names=body.get("file_names") if isinstance(body.get("file_names"), list) else None,
+                source_kind=source_kind,
+            )
+    except PermissionError as exc:
+        return Response({"detail": str(exc), "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    except ValueError as exc:
+        return Response({"detail": str(exc), "code": "invalid"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(payload)
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @authentication_classes(_AUTH)

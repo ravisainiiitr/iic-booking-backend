@@ -678,6 +678,16 @@ class Equipment(models.Model):
         verbose_name=_("Enable Remote Analysis"),
         help_text=_("When enabled, eligible completed bookings may create analysis reservations."),
     )
+    auto_complete_booking = models.BooleanField(
+        default=False,
+        verbose_name=_("Auto Complete Booking"),
+        help_text=_(
+            "When enabled, bookings for this equipment are automatically marked COMPLETED after "
+            "the scheduled end time if meaningful result data exists in the Active folder. "
+            "Does not complete blindly when no result data is present, and never terminates an "
+            "active Remote Analysis session."
+        ),
+    )
     remote_analysis_enabled_from_status = models.CharField(
         max_length=30,
         blank=True,
@@ -2378,6 +2388,15 @@ class Booking(models.Model):
         on_delete=models.SET_NULL,
         related_name="primary_for_bookings",
         verbose_name=_("Primary analysis workspace"),
+    )
+    analysis_data_selection = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_("Analysis data selection"),
+        help_text=_(
+            "User-confirmed Remote Analysis input selection (source booking, folder, files). "
+            "Recorded before RAA allocation so data choice is not lost while waiting for a PC."
+        ),
     )
 
     # Repeat sample: when True, the booking user can create a replica booking (same params, discount = original amount).

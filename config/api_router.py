@@ -515,6 +515,16 @@ urlpatterns = router.urls + [
         name="booking-analysis-files-upload",
     ),
     path(
+        "v1/bookings/<int:booking_id>/analysis/data-browser/",
+        booking_ra_views.booking_analysis_data_browser,
+        name="booking-analysis-data-browser",
+    ),
+    path(
+        "v1/bookings/<int:booking_id>/analysis/data-selection/",
+        booking_ra_views.booking_analysis_data_selection,
+        name="booking-analysis-data-selection",
+    ),
+    path(
         "v1/bookings/<int:booking_id>/analysis/end/",
         booking_ra_views.booking_analysis_end,
         name="booking-analysis-end",
@@ -609,6 +619,16 @@ urlpatterns = router.urls + [
         "bookings/<int:booking_id>/analysis/files/upload/",
         booking_ra_views.booking_analysis_files_upload,
         name="booking-analysis-files-upload-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/data-browser/",
+        booking_ra_views.booking_analysis_data_browser,
+        name="booking-analysis-data-browser-legacy",
+    ),
+    path(
+        "bookings/<int:booking_id>/analysis/data-selection/",
+        booking_ra_views.booking_analysis_data_selection,
+        name="booking-analysis-data-selection-legacy",
     ),
     path(
         "bookings/<int:booking_id>/analysis/end/",

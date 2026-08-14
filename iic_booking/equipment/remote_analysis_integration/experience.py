@@ -353,6 +353,7 @@ class AnalysisExperienceBuilder:
                     matching_available=matching_available,
                     matching_total=matching_total,
                     maintenance_hint=maintenance_hint,
+                    data_ready=bool(getattr(booking, "analysis_data_selection", None)),
                 ),
                 "required_software": required_software,
                 "position": queue_position,
@@ -456,6 +457,7 @@ class AnalysisExperienceBuilder:
         matching_available: int,
         matching_total: int,
         maintenance_hint: dict[str, Any],
+        data_ready: bool = False,
     ) -> dict[str, Any]:
         """Build queue title/body without claiming Scheduled Maintenance unless true."""
         if not is_queued:
@@ -466,6 +468,12 @@ class AnalysisExperienceBuilder:
                     "Complete check-in/start to begin the session.",
                 ],
             }
+
+        data_line = (
+            "Your data is ready. We are waiting for a compatible Analysis PC."
+            if data_ready
+            else ""
+        )
 
         reason = (maintenance_hint.get("reason") or "").strip()
         est = maintenance_hint.get("estimated_availability_display") or "Unknown"
@@ -525,13 +533,14 @@ class AnalysisExperienceBuilder:
         ):
             return {
                 "title": "No compatible Analysis PC is currently available",
-                "body": [
-                    f"Required software: {soft_label}." if soft_label else "Required software is configured.",
-                    f"Installed on: {matching_total} PC(s).",
-                    f"Online: {matching_total} · Available: 0 · Busy: {matching_total}.",
-                    "Your request remains in the queue and will start automatically when a PC becomes free.",
-                    "You may safely leave this page.",
-                ],
+                "body": ([data_line] if data_line else [])
+            + [
+                f"Required software: {soft_label}." if soft_label else "Required software is configured.",
+                f"Installed on: {matching_total} PC(s).",
+                f"Online: {matching_total} · Available: 0 · Busy: {matching_total}.",
+                "Your request remains in the queue and will start automatically when a PC becomes free.",
+                "You may safely leave this page.",
+            ],
             }
 
         if matching_available == 0 and matching_total == 0 and required_software:
@@ -562,7 +571,8 @@ class AnalysisExperienceBuilder:
                 if required_software
                 else "Analysis Environment Currently Unavailable"
             ),
-            "body": [
+            "body": ([data_line] if data_line else [])
+            + [
                 (
                     "No Analysis PC with the required software is free right now."
                     if required_software
