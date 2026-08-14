@@ -35,17 +35,21 @@
 | AI.17 | [AI.17-Ollama-Implementation-and-Pilot-Report.md](./AI.17-Ollama-Implementation-and-Pilot-Report.md) | Prior Ollama provider report |
 | AI.18 | [AI.18-Production-Integration-Assessment.md](./AI.18-Production-Integration-Assessment.md) | Production audit |
 | AI.18 | [AI.18-Integration-Report.md](./AI.18-Integration-Report.md) | Surgical integrate onto master |
+| AI.18.1 | [AI.18.1-EC2-Resource-Qualification.md](./AI.18.1-EC2-Resource-Qualification.md) | Old EC2 resource blocker |
+| AI.19 | [AI.19-EC2-Ollama-Baseline.md](./AI.19-EC2-Ollama-Baseline.md) | Pre-Ollama baseline on m5a.2xlarge |
+| AI.19 | [AI.19-Ollama-Production-Deployment.md](./AI.19-Ollama-Production-Deployment.md) | **PARTIAL** — Ollama live private; Copilot OFF |
 
-## Current production posture (AI.17 complete pass)
+## Current production posture (AI.19)
 
 | Layer | Status |
 |-------|--------|
-| CORE PLATFORM | Unchanged; Copilot additive |
-| RESEARCH COPILOT on current prod pointer | **App not installed** (AI15 `RESULT=research_copilot_app_not_installed`) — flag **false** |
-| LLM provider (code on feature branch) | **Ollama default** via `COPILOT_PROVIDER` / `COPILOT_LLM_PROVIDER` |
-| OPENAI_API_KEY | Not required for Ollama path |
-| Local Ollama smoke | PASS (`llama3.2:1b`, ~33s) |
-| Live Ollama on prod | **Not deployed** |
+| CORE PLATFORM | Healthy on `3.110.50.174` (DNS still pending) |
+| RESEARCH COPILOT feature flag | **`RESEARCH_COPILOT_ENABLED=false`** |
+| LLM provider | **Ollama** via existing AI.17 `OllamaGateway` |
+| Live Ollama on prod | **Deployed private** (`http://ollama:11434`, 2 CPU / 8 GB, no public 11434) |
+| Model | **`llama3.2:1b`** (1.3 GB) — do not jump to 3b yet |
+| OPENAI_API_KEY | Not required |
 | Pilot allowlist | **Empty** |
-| Controlled pilot | **BLOCKED** |
-| Broader production | NOT READY |
+| Controlled pilot | **BLOCKED** (no authorized emails; live tool matrix not run) |
+| DSA/RAA live heartbeat under Copilot | **BLOCKED BY DNS** |
+| Broader production Copilot | **NOT READY** — keep OFF |

@@ -1,0 +1,25 @@
+# AI.19 — private Ollama on production backend network.
+# Usage (on EC2):
+#   docker compose -f docker-compose.ollama.production.yml up -d
+# Do NOT publish 11434 to the Internet. Django reaches Ollama at http://ollama:11434
+services:
+  ollama:
+    image: docker.io/ollama/ollama:latest
+    container_name: iic-booking-backend-ollama-1
+    restart: unless-stopped
+    volumes:
+      - iic_booking_production_ollama_data:/root/.ollama
+    # Hard caps — Copilot is lower priority than booking/Celery/DSA/RAA.
+    mem_limit: ${OLLAMA_MEM_LIMIT:-8g}
+    cpus: ${OLLAMA_CPUS:-2.0}
+    # No ports: — internal Docker DNS only (service name "ollama").
+    networks:
+      - backend_net
+
+volumes:
+  iic_booking_production_ollama_data:
+
+networks:
+  backend_net:
+    external: true
+    name: iic-booking-backend_default
