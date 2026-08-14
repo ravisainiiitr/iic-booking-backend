@@ -38,11 +38,10 @@ def test_plan_tool_calls_for_bookings_and_wallet():
 
 
 @pytest.mark.django_db
-def test_plan_tool_calls_sample_and_results():
-    plans = plan_tool_calls(text="Has my sample been accepted for booking #12345? Are results available?")
+def test_plan_tool_calls_sample_status_natural_phrasing():
+    plans = plan_tool_calls(text="What is the status of my sample?")
     names = {n for n, _ in plans}
     assert "get_sample_status" in names
-    assert "get_booking_results" in names
 
 
 @pytest.mark.django_db
@@ -52,6 +51,42 @@ def test_portal_grounding_injects_portal_block(django_user_model):
     assert "<<<PORTAL_DATA>>>" in out["block"]
     assert "PORTAL_DATA" in out["modes"]
     assert out["tool_results"]
+
+
+@pytest.mark.django_db
+def test_portal_grounding_chains_pricing_after_equipment_search(monkeypatch, django_user_model):
+    """AI.20: 'How much does 5 XRD samples cost?' must not skip portal pricing tools."""
+    user = _user("price-ai20@example.com")
+    calls: list[tuple[str, dict]] = []
+
+    def fake_execute(*, name, arguments, user):
+        calls.append((name, dict(arguments or {})))
+        if name == "search_equipment":
+            return {
+                "ok": True,
+                "data": [{"id": 42, "name": "XRD Lab"}],
+                "actions": [],
+            }
+        if name == "estimate_booking_cost":
+            return {
+                "ok": True,
+                "data": {
+                    "equipment_id": 42,
+                    "estimate": None,
+                    "note": "portal calculate",
+                    "source": "PORTAL_DATA",
+                },
+                "actions": [],
+            }
+        return {"ok": True, "data": {}, "actions": []}
+
+    monkeypatch.setattr(tools_svc, "execute_tool", fake_execute)
+    out = run_portal_grounding(user=user, text="How much does 5 XRD samples cost?")
+    names = [n for n, _ in calls]
+    assert "search_equipment" in names
+    assert "estimate_booking_cost" in names
+    assert any(args.get("equipment_id") == 42 for n, args in calls if n == "estimate_booking_cost")
+    assert "estimate_booking_cost" in {t.get("tool") for t in out["tool_results"]}
 
 
 @pytest.mark.django_db

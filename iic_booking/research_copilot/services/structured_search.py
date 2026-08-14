@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import re
+
 from django.db.models import Q
 
 
@@ -24,13 +26,33 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
     if len(q) < 2:
         return []
 
-    filt = Q(name__icontains=q) | Q(description__icontains=q)
-    if any(f.name == "code" for f in Equipment._meta.get_fields()):
-        filt = filt | Q(code__icontains=q)
+    # Prefer instrument-family tokens when the user asks a natural-language question
+    # (e.g. "How much does 5 XRD samples cost?").
+    known = (
+        "xrd", "pxrd", "fesem", "sem", "tem", "afm", "xps", "raman", "ftir",
+        "nmr", "gcms", "lcms", "icp", "bet", "saxs", "waxs", "eds", "edx",
+    )
+    lower = q.lower()
+    tokens = [t for t in re.findall(r"[a-zA-Z0-9]{2,}", lower) if t not in {
+        "how", "much", "does", "the", "for", "and", "what", "when", "where", "which",
+        "can", "i", "my", "is", "are", "of", "to", "a", "an", "in", "on", "with",
+        "sample", "samples", "cost", "price", "charge", "fee", "available", "slots",
+        "software", "analysis", "booking", "book", "tomorrow", "today", "should",
+        "prepare", "coming", "difference", "between",
+    }]
+    preferred = [t for t in tokens if t in known] or tokens[:4] or [q]
+
+    filt = Q()
+    for token in preferred:
+        part = Q(name__icontains=token) | Q(description__icontains=token)
+        if any(f.name == "code" for f in Equipment._meta.get_fields()):
+            part = part | Q(code__icontains=token)
+        filt |= part
 
     qs = Equipment.objects.filter(filt).order_by("name")[:limit]
     hits: list[StructuredHit] = []
     for eq in qs:
+        eq_pk = int(eq.pk)
         specs = list(eq.equipment_specifications.all()[:6])
         spec_txt = "; ".join(f"{s.spec_key}: {s.spec_value}" for s in specs) if specs else ""
         accessories = [a.accessory_name for a in eq.equipment_accessories.all()[:5]]
@@ -48,11 +70,11 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
             snippet_parts.append("Accessories: " + ", ".join(accessories))
         hits.append(
             StructuredHit(
-                source_id=f"equipment:{eq.id}",
+                source_id=f"equipment:{eq_pk}",
                 title=eq.name,
                 snippet=" | ".join(p for p in snippet_parts if p),
                 score=0.72,
-                url=f"/equipments/{eq.id}",
+                url=f"/equipments/{eq_pk}",
                 category="equipment",
             )
         )

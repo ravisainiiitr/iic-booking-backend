@@ -43,7 +43,16 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
 
     if booking_id and _wants(lower, "sample", "received", "accepted", "rejected", "trace", "status"):
         plans.append(("get_sample_status", {"booking_id": booking_id}))
-    elif _wants(lower, "sample status", "sample received", "sample accepted", "sample rejected", "has my sample"):
+    elif _wants(
+        lower,
+        "sample status",
+        "status of my sample",
+        "my sample status",
+        "sample received",
+        "sample accepted",
+        "sample rejected",
+        "has my sample",
+    ):
         plans.append(("get_sample_status", {"booking_id": booking_id} if booking_id else {}))
 
     if booking_id and _wants(lower, "result", "download", "analysis file"):
@@ -97,6 +106,37 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
     return out
 
 
+def _first_equipment_id_from_tool_result(result: dict[str, Any]) -> int | None:
+    """Best-effort resolve a single equipment id from search_equipment output."""
+    data = result.get("data")
+    rows: list[Any] = []
+    if isinstance(data, list):
+        rows = data
+    elif isinstance(data, dict):
+        for key in ("results", "equipment", "items", "matches"):
+            if isinstance(data.get(key), list):
+                rows = data[key]
+                break
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key in ("equipment_id", "id", "pk"):
+            raw = row.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+        # Fallback: parse /equipments/123 or equipment:123 style ids
+        for key in ("url", "source_id", "href"):
+            text = str(row.get(key) or "")
+            m = re.search(r"(?:equipment[=:/]|equipments?/|equipment_id[=:])\s*(\d+)", text, re.I)
+            if m:
+                return int(m.group(1))
+    return None
+
+
 def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
     """
     Execute planned read tools for this turn.
@@ -110,6 +150,16 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
       }
     """
     plans = plan_tool_calls(text=text)
+    lower = (text or "").lower()
+    wants_cost = _wants(lower, "cost", "charge", "price", "fee", "how much")
+    wants_slots = _wants(lower, "slot", "availability", "available tomorrow", "available today", "when can i book")
+    # If user names an instrument family without equipment_id, search first so pricing/slots
+    # can use authoritative portal ids (AI.20) — never invent prices in the LLM.
+    planned_names = {n for n, _ in plans}
+    if (wants_cost or wants_slots) and "search_equipment" not in planned_names:
+        q = text.strip()[:120]
+        if q:
+            plans = [("search_equipment", {"query": q, "limit": 5}), *plans][:3]
     if not plans:
         return {"block": "", "actions": [], "tool_results": [], "modes": []}
 
@@ -123,12 +173,19 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         "Mutating suggestions must still require portal confirmation — never claim the action is already done.",
     ]
 
-    for name, args in plans:
+    resolved_equipment_id: int | None = None
+    executed: set[str] = set()
+
+    def _run(name: str, args: dict[str, Any]) -> None:
+        nonlocal resolved_equipment_id
         result = tools_svc.execute_tool(name=name, arguments=args, user=user)
+        executed.add(name)
         tool_results.append({"tool": name, "ok": bool(result.get("ok")), "error": result.get("error")})
         for a in result.get("actions") or []:
             if isinstance(a, dict) and a.get("id"):
                 actions.append(a)
+        if name == "search_equipment" and result.get("ok"):
+            resolved_equipment_id = _first_equipment_id_from_tool_result(result) or resolved_equipment_id
         payload = {k: result.get(k) for k in ("ok", "error", "message", "data") if k in result}
         try:
             serialized = json.dumps(payload, default=str)[:3500]
@@ -136,6 +193,16 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
             serialized = str(payload)[:3500]
         lines.append(f"\n### Tool `{name}`")
         lines.append(serialized)
+
+    for name, args in plans:
+        _run(name, args)
+
+    # Chain authoritative pricing/slot tools once equipment id is known (server-side).
+    if resolved_equipment_id:
+        if wants_cost and "estimate_booking_cost" not in executed:
+            _run("estimate_booking_cost", {"equipment_id": resolved_equipment_id})
+        if wants_slots and "search_slots" not in executed:
+            _run("search_slots", {"equipment_id": resolved_equipment_id})
 
     lines.append("<<<END_PORTAL_DATA>>>")
     return {

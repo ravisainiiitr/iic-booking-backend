@@ -38,18 +38,19 @@
 | AI.18.1 | [AI.18.1-EC2-Resource-Qualification.md](./AI.18.1-EC2-Resource-Qualification.md) | Old EC2 resource blocker |
 | AI.19 | [AI.19-EC2-Ollama-Baseline.md](./AI.19-EC2-Ollama-Baseline.md) | Pre-Ollama baseline on m5a.2xlarge |
 | AI.19 | [AI.19-Ollama-Production-Deployment.md](./AI.19-Ollama-Production-Deployment.md) | **PARTIAL** — Ollama live private; Copilot OFF |
+| AI.20 | [AI.20-Functional-Qualification-Report.md](./AI.20-Functional-Qualification-Report.md) | Functional matrix + routing fixes |
+| AI.20 | [AI.20-Final-Qualification-Report.md](./AI.20-Final-Qualification-Report.md) | **PARTIAL — PILOT BLOCKED** |
 
-## Current production posture (AI.19)
+## Current production posture (AI.20)
 
 | Layer | Status |
 |-------|--------|
 | CORE PLATFORM | Healthy on `3.110.50.174` (DNS still pending) |
 | RESEARCH COPILOT feature flag | **`RESEARCH_COPILOT_ENABLED=false`** |
-| LLM provider | **Ollama** via existing AI.17 `OllamaGateway` |
-| Live Ollama on prod | **Deployed private** (`http://ollama:11434`, 2 CPU / 8 GB, no public 11434) |
-| Model | **`llama3.2:1b`** (1.3 GB) — do not jump to 3b yet |
-| OPENAI_API_KEY | Not required |
+| LLM provider | **Ollama** `llama3.2:1b` via AI.17 gateway |
+| Live Ollama on prod | **Private** (2 CPU / 8 GB, concurrent 1, no public 11434) |
+| Functional qualification | **Advanced** (grounding/tools/authz/confirm/injection/busy/timeout) |
 | Pilot allowlist | **Empty** |
-| Controlled pilot | **BLOCKED** (no authorized emails; live tool matrix not run) |
-| DSA/RAA live heartbeat under Copilot | **BLOCKED BY DNS** |
-| Broader production Copilot | **NOT READY** — keep OFF |
+| Controlled pilot | **BLOCKED** (need real authorized emails) |
+| DSA/RAA live under Copilot | **BLOCKED BY DNS** |
+| Broader / global Copilot | **NOT READY** — keep OFF |

@@ -68,17 +68,26 @@ def _search_equipment(*, arguments: dict, user) -> dict:
     query = str(arguments.get("query") or arguments.get("q") or "").strip()
     limit = int(arguments.get("limit") or 8)
     hits = search_equipment(query=query, limit=max(1, min(limit, 20)))
-    return _ok(
-        [
+    rows = []
+    for h in hits:
+        eq_id = None
+        if ":" in (h.source_id or "") and h.source_id.split(":", 1)[0] == "equipment":
+            try:
+                eq_id = int(h.source_id.split(":", 1)[1])
+            except ValueError:
+                eq_id = None
+        rows.append(
             {
-                "equipment_id": int(h.source_id.split(":")[1]) if ":" in h.source_id else None,
+                "id": eq_id,
+                "equipment_id": eq_id,
                 "title": h.title,
                 "snippet": h.snippet,
                 "url": h.url,
                 "score": h.score,
             }
-            for h in hits
-        ],
+        )
+    return _ok(
+        rows,
         actions=[
             {
                 "id": "open_equipment",
@@ -131,7 +140,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
     if not slots:
         return _ok(
             {
-                "equipment_id": eq.id,
+                "equipment_id": eq.pk,
                 "equipment_name": eq.name,
                 "date": day.isoformat(),
                 "slots": [],
@@ -141,7 +150,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
                 {
                     "id": "open_equipment_slots",
                     "label": f"View availability — {eq.name}",
-                    "href": f"/equipments/{eq.id}",
+                    "href": f"/equipments/{eq.pk}",
                     "enabled": True,
                 }
             ],
@@ -149,7 +158,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
 
     return _ok(
         {
-            "equipment_id": eq.id,
+            "equipment_id": eq.pk,
             "equipment_name": eq.name,
             "date": day.isoformat(),
             "slots": slots,
@@ -159,7 +168,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
             {
                 "id": f"book_slot_{i}",
                 "label": f"Review & book {s.get('start') or 'slot'}",
-                "href": f"/book-equipment?equipment={eq.id}&date={day.isoformat()}",
+                "href": f"/book-equipment?equipment={eq.pk}&date={day.isoformat()}",
                 "enabled": True,
                 "requires_confirmation": True,
                 "hint": "Opens portal booking; confirmation uses normal booking APIs.",
@@ -444,7 +453,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     # Do not invent prices — point to portal calculate which applies full rules.
     return _ok(
         {
-            "equipment_id": eq.id,
+            "equipment_id": eq.pk,
             "equipment_name": eq.name,
             "estimate": None,
             "note": "Authoritative charges are computed by the portal booking/calculate APIs (user type, profile, slots, accessories). Open the equipment booking flow for a live estimate.",
@@ -454,7 +463,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
             {
                 "id": "open_book_equipment",
                 "label": f"Review charges — {eq.name}",
-                "href": f"/book-equipment?equipment={eq.id}",
+                "href": f"/book-equipment?equipment={eq.pk}",
                 "enabled": True,
                 "requires_confirmation": True,
                 "hint": "Portal calculate is the source of truth for cost.",
