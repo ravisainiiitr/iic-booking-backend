@@ -490,8 +490,8 @@ def _search_documentation(*, arguments: dict, user) -> dict:
         {
             "intent": retrieval.intent,
             "low_confidence": retrieval.low_confidence,
-            "citations": rag_svc.citations_as_dicts(retrieval.citations),
-            "context_preview": (retrieval.context_block or "")[:1200],
+            "citations": rag_svc.citations_as_dicts(retrieval.citations)[:2],
+            "context_preview": (retrieval.context_block or "")[:500],
         }
     )
 

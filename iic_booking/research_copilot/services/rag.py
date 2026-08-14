@@ -159,14 +159,15 @@ def retrieve(
     # Keyword
     candidates.extend(_keyword_search(query=query, allowed_levels=levels, department_id=department_id, limit=8))
 
-    citations = _rerank(candidates, limit=limit)
+    citations = _rerank(candidates, limit=min(limit, 2))
     low = len(citations) == 0 or (citations and citations[0].score < 0.35)
     latency = int((time.perf_counter() - started) * 1000)
 
     # Build LLM context — never invent; only retrieved text
     lines = []
     for i, c in enumerate(citations, 1):
-        lines.append(f"[{i}] {c.title} ({c.category or c.source_type})\n{c.snippet}")
+        snippet = (c.snippet or "")[:160]
+        lines.append(f"[{i}] {c.title} ({c.category or c.source_type})\n{snippet}")
     context_block = "\n\n".join(lines)
 
     try:

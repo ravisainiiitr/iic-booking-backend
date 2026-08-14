@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -207,26 +209,79 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         acquire_generation_slot,
     )
     from iic_booking.research_copilot.models import AuditAction
+    from iic_booking.research_copilot.services.intent import detect_intent
 
+    t0 = time.monotonic()
     grounding = run_portal_grounding(user=user, text=text)
+    t_ground_ms = int((time.monotonic() - t0) * 1000)
 
-    retrieval = rag_svc.retrieve(
-        query=text,
-        role_bucket=ctx.role_bucket,
-        department_id=ctx.department_id,
-        user=user,
-        conversation=conversation,
-    )
+    # AI.21.2: skip heavy RAG when authoritative portal tools already ground the turn,
+    # or the user asked a pure portal lookup (booking/wallet/sample/results).
+    intent = detect_intent(text)
+    portal_tools = [t.get("tool") for t in (grounding.get("tool_results") or []) if t.get("tool")]
+    portal_only_tools = {
+        "get_next_booking",
+        "search_bookings",
+        "get_wallet",
+        "get_sample_status",
+        "get_booking_results",
+        "get_sample_deadline",
+        "search_slots",
+        "estimate_booking_cost",
+        "recommend_software",
+        "search_documentation",
+    }
+    skip_rag = bool(portal_tools) and set(portal_tools).issubset(portal_only_tools | {"search_equipment"})
+    if intent in {"status"} and portal_tools:
+        skip_rag = True
+    # Prefer portal documentation tool over duplicate RAG when both could fire.
+    if "search_documentation" in portal_tools:
+        skip_rag = True
+    lower = text.lower()
+    # Prepare/SOP without a docs tool still needs knowledge retrieval.
+    if (
+        any(k in lower for k in ("prepare", "sop", "manual", "guide", "documentation", "how should"))
+        and "search_documentation" not in portal_tools
+        and not portal_tools
+    ):
+        skip_rag = False
+    # Definitional science questions: allow compact RAG (no portal tools).
+    if not portal_tools and any(
+        k in lower for k in ("what is", "what's", "whats", "define", "explain", "difference between")
+    ):
+        skip_rag = False
+
+    t1 = time.monotonic()
+    if skip_rag:
+        retrieval = rag_svc.RetrievalResult(
+            citations=[],
+            context_block="",
+            intent=intent,
+            low_confidence=False,
+            latency_ms=0,
+        )
+    else:
+        retrieval = rag_svc.retrieve(
+            query=text,
+            role_bucket=ctx.role_bucket,
+            department_id=ctx.department_id,
+            user=user,
+            conversation=conversation,
+            limit=3,
+        )
+    t_rag_ms = int((time.monotonic() - t1) * 1000)
     citations = retrieval.citations
     system = build_system_prompt(ctx)
     system = append_portal_context(system, portal_block=grounding.get("block") or "")
-    system = append_retrieval_context(
-        system,
-        context_block=retrieval.context_block,
-        citations=citations,
-    )
+    if not skip_rag:
+        system = append_retrieval_context(
+            system,
+            context_block=retrieval.context_block,
+            citations=citations,
+        )
 
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
+    prompt_chars = sum(len(m.get("content") or "") for m in llm_messages)
     gateway = get_gateway()
     result = None
     busy = False
@@ -288,6 +343,10 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
                 "model": getattr(result, "model", "") if result else "",
                 "intent": retrieval.intent,
                 "retrieval_latency_ms": retrieval.latency_ms,
+                "portal_grounding_ms": t_ground_ms,
+                "rag_ms": t_rag_ms,
+                "rag_skipped": skip_rag,
+                "prompt_chars": prompt_chars,
                 "llm_latency_ms": getattr(result, "latency_ms", 0) if result else 0,
                 "llm_error_category": getattr(result, "error_category", "") if result else "",
                 "prompt_tokens": getattr(result, "prompt_tokens", None) if result else None,
@@ -355,21 +414,65 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
 
     grounding = run_portal_grounding(user=user, text=text)
 
-    retrieval = rag_svc.retrieve(
-        query=text,
-        role_bucket=ctx.role_bucket,
-        department_id=ctx.department_id,
-        user=user,
-        conversation=conversation,
-    )
+    from iic_booking.research_copilot.services.intent import detect_intent
+
+    intent = detect_intent(text)
+    portal_tools = [t.get("tool") for t in (grounding.get("tool_results") or []) if t.get("tool")]
+    portal_only_tools = {
+        "get_next_booking",
+        "search_bookings",
+        "get_wallet",
+        "get_sample_status",
+        "get_booking_results",
+        "get_sample_deadline",
+        "search_slots",
+        "estimate_booking_cost",
+        "recommend_software",
+        "search_documentation",
+    }
+    skip_rag = bool(portal_tools) and set(portal_tools).issubset(portal_only_tools | {"search_equipment"})
+    if intent in {"status"} and portal_tools:
+        skip_rag = True
+    if "search_documentation" in portal_tools:
+        skip_rag = True
+    lower = text.lower()
+    if (
+        any(k in lower for k in ("prepare", "sop", "manual", "guide", "documentation", "how should"))
+        and "search_documentation" not in portal_tools
+        and not portal_tools
+    ):
+        skip_rag = False
+    if not portal_tools and any(
+        k in lower for k in ("what is", "what's", "whats", "define", "explain", "difference between")
+    ):
+        skip_rag = False
+
+    if skip_rag:
+        retrieval = rag_svc.RetrievalResult(
+            citations=[],
+            context_block="",
+            intent=intent,
+            low_confidence=False,
+            latency_ms=0,
+        )
+    else:
+        retrieval = rag_svc.retrieve(
+            query=text,
+            role_bucket=ctx.role_bucket,
+            department_id=ctx.department_id,
+            user=user,
+            conversation=conversation,
+            limit=3,
+        )
     citations = retrieval.citations
     system = build_system_prompt(ctx)
     system = append_portal_context(system, portal_block=grounding.get("block") or "")
-    system = append_retrieval_context(
-        system,
-        context_block=retrieval.context_block,
-        citations=citations,
-    )
+    if not skip_rag:
+        system = append_retrieval_context(
+            system,
+            context_block=retrieval.context_block,
+            citations=citations,
+        )
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
     gateway = get_gateway()
     from iic_booking.research_copilot.models import AuditAction
@@ -389,7 +492,7 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     pieces: list[str] = []
     try:
         with acquire_generation_slot(wait=False):
-            for delta in gateway.stream(llm_messages):
+            for delta in gateway.stream(llm_messages, max_tokens=default_max_tokens()):
                 pieces.append(delta)
                 yield {"event": "delta", "data": {"text": delta}}
     except CopilotBusyError:

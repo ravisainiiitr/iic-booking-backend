@@ -53,26 +53,21 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
     hits: list[StructuredHit] = []
     for eq in qs:
         eq_pk = int(eq.pk)
-        specs = list(eq.equipment_specifications.all()[:6])
-        spec_txt = "; ".join(f"{s.spec_key}: {s.spec_value}" for s in specs) if specs else ""
-        accessories = [a.accessory_name for a in eq.equipment_accessories.all()[:5]]
         snippet_parts = [
-            (eq.description or "")[:240],
+            (eq.description or "")[:160],
             f"DSA={'yes' if getattr(eq, 'dsa_enabled', False) else 'no'}",
             f"RemoteAnalysis={'yes' if getattr(eq, 'enable_remote_analysis', False) else 'no'}",
         ]
         loc = (getattr(eq, "location", None) or "").strip()
         if loc:
             snippet_parts.append(f"Location: {loc}")
-        if spec_txt:
-            snippet_parts.append(f"Specs: {spec_txt}")
-        if accessories:
-            snippet_parts.append("Accessories: " + ", ".join(accessories))
+        # AI.21.2: omit long specs/accessories lists from default search hits —
+        # they inflate Ollama prompts and caused ~60s timeouts on CPU 1b.
         hits.append(
             StructuredHit(
                 source_id=f"equipment:{eq_pk}",
                 title=eq.name,
-                snippet=" | ".join(p for p in snippet_parts if p),
+                snippet=" | ".join(p for p in snippet_parts if p)[:280],
                 score=0.72,
                 url=f"/equipments/{eq_pk}",
                 category="equipment",

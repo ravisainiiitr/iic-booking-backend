@@ -233,6 +233,8 @@ class OllamaGateway(LLMGateway):
                 "model": self.model,
                 "messages": messages,
                 "stream": False,
+                "max_tokens": max_tokens,
+                "temperature": 0.3,
                 "options": {
                     "num_predict": max_tokens,
                     "temperature": 0.3,
@@ -491,7 +493,9 @@ def provider_health() -> ProviderHealth:
 
 
 def default_max_tokens() -> int:
-    return int(getattr(settings, "RESEARCH_COPILOT_MAX_TOKENS", 800) or 800)
+    # AI.21.2: 800 completion tokens on CPU llama3.2:1b routinely approaches the
+    # 60s provider timeout. Keep answers concise; raise via env only if measured.
+    return int(getattr(settings, "RESEARCH_COPILOT_MAX_TOKENS", 160) or 160)
 
 
 def _error_category(exc: BaseException) -> str:

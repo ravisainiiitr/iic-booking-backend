@@ -38,10 +38,34 @@ def test_plan_tool_calls_for_bookings_and_wallet():
 
 
 @pytest.mark.django_db
-def test_plan_tool_calls_sample_status_natural_phrasing():
-    plans = plan_tool_calls(text="What is the status of my sample?")
+def test_plan_skips_equipment_search_for_definitional_xrd():
+    plans = plan_tool_calls(text="What is XRD?")
     names = {n for n, _ in plans}
-    assert "get_sample_status" in names
+    assert "search_equipment" not in names
+
+
+@pytest.mark.django_db
+def test_plan_software_skips_redundant_equipment_search():
+    plans = plan_tool_calls(text="What software can I use for PXRD?")
+    names = {n for n, _ in plans}
+    assert "recommend_software" in names
+    assert "search_equipment" not in names
+
+
+@pytest.mark.django_db
+def test_plan_prepare_uses_documentation_not_equipment_dump():
+    plans = plan_tool_calls(text="What should I prepare before my XRD booking?")
+    names = {n for n, _ in plans}
+    assert "search_documentation" in names
+    assert "search_equipment" not in names
+
+
+@pytest.mark.django_db
+def test_plan_still_searches_equipment_for_pricing_xrd():
+    plans = plan_tool_calls(text="How much does 5 XRD samples cost?")
+    # planner may only search_equipment; grounding chains estimate later
+    names = {n for n, _ in plans}
+    assert "search_equipment" in names
 
 
 @pytest.mark.django_db

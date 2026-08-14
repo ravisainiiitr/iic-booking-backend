@@ -43,14 +43,16 @@
 | AI.21 | [AI.21-Controlled-Pilot-Report.md](./AI.21-Controlled-Pilot-Report.md) | Limited pilot path; see AI.21.1 |
 | AI.21 | [AI.21-Pilot-Observation-Report.md](./AI.21-Pilot-Observation-Report.md) | Observation log |
 | AI.21.1 | [AI.21.1-Test-Pilot-Enablement.md](./AI.21.1-Test-Pilot-Enablement.md) | **LIMITED PILOT ACTIVE** — `test.student@iic-booking.test` |
+| AI.21.2 | [AI.21.2-Copilot-Latency-Optimization.md](./AI.21.2-Copilot-Latency-Optimization.md) | **READY FOR PILOT CONTINUATION** — latency root-caused; 0 timeouts on matrix |
 
-## Current production posture (AI.21.1)
+## Current production posture (AI.21.2)
 
 | Layer | Status |
 |-------|--------|
 | RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
-| Pilot allowlist | **`test.student@iic-booking.test` (1)** |
-| Non-pilot access | **Denied** (verified with `test.faculty@…`) |
+| Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
+| Non-pilot access | **Denied** |
 | Ollama | Private `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1 |
-| Known issue | Intermittent 60s LLM timeouts under sequential queries (safe degrade) |
+| Max completion tokens | **`RESEARCH_COPILOT_MAX_TOKENS=160`** |
+| Latency | Tool path ≪ 1s; Ollama dominates; matrix **0 timeouts** (complex still ~20–50s on CPU 1b) |
 | Global Copilot | **Still NOT enabled** |

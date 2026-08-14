@@ -85,13 +85,63 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
             args["query"] = q
         plans.append(("recommend_software", args))
 
-    if _wants(lower, "equipment", "instrument", "fesem", "sem", "tem", "xrd", "afm", "xps", "where is", "location", "resolution", "capability"):
-        # Prefer a short keyword query from the user text
+    # Equipment catalog search — skip pure definitional/general-science questions
+    # (AI.21.2): "What is XRD?" should not dump full instrument specs into the LLM prompt.
+    definitional = bool(
+        re.search(r"\b(what is|what's|whats|define|explain|difference between|mean by)\b", lower)
+    ) and not _wants(
+        lower,
+        "book",
+        "slot",
+        "available",
+        "cost",
+        "price",
+        "fee",
+        "charge",
+        "software",
+        "prepare",
+        "my booking",
+        "location",
+        "where is",
+    )
+    if (
+        not definitional
+        and _wants(
+            lower,
+            "equipment",
+            "instrument",
+            "fesem",
+            "sem",
+            "tem",
+            "xrd",
+            "afm",
+            "xps",
+            "where is",
+            "location",
+            "resolution",
+            "capability",
+        )
+    ):
         q = text.strip()[:120]
         plans.append(("search_equipment", {"query": q, "limit": 5}))
 
-    if _wants(lower, "sop", "manual", "documentation", "how should i prepare", "sample prep", "guide"):
+    prepare_docs = _wants(
+        lower,
+        "sop",
+        "manual",
+        "documentation",
+        "how should i prepare",
+        "sample prep",
+        "guide",
+        "what should i prepare",
+        "prepare before",
+        "prepare for",
+    )
+    if prepare_docs:
         plans.append(("search_documentation", {"query": text.strip()[:200]}))
+        # Docs answer prep questions; avoid dumping the equipment catalog into the prompt.
+        if not _wants(lower, "where is", "location", "cost", "price", "fee", "charge", "slot"):
+            plans = [(n, a) for n, a in plans if n != "search_equipment"]
 
     # Deduplicate by tool name preserving order; cap at 3
     seen: set[str] = set()
@@ -103,6 +153,25 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
         out.append((name, args))
         if len(out) >= 3:
             break
+
+    # AI.21.2: software recommendation does not need a full equipment catalog dump
+    # unless the user also asks for location / instrument details / cost / slots.
+    names = {n for n, _ in out}
+    if "recommend_software" in names and "search_equipment" in names:
+        if not _wants(
+            lower,
+            "where is",
+            "location",
+            "cost",
+            "price",
+            "fee",
+            "charge",
+            "how much",
+            "slot",
+            "availability",
+            "available",
+        ):
+            out = [(n, a) for n, a in out if n != "search_equipment"]
     return out
 
 
@@ -135,6 +204,148 @@ def _first_equipment_id_from_tool_result(result: dict[str, Any]) -> int | None:
             if m:
                 return int(m.group(1))
     return None
+
+
+def _compact_tool_payload(result: dict[str, Any], *, tool_name: str) -> dict[str, Any]:
+    """Shrink portal tool JSON before injecting into the LLM prompt (AI.21.2)."""
+    payload: dict[str, Any] = {k: result.get(k) for k in ("ok", "error", "message") if k in result}
+    data = result.get("data")
+    # Pricing / slots only need the matched instrument identity, not a catalog dump.
+    list_limit = 1 if tool_name == "search_equipment" else 4
+    snippet_limit = 120 if tool_name == "search_equipment" else 160
+    if isinstance(data, list):
+        rows = []
+        for row in data[:list_limit]:
+            if not isinstance(row, dict):
+                rows.append(row)
+                continue
+            compact = {
+                k: row.get(k)
+                for k in (
+                    "id",
+                    "equipment_id",
+                    "title",
+                    "name",
+                    "equipment_name",
+                    "status",
+                    "url",
+                    "score",
+                    "software_id",
+                    "slug",
+                    "is_default",
+                )
+                if k in row
+            }
+            snippet = row.get("snippet") or row.get("description") or ""
+            if snippet:
+                compact["snippet"] = str(snippet)[:snippet_limit]
+            rows.append(compact or {k: row.get(k) for k in list(row)[:6]})
+        payload["data"] = rows
+    elif isinstance(data, dict):
+        # Prefer concise portal fields; drop bulky nested blobs.
+        keep = {
+            k: data.get(k)
+            for k in (
+                "booking",
+                "booking_id",
+                "virtual_booking_id",
+                "equipment_id",
+                "equipment_name",
+                "date",
+                "status",
+                "note",
+                "estimate",
+                "source",
+                "balance",
+                "slots",
+                "results",
+                "deadline",
+                "sample_status",
+                "requires_confirmation",
+                "message",
+                "amount",
+                "currency",
+                "charge_profile",
+                "samples",
+                "num_samples",
+                "unit_price",
+                "total",
+                "citations",
+                "context_preview",
+                "intent",
+                "low_confidence",
+            )
+            if k in data
+        }
+        if "booking" in keep and isinstance(keep["booking"], dict):
+            b = keep["booking"]
+            keep["booking"] = {
+                k: b.get(k)
+                for k in (
+                    "booking_id",
+                    "virtual_booking_id",
+                    "equipment",
+                    "equipment_id",
+                    "status",
+                    "date",
+                    "start",
+                    "end",
+                    "slot",
+                )
+                if k in b
+            }
+        if "slots" in keep and isinstance(keep["slots"], list):
+            slim_slots = []
+            for slot in keep["slots"][:6]:
+                if isinstance(slot, dict):
+                    slim_slots.append(
+                        {
+                            k: slot.get(k)
+                            for k in ("date", "start", "end", "status", "available", "slot_id")
+                            if k in slot
+                        }
+                    )
+                else:
+                    slim_slots.append(slot)
+            keep["slots"] = slim_slots
+        if "estimate" in keep and isinstance(keep["estimate"], dict):
+            est = keep["estimate"]
+            keep["estimate"] = {
+                k: est.get(k)
+                for k in (
+                    "amount",
+                    "total",
+                    "currency",
+                    "charge_profile",
+                    "samples",
+                    "num_samples",
+                    "unit_price",
+                    "breakdown",
+                    "note",
+                )
+                if k in est
+            }
+        if "results" in keep and isinstance(keep["results"], list):
+            keep["results"] = keep["results"][:5]
+        if "citations" in data and isinstance(data.get("citations"), list):
+            keep["citations"] = [
+                {
+                    k: c.get(k)
+                    for k in ("title", "snippet", "category", "source_type", "url")
+                    if isinstance(c, dict) and k in c
+                }
+                for c in data["citations"][:2]
+                if isinstance(c, dict)
+            ]
+            for c in keep["citations"]:
+                if "snippet" in c:
+                    c["snippet"] = str(c["snippet"])[:160]
+        if "context_preview" in data:
+            keep["context_preview"] = str(data.get("context_preview") or "")[:500]
+        payload["data"] = keep or {k: data.get(k) for k in list(data)[:10]}
+    elif data is not None:
+        payload["data"] = data
+    return payload
 
 
 def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
@@ -171,6 +382,7 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         "Treat them as authoritative application data. Do not invent additional portal facts.",
         "Label portal-derived claims as based on the user's booking/equipment data.",
         "Mutating suggestions must still require portal confirmation — never claim the action is already done.",
+        "Answer concisely using these facts (prefer under 8 short sentences).",
     ]
 
     resolved_equipment_id: int | None = None
@@ -186,11 +398,11 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
                 actions.append(a)
         if name == "search_equipment" and result.get("ok"):
             resolved_equipment_id = _first_equipment_id_from_tool_result(result) or resolved_equipment_id
-        payload = {k: result.get(k) for k in ("ok", "error", "message", "data") if k in result}
+        compact = _compact_tool_payload(result, tool_name=name)
         try:
-            serialized = json.dumps(payload, default=str)[:3500]
+            serialized = json.dumps(compact, default=str, separators=(",", ":"))[:1100]
         except Exception:
-            serialized = str(payload)[:3500]
+            serialized = str(compact)[:1100]
         lines.append(f"\n### Tool `{name}`")
         lines.append(serialized)
 

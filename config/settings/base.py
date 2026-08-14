@@ -627,7 +627,9 @@ RESEARCH_COPILOT_VECTOR_STORE = env("RESEARCH_COPILOT_VECTOR_STORE", default="or
 RESEARCH_COPILOT_SCAN_LIMIT = env.int("RESEARCH_COPILOT_SCAN_LIMIT", default=500)
 # Cost / reliability controls (additive assistant — must not affect core portal)
 RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS = env.int("RESEARCH_COPILOT_LLM_TIMEOUT_SECONDS", default=60)
-RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=800)
+# Concise portal answers use ~60–140 tokens on CPU llama3.2:1b; 160 keeps headroom
+# without routinely exhausting the 60s provider timeout (AI.21.2 evidence).
+RESEARCH_COPILOT_MAX_TOKENS = env.int("RESEARCH_COPILOT_MAX_TOKENS", default=160)
 RESEARCH_COPILOT_MAX_USER_MESSAGES = env.int("RESEARCH_COPILOT_MAX_USER_MESSAGES", default=40)
 RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", default=4000)
 RESEARCH_COPILOT_MAX_CONCURRENT = env.int("RESEARCH_COPILOT_MAX_CONCURRENT", default=2)
