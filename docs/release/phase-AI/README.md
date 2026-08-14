@@ -40,17 +40,18 @@
 | AI.19 | [AI.19-Ollama-Production-Deployment.md](./AI.19-Ollama-Production-Deployment.md) | **PARTIAL** — Ollama live private; Copilot OFF |
 | AI.20 | [AI.20-Functional-Qualification-Report.md](./AI.20-Functional-Qualification-Report.md) | Functional matrix + routing fixes |
 | AI.20 | [AI.20-Final-Qualification-Report.md](./AI.20-Final-Qualification-Report.md) | **PARTIAL — PILOT BLOCKED** |
+| AI.21 | [AI.21-Controlled-Pilot-Report.md](./AI.21-Controlled-Pilot-Report.md) | **PILOT BLOCKED — emails not provided** |
+| AI.21 | [AI.21-Pilot-Observation-Report.md](./AI.21-Pilot-Observation-Report.md) | No pilot session (flag OFF) |
 
-## Current production posture (AI.20)
+## Current production posture (AI.21)
 
 | Layer | Status |
 |-------|--------|
-| CORE PLATFORM | Healthy on `3.110.50.174` (DNS still pending) |
+| CORE PLATFORM | Healthy on `3.110.50.174` after Django rebuild |
+| AI.20 Copilot routing fixes | **Durably in production Django image** |
 | RESEARCH COPILOT feature flag | **`RESEARCH_COPILOT_ENABLED=false`** |
-| LLM provider | **Ollama** `llama3.2:1b` via AI.17 gateway |
-| Live Ollama on prod | **Private** (2 CPU / 8 GB, concurrent 1, no public 11434) |
-| Functional qualification | **Advanced** (grounding/tools/authz/confirm/injection/busy/timeout) |
-| Pilot allowlist | **Empty** |
-| Controlled pilot | **BLOCKED** (need real authorized emails) |
-| DSA/RAA live under Copilot | **BLOCKED BY DNS** |
-| Broader / global Copilot | **NOT READY** — keep OFF |
+| Pilot allowlist | **Empty (0 emails)** |
+| Controlled pilot | **BLOCKED — authorized emails not provided** |
+| Ollama | Private `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1 |
+| DNS | Still pending (`equip.iitr.ac.in` → old IP) |
+| Global Copilot | **NOT READY** |
