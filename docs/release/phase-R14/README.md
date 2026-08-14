@@ -23,3 +23,8 @@ R14.2 controlled E2E (blocked until operator account):
 - [R14.2-Controlled-E2E-Report.md](R14.2-Controlled-E2E-Report.md)
 - [R14.2-Production-Deployment-Report.md](R14.2-Production-Deployment-Report.md)
 
+R14.3 real-owner E2E (blocked until authorized owner + real booking):
+
+- [R14.3-Controlled-Real-Owner-E2E-Report.md](R14.3-Controlled-Real-Owner-E2E-Report.md)
+- [R14.3-Production-Deployment-Report.md](R14.3-Production-Deployment-Report.md)
+
