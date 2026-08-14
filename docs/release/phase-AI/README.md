@@ -40,18 +40,17 @@
 | AI.19 | [AI.19-Ollama-Production-Deployment.md](./AI.19-Ollama-Production-Deployment.md) | **PARTIAL** — Ollama live private; Copilot OFF |
 | AI.20 | [AI.20-Functional-Qualification-Report.md](./AI.20-Functional-Qualification-Report.md) | Functional matrix + routing fixes |
 | AI.20 | [AI.20-Final-Qualification-Report.md](./AI.20-Final-Qualification-Report.md) | **PARTIAL — PILOT BLOCKED** |
-| AI.21 | [AI.21-Controlled-Pilot-Report.md](./AI.21-Controlled-Pilot-Report.md) | **PILOT BLOCKED — emails not provided** |
-| AI.21 | [AI.21-Pilot-Observation-Report.md](./AI.21-Pilot-Observation-Report.md) | No pilot session (flag OFF) |
+| AI.21 | [AI.21-Controlled-Pilot-Report.md](./AI.21-Controlled-Pilot-Report.md) | Limited pilot path; see AI.21.1 |
+| AI.21 | [AI.21-Pilot-Observation-Report.md](./AI.21-Pilot-Observation-Report.md) | Observation log |
+| AI.21.1 | [AI.21.1-Test-Pilot-Enablement.md](./AI.21.1-Test-Pilot-Enablement.md) | **LIMITED PILOT ACTIVE** — `test.student@iic-booking.test` |
 
-## Current production posture (AI.21)
+## Current production posture (AI.21.1)
 
 | Layer | Status |
 |-------|--------|
-| CORE PLATFORM | Healthy on `3.110.50.174` after Django rebuild |
-| AI.20 Copilot routing fixes | **Durably in production Django image** |
-| RESEARCH COPILOT feature flag | **`RESEARCH_COPILOT_ENABLED=false`** |
-| Pilot allowlist | **Empty (0 emails)** |
-| Controlled pilot | **BLOCKED — authorized emails not provided** |
+| RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
+| Pilot allowlist | **`test.student@iic-booking.test` (1)** |
+| Non-pilot access | **Denied** (verified with `test.faculty@…`) |
 | Ollama | Private `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1 |
-| DNS | Still pending (`equip.iitr.ac.in` → old IP) |
-| Global Copilot | **NOT READY** |
+| Known issue | Intermittent 60s LLM timeouts under sequential queries (safe degrade) |
+| Global Copilot | **Still NOT enabled** |

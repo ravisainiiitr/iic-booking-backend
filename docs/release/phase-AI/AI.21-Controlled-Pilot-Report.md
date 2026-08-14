@@ -6,16 +6,16 @@
 
 ## FINAL VERDICT
 
-### **PILOT BLOCKED — AUTHORIZED PILOT EMAILS NOT PROVIDED**
+### Prior (emails missing): **PILOT BLOCKED — AUTHORIZED PILOT EMAILS NOT PROVIDED**
 
-AI.20 Copilot routing fixes were **durably rebuilt into the production Django image**, Ollama remains healthy on the AI.19 envelope, and the disabled gate still returns **503 `research_copilot_disabled`**.
+### Update (operator authorized seeded test email): **LIMITED PILOT ACTIVE (test account only)**
 
-**Copilot was not enabled.**  
-**No pilot allowlist was configured.**  
-**No live pilot E2E was executed** (would require inventing emails/credentials — forbidden).
+See addendum: [AI.21.1-Test-Pilot-Enablement.md](./AI.21.1-Test-Pilot-Enablement.md)
 
-Not declared: READY FOR LIMITED PRODUCTION PILOT  
-Not declared: GLOBAL PRODUCTION READY
+- Allowlist: `test.student@iic-booking.test` only  
+- Flag: `RESEARCH_COPILOT_ENABLED=true`  
+- Non-pilot (`test.faculty@…`) denied  
+- Not global production ready  
 
 ---
 
