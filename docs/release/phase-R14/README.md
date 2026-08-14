@@ -18,4 +18,8 @@ R14.1 final qualification (this session):
 - [R14.1-Production-Deployment.md](R14.1-Production-Deployment.md)
 - [R14.1-Rollback.md](R14.1-Rollback.md)
 
-Production schema: `0188_equipment_auto_complete_and_data_selection` (depends on `0187_equipment_pi_and_pi_charge_profile`). The original R11-branch file named `0187_equipment_auto_complete_and_data_selection` collides with production PI pricing and must not be merged.
+R14.2 controlled E2E (blocked until operator account):
+
+- [R14.2-Controlled-E2E-Report.md](R14.2-Controlled-E2E-Report.md)
+- [R14.2-Production-Deployment-Report.md](R14.2-Production-Deployment-Report.md)
+
