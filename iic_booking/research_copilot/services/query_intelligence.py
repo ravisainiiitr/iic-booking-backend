@@ -89,8 +89,11 @@ def clarification_question(*, text: str) -> str | None:
     if "[prior user context:" in lower:
         return None
 
-    if re.search(r"\bcan i book( it)?\b", lower) or lower in {"book it", "book this"}:
+    if re.search(r"\bcan i book( it)?\b", lower) or lower in {"book it", "book this", "book this?"}:
         return "Which equipment would you like to book (for example PXRD, FESEM, or an equipment id)?"
+
+    if re.search(r"\bcan i (?:use|analyze|do) it\b", lower) and not _mentions_equipment(lower):
+        return "Which equipment or prior context should I use for that request?"
 
     if re.search(r"\b(is it available|when (?:is|can) (?:it|this))\b", lower) or lower in {
         "is it available?",
@@ -105,11 +108,13 @@ def clarification_question(*, text: str) -> str | None:
     }:
         return "Which equipment should I estimate charges for, and how many samples (if applicable)?"
 
+    if lower in {"cancel it", "change it", "modify it", "cancel it?", "change it?", "modify it?"}:
+        return "Which booking should I use? You can say your next booking or a booking id."
+
     if re.search(r"\b(cancel|change|modify) (?:my )?booking\b", lower) and not re.search(
         r"\bbooking\s*#?\s*\d+\b", lower
     ):
-        # Still allow tool to list bookings; only clarify when completely vague.
-        if lower in {"cancel it", "change it", "modify it"}:
-            return "Which booking should I use? You can say your next booking or a booking id."
+        # List/search tools can still help; only force clarify when completely pronoun-vague.
+        pass
 
     return None

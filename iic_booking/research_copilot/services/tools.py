@@ -81,9 +81,11 @@ def _search_equipment(*, arguments: dict, user) -> dict:
                 "id": eq_id,
                 "equipment_id": eq_id,
                 "title": h.title,
+                "name": h.title,
                 "snippet": h.snippet,
                 "url": h.url,
                 "score": h.score,
+                "family": getattr(h, "family", "") or "",
             }
         )
     return _ok(
@@ -482,6 +484,9 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
 
     pricing_profile = _get_charge_profile_pricing_profile_for_user(user, eq)
     user_type = getattr(user, "user_type", None) or "unknown"
+    from iic_booking.equipment.pi_pricing import pricing_resolution_meta
+
+    pi_meta = pricing_resolution_meta(user, eq)
 
     line, err = _calculate_one_proforma_line(user, eq, input_values)
     if err:
@@ -494,6 +499,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                 "input_values": input_values,
                 "user_type": user_type,
                 "pricing_profile": pricing_profile,
+                "pricing_resolution": pi_meta,
                 "needs_more_inputs": True,
                 "note": (
                     "Portal pricing engine could not complete with the provided/default inputs. "
@@ -539,6 +545,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                     "user, charge profile, and stated/default inputs."
                 ),
             },
+            "pricing_resolution": pi_meta,
             "source": "PORTAL_DATA",
         },
         actions=[

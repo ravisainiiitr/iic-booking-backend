@@ -261,6 +261,46 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     grounding = run_portal_grounding(user=user, text=grounded_text)
     t_ground_ms = int((time.monotonic() - t0) * 1000)
 
+    # AI.22.1: equipment-family clarification from grounding (e.g. bare XRD → PXRD vs GI-XRD)
+    ground_clarify = (grounding.get("clarification") or "").strip()
+    if ground_clarify:
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=ground_clarify,
+                confidence=0.92,
+                citations=[],
+                suggested_actions=_static_actions(escalate=False),
+                escalate_hint=False,
+                metadata={
+                    "provider": "deterministic",
+                    "model": "",
+                    "intent": "clarification",
+                    "clarification": True,
+                    "followup_enriched": bool(follow.get("enriched")),
+                    "portal_tools": grounding.get("tool_results") or [],
+                    "portal_grounding_ms": t_ground_ms,
+                    "llm_latency_ms": 0,
+                    "rag_skipped": True,
+                    "prompt_chars": len(ground_clarify),
+                },
+            )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["updated_at"])
+        audit_svc.audit_message_replied(
+            user=user,
+            conversation=conversation,
+            confidence=0.92,
+            escalate=False,
+        )
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        }
+
     # AI.21.2: skip heavy RAG when authoritative portal tools already ground the turn,
     # or the user asked a pure portal lookup (booking/wallet/sample/results).
     intent = detect_intent(grounded_text)

@@ -12,6 +12,10 @@ from typing import Any
 
 from iic_booking.research_copilot.services import tools as tools_svc
 from iic_booking.research_copilot.services.query_intelligence import extract_num_samples
+from iic_booking.research_copilot.services.structured_search import (
+    _equipment_family,
+    xrd_family_clarification,
+)
 
 
 def _wants(text: str, *needles: str) -> bool:
@@ -274,6 +278,7 @@ def _compact_tool_payload(result: dict[str, Any], *, tool_name: str) -> dict[str
                     "status",
                     "url",
                     "score",
+                    "family",
                     "software_id",
                     "slug",
                     "is_default",
@@ -318,6 +323,9 @@ def _compact_tool_payload(result: dict[str, Any], *, tool_name: str) -> dict[str
                 "context_preview",
                 "intent",
                 "low_confidence",
+                "pricing_resolution",
+                "pricing_profile",
+                "user_type",
             )
             if k in data
         }
@@ -415,9 +423,11 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         "available today",
         "when can i book",
     ) or (
-        _wants(lower, "when is", "available")
+        bool(re.search(r"\b(is|are)\s+.+\bavailable\b", lower) or re.search(r"\bavailable\s+(tomorrow|today|this week)\b", lower))
+        and "equipment" not in lower
+        and "instrument" not in lower
         and not _wants(lower, "next booking", "my booking", "my sample", "my result")
-        and any(h in lower for h in ("xrd", "pxrd", "fesem", "sem", "tem", "afm", "xps", "equipment", "instrument"))
+        and any(h in lower for h in ("xrd", "pxrd", "fesem", "sem", "tem", "afm", "xps", "gi-xrd"))
     )
     num_samples = extract_num_samples(text)
     # If user names an instrument family without equipment_id, search first so pricing/slots
@@ -443,8 +453,9 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
 
     resolved_equipment_id: int | None = None
     executed: set[str] = set()
+    last_equipment_hits: list[dict[str, Any]] = []
 
-    def _run(name: str, args: dict[str, Any]) -> None:
+    def _run(name: str, args: dict[str, Any]) -> dict[str, Any]:
         nonlocal resolved_equipment_id
         result = tools_svc.execute_tool(name=name, arguments=args, user=user)
         executed.add(name)
@@ -453,6 +464,12 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
             if isinstance(a, dict) and a.get("id"):
                 actions.append(a)
         if name == "search_equipment" and result.get("ok"):
+            data = result.get("data")
+            rows = data if isinstance(data, list) else []
+            last_equipment_hits.clear()
+            for row in rows:
+                if isinstance(row, dict):
+                    last_equipment_hits.append(row)
             resolved_equipment_id = _first_equipment_id_from_tool_result(result) or resolved_equipment_id
         compact = _compact_tool_payload(result, tool_name=name)
         try:
@@ -461,9 +478,29 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
             serialized = str(compact)[:1100]
         lines.append(f"\n### Tool `{name}`")
         lines.append(serialized)
+        return result
 
     for name, args in plans:
         _run(name, args)
+
+    # AI.22.1: bare "XRD" with multiple families → clarify before pricing/slots chain.
+    if (wants_cost or wants_slots) and last_equipment_hits:
+        class _H:
+            def __init__(self, title: str, family: str = ""):
+                self.title = title
+                self.family = family or _equipment_family(title)
+
+        hit_objs = [_H(str(r.get("title") or r.get("name") or ""), str(r.get("family") or "")) for r in last_equipment_hits]
+        # Attach families from titles when tool payload omitted family
+        xrd_q = xrd_family_clarification(text=text, hits=hit_objs)
+        if xrd_q:
+            return {
+                "block": "",
+                "actions": actions,
+                "tool_results": tool_results,
+                "modes": ["CLARIFICATION"],
+                "clarification": xrd_q,
+            }
 
     # Chain authoritative pricing/slot tools once equipment id is known (server-side).
     if resolved_equipment_id:
@@ -481,4 +518,5 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         "actions": actions,
         "tool_results": tool_results,
         "modes": ["PORTAL_DATA"],
+        "clarification": None,
     }
