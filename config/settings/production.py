@@ -23,10 +23,11 @@ from .base import ses_region
 # https://docs.djangoproject.com/en/dev/ref/settings/#secret-key
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts
-# Include API server IP so WebSocket (e.g. ws://15.206.88.2:8080/ws/notifications/) Origin is accepted
+# Include API server IP so WebSocket Origin is accepted when clients hit the
+# host by public IP (hostname equip.iitr.ac.in remains preferred).
 ALLOWED_HOSTS = env.list(
     "DJANGO_ALLOWED_HOSTS",
-    default=["*.iicbooking.iitr.ac.in", "15.206.88.2", "localhost", "127.0.0.1"],
+    default=["*.iicbooking.iitr.ac.in", "3.110.50.174", "localhost", "127.0.0.1"],
 )
 
 # Quota limits must always apply in production (ignore any SKIP_BOOKING_QUOTA_CHECK in env).
@@ -214,7 +215,8 @@ if env("SENTRY_DSN", default="") != "":
 # -------------------------------------------------------------------------------
 # Allow CORS for React frontend in production
 # Set DJANGO_CORS_ALLOWED_ORIGINS in your environment variables
-# Example: DJANGO_CORS_ALLOWED_ORIGINS=http://15.206.88.2,https://yourdomain.com
+# Example: DJANGO_CORS_ALLOWED_ORIGINS=http://3.110.50.174,https://yourdomain.com
+# Prefer hostnames (https://equip.iitr.ac.in) in production CORS.
 CORS_ALLOWED_ORIGINS = env.list(
     "DJANGO_CORS_ALLOWED_ORIGINS",
     default=[],
