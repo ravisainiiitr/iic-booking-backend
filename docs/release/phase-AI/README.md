@@ -64,17 +64,26 @@
 | AI.25 | [AI.25-Authenticated-Regression.md](./AI.25-Authenticated-Regression.md) | AI.23 live 86-query gate |
 | AI.25 | [AI.25-Security-Qualification.md](./AI.25-Security-Qualification.md) | ACL / anon key / injection |
 | AI.25 | [AI.25-Production-Enablement-Runbook.md](./AI.25-Production-Enablement-Runbook.md) | Future enablement (not approved yet) |
+| AI.25.1 | [AI.25.1-Final-Qualification.md](./AI.25.1-Final-Qualification.md) | **BLOCKED — AUTHENTICATED REGRESSION** |
+| AI.25.1 | [AI.25.1-Production-Candidate-Deployment.md](./AI.25.1-Production-Candidate-Deployment.md) | AI.24.1 deployed; public OFF |
+| AI.25.1 | [AI.25.1-AI23-86Query-Regression.md](./AI.25.1-AI23-86Query-Regression.md) | Live 86-query on deployed build — **FAIL** |
+| AI.25.1 | [AI.25.1-Live-Public-Security.md](./AI.25.1-Live-Public-Security.md) | Live public matrix deferred (gate) |
+| AI.25.1 | [AI.25.1-Performance-Isolation.md](./AI.25.1-Performance-Isolation.md) | Isolation + Ollama recovery |
+| AI.25.1 | [ai251_scorecard.json](./ai251_scorecard.json) | Machine-readable 86-query scorecard |
+| AI.25.2 | [AI.25.2-Final-Qualification.md](./AI.25.2-Final-Qualification.md) | **PASS — AI.23 PERFORMANCE RECOVERED** |
+| AI.25.2 | [AI.25.2-Root-Cause-Analysis.md](./AI.25.2-Root-Cause-Analysis.md) | Ollama CPU cliff; not ACL prompt bloat |
+| AI.25.2 | [AI.25.2-Latency-Optimization.md](./AI.25.2-Latency-Optimization.md) | Deterministic portal routing opts |
+| AI.25.2 | [AI.25.2-Benchmark.md](./AI.25.2-Benchmark.md) | 86-query before/after |
+| AI.25.2 | [ai252_scorecard.json](./ai252_scorecard.json) | Machine-readable recovered scorecard |
 
-## Current production posture (AI.25)
+## Current production posture (AI.25.2)
 
 | Layer | Status |
 |-------|--------|
 | RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
-| Public Copilot (`PUBLIC_ENABLED`) | **OFF / unset — not enabled** |
-| AI.24.1 code on production | **NOT deployed** |
+| Public Copilot (`PUBLIC_ENABLED`) | **`false`** |
+| AI.24.1 + AI.25.2 latency opts on production container | **MEASURED / SYNCED** — recommend formal image redeploy approval |
 | Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
 | Ollama envelope | `llama3.2:1b`, concurrent 1, max_tokens 160, ~8GiB (**frozen**) |
-| Postgres AI.24.1/AI.25 tests | **35 passed** |
-| AI.23 86-query on AI.24.1 build | **NOT EXECUTED** |
-| Frontend build (AI.24.1 UI) | **PASS** |
-| Verdict | **PARTIAL — QUALIFICATION COMPLETE BUT OPERATIONAL ISSUE REMAINS** |
+| AI.23 86-query on optimized build | **PASS** — useful/strict 100%, timeout 0%, avg ~7.3s |
+| Verdict | **PASS — AI.23 PERFORMANCE RECOVERED** |

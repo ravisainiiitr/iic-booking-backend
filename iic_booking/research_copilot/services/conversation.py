@@ -234,6 +234,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     if user_msg_count >= max_user_msgs:
         raise ValueError("conversation_limit_reached")
 
+    t_req0 = time.monotonic()
     ctx = build_context(user)
     with transaction.atomic():
         Message.objects.create(
@@ -575,6 +576,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     gateway = get_gateway()
     result = None
     busy = False
+    t_llm0 = time.monotonic()
     try:
         with acquire_generation_slot(wait=False):
             # generate() preferred; complete() remains available on all gateways
@@ -589,6 +591,8 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             detail={"code": "copilot_busy"},
         )
         result = type("R", (), {"text": BUSY_USER_MESSAGE + "\n" + ESCALATE_MARKER, "provider": "none", "model": "", "error_category": "busy", "latency_ms": 0, "prompt_tokens": None, "completion_tokens": None})()
+    t_llm_wall_ms = int((time.monotonic() - t_llm0) * 1000)
+    t_total_ms = int((time.monotonic() - t_req0) * 1000)
 
     raw = _reply_from_llm_result(result)
     reply, escalate = _strip_escalate(raw)
@@ -639,6 +643,8 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
                 "rag_skipped": skip_rag,
                 "prompt_chars": prompt_chars,
                 "llm_latency_ms": getattr(result, "latency_ms", 0) if result else 0,
+                "llm_wall_ms": t_llm_wall_ms,
+                "total_ms": t_total_ms,
                 "llm_error_category": getattr(result, "error_category", "") if result else "",
                 "prompt_tokens": getattr(result, "prompt_tokens", None) if result else None,
                 "completion_tokens": getattr(result, "completion_tokens", None) if result else None,

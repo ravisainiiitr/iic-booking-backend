@@ -185,6 +185,14 @@ def plan_tool_calls(*, text: str) -> list[tuple[str, dict[str, Any]]]:
         "what should i prepare",
         "prepare before",
         "prepare for",
+        # AI.25.2 Opt#2: policy/FAQ questions should hit documentation, not raw LLM.
+        "policy",
+        "refund",
+        "lab access",
+        "cancellation",
+        "access hours",
+        "opening hours",
+        "submission policy",
     )
     if prepare_docs:
         plans.append(("search_documentation", {"query": text.strip()[:200]}))
@@ -533,6 +541,13 @@ def run_portal_grounding(*, user, text: str, access_mode: str | AccessMode | Non
         "what should i prepare",
         "prepare before",
         "prepare for",
+        "policy",
+        "refund",
+        "lab access",
+        "cancellation",
+        "access hours",
+        "opening hours",
+        "submission policy",
     )
     structured: dict[str, Any] = {
         "equipment_name": "",
@@ -542,6 +557,15 @@ def run_portal_grounding(*, user, text: str, access_mode: str | AccessMode | Non
         "documentation_citations": [],
         "equipment_hits": [],
         "tool_errors": [],
+        # AI.25.2: capture portal payloads for deterministic (skip-LLM) replies.
+        "next_booking": None,
+        "wallet": None,
+        "sample_status": None,
+        "booking_results": None,
+        "sample_deadline": None,
+        "software_hits": None,
+        "slots": None,
+        "bookings": None,
     }
 
     def _run(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -569,6 +593,25 @@ def run_portal_grounding(*, user, text: str, access_mode: str | AccessMode | Non
             structured["documentation_preview"] = str(data.get("context_preview") or "")[:400]
             cites = data.get("citations") if isinstance(data.get("citations"), list) else []
             structured["documentation_citations"] = cites[:2]
+        if name == "get_next_booking" and result.get("ok"):
+            # Always set key (even if booking is null) so deterministic formatter can answer.
+            structured["next_booking"] = data.get("booking") if "booking" in data else data
+        if name == "get_wallet" and result.get("ok"):
+            structured["wallet"] = data
+        if name == "get_sample_status" and result.get("ok"):
+            structured["sample_status"] = data
+        if name == "get_booking_results" and result.get("ok"):
+            structured["booking_results"] = data
+        if name == "get_sample_deadline" and result.get("ok"):
+            structured["sample_deadline"] = data
+        if name == "recommend_software" and result.get("ok"):
+            rows = result.get("data") if isinstance(result.get("data"), list) else data.get("results") or data.get("items")
+            structured["software_hits"] = rows if isinstance(rows, list) else []
+        if name == "search_slots" and result.get("ok"):
+            structured["slots"] = data.get("slots") if isinstance(data.get("slots"), list) else data
+        if name == "search_bookings" and result.get("ok"):
+            rows = result.get("data") if isinstance(result.get("data"), list) else data.get("bookings") or data.get("results")
+            structured["bookings"] = rows if isinstance(rows, list) else (data if data else [])
         if name == "search_equipment" and result.get("ok"):
             rows = result.get("data") if isinstance(result.get("data"), list) else []
             last_equipment_hits.clear()
@@ -712,6 +755,19 @@ def run_portal_grounding(*, user, text: str, access_mode: str | AccessMode | Non
                 "I will not invent booking, equipment, or pricing details that the portal did not return."
             )
 
+    # AI.25.2: skip Ollama when a single authoritative portal tool already answered.
+    # Measured AI.25.1 timeouts were dominated by llm_latency_ms≈60s with identical
+    # prompt_chars to AI.23 — prefer tool→compact reply for status/pricing/docs/software.
+    if deterministic_reply is None:
+        deterministic_reply = _format_authoritative_portal_reply(
+            lower=lower,
+            tool_names=tool_names,
+            structured=structured,
+            wants_cost=wants_cost,
+            wants_slots=wants_slots,
+            wants_prepare_docs=wants_prepare_docs,
+        )
+
     return {
         "block": block,
         "actions": actions,
@@ -721,6 +777,338 @@ def run_portal_grounding(*, user, text: str, access_mode: str | AccessMode | Non
         "structured": structured,
         "deterministic_reply": deterministic_reply,
     }
+
+
+def _looks_explanatory(lower: str) -> bool:
+    """Questions that still need short LLM narration (not pure portal lookups)."""
+    # Status / account phrases often start with "what is my …" — those are portal lookups.
+    if any(
+        k in lower
+        for k in (
+            "what is my ",
+            "what's my ",
+            "whats my ",
+            "what is the status",
+            "what is the sample",
+            "what is the wallet",
+            "what is the deadline",
+            "are my results",
+            "where are my",
+            "when should i submit",
+            "do i need to recharge",
+        )
+    ):
+        return False
+    return any(
+        k in lower
+        for k in (
+            "what is ",
+            "what's ",
+            "whats ",
+            "define ",
+            "explain ",
+            "difference between",
+            "compare ",
+            "why ",
+            "how does ",
+            "how do ",
+            "tell me about",
+        )
+    )
+
+
+def _format_authoritative_portal_reply(
+    *,
+    lower: str,
+    tool_names: set,
+    structured: dict[str, Any],
+    wants_cost: bool,
+    wants_slots: bool,
+    wants_prepare_docs: bool,
+) -> str | None:
+    """
+    AI.25.2 — Prefer tool → compact answer when portal data is already authoritative.
+
+    Skip when the user asked for explanation/definition (needs LLM/RAG).
+    """
+    if _looks_explanatory(lower) and not wants_cost and not wants_slots and not wants_prepare_docs:
+        # Allow docs-only prep/policy phrasing below even if "what is" appears in policies.
+        if "search_documentation" not in tool_names:
+            return None
+
+    portal_status_tools = {
+        "get_next_booking",
+        "get_wallet",
+        "get_sample_status",
+        "get_booking_results",
+        "get_sample_deadline",
+        "search_bookings",
+    }
+    # Pure status lookup (optionally with search_equipment identity) → deterministic.
+    non_identity = tool_names - {"search_equipment"}
+    if non_identity and non_identity.issubset(portal_status_tools):
+        if "get_next_booking" in tool_names and "next_booking" in structured:
+            return _format_next_booking_reply(structured.get("next_booking"))
+        if "get_wallet" in tool_names and isinstance(structured.get("wallet"), dict):
+            return _format_wallet_reply(structured["wallet"])
+        if "get_sample_status" in tool_names and isinstance(structured.get("sample_status"), dict):
+            return _format_sample_status_reply(structured["sample_status"])
+        if "get_booking_results" in tool_names and isinstance(structured.get("booking_results"), dict):
+            return _format_booking_results_reply(structured["booking_results"])
+        if "get_sample_deadline" in tool_names and isinstance(structured.get("sample_deadline"), dict):
+            return _format_sample_deadline_reply(structured["sample_deadline"])
+        if "search_bookings" in tool_names and "bookings" in structured:
+            return _format_bookings_reply(structured.get("bookings"))
+
+    # Cost-only (estimate present; optional equipment identity tool).
+    if (
+        wants_cost
+        and not wants_prepare_docs
+        and "estimate_booking_cost" in tool_names
+        and structured.get("estimate")
+        and non_identity.issubset({"estimate_booking_cost", "get_wallet", "search_slots"})
+    ):
+        return _format_cost_only_reply(structured)
+
+    # Slots-only after equipment resolve.
+    if (
+        wants_slots
+        and not wants_cost
+        and not wants_prepare_docs
+        and "search_slots" in tool_names
+        and structured.get("slots") is not None
+        and non_identity.issubset({"search_slots"})
+    ):
+        return _format_slots_reply(structured)
+
+    # Docs / prepare / policy — documentation tool already retrieved snippets.
+    if (
+        "search_documentation" in tool_names
+        and (
+            wants_prepare_docs
+            or _wants(
+                lower,
+                "policy",
+                "refund",
+                "lab access",
+                "hours",
+                "cancellation",
+                "submission policy",
+                "prepare",
+                "sop",
+                "manual",
+                "guide",
+            )
+        )
+        and non_identity.issubset({"search_documentation", "estimate_booking_cost", "recommend_software"})
+        and (structured.get("documentation_preview") or structured.get("documentation_citations"))
+        and not wants_cost
+    ):
+        return _format_documentation_reply(structured)
+
+    # Software recommendation catalogue.
+    if (
+        "recommend_software" in tool_names
+        and isinstance(structured.get("software_hits"), list)
+        and non_identity.issubset({"recommend_software", "get_booking_results", "search_bookings"})
+        and not wants_cost
+        and not wants_prepare_docs
+    ):
+        return _format_software_reply(structured["software_hits"])
+
+    return None
+
+
+def _format_next_booking_reply(booking: Any) -> str:
+    if not booking:
+        return (
+            "Based on **PORTAL DATA**, you have no upcoming booking on record. "
+            "Open **My Bookings** in the portal to create or review bookings."
+        )
+    if not isinstance(booking, dict):
+        return "Based on **PORTAL DATA**, your next booking was retrieved. Open **My Bookings** for full details."
+    eq = booking.get("equipment") or booking.get("equipment_name") or booking.get("equipment_id") or "equipment"
+    bid = booking.get("booking_id") or booking.get("virtual_booking_id") or booking.get("id")
+    status = booking.get("status") or "n/a"
+    when = booking.get("date") or booking.get("start") or booking.get("slot") or "see portal"
+    parts = [
+        "Based on **PORTAL DATA**, your next booking:",
+        f"- Equipment: {eq}",
+        f"- When: {when}",
+        f"- Status: {status}",
+    ]
+    if bid is not None:
+        parts.append(f"- Booking id: {bid}")
+    parts.append("Open **My Bookings** for full details or changes.")
+    return "\n".join(parts)
+
+
+def _format_wallet_reply(wallet: dict[str, Any]) -> str:
+    balance = wallet.get("balance")
+    currency = wallet.get("currency") or "INR"
+    note = wallet.get("message") or wallet.get("note") or ""
+    parts = ["Based on **PORTAL DATA**, your wallet summary:"]
+    if balance is not None:
+        parts.append(f"- Balance: {currency} {balance}")
+    else:
+        parts.append("- Balance: see **Wallet** in the portal (no balance field returned).")
+    if note:
+        parts.append(f"- Note: {str(note)[:180]}")
+    parts.append("Recharge and PI billing rules are controlled by the portal wallet/charge engine.")
+    return "\n".join(parts)
+
+
+def _format_sample_status_reply(data: dict[str, Any]) -> str:
+    status = data.get("sample_status") or data.get("status") or data.get("note") or "see portal"
+    bid = data.get("booking_id") or data.get("virtual_booking_id")
+    parts = [
+        "Based on **PORTAL DATA**, sample status:",
+        f"- Status: {status}",
+    ]
+    if bid is not None:
+        parts.append(f"- Booking: {bid}")
+    if data.get("message"):
+        parts.append(f"- Detail: {str(data.get('message'))[:200]}")
+    parts.append("Refresh the booking page for the latest sample lifecycle state.")
+    return "\n".join(parts)
+
+
+def _format_booking_results_reply(data: dict[str, Any]) -> str:
+    results = data.get("results")
+    note = data.get("message") or data.get("note") or ""
+    bid = data.get("booking_id") or data.get("virtual_booking_id")
+    parts = ["Based on **PORTAL DATA**, result availability:"]
+    if bid is not None:
+        parts.append(f"- Booking: {bid}")
+    if isinstance(results, list) and results:
+        parts.append(f"- Result rows returned: {len(results)} (showing up to 5 in portal tools).")
+        for row in results[:3]:
+            if isinstance(row, dict):
+                title = row.get("title") or row.get("name") or row.get("filename") or row.get("id") or "result"
+                parts.append(f"  - {title}")
+    elif note:
+        parts.append(f"- {str(note)[:220]}")
+    else:
+        parts.append("- No result files were returned for this booking in the portal.")
+    parts.append("Download analyzed files from the booking / Analysis Workspace pages.")
+    return "\n".join(parts)
+
+
+def _format_sample_deadline_reply(data: dict[str, Any]) -> str:
+    deadline = data.get("deadline") or data.get("sample_deadline") or data.get("date") or data.get("message")
+    bid = data.get("booking_id")
+    parts = ["Based on **PORTAL DATA**, sample submission deadline:"]
+    parts.append(f"- Deadline: {deadline or 'see booking details in the portal'}")
+    if bid is not None:
+        parts.append(f"- Booking: {bid}")
+    parts.append("Submit samples per the portal instructions before the deadline.")
+    return "\n".join(parts)
+
+
+def _format_bookings_reply(bookings: Any) -> str:
+    if not bookings:
+        return "Based on **PORTAL DATA**, no bookings matched this request for your account."
+    rows = bookings if isinstance(bookings, list) else []
+    parts = ["Based on **PORTAL DATA**, your bookings:"]
+    if not rows and isinstance(bookings, dict):
+        parts.append(f"- {json.dumps(bookings, default=str)[:280]}")
+    for row in rows[:5]:
+        if not isinstance(row, dict):
+            continue
+        bid = row.get("booking_id") or row.get("id")
+        eq = row.get("equipment") or row.get("equipment_name") or ""
+        status = row.get("status") or ""
+        parts.append(f"- {bid or 'booking'}: {eq} [{status}]".strip())
+    parts.append("Open **My Bookings** for the full list.")
+    return "\n".join(parts)
+
+
+def _format_cost_only_reply(structured: dict[str, Any]) -> str:
+    est = structured.get("estimate") if isinstance(structured.get("estimate"), dict) else {}
+    eq_name = structured.get("equipment_name") or "the selected equipment"
+    amount = est.get("amount") if est else None
+    if amount is None and est:
+        amount = est.get("total")
+    currency = (est or {}).get("currency") or "INR"
+    profile = (est or {}).get("charge_profile") or (est or {}).get("pricing_profile") or "standard"
+    samples = (est or {}).get("num_samples") or (est or {}).get("samples")
+    parts = [
+        f"Based on **PORTAL DATA**, estimated cost for **{eq_name}**:",
+        f"- Amount: {currency} {amount}" if amount is not None else "- Amount: confirm via portal **Calculate** (no amount returned).",
+        f"- Charge profile: `{profile}`",
+    ]
+    if samples is not None:
+        parts.append(f"- Samples: {samples}")
+    pi = structured.get("pricing_resolution") if isinstance(structured.get("pricing_resolution"), dict) else {}
+    if pi:
+        parts.append(
+            f"- Pricing resolver: billing_identity_is_pi={pi.get('billing_identity_is_pi')}, "
+            f"resolved_profile={pi.get('resolved_pricing_profile')}."
+        )
+    parts.append(
+        "This estimate comes from the portal charge engine. Confirm the live total in the booking UI before payment."
+    )
+    return "\n".join(parts)
+
+
+def _format_slots_reply(structured: dict[str, Any]) -> str:
+    slots = structured.get("slots")
+    eq = structured.get("equipment_name") or "equipment"
+    parts = [f"Based on **PORTAL DATA**, availability for **{eq}**:"]
+    if isinstance(slots, list) and slots:
+        for slot in slots[:6]:
+            if isinstance(slot, dict):
+                parts.append(
+                    f"- {slot.get('date') or ''} {slot.get('start') or ''}-{slot.get('end') or ''} "
+                    f"[{slot.get('status') or ('available' if slot.get('available') else 'n/a')}]".strip()
+                )
+            else:
+                parts.append(f"- {slot}")
+    elif isinstance(slots, dict):
+        note = slots.get("message") or slots.get("note") or json.dumps(slots, default=str)[:240]
+        parts.append(f"- {note}")
+    else:
+        parts.append("- No AVAILABLE unbooked slots were returned for this query.")
+    parts.append("Book from the equipment calendar in the portal.")
+    return "\n".join(parts)
+
+
+def _format_documentation_reply(structured: dict[str, Any]) -> str:
+    preview = (structured.get("documentation_preview") or "").strip()
+    cites = structured.get("documentation_citations") or []
+    parts = ["According to **institute documentation** retrieved from the portal:"]
+    if preview:
+        parts.append(preview[:500])
+    elif cites:
+        for c in cites[:2]:
+            if isinstance(c, dict):
+                title = c.get("title") or "Document"
+                snip = str(c.get("snippet") or "")[:200]
+                parts.append(f"- **{title}**: {snip}")
+    else:
+        parts.append("No documentation snippets were returned for this query.")
+    titles = [str(c.get("title") or "").strip() for c in cites if isinstance(c, dict) and c.get("title")]
+    if titles:
+        parts.append("Sources: " + "; ".join(titles[:2]))
+    parts.append("Open **Documentation** in the portal for the full SOP.")
+    return "\n".join(parts)
+
+
+def _format_software_reply(hits: list) -> str:
+    parts = ["Based on **PORTAL DATA** (Analysis software catalogue):"]
+    if not hits:
+        parts.append("- No matching analysis software was returned for this query.")
+    for row in hits[:6]:
+        if not isinstance(row, dict):
+            continue
+        title = row.get("title") or row.get("name") or row.get("software_id") or "software"
+        snippet = str(row.get("snippet") or row.get("description") or "")[:120]
+        bit = f"- {title}"
+        if snippet:
+            bit += f" — {snippet}"
+        parts.append(bit)
+    parts.append("Launch Remote Analysis from the booking / Analysis Workspace when eligible.")
+    return "\n".join(parts)
 
 
 def _format_equipment_list_reply(hits: list[dict[str, Any]]) -> str:
