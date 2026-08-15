@@ -400,6 +400,32 @@ def _compact_tool_payload(result: dict[str, Any], *, tool_name: str) -> dict[str
     return payload
 
 
+def _compact_tool_payload_for_prompt(
+    result: dict[str, Any],
+    *,
+    tool_name: str,
+    wants_cost: bool = False,
+    multi_tool: bool = False,
+) -> dict[str, Any]:
+    """AI.22.2: extra-tight compaction for mixed portal turns (cost + prepare)."""
+    compact = _compact_tool_payload(result, tool_name=tool_name)
+    if tool_name != "search_documentation":
+        return compact
+    data = compact.get("data")
+    if not isinstance(data, dict):
+        return compact
+    if wants_cost or multi_tool:
+        if "context_preview" in data:
+            data["context_preview"] = str(data.get("context_preview") or "")[:280]
+        cites = data.get("citations")
+        if isinstance(cites, list):
+            data["citations"] = cites[:1]
+            for c in data["citations"]:
+                if isinstance(c, dict) and "snippet" in c:
+                    c["snippet"] = str(c["snippet"])[:120]
+    return compact
+
+
 def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
     """
     Execute planned read tools for this turn.
@@ -438,7 +464,15 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         if q:
             plans = [("search_equipment", {"query": q, "limit": 5}), *plans][:3]
     if not plans:
-        return {"block": "", "actions": [], "tool_results": [], "modes": []}
+        return {
+            "block": "",
+            "actions": [],
+            "tool_results": [],
+            "modes": [],
+            "clarification": None,
+            "structured": {},
+            "deterministic_reply": None,
+        }
 
     tool_results: list[dict] = []
     actions: list[dict] = []
@@ -454,28 +488,103 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
     resolved_equipment_id: int | None = None
     executed: set[str] = set()
     last_equipment_hits: list[dict[str, Any]] = []
+    multi_tool = len(plans) >= 2 or wants_cost  # cost often chains a second tool
+    wants_prepare_docs = _wants(
+        lower,
+        "sop",
+        "manual",
+        "documentation",
+        "how should i prepare",
+        "sample prep",
+        "guide",
+        "what should i prepare",
+        "prepare before",
+        "prepare for",
+    )
+    structured: dict[str, Any] = {
+        "equipment_name": "",
+        "estimate": None,
+        "pricing_resolution": None,
+        "documentation_preview": "",
+        "documentation_citations": [],
+        "equipment_hits": [],
+        "tool_errors": [],
+    }
 
     def _run(name: str, args: dict[str, Any]) -> dict[str, Any]:
         nonlocal resolved_equipment_id
         result = tools_svc.execute_tool(name=name, arguments=args, user=user)
         executed.add(name)
         tool_results.append({"tool": name, "ok": bool(result.get("ok")), "error": result.get("error")})
+        if not result.get("ok"):
+            structured["tool_errors"].append(
+                {
+                    "tool": name,
+                    "error": result.get("error"),
+                    "message": result.get("message"),
+                }
+            )
         for a in result.get("actions") or []:
             if isinstance(a, dict) and a.get("id"):
                 actions.append(a)
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        if name == "estimate_booking_cost" and result.get("ok"):
+            structured["estimate"] = data.get("estimate")
+            structured["pricing_resolution"] = data.get("pricing_resolution")
+            structured["equipment_name"] = str(data.get("equipment_name") or structured["equipment_name"] or "")[:120]
+        if name == "search_documentation" and result.get("ok"):
+            structured["documentation_preview"] = str(data.get("context_preview") or "")[:400]
+            cites = data.get("citations") if isinstance(data.get("citations"), list) else []
+            structured["documentation_citations"] = cites[:2]
         if name == "search_equipment" and result.get("ok"):
-            data = result.get("data")
-            rows = data if isinstance(data, list) else []
+            rows = result.get("data") if isinstance(result.get("data"), list) else []
             last_equipment_hits.clear()
             for row in rows:
                 if isinstance(row, dict):
                     last_equipment_hits.append(row)
+            structured["equipment_hits"] = list(last_equipment_hits[:6])
             resolved_equipment_id = _first_equipment_id_from_tool_result(result) or resolved_equipment_id
-        compact = _compact_tool_payload(result, tool_name=name)
+            if last_equipment_hits and not structured["equipment_name"]:
+                structured["equipment_name"] = str(
+                    last_equipment_hits[0].get("title")
+                    or last_equipment_hits[0].get("name")
+                    or last_equipment_hits[0].get("equipment_name")
+                    or ""
+                )[:120]
+            # AI.22.2: when equipment search is only to resolve an id for pricing/slots
+            # (especially mixed cost+prepare), inject a one-line identity — not a catalog dump.
+            # Catalog dumps + docs + estimate overloaded llama3.2:1b and caused Q-U-001 timeout.
+            if wants_cost or wants_slots:
+                title = structured["equipment_name"] or ""
+                lines.append(f"\n### Tool `{name}`")
+                lines.append(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "resolved_equipment_id": resolved_equipment_id,
+                            "name": title,
+                            "note": "identity_only_for_pricing_or_slots",
+                        },
+                        separators=(",", ":"),
+                    )
+                )
+                return result
+        compact = _compact_tool_payload_for_prompt(
+            result,
+            tool_name=name,
+            wants_cost=wants_cost,
+            multi_tool=multi_tool or wants_prepare_docs,
+        )
+        # Mixed cost+docs: keep serialized portal JSON smaller for CPU 1b generation.
+        ser_limit = 1100
+        if name == "search_documentation" and (wants_cost or multi_tool):
+            ser_limit = 550
+        elif multi_tool and name not in {"estimate_booking_cost", "get_wallet", "get_next_booking"}:
+            ser_limit = 750
         try:
-            serialized = json.dumps(compact, default=str, separators=(",", ":"))[:1100]
+            serialized = json.dumps(compact, default=str, separators=(",", ":"))[:ser_limit]
         except Exception:
-            serialized = str(compact)[:1100]
+            serialized = str(compact)[:ser_limit]
         lines.append(f"\n### Tool `{name}`")
         lines.append(serialized)
         return result
@@ -500,6 +609,8 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
                 "tool_results": tool_results,
                 "modes": ["CLARIFICATION"],
                 "clarification": xrd_q,
+                "structured": structured,
+                "deterministic_reply": None,
             }
 
     # Chain authoritative pricing/slot tools once equipment id is known (server-side).
@@ -513,10 +624,134 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
             _run("search_slots", {"equipment_id": resolved_equipment_id})
 
     lines.append("<<<END_PORTAL_DATA>>>")
+    block = "\n".join(lines)
+    # AI.22.2 safety net: oversized portal blocks stall CPU 1b generation (Q-U-001 ~60s timeout).
+    if len(block) > 3200:
+        block = block[:3100] + "\n…(portal context truncated for latency)\n<<<END_PORTAL_DATA>>>"
+
+    deterministic_reply = None
+    # Mixed cost + prepare: portal tools already hold both answers. Skip LLM on the
+    # constrained CPU envelope to eliminate the measured Q-U-001 timeout without
+    # inventing prices or prep guidance.
+    tool_names = {t.get("tool") for t in tool_results}
+    if (
+        wants_cost
+        and wants_prepare_docs
+        and "estimate_booking_cost" in tool_names
+        and "search_documentation" in tool_names
+        and structured.get("estimate")
+    ):
+        deterministic_reply = _format_cost_prepare_reply(structured)
+
+    wants_equipment_list = _wants(
+        lower,
+        "which equipment",
+        "what equipment",
+        "equipment do we have",
+        "equipment available",
+        "services are available",
+        "which instruments",
+    )
+    if (
+        deterministic_reply is None
+        and wants_equipment_list
+        and structured.get("equipment_hits")
+        and "recommend_software" not in tool_names
+        and not wants_prepare_docs
+    ):
+        # AI.22.2: Q-V-003 timed out while the 1b model narrated a long invented catalog.
+        deterministic_reply = _format_equipment_list_reply(structured["equipment_hits"])
+
+    # Do not let the LLM invent portal successes when tools returned not-found / forbidden.
+    if deterministic_reply is None and structured.get("tool_errors"):
+        err0 = structured["tool_errors"][0]
+        code = str(err0.get("error") or "")
+        if code in {
+            "booking_not_found",
+            "equipment_not_found",
+            "forbidden",
+            "invalid_booking_id",
+            "missing_equipment_id",
+        }:
+            msg = str(err0.get("message") or code)
+            deterministic_reply = (
+                f"Based on **PORTAL DATA**: {msg} "
+                "I will not invent booking, equipment, or pricing details that the portal did not return."
+            )
+
     return {
-        "block": "\n".join(lines),
+        "block": block,
         "actions": actions,
         "tool_results": tool_results,
-        "modes": ["PORTAL_DATA"],
+        "modes": ["PORTAL_DATA"] + (["DETERMINISTIC"] if deterministic_reply else []),
         "clarification": None,
+        "structured": structured,
+        "deterministic_reply": deterministic_reply,
     }
+
+
+def _format_equipment_list_reply(hits: list[dict[str, Any]]) -> str:
+    """Concise portal-grounded equipment listing (no LLM narration)."""
+    parts = ["Based on **PORTAL DATA**, matching equipment:"]
+    for row in hits[:5]:
+        if not isinstance(row, dict):
+            continue
+        title = str(row.get("title") or row.get("name") or row.get("equipment_name") or "Equipment").strip()
+        eid = row.get("equipment_id") or row.get("id") or row.get("pk")
+        family = str(row.get("family") or "").strip()
+        bit = f"- {title}"
+        if eid is not None:
+            bit += f" (id={eid})"
+        if family:
+            bit += f" [{family}]"
+        parts.append(bit)
+    if len(parts) == 1:
+        parts.append("- No equipment rows matched this query in the portal catalog.")
+    parts.append(
+        "Ask for slots, sample cost, preparation, or remote-analysis software for a specific instrument."
+    )
+    return "\n".join(parts)
+
+
+def _format_cost_prepare_reply(structured: dict[str, Any]) -> str:
+    """Compose a concise portal-grounded reply for mixed cost+prepare questions."""
+    est = structured.get("estimate") if isinstance(structured.get("estimate"), dict) else {}
+    eq_name = structured.get("equipment_name") or "the selected equipment"
+    amount = est.get("amount")
+    currency = est.get("currency") or "INR"
+    profile = est.get("charge_profile") or est.get("pricing_profile") or "standard"
+    parts = [
+        "Based on **PORTAL DATA** for your account:",
+        "",
+        f"**Cost estimate ({eq_name}):** "
+        + (f"{currency} {amount}" if amount is not None else "see portal calculate for the live total")
+        + f" (charge profile: `{profile}`).",
+    ]
+    pi = structured.get("pricing_resolution") if isinstance(structured.get("pricing_resolution"), dict) else {}
+    if pi:
+        parts.append(
+            "PI rate applies only when the server-side pricing resolver marks the "
+            f"billing identity as PI (current: billing_identity_is_pi="
+            f"{pi.get('billing_identity_is_pi')}, resolved_profile="
+            f"{pi.get('resolved_pricing_profile')})."
+        )
+    preview = (structured.get("documentation_preview") or "").strip()
+    if preview:
+        parts.extend(["", "**What to prepare (documentation):**", preview[:420]])
+    else:
+        parts.extend(
+            [
+                "",
+                "**What to prepare:** Open the equipment SOP / sample-preparation guide "
+                "from Documentation in the portal for authoritative steps.",
+            ]
+        )
+    cites = structured.get("documentation_citations") or []
+    titles = [str(c.get("title") or "").strip() for c in cites if isinstance(c, dict) and c.get("title")]
+    if titles:
+        parts.append("Sources: " + "; ".join(titles[:2]))
+    parts.append(
+        "Amounts and PI eligibility are determined by the portal charge engine — "
+        "not by the assistant. Confirm any booking changes in the portal UI."
+    )
+    return "\n".join(parts)

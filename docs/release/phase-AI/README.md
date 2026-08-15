@@ -48,16 +48,19 @@
 | AI.22 | [AI.22-Copilot-Evaluation-Dataset.md](./AI.22-Copilot-Evaluation-Dataset.md) | Taxonomy + 70 evaluation queries |
 | AI.22.1 | [AI.22.1-Evaluation-Completion.md](./AI.22.1-Evaluation-Completion.md) | **READY FOR PILOT CONTINUATION — IMPROVEMENTS REQUIRED** |
 | AI.22.1 | [AI.22.1-Quality-Scorecard.md](./AI.22.1-Quality-Scorecard.md) | 86-row scorecard — useful 97.7%, hallucination 0% |
+| AI.22.2 | [AI.22.2-Final-Qualification-Report.md](./AI.22.2-Final-Qualification-Report.md) | **PARTIAL — REMAINING QUALIFICATION BLOCKERS** |
+| AI.22.2 | [AI.22.2-Remaining-Gaps.md](./AI.22.2-Remaining-Gaps.md) | Timeout closed; PI config + DNS remain |
+| AI.22.2 | [ai222_scorecard.json](./ai222_scorecard.json) | Final 86-query scorecard |
 
-## Current production posture (AI.22.1)
+## Current production posture (AI.22.2)
 
 | Layer | Status |
 |-------|--------|
 | RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
 | Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
 | Ollama | `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1, max_tokens 160 |
-| XRD ranking | Deterministic PXRD / GI-XRD; ambiguous XRD clarifies |
-| Pricing | Authoritative engine + PI resolution meta |
-| Eval | Useful-answer **97.7%**, safe **100%**, hallucination **0%** |
+| 86-query eval | Useful **100%**, safe **100%**, hallucination **0%**, timeout **0%** |
+| Production PI profiles | **0 — NOT CONFIGURED** |
 | Live RAA/DSA | **BLOCKED — DNS** |
 | Global Copilot | **Still NOT enabled** |
+| Verdict | **PARTIAL — REMAINING QUALIFICATION BLOCKERS** |

@@ -213,11 +213,50 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     from iic_booking.research_copilot.services.query_intelligence import (
         clarification_question,
         enrich_query_with_history,
+        security_refusal,
     )
 
     prior_user_texts = [h["content"] for h in prior if h.get("role") == MessageRole.USER]
     follow = enrich_query_with_history(text=text, prior_user_texts=prior_user_texts)
     grounded_text = follow.get("text") or text
+
+    refused = security_refusal(text=grounded_text) or security_refusal(text=text)
+    if refused:
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=refused,
+                confidence=1.0,
+                citations=[],
+                suggested_actions=_static_actions(escalate=False),
+                escalate_hint=False,
+                metadata={
+                    "provider": "deterministic",
+                    "model": "",
+                    "intent": "security_refusal",
+                    "security_refusal": True,
+                    "followup_enriched": bool(follow.get("enriched")),
+                    "portal_tools": [],
+                    "llm_latency_ms": 0,
+                    "rag_skipped": True,
+                    "prompt_chars": len(refused),
+                },
+            )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["updated_at"])
+        audit_svc.audit_message_replied(
+            user=user,
+            conversation=conversation,
+            confidence=1.0,
+            escalate=False,
+        )
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        }
 
     clarify = clarification_question(text=grounded_text)
     if clarify:
@@ -292,6 +331,50 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             user=user,
             conversation=conversation,
             confidence=0.92,
+            escalate=False,
+        )
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        }
+
+    # AI.22.2: mixed cost+prepare — answer from portal tools without LLM (Q-U-001 timeout fix).
+    deterministic = (grounding.get("deterministic_reply") or "").strip()
+    if deterministic:
+        base_actions = _static_actions(escalate=False)
+        for a in reversed(grounding.get("actions") or []):
+            if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
+                base_actions.insert(0, a)
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=deterministic,
+                confidence=0.95,
+                citations=[],
+                suggested_actions=base_actions,
+                escalate_hint=False,
+                metadata={
+                    "provider": "deterministic",
+                    "model": "",
+                    "intent": "portal_mixed_cost_prepare",
+                    "followup_enriched": bool(follow.get("enriched")),
+                    "portal_tools": grounding.get("tool_results") or [],
+                    "portal_grounding_ms": t_ground_ms,
+                    "llm_latency_ms": 0,
+                    "rag_skipped": True,
+                    "prompt_chars": len(deterministic),
+                    "modes": grounding.get("modes") or [],
+                },
+            )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["updated_at"])
+        audit_svc.audit_message_replied(
+            user=user,
+            conversation=conversation,
+            confidence=0.95,
             escalate=False,
         )
         return {
@@ -501,6 +584,42 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     from iic_booking.research_copilot.services.prompt_builder import append_portal_context
 
     grounding = run_portal_grounding(user=user, text=text)
+
+    # AI.22.2: same short-circuits as send_message (stream path)
+    ground_clarify = (grounding.get("clarification") or "").strip()
+    if ground_clarify:
+        yield {"event": "token", "text": ground_clarify}
+        yield {
+            "event": "done",
+            "message": {
+                "role": "assistant",
+                "content": ground_clarify,
+                "metadata": {
+                    "provider": "deterministic",
+                    "clarification": True,
+                    "portal_tools": grounding.get("tool_results") or [],
+                },
+            },
+        }
+        return
+
+    deterministic = (grounding.get("deterministic_reply") or "").strip()
+    if deterministic:
+        yield {"event": "token", "text": deterministic}
+        yield {
+            "event": "done",
+            "message": {
+                "role": "assistant",
+                "content": deterministic,
+                "metadata": {
+                    "provider": "deterministic",
+                    "intent": "portal_mixed_cost_prepare",
+                    "portal_tools": grounding.get("tool_results") or [],
+                    "modes": grounding.get("modes") or [],
+                },
+            },
+        }
+        return
 
     from iic_booking.research_copilot.services.intent import detect_intent
 

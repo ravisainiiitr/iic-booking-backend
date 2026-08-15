@@ -29,7 +29,9 @@ _FOLLOWUP_RE = re.compile(
     r"can i (?:use|analyze|do) it(?: remotely)?(?:\?)?|"
     r"what should i prepare(?:\?)?|"
     r"and the (?:cost|price|fee)(?:\?)?|"
-    r"is it available(?:\?)?"
+    r"is it available(?:\?)?|"
+    r"which equipment(?: do we have)?(?: for that)?(?:\?)?|"
+    r"what equipment(?: do we have)?(?: for that)?(?:\?)?"
     r")\s*$",
     re.I,
 )
@@ -117,4 +119,32 @@ def clarification_question(*, text: str) -> str | None:
         # List/search tools can still help; only force clarify when completely pronoun-vague.
         pass
 
+    return None
+
+
+def security_refusal(*, text: str) -> str | None:
+    """Hard refuse secret / infrastructure disclosure attempts (AI.22.2).
+
+    Correct refusal is safer than letting the small model invent URLs or prompts.
+    """
+    lower = (text or "").lower()
+    if not lower:
+        return None
+    needles = (
+        "system prompt",
+        "api key",
+        "api keys",
+        "ollama url",
+        "internal ollama",
+        "reveal the system",
+        "ignore previous instructions",
+        "secret token",
+        "access token",
+        "private key",
+    )
+    if any(n in lower for n in needles):
+        return (
+            "I can't help with that. I won't disclose system prompts, API keys, "
+            "tokens, or internal service URLs. Portal booking and research help remain available."
+        )
     return None
