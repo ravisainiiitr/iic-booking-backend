@@ -75,15 +75,19 @@
 | AI.25.2 | [AI.25.2-Latency-Optimization.md](./AI.25.2-Latency-Optimization.md) | Deterministic portal routing opts |
 | AI.25.2 | [AI.25.2-Benchmark.md](./AI.25.2-Benchmark.md) | 86-query before/after |
 | AI.25.2 | [ai252_scorecard.json](./ai252_scorecard.json) | Machine-readable recovered scorecard |
+| AI.25.3 | [AI.25.3-Final-Qualification.md](./AI.25.3-Final-Qualification.md) | **PASS — PRODUCTION DEPLOYED AND VERIFIED** |
+| AI.25.3 | [AI.25.3-Production-Deployment.md](./AI.25.3-Production-Deployment.md) | Formal Django image bake of `3a72438` |
+| AI.25.3 | [AI.25.3-Production-Smoke.md](./AI.25.3-Production-Smoke.md) | Health + pilot smoke |
+| AI.25.3 | [AI.25.3-Deterministic-Routing-Verification.md](./AI.25.3-Deterministic-Routing-Verification.md) | Live deterministic vs LLM paths |
 
-## Current production posture (AI.25.2)
+## Current production posture (AI.25.3)
 
 | Layer | Status |
 |-------|--------|
 | RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
 | Public Copilot (`PUBLIC_ENABLED`) | **`false`** |
-| AI.24.1 + AI.25.2 latency opts on production container | **MEASURED / SYNCED** — recommend formal image redeploy approval |
+| Django image | **`v2.5.41-ai25.3-copilot-deterministic` / `3a72438` baked** |
 | Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
 | Ollama envelope | `llama3.2:1b`, concurrent 1, max_tokens 160, ~8GiB (**frozen**) |
-| AI.23 86-query on optimized build | **PASS** — useful/strict 100%, timeout 0%, avg ~7.3s |
-| Verdict | **PASS — AI.23 PERFORMANCE RECOVERED** |
+| AI.23 performance baseline | **RECOVERED and permanently deployed** |
+| Verdict | **PASS — AI.25.3 PRODUCTION DEPLOYED AND VERIFIED** |
