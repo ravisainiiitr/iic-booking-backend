@@ -141,6 +141,11 @@ def security_refusal(*, text: str) -> str | None:
         "secret token",
         "access token",
         "private key",
+        "another user's",
+        "another user",
+        "other user's",
+        "other users'",
+        "someone else's",
     )
     if any(n in lower for n in needles):
         return (
