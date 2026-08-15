@@ -27,6 +27,9 @@ def role_bucket_rank(role_bucket: str) -> int:
 
 
 def allowed_security_levels(role_bucket: str) -> set[str]:
+    b = (role_bucket or "default").lower()
+    if b == "public":
+        return {SecurityLevel.PUBLIC}
     rank = role_bucket_rank(role_bucket)
     return {level for level, r in SECURITY_RANK.items() if r <= rank}
 

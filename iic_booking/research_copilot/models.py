@@ -15,6 +15,16 @@ class Conversation(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="research_copilot_conversations",
+        null=True,
+        blank=True,
+    )
+    # AI.24.1: anonymous public conversations keyed by client-issued opaque id (not a secret).
+    anonymous_session_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    access_mode = models.CharField(
+        max_length=32,
+        blank=True,
+        default="authenticated",
+        help_text=_("public | authenticated — set by backend, never by the LLM"),
     )
     title = models.CharField(max_length=255, blank=True, default="")
     user_role_snapshot = models.CharField(max_length=64, blank=True, default="")
@@ -27,6 +37,7 @@ class Conversation(models.Model):
         ordering = ["-updated_at"]
         indexes = [
             models.Index(fields=["user", "-updated_at"]),
+            models.Index(fields=["anonymous_session_key", "-updated_at"]),
         ]
 
     def __str__(self) -> str:

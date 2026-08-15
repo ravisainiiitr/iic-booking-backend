@@ -57,6 +57,20 @@ def _capabilities(bucket: str) -> list[str]:
 
 
 def build_context(user) -> CopilotContext:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return CopilotContext(
+            user_id=None,
+            display_name="Visitor",
+            email="",
+            user_type="public",
+            role_bucket="public",
+            department_id=None,
+            department_name="",
+            capabilities=["ask_public_docs", "public_equipment", "public_pricing_catalogue"],
+            lifecycle_hint=(
+                "Public facility information → Sign in → Booking → Sample → Results → Remote Analysis"
+            ),
+        )
     user_type = str(getattr(user, "user_type", "") or "")
     bucket = _role_bucket(user_type)
     dept = getattr(user, "department", None)

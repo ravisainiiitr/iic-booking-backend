@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from iic_booking.research_copilot.services.access_control import (
+    AccessMode,
+    ToolAccessLevel,
+    is_authenticated_user,
+    resolve_access_mode,
+    tool_allowed_for_mode,
+)
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -13,40 +21,142 @@ class ToolSpec:
     description: str
     mutating: bool
     roles: tuple[str, ...]
+    access_level: ToolAccessLevel = ToolAccessLevel.AUTHENTICATED
 
 
 TOOL_REGISTRY: list[ToolSpec] = [
-    ToolSpec("search_equipment", "Search instruments by name/capability/location", False, ("*",)),
-    ToolSpec("search_slots", "Search available slots for equipment/date", False, ("*",)),
-    ToolSpec("search_bookings", "List caller's bookings", False, ("*",)),
-    ToolSpec("get_next_booking", "Caller's next upcoming booking", False, ("*",)),
-    ToolSpec("get_wallet", "Wallet summary for caller", False, ("student", "faculty", "external", "admin")),
-    ToolSpec("search_documentation", "RAG over docs", False, ("*",)),
-    ToolSpec("recommend_software", "Recommend analysis software via R6 catalog", False, ("*",)),
-    ToolSpec("get_sample_status", "Sample/trace status for caller's booking", False, ("*",)),
-    ToolSpec("get_booking_results", "Result availability for caller's booking", False, ("*",)),
-    ToolSpec("get_sample_deadline", "Sample submission deadline for caller's booking", False, ("*",)),
-    ToolSpec("estimate_booking_cost", "Cost guidance — portal calculate is authoritative", False, ("student", "faculty", "external", "admin")),
-    ToolSpec("create_booking", "Prepare booking options (requires confirmation)", True, ("student", "faculty", "external", "admin")),
-    ToolSpec("cancel_booking", "Prepare cancel action (requires confirmation)", True, ("student", "faculty", "external", "admin")),
-    ToolSpec("create_support_ticket", "Create support ticket", True, ("*",)),
-    ToolSpec("launch_remote_analysis", "Open Analysis Workspace for a booking", True, ("student", "faculty", "operator", "admin")),
+    ToolSpec(
+        "search_equipment",
+        "Search instruments by name/capability/location",
+        False,
+        ("*",),
+        ToolAccessLevel.PUBLIC,
+    ),
+    ToolSpec(
+        "search_slots",
+        "Search available slots for equipment/date",
+        False,
+        ("*",),
+        ToolAccessLevel.AUTHENTICATED,
+    ),
+    ToolSpec(
+        "search_bookings",
+        "List caller's bookings",
+        False,
+        ("*",),
+        ToolAccessLevel.AUTHORIZED_RESOURCE,
+    ),
+    ToolSpec(
+        "get_next_booking",
+        "Caller's next upcoming booking",
+        False,
+        ("*",),
+        ToolAccessLevel.AUTHORIZED_RESOURCE,
+    ),
+    ToolSpec(
+        "get_wallet",
+        "Wallet summary for caller",
+        False,
+        ("student", "faculty", "external", "admin"),
+        ToolAccessLevel.AUTHORIZED_RESOURCE,
+    ),
+    ToolSpec(
+        "search_documentation",
+        "RAG over docs",
+        False,
+        ("*",),
+        ToolAccessLevel.PUBLIC,
+    ),
+    ToolSpec(
+        "recommend_software",
+        "Recommend analysis software via R6 catalog",
+        False,
+        ("*",),
+        ToolAccessLevel.PUBLIC,
+    ),
+    ToolSpec(
+        "get_sample_status",
+        "Sample/trace status for caller's booking",
+        False,
+        ("*",),
+        ToolAccessLevel.AUTHORIZED_RESOURCE,
+    ),
+    ToolSpec(
+        "get_booking_results",
+        "Result availability for caller's booking",
+        False,
+        ("*",),
+        ToolAccessLevel.AUTHORIZED_RESOURCE,
+    ),
+    ToolSpec(
+        "get_sample_deadline",
+        "Sample submission deadline for caller's booking",
+        False,
+        ("*",),
+        ToolAccessLevel.AUTHORIZED_RESOURCE,
+    ),
+    ToolSpec(
+        "estimate_booking_cost",
+        "Cost guidance — portal calculate is authoritative",
+        False,
+        ("student", "faculty", "external", "admin", "public"),
+        ToolAccessLevel.PUBLIC,
+    ),
+    ToolSpec(
+        "create_booking",
+        "Prepare booking options (requires confirmation)",
+        True,
+        ("student", "faculty", "external", "admin"),
+        ToolAccessLevel.MUTATION,
+    ),
+    ToolSpec(
+        "cancel_booking",
+        "Prepare cancel action (requires confirmation)",
+        True,
+        ("student", "faculty", "external", "admin"),
+        ToolAccessLevel.MUTATION,
+    ),
+    ToolSpec(
+        "create_support_ticket",
+        "Create support ticket",
+        True,
+        ("*",),
+        ToolAccessLevel.MUTATION,
+    ),
+    ToolSpec(
+        "launch_remote_analysis",
+        "Open Analysis Workspace for a booking",
+        True,
+        ("student", "faculty", "operator", "admin"),
+        ToolAccessLevel.MUTATION,
+    ),
 ]
 
 
-def list_tools_for_role(role_bucket: str) -> list[dict]:
+def list_tools_for_role(role_bucket: str, *, access_mode: AccessMode | str | None = None) -> list[dict]:
+    if access_mode is None:
+        mode = AccessMode.PUBLIC if role_bucket == "public" else AccessMode.AUTHENTICATED
+    elif isinstance(access_mode, AccessMode):
+        mode = access_mode
+    else:
+        mode = AccessMode(str(access_mode))
     out = []
     for t in TOOL_REGISTRY:
-        if "*" in t.roles or role_bucket in t.roles or role_bucket == "admin":
-            out.append(
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "mutating": t.mutating,
-                    # Read-only tools are executable; mutating tools return action cards only.
-                    "available": not t.mutating or t.name in {"create_booking", "cancel_booking", "launch_remote_analysis"},
-                }
-            )
+        if not tool_allowed_for_mode(access_level=t.access_level, access_mode=mode):
+            continue
+        if mode == AccessMode.AUTHENTICATED and "*" not in t.roles and role_bucket not in t.roles and role_bucket != "admin":
+            continue
+        out.append(
+            {
+                "name": t.name,
+                "description": t.description,
+                "mutating": t.mutating,
+                "access_level": t.access_level.value,
+                # Read-only tools are executable; mutating tools return action cards only.
+                "available": not t.mutating
+                or t.name in {"create_booking", "cancel_booking", "launch_remote_analysis"},
+            }
+        )
     return out
 
 
@@ -446,12 +556,19 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     """Authoritative cost estimate via portal ChargeCalculationEngine (AI.22).
 
     Reuses equipment calculate / proforma line logic. Never invents prices in the LLM.
+
+    Anonymous (public) callers receive a catalogue estimate using EXTERNAL + STANDARD
+    only — never PI / wallet-owner personalization. Sign-in is required for
+    account-specific rates.
     """
+    from types import SimpleNamespace
+
     from iic_booking.equipment.api_views import (
         _calculate_one_proforma_line,
         _get_charge_profile_pricing_profile_for_user,
     )
-    from iic_booking.equipment.models import Equipment
+    from iic_booking.equipment.models import ChargeProfilePricingProfile, Equipment
+    from iic_booking.equipment.pi_pricing import pricing_resolution_meta
 
     equipment_id = arguments.get("equipment_id")
     if not equipment_id:
@@ -482,14 +599,48 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
         except (TypeError, ValueError):
             return _err("invalid_num_samples", "num_samples must be numeric")
 
-    pricing_profile = _get_charge_profile_pricing_profile_for_user(user, eq)
-    user_type = getattr(user, "user_type", None) or "unknown"
-    from iic_booking.equipment.pi_pricing import pricing_resolution_meta
+    public_catalogue = (not is_authenticated_user(user)) or bool(
+        arguments.get("public_catalogue_only")
+    )
+    if public_catalogue:
+        # Catalogue path: EXTERNAL + STANDARD only. Never PI / wallet identity.
+        billing_user = SimpleNamespace(
+            pk=None,
+            id=None,
+            user_type="external",
+            use_discounted_charge_profile=False,
+            email="",
+            is_authenticated=False,
+            get_accessible_wallet=lambda: None,
+        )
+        pricing_profile = ChargeProfilePricingProfile.STANDARD
+        user_type = "external"
+        pi_meta = {
+            "billing_identity_is_pi": False,
+            "current_user_is_pi": False,
+            "wallet_owner_is_pi": False,
+            "equipment_has_pi_profiles": False,
+            "wallet_owner_id": None,
+            "wallet_owner_email": None,
+            "resolved_pricing_profile": ChargeProfilePricingProfile.STANDARD,
+            "public_catalogue": True,
+        }
+    else:
+        billing_user = user
+        pricing_profile = _get_charge_profile_pricing_profile_for_user(user, eq)
+        user_type = getattr(user, "user_type", None) or "unknown"
+        pi_meta = pricing_resolution_meta(user, eq)
 
-    pi_meta = pricing_resolution_meta(user, eq)
-
-    line, err = _calculate_one_proforma_line(user, eq, input_values)
+    line, err = _calculate_one_proforma_line(billing_user, eq, input_values)
     if err:
+        note = (
+            "Portal pricing engine could not complete with the provided/default inputs. "
+            + (
+                "Sign in for an account-specific estimate, or open the booking calculate flow."
+                if public_catalogue
+                else "Open the booking calculate flow for a full interactive estimate."
+            )
+        )
         return _ok(
             {
                 "equipment_id": eq.pk,
@@ -501,10 +652,8 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                 "pricing_profile": pricing_profile,
                 "pricing_resolution": pi_meta,
                 "needs_more_inputs": True,
-                "note": (
-                    "Portal pricing engine could not complete with the provided/default inputs. "
-                    "Open the booking calculate flow for a full interactive estimate."
-                ),
+                "public_catalogue": public_catalogue,
+                "note": note,
                 "source": "PORTAL_DATA",
             },
             actions=[
@@ -523,6 +672,16 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     if isinstance(breakdown, list):
         breakdown = breakdown[:6]
 
+    est_note = (
+        "Public catalogue estimate using EXTERNAL/STANDARD charge profile. "
+        "Sign in to calculate the rate applicable to your account (PI/wallet when configured)."
+        if public_catalogue
+        else (
+            "Authoritative portal ChargeCalculationEngine result for this authenticated "
+            "user, charge profile, and stated/default inputs."
+        )
+    )
+
     return _ok(
         {
             "equipment_id": eq.pk,
@@ -540,12 +699,10 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                 "user_type": user_type,
                 "input_values": input_values,
                 "samples_field": samples_key,
-                "note": (
-                    "Authoritative portal ChargeCalculationEngine result for this authenticated "
-                    "user, charge profile, and stated/default inputs."
-                ),
+                "note": est_note,
             },
             "pricing_resolution": pi_meta,
+            "public_catalogue": public_catalogue,
             "source": "PORTAL_DATA",
         },
         actions=[
@@ -808,16 +965,27 @@ _HANDLERS = {
 def _role_bucket_for_user(user) -> str:
     from iic_booking.research_copilot.services.context_builder import _role_bucket
 
+    if not is_authenticated_user(user):
+        return "public"
     user_type = getattr(user, "user_type", None) or getattr(user, "role", None) or ""
     if hasattr(user_type, "value"):
         user_type = user_type.value
     return _role_bucket(str(user_type or ""))
 
 
-def execute_tool(*, name: str, arguments: dict, user) -> dict:
-    """Execute a registered tool. Mutating tools only prepare authorized portal action cards."""
+def execute_tool(*, name: str, arguments: dict, user, access_mode: AccessMode | str | None = None) -> dict:
+    """Execute a registered tool. Mutating tools only prepare authorized portal action cards.
+
+    Access-level checks run BEFORE handlers (no private DB work for anonymous callers).
+    """
     from iic_booking.research_copilot.services.audit import audit_tool_executed
 
+    if access_mode is None:
+        mode = resolve_access_mode(user=user)
+    elif isinstance(access_mode, AccessMode):
+        mode = access_mode
+    else:
+        mode = AccessMode(str(access_mode))
     handler = _HANDLERS.get(name)
     if not handler:
         result = _err("unknown_tool", f"Tool '{name}' is not registered")
@@ -825,14 +993,41 @@ def execute_tool(*, name: str, arguments: dict, user) -> dict:
         return result
 
     spec = next((t for t in TOOL_REGISTRY if t.name == name), None)
+    if spec and not tool_allowed_for_mode(access_level=spec.access_level, access_mode=mode):
+        result = _err(
+            "login_required" if mode == AccessMode.PUBLIC else "forbidden",
+            (
+                f"Tool '{name}' requires sign-in."
+                if mode == AccessMode.PUBLIC
+                else f"Tool '{name}' is not available in this access mode."
+            ),
+        )
+        audit_tool_executed(user=user, name=name, ok=False, arguments=arguments, result=result)
+        return result
+
     role = _role_bucket_for_user(user)
-    if spec and "*" not in spec.roles and role not in spec.roles and role != "admin":
+    if (
+        mode == AccessMode.AUTHENTICATED
+        and spec
+        and "*" not in spec.roles
+        and role not in spec.roles
+        and role != "admin"
+    ):
         result = _err("forbidden", f"Tool '{name}' is not available for role '{role}'")
         audit_tool_executed(user=user, name=name, ok=False, arguments=arguments, result=result)
         return result
 
+    # Defense in depth: never run user-scoped handlers without an authenticated user.
+    if mode == AccessMode.PUBLIC and spec and spec.access_level != ToolAccessLevel.PUBLIC:
+        result = _err("login_required", f"Tool '{name}' requires sign-in.")
+        audit_tool_executed(user=user, name=name, ok=False, arguments=arguments, result=result)
+        return result
+
     try:
-        result = handler(arguments=arguments or {}, user=user)
+        args = dict(arguments or {})
+        if mode == AccessMode.PUBLIC and name == "estimate_booking_cost":
+            args["public_catalogue_only"] = True
+        result = handler(arguments=args, user=user)
     except Exception as exc:  # noqa: BLE001 — tool boundary
         result = _err("tool_failed", f"Tool '{name}' failed: {exc}")
     audit_tool_executed(

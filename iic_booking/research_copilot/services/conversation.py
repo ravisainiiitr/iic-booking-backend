@@ -36,10 +36,31 @@ def feature_enabled(*, user=None) -> bool:
     """
     Global enable via RESEARCH_COPILOT_ENABLED.
 
-    Optional pilot allowlist: RESEARCH_COPILOT_PILOT_EMAILS (comma-separated).
-    When the allowlist is non-empty, only those emails may use Copilot while the
-    global flag is true. Empty allowlist = all authenticated users (global).
+    AI.24.1:
+      - Anonymous: ENABLED and RESEARCH_COPILOT_PUBLIC_ENABLED
+      - Authenticated: ENABLED and (PUBLIC_ENABLED or on pilot allowlist / empty allowlist)
+
+    Private tools still require authenticated_full_access().
     """
+    if not bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)):
+        return False
+    if user is None or not getattr(user, "is_authenticated", False):
+        return bool(getattr(settings, "RESEARCH_COPILOT_PUBLIC_ENABLED", True))
+    if bool(getattr(settings, "RESEARCH_COPILOT_PUBLIC_ENABLED", True)):
+        return True
+    return authenticated_full_access(user=user)
+
+
+def public_mode_enabled() -> bool:
+    return bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)) and bool(
+        getattr(settings, "RESEARCH_COPILOT_PUBLIC_ENABLED", True)
+    )
+
+
+def authenticated_full_access(*, user) -> bool:
+    """True when the user may use private/authorized tools (pilot rules apply)."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
     if not bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)):
         return False
     raw = (getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", None) or "").strip()
@@ -48,10 +69,16 @@ def feature_enabled(*, user=None) -> bool:
     allowed = {e.strip().lower() for e in raw.split(",") if e.strip()}
     if not allowed:
         return True
-    if user is None:
-        return False
     email = (getattr(user, "email", None) or "").strip().lower()
     return email in allowed
+
+
+def effective_access_mode(*, user) -> str:
+    from iic_booking.research_copilot.services.access_control import AccessMode
+
+    if authenticated_full_access(user=user):
+        return AccessMode.AUTHENTICATED.value
+    return AccessMode.PUBLIC.value
 
 
 def _reply_from_llm_result(result) -> str:
@@ -102,24 +129,45 @@ def _estimate_confidence(*, escalate: bool, provider: str, text: str, retrieval_
     return min(0.92, 0.7 + 0.04 * min(hit_count, 5))
 
 
-def create_conversation(*, user, title: str = "") -> Conversation:
+def create_conversation(*, user=None, title: str = "", anonymous_session_key: str = "") -> Conversation:
     ctx = build_context(user)
+    mode = effective_access_mode(user=user)
     conv = Conversation.objects.create(
-        user=user,
+        user=user if getattr(user, "is_authenticated", False) else None,
+        anonymous_session_key=(anonymous_session_key or "")[:64] if not getattr(user, "is_authenticated", False) else "",
+        access_mode=mode,
         title=(title or "New conversation")[:255],
-        user_role_snapshot=ctx.user_type[:64],
+        user_role_snapshot=(ctx.user_type or mode)[:64],
         department_id_snapshot=ctx.department_id,
     )
     audit_svc.audit_conversation_created(user=user, conversation=conv)
     return conv
 
 
-def list_conversations(*, user, limit: int = 50):
-    return Conversation.objects.filter(user=user, is_archived=False)[:limit]
+def list_conversations(*, user=None, anonymous_session_key: str = "", limit: int = 50):
+    if getattr(user, "is_authenticated", False):
+        return Conversation.objects.filter(user=user, is_archived=False)[:limit]
+    key = (anonymous_session_key or "").strip()
+    if not key:
+        return Conversation.objects.none()
+    return Conversation.objects.filter(
+        user__isnull=True,
+        anonymous_session_key=key,
+        is_archived=False,
+        access_mode="public",
+    )[:limit]
 
 
-def get_conversation(*, user, conversation_id) -> Conversation:
-    return Conversation.objects.get(id=conversation_id, user=user)
+def get_conversation(*, user=None, conversation_id, anonymous_session_key: str = "") -> Conversation:
+    if getattr(user, "is_authenticated", False):
+        return Conversation.objects.get(id=conversation_id, user=user)
+    key = (anonymous_session_key or "").strip()
+    return Conversation.objects.get(
+        id=conversation_id,
+        user__isnull=True,
+        anonymous_session_key=key,
+        access_mode="public",
+    )
 
 
 def _suggested_for(ctx) -> list[str]:
@@ -255,7 +303,73 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             "conversation_id": str(conversation.id),
             "message": serialize_message(assistant),
             "suggested_prompts": _suggested_for(ctx),
-            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+            "tools_available": tools_svc.list_tools_for_role(
+                ctx.role_bucket, access_mode=effective_access_mode(user=user)
+            ),
+            "access_mode": effective_access_mode(user=user),
+            "login_required": False,
+        }
+
+    access_mode = effective_access_mode(user=user)
+    from iic_booking.research_copilot.services.access_control import (
+        LOGIN_REQUIRED_MESSAGE,
+        private_intent_requires_login,
+        strip_internal_infra,
+    )
+
+    # Backend auth boundary — LLM must never decide this (AI.24.1).
+    from iic_booking.research_copilot.services.access_control import AccessMode as _AccessMode
+
+    if private_intent_requires_login(
+        text=grounded_text, access_mode=_AccessMode(access_mode)
+    ):
+        login_msg = LOGIN_REQUIRED_MESSAGE
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=login_msg,
+                confidence=1.0,
+                citations=[],
+                suggested_actions=[
+                    {
+                        "id": "sign_in",
+                        "label": "Sign in to continue",
+                        "href": "/login",
+                        "enabled": True,
+                    }
+                ],
+                escalate_hint=False,
+                metadata={
+                    "provider": "deterministic",
+                    "model": "",
+                    "intent": "login_required",
+                    "login_required": True,
+                    "access_mode": access_mode,
+                    "followup_enriched": bool(follow.get("enriched")),
+                    "portal_tools": [],
+                    "llm_latency_ms": 0,
+                    "rag_skipped": True,
+                    "prompt_chars": len(login_msg),
+                },
+            )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["updated_at"])
+        audit_svc.write_audit(
+            action=AuditAction.MESSAGE_REPLIED,
+            message="login_required",
+            user=user,
+            conversation=conversation,
+            detail={"intent": "login_required", "access_mode": access_mode},
+        )
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket, access_mode=access_mode),
+            "access_mode": access_mode,
+            "login_required": True,
+            "login_href": "/login",
         }
 
     clarify = clarification_question(text=grounded_text)
@@ -293,11 +407,13 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             "conversation_id": str(conversation.id),
             "message": serialize_message(assistant),
             "suggested_prompts": _suggested_for(ctx),
-            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket, access_mode=access_mode),
+            "access_mode": access_mode,
+            "login_required": False,
         }
 
     t0 = time.monotonic()
-    grounding = run_portal_grounding(user=user, text=grounded_text)
+    grounding = run_portal_grounding(user=user, text=grounded_text, access_mode=access_mode)
     t_ground_ms = int((time.monotonic() - t0) * 1000)
 
     # AI.22.1: equipment-family clarification from grounding (e.g. bare XRD → PXRD vs GI-XRD)
@@ -337,12 +453,15 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             "conversation_id": str(conversation.id),
             "message": serialize_message(assistant),
             "suggested_prompts": _suggested_for(ctx),
-            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket, access_mode=access_mode),
+            "access_mode": access_mode,
+            "login_required": False,
         }
 
     # AI.22.2: mixed cost+prepare — answer from portal tools without LLM (Q-U-001 timeout fix).
     deterministic = (grounding.get("deterministic_reply") or "").strip()
     if deterministic:
+        deterministic = strip_internal_infra(deterministic)
         base_actions = _static_actions(escalate=False)
         for a in reversed(grounding.get("actions") or []):
             if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
@@ -381,7 +500,9 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             "conversation_id": str(conversation.id),
             "message": serialize_message(assistant),
             "suggested_prompts": _suggested_for(ctx),
-            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket, access_mode=access_mode),
+            "access_mode": access_mode,
+            "login_required": False,
         }
 
     # AI.21.2: skip heavy RAG when authoritative portal tools already ground the turn,
@@ -473,6 +594,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
     reply, escalate = _strip_escalate(raw)
     if not busy:
         reply = _append_sources_footer(reply, citations)
+    reply = strip_internal_infra(reply)
     provider = result.provider if result else "none"
     confidence = _estimate_confidence(
         escalate=escalate,
@@ -533,7 +655,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         conversation.updated_at = timezone.now()
         conversation.save(update_fields=["title", "updated_at"])
 
-        if not busy and (escalate or retrieval.low_confidence):
+        if not busy and (escalate or retrieval.low_confidence) and getattr(user, "is_authenticated", False):
             KnowledgeGap.objects.create(
                 conversation=conversation,
                 user=user,
@@ -554,7 +676,9 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         "conversation_id": str(conversation.id),
         "message": serialize_message(assistant),
         "suggested_prompts": _suggested_for(ctx),
-        "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket, access_mode=access_mode),
+        "access_mode": access_mode,
+        "login_required": False,
     }
 
 
@@ -573,6 +697,14 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
         raise ValueError("conversation_limit_reached")
 
     ctx = build_context(user)
+    access_mode = effective_access_mode(user=user)
+    from iic_booking.research_copilot.services.access_control import (
+        AccessMode as _AccessMode,
+        LOGIN_REQUIRED_MESSAGE,
+        private_intent_requires_login,
+        strip_internal_infra,
+    )
+
     Message.objects.create(conversation=conversation, role=MessageRole.USER, content=text)
     prior = [
         {"role": m.role, "content": m.content}
@@ -583,7 +715,22 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
     from iic_booking.research_copilot.services.prompt_builder import append_portal_context
 
-    grounding = run_portal_grounding(user=user, text=text)
+    if private_intent_requires_login(text=text, access_mode=_AccessMode(access_mode)):
+        yield {"event": "token", "text": LOGIN_REQUIRED_MESSAGE}
+        yield {
+            "event": "done",
+            "message": {
+                "role": "assistant",
+                "content": LOGIN_REQUIRED_MESSAGE,
+                "metadata": {"provider": "deterministic", "login_required": True, "access_mode": access_mode},
+            },
+            "login_required": True,
+            "login_href": "/login",
+            "access_mode": access_mode,
+        }
+        return
+
+    grounding = run_portal_grounding(user=user, text=text, access_mode=access_mode)
 
     # AI.22.2: same short-circuits as send_message (stream path)
     ground_clarify = (grounding.get("clarification") or "").strip()
@@ -712,6 +859,7 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     )
     reply, escalate = _strip_escalate(raw)
     reply = _append_sources_footer(reply, citations)
+    reply = strip_internal_infra(reply)
     confidence = _estimate_confidence(
         escalate=escalate,
         provider="stream",
@@ -811,6 +959,7 @@ def serialize_conversation(c: Conversation, *, include_messages: bool = False) -
     data = {
         "id": str(c.id),
         "title": c.title,
+        "access_mode": getattr(c, "access_mode", None) or "authenticated",
         "user_role_snapshot": c.user_role_snapshot,
         "department_id_snapshot": c.department_id_snapshot,
         "created_at": c.created_at.isoformat() if c.created_at else None,
@@ -821,20 +970,22 @@ def serialize_conversation(c: Conversation, *, include_messages: bool = False) -
     return data
 
 
-def bootstrap_payload(*, user) -> dict:
+def bootstrap_payload(*, user=None) -> dict:
+    from iic_booking.research_copilot.services.access_control import public_bootstrap_prompts
     from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
 
     ctx = build_context(user)
-    # Ordinary users see provider family only — no base URL / secrets.
-    return {
-        "enabled": feature_enabled(user=user),
-        "assistant_name": "IIC Research Copilot",
-        "role_bucket": ctx.role_bucket,
-        "suggested_prompts": _suggested_for(ctx),
-        "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
-        "capabilities": ctx.capabilities,
-        "llm_provider": configured_provider_name(),
-        "command_actions": [
+    mode = effective_access_mode(user=user)
+    full = authenticated_full_access(user=user)
+    prompts = public_bootstrap_prompts() if mode == "public" else _suggested_for(ctx)
+    command_actions = [
+        {"id": "find_equipment", "label": "Find equipment", "href": "/equipments", "prompt": "Help me find suitable equipment for my sample."},
+        {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "How much does 5 XRD samples cost?"},
+        {"id": "research_help", "label": "Research Help", "prompt": "What is PXRD?"},
+        {"id": "software", "label": "Find Analysis Software", "prompt": "What software is used for PXRD analysis?"},
+    ]
+    if full:
+        command_actions = [
             {"id": "next_booking", "label": "My next booking", "prompt": "What is my next booking?"},
             {"id": "my_bookings", "label": "My bookings", "href": "/my-bookings", "prompt": "List my recent bookings."},
             {"id": "booking_status", "label": "Check booking status", "prompt": "What is the status of my latest booking?"},
@@ -845,5 +996,24 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
             {"id": "software", "label": "Find Analysis Software", "href": "/remote-analysis/software-catalog"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
-        ],
+        ]
+    # Ordinary users see provider family only — no base URL / secrets.
+    return {
+        "enabled": feature_enabled(user=user),
+        "assistant_name": "IIC Research Copilot",
+        "access_mode": mode,
+        "login_required_for_private": mode != "authenticated",
+        "login_href": "/login",
+        "public_banner": (
+            "Ask about equipment, services, sample preparation, pricing and research facilities. "
+            "Sign in to ask about your bookings, samples, results, wallet or Remote Analysis."
+            if mode != "authenticated"
+            else ""
+        ),
+        "role_bucket": ctx.role_bucket,
+        "suggested_prompts": prompts,
+        "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket, access_mode=mode),
+        "capabilities": ctx.capabilities,
+        "llm_provider": configured_provider_name(),
+        "command_actions": command_actions,
     }

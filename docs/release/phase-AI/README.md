@@ -57,16 +57,21 @@
 | AI.24 | [AI.24-Final-Qualification-Report.md](./AI.24-Final-Qualification-Report.md) | **READY FOR PILOT CONTINUATION — OPERATIONAL BLOCKER** |
 | AI.24 | [AI.24-Pilot-Expansion-Qualification.md](./AI.24-Pilot-Expansion-Qualification.md) | 3–5 user gate — **not executed** |
 | AI.24 | [AI.24-Operational-Runbook.md](./AI.24-Operational-Runbook.md) | Ops / rollback / thresholds |
+| AI.24.1 | [AI.24.1-Public-Authenticated-Copilot.md](./AI.24.1-Public-Authenticated-Copilot.md) | **PARTIAL** — public+auth modes coded; **not deployed** |
+| AI.24.1 | [AI.24.1-Security-Matrix.md](./AI.24.1-Security-Matrix.md) | Public/auth ACL matrix |
+| AI.24.1 | [AI.24.1-Operational-Runbook.md](./AI.24.1-Operational-Runbook.md) | Public enable / throttle / rollback |
 
-## Current production posture (AI.24)
+## Current production posture (AI.24 / AI.24.1)
 
 | Layer | Status |
 |-------|--------|
-| RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
+| RESEARCH COPILOT feature flag | **`true` (allowlist only)** — production unchanged by AI.24.1 until approved |
+| Public Copilot (`PUBLIC_ENABLED`) | **Implemented in code — not production-enabled pending approval** |
 | Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
 | Ollama envelope | `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1, max_tokens 160 (**frozen / golden**) |
 | AI.23 86-query golden baseline | Useful/strict/safe **100%**, hallucination/timeout **0%** |
 | Production PI profiles | **0 — NOT CONFIGURED** |
 | Live RAA/DSA | **BLOCKED — DNS** |
 | Global Copilot | **Still NOT enabled** |
-| Verdict | **READY FOR PILOT CONTINUATION — OPERATIONAL BLOCKER** |
+| Android public mode | **NOT IN SCOPE** |
+| Verdict | **PARTIAL — PUBLIC MODE READY, LIVE REGRESSION / DEPLOY PENDING APPROVAL** |

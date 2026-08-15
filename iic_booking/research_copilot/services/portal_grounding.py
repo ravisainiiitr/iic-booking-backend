@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from iic_booking.research_copilot.services import tools as tools_svc
+from iic_booking.research_copilot.services.access_control import AccessMode
 from iic_booking.research_copilot.services.query_intelligence import extract_num_samples
 from iic_booking.research_copilot.services.structured_search import (
     _equipment_family,
@@ -426,7 +427,7 @@ def _compact_tool_payload_for_prompt(
     return compact
 
 
-def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
+def run_portal_grounding(*, user, text: str, access_mode: str | AccessMode | None = None) -> dict[str, Any]:
     """
     Execute planned read tools for this turn.
 
@@ -438,7 +439,27 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         "modes": list[str],    # e.g. ["PORTAL_DATA"]
       }
     """
+    from iic_booking.research_copilot.services.access_control import (
+        AccessMode,
+        resolve_access_mode,
+        tool_allowed_for_mode,
+    )
+    from iic_booking.research_copilot.services.tools import TOOL_REGISTRY
+
+    mode = AccessMode(str(access_mode)) if access_mode else resolve_access_mode(user=user)
+
     plans = plan_tool_calls(text=text)
+    # Backend ACL — drop any planned non-public tools before execution (AI.24.1).
+    filtered: list[tuple[str, dict]] = []
+    for name, args in plans:
+        spec = next((t for t in TOOL_REGISTRY if t.name == name), None)
+        if spec is None:
+            continue
+        if not tool_allowed_for_mode(access_level=spec.access_level, access_mode=mode):
+            continue
+        filtered.append((name, args))
+    plans = filtered
+
     lower = (text or "").lower()
     wants_cost = _wants(lower, "cost", "charge", "price", "fee", "how much", "pi rate", "pi pricing")
     wants_slots = _wants(
@@ -455,6 +476,9 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
         and not _wants(lower, "next booking", "my booking", "my sample", "my result")
         and any(h in lower for h in ("xrd", "pxrd", "fesem", "sem", "tem", "afm", "xps", "gi-xrd"))
     )
+    # Availability slots are authenticated-only unless a future public endpoint exists.
+    if mode == AccessMode.PUBLIC:
+        wants_slots = False
     num_samples = extract_num_samples(text)
     # If user names an instrument family without equipment_id, search first so pricing/slots
     # can use authoritative portal ids (AI.20) — never invent prices in the LLM.
@@ -476,14 +500,23 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
 
     tool_results: list[dict] = []
     actions: list[dict] = []
-    lines = [
-        "<<<PORTAL_DATA>>>",
-        "The following facts were retrieved from the IIC Booking portal for THIS authenticated user.",
-        "Treat them as authoritative application data. Do not invent additional portal facts.",
-        "Label portal-derived claims as based on the user's booking/equipment data.",
-        "Mutating suggestions must still require portal confirmation — never claim the action is already done.",
-        "Answer concisely using these facts (prefer under 8 short sentences).",
-    ]
+    if mode == AccessMode.PUBLIC:
+        lines = [
+            "<<<PORTAL_DATA>>>",
+            "The following facts were retrieved from APPROVED PUBLIC IIC portal information.",
+            "Treat them as authoritative public catalogue data. Do not invent prices or private facts.",
+            "Do not reveal internal infrastructure, hostnames, IPs, tunnels, secrets, or private bookings.",
+            "Answer concisely using these facts (prefer under 8 short sentences).",
+        ]
+    else:
+        lines = [
+            "<<<PORTAL_DATA>>>",
+            "The following facts were retrieved from the IIC Booking portal for THIS authenticated user.",
+            "Treat them as authoritative application data. Do not invent additional portal facts.",
+            "Label portal-derived claims as based on the user's booking/equipment data.",
+            "Mutating suggestions must still require portal confirmation — never claim the action is already done.",
+            "Answer concisely using these facts (prefer under 8 short sentences).",
+        ]
 
     resolved_equipment_id: int | None = None
     executed: set[str] = set()
@@ -513,7 +546,7 @@ def run_portal_grounding(*, user, text: str) -> dict[str, Any]:
 
     def _run(name: str, args: dict[str, Any]) -> dict[str, Any]:
         nonlocal resolved_equipment_id
-        result = tools_svc.execute_tool(name=name, arguments=args, user=user)
+        result = tools_svc.execute_tool(name=name, arguments=args, user=user, access_mode=mode)
         executed.add(name)
         tool_results.append({"tool": name, "ok": bool(result.get("ok")), "error": result.get("error")})
         if not result.get("ok"):

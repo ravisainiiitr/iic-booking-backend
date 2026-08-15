@@ -1,4 +1,4 @@
-"""HTTP API for IIC Research Copilot (Phase AI.1)."""
+"""HTTP API for IIC Research Copilot (Phase AI.1 / AI.24.1)."""
 
 from __future__ import annotations
 
@@ -8,20 +8,26 @@ from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.research_copilot.models import AuditAction, Conversation, FeedbackRating
 from iic_booking.research_copilot.services import audit as audit_svc
 from iic_booking.research_copilot.services import conversation as conv_svc
+from iic_booking.research_copilot.services.access_control import AccessMode, sanitize_anonymous_key
 from iic_booking.research_copilot.services.context_builder import build_context
 from iic_booking.research_copilot.constants import SUGGESTED_PROMPTS
-from iic_booking.research_copilot.throttles import ResearchCopilotToolThrottle, ResearchCopilotUserThrottle
+from iic_booking.research_copilot.throttles import (
+    ResearchCopilotAnonThrottle,
+    ResearchCopilotAnonToolThrottle,
+    ResearchCopilotToolThrottle,
+    ResearchCopilotUserThrottle,
+)
 
 
 def _feature_gate(*, user=None, audit: bool = True):
     if not conv_svc.feature_enabled(user=user):
-        if audit and user is not None:
+        if audit and user is not None and getattr(user, "is_authenticated", False):
             audit_svc.write_audit(
                 action=AuditAction.FEATURE_DISABLED,
                 message="Research Copilot feature flag disabled",
@@ -40,37 +46,92 @@ def _feature_gate(*, user=None, audit: bool = True):
     return None
 
 
+def _request_user(request):
+    if getattr(request.user, "is_authenticated", False):
+        return request.user
+    return None
+
+
+def _anonymous_key(request) -> str | None:
+    raw = request.META.get("HTTP_X_COPILOT_ANONYMOUS_KEY") or ""
+    if not raw and hasattr(request, "headers"):
+        raw = request.headers.get("X-Copilot-Anonymous-Key") or ""
+    return sanitize_anonymous_key(raw)
+
+
+def _require_anon_key(request) -> tuple[str | None, Response | None]:
+    """Anonymous callers must send a client opaque session key (not a secret)."""
+    if _request_user(request):
+        return None, None
+    key = _anonymous_key(request)
+    if not key:
+        return None, Response(
+            {
+                "error": {
+                    "code": "anonymous_key_required",
+                    "message": "X-Copilot-Anonymous-Key header (16–64 chars) is required for public Copilot.",
+                }
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return key, None
+
+
+def _get_conversation_for_request(request, conversation_id) -> Conversation | Response:
+    user = _request_user(request)
+    if user:
+        return get_object_or_404(Conversation, id=conversation_id, user=user)
+    key, err = _require_anon_key(request)
+    if err:
+        return err
+    return get_object_or_404(
+        Conversation,
+        id=conversation_id,
+        user__isnull=True,
+        anonymous_session_key=key,
+        access_mode=AccessMode.PUBLIC.value,
+    )
+
+
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@throttle_classes([ResearchCopilotUserThrottle])
+@permission_classes([AllowAny])
+@throttle_classes([ResearchCopilotUserThrottle, ResearchCopilotAnonThrottle])
 def bootstrap(request):
-    """Public config for the Copilot UI (still requires auth)."""
-    if not conv_svc.feature_enabled(user=request.user):
-        # Still return bootstrap shape with enabled=false for UI to hide gracefully
-        ctx = build_context(request.user)
+    """Public config for the Copilot UI (anonymous or authenticated)."""
+    user = _request_user(request)
+    if not conv_svc.feature_enabled(user=user):
+        ctx = build_context(user)
         return Response(
             {
                 "enabled": False,
                 "assistant_name": "IIC Research Copilot",
+                "access_mode": "public",
                 "role_bucket": ctx.role_bucket,
                 "suggested_prompts": SUGGESTED_PROMPTS.get(ctx.role_bucket) or SUGGESTED_PROMPTS["default"],
                 "tools_available": [],
                 "capabilities": ctx.capabilities,
             }
         )
-    return Response(conv_svc.bootstrap_payload(user=request.user))
+    return Response(conv_svc.bootstrap_payload(user=user))
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
-@throttle_classes([ResearchCopilotUserThrottle])
+@permission_classes([AllowAny])
+@throttle_classes([ResearchCopilotUserThrottle, ResearchCopilotAnonThrottle])
 def conversations_collection(request):
-    gated = _feature_gate(user=request.user)
+    user = _request_user(request)
+    gated = _feature_gate(user=user)
     if gated:
         return gated
 
     if request.method == "GET":
-        rows = conv_svc.list_conversations(user=request.user)
+        if user:
+            rows = conv_svc.list_conversations(user=user)
+        else:
+            key, err = _require_anon_key(request)
+            if err:
+                return err
+            rows = conv_svc.list_conversations(user=None, anonymous_session_key=key)
         return Response(
             {
                 "count": len(rows),
@@ -79,39 +140,56 @@ def conversations_collection(request):
         )
 
     title = (request.data.get("title") or "").strip()
-    conv = conv_svc.create_conversation(user=request.user, title=title)
-    ctx = build_context(request.user)
+    if user:
+        conv = conv_svc.create_conversation(user=user, title=title)
+    else:
+        key, err = _require_anon_key(request)
+        if err:
+            return err
+        conv = conv_svc.create_conversation(user=None, title=title, anonymous_session_key=key)
+    ctx = build_context(user)
     return Response(
         {
             "conversation": conv_svc.serialize_conversation(conv, include_messages=True),
-            "suggested_prompts": SUGGESTED_PROMPTS.get(ctx.role_bucket) or SUGGESTED_PROMPTS["default"],
+            "suggested_prompts": (
+                conv_svc.bootstrap_payload(user=user).get("suggested_prompts")
+                or SUGGESTED_PROMPTS.get(ctx.role_bucket)
+                or SUGGESTED_PROMPTS["default"]
+            ),
+            "access_mode": conv.access_mode,
         },
         status=status.HTTP_201_CREATED,
     )
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
-@throttle_classes([ResearchCopilotUserThrottle])
+@permission_classes([AllowAny])
+@throttle_classes([ResearchCopilotUserThrottle, ResearchCopilotAnonThrottle])
 def conversation_detail(request, conversation_id):
-    gated = _feature_gate(user=request.user)
+    user = _request_user(request)
+    gated = _feature_gate(user=user)
     if gated:
         return gated
-    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    conv = _get_conversation_for_request(request, conversation_id)
+    if isinstance(conv, Response):
+        return conv
     return Response(conv_svc.serialize_conversation(conv, include_messages=True))
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@throttle_classes([ResearchCopilotUserThrottle])
+@permission_classes([AllowAny])
+@throttle_classes([ResearchCopilotUserThrottle, ResearchCopilotAnonThrottle])
 def conversation_messages(request, conversation_id):
-    gated = _feature_gate(user=request.user)
+    user = _request_user(request)
+    gated = _feature_gate(user=user)
     if gated:
         return gated
-    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    conv = _get_conversation_for_request(request, conversation_id)
+    if isinstance(conv, Response):
+        return conv
     content = request.data.get("content") or request.data.get("message") or ""
     try:
-        payload = conv_svc.send_message(user=request.user, conversation=conv, content=content)
+        payload = conv_svc.send_message(user=user, conversation=conv, content=content)
     except ValueError as exc:
         return Response(
             {"error": {"code": str(exc), "message": "Invalid message."}},
@@ -121,24 +199,27 @@ def conversation_messages(request, conversation_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@throttle_classes([ResearchCopilotUserThrottle])
+@permission_classes([AllowAny])
+@throttle_classes([ResearchCopilotUserThrottle, ResearchCopilotAnonThrottle])
 def conversation_messages_stream(request, conversation_id):
-    gated = _feature_gate(user=request.user)
+    user = _request_user(request)
+    gated = _feature_gate(user=user)
     if gated:
         return gated
-    conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    conv = _get_conversation_for_request(request, conversation_id)
+    if isinstance(conv, Response):
+        return conv
     content = request.data.get("content") or request.data.get("message") or ""
 
     def event_stream():
         try:
             for item in conv_svc.stream_message_deltas(
-                user=request.user,
+                user=user,
                 conversation=conv,
                 content=content,
             ):
                 ev = item.get("event", "message")
-                data = json.dumps(item.get("data") or {})
+                data = json.dumps(item.get("data") or {k: v for k, v in item.items() if k != "event"})
                 yield f"event: {ev}\ndata: {data}\n\n"
         except ValueError as exc:
             yield f"event: error\ndata: {json.dumps({'code': str(exc)})}\n\n"
@@ -176,13 +257,25 @@ def conversation_feedback(request, conversation_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
-@throttle_classes([ResearchCopilotToolThrottle])
+@permission_classes([AllowAny])
+@throttle_classes(
+    [
+        ResearchCopilotToolThrottle,
+        ResearchCopilotAnonToolThrottle,
+        ResearchCopilotUserThrottle,
+        ResearchCopilotAnonThrottle,
+    ]
+)
 def execute_tool(request):
-    """Execute a Copilot tool (read-only or confirmation action-card)."""
-    gated = _feature_gate(user=request.user)
+    """Execute a Copilot tool. Backend ACL rejects non-public tools for anonymous callers."""
+    user = _request_user(request)
+    gated = _feature_gate(user=user)
     if gated:
         return gated
+    if not user:
+        key, err = _require_anon_key(request)
+        if err:
+            return err
     from iic_booking.research_copilot.services import tools as tools_svc
 
     name = (request.data.get("name") or request.data.get("tool") or "").strip()
@@ -197,8 +290,16 @@ def execute_tool(request):
             {"error": {"code": "invalid_arguments", "message": "arguments must be an object"}},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    result = tools_svc.execute_tool(name=name, arguments=arguments, user=request.user)
+    mode = AccessMode(conv_svc.effective_access_mode(user=user))
+    result = tools_svc.execute_tool(name=name, arguments=arguments, user=user, access_mode=mode)
     code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
+    if result.get("error") == "login_required":
+        code = status.HTTP_403_FORBIDDEN
+        result = {
+            **result,
+            "login_required": True,
+            "login_href": "/login",
+        }
     return Response(result, status=code)
 
 

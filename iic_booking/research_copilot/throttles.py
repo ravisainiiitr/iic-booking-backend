@@ -6,7 +6,7 @@ from rest_framework.throttling import SimpleRateThrottle
 
 
 class ResearchCopilotUserThrottle(SimpleRateThrottle):
-    """Per-user throttle for Copilot chat / conversations / tools."""
+    """Per-user throttle for authenticated Copilot chat / conversations / tools."""
 
     scope = "research_copilot_user"
 
@@ -14,6 +14,23 @@ class ResearchCopilotUserThrottle(SimpleRateThrottle):
         if not request.user or not request.user.is_authenticated:
             return None
         return self.cache_format % {"scope": self.scope, "ident": request.user.pk}
+
+
+class ResearchCopilotAnonThrottle(SimpleRateThrottle):
+    """Per-IP throttle for anonymous Public Copilot (AI.24.1).
+
+    Prevents unlimited anonymous Ollama consumption while bookings stay higher priority.
+    """
+
+    scope = "research_copilot_anon"
+
+    def get_cache_key(self, request, view):
+        if request.user and request.user.is_authenticated:
+            return None
+        ident = self.get_ident(request)
+        if not ident:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": ident}
 
 
 class ResearchCopilotToolThrottle(SimpleRateThrottle):
@@ -25,3 +42,17 @@ class ResearchCopilotToolThrottle(SimpleRateThrottle):
         if not request.user or not request.user.is_authenticated:
             return None
         return self.cache_format % {"scope": self.scope, "ident": request.user.pk}
+
+
+class ResearchCopilotAnonToolThrottle(SimpleRateThrottle):
+    """Stricter per-IP throttle for anonymous tool execute."""
+
+    scope = "research_copilot_anon_tool"
+
+    def get_cache_key(self, request, view):
+        if request.user and request.user.is_authenticated:
+            return None
+        ident = self.get_ident(request)
+        if not ident:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": ident}

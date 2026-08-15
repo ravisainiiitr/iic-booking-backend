@@ -538,6 +538,8 @@ REST_FRAMEWORK = {
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="60/hour"),
         "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="30/hour"),
+        "research_copilot_anon": env("RESEARCH_COPILOT_ANON_THROTTLE", default="20/hour"),
+        "research_copilot_anon_tool": env("RESEARCH_COPILOT_ANON_TOOL_THROTTLE", default="15/hour"),
     },
 }
 
@@ -566,6 +568,10 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 CORS_EXPOSE_HEADERS = ["X-Booking-Perf", "x-booking-perf"]
+# AI.24.1: allow Public Copilot anonymous session header in browser preflight
+from corsheaders.defaults import default_headers as _cors_default_headers  # noqa: E402
+
+CORS_ALLOW_HEADERS = list(_cors_default_headers) + ["x-copilot-anonymous-key"]
 
 # By Default swagger ui is available only to admin user(s). You can change permission classes to change that
 # See more configuration options at https://drf-spectacular.readthedocs.io/en/latest/settings.html#settings
@@ -620,6 +626,8 @@ PROVISIONING_VERSION = env("PROVISIONING_VERSION", default="2.0")
 PROVISIONING_ENABLED = env.bool("PROVISIONING_ENABLED", default=True)
 RESEARCH_COPILOT_VERSION = env("RESEARCH_COPILOT_VERSION", default="0.1.0")
 RESEARCH_COPILOT_ENABLED = env.bool("RESEARCH_COPILOT_ENABLED", default=False)
+# AI.24.1: anonymous Public Copilot when ENABLED (private tools still require auth + pilot).
+RESEARCH_COPILOT_PUBLIC_ENABLED = env.bool("RESEARCH_COPILOT_PUBLIC_ENABLED", default=True)
 RESEARCH_COPILOT_MODEL = env("RESEARCH_COPILOT_MODEL", default="")
 RESEARCH_COPILOT_EMBEDDING_PROVIDER = env("RESEARCH_COPILOT_EMBEDDING_PROVIDER", default="local")
 RESEARCH_COPILOT_EMBEDDING_MODEL = env("RESEARCH_COPILOT_EMBEDDING_MODEL", default="text-embedding-3-small")
