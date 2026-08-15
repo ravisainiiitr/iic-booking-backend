@@ -1,0 +1,71 @@
+ Container iic-booking-backend-deploy-django-run-cd462f1d374c Creating 
+ Container iic-booking-backend-deploy-django-run-cd462f1d374c Created 
+chown: invalid user: 'django:django'
+...................................                                      [100%]
+=============================== warnings summary ===============================
+iic_booking/equipment/models.py:4776
+  /app/iic_booking/equipment/models.py:4776: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(
+
+iic_booking/equipment/models.py:5245
+  /app/iic_booking/equipment/models.py:5245: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(requested_qty__gte=0), name='inv_req_line_requested_gte_0'),
+
+iic_booking/equipment/models.py:5246
+  /app/iic_booking/equipment/models.py:5246: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(approved_qty__gte=0), name='inv_req_line_approved_gte_0'),
+
+iic_booking/equipment/models.py:5247
+  /app/iic_booking/equipment/models.py:5247: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(issued_qty__gte=0), name='inv_req_line_issued_gte_0'),
+
+iic_booking/equipment/models.py:5248
+  /app/iic_booking/equipment/models.py:5248: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(approved_qty__lte=models.F('requested_qty')), name='inv_req_line_approved_lte_requested'),
+
+iic_booking/equipment/models.py:5249
+  /app/iic_booking/equipment/models.py:5249: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(issued_qty__lte=models.F('approved_qty')), name='inv_req_line_issued_lte_approved'),
+
+iic_booking/equipment/models.py:5297
+  /app/iic_booking/equipment/models.py:5297: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(quantity__gt=0), name='inv_tx_quantity_gt_0'),
+
+iic_booking/equipment/models.py:5526
+  /app/iic_booking/equipment/models.py:5526: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(quantity__gt=0), name='proc_line_qty_gt_0'),
+
+iic_booking/equipment/models.py:5527
+  /app/iic_booking/equipment/models.py:5527: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    models.CheckConstraint(check=models.Q(tentative_unit_cost__gte=0), name='proc_line_unit_cost_gte_0'),
+
+.venv/lib/python3.13/site-packages/django/db/models/fields/__init__.py:1148
+.venv/lib/python3.13/site-packages/django/db/models/fields/__init__.py:1148
+.venv/lib/python3.13/site-packages/django/db/models/fields/__init__.py:1148
+  /app/.venv/lib/python3.13/site-packages/django/db/models/fields/__init__.py:1148: RemovedInDjango60Warning: The default scheme will be changed from 'http' to 'https' in Django 6.0. Pass the forms.URLField.assume_scheme argument to silence this warning, or set the FORMS_URLFIELD_ASSUME_HTTPS transitional setting to True to opt into using 'https' as the new default scheme.
+    return form_class(**defaults)
+
+.venv/lib/python3.13/site-packages/requests/__init__.py:113
+  /app/.venv/lib/python3.13/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.2) or chardet (7.0.1)/charset_normalizer (3.4.4) doesn't match a supported version!
+    warnings.warn(
+
+iic_booking/research_copilot/tests/test_ai241_public_auth.py::test_anonymous_bootstrap_public_mode
+  /app/iic_booking/equipment/migrations/0097_ta_rewards.py:119: RemovedInDjango60Warning: CheckConstraint.check is deprecated in favor of `.condition`.
+    constraint=models.CheckConstraint(check=models.Q(("hours_spent__gt", 0)) | models.Q(("samples_processed__gt", 0)), name="ta_duty_hours_or_samples_positive"),
+
+iic_booking/research_copilot/tests/test_ai241_public_auth.py: 9 warnings
+iic_booking/research_copilot/tests/test_security_ai13.py: 6 warnings
+  /app/.venv/lib/python3.13/site-packages/django/core/handlers/base.py:61: UserWarning: No directory at: /app/staticfiles/
+    mw_instance = middleware(adapted_handler)
+
+iic_booking/research_copilot/tests/test_ai241_public_auth.py::test_anonymous_bootstrap_public_mode
+  /app/.venv/lib/python3.13/site-packages/razorpay/client.py:4: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+    import pkg_resources
+
+iic_booking/research_copilot/tests/test_ai241_public_auth.py::test_anonymous_bootstrap_public_mode
+  /app/.venv/lib/python3.13/site-packages/pkg_resources/__init__.py:3146: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('sphinxcontrib')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+35 passed, 31 warnings in 12.91s

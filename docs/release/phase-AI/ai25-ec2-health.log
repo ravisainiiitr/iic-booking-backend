@@ -1,0 +1,41 @@
+=== containers ===
+iic-booking-backend-django-1	Up 56 minutes (healthy)
+iic-booking-backend-ollama-1	Up About an hour
+iic_booking_production_frontend	Up 10 hours (healthy)
+iic-booking-backend-celeryworker-1	Up 10 hours
+iic-booking-backend-celerybeat-1	Up 10 hours
+iic-booking-backend-flower-1	Up 10 hours
+iic_booking_production_redis	Up 10 hours (healthy)
+iic-booking-backend-reverse-tunnel-gateway-1	Up 10 hours (healthy)
+iic-booking-backend-guacamole-1	Up 10 hours (healthy)
+iic-booking-backend-guacd-1	Up 10 hours (healthy)
+iic-booking-backend-guacamole-db-1	Up 10 hours (healthy)
+CID=306cbfa3a598
+=== version ===
+=== env ===
+true
+test.student@iic-booking.test
+1
+160
+llama3.2:1b
+ollama
+=== ollama ===
+NAME    ID    SIZE    PROCESSOR    CONTEXT    UNTIL 
+iic-booking-backend-django-1 0.27% 518.2MiB / 30.73GiB
+iic-booking-backend-ollama-1 0.00% 14.73MiB / 8GiB
+iic_booking_production_frontend 0.00% 13.85MiB / 30.73GiB
+iic-booking-backend-celeryworker-1 0.20% 479.3MiB / 30.73GiB
+iic-booking-backend-celerybeat-1 0.00% 156.6MiB / 30.73GiB
+iic-booking-backend-flower-1 0.20% 171.2MiB / 30.73GiB
+iic_booking_production_redis 0.14% 24.25MiB / 30.73GiB
+iic-booking-backend-reverse-tunnel-gateway-1 0.06% 97.39MiB / 30.73GiB
+iic-booking-backend-guacamole-1 0.06% 724.7MiB / 30.73GiB
+iic-booking-backend-guacd-1 0.00% 16.02MiB / 30.73GiB
+iic-booking-backend-guacamole-db-1 0.00% 54.03MiB / 30.73GiB
+=== celery ===
+->  celery@a3694f131019: OK
+        pong
+
+1 node online.
+=== anon bootstrap (expect auth required on pre-24.1) ===
+AI25_HEALTH_DONE
