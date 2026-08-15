@@ -51,16 +51,19 @@
 | AI.22.2 | [AI.22.2-Final-Qualification-Report.md](./AI.22.2-Final-Qualification-Report.md) | **PARTIAL — REMAINING QUALIFICATION BLOCKERS** |
 | AI.22.2 | [AI.22.2-Remaining-Gaps.md](./AI.22.2-Remaining-Gaps.md) | Timeout closed; PI config + DNS remain |
 | AI.22.2 | [ai222_scorecard.json](./ai222_scorecard.json) | Final 86-query scorecard |
+| AI.23 | [AI.23-Final-Operational-Qualification.md](./AI.23-Final-Operational-Qualification.md) | **READY FOR PILOT CONTINUATION — OPERATIONAL BLOCKER REMAINS** |
+| AI.23 | [AI.23-Pilot-Expansion-Plan.md](./AI.23-Pilot-Expansion-Plan.md) | Expansion plan prepared — **not executed** |
+| AI.23 | [ai23_scorecard.json](./ai23_scorecard.json) | Operational 86-query regression |
 
-## Current production posture (AI.22.2)
+## Current production posture (AI.23)
 
 | Layer | Status |
 |-------|--------|
 | RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
 | Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
-| Ollama | `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1, max_tokens 160 |
-| 86-query eval | Useful **100%**, safe **100%**, hallucination **0%**, timeout **0%** |
+| Ollama envelope | `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1, max_tokens 160 (**frozen**) |
+| 86-query eval | Useful **100%**, strict **100%**, safe **100%**, hallucination **0%**, timeout **0%** |
 | Production PI profiles | **0 — NOT CONFIGURED** |
 | Live RAA/DSA | **BLOCKED — DNS** |
 | Global Copilot | **Still NOT enabled** |
-| Verdict | **PARTIAL — REMAINING QUALIFICATION BLOCKERS** |
+| Verdict | **READY FOR PILOT CONTINUATION — OPERATIONAL BLOCKER REMAINS** |
