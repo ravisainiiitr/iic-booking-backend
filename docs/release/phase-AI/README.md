@@ -60,18 +60,21 @@
 | AI.24.1 | [AI.24.1-Public-Authenticated-Copilot.md](./AI.24.1-Public-Authenticated-Copilot.md) | **PARTIAL** — public+auth modes coded; **not deployed** |
 | AI.24.1 | [AI.24.1-Security-Matrix.md](./AI.24.1-Security-Matrix.md) | Public/auth ACL matrix |
 | AI.24.1 | [AI.24.1-Operational-Runbook.md](./AI.24.1-Operational-Runbook.md) | Public enable / throttle / rollback |
+| AI.25 | [AI.25-Public-Copilot-Qualification.md](./AI.25-Public-Copilot-Qualification.md) | **PARTIAL** — Postgres tests PASS; 86-query on AI.24.1 **not run** |
+| AI.25 | [AI.25-Authenticated-Regression.md](./AI.25-Authenticated-Regression.md) | AI.23 live 86-query gate |
+| AI.25 | [AI.25-Security-Qualification.md](./AI.25-Security-Qualification.md) | ACL / anon key / injection |
+| AI.25 | [AI.25-Production-Enablement-Runbook.md](./AI.25-Production-Enablement-Runbook.md) | Future enablement (not approved yet) |
 
-## Current production posture (AI.24 / AI.24.1)
+## Current production posture (AI.25)
 
 | Layer | Status |
 |-------|--------|
-| RESEARCH COPILOT feature flag | **`true` (allowlist only)** — production unchanged by AI.24.1 until approved |
-| Public Copilot (`PUBLIC_ENABLED`) | **Implemented in code — not production-enabled pending approval** |
+| RESEARCH COPILOT feature flag | **`true` (allowlist only)** |
+| Public Copilot (`PUBLIC_ENABLED`) | **OFF / unset — not enabled** |
+| AI.24.1 code on production | **NOT deployed** |
 | Pilot allowlist | **`test.student@iic-booking.test` (1)** — **not expanded** |
-| Ollama envelope | `llama3.2:1b`, 2 CPU / 8 GB, concurrent 1, max_tokens 160 (**frozen / golden**) |
-| AI.23 86-query golden baseline | Useful/strict/safe **100%**, hallucination/timeout **0%** |
-| Production PI profiles | **0 — NOT CONFIGURED** |
-| Live RAA/DSA | **BLOCKED — DNS** |
-| Global Copilot | **Still NOT enabled** |
-| Android public mode | **NOT IN SCOPE** |
-| Verdict | **PARTIAL — PUBLIC MODE READY, LIVE REGRESSION / DEPLOY PENDING APPROVAL** |
+| Ollama envelope | `llama3.2:1b`, concurrent 1, max_tokens 160, ~8GiB (**frozen**) |
+| Postgres AI.24.1/AI.25 tests | **35 passed** |
+| AI.23 86-query on AI.24.1 build | **NOT EXECUTED** |
+| Frontend build (AI.24.1 UI) | **PASS** |
+| Verdict | **PARTIAL — QUALIFICATION COMPLETE BUT OPERATIONAL ISSUE REMAINS** |

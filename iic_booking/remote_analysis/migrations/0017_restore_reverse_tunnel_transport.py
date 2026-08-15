@@ -140,9 +140,11 @@ def restore_reverse_tunnel_transport(apps, schema_editor):
         TunnelEvent = django_apps.get_model("remote_analysis", "TunnelEvent")
         TunnelMetric = django_apps.get_model("remote_analysis", "TunnelMetric")
 
+    created_tunnel_session = False
     if TunnelSession._meta.db_table not in table_names:
         schema_editor.create_model(TunnelSession)
         table_names.add(TunnelSession._meta.db_table)
+        created_tunnel_session = True
     if TunnelMetric._meta.db_table not in table_names:
         schema_editor.create_model(TunnelMetric)
         table_names.add(TunnelMetric._meta.db_table)
@@ -150,7 +152,9 @@ def restore_reverse_tunnel_transport(apps, schema_editor):
         schema_editor.create_model(TunnelEvent)
         table_names.add(TunnelEvent._meta.db_table)
 
-    if TunnelSession._meta.db_table in table_names:
+    # create_model already queues Meta.indexes; re-adding them in the same
+    # schema_editor flush causes DuplicateTable on fresh databases (AI.25).
+    if TunnelSession._meta.db_table in table_names and not created_tunnel_session:
         existing_indexes = _index_names(schema_editor, TunnelSession._meta.db_table)
         for index in TunnelSession._meta.indexes:
             if index.name not in existing_indexes:

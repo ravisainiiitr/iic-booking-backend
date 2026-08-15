@@ -334,7 +334,13 @@ def test_secret_and_infra_questions_refused(monkeypatch):
     assert resp.status_code == 200
     content = (resp.json()["message"]["content"] or "").lower()
     assert "11434" not in content
-    assert "api key" not in content or "cannot" in content or "not" in content
+    # Refusal may mention the words "api key" while declining; secrets/URLs must not appear.
+    assert "sk-" not in content
+    assert "http://" not in content and "https://" not in content
+    meta = resp.json()["message"].get("metadata") or {}
+    assert meta.get("security_refusal") is True or any(
+        k in content for k in ("can't", "cannot", "won't", "will not", "not provide", "refuse", "available")
+    )
 
 
 @pytest.mark.django_db
