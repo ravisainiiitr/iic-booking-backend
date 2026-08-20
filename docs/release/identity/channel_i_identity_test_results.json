@@ -1,0 +1,9 @@
+{
+  "suite": "channel_i_identity_architecture",
+  "database": "PostgreSQL",
+  "passed": 11,
+  "failed": 0,
+  "file": "iic_booking/users/tests/test_channel_i_identity_architecture.py",
+  "live_channel_i_oauth_tested": false,
+  "status": "PASS_UNIT"
+}

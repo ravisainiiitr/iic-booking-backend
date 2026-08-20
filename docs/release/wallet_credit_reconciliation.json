@@ -1,0 +1,7 @@
+{
+  "read_only": true,
+  "total_facilities": 0,
+  "inconsistent_count": 0,
+  "facilities": [],
+  "note": "No facilities in this environment at report time. Re-run: python manage.py reconcile_wallet_credit --output docs/release/wallet_credit_reconciliation.json"
+}

@@ -680,9 +680,33 @@ class BookingRemoteAnalysisService:
 
         reservation = self.ensure_reservation(booking, actor=user)
 
+        from iic_booking.remote_analysis.constants import SessionStatus
+        from iic_booking.remote_analysis.guacamole.authorization import find_reusable_open_session
+        from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
+        from iic_booking.remote_analysis.guacamole.session import SessionError, SessionOrchestrator
+        from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings, WorkstationRdpSecret
+        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
+        from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+
+        settings_obj = RemoteAnalysisSettings.get_solo()
+        # Fail-fast before consuming the check-in hold. Otherwise a missing
+        # WorkstationRdpSecret leaves the reservation RESERVED with no session
+        # and the only Analysis PC stays held until End Analysis.
+        if reservation.workstation_id and not settings_obj.mock_guacamole:
+            secret = WorkstationRdpSecret.objects.filter(workstation_id=reservation.workstation_id).first()
+            username_ok = bool(secret and (secret.username or "").strip())
+            password_ok = bool(secret and (secret.password_encrypted or "").strip())
+            if not username_ok or not password_ok:
+                raise SessionError(
+                    "Workstation Windows credentials are not configured. "
+                    "Re-run the Remote Analysis Agent installer (or set Workstation RDP Secret "
+                    "in Django Admin) so automatic login can succeed.",
+                    code="rdp_credentials_missing",
+                )
+
         # Explicit check-in required before Guacamole / tunnel allocation.
+        checked_in_this_call = False
         if reservation.status == ReservationStatus.AWAITING_CHECKIN:
-            from iic_booking.remote_analysis.guacamole.session import SessionError
             from iic_booking.remote_analysis.services.checkin import CheckinService
             from iic_booking.remote_analysis.services.reservation import ReservationService
 
@@ -700,17 +724,9 @@ class BookingRemoteAnalysisService:
                 reason="User checked in — starting desktop",
                 actor=user,
             )
+            checked_in_this_call = True
             self.audit.log(booking, "CheckinAccepted", details=str(reservation.id), actor=user)
 
-        from iic_booking.remote_analysis.constants import SessionStatus
-        from iic_booking.remote_analysis.guacamole.authorization import find_reusable_open_session
-        from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
-        from iic_booking.remote_analysis.guacamole.session import SessionOrchestrator
-        from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
-        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
-        from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
-
-        settings_obj = RemoteAnalysisSettings.get_solo()
         workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user)
         if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
             try:
@@ -720,12 +736,26 @@ class BookingRemoteAnalysisService:
 
         orch = SessionOrchestrator()
         was_new = find_reusable_open_session(reservation, settings_obj=orch.settings) is None
-        session = orch.create_session(
-            reservation=reservation,
-            user=user,
-            client_ip=client_ip,
-            wait_for_prepare=wait_for_prepare,
-        )
+        try:
+            session = orch.create_session(
+                reservation=reservation,
+                user=user,
+                client_ip=client_ip,
+                wait_for_prepare=wait_for_prepare,
+            )
+        except SessionError:
+            if checked_in_this_call:
+                from iic_booking.remote_analysis.services.reservation import ReservationService
+
+                reservation.refresh_from_db()
+                if reservation.status == ReservationStatus.RESERVED:
+                    ReservationService().transition(
+                        reservation,
+                        ReservationStatus.AWAITING_CHECKIN,
+                        reason="Launch failed; restoring check-in hold",
+                        actor=user,
+                    )
+            raise
         if session.status == SessionStatus.PREPARING:
             orch.try_advance_after_prepare(session)
             session.refresh_from_db()

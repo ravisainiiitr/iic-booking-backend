@@ -2916,6 +2916,15 @@ def _book_equipment_impl(request, pk):
     if not user_can_see_equipment(request.user, equipment):
         return equipment_visibility_denied_response(request.user)
 
+    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+
+    locked, lock_message = end_user_booking_is_locked(request.user)
+    if locked:
+        return Response(
+            {"error": lock_message, "code": "PORTAL_BOOKING_LOCKED", "message": lock_message},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     # Booking is allowed only when equipment is Operational.
     # This is enforced server-side so maintenance statuses are always visible but not bookable.
     if (equipment.status or "").strip() != EquipmentStatus.ACTIVE:

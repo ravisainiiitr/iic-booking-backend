@@ -272,6 +272,11 @@ def create_booking_for_waitlist_user(
     """
     if not slot_ids:
         return None, "No slot IDs provided"
+    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+
+    locked, lock_message = end_user_booking_is_locked(booking_user)
+    if locked:
+        return None, lock_message
     if created_by is None:
         created_by = booking_user
 

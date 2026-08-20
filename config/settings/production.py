@@ -23,10 +23,16 @@ from .base import ses_region
 # https://docs.djangoproject.com/en/dev/ref/settings/#secret-key
 SECRET_KEY = env("DJANGO_SECRET_KEY")
 # https://docs.djangoproject.com/en/dev/ref/settings/#allowed-hosts
-# Include API server IP so WebSocket (e.g. ws://15.206.88.2:8080/ws/notifications/) Origin is accepted
+# Include API server IP so WebSocket (e.g. ws://3.110.50.174:8080/ws/notifications/) Origin is accepted
 ALLOWED_HOSTS = env.list(
     "DJANGO_ALLOWED_HOSTS",
-    default=["*.iicbooking.iitr.ac.in", "15.206.88.2", "localhost", "127.0.0.1"],
+    default=[
+        "equip.iitr.ac.in",
+        "*.iicbooking.iitr.ac.in",
+        "3.110.50.174",
+        "localhost",
+        "127.0.0.1",
+    ],
 )
 
 # Quota limits must always apply in production (ignore any SKIP_BOOKING_QUOTA_CHECK in env).
@@ -58,7 +64,13 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # Required when running behind a proxy (e.g. Traefik) for HTTPS origins
 CSRF_TRUSTED_ORIGINS = env.list(
     "DJANGO_CSRF_TRUSTED_ORIGINS",
-    default=["https://localhost", "https://127.0.0.1", "https://iicbooking.iitr.ac.in", "https://www.iicbooking.iitr.ac.in"],
+    default=[
+        "https://localhost",
+        "https://127.0.0.1",
+        "https://equip.iitr.ac.in",
+        "https://iicbooking.iitr.ac.in",
+        "https://www.iicbooking.iitr.ac.in",
+    ],
 )
 # https://docs.djangoproject.com/en/dev/ref/settings/#secure-ssl-redirect
 SECURE_SSL_REDIRECT = env.bool("DJANGO_SECURE_SSL_REDIRECT", default=True)
@@ -214,7 +226,7 @@ if env("SENTRY_DSN", default="") != "":
 # -------------------------------------------------------------------------------
 # Allow CORS for React frontend in production
 # Set DJANGO_CORS_ALLOWED_ORIGINS in your environment variables
-# Example: DJANGO_CORS_ALLOWED_ORIGINS=http://15.206.88.2,https://yourdomain.com
+# Example: DJANGO_CORS_ALLOWED_ORIGINS=http://3.110.50.174,https://yourdomain.com
 CORS_ALLOWED_ORIGINS = env.list(
     "DJANGO_CORS_ALLOWED_ORIGINS",
     default=[],
@@ -226,7 +238,8 @@ CORS_ALLOW_CREDENTIALS = True
 # -------------------------------------------------------------------------------
 # Tools that generate code samples can use SERVERS to point to the correct domain
 SPECTACULAR_SETTINGS["SERVERS"] = [
-    {"url": "https://iicbooking.iitr.ac.in", "description": "Production server"},
+    {"url": "https://equip.iitr.ac.in", "description": "Production server"},
+    {"url": "https://iicbooking.iitr.ac.in", "description": "Legacy production alias"},
 ]
 
 # Pin enrollment throttle for production. Do not inherit a loose DEBUG default.

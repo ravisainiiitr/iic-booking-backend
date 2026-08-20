@@ -1,0 +1,7 @@
+{
+  "suite": "student_lifecycle",
+  "covered_in": "test_channel_i_identity_architecture.py::test_expire_and_extension",
+  "passed": true,
+  "live_celery_tested": false,
+  "status": "PASS_UNIT"
+}
