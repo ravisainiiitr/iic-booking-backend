@@ -137,10 +137,21 @@ def extract_channel_i_academic_facts(user_info: dict) -> dict[str, Any]:
         user_info.get("username") or user_info.get("preferred_username") or user_info.get("preferredUsername")
     )
     user_id = _text(user_info.get("userId") or user_info.get("user_id") or user_info.get("sub"))
+    enrolment = _text(
+        student.get("enrolmentNumber")
+        or student.get("enrolment_number")
+        or student.get("enrollmentNumber")
+        or ""
+    )
+    from iic_booking.users.identity.gender import extract_channel_i_sex, normalize_channel_i_sex
+
+    channel_i_sex = extract_channel_i_sex(user_info)
+    gender = normalize_channel_i_sex(channel_i_sex)
 
     return {
         "channel_i_user_id": user_id,
         "channel_i_username": username,
+        "student_enrolment_number": enrolment,
         "student_degree_name": degree_name,
         "student_department_name": department_name,
         "student_branch_name": branch_name,
@@ -148,6 +159,8 @@ def extract_channel_i_academic_facts(user_info: dict) -> dict[str, Any]:
         "student_end_date": end_date,
         "faculty_department_name": faculty_dept,
         "faculty_designation": faculty_designation,
+        "channel_i_sex": channel_i_sex,
+        "normalized_gender": gender or "",
         "has_student_payload": has_student,
         "has_faculty_payload": has_faculty,
         "raw_student_keys": sorted(student.keys()) if student else [],
@@ -159,12 +172,15 @@ def facts_as_history_values(facts: dict[str, Any]) -> dict[str, str]:
     for key in (
         "channel_i_user_id",
         "channel_i_username",
+        "student_enrolment_number",
         "student_degree_name",
         "student_department_name",
         "student_start_date",
         "student_end_date",
         "faculty_department_name",
         "faculty_designation",
+        "channel_i_sex",
+        "normalized_gender",
     ):
         val = facts.get(key)
         if isinstance(val, date):

@@ -65,12 +65,19 @@ class ChannelIIdentityProfile(models.Model):
     )
     channel_i_user_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
     channel_i_username = models.CharField(max_length=128, blank=True, default="")
+    student_enrolment_number = models.CharField(max_length=64, blank=True, default="", db_index=True)
     student_degree_name = models.CharField(max_length=255, blank=True, default="")
     student_department_name = models.CharField(max_length=255, blank=True, default="")
     student_start_date = models.DateField(null=True, blank=True)
     student_end_date = models.DateField(null=True, blank=True)
     faculty_department_name = models.CharField(max_length=255, blank=True, default="")
     faculty_designation = models.CharField(max_length=255, blank=True, default="")
+    channel_i_sex = models.CharField(max_length=32, blank=True, default="")
+    normalized_gender = models.CharField(max_length=30, blank=True, default="")
+    gender_locked_from_channel_i = models.BooleanField(
+        default=False,
+        help_text=_("When True, User.gender is Channel-I supplied and must not be user-edited."),
+    )
     has_student_payload = models.BooleanField(default=False)
     has_faculty_payload = models.BooleanField(default=False)
     derived_end_date = models.DateField(null=True, blank=True)

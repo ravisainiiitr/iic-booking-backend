@@ -1,0 +1,27 @@
+{
+  "captured_at": "2026-08-20",
+  "source": "production django User info received logs",
+  "fields_verified": [
+    "userId",
+    "username",
+    "person.fullName",
+    "student.startDate",
+    "student.endDate",
+    "student.enrolmentNumber",
+    "student.branch name",
+    "student.branch degree name",
+    "student.branch department name",
+    "student.currentYear",
+    "student.currentSemester",
+    "biologicalInformation.sex",
+    "biologicalInformation.gender",
+    "contactInformation.instituteWebmailAddress"
+  ],
+  "employee_id_confirmation": {
+    "staff": "username",
+    "student": "student.enrolmentNumber",
+    "note": "Do not auto-write emp_id unless CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM is set"
+  },
+  "roles_key_present": false,
+  "facultyMember_often_empty_for_staff": true
+}
