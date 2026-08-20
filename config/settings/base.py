@@ -615,8 +615,10 @@ OMNIPORT_USERINFO_URL = env(
     default="https://channeli.in/open_auth/get_user_data/",
 )
 # Empty until IMG/operator confirms which userinfo path is the institutional Employee ID.
-# Example values: facultyMember.employeeId  or  student.enrolmentNumber
-# Username is never treated as Employee ID.
+# Live confirmation (2026-08-20): staff Employee ID = username; student ID = student.enrolmentNumber.
+# Recommended production value after review: operator_confirmed_map
+# Other values: username | student.enrolmentNumber | facultyMember.employeeId
+# Username is NEVER treated as Employee ID when this setting is empty.
 CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM = env(
     "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM",
     default="",

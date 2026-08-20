@@ -174,12 +174,42 @@ def decide_employee_id_on_login(
 ) -> IdentityApplyDecision:
     """Safe backfill rules. Never guess. Never overwrite a different emp_id.
 
-    Unverified candidates are never written. Username is never Employee ID.
+    Unverified candidates are never written. Username is never Employee ID unless
+    the operator explicitly confirms the claim path (see CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM).
+
+    Supported claim values (2026-08-20 live confirmation):
+      - username — staff Employee ID (Channel-I username)
+      - student.enrolmentNumber — student institutional ID
+      - operator_confirmed_map — dual rule: student→enrolment else→username
+      - facultyMember.employeeId — only when Channel-I sends that claim
     """
     existing = _blank(existing_emp_id)
-    candidate = _blank(claims.candidate_employee_id)
-    if operator_confirmed_claim and claims.candidate_employee_id_source == operator_confirmed_claim and candidate:
+    claim = _blank(operator_confirmed_claim)
+
+    # Bind candidate from the operator-confirmed claim path only.
+    if claim == "operator_confirmed_map":
+        if claims.student_enrolment_number:
+            claims.candidate_employee_id = claims.student_enrolment_number
+            claims.candidate_employee_id_source = "student.enrolmentNumber"
+            claims.verified = True
+        elif claims.channel_i_username:
+            claims.candidate_employee_id = claims.channel_i_username
+            claims.candidate_employee_id_source = "username"
+            claims.verified = True
+    elif claim == "username" and claims.channel_i_username:
+        claims.candidate_employee_id = claims.channel_i_username
+        claims.candidate_employee_id_source = "username"
         claims.verified = True
+    elif claim in {"student.enrolmentNumber", "student.enrolment_number"} and claims.student_enrolment_number:
+        claims.candidate_employee_id = claims.student_enrolment_number
+        claims.candidate_employee_id_source = "student.enrolmentNumber"
+        claims.verified = True
+    elif claim and claims.candidate_employee_id_source == claim and _blank(claims.candidate_employee_id):
+        claims.verified = True
+    elif claim and claims.candidate_employee_id_source == claim and claims.candidate_employee_id:
+        claims.verified = True
+
+    candidate = _blank(claims.candidate_employee_id)
     if existing:
         if claims.verified and candidate and existing != candidate:
             return IdentityApplyDecision(

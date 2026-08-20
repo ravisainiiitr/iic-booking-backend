@@ -12,8 +12,21 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     PortalMigrationPhase.PREPARATION: {PortalMigrationPhase.PARALLEL_OPERATION},
     PortalMigrationPhase.PARALLEL_OPERATION: {PortalMigrationPhase.FINANCIAL_FREEZE},
     PortalMigrationPhase.FINANCIAL_FREEZE: {PortalMigrationPhase.FINAL_SYNC, PortalMigrationPhase.PARALLEL_OPERATION},
-    PortalMigrationPhase.FINAL_SYNC: {PortalMigrationPhase.RECONCILIATION, PortalMigrationPhase.FINANCIAL_FREEZE},
-    PortalMigrationPhase.RECONCILIATION: {PortalMigrationPhase.NEW_PORTAL_ACTIVE, PortalMigrationPhase.FINAL_SYNC},
+    PortalMigrationPhase.FINAL_SYNC: {
+        PortalMigrationPhase.RECONCILIATION,
+        PortalMigrationPhase.FINANCIAL_FREEZE,
+        PortalMigrationPhase.MIGRATION_INTERRUPTED,
+    },
+    PortalMigrationPhase.RECONCILIATION: {
+        PortalMigrationPhase.NEW_PORTAL_ACTIVE,
+        PortalMigrationPhase.FINAL_SYNC,
+        PortalMigrationPhase.MIGRATION_INTERRUPTED,
+    },
+    PortalMigrationPhase.MIGRATION_INTERRUPTED: {
+        PortalMigrationPhase.FINAL_SYNC,
+        PortalMigrationPhase.RECONCILIATION,
+        PortalMigrationPhase.PARALLEL_OPERATION,
+    },
     PortalMigrationPhase.NEW_PORTAL_ACTIVE: {
         PortalMigrationPhase.OLD_PORTAL_READ_ONLY,
         PortalMigrationPhase.RECONCILIATION,

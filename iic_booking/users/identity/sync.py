@@ -17,12 +17,15 @@ from iic_booking.users.models.channel_i_identity import (
 TRACKED_FIELDS = (
     "channel_i_user_id",
     "channel_i_username",
+    "student_enrolment_number",
     "student_degree_name",
     "student_department_name",
     "student_start_date",
     "student_end_date",
     "faculty_department_name",
     "faculty_designation",
+    "channel_i_sex",
+    "normalized_gender",
 )
 
 
@@ -38,7 +41,7 @@ def sync_channel_i_identity(user, user_info: dict) -> ChannelIIdentityProfile:
     changed = False
     now = timezone.now()
     for field in TRACKED_FIELDS:
-        old = getattr(profile, field)
+        old = getattr(profile, field, None)
         new = facts.get(field)
         if _str(old) != _str(new):
             ChannelIIdentityHistory.objects.create(
@@ -47,7 +50,7 @@ def sync_channel_i_identity(user, user_info: dict) -> ChannelIIdentityProfile:
                 previous_value=_str(old),
                 new_value=_str(new),
             )
-            setattr(profile, field, new)
+            setattr(profile, field, new if new is not None else "")
             changed = True
     profile.has_student_payload = bool(facts.get("has_student_payload"))
     profile.has_faculty_payload = bool(facts.get("has_faculty_payload"))
@@ -71,6 +74,21 @@ def sync_channel_i_identity(user, user_info: dict) -> ChannelIIdentityProfile:
     else:
         if profile.has_student_payload:
             profile.validity_source = StudentValiditySource.UNRESOLVED
+
+    # Gender from Channel-I sex (read-only once supplied).
+    gender = facts.get("normalized_gender") or ""
+    if gender:
+        profile.gender_locked_from_channel_i = True
+        old_gender = _str(getattr(user, "gender", "") or "")
+        if old_gender != gender:
+            ChannelIIdentityHistory.objects.create(
+                profile=profile,
+                field_name="user.gender",
+                previous_value=old_gender,
+                new_value=gender,
+            )
+            user.gender = gender
+            user.save(update_fields=["gender"])
 
     profile.save()
     _ensure_unmapped_department_row(profile.student_department_name)

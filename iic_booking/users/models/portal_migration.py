@@ -7,6 +7,17 @@ from django.utils.translation import gettext_lazy as _
 
 
 class PortalMigrationPhase(models.TextChoices):
+    """Authoritative cutover phases.
+
+    Operator-facing aliases (docs):
+      LEGACY_ACTIVE / MIGRATION_PREPARATION → PREPARATION or PARALLEL_OPERATION
+      MIGRATION_READY → PARALLEL_OPERATION (sync on, booking optionally locked)
+      MIGRATION_RUNNING → FINAL_SYNC
+      MIGRATION_VERIFICATION → RECONCILIATION
+      MIGRATION_INTERRUPTED → stored via interrupted flag + last phase
+      LEGACY_REDIRECT → OLD_PORTAL_REDIRECT
+    """
+
     PREPARATION = "PREPARATION", _("Preparation")
     PARALLEL_OPERATION = "PARALLEL_OPERATION", _("Parallel operation")
     FINANCIAL_FREEZE = "FINANCIAL_FREEZE", _("Financial freeze")
@@ -16,7 +27,18 @@ class PortalMigrationPhase(models.TextChoices):
     OLD_PORTAL_READ_ONLY = "OLD_PORTAL_READ_ONLY", _("Old portal read-only")
     OLD_PORTAL_REDIRECT = "OLD_PORTAL_REDIRECT", _("Old portal redirect")
     ARCHIVED = "ARCHIVED", _("Archived")
+    MIGRATION_INTERRUPTED = "MIGRATION_INTERRUPTED", _("Migration interrupted")
 
+
+# Doc ↔ DB phase aliases (read-side convenience; writes use PortalMigrationPhase).
+PORTAL_MIGRATION_PHASE_ALIASES = {
+    "LEGACY_ACTIVE": PortalMigrationPhase.PREPARATION,
+    "MIGRATION_PREPARATION": PortalMigrationPhase.PREPARATION,
+    "MIGRATION_READY": PortalMigrationPhase.PARALLEL_OPERATION,
+    "MIGRATION_RUNNING": PortalMigrationPhase.FINAL_SYNC,
+    "MIGRATION_VERIFICATION": PortalMigrationPhase.RECONCILIATION,
+    "LEGACY_REDIRECT": PortalMigrationPhase.OLD_PORTAL_REDIRECT,
+}
 
 class LegacyWalletMappingStatus(models.TextChoices):
     PENDING = "PENDING", _("Pending")

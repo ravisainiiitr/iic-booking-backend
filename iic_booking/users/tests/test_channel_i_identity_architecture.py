@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -46,10 +46,37 @@ NESTED_STUDENT = {
         "enrolmentNumber": "24117001",
     },
     "person": {"fullName": "UG Student"},
+    "biologicalInformation": {"sex": "male", "gender": "man"},
+}
+
+# Live Channel-I get_user_data shape captured 2026-08-20 on production.
+LIVE_FLAT_STUDENT = {
+    "userId": 23740,
+    "username": "24905001",
+    "person": {"fullName": "Kushagra", "displayPicture": None},
+    "student": {
+        "startDate": "2024-07-18",
+        "enrolmentNumber": "24905001",
+        "endDate": None,
+        "branch name": "Ph.D. Institute Instrumentation",
+        "branch degree name": "Ph.D. - Doctor of Philosophy",
+        "currentYear": 3,
+        "currentSemester": 5,
+        "branch department name": "Institute Instrumentation Centre",
+    },
+    "facultyMember": {},
+    "biologicalInformation": {"dateOfBirth": "1995-07-25", "sex": "male", "gender": "man"},
+    "contactInformation": {
+        "instituteWebmailAddress": "kushagra@ic.iitr.ac.in",
+        "primaryPhoneNumber": "7895245297",
+        "secondaryPhoneNumber": None,
+        "emailAddress": "kushagra@ic.iitr.ac.in",
+        "emailAddressVerified": False,
+    },
 }
 
 
-class ChannelIIdentityExtractTests(TestCase):
+class ChannelIIdentityExtractTests(SimpleTestCase):
     def test_nested_degree_department_dates(self):
         facts = extract_channel_i_academic_facts(NESTED_STUDENT)
         self.assertEqual(facts["student_degree_name"], "B.Tech")
@@ -58,6 +85,19 @@ class ChannelIIdentityExtractTests(TestCase):
         self.assertIsNone(facts["student_end_date"])
         self.assertEqual(facts["channel_i_user_id"], "9001")
         self.assertEqual(facts["channel_i_username"], "ug.student")
+        self.assertEqual(facts["normalized_gender"], "male")
+
+    def test_live_flat_student_payload(self):
+        facts = extract_channel_i_academic_facts(LIVE_FLAT_STUDENT)
+        self.assertTrue(facts["has_student_payload"])
+        self.assertEqual(facts["student_enrolment_number"], "24905001")
+        self.assertEqual(facts["channel_i_username"], "24905001")
+        self.assertEqual(facts["student_degree_name"], "Ph.D. - Doctor of Philosophy")
+        self.assertEqual(facts["student_department_name"], "Institute Instrumentation Centre")
+        self.assertEqual(facts["student_start_date"], date(2024, 7, 18))
+        self.assertIsNone(facts["student_end_date"])
+        self.assertEqual(facts["channel_i_sex"], "male")
+        self.assertEqual(facts["normalized_gender"], "male")
 
     def test_missing_values(self):
         facts = extract_channel_i_academic_facts({"userId": "1", "student": {}})
@@ -348,6 +388,26 @@ class IdentityArchitectureTests(TestCase):
         self.assertEqual(code, "CREDIT_NOT_ALLOWED_FOR_USER_TYPE")
         ok, code, _ = UserEligibilityService.can_request_wallet_credit(self.faculty)
         self.assertTrue(ok)
+
+    def test_live_sync_gender_and_enrolment_readonly(self):
+        user = User.objects.create_user(
+            email="live.student@test.iitr.ac.in",
+            password="x",
+            user_type=UserType.STUDENT,
+        )
+        sync_channel_i_identity(user, LIVE_FLAT_STUDENT)
+        user.refresh_from_db()
+        profile = UserIdentityService.get_profile(user)
+        self.assertEqual(profile.student_enrolment_number, "24905001")
+        self.assertEqual(profile.channel_i_sex, "male")
+        self.assertEqual(profile.normalized_gender, "male")
+        self.assertTrue(profile.gender_locked_from_channel_i)
+        self.assertEqual(user.gender, "male")
+        from iic_booking.users.serializers.user_serializer import UserSerializer
+
+        ser = UserSerializer(user, data={"gender": "female"}, partial=True)
+        self.assertFalse(ser.is_valid())
+        self.assertIn("gender", ser.errors)
 
     def test_idor_degree_admin_only(self):
         self.client.force_authenticate(user=self.faculty)

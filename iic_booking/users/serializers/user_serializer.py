@@ -173,6 +173,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
     rbac_permissions = serializers.SerializerMethodField()
     admin_panel_enabled = serializers.SerializerMethodField()
     admin_panel_modules = serializers.SerializerMethodField()
+    gender_from_channel_i = serializers.SerializerMethodField()
 
     # MethodField — never call ImageField.url during list (signed S3 / NoSuchKey broke OIC user pickers).
     profile_picture = serializers.SerializerMethodField()
@@ -222,6 +223,15 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
         return list_effective_admin_module_keys(obj)
 
+    def get_gender_from_channel_i(self, obj):
+        profile = getattr(obj, "channel_i_identity", None)
+        if profile is None:
+            return False
+        return bool(
+            getattr(profile, "gender_locked_from_channel_i", False)
+            and (getattr(profile, "normalized_gender", "") or obj.gender)
+        )
+
     def get_profile_picture(self, obj):
         try:
             return obj.get_profile_picture_url_or_none(request=self.context.get("request"))
@@ -253,6 +263,17 @@ class UserSerializer(serializers.ModelSerializer[User]):
                         )
                     }
                 )
+        if "gender" in attrs and self.instance is not None:
+            profile = getattr(self.instance, "channel_i_identity", None)
+            if profile and getattr(profile, "gender_locked_from_channel_i", False):
+                if attrs.get("gender") != self.instance.gender:
+                    raise serializers.ValidationError(
+                        {
+                            "gender": (
+                                "Gender is supplied by Channel-I and cannot be changed in this portal."
+                            )
+                        }
+                    )
         return attrs
 
     class Meta:
@@ -262,6 +283,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "name",
             "email",
             "gender",
+            "gender_from_channel_i",
             "user_type",
             "user_type_alias",
             "user_type_display",
@@ -305,6 +327,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
         read_only_fields = [
             "id",
             "email",
+            "gender_from_channel_i",
             "department_code",
             "department_name",
             "department_type",
