@@ -235,7 +235,22 @@ def department_faculty_credit_facility_my_status_view(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def department_faculty_credit_facility_avail_view(request):
-    """Faculty: avail one-time department credit facility with a chosen amount."""
+    """Faculty: avail one-time department credit facility with a chosen amount.
+
+    RETIRED: automatic department overdraft is disabled. Use administrator-approved
+    Wallet Credit Facility V2 instead. Historical facility rows remain intact.
+    """
+    return Response(
+        {
+            "error": (
+                "Department faculty automatic credit facility has been retired. "
+                "Please use Wallet → Credit Facility → Request Wallet Credit "
+                "(subject to Main Administrator approval)."
+            ),
+            "code": "FACULTY_AUTO_CREDIT_RETIRED",
+        },
+        status=status.HTTP_410_GONE,
+    )
     if str(getattr(request.user, "user_type", "") or "").lower() != UserType.FACULTY:
         return Response(
             {"error": "Only faculty members can avail the department credit facility."},

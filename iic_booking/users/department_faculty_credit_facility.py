@@ -122,9 +122,13 @@ def is_eligible_for_new_facility(
 def department_faculty_credit_floor(sub: SubWallet) -> Decimal:
     """
     Lowest allowed department sub-wallet balance after debit for this facility.
-    Credit applies only after the faculty explicitly avails the facility.
+
+    RETIRED: automatic overdraft floors are disabled. Historical facility rows remain
+    for audit; booking debit floor is always 0.00.
     """
-    try:
+    return ZERO
+    # Unreachable — retained for historical reference.
+    try:  # pragma: no cover
         wallet = sub.wallet
         user = wallet.user
     except Exception:
@@ -308,7 +312,14 @@ def avail_faculty_department_credit(
 ) -> FacultyDepartmentCreditFacility:
     """
     Faculty explicitly avails a one-time department credit facility for the given amount.
+
+    RETIRED: automatic department overdraft is disabled. Historical facility rows remain.
+    Use administrator-approved Wallet Credit Facility V2 instead.
     """
+    raise ValueError(
+        "Department faculty automatic credit facility has been retired. "
+        "Please request credit via Wallet Credit Facility (Main Administrator approval)."
+    )
     from iic_booking.users.models import Department
 
     if str(getattr(user, "user_type", "") or "").lower() != UserType.FACULTY:

@@ -1,0 +1,15 @@
+{
+  "suite": "wallet_credit_facility_v2",
+  "database": "PostgreSQL",
+  "runner": "pytest --nomigrations --ds=config.settings.test",
+  "timestamp": "2026-08-20T04:35:00Z",
+  "passed": 15,
+  "failed": 0,
+  "files": [
+    "iic_booking/users/tests/test_wallet_credit_facility_v2.py",
+    "iic_booking/users/tests/test_department_faculty_credit_facility.py"
+  ],
+  "feature_flag_default": false,
+  "production_writes": false,
+  "status": "PASS"
+}

@@ -132,3 +132,98 @@ def expire_wallet_credit_facilities() -> int:
     n = expire_due_wallet_credit_facilities()
     logger.info("expire_wallet_credit_facilities: expired_count=%s", n)
     return n
+
+
+@shared_task(name="users.wallet_credit_facility_v2_overdue_and_reminders")
+def wallet_credit_facility_v2_overdue_and_reminders() -> dict:
+    """Mark overdue invoices and emit reminder audit events for unpaid credit facilities.
+
+    Interval is driven by WalletCreditPolicy.overdue_reminder_interval_days /
+    reminder_days_before_due (not hardcoded aggression). Schedule daily via beat.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+    from iic_booking.users.models.wallet_credit_facility import (
+        WalletCreditFacility,
+        WalletCreditFacilityStatus,
+        WalletCreditPolicy,
+    )
+    from iic_booking.users.wallet_credit_facility_v2 import audit, mark_overdue_facilities
+
+    overdue_n = mark_overdue_facilities()
+    policy = WalletCreditPolicy.get_solo()
+    today = timezone.localdate()
+    before = int(policy.reminder_days_before_due or 0)
+    reminded = 0
+    if before > 0:
+        target = today + timedelta(days=before)
+        qs = WalletCreditFacility.objects.filter(
+            status__in={
+                WalletCreditFacilityStatus.CREDITED,
+                WalletCreditFacilityStatus.PARTIALLY_SETTLED,
+            },
+            due_date=target,
+            outstanding_amount__gt=0,
+        )
+        for facility in qs:
+            audit(
+                facility,
+                actor=None,
+                action="REMINDER_BEFORE_DUE",
+                new=str(facility.outstanding_amount),
+                metadata={"due_date": str(facility.due_date)},
+            )
+            reminded += 1
+    logger.info(
+        "wallet_credit_facility_v2_overdue_and_reminders: overdue=%s reminded=%s",
+        overdue_n,
+        reminded,
+    )
+    return {"overdue_marked": overdue_n, "reminders": reminded}
+
+@shared_task(name="users.sync_legacy_wallet_ledger")
+def sync_legacy_wallet_ledger() -> dict:
+    """Incremental copy of old wallet_transactions into the immutable legacy ledger.
+
+    Schedule via django-celery-beat using PORTAL_MIGRATION_SYNC_INTERVAL_SECONDS as guidance.
+    Does not modify already imported rows. Credentials are environment-only.
+    """
+    from django.utils import timezone
+    from iic_booking.users.legacy_ledger.reader import OldMySQLNotConfigured, OldMySQLReader
+    from iic_booking.users.legacy_ledger.sync import run_ledger_sync
+    from iic_booking.users.models.portal_migration import PortalMigrationState
+
+    state = PortalMigrationState.get_solo()
+    if state.legacy_ledger_frozen:
+        return {"ok": True, "skipped": "frozen"}
+    if not state.incremental_sync_enabled:
+        return {"ok": True, "skipped": "incremental_sync_disabled"}
+    if state.phase not in (
+        "PARALLEL_OPERATION",
+        "FINANCIAL_FREEZE",
+        "FINAL_SYNC",
+        "RECONCILIATION",
+    ):
+        return {"ok": True, "skipped": f"phase_{state.phase}"}
+    batch = timezone.now().strftime("sync-%Y%m%d%H%M%S")
+    try:
+        with OldMySQLReader() as reader:
+            result = run_ledger_sync(reader, batch=batch, dry_run=False)
+    except OldMySQLNotConfigured:
+        logger.warning("sync_legacy_wallet_ledger skipped: OLD_MYSQL_* not configured")
+        return {"ok": False, "skipped": "not_configured"}
+    except Exception:
+        logger.exception("sync_legacy_wallet_ledger failed")
+        raise
+    return result
+
+
+@shared_task(name="users.expire_channel_i_students")
+def expire_channel_i_students() -> int:
+    """Idempotent student expiry. No-op unless STUDENT_LIFECYCLE_ENABLED."""
+    from iic_booking.users.identity.lifecycle import expire_due_students
+
+    n = expire_due_students()
+    logger.info("expire_channel_i_students: disabled_count=%s", n)
+    return n

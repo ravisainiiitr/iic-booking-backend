@@ -81,26 +81,17 @@ def wallet_booking_block_message(sub: SubWallet) -> Optional[str]:
 
 def subwallet_minimum_balance_after_debit(sub: SubWallet) -> Decimal:
     """
-    Lowest allowed balance after a debit. Negative means overdraft allowed up to |value|.
+    Lowest allowed balance after a debit.
 
-    Composes institute recharge temporary credit with department faculty credit facility
-    (most permissive / most negative floor wins).
+    Automatic temporary credit / negative-balance overdraft is retired.
+    Bookings and wallet debits require non-negative balances unless an
+    administrator-approved Wallet Credit Facility has already posted real funds.
+    Historical EXPIRED_UNPAID holds still block booking until recharge completes.
     """
     if subwallet_has_expired_credit_block(sub):
         return Decimal("0.00")
-    floors = [Decimal("0.00")]
-    req = _active_credit_request_for_subwallet(sub)
-    if req and req.credit_limit_amount:
-        floors.append(-Decimal(str(req.credit_limit_amount)))
-    try:
-        from .department_faculty_credit_facility import department_faculty_credit_floor
-
-        floors.append(department_faculty_credit_floor(sub))
-    except Exception:
-        logger.exception(
-            "department_faculty_credit_floor failed for subwallet %s", getattr(sub, "id", None)
-        )
-    return min(floors)
+    # Recharge temporary overdraft and department faculty overdraft floors are disabled.
+    return Decimal("0.00")
 
 
 def wallet_max_spendable_on_subwallet(sub: SubWallet) -> Decimal:
@@ -264,8 +255,15 @@ def try_activate_credit_facility_after_otp_verify(recharge_request: WalletRechar
     """
     After user OTP is verified: if opted in and rules still pass, set ACTIVE credit window and limit.
     Otherwise clear opt-in flag so the request proceeds as a normal recharge request.
+
+    RETIRED: automatic/recharge temporary credit is disabled. Use Wallet Credit Facility V2
+    (administrator-approved) instead. Historical ACTIVE/EXPIRED rows remain for audit.
     """
-    if not recharge_request.credit_facility_opted_in:
+    if recharge_request.credit_facility_opted_in:
+        WalletRechargeRequest.objects.filter(pk=recharge_request.pk).update(credit_facility_opted_in=False)
+    return
+    # Unreachable — retained for historical reference only.
+    if not recharge_request.credit_facility_opted_in:  # pragma: no cover
         return
     if recharge_request.user.user_type != UserType.FACULTY:
         WalletRechargeRequest.objects.filter(pk=recharge_request.pk).update(credit_facility_opted_in=False)

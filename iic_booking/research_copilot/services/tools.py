@@ -581,6 +581,9 @@ def _recommend_software(*, arguments: dict, user) -> dict:
 
 
 def _prepare_create_booking(*, arguments: dict, user) -> dict:
+    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+
+    locked, lock_message = end_user_booking_is_locked(user)
     equipment_id = arguments.get("equipment_id")
     day = arguments.get("date") or ""
     href = "/book-equipment"
@@ -594,18 +597,21 @@ def _prepare_create_booking(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "requires_confirmation": True,
-            "message": "I can open the booking flow with these details. Booking is confirmed only after the portal booking API succeeds under your permissions.",
+            "message": lock_message or (
+                "I can open the booking flow with these details. Booking is confirmed only after the portal booking API succeeds under your permissions."
+            ),
             "equipment_id": equipment_id,
             "date": day,
+            "booking_locked": locked,
         },
         actions=[
             {
                 "id": "book_equipment",
                 "label": "Book Equipment",
                 "href": href,
-                "enabled": True,
+                "enabled": not locked,
                 "requires_confirmation": True,
-                "hint": "Opens the booking flow — confirm in the portal. Copilot does not create bookings itself.",
+                "hint": lock_message if locked else "Opens the booking flow — confirm in the portal. Copilot does not create bookings itself.",
             }
         ],
     )

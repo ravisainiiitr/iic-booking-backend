@@ -127,6 +127,13 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
         "main_admin_only": True,
     },
     {
+        "key": "admin_settings.portal_migration",
+        "label": "Portal Migration",
+        "description": "Wallet ledger migration dashboard, mapping exceptions, cutover state",
+        "path": "/admin-settings/portal-migration",
+        "main_admin_only": True,
+    },
+    {
         "key": "admin_settings.equipment",
         "label": "Equipment",
         "description": "Equipment modules, slots, nominations, charges, buffers",
