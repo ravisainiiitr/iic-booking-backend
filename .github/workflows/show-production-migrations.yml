@@ -2,11 +2,39 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  prep:
+  verify200:
     runs-on: [self-hosted, Linux]
     steps:
-      - run: |
+      - name: Confirm /api/auth/user/ returns 200
+        run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
-          git checkout -- docker-compose.production.yml 2>/dev/null || true
-          git status -sb | head -n 5
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec "$CID" grep -n 'aborts the' /app/iic_booking/users/serializers/user_serializer.py | head -n 2
+          KEY=$(docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from django.contrib.auth import get_user_model
+          from rest_framework.authtoken.models import Token
+          u=get_user_model().objects.get(pk=66)
+          Token.objects.filter(user=u).delete()
+          print(Token.objects.create(user=u).key)
+          PY
+          )
+          code=$(curl -sS -o /tmp/body.json -w '%{http_code}' --max-time 20 \
+            -H "Authorization: Token $KEY" -H "Host: equip.iitr.ac.in" \
+            "http://127.0.0.1:8080/api/auth/user/")
+          echo "http=$code"
+          python3 -c "import json;d=json.load(open('/tmp/body.json'));print('id' in d, 'gender_from_channel_i' in d, 'detail=', d.get('detail'))"
+          docker exec -i -w /app -e KEY="$KEY" "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from rest_framework.authtoken.models import Token
+          Token.objects.filter(key=os.environ['KEY']).delete()
+          print('destroyed=YES')
+          PY
+          test "$code" = "200"
