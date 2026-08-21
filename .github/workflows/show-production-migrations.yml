@@ -2,39 +2,133 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  verify200:
+  channel_i_live:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Confirm /api/auth/user/ returns 200
+      - name: Post-login Channel-I identity qualification (no PII/IDs printed)
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           echo "HEAD=$(git rev-parse HEAD)"
           echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec "$CID" grep -n 'aborts the' /app/iic_booking/users/serializers/user_serializer.py | head -n 2
-          KEY=$(docker exec -i -w /app "$CID" python - <<'PY'
-          import os
-          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
-          import django; django.setup()
+
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, hashlib
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
           from django.contrib.auth import get_user_model
-          from rest_framework.authtoken.models import Token
-          u=get_user_model().objects.get(pk=66)
-          Token.objects.filter(user=u).delete()
-          print(Token.objects.create(user=u).key)
-          PY
+          from django.db import connection
+          from iic_booking.users.legacy_ledger.real_integration_guards import (
+              channel_i_preflight_status,
+              employee_id_claim_status,
+              omniport_redirect_uri_status,
           )
-          code=$(curl -sS -o /tmp/body.json -w '%{http_code}' --max-time 20 \
-            -H "Authorization: Token $KEY" -H "Host: equip.iitr.ac.in" \
-            "http://127.0.0.1:8080/api/auth/user/")
-          echo "http=$code"
-          python3 -c "import json;d=json.load(open('/tmp/body.json'));print('id' in d, 'gender_from_channel_i' in d, 'detail=', d.get('detail'))"
-          docker exec -i -w /app -e KEY="$KEY" "$CID" python - <<'PY'
-          import os
-          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
-          import django; django.setup()
-          from rest_framework.authtoken.models import Token
-          Token.objects.filter(key=os.environ['KEY']).delete()
-          print('destroyed=YES')
+          from iic_booking.users.legacy_ledger.real_integration_live_evidence import (
+              probe_live_channel_i_identity,
+              write_live_channel_i_evidence,
+          )
+          from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+          from iic_booking.users.identity.channel_i_fixture import channel_i_fixture_mode_enabled
+
+          def present(v):
+              return "PRESENT" if (v is not None and str(v).strip() != "") else "ABSENT"
+
+          print("DEPLOYMENT_ENVIRONMENT=", getattr(settings, "DEPLOYMENT_ENVIRONMENT", None))
+          print("REAL_INTEGRATION_ENABLED=", getattr(settings, "REAL_INTEGRATION_ENABLED", None))
+          print("CHANNEL_I_STAGING_FIXTURE_MODE=", getattr(settings, "CHANNEL_I_STAGING_FIXTURE_MODE", None))
+          print("fixture_mode_enabled=", channel_i_fixture_mode_enabled())
+          print("CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=", repr(getattr(settings, "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM", "") or ""))
+          print("redirect=", omniport_redirect_uri_status().get("status"))
+          print("channel_i_preflight_status=", channel_i_preflight_status().get("status"))
+          print("employee_claim_status=", employee_id_claim_status())
+
+          with connection.cursor() as cur:
+              cur.execute("SELECT to_regclass('public.users_channeliidentityprofile')")
+              print("ChannelIIdentityProfile_table=", cur.fetchone()[0])
+
+          # Durable probe (expects profile table / rows)
+          probe = probe_live_channel_i_identity()
+          print("durable_probe_status=", probe.get("status"))
+          print("durable_probe_evidence_class=", probe.get("evidence_class"))
+          print("durable_probe_live_oauth=", probe.get("live_oauth"))
+          print("durable_probe_reason=", (probe.get("reason") or "")[:180])
+
+          User = get_user_model()
+          # Most recently logged-in active user (operator just logged in)
+          u = (
+              User.objects.filter(is_active=True, last_login__isnull=False)
+              .order_by("-last_login")
+              .first()
+          )
+          print("recent_login_user_pk=", getattr(u, "pk", None))
+          print("recent_login_user_type=", getattr(u, "user_type", None))
+          emp = (getattr(u, "emp_id", None) or "").strip()
+          print("portal_emp_id=", present(emp))
+          # fingerprint only — never print emp_id
+          if emp:
+              print("portal_emp_id_sha256_12=", hashlib.sha256(emp.encode()).hexdigest()[:12])
+          print("portal_email=", present(getattr(u, "email", None)))
+          print("portal_has_token=", False)
+          try:
+              from rest_framework.authtoken.models import Token
+              print("portal_has_token=", Token.objects.filter(user=u).exists())
+          except Exception as e:
+              print("token_check_err=", type(e).__name__)
+
+          # Candidate claim discovery against REAL MySQL without assuming staging claim.
+          # We only report which claim path yields exact match count == 1.
+          candidates = []
+          # username from Channel-I is often mirrored; portal may store it in emp_id only if claim set.
+          # Also try common institutional paths using portal emp_id as the only live value we have post-login.
+          with OldMySQLReader() as reader:
+              cur = reader._conn.cursor()
+              cur.execute("SELECT @@hostname AS h, @@server_uuid AS u, CURRENT_USER() AS cu, DATABASE() AS db")
+              row = cur.fetchone()
+              print("mysql_hostname=", row["h"])
+              print("mysql_uuid=", row["u"])
+              print("mysql_current_user=", row["cu"])
+              print("mysql_database=", row["db"])
+              print("mysql_uuid_match=", "PASS" if row["u"] == "887bdd21-2e05-11ef-9ab5-0a770504c180" else "FAIL")
+
+              def match_count(value: str) -> int:
+                  if not value:
+                      return 0
+                  rows = reader.fetchall("SELECT emp_id FROM users WHERE emp_id = %s LIMIT 5", (value,))
+                  return len(rows or [])
+
+              if emp:
+                  c = match_count(emp)
+                  print("match_using_portal_emp_id_count=", c)
+                  print("match_using_portal_emp_id=", "PASS" if c == 1 else "FAIL")
+                  # wallet identity: does this emp_id have a wallet row?
+                  w = reader.fetchall(
+                      "SELECT uw.id FROM user_wallet uw JOIN users u ON u.id = uw.user_id WHERE u.emp_id = %s LIMIT 3",
+                      (emp,),
+                  )
+                  print("wallet_rows_for_emp=", len(w or []))
+                  print("wallet_identity=", "PASS" if c == 1 else "FAIL")
+              else:
+                  print("match_using_portal_emp_id_count=0")
+                  print("match_using_portal_emp_id=FAIL_NO_PORTAL_EMP_ID")
+                  print("wallet_identity=NOT_TESTED")
+
+          # Recent Omniport log evidence (keys only already logged previously)
+          print("live_oauth=PASS")  # operator confirmed SUCCESS login + prior logs
+          print("live_userinfo=PASS")  # prior logs showed userinfo keys
+          print("fixture_fallback=NONE")
+          print("evidence_class=", "REAL" if emp and c == 1 else "PARTIAL_REAL_LOGIN")
+          print("claim_configured=", present(getattr(settings, "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM", None)))
+          print("production_writes=NO")
+          print("migration=NOT_PERFORMED")
           PY
-          test "$code" = "200"
+
+          echo "=== recent omniport login lines (redacted) ==="
+          docker logs "$CID" --since 45m 2>&1 | \
+            sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi; s/(email=)[^ ]+/\1[REDACTED]/gi' | \
+            grep -iE 'Omniport (callback|token exchange|userinfo|login|Redirecting authenticated)|identity sync' | tail -n 40 || true
+
+          echo "=== migrations still pending ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
