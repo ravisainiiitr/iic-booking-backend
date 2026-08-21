@@ -2,13 +2,17 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  prep:
+  verify:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Ensure clean compose for deploy checkout
-        run: |
+      - run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
-          git checkout -- docker-compose.production.yml 2>/dev/null || true
-          git status -sb | head -n 8
           echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec "$CID" grep -n 'channel_i_identity table may be absent' /app/iic_booking/users/serializers/user_serializer.py | head -n 2
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
+          echo "health=$code"
+          grep -E '^OLD_MYSQL_HOST=' .envs/.production/.django
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0099|0100' || true
