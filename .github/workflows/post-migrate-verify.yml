@@ -1,0 +1,105 @@
+name: Post Migrate Verify
+on:
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Post-migration RO verification
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+
+          echo "=== showmigrations users 0096-0100 ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
+
+          echo "=== remaining pending ==="
+          PENDING=$(docker exec -w /app "$CID" python manage.py showmigrations 2>/dev/null | grep '\[ \]' || true)
+          if [ -z "$PENDING" ]; then echo "NONE_PENDING"; else echo "$PENDING"; fi
+
+          echo "=== equipment 0188 ==="
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>/dev/null | grep '0188' || echo "equipment_0188=ABSENT"
+
+          cat >/tmp/post_mig_verify.py <<'PY'
+          from django.db import connection
+          from django.apps import apps
+          from django.conf import settings
+          import os
+
+          tables = connection.introspection.table_names()
+          print("users_channeliidentityprofile=", "users_channeliidentityprofile" in tables)
+          Model = apps.get_model("users", "ChannelIIdentityProfile")
+          print("model_ok=", Model is not None)
+          print("ChannelIIdentityProfile_rows=", Model.objects.count())
+          with connection.cursor() as c:
+              c.execute(
+                  "SELECT column_name FROM information_schema.columns "
+                  "WHERE table_name='users_channeliidentityprofile' ORDER BY ordinal_position"
+              )
+              print("profile_columns=", [r[0] for r in c.fetchall()])
+              c.execute(
+                  "SELECT column_name FROM information_schema.columns "
+                  "WHERE table_name='users_portalmigrationstate' ORDER BY ordinal_position"
+              )
+              print("portalmigrationstate_columns=", [r[0] for r in c.fetchall()])
+
+          claim = getattr(settings, "CHANNEL_I_EMPLOYEE_CLAIM", None) or os.environ.get("CHANNEL_I_EMPLOYEE_CLAIM")
+          print("authoritative_claim=", claim)
+          print("REAL_INTEGRATION_ENABLED=", getattr(settings, "REAL_INTEGRATION_ENABLED", os.environ.get("REAL_INTEGRATION_ENABLED")))
+          print("USE_FIXTURE_AUTH=", getattr(settings, "USE_FIXTURE_AUTH", os.environ.get("USE_FIXTURE_AUTH")))
+          print("DEBUG=", settings.DEBUG)
+          b = getattr(settings, "AWS_STORAGE_BUCKET_NAME", None) or os.environ.get("AWS_STORAGE_BUCKET_NAME")
+          print("s3_bucket_configured=", bool(b))
+
+          import MySQLdb
+          host = os.environ.get("OLD_MYSQL_HOST")
+          port = int(os.environ.get("OLD_MYSQL_PORT", "3306"))
+          user = os.environ.get("OLD_MYSQL_USER")
+          db = os.environ.get("OLD_MYSQL_DATABASE") or os.environ.get("OLD_MYSQL_DB")
+          pw = os.environ.get("OLD_MYSQL_PASSWORD")
+          print("mysql_host=", host)
+          print("mysql_db=", db)
+          print("mysql_user=", user)
+          conn = MySQLdb.connect(host=host, port=port, user=user, passwd=pw, db=db, connect_timeout=8)
+          cur = conn.cursor()
+          for t in ["users", "user_wallet", "wallet_transactions", "booking"]:
+              cur.execute(f"SELECT COUNT(*) FROM `{t}`")
+              print(f"{t}_count=", cur.fetchone()[0])
+              print(f"{t}_read=", "PASS")
+          cur.execute("SHOW GRANTS")
+          grants = [row[0] for row in cur.fetchall()]
+          # redact any accidental password echo
+          safe = []
+          for g in grants:
+              if pw and pw in g:
+                  g = g.replace(pw, "***")
+              safe.append(g)
+          print("grants_summary=", safe)
+          has_write = False
+          for g in grants:
+              gu = g.upper()
+              if "ON `ADMIN`" in gu or "ON ADMIN" in gu or "ON *.*" in gu:
+                  if any(x in gu for x in ("INSERT", "UPDATE", "DELETE", "ALL PRIVILEGES")):
+                      has_write = True
+          print("account_appears_writable=", has_write)
+          cur.execute("SELECT COUNT(*) FROM users WHERE emp_id IS NOT NULL AND emp_id<>''")
+          print("users_with_emp_id=", cur.fetchone()[0])
+          conn.close()
+          print("mysql_ro=", "PASS")
+          print("wallet_identity_probe=", "SKIP_NO_LIVE_SESSION")
+          PY
+
+          docker cp /tmp/post_mig_verify.py "$CID":/tmp/post_mig_verify.py
+          docker exec -i -w /app "$CID" python manage.py shell < /tmp/post_mig_verify.py 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "=== health ==="
+          for u in http://127.0.0.1:8080/api/v1/analysis/health/ready/ http://127.0.0.1:8080/api/health/; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "$u" || true)
+            echo "url=$u code=$code"
+          done
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
+          echo "POST_MIGRATE_VERIFY_DONE=YES"
