@@ -2,6 +2,7 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
+<<<<<<< Updated upstream
   user500b:
     runs-on: [self-hosted, Linux]
     steps:
@@ -18,3 +19,13 @@ jobs:
           docker logs "$CID" --since 40m 2>&1 | \
             sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi' | \
             grep -n 'Internal Server Error\|ERROR 2026-08-21 21:5' | tail -n 40 || true
+=======
+  prep:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          git checkout -- docker-compose.production.yml 2>/dev/null || true
+          git status -sb | head -n 5
+>>>>>>> Stashed changes
