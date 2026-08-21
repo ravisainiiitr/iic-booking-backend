@@ -70,7 +70,12 @@ Executed on the Linux runner in `deploy_path`:
 9. Wait for django health when Docker reports Health
 10. `curl` health URL until HTTP 200 (fail closed)
 
-Existing helpers: `./deploy.sh`, `./scripts/deploy/rollback.sh`, `./scripts/deploy/verify-production.sh`.
+Existing helpers: `./deploy.sh`, `./scripts/deploy/rollback.sh`, `./scripts/deploy/verify-production.sh`,
+`./scripts/deploy/migrate-production.sh` (**explicit migrate only**; `CONFIRM_MIGRATE=YES`).
+
+**DEPLOYMENT ≠ MIGRATION:** production Django `start` and **Deploy Backend** do **not** run
+`manage.py migrate` or POST provisioning sessions. Apply schema only via **Migrate Production**
+(`confirm_migrate=MIGRATE`) or `scripts/deploy/migrate-production.sh` after explicit approval.
 
 ---
 

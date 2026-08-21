@@ -40,10 +40,10 @@ git checkout "$TARGET"
 export SKIP_GIT_PULL=1
 export SKIP_DB_BACKUP="${SKIP_DB_BACKUP:-1}"
 
-log "Rebuilding at $TARGET"
+log "Rebuilding at $TARGET (NO migrate — application rollback only)"
 compose build
-compose run --rm --no-deps django python manage.py migrate --noinput
 compose up -d --remove-orphans
+log "NOTE: DB schema is NOT rolled back by this script. If schema is newer than code, restore DB from backup."
 
 git rev-parse HEAD >"$CUR_REF_FILE"
 log "Waiting for readiness"

@@ -4,7 +4,11 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-python /app/manage.py migrate --noinput
+# DEPLOYMENT ≠ MIGRATION
+# Do NOT run `manage.py migrate` here. Schema changes require an explicit
+# operator-approved migration step (see scripts/deploy/migrate-production.sh
+# and docs/release/migration/AI30-AI31-NO-AUTO-MIGRATE-DEPLOY.md).
+
 python /app/manage.py collectstatic --noinput
 
 WEB_CONCURRENCY="${WEB_CONCURRENCY:-4}"

@@ -1,12 +1,33 @@
+# EXPLICIT production migration only — never part of normal Deploy Backend.
+# Requires workflow_dispatch + confirm_migrate=MIGRATE.
+# Does NOT POST provisioning sessions.
 name: Migrate Production
 
 on:
   workflow_dispatch:
+    inputs:
+      confirm_migrate:
+        description: Type MIGRATE to apply pending Django migrations on production
+        required: true
+        type: string
+        default: ''
 
 jobs:
   migrate:
     runs-on: [self-hosted, Linux]
     steps:
+      - name: Require explicit confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm_migrate }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM}" != "MIGRATE" ]]; then
+            echo "Refusing: confirm_migrate must be exactly MIGRATE (got '${CONFIRM}')"
+            echo "DEPLOYMENT ≠ MIGRATION — use Deploy Backend for application only."
+            exit 2
+          fi
+          echo "Confirmed explicit production migrate."
+
       - name: Locate production Django container
         id: find
         run: |
@@ -61,7 +82,7 @@ jobs:
         if: steps.find.outputs.mode == 'exec'
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
-            python manage.py showmigrations device_provisioning equipment communication remote_analysis sync | tail -n 120
+            python manage.py showmigrations users device_provisioning equipment communication remote_analysis sync | tail -n 160
 
       - name: Run all pending migrations on production
         if: steps.find.outputs.mode == 'exec'
@@ -81,25 +102,7 @@ jobs:
         if: steps.find.outputs.mode == 'exec'
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
-            python manage.py showmigrations device_provisioning equipment communication remote_analysis sync | tail -n 120
-
-      - name: Smoke POST provisioning sessions
-        if: steps.find.outputs.mode == 'exec'
-        run: |
-          set -euo pipefail
-          cat > /tmp/prov_smoke.json <<'EOF'
-          {"device_type":"dsa","machine_guid":"GUID-MIGRATE-SMOKE","hostname":"MIGRATE-SMOKE","windows_version":"Windows 11","cpu":"Intel","ram_gb":8,"mac_addresses":["aa:bb:cc:dd:ee:99"],"local_ips":["10.0.0.99"],"application_version":"1.0.2","bootstrap_public_key":"ssh-test"}
-          EOF
-          code=$(curl -sS -o /tmp/prov_smoke_out.txt -w '%{http_code}' -X POST \
-            -H 'Content-Type: application/json' -H 'Host: equip.iitr.ac.in' \
-            --data-binary @/tmp/prov_smoke.json \
-            http://127.0.0.1:8080/api/v1/provisioning/sessions/ || true)
-          echo "sessions_create http=$code"
-          cat /tmp/prov_smoke_out.txt; echo
-          case "$code" in
-            201|409) echo "PASS provisioning sessions smoke" ;;
-            *) echo "FAIL provisioning sessions smoke"; exit 1 ;;
-          esac
+            python manage.py showmigrations users device_provisioning equipment communication remote_analysis sync | tail -n 160
 
       - name: Ensure Django is up after migrate
         if: steps.find.outputs.mode == 'exec'
