@@ -1,204 +1,41 @@
-# Read-only production blocker resolution probes. NO migrate. NO secrets printed.
 name: Show Production Migrations
-
 on:
   workflow_dispatch:
-
 jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Locate production Django container
-        id: find
+      - name: Inspect production env MySQL keys and local listeners (no secrets)
         run: |
           set -euo pipefail
-          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
-            if [[ -f "$d/docker-compose.production.yml" ]]; then
-              cd "$d"
-              echo "git_head=$(git rev-parse HEAD)"
-              echo "current_release_tag=$(cat .deploy-state/current_release_tag 2>/dev/null || true)"
-              break
-            fi
-          done
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
-          test -n "$CID"
-          echo "Using container: $CID"
-          echo "container=$CID" >> "$GITHUB_OUTPUT"
-
-      - name: Env presence OLD/LEGACY MySQL + AWS + Omniport (keys only)
-        run: |
-          set -euo pipefail
-          CID="${{ steps.find.outputs.container }}"
-          docker exec "$CID" python - <<'PY'
-          import os
-          keys = [
-            "OLD_MYSQL_HOST","OLD_MYSQL_PORT","OLD_MYSQL_DATABASE","OLD_MYSQL_USER","OLD_MYSQL_PASSWORD",
-            "LEGACY_MYSQL_HOST","LEGACY_MYSQL_PORT","LEGACY_MYSQL_DATABASE","LEGACY_MYSQL_USER","LEGACY_MYSQL_PASSWORD",
-            "USE_S3_MEDIA","AWS_STORAGE_BUCKET_NAME","AWS_ACCESS_KEY_ID","AWS_SECRET_ACCESS_KEY",
-            "OMNIPORT_CLIENT_ID","OMNIPORT_CLIENT_SECRET","OMNIPORT_REDIRECT_URI",
-            "REAL_INTEGRATION_ENABLED","LOCAL_STAGING_ACCEPTED",
-          ]
-          for k in keys:
-              v = os.environ.get(k)
-              print(f"ENV_{k}=", "PRESENT" if (v is not None and str(v).strip() != "") else "ABSENT")
-          PY
-
-      - name: Django settings vs defaults + S3 + MySQL probe
-        run: |
-          set -euo pipefail
-          CID="${{ steps.find.outputs.container }}"
-          cat > /tmp/prod_blocker_probe.py <<'PY'
-          import os
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
-          import django
-          django.setup()
-          from django.conf import settings
-          from django.core.files.storage import default_storage
-          from django.db import connection
-
-          def env_present(name: str) -> bool:
-              return bool(str(os.environ.get(name, "") or "").strip())
-
-          print("DEPLOYMENT_ENVIRONMENT=", getattr(settings, "DEPLOYMENT_ENVIRONMENT", None))
-          print("REAL_INTEGRATION_ENABLED=", bool(getattr(settings, "REAL_INTEGRATION_ENABLED", False)))
-          print("CHANNEL_I_STAGING_FIXTURE_MODE=", bool(getattr(settings, "CHANNEL_I_STAGING_FIXTURE_MODE", False)))
-          print("LEGACY_MYSQL_STAGING_FIXTURE_MODE=", bool(getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", False)))
-          print("LOCAL_STAGING_ACCEPTED=", bool(getattr(settings, "LOCAL_STAGING_ACCEPTED", False)))
-
-          # S3 analysis
-          print("USE_S3_MEDIA_setting_defined=", hasattr(settings, "USE_S3_MEDIA"))
-          if hasattr(settings, "USE_S3_MEDIA"):
-              print("USE_S3_MEDIA=", bool(getattr(settings, "USE_S3_MEDIA")))
-          storages = getattr(settings, "STORAGES", {}) or {}
-          default_backend = (storages.get("default") or {}).get("BACKEND", "")
-          print("STORAGES_default_BACKEND=", default_backend)
-          cls = default_storage.__class__.__module__ + "." + default_storage.__class__.__name__
-          print("default_storage_class=", cls)
-          print("ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK=", bool(getattr(settings, "ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK", True)))
-          try:
-              default_storage.listdir("")
-              print("S3_RESULT=PASS_LISTDIR")
-          except Exception as exc:
-              print("S3_RESULT=NOT_VERIFIED")
-              print("S3_ERROR_TYPE=", type(exc).__name__)
-
-          # MySQL: report settings values presence WITHOUT printing secrets/hosts if sensitive —
-          # only whether non-empty after settings resolution, and whether from ENV.
-          for label, env_names in [
-              ("HOST", ("OLD_MYSQL_HOST", "LEGACY_MYSQL_HOST")),
-              ("PORT", ("OLD_MYSQL_PORT", "LEGACY_MYSQL_PORT")),
-              ("DATABASE", ("OLD_MYSQL_DATABASE", "LEGACY_MYSQL_DATABASE")),
-              ("USER", ("OLD_MYSQL_USER", "LEGACY_MYSQL_USER")),
-              ("PASSWORD", ("OLD_MYSQL_PASSWORD", "LEGACY_MYSQL_PASSWORD")),
-          ]:
-              env_hit = any(env_present(n) for n in env_names)
-              setting_name = "OLD_MYSQL_" + ("PASSWORD" if label == "PASSWORD" else label if label != "DATABASE" else "DATABASE")
-              # normalize
-              smap = {
-                  "HOST": "OLD_MYSQL_HOST",
-                  "PORT": "OLD_MYSQL_PORT",
-                  "DATABASE": "OLD_MYSQL_DATABASE",
-                  "USER": "OLD_MYSQL_USER",
-                  "PASSWORD": "OLD_MYSQL_PASSWORD",
-              }
-              sval = getattr(settings, smap[label], None)
-              if label == "PASSWORD":
-                  setting_nonempty = bool(str(sval or "").strip())
-              elif label == "PORT":
-                  setting_nonempty = sval is not None
-              else:
-                  setting_nonempty = bool(str(sval or "").strip())
-              print(f"MYSQL_{label}_ENV=", "PRESENT" if env_hit else "ABSENT")
-              print(f"MYSQL_{label}_SETTING_NONEMPTY=", setting_nonempty)
-              if label == "USER" and setting_nonempty:
-                  u = str(sval).strip()
-                  print("MYSQL_USER_is_harshit=", u.lower() == "harshit")
-                  print("MYSQL_USER_looks_like_ro=", ("_ro" in u.lower() or u.lower().endswith("ro") or "readonly" in u.lower()))
-
-          host = str(getattr(settings, "OLD_MYSQL_HOST", "") or "").strip()
-          user = str(getattr(settings, "OLD_MYSQL_USER", "") or "").strip()
-          database = str(getattr(settings, "OLD_MYSQL_DATABASE", "") or "").strip()
-          password_set = bool(str(getattr(settings, "OLD_MYSQL_PASSWORD", "") or "").strip())
-          if not (host and user and database and password_set):
-              print("MYSQL_LIVE_PROBE=BLOCKED_MISSING_CONFIG")
-              print("fixture_fallback=", "NONE")
-          else:
-              if user.lower() == "harshit":
-                  print("MYSQL_LIVE_PROBE=BLOCKED_FORBIDDEN_ACCOUNT")
-              else:
-                  try:
-                      from iic_booking.users.legacy_ledger.reader import OldMySQLReader
-                      reader = OldMySQLReader()
-                      probe = reader.connection_probe()
-                      print("MYSQL_connection_probe_keys=", sorted(probe.keys()) if isinstance(probe, dict) else type(probe).__name__)
-                      # Safe counts via SQL through fetchone (assert_readonly_sql enforced)
-                      counts = {}
-                      for label, sql in [
-                          ("users", "SELECT COUNT(*) AS c FROM admin.users"),
-                          ("wallets", "SELECT COUNT(*) AS c FROM admin.user_wallet"),
-                          ("ledger", "SELECT COUNT(*) AS c FROM admin.wallet_transactions"),
-                          ("bookings", "SELECT COUNT(*) AS c FROM admin.bookings"),
-                      ]:
-                          try:
-                              row = reader.fetchone(sql)
-                              counts[label] = int(row["c"]) if row and "c" in row else None
-                              print(f"{label}_read=", "PASS" if counts[label] is not None else "FAIL", "count=", counts[label])
-                          except Exception as exc:
-                              # try without schema prefix
-                              try:
-                                  alt = sql.replace("admin.", "")
-                                  row = reader.fetchone(alt)
-                                  counts[label] = int(list(row.values())[0]) if row else None
-                                  print(f"{label}_read=", "PASS" if counts[label] is not None else "FAIL", "count=", counts[label])
-                              except Exception as exc2:
-                                  print(f"{label}_read=FAIL", "error=", type(exc2).__name__)
-                                  counts[label] = None
-                      denied = None
-                      try:
-                          from iic_booking.users.legacy_ledger.reader import assert_readonly_sql
-                          assert_readonly_sql("UPDATE admin.users SET emp_id=emp_id WHERE 1=0")
-                          denied = False
-                      except Exception as exc:
-                          denied = True
-                          print("write_guard_error_type=", type(exc).__name__)
-                      print("account_appears_writable=", False if denied else "UNKNOWN")
-                      print("fixture_fallback=", "NONE")
-                      print("MYSQL_LIVE_PROBE=", "PASS" if all(v is not None for v in counts.values()) else "PARTIAL")
-                  except Exception as exc:
-                      print("MYSQL_LIVE_PROBE=NOT_VERIFIED")
-                      print("MYSQL_ERROR_TYPE=", type(exc).__name__)
-
-          # Channel-I durable profile table presence (0099 pending expected)
-          try:
-              with connection.cursor() as c:
-                  c.execute(
-                      "SELECT to_regclass('public.users_channeliidentityprofile') IS NOT NULL AS exists"
-                  )
-                  row = c.fetchone()
-                  print("channel_i_identity_table_exists=", bool(row and row[0]))
-          except Exception as exc:
-              print("channel_i_identity_table_exists=UNKNOWN")
-              print("table_check_error=", type(exc).__name__)
-          PY
-          docker cp /tmp/prod_blocker_probe.py "$CID":/tmp/prod_blocker_probe.py
-          docker exec -w /app -e PYTHONPATH=/app "$CID" /app/.venv/bin/python /tmp/prod_blocker_probe.py
-
-      - name: Backup retention listing (RO)
-        run: |
-          set -euo pipefail
-          echo "=== nightly backups ==="
-          ls -la /home/ubuntu/backups/nightly/ 2>/dev/null | head -n 40 || echo "nightly_dir=ABSENT"
-          echo "=== latest target ==="
-          readlink -f /home/ubuntu/backups/nightly/latest 2>/dev/null || readlink /home/ubuntu/backups/nightly/latest 2>/dev/null || true
-          echo "=== cron / restore scripts presence ==="
+          ENV=""
           for p in \
-            /home/ubuntu/bin/iic-nightly-backup-cron.sh \
-            /home/ubuntu/bin/iic-restore-verify.sh \
-            /var/log/iic-nightly-backup.log
+            /home/ubuntu/iic-booking-backend/.envs/.production/.django \
+            /home/ubuntu/iic_booking_backend/.envs/.production/.django
           do
-            if [ -e "$p" ]; then echo "PRESENT $p"; else echo "ABSENT $p"; fi
+            if [ -f "$p" ]; then ENV="$p"; break; fi
           done
-          if [ -f /var/log/iic-nightly-backup.log ]; then
-            echo "=== backup log tail (redacted) ==="
-            tail -n 20 /var/log/iic-nightly-backup.log | sed -E 's/(password|secret|token|key)=[^[:space:]]+/\1***/Ig' || true
+          echo "production_env_file=${ENV:-ABSENT}"
+          if [ -n "$ENV" ]; then
+            for k in OLD_MYSQL_HOST OLD_MYSQL_PORT OLD_MYSQL_DATABASE OLD_MYSQL_USER OLD_MYSQL_PASSWORD LEGACY_MYSQL_HOST LEGACY_MYSQL_USER; do
+              if grep -qE "^${k}=" "$ENV"; then
+                val=$(grep -E "^${k}=" "$ENV" | head -n1 | cut -d= -f2-)
+                if [ "$k" = "OLD_MYSQL_PASSWORD" ] || [ "$k" = "LEGACY_MYSQL_PASSWORD" ]; then
+                  if [ -n "$val" ]; then echo "${k}=PRESENT"; else echo "${k}=EMPTY"; fi
+                elif [ "$k" = "OLD_MYSQL_HOST" ] || [ "$k" = "LEGACY_MYSQL_HOST" ]; then
+                  echo "${k}=PRESENT host_len=${#val}"
+                else
+                  echo "${k}=${val}"
+                fi
+              else
+                echo "${k}=ABSENT"
+              fi
+            done
+          fi
+          echo "=== local mysql-ish listeners (host only) ==="
+          ss -lnt 2>/dev/null | awk 'NR==1 || /:(3306|3307|13306)\s/' || netstat -lnt 2>/dev/null | grep -E '3306|3307|13306' || echo "no_listener_scan"
+          CID=$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n1 || true)
+          echo "django=$CID"
+          if [ -n "$CID" ]; then
+            docker exec "$CID" sh -c 'for k in OLD_MYSQL_HOST OLD_MYSQL_PORT OLD_MYSQL_DATABASE OLD_MYSQL_USER OLD_MYSQL_PASSWORD; do eval v=\$$k; if [ -n "$v" ]; then if [ "$k" = OLD_MYSQL_PASSWORD ]; then echo ENV_$k=PRESENT; elif [ "$k" = OLD_MYSQL_HOST ]; then echo ENV_$k=PRESENT; else echo ENV_$k=$v; fi; else echo ENV_$k=ABSENT; fi; done'
           fi
