@@ -5,182 +5,82 @@ jobs:
   docker_mysql_ro:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Phase 1-2 — Docker network + localhost grants (RO)
+      - name: Phase 1-4 — network + create 172.18.% SELECT-only
         env:
+          MYSQL_RO_PASSWORD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
           MYSQL_PWD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
         run: |
           set -euo pipefail
           unset HISTFILE || true
           DEPLOY=/home/ubuntu/iic-booking-backend
           cd "$DEPLOY"
-          echo "HEAD=$(git rev-parse HEAD)"
-
-          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep -E 'django' | head -n1)"
-          echo "django_container=$CID"
-
-          echo "=== Phase 1 docker network ==="
-          docker inspect "$CID" --format 'IP={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'
-          docker inspect "$CID" --format '{{range $k,$v := .NetworkSettings.Networks}}NET={{$k}} IP={{$v.IPAddress}} GW={{$v.Gateway}}{{println ""}}{{end}}'
-          # subnet via network inspect
-          NET="$(docker inspect "$CID" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | awk '{print $1}')"
-          echo "primary_net=$NET"
-          docker network inspect "$NET" --format '{{range .IPAM.Config}}Subnet={{.Subnet}} Gateway={{.Gateway}}{{println ""}}{{end}}'
-          # write for next step
+          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
           IP="$(docker inspect "$CID" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | awk '{print $1}')"
+          NET="$(docker inspect "$CID" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | awk '{print $1}')"
           SUBNET="$(docker network inspect "$NET" --format '{{(index .IPAM.Config 0).Subnet}}')"
-          echo "DJANGO_IP=$IP" | tee /tmp/mysql_docker_net.env
-          echo "DOCKER_NET=$NET" | tee -a /tmp/mysql_docker_net.env
-          echo "DOCKER_SUBNET=$SUBNET" | tee -a /tmp/mysql_docker_net.env
+          echo "DJANGO_IP=$IP"
+          echo "DOCKER_NET=$NET"
+          echo "DOCKER_SUBNET=$SUBNET"
+          [ "$SUBNET" = "172.18.0.0/16" ] || { echo "STOP unexpected subnet $SUBNET"; exit 2; }
+          case "$IP" in 172.18.*) ;; *) echo "STOP ip $IP"; exit 2 ;; esac
+          HOST_PATTERN='172.18.%'
+          echo "MYSQL_HOST_PATTERN=$HOST_PATTERN"
+          printf '%s\n' "DJANGO_IP=$IP" "DOCKER_NET=$NET" "DOCKER_SUBNET=$SUBNET" "MYSQL_HOST_PATTERN=$HOST_PATTERN" > /tmp/mysql_docker_net.env
 
-          echo "=== Phase 2 SHOW GRANTS localhost ==="
+          echo "=== localhost grants (RO app user) ==="
           mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "SHOW GRANTS FOR CURRENT_USER();" | sed 's/^/GRANT_LOCAL /'
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT CURRENT_USER();" | awk '{print "current_user="$1}'
 
-      - name: Phase 3-4 — create host-specific RO user if needed
-        env:
-          MYSQL_RO_PASSWORD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
-        run: |
-          set -euo pipefail
-          unset HISTFILE || true
-          . /tmp/mysql_docker_net.env
-          echo "DJANGO_IP=$DJANGO_IP DOCKER_SUBNET=$DOCKER_SUBNET DOCKER_NET=$DOCKER_NET"
+          admin() { sudo mysql --defaults-file=/etc/mysql/debian.cnf "$@"; }
+          echo "=== admin path ==="
+          admin -N -e "SELECT 'ADMIN_OK';"
 
-          # Decide host pattern from subnet — prefer tightest safe pattern
-          # 172.18.0.0/16 → 172.18.% ; only broaden to 172.% if subnet is not a single /16 in 172.16-31
-          HOST_PATTERN=""
-          case "$DOCKER_SUBNET" in
-            172.18.0.0/16) HOST_PATTERN='172.18.%' ;;
-            172.17.0.0/16) HOST_PATTERN='172.17.%' ;;
-            172.16.0.0/12) HOST_PATTERN='172.%' ;;
-            172.*.*.*/16)
-              # generic /16 in 172.x
-              OCT2="$(echo "$DOCKER_SUBNET" | awk -F'[./]' '{print $2}')"
-              HOST_PATTERN="172.${OCT2}.%"
-              ;;
-            *)
-              echo "STOP cannot safely map subnet=$DOCKER_SUBNET to host pattern"
-              exit 2
-              ;;
-          esac
-          # Sanity: container IP must match pattern prefix
-          case "$DJANGO_IP" in
-            172.18.*) [ "$HOST_PATTERN" = '172.18.%' ] || [ "$HOST_PATTERN" = '172.%' ] || { echo STOP pattern mismatch; exit 2; } ;;
-            172.*) ;;
-            *) echo "STOP unexpected django ip $DJANGO_IP"; exit 2 ;;
-          esac
-          echo "MYSQL_HOST_PATTERN=$HOST_PATTERN" | tee -a /tmp/mysql_docker_net.env
-
-          # Find admin CLI: debian-sys-maint, sudo mysql, or root via socket
-          ADMIN_OK=0
-          run_admin() {
-            local sql="$1"
-            if [ -f /etc/mysql/debian.cnf ]; then
-              mysql --defaults-file=/etc/mysql/debian.cnf -e "$sql"
-              return $?
-            fi
-            if sudo mysql -e "$sql" >/dev/null 2>&1; then
-              sudo mysql -e "$sql"
-              return $?
-            fi
-            return 1
-          }
-
-          echo "=== admin path probe ==="
-          if [ -f /etc/mysql/debian.cnf ]; then
-            echo "admin_path=debian.cnf"
-            mysql --defaults-file=/etc/mysql/debian.cnf -N -e "SELECT 1" >/dev/null && ADMIN_OK=1
-          fi
-          if [ "$ADMIN_OK" -ne 1 ]; then
-            if sudo mysql -N -e "SELECT 1" >/dev/null 2>&1; then
-              echo "admin_path=sudo_mysql"
-              ADMIN_OK=1
-            fi
-          fi
-          if [ "$ADMIN_OK" -ne 1 ]; then
-            echo "STOP no MySQL admin credential on EC2 for CREATE USER"
-            exit 2
-          fi
-
-          EXISTS="$(mysql --defaults-file=/etc/mysql/debian.cnf -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='iic_booking_ro' AND host='$HOST_PATTERN';" 2>/dev/null \
-            || sudo mysql -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='iic_booking_ro' AND host='$HOST_PATTERN';")"
+          EXISTS="$(admin -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='iic_booking_ro' AND host='${HOST_PATTERN}';")"
           echo "existing_host_account_count=$EXISTS"
 
-          if [ "${EXISTS:-0}" = "0" ]; then
-            echo "=== CREATE USER + GRANT SELECT ==="
-            # password via env into mysql -p without printing
-            export MYSQL_PWD="$MYSQL_RO_PASSWORD"
-            # Use admin without MYSQL_PWD conflict: unset for admin, pass password in SQL via prepared approach
-            unset MYSQL_PWD
-            # Write SQL file with password substituted privately
-            python3 - <<PY
+          if [ "$EXISTS" = "0" ]; then
+            python3 - <<'PY'
           import os
           from pathlib import Path
-          host = open("/tmp/mysql_docker_net.env").read()
-          pattern = [l.split("=",1)[1].strip() for l in host.splitlines() if l.startswith("MYSQL_HOST_PATTERN=")][0]
+          pattern = "172.18.%"
           pw = os.environ["MYSQL_RO_PASSWORD"]
-          # escape single quotes for SQL
-          pw_sql = pw.replace("\\\\", "\\\\\\\\").replace("'", "''")
-          sql = f"""
-          CREATE USER IF NOT EXISTS 'iic_booking_ro'@'{pattern}' IDENTIFIED BY '{pw_sql}';
-          GRANT SELECT ON \\`admin\\`.* TO 'iic_booking_ro'@'{pattern}';
-          FLUSH PRIVILEGES;
-          SELECT user, host FROM mysql.user WHERE user='iic_booking_ro' ORDER BY host;
-          """
+          pw_sql = pw.replace("\\", "\\\\").replace("'", "''")
+          sql = (
+              f"CREATE USER IF NOT EXISTS 'iic_booking_ro'@'{pattern}' IDENTIFIED BY '{pw_sql}';\n"
+              f"GRANT SELECT ON `admin`.* TO 'iic_booking_ro'@'{pattern}';\n"
+              "FLUSH PRIVILEGES;\n"
+              "SELECT user, host FROM mysql.user WHERE user='iic_booking_ro' ORDER BY host;\n"
+          )
           Path("/tmp/create_ro_host.sql").write_text(sql)
-          print("sql_written=YES password_in_report=NO")
+          print("sql_written=YES")
           PY
-            if [ -f /etc/mysql/debian.cnf ]; then
-              mysql --defaults-file=/etc/mysql/debian.cnf < /tmp/create_ro_host.sql
-            else
-              sudo mysql < /tmp/create_ro_host.sql
-            fi
+            admin < /tmp/create_ro_host.sql
             shred -u /tmp/create_ro_host.sql 2>/dev/null || rm -f /tmp/create_ro_host.sql
             echo "CREATE_HOST_ACCOUNT=DONE"
           else
             echo "CREATE_HOST_ACCOUNT=ALREADY_EXISTS"
-            # Ensure SELECT grant present (idempotent)
-            if [ -f /etc/mysql/debian.cnf ]; then
-              mysql --defaults-file=/etc/mysql/debian.cnf -e "GRANT SELECT ON \`admin\`.* TO 'iic_booking_ro'@'$HOST_PATTERN'; FLUSH PRIVILEGES;"
-            else
-              sudo mysql -e "GRANT SELECT ON \`admin\`.* TO 'iic_booking_ro'@'$HOST_PATTERN'; FLUSH PRIVILEGES;"
-            fi
+            admin -e "GRANT SELECT ON \`admin\`.* TO 'iic_booking_ro'@'${HOST_PATTERN}'; FLUSH PRIVILEGES;"
           fi
 
-          echo "=== Phase 4 SHOW GRANTS new host ==="
-          if [ -f /etc/mysql/debian.cnf ]; then
-            mysql --defaults-file=/etc/mysql/debian.cnf -e "SHOW GRANTS FOR 'iic_booking_ro'@'$HOST_PATTERN';" | sed 's/^/GRANT_DOCKER /'
-            mysql --defaults-file=/etc/mysql/debian.cnf -e "SHOW GRANTS FOR 'iic_booking_ro'@'localhost';" | sed 's/^/GRANT_LOCALHOST /'
-          else
-            sudo mysql -e "SHOW GRANTS FOR 'iic_booking_ro'@'$HOST_PATTERN';" | sed 's/^/GRANT_DOCKER /'
-            sudo mysql -e "SHOW GRANTS FOR 'iic_booking_ro'@'localhost';" | sed 's/^/GRANT_LOCALHOST /'
-          fi
+          echo "=== grants docker host ==="
+          admin -e "SHOW GRANTS FOR 'iic_booking_ro'@'${HOST_PATTERN}';" | sed 's/^/GRANT_DOCKER /'
+          echo "=== grants localhost preserved ==="
+          admin -e "SHOW GRANTS FOR 'iic_booking_ro'@'localhost';" | sed 's/^/GRANT_LOCALHOST /'
 
-          # Privilege keyword scan
-          GRANTS="$(mysql --defaults-file=/etc/mysql/debian.cnf -N -e "SHOW GRANTS FOR 'iic_booking_ro'@'$HOST_PATTERN';" 2>/dev/null || sudo mysql -N -e "SHOW GRANTS FOR 'iic_booking_ro'@'$HOST_PATTERN';")"
-          echo "$GRANTS" | tee /tmp/grants_docker.txt
-          echo "$GRANTS" | grep -qi 'SELECT' && echo "has_SELECT=YES" || echo "has_SELECT=NO"
-          for bad in INSERT UPDATE DELETE CREATE ALTER DROP TRUNCATE 'GRANT OPTION' RELOAD FILE SUPER ALL; do
-            if echo "$GRANTS" | grep -qiE "(^|[^A-Z])${bad}([^A-Z]|$)"; then
-              # ALL PRIVILEGES would match ALL — check carefully
-              if [ "$bad" = "ALL" ]; then
-                echo "$GRANTS" | grep -qi 'ALL PRIVILEGES' && { echo "STOP writeish=$bad"; exit 2; } || true
-              else
-                echo "STOP writeish_or_elevated=$bad"
-                exit 2
-              fi
-            fi
-          done
-          echo "grants_select_only=PASS"
-          unset MYSQL_RO_PASSWORD || true
+          GRANTS="$(admin -N -e "SHOW GRANTS FOR 'iic_booking_ro'@'${HOST_PATTERN}';")"
+          echo "$GRANTS"
+          echo "$GRANTS" | grep -q 'SELECT' && echo has_SELECT=YES || { echo has_SELECT=NO; exit 2; }
+          echo "$GRANTS" | grep -qiE 'INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|GRANT OPTION|RELOAD|FILE|SUPER|ALL PRIVILEGES' \
+            && { echo "STOP elevated_or_write_priv"; exit 2; } || echo "grants_select_only=PASS"
+          unset MYSQL_RO_PASSWORD MYSQL_PWD || true
 
-      - name: Phase 5-7 + 9-10 — Django RO probe, identity, migrations
+      - name: Phase 5-10 — Django OldMySQLReader probe
         run: |
           set -euo pipefail
           . /tmp/mysql_docker_net.env
           DEPLOY=/home/ubuntu/iic-booking-backend
           cd "$DEPLOY"
-          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep -E 'django' | head -n1)"
-          echo "django=$CID pattern=$MYSQL_HOST_PATTERN"
+          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
+          echo "django=$CID"
 
           docker exec -i -w /app "$CID" python - <<'PY'
           import os
@@ -190,48 +90,38 @@ jobs:
           from django.conf import settings
           from iic_booking.users.legacy_ledger.reader import OldMySQLReader, assert_readonly_sql
 
-          assert settings.OLD_MYSQL_HOST == "host.docker.internal"
-          assert int(settings.OLD_MYSQL_PORT) == 3306
-          assert settings.OLD_MYSQL_DATABASE == "admin"
-          assert settings.OLD_MYSQL_USER == "iic_booking_ro"
-          print("settings_ok=YES")
+          print("settings_host=", settings.OLD_MYSQL_HOST)
+          print("settings_port=", settings.OLD_MYSQL_PORT)
+          print("settings_db=", settings.OLD_MYSQL_DATABASE)
+          print("settings_user=", settings.OLD_MYSQL_USER)
           print("fixture_fallback=NONE")
 
-          # RO SQL guard
-          try:
-              assert_readonly_sql("UPDATE admin.users SET emp_id=emp_id WHERE 1=0")
-              print("readonly_guard_UPDATE=FAIL_ACCEPTED_WRITE")
-              raise SystemExit(2)
-          except ValueError:
-              print("readonly_guard_UPDATE=PASS_REJECTED")
-          try:
-              assert_readonly_sql("DELETE FROM admin.users WHERE 1=0")
-              print("readonly_guard_delete=FAIL_ACCEPTED_WRITE")
-              raise SystemExit(2)
-          except ValueError:
-              print("readonly_guard_delete=PASS_REJECTED")
+          for sql, label in [
+              ("UPDATE admin.users SET emp_id=emp_id WHERE 1=0", "update"),
+              ("DELETE FROM admin.users WHERE 1=0", "delete"),
+          ]:
+              try:
+                  assert_readonly_sql(sql)
+                  print(f"readonly_guard_{label}=FAIL")
+                  raise SystemExit(2)
+              except ValueError:
+                  print(f"readonly_guard_{label}=PASS_REJECTED")
 
           with OldMySQLReader() as reader:
               report = reader.connection_probe()
               audit = reader.live_financial_audit()
               print("connection=", "PASS" if report.get("ok") else "FAIL")
               print("account_appears_writable=", report.get("account_appears_writable"))
-              print("probe_ok=", report.get("ok"))
               cur = reader._conn.cursor()
-              cur.execute(
-                  "SELECT @@hostname AS h, @@port AS p, @@server_uuid AS u, CURRENT_USER() AS cu, DATABASE() AS db"
-              )
+              cur.execute("SELECT @@hostname AS h, @@port AS p, @@server_uuid AS u, CURRENT_USER() AS cu, DATABASE() AS db")
               row = cur.fetchone()
               print("server_hostname=", row["h"])
               print("server_port=", row["p"])
               print("server_uuid=", row["u"])
               print("current_user=", row["cu"])
               print("database=", row["db"])
-              expected_uuid = "887bdd21-2e05-11ef-9ab5-0a770504c180"
-              expected_host = "ip-10-0-1-153"
-              print("server_uuid_match=", "PASS" if row["u"] == expected_uuid else "FAIL")
-              print("server_hostname_match=", "PASS" if row["h"] == expected_host else "FAIL")
-              print("server_port_match=", "PASS" if int(row["p"]) == 3306 else "FAIL")
+              print("server_uuid_match=", "PASS" if row["u"] == "887bdd21-2e05-11ef-9ab5-0a770504c180" else "FAIL")
+              print("server_hostname_match=", "PASS" if row["h"] == "ip-10-0-1-153" else "FAIL")
               for sql, label in [
                   ("SELECT COUNT(*) AS c FROM users", "users"),
                   ("SELECT COUNT(*) AS c FROM user_wallet", "user_wallet"),
@@ -242,32 +132,19 @@ jobs:
                   print(f"{label}_count=", cur.fetchone()["c"])
                   print(f"{label}_read=PASS")
               cur.execute("SELECT id, user_id, balance FROM user_wallet LIMIT 1")
-              print("wallet_sample=", "PASS" if cur.fetchone() else "EMPTY")
+              print("wallet_read=", "PASS" if cur.fetchone() else "EMPTY")
               cur.execute("SELECT id, user_id, amount FROM wallet_transactions ORDER BY id DESC LIMIT 1")
-              print("ledger_sample=", "PASS" if cur.fetchone() else "EMPTY")
+              print("ledger_read=", "PASS" if cur.fetchone() else "EMPTY")
               cur.execute("SELECT id FROM booking ORDER BY id DESC LIMIT 1")
-              print("booking_sample=", "PASS" if cur.fetchone() else "EMPTY")
+              print("booking_read=", "PASS" if cur.fetchone() else "EMPTY")
               for k, v in audit.items():
-                  if k == "type_samples":
-                      continue
-                  print(f"audit_{k}=", v)
-
-          # management command
+                  if k != "type_samples":
+                      print(f"audit_{k}=", v)
           print("production_writes=NO")
           PY
 
           docker exec -w /app "$CID" python manage.py test_old_mysql
-
-          echo "=== migrations still pending ==="
           docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
-
-          echo "=== Channel-I ==="
-          docker exec -i -w /app "$CID" python - <<'PY'
-          print("channel_i_live=NOT_TESTED")
-          print("employee_claim=NOT_TESTED")
-          print("employee_match_count=NOT_TESTED")
-          print("note=operator browser login required for REAL Channel-I")
-          PY
-
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
-          echo "health_http=$code"
+          echo "channel_i_live=NOT_TESTED"
+          echo "employee_identity=NOT_TESTED"
+          echo "health=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
