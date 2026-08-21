@@ -225,9 +225,13 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
     def get_gender_from_channel_i(self, obj):
         # channel_i_identity table may be absent until users.0099 is migrated.
-        # Missing relation must not 500 /api/auth/user/ after Omniport login.
+        # With ATOMIC_REQUESTS=True, a caught ProgrammingError still aborts the
+        # request transaction — wrap in a savepoint so later fields (rbac, etc.) work.
+        from django.db import transaction
+
         try:
-            profile = getattr(obj, "channel_i_identity", None)
+            with transaction.atomic():
+                profile = getattr(obj, "channel_i_identity", None)
         except Exception:
             return False
         if profile is None:
@@ -269,8 +273,11 @@ class UserSerializer(serializers.ModelSerializer[User]):
                     }
                 )
         if "gender" in attrs and self.instance is not None:
+            from django.db import transaction
+
             try:
-                profile = getattr(self.instance, "channel_i_identity", None)
+                with transaction.atomic():
+                    profile = getattr(self.instance, "channel_i_identity", None)
             except Exception:
                 profile = None
             if profile and getattr(profile, "gender_locked_from_channel_i", False):

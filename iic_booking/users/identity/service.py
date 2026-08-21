@@ -86,8 +86,11 @@ class UserIdentityService:
         pk = getattr(user, "pk", None)
         if not pk:
             return None
+        from django.db import transaction
+
         try:
-            return ChannelIIdentityProfile.objects.filter(user_id=pk).first()
+            with transaction.atomic():
+                return ChannelIIdentityProfile.objects.filter(user_id=pk).first()
         except Exception:
             # Table may not exist until users.0099 is migrated.
             return None
