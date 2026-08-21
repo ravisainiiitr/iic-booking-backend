@@ -2,97 +2,29 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  phase0:
+  backups:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Phase 0–2 pre-migration verification (NO migrate)
+      - name: Backup RO detail (no migrate)
         run: |
           set -euo pipefail
-          cd /home/ubuntu/iic-booking-backend
-          echo "=== SHA / tag ==="
-          echo "HEAD=$(git rev-parse HEAD)"
-          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-          echo "expected_prompt_sha=fdda7bee2167c33c5b8d49437c6e33838c077180"
-          echo "sha_matches_prompt_fdda7be=$([ "$(git rev-parse HEAD)" = "fdda7bee2167c33c5b8d49437c6e33838c077180" ] && echo YES || echo NO)"
-
-          echo "=== health ==="
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
-          echo "health=$code"
-
-          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          echo "django=$CID"
-
-          echo "=== users 0096-0100 ==="
-          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
-
-          echo "=== ALL pending migrations (any app) ==="
-          docker exec -w /app "$CID" python manage.py showmigrations 2>/dev/null | awk '
-            /^[a-zA-Z0-9_]/ { app=$1 }
-            /\[ \]/ {
-              # pending
-              gsub(/^\s+\[ \] /, "", $0)
-              print "PENDING", app, $0
-            }
-          ' || true
-
-          echo "=== equipment 0188 presence ==="
-          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>/dev/null | grep -E '0188|r14|R14' || echo "equipment_0188_or_r14=NOT_IN_SHOWMIGRATIONS"
-
-          echo "=== migrate plan (dry) ==="
-          docker exec -w /app "$CID" python manage.py migrate --plan 2>/dev/null | tee /tmp/migrate_plan.txt | tail -n 80
-          echo "=== plan contains equipment.0188? ==="
-          grep -E 'equipment\.0188|0188_' /tmp/migrate_plan.txt && echo "UNEXPECTED_0188=YES" || echo "UNEXPECTED_0188=NO"
-          echo "=== plan apps ==="
-          grep -E '^\s*(Migrating|Applying)' /tmp/migrate_plan.txt | head -n 60 || true
-          # Extract planned migration names
-          grep -oE '[a-zA-Z0-9_]+\.[0-9]{4}_[a-zA-Z0-9_]+' /tmp/migrate_plan.txt | sort -u | tee /tmp/planned.txt || true
-          echo "=== planned list ==="
-          cat /tmp/planned.txt || true
-          # Flag if anything outside users 0096-0100
-          python3 - <<'PY'
-          from pathlib import Path
-          allowed={
-            'users.0096_portal_migration_legacy_ledger',
-            'users.0097_portal_migration_observability',
-            'users.0098_wallet_credit_facility_v2',
-            'users.0099_channel_i_identity_architecture',
-            'users.0100_channel_i_gender_enrolment',
-          }
-          # also allow short forms from plan
-          lines=[l.strip() for l in Path('/tmp/planned.txt').read_text().splitlines() if l.strip()]
-          unexpected=[]
-          users_hits=[]
-          for l in lines:
-              if l.startswith('users.009') or l.startswith('users.0100'):
-                  users_hits.append(l)
-              # normalize: plan may print app.migration
-              if not (l.startswith('users.0096') or l.startswith('users.0097') or l.startswith('users.0098') or l.startswith('users.0099') or l.startswith('users.0100')):
-                  # ignore non-migration tokens
-                  if '.' in l and any(ch.isdigit() for ch in l.split('.',1)[0][-1:]+l):
-                      # keep if looks like app.NNNN_
-                      parts=l.split('.',1)
-                      if len(parts)==2 and parts[1][:4].isdigit():
-                          if not (parts[0]=='users' and parts[1][:4] in {'0096','0097','0098','0099','0100'}):
-                              unexpected.append(l)
-          print('planned_count=', len(lines))
-          print('users_target_hits=', users_hits)
-          print('unexpected_migrations=', unexpected if unexpected else 'NONE')
-          print('plan_only_users_0096_0100=', 'YES' if not unexpected else 'NO')
-          PY
-
-          echo "=== backup evidence ==="
-          for d in /home/ubuntu/backups /home/ubuntu/iic-booking-backend/backups /var/backups/iic /home/ubuntu/iic-booking-backend/.backups /opt/backups; do
-            [ -d "$d" ] && echo "backup_dir=$d" && ls -lt "$d" 2>/dev/null | head -n 15 || true
-          done
-          # known nightly pattern from prior qualification
-          find /home/ubuntu -maxdepth 4 -type d -name 'nightly-*' 2>/dev/null | head -n 10 || true
-          find /home/ubuntu -maxdepth 5 -type f \( -name '*.sql.gz' -o -name '*.dump' -o -name '*backup*' \) 2>/dev/null | head -n 30 || true
-          ls -lt /home/ubuntu/iic-booking-backend/scripts/deploy/ 2>/dev/null | head -n 20 || true
-          test -f scripts/deploy/backup.sh && echo backup_script=PRESENT || echo backup_script=ABSENT
-          test -f scripts/deploy/migrate-production.sh && echo migrate_script=PRESENT || echo migrate_script=ABSENT
-          ls docs/release/migration/* 2>/dev/null | head -n 40 || true
-
-          echo "=== gated workflow confirm string ==="
-          echo "actions_confirm=MIGRATE"
-          echo "script_confirm=CONFIRM_MIGRATE=YES"
-          echo "MIGRATE_EXECUTED=NO"
+          echo "=== /home/ubuntu/backups ==="
+          ls -lah /home/ubuntu/backups 2>/dev/null | head -n 40 || true
+          latest=$(ls -1dt /home/ubuntu/backups/* 2>/dev/null | head -n 1 || true)
+          echo "latest_entry=$latest"
+          if [ -n "$latest" ]; then
+            ls -lah "$latest" | head -n 40
+            # gzip test newest .gz
+            gz=$(find "$latest" -type f -name '*.gz' 2>/dev/null | head -n 3 || true)
+            for f in $gz; do
+              echo "gzip_test=$f"
+              gzip -t "$f" && echo "gzip_ok=YES" || echo "gzip_ok=NO"
+              ls -lah "$f"
+            done
+          fi
+          # cron / restore docs
+          ls -lah /home/ubuntu/iic-booking-backend/scripts/deploy/ | head -n 30
+          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/backup.sh && echo backup_sh=YES
+          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/restore.sh && echo restore_sh=YES || echo restore_sh=NO
+          ls /home/ubuntu/iic-booking-backend/docs/release/migration/ 2>/dev/null | head -n 40 || true
+          crontab -l 2>/dev/null | grep -iE 'backup|migrate' || echo 'crontab_backup_lines=none_or_no_access'
