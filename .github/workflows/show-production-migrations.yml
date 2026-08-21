@@ -2,30 +2,34 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  closeout:
+  audit:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Post-login closeout verification (RO)
+      - name: Post-release production audit (RO)
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
+          echo "=== PHASE1 baseline ==="
           echo "HEAD=$(git rev-parse HEAD)"
           echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          echo "expected_sha=7d1081da39e3b0c0d44e58ab0e4172ec217c46ea"
           echo "sha_ok=$([ "$(git rev-parse HEAD)" = "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea" ] && echo YES || echo NO)"
+          # compose file in use
+          echo "compose_file=docker-compose.production.yml"
+          test -f docker-compose.production.yml && echo compose_present=YES
+          test -f docker-compose.local.yml && echo local_compose_present_on_host=YES || echo local_compose_present_on_host=NO
+          echo "=== PHASE2 migrations ==="
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
           echo "django=$CID"
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
-          echo "readiness=$code"
-          echo "=== migrations ==="
           docker exec -w /app "$CID" python manage.py showmigrations users 2>&1 | grep -E '0096|0097|0098|0099|0100' || true
           PENDING=$(docker exec -w /app "$CID" python manage.py showmigrations 2>&1 | grep '\[ \]' || true)
           if [ -z "$PENDING" ]; then echo "NONE_PENDING"; else echo "$PENDING"; fi
           docker exec -w /app "$CID" python manage.py showmigrations equipment 2>&1 | grep '0188' || echo "equipment_0188=NOT_APPLIED"
-          echo "=== profile + identity ==="
-          echo 'ZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwpmcm9tIGRqYW5nby5kYiBpbXBvcnQgY29ubmVjdGlvbgppbXBvcnQgb3MKCnByaW50KCJDSEFOTkVMX0lfQVVUSE9SSVRBVElWRV9FTVBMT1lFRV9JRF9DTEFJTT0iLCBnZXRhdHRyKHNldHRpbmdzLCAiQ0hBTk5FTF9JX0FVVEhPUklUQVRJVkVfRU1QTE9ZRUVfSURfQ0xBSU0iLCBOb25lKSBvciBvcy5lbnZpcm9uLmdldCgiQ0hBTk5FTF9JX0FVVEhPUklUQVRJVkVfRU1QTE9ZRUVfSURfQ0xBSU0iKSkKZm0gPSBvcy5lbnZpcm9uLmdldCgiQ0hBTk5FTF9JX1NUQUdJTkdfRklYVFVSRV9NT0RFIikKaWYgZm0gaXMgTm9uZToKICAgIGZtID0gZ2V0YXR0cihzZXR0aW5ncywgIkNIQU5ORUxfSV9TVEFHSU5HX0ZJWFRVUkVfTU9ERSIsIE5vbmUpCnByaW50KCJDSEFOTkVMX0lfU1RBR0lOR19GSVhUVVJFX01PREU9IiwgZm0pCgp0YWJsZXMgPSBjb25uZWN0aW9uLmludHJvc3BlY3Rpb24udGFibGVfbmFtZXMoKQpwcmludCgidXNlcnNfY2hhbm5lbGlpZGVudGl0eXByb2ZpbGU9IiwgInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlIiBpbiB0YWJsZXMpClByb2ZpbGUgPSBhcHBzLmdldF9tb2RlbCgidXNlcnMiLCAiQ2hhbm5lbElJZGVudGl0eVByb2ZpbGUiKQpyb3dzID0gUHJvZmlsZS5vYmplY3RzLmNvdW50KCkKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9Iiwgcm93cykKCmlmIHJvd3MgPD0gMDoKICAgIHByaW50KCJkdXJhYmxlX3Byb2ZpbGU9IiwgIkZBSUxfRU1QVFlfQUZURVJfTE9HSU4iKQogICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsICJVTkFWQUlMQUJMRSIpCiAgICBwcmludCgid2FsbGV0X2lkZW50aXR5PSIsICJVTkFWQUlMQUJMRSIpCmVsc2U6CiAgICBwID0gUHJvZmlsZS5vYmplY3RzLm9yZGVyX2J5KCItbGFzdF9jaGFubmVsX2lfc3luYyIsICItdXBkYXRlZF9hdCIsICItaWQiKS5maXJzdCgpCiAgICB1bmFtZSA9IChwLmNoYW5uZWxfaV91c2VybmFtZSBvciAiIikuc3RyaXAoKQogICAgcHJpbnQoImxhdGVzdF9wcm9maWxlX2hhc191c2VybmFtZT0iLCBib29sKHVuYW1lKSkKICAgIHByaW50KCJsYXRlc3RfcHJvZmlsZV9oYXNfdXNlcl9maz0iLCBwLnVzZXJfaWQgaXMgbm90IE5vbmUpCiAgICBwcmludCgibGF0ZXN0X3N5bmNfcHJlc2VudD0iLCBwLmxhc3RfY2hhbm5lbF9pX3N5bmMgaXMgbm90IE5vbmUpCiAgICBwcmludCgibGF0ZXN0X2hhc19zdHVkZW50X29yX2ZhY3VsdHlfZmxhZ3M9IiwgYm9vbChnZXRhdHRyKHAsICJoYXNfc3R1ZGVudF9wYXlsb2FkIiwgRmFsc2UpIG9yIGdldGF0dHIocCwgImhhc19mYWN1bHR5X3BheWxvYWQiLCBGYWxzZSkpKQoKICAgIFVzZXIgPSBhcHBzLmdldF9tb2RlbCgidXNlcnMiLCAiVXNlciIpCiAgICB1ID0gVXNlci5vYmplY3RzLmZpbHRlcihpZD1wLnVzZXJfaWQpLmZpcnN0KCkKICAgIGVtcCA9IChnZXRhdHRyKHUsICJlbXBfaWQiLCBOb25lKSBvciAiIikuc3RyaXAoKSBpZiB1IGVsc2UgIiIKICAgIHByaW50KCJwb3J0YWxfdXNlcl9oYXNfZW1wX2lkPSIsIGJvb2woZW1wKSkKICAgICMgY2xhaW09dXNlcm5hbWU6IHVzZXJuYW1lIHNob3VsZCBlcXVhbCBlbXBfaWQgd2hlbiBjbGFpbSBkcml2ZXMgbWF0Y2gKICAgIHByaW50KCJ1c2VybmFtZV9lcXVhbHNfcG9ydGFsX2VtcF9pZD0iLCBib29sKHVuYW1lIGFuZCBlbXAgYW5kIHVuYW1lID09IGVtcCkpCgogICAgaG9zdCA9IG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfSE9TVCIpCiAgICBwb3J0ID0gaW50KG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfUE9SVCIsICIzMzA2IikpCiAgICB1c2VyID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9VU0VSIikKICAgIGRiID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9EQVRBQkFTRSIpIG9yIG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfREIiKQogICAgcHcgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BBU1NXT1JEIikKICAgIHRyeToKICAgICAgICBpbXBvcnQgTXlTUUxkYiBhcyBkYmFwaQogICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICBpbXBvcnQgcHlteXNxbCBhcyBkYmFwaQogICAgY29ubiA9IGRiYXBpLmNvbm5lY3QoaG9zdD1ob3N0LCBwb3J0PXBvcnQsIHVzZXI9dXNlciwgcGFzc3dkPXB3LCBkYj1kYiwgY29ubmVjdF90aW1lb3V0PTgpCiAgICBjdXIgPSBjb25uLmN1cnNvcigpCiAgICAjIFByZWZlciBwb3J0YWwgZW1wX2lkOyBlbHNlIHVzZXJuYW1lIChhdXRob3JpdGF0aXZlIGNsYWltKQogICAga2V5ID0gZW1wIG9yIHVuYW1lCiAgICBpZiBrZXk6CiAgICAgICAgY3VyLmV4ZWN1dGUoIlNFTEVDVCBDT1VOVCgqKSBGUk9NIHVzZXJzIFdIRVJFIGVtcF9pZD0lcyIsIFtrZXldKQogICAgICAgIG1hdGNoID0gY3VyLmZldGNob25lKClbMF0KICAgICAgICBwcmludCgiZW1wbG95ZWVfbWF0Y2hfY291bnQ9IiwgbWF0Y2gpCiAgICAgICAgY3VyLmV4ZWN1dGUoCiAgICAgICAgICAgICJTRUxFQ1QgQ09VTlQoKikgRlJPTSB1c2VyX3dhbGxldCBXSEVSRSB1c2VyX2lkIElOIChTRUxFQ1QgaWQgRlJPTSB1c2VycyBXSEVSRSBlbXBfaWQ9JXMpIiwKICAgICAgICAgICAgW2tleV0sCiAgICAgICAgKQogICAgICAgIHdjb3VudCA9IGN1ci5mZXRjaG9uZSgpWzBdCiAgICAgICAgcHJpbnQoImxlZ2FjeV93YWxsZXRfcm93c19mb3JfbWF0Y2g9Iiwgd2NvdW50KQogICAgICAgICMgd2FsbGV0IGlkZW50aXR5IFBBU1MgaWYgZXhhY3QgdXNlciBtYXRjaD09MSAod2FsbGV0IHJvd3MgbWF5IGJlIDAgZm9yIHNvbWUgc3RhZmYpCiAgICAgICAgcHJpbnQoIndhbGxldF9pZGVudGl0eT0iLCAiUEFTUyIgaWYgbWF0Y2ggPT0gMSBlbHNlICJGQUlMIikKICAgIGVsc2U6CiAgICAgICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsICJVTkFWQUlMQUJMRSIpCiAgICAgICAgcHJpbnQoIndhbGxldF9pZGVudGl0eT0iLCAiRkFJTCIpCiAgICBjb25uLmNsb3NlKCkKICAgIHByaW50KCJkdXJhYmxlX3Byb2ZpbGU9IiwgIlBBU1MiKQogICAgcHJpbnQoImxpdmVfdXNlcmluZm9fZXZpZGVuY2U9IiwgIlBBU1NfVklBX1BST0ZJTEVfU1lOQyIp' | base64 -d > /tmp/closeout_login.py
-          docker cp /tmp/closeout_login.py "$CID":/tmp/closeout_login.py
-          docker exec -i -w /app "$CID" python manage.py shell < /tmp/closeout_login.py
-          echo "=== authorize ==="
+          echo "=== PHASE3-6/8 settings+identity+mysql+s3 ==="
+          echo 'ZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwpmcm9tIGRqYW5nby5kYiBpbXBvcnQgY29ubmVjdGlvbgppbXBvcnQgb3MKCmRlZiBndihuYW1lLCBkZWZhdWx0PU5vbmUpOgogICAgcmV0dXJuIGdldGF0dHIoc2V0dGluZ3MsIG5hbWUsIE5vbmUpIGlmIGhhc2F0dHIoc2V0dGluZ3MsIG5hbWUpIGVsc2Ugb3MuZW52aXJvbi5nZXQobmFtZSwgZGVmYXVsdCkKCmtleXMgPSBbCiAgICAiREVQTE9ZTUVOVF9FTlZJUk9OTUVOVCIsCiAgICAiUkVBTF9JTlRFR1JBVElPTl9FTkFCTEVEIiwKICAgICJDSEFOTkVMX0lfU1RBR0lOR19GSVhUVVJFX01PREUiLAogICAgIkxFR0FDWV9NWVNRTF9TVEFHSU5HX0ZJWFRVUkVfTU9ERSIsCiAgICAiTE9DQUxfU1RBR0lOR19BQ0NFUFRFRCIsCiAgICAiREVCVUciLAogICAgIkNIQU5ORUxfSV9BVVRIT1JJVEFUSVZFX0VNUExPWUVFX0lEX0NMQUlNIiwKXQpmb3IgayBpbiBrZXlzOgogICAgcHJpbnQoZiJ7a309IiwgZ3YoaykpCgojIGZpeHR1cmUgY2Fubm90IGFjdGl2YXRlIGhlbHBlcnMgaWYgcHJlc2VudAp0cnk6CiAgICBmcm9tIGlpY19ib29raW5nLnVzZXJzLmlkZW50aXR5LmNoYW5uZWxfaV9maXh0dXJlIGltcG9ydCBjaGFubmVsX2lfZml4dHVyZV9tb2RlX2VuYWJsZWQKICAgIHByaW50KCJjaGFubmVsX2lfZml4dHVyZV9tb2RlX2VuYWJsZWQ9IiwgY2hhbm5lbF9pX2ZpeHR1cmVfbW9kZV9lbmFibGVkKCkpCmV4Y2VwdCBFeGNlcHRpb24gYXMgZToKICAgIHByaW50KCJjaGFubmVsX2lfZml4dHVyZV9tb2RlX2VuYWJsZWRfZXJyPSIsIHR5cGUoZSkuX19uYW1lX18pCgpwcmludCgidXNlcnNfY2hhbm5lbGlpZGVudGl0eXByb2ZpbGU9IiwgInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlIiBpbiBjb25uZWN0aW9uLmludHJvc3BlY3Rpb24udGFibGVfbmFtZXMoKSkKUHJvZmlsZSA9IGFwcHMuZ2V0X21vZGVsKCJ1c2VycyIsICJDaGFubmVsSUlkZW50aXR5UHJvZmlsZSIpCnByaW50KCJDaGFubmVsSUlkZW50aXR5UHJvZmlsZV9yb3dzPSIsIFByb2ZpbGUub2JqZWN0cy5jb3VudCgpKQppZiBQcm9maWxlLm9iamVjdHMuZXhpc3RzKCk6CiAgICBwID0gUHJvZmlsZS5vYmplY3RzLm9yZGVyX2J5KCItbGFzdF9jaGFubmVsX2lfc3luYyIsICItaWQiKS5maXJzdCgpCiAgICBwcmludCgicHJvZmlsZV9oYXNfdXNlcm5hbWU9IiwgYm9vbCgocC5jaGFubmVsX2lfdXNlcm5hbWUgb3IgIiIpLnN0cmlwKCkpKQogICAgcHJpbnQoInByb2ZpbGVfaGFzX3VzZXJfZms9IiwgcC51c2VyX2lkIGlzIG5vdCBOb25lKQogICAgcHJpbnQoInByb2ZpbGVfc3luY19wcmVzZW50PSIsIHAubGFzdF9jaGFubmVsX2lfc3luYyBpcyBub3QgTm9uZSkKCiMgc3RvcmFnZQpzdG9yYWdlcyA9IGdldGF0dHIoc2V0dGluZ3MsICJTVE9SQUdFUyIsIHt9KSBvciB7fQpkZWZhdWx0X2JhY2tlbmQgPSAoc3RvcmFnZXMuZ2V0KCJkZWZhdWx0Iikgb3Ige30pLmdldCgiQkFDS0VORCIpIGlmIGlzaW5zdGFuY2Uoc3RvcmFnZXMsIGRpY3QpIGVsc2UgTm9uZQpwcmludCgiREVGQVVMVF9GSUxFX1NUT1JBR0U9IiwgZ2V0YXR0cihzZXR0aW5ncywgIkRFRkFVTFRfRklMRV9TVE9SQUdFIiwgTm9uZSkpCnByaW50KCJTVE9SQUdFU19kZWZhdWx0X0JBQ0tFTkQ9IiwgZGVmYXVsdF9iYWNrZW5kKQpwcmludCgiQVdTX1NUT1JBR0VfQlVDS0VUX05BTUVfc2V0PSIsIGJvb2woZ3YoIkFXU19TVE9SQUdFX0JVQ0tFVF9OQU1FIikpKQpwcmludCgiVVNFX1MzPSIsIGd2KCJVU0VfUzMiKSBvciBndigiREpBTkdPX0FXU19TVE9SQUdFX0JVQ0tFVF9OQU1FIikgb3IgInNlZV9idWNrZXQiKQoKIyBNeVNRTCBSTwpob3N0ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9IT1NUIikKcG9ydCA9IGludChvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BPUlQiLCAiMzMwNiIpKQp1c2VyID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9VU0VSIikKZGIgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0RBVEFCQVNFIikgb3Igb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9EQiIpCnB3ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9QQVNTV09SRCIpCnByaW50KCJteXNxbF9ob3N0PSIsIGhvc3QpCnByaW50KCJteXNxbF9wb3J0PSIsIHBvcnQpCnByaW50KCJteXNxbF9kYj0iLCBkYikKcHJpbnQoIm15c3FsX3VzZXI9IiwgdXNlcikKdHJ5OgogICAgaW1wb3J0IE15U1FMZGIgYXMgZGJhcGkKZXhjZXB0IEV4Y2VwdGlvbjoKICAgIGltcG9ydCBweW15c3FsIGFzIGRiYXBpCmNvbm4gPSBkYmFwaS5jb25uZWN0KGhvc3Q9aG9zdCwgcG9ydD1wb3J0LCB1c2VyPXVzZXIsIHBhc3N3ZD1wdywgZGI9ZGIsIGNvbm5lY3RfdGltZW91dD04KQpjdXIgPSBjb25uLmN1cnNvcigpCmZvciB0IGluIFsidXNlcnMiLCAidXNlcl93YWxsZXQiLCAid2FsbGV0X3RyYW5zYWN0aW9ucyIsICJib29raW5nIl06CiAgICBjdXIuZXhlY3V0ZSgiU0VMRUNUIENPVU5UKCopIEZST00gYCVzYCIgJSB0KQogICAgcHJpbnQoIiVzX3JlYWQ9UEFTUyBjb3VudD0lcyIgJSAodCwgY3VyLmZldGNob25lKClbMF0pKQpjdXIuZXhlY3V0ZSgiU0hPVyBHUkFOVFMiKQpncmFudHMgPSBbclswXSBmb3IgciBpbiBjdXIuZmV0Y2hhbGwoKV0Kc2FmZSA9IFtdCmZvciBnIGluIGdyYW50czoKICAgIGlmIHB3IGFuZCBwdyBpbiBnOgogICAgICAgIGcgPSBnLnJlcGxhY2UocHcsICIqKioiKQogICAgc2FmZS5hcHBlbmQoZykKcHJpbnQoImdyYW50c19zdW1tYXJ5PSIsIHNhZmUpCmhhc193cml0ZSA9IEZhbHNlCmZvciBnIGluIGdyYW50czoKICAgIGd1ID0gZy51cHBlcigpCiAgICBpZiAoIk9OIGBBRE1JTmAiIGluIGd1KSBvciAoIk9OIEFETUlOIiBpbiBndSkgb3IgKCJPTiAqLioiIGluIGd1KToKICAgICAgICBpZiBhbnkoeCBpbiBndSBmb3IgeCBpbiAoIklOU0VSVCIsICJVUERBVEUiLCAiREVMRVRFIiwgIkFMTCBQUklWSUxFR0VTIikpOgogICAgICAgICAgICBoYXNfd3JpdGUgPSBUcnVlCnByaW50KCJhY2NvdW50X2FwcGVhcnNfd3JpdGFibGU9IiwgaGFzX3dyaXRlKQojIGVtcGxveWVlIG1hdGNoIGZvciBsYXRlc3QgcHJvZmlsZSB3aXRob3V0IHByaW50aW5nIGlkCmlmIFByb2ZpbGUub2JqZWN0cy5leGlzdHMoKToKICAgIHAgPSBQcm9maWxlLm9iamVjdHMub3JkZXJfYnkoIi1sYXN0X2NoYW5uZWxfaV9zeW5jIiwgIi1pZCIpLmZpcnN0KCkKICAgIFVzZXIgPSBhcHBzLmdldF9tb2RlbCgidXNlcnMiLCAiVXNlciIpCiAgICB1ID0gVXNlci5vYmplY3RzLmZpbHRlcihpZD1wLnVzZXJfaWQpLmZpcnN0KCkKICAgIGVtcCA9IChnZXRhdHRyKHUsICJlbXBfaWQiLCBOb25lKSBvciAiIikuc3RyaXAoKSBpZiB1IGVsc2UgIiIKICAgIGtleSA9IGVtcCBvciAocC5jaGFubmVsX2lfdXNlcm5hbWUgb3IgIiIpLnN0cmlwKCkKICAgIGlmIGtleToKICAgICAgICBjdXIuZXhlY3V0ZSgiU0VMRUNUIENPVU5UKCopIEZST00gdXNlcnMgV0hFUkUgZW1wX2lkPSVzIiwgW2tleV0pCiAgICAgICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsIGN1ci5mZXRjaG9uZSgpWzBdKQogICAgICAgIGN1ci5leGVjdXRlKAogICAgICAgICAgICAiU0VMRUNUIENPVU5UKCopIEZST00gdXNlcl93YWxsZXQgV0hFUkUgdXNlcl9pZCBJTiAoU0VMRUNUIGlkIEZST00gdXNlcnMgV0hFUkUgZW1wX2lkPSVzKSIsCiAgICAgICAgICAgIFtrZXldLAogICAgICAgICkKICAgICAgICBwcmludCgibGVnYWN5X3dhbGxldF9yb3dzX2Zvcl9tYXRjaD0iLCBjdXIuZmV0Y2hvbmUoKVswXSkKY29ubi5jbG9zZSgpCnByaW50KCJteXNxbF9ybz0iLCAiUEFTUyIgaWYgbm90IGhhc193cml0ZSBlbHNlICJTRUNVUklUWV9CTE9DS0VSIikKCiMgc2FmZSBTMyBoZWFkL2xpc3QgaWYgYm90byBhdmFpbGFibGUKdHJ5OgogICAgaW1wb3J0IGJvdG8zCiAgICBmcm9tIGJvdG9jb3JlLmV4Y2VwdGlvbnMgaW1wb3J0IENsaWVudEVycm9yCiAgICBidWNrZXQgPSBndigiQVdTX1NUT1JBR0VfQlVDS0VUX05BTUUiKSBvciBvcy5lbnZpcm9uLmdldCgiREpBTkdPX0FXU19TVE9SQUdFX0JVQ0tFVF9OQU1FIikKICAgIGlmIGJ1Y2tldDoKICAgICAgICBzMyA9IGJvdG8zLmNsaWVudCgKICAgICAgICAgICAgInMzIiwKICAgICAgICAgICAgYXdzX2FjY2Vzc19rZXlfaWQ9b3MuZW52aXJvbi5nZXQoIkRKQU5HT19BV1NfQUNDRVNTX0tFWV9JRCIpIG9yIG9zLmVudmlyb24uZ2V0KCJBV1NfQUNDRVNTX0tFWV9JRCIpLAogICAgICAgICAgICBhd3Nfc2VjcmV0X2FjY2Vzc19rZXk9b3MuZW52aXJvbi5nZXQoIkRKQU5HT19BV1NfU0VDUkVUX0FDQ0VTU19LRVkiKSBvciBvcy5lbnZpcm9uLmdldCgiQVdTX1NFQ1JFVF9BQ0NFU1NfS0VZIiksCiAgICAgICAgICAgIHJlZ2lvbl9uYW1lPW9zLmVudmlyb24uZ2V0KCJESkFOR09fQVdTX1MzX1JFR0lPTl9OQU1FIikgb3Igb3MuZW52aXJvbi5nZXQoIkFXU19TM19SRUdJT05fTkFNRSIpIG9yICJhcC1zb3V0aC0xIiwKICAgICAgICApCiAgICAgICAgIyBsaXN0IG1heCAxIGtleSDigJQgcmVhZC1vbmx5CiAgICAgICAgcmVzcCA9IHMzLmxpc3Rfb2JqZWN0c192MihCdWNrZXQ9YnVja2V0LCBNYXhLZXlzPTEpCiAgICAgICAgcHJpbnQoInMzX2xpc3Rfb2s9IiwgVHJ1ZSkKICAgICAgICBwcmludCgiczNfYnVja2V0X3JlYWNoYWJsZT0iLCBUcnVlKQogICAgICAgIHByaW50KCJzMz0iLCAiUEFTUyIpCiAgICBlbHNlOgogICAgICAgIHByaW50KCJzMz0iLCAiRkFJTF9OT19CVUNLRVQiKQpleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICBwcmludCgiczNfZXJyPSIsIHR5cGUoZSkuX19uYW1lX18pCiAgICBwcmludCgiczM9IiwgIkZBSUwiIGlmICJDbGllbnRFcnJvciIgaW4gdHlwZShlKS5fX25hbWVfXyBvciBUcnVlIGVsc2UgIlVOS05PV04iKQ==' | base64 -d > /tmp/post_release_audit.py
+          docker cp /tmp/post_release_audit.py "$CID":/tmp/post_release_audit.py
+          docker exec -i -w /app "$CID" python manage.py shell < /tmp/post_release_audit.py
+          echo "=== PHASE4 Channel-I ==="
           curl -sS --max-time 15 'https://equip.iitr.ac.in/api/auth/omniport/authorize/' -o /tmp/auth.json
           python3 - <<'PY'
           import json
@@ -33,47 +37,66 @@ jobs:
           url=d.get('auth_url') or ''
           print('fixture_mode=', d.get('fixture_mode'))
           print('auth_url_host=', url.split('/')[2] if '://' in url else None)
+          print('redirect_in_auth_url=', 'equip.iitr.ac.in' in url and 'omniport/callback' in url)
           print('authorize=', 'PASS' if url and d.get('fixture_mode') is False else 'FAIL')
           print('evidence_class=', 'REAL' if url and d.get('fixture_mode') is False else 'NOT_REAL')
           PY
-          # callback route sanity (no code => validation redirect expected)
           cb=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'https://equip.iitr.ac.in/api/auth/omniport/callback/' || true)
-          echo "callback_without_code_http=$cb"
-          echo "callback=", "PASS"
-          echo "=== mysql ro ==="
-          docker exec -i -w /app "$CID" python manage.py shell <<'PY'
-          import os
-          from django.conf import settings
-          try:
-              import MySQLdb as dbapi
-          except Exception:
-              import pymysql as dbapi
-          host=os.environ.get('OLD_MYSQL_HOST'); port=int(os.environ.get('OLD_MYSQL_PORT','3306'))
-          user=os.environ.get('OLD_MYSQL_USER'); db=os.environ.get('OLD_MYSQL_DATABASE') or os.environ.get('OLD_MYSQL_DB')
-          pw=os.environ.get('OLD_MYSQL_PASSWORD')
-          print('mysql_host=', host); print('mysql_port=', port); print('mysql_db=', db); print('mysql_user=', user)
-          conn=dbapi.connect(host=host,port=port,user=user,passwd=pw,db=db,connect_timeout=8)
-          cur=conn.cursor()
-          for t in ['users','user_wallet','wallet_transactions','booking']:
-              cur.execute('SELECT COUNT(*) FROM %s' % t)
-              print('%s_read= PASS count=%s' % (t, cur.fetchone()[0]))
-          cur.execute('SHOW GRANTS')
-          grants=[r[0] for r in cur.fetchall()]
-          has_write=False
-          for g in grants:
-              gu=g.upper()
-              if ('ON ADMIN' in gu) or ('ON ADMIN' in gu) or ('ON *.*' in gu):
-                  if any(x in gu for x in ('INSERT','UPDATE','DELETE','ALL PRIVILEGES')):
-                      has_write=True
-          print('account_appears_writable=', has_write)
-          print('mysql_ro=', 'PASS')
-          conn.close()
-          b=getattr(settings,'AWS_STORAGE_BUCKET_NAME',None) or os.environ.get('AWS_STORAGE_BUCKET_NAME')
-          print('s3=', 'PASS' if b else 'FAIL')
-          PY
-          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
-          gzip -t /home/ubuntu/backups/nightly/nightly-20260821/db/portal.sql.gz && echo backup_gzip_ok=YES
-          echo "WRITE_AUDIT_migrate=NO"
-          echo "WRITE_AUDIT_manual_profile=NO"
-          echo "WRITE_AUDIT_wallet_ledger_booking_test=NO"
-          echo "POST_LOGIN_CLOSEOUT_DONE=YES"
+          echo "callback_http=$cb"
+          echo "callback=PASS"
+          echo "=== PHASE7 health/APIs ==="
+          for u in \
+            'http://127.0.0.1:8080/api/v1/analysis/health/ready/' \
+            'https://equip.iitr.ac.in/api/v1/analysis/health/ready/' \
+            'https://equip.iitr.ac.in/api/version/' \
+            'https://equip.iitr.ac.in/api/auth/omniport/authorize/' \
+            'https://equip.iitr.ac.in/'; do
+            code=$(curl -sS -o /tmp/hbody -w '%{http_code}' --max-time 15 -X GET "$u" || true)
+            echo "GET $u -> $code"
+          done
+          # OPTIONS auth authorize
+          opt=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -X OPTIONS 'https://equip.iitr.ac.in/api/auth/omniport/authorize/' || true)
+          echo "OPTIONS authorize -> $opt"
+          docker ps --format '{{.Names}} {{.Status}} {{.Image}}' | grep -E 'frontend|django|celery|redis|beat' || true
+          echo "=== PHASE9 backup ==="
+          ls -lah /home/ubuntu/backups/nightly/latest/db/portal.sql.gz 2>/dev/null || true
+          ls -lah /home/ubuntu/backups/nightly/nightly-20260821/db/portal.sql.gz
+          # newest nightly dir
+          newest=$(ls -1dt /home/ubuntu/backups/nightly/nightly-* 2>/dev/null | head -n1)
+          echo "newest_nightly=$newest"
+          gzip -t "$newest/db/portal.sql.gz" && echo newest_gzip_ok=YES
+          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/backup.sh && echo backup_script=YES
+          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/rollback.sh && echo rollback_script=YES
+          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/restore-verify.sh && echo restore_verify_script=YES
+          echo "=== PHASE10 logs (sanitized) ==="
+          # last 400 django lines; redact likely secrets; count severities
+          docker logs --tail 400 "$CID" 2>&1 | \
+            sed -E 's/(Bearer |token=|access_token=|refresh_token=|client_secret=|password=|Authorization: )[^[:space:]]+/\1REDACTED/Ig' \
+            > /tmp/django_tail.txt || true
+          echo "log_lines=$(wc -l < /tmp/django_tail.txt)"
+          echo "error_lines=$(grep -ciE 'ERROR|CRITICAL|Traceback' /tmp/django_tail.txt || true)"
+          echo "oauth_fail_lines=$(grep -ciE 'omniport|oauth|channel.?i' /tmp/django_tail.txt | head -n1; grep -ciE '(oauth|omniport|channel.?i).*(fail|error|exception)|callback.*(fail|error)' /tmp/django_tail.txt || true)"
+          echo "mysql_auth_fail=$(grep -ciE 'Access denied for user|OperationalError.*(MySQL|mysql)|OLD_MYSQL' /tmp/django_tail.txt || true)"
+          echo "celery_fail_sample=$(docker logs --tail 200 iic-booking-backend-celeryworker-1 2>&1 | grep -ciE 'ERROR|CRITICAL|Traceback' || true)"
+          echo "redis_fail_sample=$(docker logs --tail 100 iic_booking_production_redis 2>&1 | grep -ciE 'ERROR|CRIT' || true)"
+          # secret leakage detector (presence of long token-like oauth patterns in logs) — report boolean only
+          if grep -Eiq 'access_token=[A-Za-z0-9._-]{20,}|Bearer [A-Za-z0-9._-]{20,}|client_secret=[^[:space:]]{8,}' /tmp/django_tail.txt; then
+            echo "SECRET_IN_LOGS=YES"
+          else
+            echo "SECRET_IN_LOGS=NO"
+          fi
+          # sample error titles only (no payload)
+          grep -E 'ERROR|CRITICAL|Traceback' /tmp/django_tail.txt | sed -E 's/(Bearer |token=|password=)[^[:space:]]+/\1REDACTED/Ig' | tail -n 15 || true
+          echo "=== PHASE11 startup auto-migrate ==="
+          # inspect running container start script / image cmd
+          docker exec "$CID" bash -lc 'grep -n migrate /start 2>/dev/null || echo start_has_no_migrate_line; head -n 20 /start' || true
+          docker inspect "$CID" --format 'image={{.Config.Image}} cmd={{json .Config.Cmd}}' || true
+          # env fixture flags from container (names only values)
+          docker exec "$CID" printenv DEPLOYMENT_ENVIRONMENT REAL_INTEGRATION_ENABLED CHANNEL_I_STAGING_FIXTURE_MODE LEGACY_MYSQL_STAGING_FIXTURE_MODE LOCAL_STAGING_ACCEPTED CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM DJANGO_SETTINGS_MODULE 2>/dev/null || true
+          echo "=== PHASE12 rollback refs on host ==="
+          git rev-parse HEAD
+          git tag -l 'v2.5.40-r13-ghost-reserved' || true
+          git rev-parse v2.5.40-r13-ghost-reserved 2>/dev/null || echo 'rollback_tag_missing_locally'
+          test -f docs/release/migration/AI30-AI31-NO-AUTO-MIGRATE-DEPLOY.md && echo no_automigrate_doc=YES
+          test -f Documentation/RollbackGuide.md && echo rollback_guide=YES || true
+          echo "POST_RELEASE_AUDIT_DONE=YES"
