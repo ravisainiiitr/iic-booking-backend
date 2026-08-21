@@ -13,85 +13,19 @@ jobs:
           echo "django=$CID"
           echo "HEAD=$(git rev-parse HEAD)"
           echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-
           echo "=== showmigrations users 0096-0100 ==="
           docker exec -w /app "$CID" python manage.py showmigrations users 2>&1 | grep -E '0096|0097|0098|0099|0100' || true
-
           echo "=== remaining pending ==="
           PENDING=$(docker exec -w /app "$CID" python manage.py showmigrations 2>&1 | grep '\[ \]' || true)
           if [ -z "$PENDING" ]; then echo "NONE_PENDING"; else echo "$PENDING"; fi
-
           echo "=== equipment 0188 ==="
           docker exec -w /app "$CID" python manage.py showmigrations equipment 2>&1 | grep '0188' || echo "equipment_0188=ABSENT"
-
-          echo "=== schema + config + mysql ==="
-          docker exec -w /app "$CID" python manage.py shell -c '
-from django.db import connection
-from django.apps import apps
-from django.conf import settings
-import os
-tables = connection.introspection.table_names()
-print("users_channeliidentityprofile=", "users_channeliidentityprofile" in tables)
-Model = apps.get_model("users", "ChannelIIdentityProfile")
-print("model_ok=", Model is not None)
-print("ChannelIIdentityProfile_rows=", Model.objects.count())
-with connection.cursor() as c:
-    c.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s ORDER BY ordinal_position", ["users_channeliidentityprofile"])
-    print("profile_columns=", [r[0] for r in c.fetchall()])
-    c.execute("SELECT column_name FROM information_schema.columns WHERE table_name=%s ORDER BY ordinal_position", ["users_portalmigrationstate"])
-    print("portalmigrationstate_columns=", [r[0] for r in c.fetchall()])
-claim = getattr(settings, "CHANNEL_I_EMPLOYEE_CLAIM", None) or os.environ.get("CHANNEL_I_EMPLOYEE_CLAIM")
-print("authoritative_claim=", claim)
-print("REAL_INTEGRATION_ENABLED=", getattr(settings, "REAL_INTEGRATION_ENABLED", os.environ.get("REAL_INTEGRATION_ENABLED")))
-print("USE_FIXTURE_AUTH=", getattr(settings, "USE_FIXTURE_AUTH", os.environ.get("USE_FIXTURE_AUTH")))
-print("DEBUG=", settings.DEBUG)
-b = getattr(settings, "AWS_STORAGE_BUCKET_NAME", None) or os.environ.get("AWS_STORAGE_BUCKET_NAME")
-print("s3_bucket_configured=", bool(b))
-' 2>&1 | grep -v RequestsDependencyWarning
-
-          docker exec -w /app "$CID" python manage.py shell -c '
-import os
-host = os.environ.get("OLD_MYSQL_HOST")
-port = int(os.environ.get("OLD_MYSQL_PORT", "3306"))
-user = os.environ.get("OLD_MYSQL_USER")
-db = os.environ.get("OLD_MYSQL_DATABASE") or os.environ.get("OLD_MYSQL_DB")
-pw = os.environ.get("OLD_MYSQL_PASSWORD")
-print("mysql_host=", host)
-print("mysql_db=", db)
-print("mysql_user=", user)
-try:
-    import MySQLdb as dbapi
-except Exception:
-    import pymysql as dbapi
-conn = dbapi.connect(host=host, port=port, user=user, passwd=pw, db=db, connect_timeout=8)
-cur = conn.cursor()
-for t in ["users", "user_wallet", "wallet_transactions", "booking"]:
-    cur.execute("SELECT COUNT(*) FROM `%s`" % t)
-    print("%s_count=" % t, cur.fetchone()[0])
-    print("%s_read=" % t, "PASS")
-cur.execute("SHOW GRANTS")
-grants = [row[0] for row in cur.fetchall()]
-safe = []
-for g in grants:
-    if pw and pw in g:
-        g = g.replace(pw, "***")
-    safe.append(g)
-print("grants_summary=", safe)
-has_write = False
-for g in grants:
-    gu = g.upper()
-    if "ON `ADMIN`" in gu or "ON ADMIN" in gu or "ON *.*" in gu:
-        if any(x in gu for x in ("INSERT", "UPDATE", "DELETE", "ALL PRIVILEGES")):
-            has_write = True
-print("account_appears_writable=", has_write)
-cur.execute("SELECT COUNT(*) FROM users WHERE emp_id IS NOT NULL AND emp_id<>%s", [""])
-print("users_with_emp_id=", cur.fetchone()[0])
-conn.close()
-print("mysql_ro=", "PASS")
-' 2>&1 | grep -v RequestsDependencyWarning
-
+          echo "=== schema + mysql ==="
+          echo 'ZnJvbSBkamFuZ28uZGIgaW1wb3J0IGNvbm5lY3Rpb24KZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwppbXBvcnQgb3MKdGFibGVzID0gY29ubmVjdGlvbi5pbnRyb3NwZWN0aW9uLnRhYmxlX25hbWVzKCkKcHJpbnQoInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlPSIsICJ1c2Vyc19jaGFubmVsaWlkZW50aXR5cHJvZmlsZSIgaW4gdGFibGVzKQpNb2RlbCA9IGFwcHMuZ2V0X21vZGVsKCJ1c2VycyIsICJDaGFubmVsSUlkZW50aXR5UHJvZmlsZSIpCnByaW50KCJtb2RlbF9vaz0iLCBNb2RlbCBpcyBub3QgTm9uZSkKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9IiwgTW9kZWwub2JqZWN0cy5jb3VudCgpKQp3aXRoIGNvbm5lY3Rpb24uY3Vyc29yKCkgYXMgYzoKICAgIGMuZXhlY3V0ZSgiU0VMRUNUIGNvbHVtbl9uYW1lIEZST00gaW5mb3JtYXRpb25fc2NoZW1hLmNvbHVtbnMgV0hFUkUgdGFibGVfbmFtZT0lcyBPUkRFUiBCWSBvcmRpbmFsX3Bvc2l0aW9uIiwgWyJ1c2Vyc19jaGFubmVsaWlkZW50aXR5cHJvZmlsZSJdKQogICAgcHJpbnQoInByb2ZpbGVfY29sdW1ucz0iLCBbclswXSBmb3IgciBpbiBjLmZldGNoYWxsKCldKQogICAgYy5leGVjdXRlKCJTRUxFQ1QgY29sdW1uX25hbWUgRlJPTSBpbmZvcm1hdGlvbl9zY2hlbWEuY29sdW1ucyBXSEVSRSB0YWJsZV9uYW1lPSVzIE9SREVSIEJZIG9yZGluYWxfcG9zaXRpb24iLCBbInVzZXJzX3BvcnRhbG1pZ3JhdGlvbnN0YXRlIl0pCiAgICBwcmludCgicG9ydGFsbWlncmF0aW9uc3RhdGVfY29sdW1ucz0iLCBbclswXSBmb3IgciBpbiBjLmZldGNoYWxsKCldKQpjbGFpbSA9IGdldGF0dHIoc2V0dGluZ3MsICJDSEFOTkVMX0lfRU1QTE9ZRUVfQ0xBSU0iLCBOb25lKSBvciBvcy5lbnZpcm9uLmdldCgiQ0hBTk5FTF9JX0VNUExPWUVFX0NMQUlNIikKcHJpbnQoImF1dGhvcml0YXRpdmVfY2xhaW09IiwgY2xhaW0pCnByaW50KCJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQ9IiwgZ2V0YXR0cihzZXR0aW5ncywgIlJFQUxfSU5URUdSQVRJT05fRU5BQkxFRCIsIG9zLmVudmlyb24uZ2V0KCJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQiKSkpCnByaW50KCJVU0VfRklYVFVSRV9BVVRIPSIsIGdldGF0dHIoc2V0dGluZ3MsICJVU0VfRklYVFVSRV9BVVRIIiwgb3MuZW52aXJvbi5nZXQoIlVTRV9GSVhUVVJFX0FVVEgiKSkpCnByaW50KCJERUJVRz0iLCBzZXR0aW5ncy5ERUJVRykKYiA9IGdldGF0dHIoc2V0dGluZ3MsICJBV1NfU1RPUkFHRV9CVUNLRVRfTkFNRSIsIE5vbmUpIG9yIG9zLmVudmlyb24uZ2V0KCJBV1NfU1RPUkFHRV9CVUNLRVRfTkFNRSIpCnByaW50KCJzM19idWNrZXRfY29uZmlndXJlZD0iLCBib29sKGIpKQpob3N0ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9IT1NUIikKcG9ydCA9IGludChvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BPUlQiLCAiMzMwNiIpKQp1c2VyID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9VU0VSIikKZGIgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0RBVEFCQVNFIikgb3Igb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9EQiIpCnB3ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9QQVNTV09SRCIpCnByaW50KCJteXNxbF9ob3N0PSIsIGhvc3QpCnByaW50KCJteXNxbF9kYj0iLCBkYikKcHJpbnQoIm15c3FsX3VzZXI9IiwgdXNlcikKdHJ5OgogICAgaW1wb3J0IE15U1FMZGIgYXMgZGJhcGkKZXhjZXB0IEV4Y2VwdGlvbjoKICAgIGltcG9ydCBweW15c3FsIGFzIGRiYXBpCmNvbm4gPSBkYmFwaS5jb25uZWN0KGhvc3Q9aG9zdCwgcG9ydD1wb3J0LCB1c2VyPXVzZXIsIHBhc3N3ZD1wdywgZGI9ZGIsIGNvbm5lY3RfdGltZW91dD04KQpjdXIgPSBjb25uLmN1cnNvcigpCmZvciB0IGluIFsidXNlcnMiLCAidXNlcl93YWxsZXQiLCAid2FsbGV0X3RyYW5zYWN0aW9ucyIsICJib29raW5nIl06CiAgICBjdXIuZXhlY3V0ZSgiU0VMRUNUIENPVU5UKCopIEZST00gYCVzYCIgJSB0KQogICAgcHJpbnQoIiVzX2NvdW50PSIgJSB0LCBjdXIuZmV0Y2hvbmUoKVswXSkKICAgIHByaW50KCIlc19yZWFkPSIgJSB0LCAiUEFTUyIpCmN1ci5leGVjdXRlKCJTSE9XIEdSQU5UUyIpCmdyYW50cyA9IFtyb3dbMF0gZm9yIHJvdyBpbiBjdXIuZmV0Y2hhbGwoKV0Kc2FmZSA9IFsoZy5yZXBsYWNlKHB3LCAiKioqIikgaWYgcHcgYW5kIHB3IGluIGcgZWxzZSBnKSBmb3IgZyBpbiBncmFudHNdCnByaW50KCJncmFudHNfc3VtbWFyeT0iLCBzYWZlKQpoYXNfd3JpdGUgPSBGYWxzZQpmb3IgZyBpbiBncmFudHM6CiAgICBndSA9IGcudXBwZXIoKQogICAgaWYgKCJPTiBgQURNSU5gIiBpbiBndSkgb3IgKCJPTiBBRE1JTiIgaW4gZ3UpIG9yICgiT04gKi4qIiBpbiBndSk6CiAgICAgICAgaWYgYW55KHggaW4gZ3UgZm9yIHggaW4gKCJJTlNFUlQiLCAiVVBEQVRFIiwgIkRFTEVURSIsICJBTEwgUFJJVklMRUdFUyIpKToKICAgICAgICAgICAgaGFzX3dyaXRlID0gVHJ1ZQpwcmludCgiYWNjb3VudF9hcHBlYXJzX3dyaXRhYmxlPSIsIGhhc193cml0ZSkKY3VyLmV4ZWN1dGUoIlNFTEVDVCBDT1VOVCgqKSBGUk9NIHVzZXJzIFdIRVJFIGVtcF9pZCBJUyBOT1QgTlVMTCBBTkQgZW1wX2lkPD4lcyIsIFsiIl0pCnByaW50KCJ1c2Vyc193aXRoX2VtcF9pZD0iLCBjdXIuZmV0Y2hvbmUoKVswXSkKY29ubi5jbG9zZSgpCnByaW50KCJteXNxbF9ybz0iLCAiUEFTUyIp' | base64 -d > /tmp/post_mig_verify.py
+          docker cp /tmp/post_mig_verify.py "$CID":/tmp/post_mig_verify.py
+          docker exec -i -w /app "$CID" python manage.py shell < /tmp/post_mig_verify.py
           echo "=== health ==="
-          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
           echo "readiness=$code"
-          docker ps --format "{{.Names}} {{.Status}}" | grep -E "frontend|django|celery|redis" || true
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
           echo "POST_MIGRATE_VERIFY_DONE=YES"
