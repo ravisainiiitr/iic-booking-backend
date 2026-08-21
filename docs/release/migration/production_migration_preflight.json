@@ -1,0 +1,147 @@
+{
+  "timestamp_utc": "2026-08-21T04:05:00+00:00",
+  "title": "PRODUCTION MIGRATION PRE-FLIGHT",
+  "verdict": "NOT READY FOR PRODUCTION MIGRATION",
+  "overall_ready_for_production_migration": false,
+  "production_migration_performed": "NO",
+  "production_writes": "NO",
+  "production_ec2_modified": "NO",
+  "production_rds_modified": "NO",
+  "scope": "PRE-FLIGHT ONLY — no production migrate, no REAL mode enablement, no env edits",
+  "staging_qualification_reference": {
+    "status": "GO",
+    "channel_i": "PASS/REAL",
+    "employee_claim": "username",
+    "legacy_mysql": "PASS/REAL",
+    "s3": "NOT_AVAILABLE/ACCEPTED LIMITATION (staging only)",
+    "tests": "30 PASS"
+  },
+  "architecture": {
+    "public_host": "equip.iitr.ac.in",
+    "ec2_ip_dns": "3.110.50.174",
+    "django_compose": "docker-compose.production.yml",
+    "django_image": "iic_booking_production_django",
+    "env_file": ".envs/.production/.django (on EC2; gitignored; ABSENT from local workspace)",
+    "frontend_url": "https://equip.iitr.ac.in",
+    "frontend_api_runtime": "/api (same-origin)",
+    "postgres": "RDS/external via DATABASE_URL (not inspected live)",
+    "redis": "compose service redis (production)",
+    "reverse_proxy": "HTTPS termination in front of host:8080→container:5000 (Traefik/Apache per deploy docs)",
+    "deploy_path": "GitHub Deploy Backend → EC2 Linux self-hosted runner",
+    "staging_separation": "PASS — separate compose, ports, DB name iic_booking_staging, env paths"
+  },
+  "production_code_version": {
+    "public_portal_version": "2.5.2",
+    "public_backend_version": "2.5.2",
+    "public_frontend_version": "2.5.2",
+    "public_backend_commit_api": "EMPTY",
+    "public_frontend_commit_api": "EMPTY",
+    "public_git_commit_api": "EMPTY",
+    "build_date_api": "2026-08-21",
+    "prior_documented_ec2_commit": "ced49a2",
+    "local_backend_worktree_head": "f7783f9",
+    "local_frontend_head": "de71188",
+    "staging_qualified_guards_in_git": false,
+    "note": "REAL integration guard modules are untracked local files — not in production release tree"
+  },
+  "Channel-I": {
+    "status": "PARTIAL",
+    "authorize_endpoint": "PASS (HTTP 200, auth_url present)",
+    "redirect_uri_live": "https://equip.iitr.ac.in/api/auth/omniport/callback/",
+    "redirect_uri_expected": "https://equip.iitr.ac.in/api/auth/omniport/callback/",
+    "redirect_match": true,
+    "localhost_or_staging_callback": false,
+    "OMNIPORT_CLIENT_ID": "PRESENT_INFERRED (authorize succeeds)",
+    "OMNIPORT_CLIENT_SECRET": "NOT_VERIFIED_LIVE (never printed; authorize implies configured)",
+    "live_oauth_callback_userinfo_on_production": "NOT_TESTED",
+    "evidence_class": "NOT_TESTED",
+    "claim_pass": false,
+    "blocker": "No production live userinfo/employee-claim evidence; do not copy staging blindly"
+  },
+  "Employee_Identity": {
+    "status": "NOT_VERIFIED",
+    "staging_proven_claim": "username",
+    "production_CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM": "UNKNOWN (EC2 env not read)",
+    "production_live_match_admin_users_emp_id": "NOT_TESTED",
+    "claim_pass": false,
+    "blocker": "Must verify production Channel-I identity claim after approved production OAuth probe"
+  },
+  "Legacy_MySQL": {
+    "status": "NOT_VERIFIED",
+    "production_OLD_MYSQL_vars": "UNKNOWN (EC2 env not read; local .envs/.production ABSENT)",
+    "forbidden_accounts_note": "Do not use harshit; do not reuse staging iic_booking_ro without proving production-scoped RO grant",
+    "reachable_safely": "NOT_TESTED_THIS_PREFLIGHT",
+    "read_only_enforcement_in_code": "PASS (assert_readonly_sql in OldMySQLReader)",
+    "live_wallet_read": "NOT_TESTED",
+    "live_ledger_read": "NOT_TESTED",
+    "live_booking_read": "NOT_TESTED",
+    "evidence_class": "NOT_TESTED",
+    "claim_pass": false
+  },
+  "Staging_S3_vs_Production_S3": {
+    "LOCAL_STAGING_ACCEPTED_carried_to_production": false,
+    "production_ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK": false,
+    "production_default_media_url_pattern": "https://{bucket}.s3.{region}.amazonaws.com/media/",
+    "production_S3_live_probe": "NOT_TESTED",
+    "status": "BLOCKED_OR_UNVERIFIED",
+    "claim_pass": false,
+    "note": "Production must be REAL S3 verified or explicit production blocker — never LOCAL_STAGING acceptance"
+  },
+  "CORS": {
+    "live_options_origin_equip": "PASS (ACAO=https://equip.iitr.ac.in)",
+    "code_default": "empty list — requires DJANGO_CORS_ALLOWED_ORIGINS in production env",
+    "status": "PASS_LIVE"
+  },
+  "Backups": {
+    "postgres_mechanism_documented": "PASS (scripts/deploy/backup.sh pg_dump)",
+    "latest_backup_timestamp_on_ec2": "NOT_VERIFIED",
+    "legacy_mysql_backup_status": "NOT_VERIFIED",
+    "restore_procedure_documented": "PARTIAL (rollback.sh / RollbackGuide / Rollback-Runbook)",
+    "rollback_plan": "PARTIAL — financial cutover has no simple undo; image rollback documented",
+    "claim_pass": false,
+    "blocker": "Operator must confirm fresh RDS snapshot + MySQL dump timestamps before migration"
+  },
+  "Migration_state": {
+    "showmigrations_production": "NOT_RUN (read-only inspection not performed on EC2 this preflight)",
+    "migrate_executed": "NO",
+    "makemigrations_executed": "NO",
+    "status": "NOT_VERIFIED"
+  },
+  "Security": {
+    "production_env_gitignored": true,
+    "secrets_committed_to_git_check": "PASS (.envs/.production/ ignored)",
+    "secrets_printed_this_preflight": false
+  },
+  "REAL_integration_guards": {
+    "present_in_local_workspace": true,
+    "present_in_git_HEAD": false,
+    "present_in_ced49a2": false,
+    "present_in_production_running_build": "ALMOST_CERTAINLY_NO",
+    "fixture_modes_for_production": "N/A until REAL tooling deployed; staging-only flags must remain false if introduced",
+    "REAL_INTEGRATION_ENABLED_on_production": "NOT_SET_IN_production.py (staging-only setting) — must not enable without approval",
+    "guard_tests_ran_against_code": "30 PASS (staging container / no production writes)"
+  },
+  "blocked_reasons": [
+    "Staging-qualified REAL integration code (guards/activation/live evidence) is not committed and not on production",
+    "Production Channel-I live userinfo + employee claim verification NOT_TESTED",
+    "Production CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM unknown on EC2",
+    "Production legacy MySQL RO credentials/reachability NOT_VERIFIED",
+    "Production wallet/ledger/booking live RO probes NOT_TESTED",
+    "Production S3 live verification NOT_TESTED (LOCAL_STAGING_ACCEPTED must not apply)",
+    "Production backup timestamps NOT_VERIFIED",
+    "Production Django migration state NOT_VERIFIED",
+    "Production backend/frontend git SHAs empty on /api/version/ — deploy provenance incomplete"
+  ],
+  "required_before_ready": [
+    "Commit + release tag containing REAL integration guards and related migration tooling",
+    "Deploy that release to staging re-qualify, then production under change window",
+    "On EC2: confirm OMNIPORT_* presence (redirect must remain equip.iitr.ac.in callback)",
+    "Set/prove CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM after production identity probe (expected username if same IdP behavior)",
+    "Provision production-scoped READ-ONLY legacy MySQL user; prove SELECT; prove write rejection",
+    "Run production RO wallet/ledger/booking probes only",
+    "Verify S3 REAL (or document hard blocker) — no LOCAL_STAGING_ACCEPTED",
+    "Confirm RDS snapshot + MySQL dump timestamps + restore drill owner",
+    "Inspect showmigrations on production (read-only) and plan approved migrate separately",
+    "Explicit operator approval for PRODUCTION MIGRATION (separate from this preflight)"
+  ]
+}

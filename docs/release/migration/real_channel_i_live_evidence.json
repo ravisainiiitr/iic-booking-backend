@@ -1,0 +1,22 @@
+{
+  "timestamp_utc": "2026-08-21T03:54:16.397019+00:00",
+  "title": "REAL Channel-I live evidence",
+  "evidence_class": "REAL",
+  "status": "PASS",
+  "live_oauth": "PASS",
+  "live_userinfo": "PASS",
+  "redirect": "PASS",
+  "claim": "username",
+  "claim_source": "username",
+  "claim_pass": true,
+  "legacy_match": "PASS",
+  "exact_match_count": 1,
+  "wallet_identity": "PASS",
+  "fixture_fallback": "NONE",
+  "email_name_fallback": false,
+  "verification_method": "durable_identity_reverification",
+  "reason": "Prior real Omniport callback left durable identity; re-verified claim against admin.users.emp_id (exact match=1); no new token exchange; no fixture fallback",
+  "production_writes": "NO",
+  "secrets_included": false,
+  "claim_value_included": false
+}

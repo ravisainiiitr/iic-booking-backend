@@ -44,7 +44,13 @@ from .auth_serializers import (
 from .token_auth import set_token_activity
 from iic_booking.users.serializers import UserSerializer
 from iic_booking.users.models import UserType, Department, UserLoginLock, OrganizationRequest
+from iic_booking.users.oauth_redact import redact_oauth_payload, redact_oauth_text, userinfo_key_summary
+from iic_booking.users.legacy_ledger.channel_i_identity import (
+    extract_channel_i_identity,
+    resolve_employee_id_for_omniport,
+)
 import logging
+
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
@@ -414,6 +420,44 @@ def omniport_auth_url(request):
         - auth_url: The URL to redirect user to for Omniport login
         - state: Random state token for CSRF protection
     """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from iic_booking.users.identity.channel_i_fixture import (
+        channel_i_fixture_mode_enabled,
+        require_real_channel_i_credentials_when_fixture_off,
+    )
+
+    try:
+        if channel_i_fixture_mode_enabled():
+            return Response(
+                {
+                    "auth_url": None,
+                    "state": None,
+                    "fixture_mode": True,
+                    "message": (
+                        "CHANNEL_I_STAGING_FIXTURE_MODE is enabled. "
+                        "Use POST /api/auth/channel-i/staging-fixture/ with {case}."
+                    ),
+                    "fixture_endpoint": "/api/auth/channel-i/staging-fixture/",
+                    "environment": getattr(settings, "DEPLOYMENT_ENVIRONMENT", ""),
+                }
+            )
+        require_real_channel_i_credentials_when_fixture_off()
+    except ImproperlyConfigured as exc:
+        return Response(
+            {"error": str(exc), "error_code": "channel_i_config_required"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    if not (settings.OMNIPORT_CLIENT_ID or "").strip():
+        return Response(
+            {
+                "error": "OMNIPORT_CLIENT_ID is not configured for this environment.",
+                "error_code": "channel_i_credentials_missing",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
     state = secrets.token_urlsafe(32)
     redirect_uri = omniport_callback_url(request)
     
@@ -430,6 +474,75 @@ def omniport_auth_url(request):
         {
             "auth_url": settings.OMNIPORT_AUTH_URL + "?" + urlencode(params),
             "state": state,
+            "fixture_mode": False,
+        }
+    )
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def channel_i_staging_fixture_login(request):
+    """STAGING-ONLY: apply a Channel-I fixture payload through the real identity sync.
+
+    Never available unless CHANNEL_I_STAGING_FIXTURE_MODE + DEPLOYMENT_ENVIRONMENT=STAGING.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework.authtoken.models import Token
+
+    from iic_booking.users.identity.channel_i_fixture import (
+        FIXTURE_CASES,
+        channel_i_fixture_mode_enabled,
+        fixture_payload,
+    )
+    from iic_booking.users.identity.sync import sync_channel_i_identity
+
+    try:
+        if not channel_i_fixture_mode_enabled():
+            return Response(
+                {"error": "Fixture mode disabled", "error_code": "fixture_mode_off"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except ImproperlyConfigured as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    case = (request.data.get("case") or request.query_params.get("case") or "").strip()
+    if not case:
+        return Response(
+            {"error": "case is required", "allowed": list(FIXTURE_CASES)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        user_info = fixture_payload(case)
+    except KeyError as exc:
+        return Response({"error": str(exc), "allowed": list(FIXTURE_CASES)}, status=400)
+
+    # Minimal user upsert mirroring callback identity keys (no OAuth tokens).
+    username = str(user_info.get("username") or "")
+    email = (
+        (user_info.get("contactInformation") or {}).get("instituteWebmailAddress")
+        or (user_info.get("contactInformation") or {}).get("emailAddress")
+        or f"{username}@staging.fixture.local"
+    )
+    user, _ = User.objects.get_or_create(
+        email=email.lower(),
+        defaults={
+            "username": username or email.split("@")[0],
+            "name": (user_info.get("person") or {}).get("fullName") or username,
+        },
+    )
+    sync_channel_i_identity(user, user_info)
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response(
+        {
+            "mode": "STAGING_FIXTURE",
+            "case": case.upper(),
+            "token": token.key,
+            "user_id": user.pk,
+            "email": user.email,
+            "username": user.username,
+            "channel_i_user_id": str(user_info.get("userId")),
+            "evidence": "FIXTURE",
         }
     )
 
@@ -454,7 +567,11 @@ def omniport_callback(request):
     data = request.query_params if request.method == "GET" else request.data
     
     # Log incoming request for debugging
-    logger.info(f"Omniport callback received: method={request.method}, params={dict(data)}")
+    logger.info(
+        "Omniport callback received: method=%s params=%s",
+        request.method,
+        redact_oauth_payload(dict(data)),
+    )
     
     # Check for OAuth error parameters first (OAuth 2.0 spec allows error in callback)
     if "error" in data:
@@ -482,7 +599,11 @@ def omniport_callback(request):
                     error_parts.append(f"{k}: {str(v)}")
             error_message = "; ".join(error_parts)
         
-        logger.warning(f"Omniport callback validation failed: {error_message}. Received data: {dict(data)}")
+        logger.warning(
+            "Omniport callback validation failed: %s. Received data: %s",
+            error_message,
+            redact_oauth_payload(dict(data)),
+        )
         if request.method == "GET":
             return redirect_to_frontend_with_error(request, error_message, "invalid_request")
         return Response(
@@ -563,8 +684,11 @@ def omniport_callback(request):
     try:
         token_response.raise_for_status()
         token_info = token_response.json()
-        logger.info(f"Token info received: {token_info}")
-        access_token = token_info.get("access_token")
+        logger.info(
+            "Omniport token exchange succeeded: keys=%s",
+            sorted(redact_oauth_payload(token_info).keys()) if isinstance(token_info, dict) else [],
+        )
+        access_token = token_info.get("access_token") if isinstance(token_info, dict) else None
         if not access_token:
             error_message = "Failed to obtain access token from Omniport"
             if request.method == "GET":
@@ -574,7 +698,7 @@ def omniport_callback(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     except requests.HTTPError as e:
-        error_message = f"Token exchange failed: {token_response.text if token_response else str(e)}"
+        error_message = f"Token exchange failed: {redact_oauth_text(token_response.text if token_response else str(e))}"
         logger.error(error_message)
         if request.method == "GET":
             return redirect_to_frontend_with_error(request, "Failed to exchange authorization code for token", "token_exchange_failed")
@@ -609,12 +733,28 @@ def omniport_callback(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    logger.info(f"User info received: {user_info}")
+    logger.info("Omniport userinfo received: %s", userinfo_key_summary(user_info))
+    identity_claims = extract_channel_i_identity(user_info)
     
     # Initialize all variables with default values
     user_type = None  # Will be a user type code string
-    internal_id = _blank_to_none(user_info.get("userId", ""))
-    emp_id = _blank_to_none(user_info.get("username", ""))
+    internal_id = _blank_to_none(identity_claims.provider_subject)
+    # Username is Channel-I login identity, not Employee ID.
+    authoritative_claim = getattr(settings, "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM", "") or ""
+    other_has = False
+    if identity_claims.candidate_employee_id:
+        other_has = User.objects.filter(emp_id=identity_claims.candidate_employee_id).exists()
+    create_emp_decision = resolve_employee_id_for_omniport(
+        existing_emp_id="",
+        user_info=user_info,
+        other_user_has_candidate=other_has,
+        authoritative_claim=authoritative_claim,
+    )
+    emp_id = (
+        _blank_to_none(create_emp_decision.employee_id)
+        if create_emp_decision.action == "set_verified"
+        else None
+    )
     person = user_info.get("person", {})
     name = person.get("fullName", "") if isinstance(person, dict) else ""
     profile_picture_path = person.get("displayPicture", "") if isinstance(person, dict) else ""
@@ -630,14 +770,14 @@ def omniport_callback(request):
     if student and isinstance(student, dict) and len(student) > 0:
         # Set student user type code
         user_type = UserType.STUDENT
-        branch_name = student.get("branch name", "") or student.get("branch_name", "") or ""
-        degree_name = student.get("branch degree name", "") or student.get("branch_degree_name", "") or ""
-        department_name = (
-            student.get("branch department name", "")
-            or student.get("branch_department_name", "")
-            or ""
-        )
-        joining_date, graduation_date = _role_start_end_dates(student)
+        from iic_booking.users.identity.extract import extract_channel_i_academic_facts
+
+        academic = extract_channel_i_academic_facts(user_info)
+        branch_name = academic.get("student_branch_name") or ""
+        degree_name = academic.get("student_degree_name") or ""
+        department_name = academic.get("student_department_name") or ""
+        joining_date = academic.get("student_start_date")
+        graduation_date = academic.get("student_end_date")
 
     faculty = user_info.get("facultyMember") or user_info.get("faculty_member") or {}
     if faculty and isinstance(faculty, dict) and len(faculty) > 0:
@@ -690,9 +830,13 @@ def omniport_callback(request):
     # Parse date_of_birth if provided
     date_of_birth = _parse_omniport_date(date_of_birth_str) if date_of_birth_str else None
     
-    # Get or create department if department_name is provided
+    # Get or create department if department_name is provided.
+    # When department mapping is enabled, Channel-I names are source data only —
+    # do not auto-create internal departments or overwrite User.department.
     department = None
-    if department_name:
+    from iic_booking.users.identity.flags import department_mapping_enabled
+
+    if department_name and not department_mapping_enabled():
         try:
             department, _ = Department.objects.get_or_create(
                 name=department_name,
@@ -787,12 +931,29 @@ def omniport_callback(request):
                 user.user_type = user_type
                 update_fields.append("user_type")
             if department and user.department != department:
-                user.department = department
-                update_fields.append("department")
-            if emp_id and not user.emp_id:
-                if not User.objects.filter(emp_id=emp_id).exclude(pk=user.pk).exists():
-                    user.emp_id = emp_id
-                    update_fields.append("emp_id")
+                from iic_booking.users.identity.flags import department_mapping_enabled as _dme
+
+                if not _dme():
+                    user.department = department
+                    update_fields.append("department")
+            existing_emp_decision = resolve_employee_id_for_omniport(
+                existing_emp_id=user.emp_id or "",
+                user_info=user_info,
+                other_user_has_candidate=bool(
+                    identity_claims.candidate_employee_id
+                    and User.objects.filter(emp_id=identity_claims.candidate_employee_id)
+                    .exclude(pk=user.pk)
+                    .exists()
+                ),
+                authoritative_claim=authoritative_claim,
+            )
+            if (
+                existing_emp_decision.action == "set_verified"
+                and existing_emp_decision.employee_id
+                and not user.emp_id
+            ):
+                user.emp_id = existing_emp_decision.employee_id
+                update_fields.append("emp_id")
             # Profile picture: Channel i seeds only when the account still has none.
             # Never overwrite a picture already stored (user change or prior Channel i capture).
             if profile_picture_file and not (
@@ -859,7 +1020,14 @@ def omniport_callback(request):
             {"error": error_message},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    
+
+    try:
+        from iic_booking.users.identity.sync import sync_channel_i_identity
+
+        sync_channel_i_identity(user, user_info)
+    except Exception:
+        logger.exception("Channel-I identity sync failed for user_id=%s (login continues)", getattr(user, "id", None))
+
     # Get or create Django auth token (regenerate so this session gets the token; any other session will get 401)
     try:
         token = _regenerate_auth_token(user)
@@ -887,17 +1055,21 @@ def omniport_callback(request):
     if _should_send_welcome_email(user) and is_first_login:
         try:
             content = build_welcome_email(**welcome_email_kwargs_from_user(user))
+            # fail_silently=True: SMTP timeouts must not delay the OAuth redirect.
             send_mail(
                 subject=content.subject,
                 message=content.text_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
                 html_message=content.html_body,
-                fail_silently=False,
+                fail_silently=True,
             )
         except Exception:
-            logger.exception("Failed to send first-login welcome email to %s", user.email)
-    
+            logger.exception(
+                "Failed to send first-login welcome email for user_id=%s",
+                getattr(user, "id", None),
+            )
+
     # Prepare response data
     response_data = {
         "token": token.key,
@@ -927,8 +1099,12 @@ def omniport_callback(request):
         # Encode parameters for URL
         from urllib.parse import urlencode
         redirect_url = f"{frontend_url}/auth/callback?{urlencode(redirect_params)}"
-        
-        logger.info(f"Redirecting user {user.email} to frontend: {redirect_url}")
+
+        # Never log token / email / query string — redirect params are credentials.
+        logger.info(
+            "Redirecting authenticated user_id=%s to frontend /auth/callback (params redacted)",
+            getattr(user, "id", None),
+        )
         return HttpResponseRedirect(redirect_url)
     
     # If POST request (from React frontend), return JSON response

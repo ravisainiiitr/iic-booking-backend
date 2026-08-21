@@ -12,6 +12,7 @@ from rest_framework.routers import SimpleRouter
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
     omniport_callback,
+    channel_i_staging_fixture_login,
     login,
     register,
     logout,
@@ -93,6 +94,14 @@ from iic_booking.users.api.wallet_views import (
     legacy_wallet_balance_lookup,
     legacy_wallet_balance_list,
 )
+from iic_booking.users.api.portal_migration_views import (
+    portal_booking_status,
+    portal_migration_admin_state,
+    portal_migration_dashboard,
+    portal_migration_dead_letters,
+    portal_migration_mapping_report,
+    portal_migration_transition,
+)
 from iic_booking.users.api.wallet_peer_transfer_views import (
     wallet_peer_transfer_eligible_recipients,
     wallet_peer_transfer_send_otp,
@@ -106,6 +115,31 @@ from iic_booking.users.api.department_faculty_credit_facility_views import (
     department_faculty_credit_facility_audit_list_view,
     department_faculty_credit_facility_my_status_view,
     department_faculty_credit_facility_avail_view,
+)
+from iic_booking.users.api.wallet_credit_facility_v2_views import (
+    wallet_credit_v2_summary,
+    wallet_credit_v2_list_or_create,
+    wallet_credit_v2_detail,
+    wallet_credit_v2_repay,
+    wallet_credit_v2_invoice_pdf,
+    admin_wallet_credit_v2_list,
+    admin_wallet_credit_v2_detail,
+    admin_wallet_credit_v2_approve,
+    admin_wallet_credit_v2_reject,
+    admin_wallet_credit_v2_clarification,
+    admin_wallet_credit_v2_post_credit,
+    admin_wallet_credit_v2_reconcile,
+)
+from iic_booking.users.api.identity_admin_views import (
+    identity_dashboard,
+    degree_classification_list,
+    department_mapping_list,
+    hod_assignment_list,
+    hod_assignment_disable,
+    student_lifecycle_list,
+    identity_my_hod,
+    validity_extension_list,
+    validity_extension_approve,
 )
 from iic_booking.users.api.project_views import (
     project_list,
@@ -446,6 +480,12 @@ urlpatterns = router.urls + [
     path("v1/provisioning/", include("iic_booking.device_provisioning.urls")),
     # IIC Research Copilot (feature-flagged in views; default OFF)
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
+    path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
+    path("v1/portal-migration/admin/state/", portal_migration_admin_state, name="portal-migration-admin-state-v1"),
+    path("v1/portal-migration/admin/dashboard/", portal_migration_dashboard, name="portal-migration-admin-dashboard-v1"),
+    path("v1/portal-migration/admin/transition/", portal_migration_transition, name="portal-migration-admin-transition-v1"),
+    path("v1/portal-migration/admin/mappings/", portal_migration_mapping_report, name="portal-migration-admin-mappings-v1"),
+    path("v1/portal-migration/admin/dead-letters/", portal_migration_dead_letters, name="portal-migration-admin-dead-letters-v1"),
     # Booking ↔ Remote Analysis integration
     path(
         "v1/bookings/analysis/dashboard/",
@@ -676,6 +716,7 @@ urlpatterns = router.urls + [
     
     path("auth/omniport/authorize/", omniport_auth_url, name="omniport-auth-url"),
     path("auth/omniport/callback/", omniport_callback, name="omniport-callback"),
+    path("auth/channel-i/staging-fixture/", channel_i_staging_fixture_login, name="channel-i-staging-fixture"),
     path("profiles/me/", profile_me, name="profile-me"),
     path("profiles/me/avatar/", profile_me_avatar, name="profile-me-avatar"),
     path("profiles/me/external-billing/", external_billing_profile_me, name="external-billing-profile-me"),
@@ -840,6 +881,44 @@ urlpatterns = router.urls + [
         name="wallet-credit-facility-offer-for-recharge",
     ),
     path("wallet/credit-facility/my-status/", wallet_credit_facility_my_status_view, name="wallet-credit-facility-my-status"),
+    # Administrator-approved Wallet Credit Facility (v2)
+    path("wallet/credit-requests/summary/", wallet_credit_v2_summary, name="wallet-credit-requests-summary"),
+    path("wallet/credit-requests/", wallet_credit_v2_list_or_create, name="wallet-credit-requests"),
+    path("wallet/credit-requests/<int:facility_id>/", wallet_credit_v2_detail, name="wallet-credit-request-detail"),
+    path("wallet/credit-requests/<int:facility_id>/repay/", wallet_credit_v2_repay, name="wallet-credit-request-repay"),
+    path(
+        "wallet/credit-requests/<int:facility_id>/invoice.pdf",
+        wallet_credit_v2_invoice_pdf,
+        name="wallet-credit-request-invoice-pdf",
+    ),
+    path("admin/wallet-credit/", admin_wallet_credit_v2_list, name="admin-wallet-credit-list"),
+    path("admin/wallet-credit/reconcile/", admin_wallet_credit_v2_reconcile, name="admin-wallet-credit-reconcile"),
+    path("admin/wallet-credit/<int:facility_id>/", admin_wallet_credit_v2_detail, name="admin-wallet-credit-detail"),
+    path("admin/wallet-credit/<int:facility_id>/approve/", admin_wallet_credit_v2_approve, name="admin-wallet-credit-approve"),
+    path("admin/wallet-credit/<int:facility_id>/reject/", admin_wallet_credit_v2_reject, name="admin-wallet-credit-reject"),
+    path(
+        "admin/wallet-credit/<int:facility_id>/clarification/",
+        admin_wallet_credit_v2_clarification,
+        name="admin-wallet-credit-clarification",
+    ),
+    path(
+        "admin/wallet-credit/<int:facility_id>/post-credit/",
+        admin_wallet_credit_v2_post_credit,
+        name="admin-wallet-credit-post-credit",
+    ),
+    path("admin/identity/dashboard/", identity_dashboard, name="admin-identity-dashboard"),
+    path("admin/identity/degrees/", degree_classification_list, name="admin-identity-degrees"),
+    path("admin/identity/department-mappings/", department_mapping_list, name="admin-identity-department-mappings"),
+    path("admin/identity/hods/", hod_assignment_list, name="admin-identity-hods"),
+    path("admin/identity/hods/<int:assignment_id>/disable/", hod_assignment_disable, name="admin-identity-hod-disable"),
+    path("admin/identity/students/", student_lifecycle_list, name="admin-identity-students"),
+    path("admin/identity/extensions/", validity_extension_list, name="admin-identity-extensions"),
+    path(
+        "admin/identity/extensions/<int:extension_id>/approve/",
+        validity_extension_approve,
+        name="admin-identity-extension-approve",
+    ),
+    path("identity/my-hod/", identity_my_hod, name="identity-my-hod"),
     path("wallet/recharge-request/send-otp/", send_user_otp_for_recharge, name="wallet-recharge-request-send-otp"),
     path("wallet/recharge-request/", create_wallet_recharge_request, name="wallet-recharge-request-create"),
     path("wallet/recharge-requests/pipeline/", get_wallet_recharge_pipeline_requests, name="wallet-recharge-requests-pipeline"),
@@ -858,6 +937,12 @@ urlpatterns = router.urls + [
     ),
     path("wallet/legacy-wallet/balance/", legacy_wallet_balance_lookup, name="wallet-legacy-wallet-balance"),
     path("wallet/legacy-wallet/balances/", legacy_wallet_balance_list, name="wallet-legacy-wallet-balance-list"),
+    path("portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status"),
+    path("portal-migration/admin/state/", portal_migration_admin_state, name="portal-migration-admin-state"),
+    path("portal-migration/admin/dashboard/", portal_migration_dashboard, name="portal-migration-admin-dashboard"),
+    path("portal-migration/admin/transition/", portal_migration_transition, name="portal-migration-admin-transition"),
+    path("portal-migration/admin/mappings/", portal_migration_mapping_report, name="portal-migration-admin-mappings"),
+    path("portal-migration/admin/dead-letters/", portal_migration_dead_letters, name="portal-migration-admin-dead-letters"),
     
     # Project endpoints
     path("projects/", project_list, name="project-list"),  # GET: List projects, POST: Create project

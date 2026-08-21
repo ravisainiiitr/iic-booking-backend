@@ -322,10 +322,23 @@ def get_wallet_balance(request):
                 status=status.HTTP_403_FORBIDDEN,
             )
     
+    from iic_booking.users.models.portal_migration import LegacyWalletAccountMapping
+
+    active = wallet.total_balance or Decimal("0.00")
+    legacy_closing = Decimal("0.00")
+    emp = (getattr(wallet.user, "emp_id", None) or "").strip()
+    if emp:
+        mapping = LegacyWalletAccountMapping.objects.filter(employee_id=emp).first()
+        if mapping:
+            legacy_closing = (mapping.imported_credits or Decimal("0")) - (mapping.imported_debits or Decimal("0"))
     serializer = WalletBalanceSerializer({
-        "balance": wallet.total_balance
+        "balance": active + legacy_closing
     })
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    data = serializer.data
+    data["active_ledger_balance"] = str(active)
+    data["legacy_ledger_balance"] = str(legacy_closing)
+    data["unified_balance"] = str(active + legacy_closing)
+    return Response(data, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
@@ -433,12 +446,48 @@ def get_wallet_transactions(request):
                 status=status.HTTP_403_FORBIDDEN,
             )
     
-    # Main wallet transactions removed; use sub-wallet transactions per department
     limit = int(request.GET.get("limit", 50))
     offset = int(request.GET.get("offset", 0))
+    from iic_booking.users.models.portal_migration import LegacyWalletLedgerEntry
+
+    active_rows = []
+    for sw in SubWallet.objects.filter(wallet=wallet):
+        for txn in SubWalletTransaction.objects.filter(sub_wallet=sw).order_by("-created_at")[:1000]:
+            active_rows.append({
+                "id": f"active-{txn.id}",
+                "provenance": "New Portal",
+                "source_system": "NEW_PORTAL",
+                "immutable": False,
+                "transaction_type": txn.transaction_type,
+                "amount": str(txn.amount),
+                "description": txn.description,
+                "created_at": txn.created_at.isoformat() if txn.created_at else None,
+                "department_id": sw.department_id,
+            })
+    emp = (getattr(wallet.user, "emp_id", None) or "").strip()
+    legacy_rows = []
+    if emp:
+        for entry in LegacyWalletLedgerEntry.objects.filter(employee_id=emp).order_by("-occurred_at")[:5000]:
+            legacy_rows.append({
+                "id": f"legacy-{entry.source_transaction_id}",
+                "provenance": "Legacy Portal",
+                "source_system": entry.source_system,
+                "immutable": True,
+                "transaction_type": entry.direction.lower(),
+                "amount": str(entry.amount),
+                "description": entry.description,
+                "created_at": entry.occurred_at.isoformat() if entry.occurred_at else None,
+                "reference": entry.reference,
+                "utr": entry.utr,
+            })
+    merged = sorted(
+        active_rows + legacy_rows,
+        key=lambda r: r.get("created_at") or "",
+        reverse=True,
+    )
     return Response({
-        "transactions": [],
-        "count": 0,
+        "transactions": merged[offset:offset + limit],
+        "count": len(merged),
         "limit": limit,
         "offset": offset,
     }, status=status.HTTP_200_OK)
@@ -623,7 +672,31 @@ def search_faculty_by_name(request):
     ).select_related('department')[:limit]
     
     results = []
+    from iic_booking.users.identity.flags import hod_affiliation_enabled
+    from iic_booking.users.identity.service import UserEligibilityService
+
+    valid_hod = UserEligibilityService.get_valid_hod(request.user) if hod_affiliation_enabled() else None
+    if valid_hod and valid_hod.user.is_active:
+        hod_user = valid_hod.user
+        qlow = query.lower()
+        if qlow in (hod_user.name or "").lower() or qlow in (hod_user.email or "").lower():
+            results.append({
+                "id": hod_user.id,
+                "name": hod_user.name or hod_user.email,
+                "email": hod_user.email,
+                "phone": hod_user.phone_number,
+                "profile_picture": hod_user.get_profile_picture_url_or_none(),
+                "has_wallet": hasattr(hod_user, "wallet"),
+                "department": valid_hod.department.name if valid_hod.department_id else None,
+                "emp_id": hod_user.emp_id,
+                "affiliation_kind": "HEAD_OF_DEPARTMENT",
+                "is_hod": True,
+            })
+
+    seen = {r["id"] for r in results}
     for faculty in faculty_queryset:
+        if faculty.id in seen:
+            continue
         # Check if faculty has a wallet
         has_wallet = hasattr(faculty, 'wallet')
         
@@ -639,6 +712,8 @@ def search_faculty_by_name(request):
             "has_wallet": has_wallet,
             "department": faculty.department.name if faculty.department else None,
             "emp_id": faculty.emp_id,
+            "affiliation_kind": "FACULTY",
+            "is_hod": False,
         })
     
     return Response({
@@ -723,6 +798,33 @@ def request_wallet_join(request):
             {"error": "Faculty member not found with the provided email address."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    from iic_booking.users.identity.flags import hod_affiliation_enabled, student_lifecycle_enabled
+    from iic_booking.users.identity.service import UserEligibilityService
+    from iic_booking.users.models.channel_i_identity import AffiliationKind, UserAffiliation
+
+    if student_lifecycle_enabled():
+        ok, code = UserEligibilityService.can_create_affiliation(request.user)
+        if not ok:
+            return Response(
+                {"error": "Disabled students cannot create affiliation requests.", "code": code},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    affiliation_kind = AffiliationKind.FACULTY
+    if hod_affiliation_enabled():
+        hod_ok, hod_code, hod_msg = UserEligibilityService.evaluate_hod_join(request.user, faculty)
+        if not hod_ok:
+            return Response({"error": hod_msg, "code": hod_code}, status=status.HTTP_403_FORBIDDEN)
+        from iic_booking.users.models.channel_i_identity import HeadOfDepartmentAssignment
+        from iic_booking.users.identity.service import models_q_effective_to
+        from django.utils import timezone as dj_tz
+
+        if HeadOfDepartmentAssignment.objects.filter(user=faculty, active=True).filter(
+            models_q_effective_to(dj_tz.localdate())
+        ).exists():
+            affiliation_kind = AffiliationKind.HEAD_OF_DEPARTMENT
+
     
     # Check if faculty has a wallet
     if not hasattr(faculty, 'wallet'):
@@ -766,6 +868,21 @@ def request_wallet_join(request):
             message=message,
             status=WalletJoinRequestStatus.PENDING
         )
+        try:
+            from iic_booking.users.identity.service import UserIdentityService
+            from iic_booking.users.models.channel_i_identity import AffiliationKind, UserAffiliation
+
+            view = UserIdentityService.view(request.user)
+            UserAffiliation.objects.create(
+                user=request.user,
+                kind=affiliation_kind,
+                related_user=faculty,
+                department_id=view.internal_department_id,
+                wallet_join_request=join_request,
+                active=False,
+            )
+        except Exception:
+            pass
         try:
             send_wallet_join_request_submitted_emails(join_request)
         except Exception:
@@ -861,6 +978,12 @@ def approve_wallet_join_request(request, request_id):
     
     try:
         join_request.approve(response_message)
+        try:
+            from iic_booking.users.models.channel_i_identity import UserAffiliation
+
+            UserAffiliation.objects.filter(wallet_join_request=join_request).update(active=True)
+        except Exception:
+            pass
         try:
             send_wallet_join_request_decision_email(join_request, "approved")
         except Exception:
@@ -1471,7 +1594,7 @@ def send_user_otp_for_recharge(request):
     )
     undertaking_accepted = bool(serializer.validated_data.get("undertaking_accepted"))
     credit_facility_opted_in = bool(serializer.validated_data.get('credit_facility_opted_in'))
-    # Recharge temporary credit facility retired — department faculty credit is availed from Wallet.
+    # Recharge temporary credit facility retired — use administrator-approved Wallet Credit Facility V2.
     credit_facility_opted_in = False
 
     if recharge_mode not in {
@@ -2528,15 +2651,8 @@ def _legacy_wallet_lookup_options(request) -> tuple:
 
 
 def _legacy_mysql_overrides_from_request(request):
-    from ..legacy_wallet_db import parse_legacy_mysql_overrides
-
-    data = request.data if hasattr(request, "data") and request.data else {}
-    if not data and hasattr(request, "query_params"):
-        data = request.query_params
-    try:
-        return parse_legacy_mysql_overrides(data.get("legacy_mysql"))
-    except ValueError as e:
-        raise ValueError(str(e)) from e
+    """Credentials must not be accepted from the client. Use OLD_MYSQL_* / LEGACY_MYSQL_* env only."""
+    return None
 
 
 @api_view(["GET", "POST"])
