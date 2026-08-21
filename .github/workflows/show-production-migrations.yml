@@ -5,19 +5,16 @@ jobs:
   verify:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Discover Omniport auth paths
+      - name: Omniport authorize probe
         run: |
           set -euo pipefail
           CID=$(docker compose -f /home/ubuntu/iic-booking-backend/docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -w /app "$CID" python manage.py shell -c 'from django.urls import reverse; print(reverse("api:omniport-auth")); print(reverse("api:omniport-callback"))'
-          for p in /api/auth/omniport/ /api/auth/omniport/login/ /api/auth/omniport/authorize/ /api/auth/channel-i/ /api/auth/omniport; do
-            code=$(curl -sS -o /tmp/o -w '%{http_code}' --max-time 10 -D /tmp/h "https://equip.iitr.ac.in$p" || true)
+          docker exec -w /app "$CID" python manage.py shell -c 'from django.urls import reverse; print(reverse("api:omniport-auth-url")); print(reverse("api:omniport-callback"))'
+          for p in /api/auth/omniport/authorize/ /api/auth/omniport/callback/; do
+            code=$(curl -sS -o /tmp/o -w '%{http_code}' --max-time 15 -D /tmp/h "https://equip.iitr.ac.in$p" || true)
             loc=$(grep -i '^location:' /tmp/h | head -n1 | tr -d '\r' || true)
             echo "path=$p code=$code loc_present=$([ -n "$loc" ] && echo YES || echo NO)"
-            echo "$loc" | sed -E 's/(client_id=)[^&]+/\1REDACTED/; s/(state=)[^&]+/\1REDACTED/' || true
+            echo "$loc" | sed -E 's/(client_id=)[^&]+/\1REDACTED/; s/(state=)[^&]+/\1REDACTED/; s/(code=)[^&]+/\1REDACTED/' || true
           done
-          # also match exact emp_id for previously qualified operator without printing PII:
-          # use count-only: we cannot re-run browser login; verify claim + redirect + profile table ready
-          echo "claim_setting_check:"
-          docker exec -w /app "$CID" printenv CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM || true
+          echo "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=$(docker exec "$CID" printenv CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM || true)"
           echo "DONE"
