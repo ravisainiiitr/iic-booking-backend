@@ -2,10 +2,10 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  catch500:
+  catch500b:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Trigger /user/ 500 and capture ASGI traceback
+      - name: Inspect 500 headers/body and django exception handler path
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
@@ -21,23 +21,33 @@ jobs:
           print(Token.objects.create(user=u).key)
           PY
           )
-          echo "token_len=${#KEY}"
-          # mark time
-          START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "START=$START"
-          curl -sS -o /tmp/body.json -w 'http=%{http_code}\n' --max-time 20 \
-            -H "Authorization: Token $KEY" \
-            -H "Host: equip.iitr.ac.in" \
+          echo "=== with Host equip ==="
+          curl -sS -D /tmp/h1.txt -o /tmp/b1.json --max-time 20 \
+            -H "Authorization: Token $KEY" -H "Host: equip.iitr.ac.in" \
             "http://127.0.0.1:8080/api/auth/user/" || true
-          python3 -c "import json;d=json.load(open('/tmp/body.json'));print('detail=',d.get('detail'))"
-          sleep 1
-          echo "=== logs since trigger ==="
-          docker logs "$CID" --since 2m 2>&1 | sed -E "s/$KEY/[REDACTED]/g; s/[0-9a-f]{32,}/[REDACTED]/gi" | tail -n 200
+          echo "headers:"; head -n 20 /tmp/h1.txt
+          echo "body:"; cat /tmp/b1.json; echo
+          echo "=== without Host override ==="
+          curl -sS -D /tmp/h2.txt -o /tmp/b2.json --max-time 20 \
+            -H "Authorization: Token $KEY" \
+            "http://127.0.0.1:8080/api/auth/user/" || true
+          echo "headers:"; head -n 20 /tmp/h2.txt
+          echo "body:"; cat /tmp/b2.json; echo
+          echo "=== via docker network to container:5000 ==="
+          CIP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID" | awk '{print $1}')
+          curl -sS -D /tmp/h3.txt -o /tmp/b3.json --max-time 20 \
+            -H "Authorization: Token $KEY" -H "Host: equip.iitr.ac.in" \
+            "http://$CIP:5000/api/auth/user/" || true
+          echo "cip=$CIP"; head -n 15 /tmp/h3.txt; cat /tmp/b3.json; echo
+          docker logs "$CID" --since 1m 2>&1 | sed -E "s/$KEY/[REDACTED]/g" | tail -n 80
           docker exec -i -w /app -e KEY="$KEY" "$CID" python - <<'PY'
           import os
           os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
           import django; django.setup()
           from rest_framework.authtoken.models import Token
-          Token.objects.filter(key=os.environ['KEY']).delete()
-          print('destroyed=YES')
+          print('del', Token.objects.filter(key=os.environ['KEY']).delete())
+          # show exception handler setting
+          from django.conf import settings
+          print('EXCEPTION_HANDLER', settings.REST_FRAMEWORK.get('EXCEPTION_HANDLER'))
+          print('DEBUG', settings.DEBUG)
           PY
