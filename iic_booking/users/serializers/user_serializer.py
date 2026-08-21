@@ -224,7 +224,12 @@ class UserSerializer(serializers.ModelSerializer[User]):
         return list_effective_admin_module_keys(obj)
 
     def get_gender_from_channel_i(self, obj):
-        profile = getattr(obj, "channel_i_identity", None)
+        # channel_i_identity table may be absent until users.0099 is migrated.
+        # Missing relation must not 500 /api/auth/user/ after Omniport login.
+        try:
+            profile = getattr(obj, "channel_i_identity", None)
+        except Exception:
+            return False
         if profile is None:
             return False
         return bool(
@@ -264,7 +269,10 @@ class UserSerializer(serializers.ModelSerializer[User]):
                     }
                 )
         if "gender" in attrs and self.instance is not None:
-            profile = getattr(self.instance, "channel_i_identity", None)
+            try:
+                profile = getattr(self.instance, "channel_i_identity", None)
+            except Exception:
+                profile = None
             if profile and getattr(profile, "gender_locked_from_channel_i", False):
                 if attrs.get("gender") != self.instance.gender:
                     raise serializers.ValidationError(
