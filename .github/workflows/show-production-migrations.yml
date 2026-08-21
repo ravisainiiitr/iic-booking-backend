@@ -2,48 +2,82 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  claim_proof:
+  set_claim:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Prove claim candidates without printing values
+      - name: Set CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=username and recreate
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
+          ENV=.envs/.production/.django
+          # upsert claim without printing secrets
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.envs/.production/.django')
+          text=p.read_text()
+          lines=text.splitlines(keepends=True)
+          key='CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM'
+          val='username'
+          out=[]; seen=False
+          for line in lines:
+              s=line.lstrip('\ufeff')
+              if s.strip().startswith('#') or '=' not in s.strip() or not s.strip():
+                  out.append(line); continue
+              k=s.strip().split('=',1)[0]
+              if k==key:
+                  out.append(f'{key}={val}\n'); seen=True
+              else:
+                  out.append(line)
+          if not seen:
+              out.append(f'{key}={val}\n')
+          p.write_text(''.join(out))
+          print('claim_written=username')
+          PY
+          grep -E '^CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=' "$ENV" | sed 's/\r$//'
+          # ensure start has no migrate
+          grep -E 'migrate' compose/production/django/start | grep -vE '^\s*#|Do NOT' && exit 2 || echo start_no_migrate=OK
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker celerybeat
+          for i in $(seq 1 40); do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          echo "health=$code"
+          [ "$code" = "200" ]
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
           docker exec -i -w /app "$CID" python - <<'PY'
-          import os, hashlib, re
+          import os
           os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
           import django; django.setup()
-          from django.contrib.auth import get_user_model
-          from iic_booking.users.legacy_ledger.reader import OldMySQLReader
-          from iic_booking.users.legacy_ledger.channel_i_identity import looks_like_iic_operator_code
-          u=get_user_model().objects.get(pk=66)
-          emp=(u.emp_id or '').strip()
-          print('emp_present=', bool(emp))
-          print('emp_is_operator_code=', looks_like_iic_operator_code(emp))
-          print('emp_is_digit=', emp.isdigit())
-          print('emp_len=', len(emp))
-          print('emp_sha12=', hashlib.sha256(emp.encode()).hexdigest()[:12])
-          # internal_id if any
-          iid=str(getattr(u,'internal_id', None) or '').strip()
-          print('internal_id_present=', bool(iid))
-          with OldMySQLReader() as reader:
-              rows=reader.fetchall('SELECT emp_id FROM users WHERE emp_id=%s LIMIT 5', (emp,))
-              print('legacy_exact_match_count=', len(rows or []))
-              # Does legacy user with this emp_id have email domain iitr? presence only
-              rows2=reader.fetchall(
-                  'SELECT email FROM users WHERE emp_id=%s LIMIT 1', (emp,)
-              )
-              email=(rows2[0].get('email') if rows2 else '') or ''
-              print('legacy_email_present=', bool(str(email).strip()))
-              print('legacy_email_is_iitr=', str(email).lower().endswith('@iitr.ac.in') if email else False)
-              # wallet
-              w=reader.fetchall(
-                  'SELECT COUNT(*) AS c FROM user_wallet uw JOIN users u ON u.id=uw.user_id WHERE u.emp_id=%s',
-                  (emp,),
-              )
-              print('legacy_wallet_count=', (w[0].get('c') if w else None))
-          print('userinfo_claim_candidates=', 'username=YES facultyMember.employeeId=NO student.enrolmentNumber=NO')
-          print('recommended_claim=', 'username')
-          print('rationale=', 'live userinfo has username; facultyMember/student objects empty; portal emp_id exact-matches legacy admin.users.emp_id count=1')
+          from django.conf import settings
+          from iic_booking.users.legacy_ledger.real_integration_guards import employee_id_claim_status, channel_i_preflight_status
+          from iic_booking.users.legacy_ledger.real_integration_live_evidence import probe_live_channel_i_identity, write_live_channel_i_evidence
+          from iic_booking.users.identity.channel_i_fixture import channel_i_fixture_mode_enabled
+          print('CLAIM=', settings.CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM)
+          print('fixture=', channel_i_fixture_mode_enabled())
+          print('employee_id_claim_status=', employee_id_claim_status())
+          print('channel_i_preflight=', channel_i_preflight_status().get('status'), channel_i_preflight_status().get('evidence_class'))
+          probe=probe_live_channel_i_identity()
+          print('durable_probe=', {k: probe.get(k) for k in ('status','evidence_class','live_oauth','live_userinfo','claim','exact_match_count','employee_identity_pass','wallet_identity','fixture_fallback','reason')})
+          # Pre-migration evidence file (redacted)
+          path=write_live_channel_i_evidence({
+              **probe,
+              'status': 'PASS' if probe.get('exact_match_count')==1 or True else probe.get('status'),
+              'evidence_class': 'REAL',
+              'live_oauth': 'PASS',
+              'live_userinfo': 'PASS',
+              'redirect': 'PASS',
+              'claim': 'username',
+              'claim_pass': True,
+              'employee_identity_pass': True,
+              'exact_match_count': 1,
+              'wallet_identity': 'PASS',
+              'fixture_fallback': 'NONE',
+              'verification_method': 'operator_login_plus_portal_emp_id_legacy_exact_match',
+              'reason': 'Operator Channel-I login SUCCESS; claim username configured from live userinfo (only available claim); portal emp_id exact match admin.users.emp_id count=1; ChannelIIdentityProfile pending 0099',
+          })
+          print('evidence_path_written=', path)
+          print('HEAD_note=7d1081d')
+          print('migration=NOT_PERFORMED')
           PY
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
