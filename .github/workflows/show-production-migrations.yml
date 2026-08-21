@@ -2,17 +2,68 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  verify:
+  user500c:
     runs-on: [self-hosted, Linux]
     steps:
-      - run: |
+      - name: Full /user/ 500 traceback (redact secrets)
+        run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           echo "HEAD=$(git rev-parse HEAD)"
-          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec "$CID" grep -n 'channel_i_identity table may be absent' /app/iic_booking/users/serializers/user_serializer.py | head -n 2
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
-          echo "health=$code"
-          grep -E '^OLD_MYSQL_HOST=' .envs/.production/.django
-          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0099|0100' || true
+          # Dump last 15 minutes of ERROR/Traceback blocks with file paths
+          docker logs "$CID" --since 15m 2>&1 | \
+            sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi; s/(email[=:])[^ &\"]+/\1[REDACTED]/gi; s/(token[=:])[^ &\"]+/\1[REDACTED]/gi' \
+            > /tmp/djlogs.txt
+          echo "=== ERROR lines ==="
+          grep -nE 'ERROR|Internal Server|Exception|ProgrammingError|UndefinedTable|Traceback|File \"/app' /tmp/djlogs.txt | tail -n 120 || true
+          echo "=== contiguous traceback tails ==="
+          # extract last few traceback windows
+          python3 - <<'PY'
+          from pathlib import Path
+          lines=Path('/tmp/djlogs.txt').read_text(errors='replace').splitlines()
+          idxs=[i for i,l in enumerate(lines) if 'Traceback' in l or 'Internal Server Error' in l or 'ProgrammingError' in l or 'ERROR' in l and '21:3' in l or '22:0' in l or '21:5' in l or '21:6' in l]
+          # print windows around recent ERROR
+          shown=0
+          for i,l in enumerate(lines):
+              if 'ERROR' in l and ('auth' in l.lower() or 'user' in l.lower() or 'Internal' in l or 'channel' in l.lower() or 'serializer' in l.lower() or 'identity' in l.lower()):
+                  start=max(0,i-2); end=min(len(lines), i+40)
+                  print('--- window', i, '---')
+                  print('\n'.join(lines[start:end]))
+                  shown += 1
+                  if shown>=6: break
+          if shown==0:
+              for i,l in enumerate(lines):
+                  if 'Traceback' in l:
+                      print('--- tb', i, '---')
+                      print('\n'.join(lines[i:i+50]))
+                      shown += 1
+                      if shown>=4: break
+          PY
+
+          echo "=== reproduce /user/ with a throwaway check via django (no token print) ==="
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from django.contrib.auth import get_user_model
+          from iic_booking.users.serializers.user_serializer import UserSerializer
+          from django.test import RequestFactory
+          User=get_user_model()
+          # Prefer the user that just logged in if present; do not print email
+          u = User.objects.filter(pk=56).first() or User.objects.filter(pk=66).first() or User.objects.filter(is_active=True).order_by('-last_login').first()
+          print('user_pk=', getattr(u,'pk',None), 'user_type=', getattr(u,'user_type',None))
+          rf=RequestFactory(); req=rf.get('/api/auth/user/'); req.user=u
+          try:
+              data=UserSerializer(u, context={'request':req}).data
+              print('serializer_ok=YES keys=', sorted(list(data.keys()))[:20])
+          except Exception as e:
+              print('serializer_FAIL', type(e).__name__, str(e)[:300])
+              import traceback; traceback.print_exc()
+          # also try channel_i access
+          try:
+              p=getattr(u,'channel_i_identity',None)
+              print('direct_getattr_profile=', p)
+          except Exception as e:
+              print('direct_getattr_FAIL', type(e).__name__, str(e)[:200])
+          PY
