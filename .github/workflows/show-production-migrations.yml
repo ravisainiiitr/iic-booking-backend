@@ -2,35 +2,11 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  raise_exc:
+  prep:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Raise exception from Django test Client for /api/auth/user/
-        run: |
+      - run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
-          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -i -w /app "$CID" python - <<'PY'
-          import os, traceback
-          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
-          import django; django.setup()
-          from django.contrib.auth import get_user_model
-          from rest_framework.authtoken.models import Token
-          from django.test import Client
-          from django.conf import settings
-          # Ensure test client host allowed
-          if 'testserver' not in settings.ALLOWED_HOSTS:
-              settings.ALLOWED_HOSTS = list(settings.ALLOWED_HOSTS) + ['testserver', 'equip.iitr.ac.in', '127.0.0.1', 'localhost']
-          u=get_user_model().objects.get(pk=66)
-          Token.objects.filter(user=u).delete()
-          tok=Token.objects.create(user=u)
-          c=Client(raise_request_exception=True)
-          try:
-              r=c.get('/api/auth/user/', HTTP_AUTHORIZATION=f'Token {tok.key}', HTTP_HOST='equip.iitr.ac.in')
-              print('unexpected_status', r.status_code, r.content[:200])
-          except Exception as e:
-              print('RAISED', type(e).__name__, str(e)[:400])
-              traceback.print_exc()
-          Token.objects.filter(key=tok.key).delete()
-          print('done')
-          PY
+          git checkout -- docker-compose.production.yml 2>/dev/null || true
+          git status -sb | head -n 5
