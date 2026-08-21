@@ -2,30 +2,13 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-<<<<<<< Updated upstream
-  user500b:
-    runs-on: [self-hosted, Linux]
-    steps:
-      - name: Broader /user/ traceback (redacted)
-        run: |
-          set -euo pipefail
-          cd /home/ubuntu/iic-booking-backend
-          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker logs "$CID" --since 40m 2>&1 | \
-            sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi; s/(email=)[^ ]+/\1[REDACTED]/gi; s/(token=)[^& ]+/\1[REDACTED]/gi' | \
-            grep -nE '21:5[0-9]|Internal Server|api/auth/user|current_user|UserSerializer|500|ERROR|Traceback|UndefinedTable|channeliidentity|AttributeError|KeyError|TypeError' | \
-            tail -n 200 || true
-          echo "=== last 80 lines around Internal ==="
-          docker logs "$CID" --since 40m 2>&1 | \
-            sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi' | \
-            grep -n 'Internal Server Error\|ERROR 2026-08-21 21:5' | tail -n 40 || true
-=======
   prep:
     runs-on: [self-hosted, Linux]
     steps:
-      - run: |
+      - name: Ensure clean compose for deploy checkout
+        run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           git checkout -- docker-compose.production.yml 2>/dev/null || true
-          git status -sb | head -n 5
->>>>>>> Stashed changes
+          git status -sb | head -n 8
+          echo "HEAD=$(git rev-parse HEAD)"
