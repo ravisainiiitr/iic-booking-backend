@@ -41,6 +41,10 @@ services:
     # `docker compose down -v` — and do not treat this volume as the image source of truth.
     volumes:
       - production_media:/app/iic_booking/media
+    # Reach EC2 host MySQL (legacy admin / iic_booking_ro) via host-gateway.
+    # Do NOT use 127.0.0.1 inside the container for host MySQL.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # App binds to 5000 (gunicorn in start script); expose as 8000 on host
     ports:
       - '8080:5000'

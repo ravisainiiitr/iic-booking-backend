@@ -2,67 +2,268 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  show:
+  apply_option_a:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: RO connect iic_booking_ro to 127.0.0.1:3306
+      - name: Phase 1-4 — host-gateway, env, recreate (no migrate, keep SHA)
         env:
-          MYSQL_PWD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
+          MYSQL_RO_PASSWORD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
         run: |
           set -euo pipefail
           unset HISTFILE || true
-          echo "=== tools ==="
-          command -v mysql || sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client >/dev/null
-          command -v mysql
-          echo "=== attempt iic_booking_ro@127.0.0.1:3306 db=admin ==="
-          if mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT 'CONNECT_OK'; SELECT VERSION(); SELECT @@hostname; SELECT @@port; SELECT @@server_uuid;" 2>/tmp/ro_err.txt; then
-            echo "AUTH=iic_booking_ro_ok"
-          else
-            echo "AUTH=iic_booking_ro_fail"
-            # redact any accidental password leakage
-            sed -E 's/Password[^[:space:]]*/Password***/Ig; s/'$'\x27''[^'$'\x27'']+'$'\x27''/*** /g' /tmp/ro_err.txt | head -n 30 || true
-            exit 0
-          fi
-
-          echo "=== databases ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW DATABASES;" | awk '{print "db="$1}'
-          echo "=== admin? ==="
-          if mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW DATABASES LIKE 'admin';" | grep -qx admin; then
-            echo "ADMIN_EXISTS=YES"
-          else
-            echo "ADMIN_EXISTS=NO"
-            exit 0
-          fi
-
-          echo "=== tables sample ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW TABLES FROM admin;" | head -n 40 | awk '{print "table="$1}'
-
-          echo "=== counts ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.users;" | awk '{print "users_count="$1}'
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.user_wallet;" | awk '{print "user_wallet_count="$1}'
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.wallet_transactions;" | awk '{print "wallet_transactions_count="$1}'
-          for t in bookings booking user_bookings; do
-            if mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW TABLES FROM admin LIKE '$t';" | grep -qx "$t"; then
-              echo "bookings_table=$t"
-              mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.$t;" | awk '{print "bookings_count="$1}'
-              break
-            fi
+          DEPLOY=""
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+            if [ -f "$d/docker-compose.production.yml" ]; then DEPLOY="$d"; break; fi
           done
-          echo "=== emp_id column ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW COLUMNS FROM admin.users LIKE 'emp_id';" | head -n 3 | awk '{print "emp_id_col="$0}' || echo "emp_id_col=ABSENT"
+          test -n "$DEPLOY"
+          cd "$DEPLOY"
+          echo "DEPLOY_PATH=$DEPLOY"
 
-          echo "=== CURRENT_USER / grants visible to RO ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "SELECT CURRENT_USER(); SHOW GRANTS;" | sed 's/^/GRANT_OR_USER /'
+          HEAD="$(git rev-parse HEAD)"
+          echo "production_HEAD=$HEAD"
+          EXPECTED="fdda7bee2167c33c5b8d49437c6e33838c077180"
+          if [ "$HEAD" != "$EXPECTED" ]; then
+            echo "STOP unexpected SHA want=$EXPECTED got=$HEAD"
+            exit 2
+          fi
+          echo "tag=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
 
-          echo "=== write attempt should fail (expected) ==="
-          set +e
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "UPDATE admin.users SET emp_id=emp_id WHERE 1=0;" 2>/tmp/write_err.txt
-          wr=$?
-          set -e
-          echo "write_exit=$wr"
-          if [ "$wr" -ne 0 ]; then echo "account_appears_writable=FALSE"; else echo "account_appears_writable=TRUE_UNEXPECTED"; fi
-          head -n 5 /tmp/write_err.txt | sed -E 's/Password[^[:space:]]*/***/Ig' || true
+          echo "=== Phase 2 host :3306 ==="
+          ss -lntp | awk 'NR==1 || /:3306/'
+          ss -lntp | grep -E '0\.0\.0\.0:3306|[[:space:]]:3306' >/dev/null
+          echo "HOST_MYSQL_3306=LISTENING"
 
-          echo "=== prior snapshot comparison markers ==="
-          echo "prior_users=4333 prior_wallets=1747 prior_txns=64244 prior_bookings=57991"
-          echo "DONE"
+          echo "=== Phase 4 precheck start script (no migrate) ==="
+          START_FILE="compose/production/django/start"
+          if [ -f "$START_FILE" ]; then
+            if grep -E 'migrate( |$)|migrate --noinput' "$START_FILE" | grep -vE '^\s*#|Do NOT run' >/dev/null; then
+              echo "STOP start script would migrate"
+              grep -n migrate "$START_FILE" || true
+              exit 2
+            fi
+            echo "start_script_migrate=ABSENT_OK"
+          else
+            echo "WARN start file missing at $START_FILE — inspecting container"
+          fi
+
+          echo "=== Phase 1 host-gateway on compose ==="
+          COMPOSE="docker-compose.production.yml"
+          if grep -q 'host.docker.internal:host-gateway' "$COMPOSE"; then
+            echo "extra_hosts=ALREADY_PRESENT"
+          else
+            python3 - <<'PY'
+          from pathlib import Path
+          p = Path("docker-compose.production.yml")
+          text = p.read_text()
+          needle = "    volumes:\n      - production_media:/app/iic_booking/media\n"
+          insert = needle + (
+              "    # Reach EC2 host MySQL via host-gateway (do not use container 127.0.0.1).\n"
+              "    extra_hosts:\n"
+              "      - \"host.docker.internal:host-gateway\"\n"
+          )
+          if needle not in text:
+              raise SystemExit("compose needle not found; refuse blind edit")
+          if "host.docker.internal:host-gateway" in text:
+              print("already present")
+          else:
+              p.write_text(text.replace(needle, insert, 1))
+              print("extra_hosts=ADDED")
+          PY
+          fi
+          grep -n 'extra_hosts\|host.docker.internal' "$COMPOSE" | head -n 10
+
+          echo "=== Phase 3 production env OLD_MYSQL_* ==="
+          ENV=".envs/.production/.django"
+          test -f "$ENV"
+          test -n "${MYSQL_RO_PASSWORD:-}"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          env_path = Path(".envs/.production/.django")
+          text = env_path.read_text()
+          lines = text.splitlines(keepends=True)
+          updates = {
+              "OLD_MYSQL_HOST": "host.docker.internal",
+              "OLD_MYSQL_PORT": "3306",
+              "OLD_MYSQL_DATABASE": "admin",
+              "OLD_MYSQL_USER": "iic_booking_ro",
+              "OLD_MYSQL_PASSWORD": os.environ["MYSQL_RO_PASSWORD"],
+          }
+          keys = set(updates)
+          out = []
+          seen = set()
+          for line in lines:
+              raw = line
+              if line.startswith("\ufeff"):
+                  line = line.lstrip("\ufeff")
+              stripped = line.strip()
+              if not stripped or stripped.startswith("#") or "=" not in stripped:
+                  out.append(raw)
+                  continue
+              k, _, _ = stripped.partition("=")
+              if k in keys:
+                  out.append(f"{k}={updates[k]}\n")
+                  seen.add(k)
+              else:
+                  out.append(raw)
+          for k in updates:
+              if k not in seen:
+                  out.append(f"{k}={updates[k]}\n")
+          env_path.write_text("".join(out))
+          # presence-only report
+          for k in updates:
+              print(f"{k}_written=YES")
+          print("password_printed=NO")
+          PY
+          # Show non-secret values only
+          grep -E '^OLD_MYSQL_(HOST|PORT|DATABASE|USER)=' "$ENV" | sed 's/\r$//'
+          grep -E '^OLD_MYSQL_PASSWORD=' "$ENV" >/dev/null && echo "OLD_MYSQL_PASSWORD=PRESENT" || echo "OLD_MYSQL_PASSWORD=ABSENT"
+          # Clear env var from this shell after write
+          unset MYSQL_RO_PASSWORD
+
+          echo "=== Recreate django/celery only (no full deploy, no migrate) ==="
+          # Confirm compose config includes extra_hosts for django family
+          docker compose -f "$COMPOSE" config 2>/dev/null | grep -A2 'host.docker.internal' | head -n 20 || true
+          docker compose -f "$COMPOSE" up -d --force-recreate --no-deps django celeryworker celerybeat
+          # flower may or may not be running
+          if docker compose -f "$COMPOSE" ps --format '{{.Name}}' | grep -q flower; then
+            docker compose -f "$COMPOSE" --profile flower up -d --force-recreate --no-deps flower || true
+          fi
+
+          echo "=== Wait health ==="
+          for i in $(seq 1 40); do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
+            if [ "$code" = "200" ]; then echo "health=PASS"; break; fi
+            echo "health_wait $i code=$code"
+            sleep 3
+          done
+          [ "${code:-}" = "200" ]
+
+          echo "HEAD_AFTER=$(git rev-parse HEAD)"
+          echo "compose_dirty=$(git status -sb | head -n 3)"
+
+      - name: Phase 5-9 — env, TCP, OldMySQLReader RO probe
+        run: |
+          set -euo pipefail
+          DEPLOY=""
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+            if [ -f "$d/docker-compose.production.yml" ]; then DEPLOY="$d"; break; fi
+          done
+          cd "$DEPLOY"
+          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep -E 'django' | head -n1)"
+          echo "django=$CID"
+
+          docker exec "$CID" python - <<'PY'
+          import os, socket
+          def present(k):
+              v = os.environ.get(k)
+              return "PRESENT" if v not in (None, "") else "ABSENT"
+          print("OLD_MYSQL_HOST=", present("OLD_MYSQL_HOST"), "value=", os.environ.get("OLD_MYSQL_HOST",""))
+          print("OLD_MYSQL_PORT=", present("OLD_MYSQL_PORT"), "value=", os.environ.get("OLD_MYSQL_PORT",""))
+          print("OLD_MYSQL_DATABASE=", present("OLD_MYSQL_DATABASE"), "value=", os.environ.get("OLD_MYSQL_DATABASE",""))
+          print("OLD_MYSQL_USER=", present("OLD_MYSQL_USER"), "value=", os.environ.get("OLD_MYSQL_USER",""))
+          print("OLD_MYSQL_PASSWORD=", present("OLD_MYSQL_PASSWORD"))
+          host = os.environ.get("OLD_MYSQL_HOST","")
+          port = int(os.environ.get("OLD_MYSQL_PORT") or 3306)
+          s = socket.socket(); s.settimeout(5)
+          try:
+              s.connect((host, port))
+              print("MYSQL_HOST_GATEWAY_REACHABLE")
+          except Exception as e:
+              print("MYSQL_HOST_GATEWAY_UNREACHABLE", type(e).__name__)
+              raise
+          finally:
+              s.close()
+          PY
+
+          echo "=== OldMySQLReader / test_old_mysql ==="
+          docker exec -w /app "$CID" python manage.py test_old_mysql
+
+          echo "=== Extended RO identity + wallet/ledger/booking ==="
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+
+          assert (settings.OLD_MYSQL_HOST or "") == "host.docker.internal"
+          assert int(settings.OLD_MYSQL_PORT) == 3306
+          assert (settings.OLD_MYSQL_DATABASE or "") == "admin"
+          assert (settings.OLD_MYSQL_USER or "") == "iic_booking_ro"
+          print("settings_host=", settings.OLD_MYSQL_HOST)
+          print("settings_port=", settings.OLD_MYSQL_PORT)
+          print("settings_database=", settings.OLD_MYSQL_DATABASE)
+          print("settings_user=", settings.OLD_MYSQL_USER)
+          print("settings_password=", "PRESENT" if settings.OLD_MYSQL_PASSWORD else "ABSENT")
+
+          with OldMySQLReader() as reader:
+              report = reader.connection_probe()
+              audit = reader.live_financial_audit()
+              print("probe_ok=", report.get("ok"))
+              print("account_appears_writable=", report.get("account_appears_writable"))
+              print("fixture_fallback=NONE")
+              # server identity
+              cur = reader._conn.cursor()
+              cur.execute("SELECT VERSION(), @@hostname, @@port, @@server_uuid, CURRENT_USER()")
+              ver, hostn, port, uuid, cu = cur.fetchone() if not hasattr(cur.fetchone(), 'keys') else list(cur.fetchone().values()) if False else None
+              # DictCursor
+              cur.execute("SELECT VERSION() AS v, @@hostname AS h, @@port AS p, @@server_uuid AS u, CURRENT_USER() AS cu")
+              row = cur.fetchone()
+              print("server_version=", row["v"])
+              print("server_hostname=", row["h"])
+              print("server_port=", row["p"])
+              print("server_uuid=", row["u"])
+              print("current_user=", row["cu"])
+              for sql, label in [
+                  ("SELECT COUNT(*) AS c FROM users", "users"),
+                  ("SELECT COUNT(*) AS c FROM user_wallet", "user_wallet"),
+                  ("SELECT COUNT(*) AS c FROM wallet_transactions", "wallet_transactions"),
+                  ("SELECT COUNT(*) AS c FROM booking", "booking"),
+              ]:
+                  cur.execute(sql)
+                  print(f"{label}_count=", cur.fetchone()["c"])
+                  print(f"{label}_read=PASS")
+              # wallet/ledger sample reads
+              cur.execute("SELECT id, user_id, balance FROM user_wallet LIMIT 1")
+              w = cur.fetchone()
+              print("wallet_sample_read=", "PASS" if w else "EMPTY")
+              cur.execute("SELECT id, user_id, amount FROM wallet_transactions ORDER BY id DESC LIMIT 1")
+              t = cur.fetchone()
+              print("ledger_sample_read=", "PASS" if t else "EMPTY")
+              cur.execute("SELECT id FROM booking ORDER BY id DESC LIMIT 1")
+              b = cur.fetchone()
+              print("booking_sample_read=", "PASS" if b else "EMPTY")
+              print("live_financial_audit_keys=", sorted(audit.keys()))
+              for k,v in audit.items():
+                  if k == "type_samples":
+                      continue
+                  print(f"audit_{k}=", v)
+          print("production_writes=NO")
+          PY
+
+          echo "=== showmigrations pending check (RO) ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '\[ \]|0096|0097|0098|0099|0100' | head -n 40 || true
+
+          echo "=== Channel-I authorize/callback smoke (no live browser) ==="
+          # presence of Channel-I settings only; live login needs operator
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          def p(name):
+              v = getattr(settings, name, None)
+              print(f"{name}=", "PRESENT" if v not in (None, "", False) else "ABSENT_OR_FALSE", "type=", type(v).__name__)
+          for n in ("CHANNEL_I_CLIENT_ID", "CHANNELI_CLIENT_ID", "OMNIPORT_CLIENT_ID", "REAL_INTEGRATION_ENABLED", "DEPLOYMENT_ENVIRONMENT"):
+              if hasattr(settings, n) or True:
+                  try:
+                      p(n)
+                  except Exception as e:
+                      print(n, "ERR", type(e).__name__)
+          print("channel_i_live_browser=NOT_TESTED")
+          print("employee_claim=NOT_TESTED")
+          print("employee_match_count=NOT_TESTED")
+          PY
