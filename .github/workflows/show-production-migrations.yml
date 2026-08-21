@@ -2,17 +2,15 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  curl_user:
+  catch500:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: curl /api/auth/user/ via localhost:8080
+      - name: Trigger /user/ 500 and capture ASGI traceback
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          # Create temp token inside container, write key to file mounted? Use docker exec python to curl from host via print only status
-          KEYFILE=$(mktemp)
-          docker exec -i -w /app "$CID" python - <<'PY' > "$KEYFILE"
+          KEY=$(docker exec -i -w /app "$CID" python - <<'PY'
           import os
           os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
           import django; django.setup()
@@ -20,33 +18,21 @@ jobs:
           from rest_framework.authtoken.models import Token
           u=get_user_model().objects.get(pk=66)
           Token.objects.filter(user=u).delete()
-          t=Token.objects.create(user=u)
-          print(t.key)
+          print(Token.objects.create(user=u).key)
           PY
-          KEY=$(cat "$KEYFILE" | tr -d '\r\n')
-          rm -f "$KEYFILE"
-          echo "temp_token_len=${#KEY}"
-          for path in /api/auth/user/ /api/auth/user /api/auth/profile/me/; do
-            code=$(curl -sS -o /tmp/body.json -w '%{http_code}' --max-time 15 \
-              -H "Authorization: Token $KEY" \
-              -H "Host: equip.iitr.ac.in" \
-              "http://127.0.0.1:8080$path" || echo FAIL)
-            echo "path=$path http=$code"
-            python3 - <<'PY'
-          import json
-          try:
-            d=json.load(open('/tmp/body.json'))
-            if isinstance(d, dict):
-              print('keys=', sorted(d.keys())[:12])
-              print('detail=', (d.get('detail') or d.get('error') or '')[:120])
-              print('id_present=', 'id' in d)
-            else:
-              print('body_type', type(d))
-          except Exception as e:
-            print('body_parse_fail', type(e).__name__, open('/tmp/body.json','rb').read()[:120])
-          PY
-          done
-          # destroy token
+          )
+          echo "token_len=${#KEY}"
+          # mark time
+          START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "START=$START"
+          curl -sS -o /tmp/body.json -w 'http=%{http_code}\n' --max-time 20 \
+            -H "Authorization: Token $KEY" \
+            -H "Host: equip.iitr.ac.in" \
+            "http://127.0.0.1:8080/api/auth/user/" || true
+          python3 -c "import json;d=json.load(open('/tmp/body.json'));print('detail=',d.get('detail'))"
+          sleep 1
+          echo "=== logs since trigger ==="
+          docker logs "$CID" --since 2m 2>&1 | sed -E "s/$KEY/[REDACTED]/g; s/[0-9a-f]{32,}/[REDACTED]/gi" | tail -n 200
           docker exec -i -w /app -e KEY="$KEY" "$CID" python - <<'PY'
           import os
           os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
@@ -55,6 +41,3 @@ jobs:
           Token.objects.filter(key=os.environ['KEY']).delete()
           print('destroyed=YES')
           PY
-          unset KEY
-          echo "=== recent Internal Server Error around auth/user if any ==="
-          docker logs "$CID" --since 10m 2>&1 | sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi' | grep -nE 'api/auth/user|Internal Server Error|ERROR 2026' | tail -n 30 || true
