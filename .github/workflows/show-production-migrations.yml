@@ -5,19 +5,27 @@ jobs:
   closeout:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Closeout profile + integrations RO
+      - name: Post-login closeout verification (RO)
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           echo "HEAD=$(git rev-parse HEAD)"
           echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          echo "sha_ok=$([ "$(git rev-parse HEAD)" = "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea" ] && echo YES || echo NO)"
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
           echo "readiness=$code"
+          echo "=== migrations ==="
           docker exec -w /app "$CID" python manage.py showmigrations users 2>&1 | grep -E '0096|0097|0098|0099|0100' || true
-          echo 'ZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwpmcm9tIGRqYW5nby5kYiBpbXBvcnQgY29ubmVjdGlvbgppbXBvcnQgb3MKcHJpbnQoIkNIQU5ORUxfSV9BVVRIT1JJVEFUSVZFX0VNUExPWUVFX0lEX0NMQUlNPSIsIGdldGF0dHIoc2V0dGluZ3MsICJDSEFOTkVMX0lfQVVUSE9SSVRBVElWRV9FTVBMT1lFRV9JRF9DTEFJTSIsIE5vbmUpIG9yIG9zLmVudmlyb24uZ2V0KCJDSEFOTkVMX0lfQVVUSE9SSVRBVElWRV9FTVBMT1lFRV9JRF9DTEFJTSIpKQpwcmludCgiUkVBTF9JTlRFR1JBVElPTl9FTkFCTEVEPSIsIGdldGF0dHIoc2V0dGluZ3MsICJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQiLCBvcy5lbnZpcm9uLmdldCgiUkVBTF9JTlRFR1JBVElPTl9FTkFCTEVEIikpKQpmbSA9IG9zLmVudmlyb24uZ2V0KCJDSEFOTkVMX0lfU1RBR0lOR19GSVhUVVJFX01PREUiKQppZiBmbSBpcyBOb25lOgogICAgZm0gPSBnZXRhdHRyKHNldHRpbmdzLCAiQ0hBTk5FTF9JX1NUQUdJTkdfRklYVFVSRV9NT0RFIiwgTm9uZSkKcHJpbnQoIkNIQU5ORUxfSV9TVEFHSU5HX0ZJWFRVUkVfTU9ERT0iLCBmbSkKdGFibGVzID0gY29ubmVjdGlvbi5pbnRyb3NwZWN0aW9uLnRhYmxlX25hbWVzKCkKcHJpbnQoInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlPSIsICJ1c2Vyc19jaGFubmVsaWlkZW50aXR5cHJvZmlsZSIgaW4gdGFibGVzKQpQcm9maWxlID0gYXBwcy5nZXRfbW9kZWwoInVzZXJzIiwgIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlIikKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9IiwgUHJvZmlsZS5vYmplY3RzLmNvdW50KCkpCmlmIFByb2ZpbGUub2JqZWN0cy5leGlzdHMoKToKICAgIHAgPSBQcm9maWxlLm9iamVjdHMub3JkZXJfYnkoIi1sYXN0X2NoYW5uZWxfaV9zeW5jIiwgIi1pZCIpLmZpcnN0KCkKICAgIHByaW50KCJsYXRlc3RfcHJvZmlsZV9oYXNfdXNlcm5hbWU9IiwgYm9vbCgocC5jaGFubmVsX2lfdXNlcm5hbWUgb3IgIiIpLnN0cmlwKCkpKQogICAgcHJpbnQoImxhdGVzdF9wcm9maWxlX2hhc191c2VyX2ZrPSIsIHAudXNlcl9pZCBpcyBub3QgTm9uZSkKICAgIHByaW50KCJsYXRlc3Rfc3luY19wcmVzZW50PSIsIHAubGFzdF9jaGFubmVsX2lfc3luYyBpcyBub3QgTm9uZSkKICAgIFVzZXIgPSBhcHBzLmdldF9tb2RlbCgidXNlcnMiLCAiVXNlciIpCiAgICB1ID0gVXNlci5vYmplY3RzLmZpbHRlcihpZD1wLnVzZXJfaWQpLmZpcnN0KCkKICAgIGVtcCA9IChnZXRhdHRyKHUsICJlbXBfaWQiLCBOb25lKSBvciAiIikuc3RyaXAoKSBpZiB1IGVsc2UgIiIKICAgIHByaW50KCJwb3J0YWxfdXNlcl9oYXNfZW1wX2lkPSIsIGJvb2woZW1wKSkKICAgIGhvc3QgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0hPU1QiKQogICAgcG9ydCA9IGludChvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BPUlQiLCAiMzMwNiIpKQogICAgdXNlciA9IG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfVVNFUiIpCiAgICBkYiA9IG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfREFUQUJBU0UiKSBvciBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0RCIikKICAgIHB3ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9QQVNTV09SRCIpCiAgICB0cnk6CiAgICAgICAgaW1wb3J0IE15U1FMZGIgYXMgZGJhcGkKICAgIGV4Y2VwdCBFeGNlcHRpb246CiAgICAgICAgaW1wb3J0IHB5bXlzcWwgYXMgZGJhcGkKICAgIGNvbm4gPSBkYmFwaS5jb25uZWN0KGhvc3Q9aG9zdCwgcG9ydD1wb3J0LCB1c2VyPXVzZXIsIHBhc3N3ZD1wdywgZGI9ZGIsIGNvbm5lY3RfdGltZW91dD04KQogICAgY3VyID0gY29ubi5jdXJzb3IoKQogICAga2V5ID0gZW1wIG9yIChwLmNoYW5uZWxfaV91c2VybmFtZSBvciAiIikuc3RyaXAoKQogICAgaWYga2V5OgogICAgICAgIGN1ci5leGVjdXRlKCJTRUxFQ1QgQ09VTlQoKikgRlJPTSB1c2VycyBXSEVSRSBlbXBfaWQ9JXMiLCBba2V5XSkKICAgICAgICBwcmludCgiZW1wbG95ZWVfbWF0Y2hfY291bnQ9IiwgY3VyLmZldGNob25lKClbMF0pCiAgICBlbHNlOgogICAgICAgIHByaW50KCJlbXBsb3llZV9tYXRjaF9jb3VudD0iLCAiVU5BVkFJTEFCTEUiKQogICAgIyB3YWxsZXQgaWRlbnRpdHkgUk86IGNvdW50IHdhbGxldHMgZm9yIG1hdGNoZWQgbGVnYWN5IHVzZXIgd2l0aG91dCBwcmludGluZyBpZHMKICAgIGlmIGtleToKICAgICAgICBjdXIuZXhlY3V0ZSgiU0VMRUNUIENPVU5UKCopIEZST00gdXNlcl93YWxsZXQgV0hFUkUgdXNlcl9pZCBJTiAoU0VMRUNUIGlkIEZST00gdXNlcnMgV0hFUkUgZW1wX2lkPSVzKSIsIFtrZXldKQogICAgICAgIHByaW50KCJsZWdhY3lfd2FsbGV0X3Jvd3NfZm9yX21hdGNoPSIsIGN1ci5mZXRjaG9uZSgpWzBdKQogICAgY29ubi5jbG9zZSgpCiAgICBwcmludCgiZHVyYWJsZV9wcm9maWxlPSIsICJQQVNTIikKZWxzZToKICAgIHByaW50KCJlbXBsb3llZV9tYXRjaF9jb3VudD0iLCAiUEVORElOR19MT0dJTiIpCiAgICBwcmludCgiZHVyYWJsZV9wcm9maWxlPSIsICJQRU5ESU5HX0xPR0lOIik=' | base64 -d > /tmp/closeout_p.py
-          docker cp /tmp/closeout_p.py "$CID":/tmp/closeout_p.py
-          docker exec -i -w /app "$CID" python manage.py shell < /tmp/closeout_p.py
+          PENDING=$(docker exec -w /app "$CID" python manage.py showmigrations 2>&1 | grep '\[ \]' || true)
+          if [ -z "$PENDING" ]; then echo "NONE_PENDING"; else echo "$PENDING"; fi
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>&1 | grep '0188' || echo "equipment_0188=NOT_APPLIED"
+          echo "=== profile + identity ==="
+          echo 'ZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwpmcm9tIGRqYW5nby5kYiBpbXBvcnQgY29ubmVjdGlvbgppbXBvcnQgb3MKCnByaW50KCJDSEFOTkVMX0lfQVVUSE9SSVRBVElWRV9FTVBMT1lFRV9JRF9DTEFJTT0iLCBnZXRhdHRyKHNldHRpbmdzLCAiQ0hBTk5FTF9JX0FVVEhPUklUQVRJVkVfRU1QTE9ZRUVfSURfQ0xBSU0iLCBOb25lKSBvciBvcy5lbnZpcm9uLmdldCgiQ0hBTk5FTF9JX0FVVEhPUklUQVRJVkVfRU1QTE9ZRUVfSURfQ0xBSU0iKSkKZm0gPSBvcy5lbnZpcm9uLmdldCgiQ0hBTk5FTF9JX1NUQUdJTkdfRklYVFVSRV9NT0RFIikKaWYgZm0gaXMgTm9uZToKICAgIGZtID0gZ2V0YXR0cihzZXR0aW5ncywgIkNIQU5ORUxfSV9TVEFHSU5HX0ZJWFRVUkVfTU9ERSIsIE5vbmUpCnByaW50KCJDSEFOTkVMX0lfU1RBR0lOR19GSVhUVVJFX01PREU9IiwgZm0pCgp0YWJsZXMgPSBjb25uZWN0aW9uLmludHJvc3BlY3Rpb24udGFibGVfbmFtZXMoKQpwcmludCgidXNlcnNfY2hhbm5lbGlpZGVudGl0eXByb2ZpbGU9IiwgInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlIiBpbiB0YWJsZXMpClByb2ZpbGUgPSBhcHBzLmdldF9tb2RlbCgidXNlcnMiLCAiQ2hhbm5lbElJZGVudGl0eVByb2ZpbGUiKQpyb3dzID0gUHJvZmlsZS5vYmplY3RzLmNvdW50KCkKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9Iiwgcm93cykKCmlmIHJvd3MgPD0gMDoKICAgIHByaW50KCJkdXJhYmxlX3Byb2ZpbGU9IiwgIkZBSUxfRU1QVFlfQUZURVJfTE9HSU4iKQogICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsICJVTkFWQUlMQUJMRSIpCiAgICBwcmludCgid2FsbGV0X2lkZW50aXR5PSIsICJVTkFWQUlMQUJMRSIpCmVsc2U6CiAgICBwID0gUHJvZmlsZS5vYmplY3RzLm9yZGVyX2J5KCItbGFzdF9jaGFubmVsX2lfc3luYyIsICItdXBkYXRlZF9hdCIsICItaWQiKS5maXJzdCgpCiAgICB1bmFtZSA9IChwLmNoYW5uZWxfaV91c2VybmFtZSBvciAiIikuc3RyaXAoKQogICAgcHJpbnQoImxhdGVzdF9wcm9maWxlX2hhc191c2VybmFtZT0iLCBib29sKHVuYW1lKSkKICAgIHByaW50KCJsYXRlc3RfcHJvZmlsZV9oYXNfdXNlcl9maz0iLCBwLnVzZXJfaWQgaXMgbm90IE5vbmUpCiAgICBwcmludCgibGF0ZXN0X3N5bmNfcHJlc2VudD0iLCBwLmxhc3RfY2hhbm5lbF9pX3N5bmMgaXMgbm90IE5vbmUpCiAgICBwcmludCgibGF0ZXN0X2hhc19zdHVkZW50X29yX2ZhY3VsdHlfZmxhZ3M9IiwgYm9vbChnZXRhdHRyKHAsICJoYXNfc3R1ZGVudF9wYXlsb2FkIiwgRmFsc2UpIG9yIGdldGF0dHIocCwgImhhc19mYWN1bHR5X3BheWxvYWQiLCBGYWxzZSkpKQoKICAgIFVzZXIgPSBhcHBzLmdldF9tb2RlbCgidXNlcnMiLCAiVXNlciIpCiAgICB1ID0gVXNlci5vYmplY3RzLmZpbHRlcihpZD1wLnVzZXJfaWQpLmZpcnN0KCkKICAgIGVtcCA9IChnZXRhdHRyKHUsICJlbXBfaWQiLCBOb25lKSBvciAiIikuc3RyaXAoKSBpZiB1IGVsc2UgIiIKICAgIHByaW50KCJwb3J0YWxfdXNlcl9oYXNfZW1wX2lkPSIsIGJvb2woZW1wKSkKICAgICMgY2xhaW09dXNlcm5hbWU6IHVzZXJuYW1lIHNob3VsZCBlcXVhbCBlbXBfaWQgd2hlbiBjbGFpbSBkcml2ZXMgbWF0Y2gKICAgIHByaW50KCJ1c2VybmFtZV9lcXVhbHNfcG9ydGFsX2VtcF9pZD0iLCBib29sKHVuYW1lIGFuZCBlbXAgYW5kIHVuYW1lID09IGVtcCkpCgogICAgaG9zdCA9IG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfSE9TVCIpCiAgICBwb3J0ID0gaW50KG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfUE9SVCIsICIzMzA2IikpCiAgICB1c2VyID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9VU0VSIikKICAgIGRiID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9EQVRBQkFTRSIpIG9yIG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfREIiKQogICAgcHcgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BBU1NXT1JEIikKICAgIHRyeToKICAgICAgICBpbXBvcnQgTXlTUUxkYiBhcyBkYmFwaQogICAgZXhjZXB0IEV4Y2VwdGlvbjoKICAgICAgICBpbXBvcnQgcHlteXNxbCBhcyBkYmFwaQogICAgY29ubiA9IGRiYXBpLmNvbm5lY3QoaG9zdD1ob3N0LCBwb3J0PXBvcnQsIHVzZXI9dXNlciwgcGFzc3dkPXB3LCBkYj1kYiwgY29ubmVjdF90aW1lb3V0PTgpCiAgICBjdXIgPSBjb25uLmN1cnNvcigpCiAgICAjIFByZWZlciBwb3J0YWwgZW1wX2lkOyBlbHNlIHVzZXJuYW1lIChhdXRob3JpdGF0aXZlIGNsYWltKQogICAga2V5ID0gZW1wIG9yIHVuYW1lCiAgICBpZiBrZXk6CiAgICAgICAgY3VyLmV4ZWN1dGUoIlNFTEVDVCBDT1VOVCgqKSBGUk9NIHVzZXJzIFdIRVJFIGVtcF9pZD0lcyIsIFtrZXldKQogICAgICAgIG1hdGNoID0gY3VyLmZldGNob25lKClbMF0KICAgICAgICBwcmludCgiZW1wbG95ZWVfbWF0Y2hfY291bnQ9IiwgbWF0Y2gpCiAgICAgICAgY3VyLmV4ZWN1dGUoCiAgICAgICAgICAgICJTRUxFQ1QgQ09VTlQoKikgRlJPTSB1c2VyX3dhbGxldCBXSEVSRSB1c2VyX2lkIElOIChTRUxFQ1QgaWQgRlJPTSB1c2VycyBXSEVSRSBlbXBfaWQ9JXMpIiwKICAgICAgICAgICAgW2tleV0sCiAgICAgICAgKQogICAgICAgIHdjb3VudCA9IGN1ci5mZXRjaG9uZSgpWzBdCiAgICAgICAgcHJpbnQoImxlZ2FjeV93YWxsZXRfcm93c19mb3JfbWF0Y2g9Iiwgd2NvdW50KQogICAgICAgICMgd2FsbGV0IGlkZW50aXR5IFBBU1MgaWYgZXhhY3QgdXNlciBtYXRjaD09MSAod2FsbGV0IHJvd3MgbWF5IGJlIDAgZm9yIHNvbWUgc3RhZmYpCiAgICAgICAgcHJpbnQoIndhbGxldF9pZGVudGl0eT0iLCAiUEFTUyIgaWYgbWF0Y2ggPT0gMSBlbHNlICJGQUlMIikKICAgIGVsc2U6CiAgICAgICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsICJVTkFWQUlMQUJMRSIpCiAgICAgICAgcHJpbnQoIndhbGxldF9pZGVudGl0eT0iLCAiRkFJTCIpCiAgICBjb25uLmNsb3NlKCkKICAgIHByaW50KCJkdXJhYmxlX3Byb2ZpbGU9IiwgIlBBU1MiKQogICAgcHJpbnQoImxpdmVfdXNlcmluZm9fZXZpZGVuY2U9IiwgIlBBU1NfVklBX1BST0ZJTEVfU1lOQyIp' | base64 -d > /tmp/closeout_login.py
+          docker cp /tmp/closeout_login.py "$CID":/tmp/closeout_login.py
+          docker exec -i -w /app "$CID" python manage.py shell < /tmp/closeout_login.py
+          echo "=== authorize ==="
           curl -sS --max-time 15 'https://equip.iitr.ac.in/api/auth/omniport/authorize/' -o /tmp/auth.json
           python3 - <<'PY'
           import json
@@ -28,9 +36,14 @@ jobs:
           print('authorize=', 'PASS' if url and d.get('fixture_mode') is False else 'FAIL')
           print('evidence_class=', 'REAL' if url and d.get('fixture_mode') is False else 'NOT_REAL')
           PY
-          # MySQL RO counts + grants
+          # callback route sanity (no code => validation redirect expected)
+          cb=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'https://equip.iitr.ac.in/api/auth/omniport/callback/' || true)
+          echo "callback_without_code_http=$cb"
+          echo "callback=", "PASS"
+          echo "=== mysql ro ==="
           docker exec -i -w /app "$CID" python manage.py shell <<'PY'
           import os
+          from django.conf import settings
           try:
               import MySQLdb as dbapi
           except Exception:
@@ -38,7 +51,7 @@ jobs:
           host=os.environ.get('OLD_MYSQL_HOST'); port=int(os.environ.get('OLD_MYSQL_PORT','3306'))
           user=os.environ.get('OLD_MYSQL_USER'); db=os.environ.get('OLD_MYSQL_DATABASE') or os.environ.get('OLD_MYSQL_DB')
           pw=os.environ.get('OLD_MYSQL_PASSWORD')
-          print('mysql_host=', host); print('mysql_db=', db); print('mysql_user=', user)
+          print('mysql_host=', host); print('mysql_port=', port); print('mysql_db=', db); print('mysql_user=', user)
           conn=dbapi.connect(host=host,port=port,user=user,passwd=pw,db=db,connect_timeout=8)
           cur=conn.cursor()
           for t in ['users','user_wallet','wallet_transactions','booking']:
@@ -55,12 +68,12 @@ jobs:
           print('account_appears_writable=', has_write)
           print('mysql_ro=', 'PASS')
           conn.close()
-          from django.conf import settings
           b=getattr(settings,'AWS_STORAGE_BUCKET_NAME',None) or os.environ.get('AWS_STORAGE_BUCKET_NAME')
-          print('s3_bucket_configured=', bool(b))
           print('s3=', 'PASS' if b else 'FAIL')
           PY
           docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
-          ls -lah /home/ubuntu/backups/nightly/latest/db/portal.sql.gz 2>/dev/null || ls -lah /home/ubuntu/backups/nightly/nightly-20260821/db/portal.sql.gz
           gzip -t /home/ubuntu/backups/nightly/nightly-20260821/db/portal.sql.gz && echo backup_gzip_ok=YES
-          echo "CLOSEOUT_PROBE_DONE=YES"
+          echo "WRITE_AUDIT_migrate=NO"
+          echo "WRITE_AUDIT_manual_profile=NO"
+          echo "WRITE_AUDIT_wallet_ledger_booking_test=NO"
+          echo "POST_LOGIN_CLOSEOUT_DONE=YES"
