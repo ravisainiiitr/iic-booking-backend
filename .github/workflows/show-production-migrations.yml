@@ -2,49 +2,14 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  token_fail:
+  unblock_deploy:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Diagnose token_creation_failed (RO logs + schema)
+      - name: Clear dirty compose so Deploy can checkout hotfix tag
         run: |
           set -euo pipefail
-          DEPLOY=/home/ubuntu/iic-booking-backend
-          cd "$DEPLOY"
-          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
-          echo "django=$CID HEAD=$(git rev-parse HEAD)"
-
-          echo "=== recent django logs (token/omniport/auth) ==="
-          docker logs "$CID" --since 30m 2>&1 | grep -iE 'token_creation|regenerate|auth token|Omniport|omniport|user_creation|identity sync|ProgrammingError|relation|authtoken|IntegrityError|OperationalError|Failed to create authentication' | tail -n 80 || true
-
-          echo "=== broader error tail ==="
-          docker logs "$CID" --since 30m 2>&1 | grep -iE 'ERROR|Exception|Traceback' | tail -n 60 || true
-
-          docker exec -i -w /app "$CID" python - <<'PY'
-          import os
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE","config.settings.production")
-          import django; django.setup()
-          from django.db import connection
-          with connection.cursor() as cur:
-              for t in (
-                  "authtoken_token",
-                  "users_user",
-                  "users_channeliidentityprofile",
-              ):
-                  cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
-                  print(f"table_{t}=", cur.fetchone()[0])
-              cur.execute("""
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_name='authtoken_token'
-                ORDER BY ordinal_position
-              """)
-              cols=cur.fetchall()
-              print("authtoken_columns=", [c[0] for c in cols])
-          from django.conf import settings
-          print("AUTH_TOKEN_MODEL=", getattr(settings,"REST_FRAMEWORK",{}).get("DEFAULT_AUTHENTICATION_CLASSES"))
-          try:
-              from rest_framework.authtoken.models import Token
-              print("Token_objects_count=", Token.objects.count())
-          except Exception as e:
-              print("Token_count_error=", type(e).__name__, str(e)[:200])
-          PY
+          cd /home/ubuntu/iic-booking-backend
+          echo "BEFORE=$(git status -sb | head -n 5)"
+          git checkout -- docker-compose.production.yml || true
+          git status -sb | head -n 5
+          echo "HEAD_NOW=$(git rev-parse HEAD)"
