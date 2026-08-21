@@ -5,68 +5,64 @@ jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: RO MySQL identity via host socket / 127.0.0.1 (no env writes)
+      - name: RO connect iic_booking_ro to 127.0.0.1:3306
+        env:
+          MYSQL_PWD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
         run: |
           set -euo pipefail
-          echo "=== listener reminder ==="
-          ss -lntp | awk 'NR==1 || /:3306/'
-          echo "=== try sudo mysql unix_socket (Ubuntu root) ==="
-          if sudo mysql -N -e "SELECT 'SOCKET_OK'; SELECT VERSION(); SELECT @@hostname; SELECT @@port; SELECT @@server_uuid;" 2>/tmp/mysql_err.txt; then
-            echo "AUTH=unix_socket_root_ok"
+          unset HISTFILE || true
+          echo "=== tools ==="
+          command -v mysql || sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client >/dev/null
+          command -v mysql
+          echo "=== attempt iic_booking_ro@127.0.0.1:3306 db=admin ==="
+          if mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT 'CONNECT_OK'; SELECT VERSION(); SELECT @@hostname; SELECT @@port; SELECT @@server_uuid;" 2>/tmp/ro_err.txt; then
+            echo "AUTH=iic_booking_ro_ok"
           else
-            echo "AUTH=unix_socket_root_fail"
-            sed -E 's/Password[^[:space:]]*/Password***/Ig' /tmp/mysql_err.txt | head -n 20 || true
+            echo "AUTH=iic_booking_ro_fail"
+            # redact any accidental password leakage
+            sed -E 's/Password[^[:space:]]*/Password***/Ig; s/'$'\x27''[^'$'\x27'']+'$'\x27''/*** /g' /tmp/ro_err.txt | head -n 30 || true
+            exit 0
           fi
 
-          run_sql() {
-            sudo mysql -N -e "$1" 2>/dev/null
-          }
+          echo "=== databases ==="
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW DATABASES;" | awk '{print "db="$1}'
+          echo "=== admin? ==="
+          if mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW DATABASES LIKE 'admin';" | grep -qx admin; then
+            echo "ADMIN_EXISTS=YES"
+          else
+            echo "ADMIN_EXISTS=NO"
+            exit 0
+          fi
 
-          if sudo mysql -N -e "SELECT 1" >/dev/null 2>&1; then
-            echo "=== SHOW DATABASES ==="
-            run_sql "SHOW DATABASES;"
-            echo "=== admin exists? ==="
-            if run_sql "SHOW DATABASES LIKE 'admin';" | grep -qx admin; then
-              echo "ADMIN_EXISTS=YES"
-              echo "=== admin tables (first 40) ==="
-              run_sql "SHOW TABLES FROM admin;" | head -n 40
-              echo "=== counts ==="
-              run_sql "SELECT COUNT(*) FROM admin.users;" | awk '{print "users_count="$1}'
-              run_sql "SELECT COUNT(*) FROM admin.user_wallet;" | awk '{print "user_wallet_count="$1}'
-              run_sql "SELECT COUNT(*) FROM admin.wallet_transactions;" | awk '{print "wallet_transactions_count="$1}'
-              # bookings table discovery
-              for t in bookings booking user_bookings; do
-                if run_sql "SHOW TABLES FROM admin LIKE '$t';" | grep -qx "$t"; then
-                  echo "bookings_table=$t"
-                  run_sql "SELECT COUNT(*) FROM admin.$t;" | awk -v t="$t" '{print "bookings_count="$1}'
-                  break
-                fi
-              done
-              echo "=== users.emp_id column? ==="
-              run_sql "SHOW COLUMNS FROM admin.users LIKE 'emp_id';" | head -n 5 || echo "emp_id_column=ABSENT_OR_ERROR"
-            else
-              echo "ADMIN_EXISTS=NO"
+          echo "=== tables sample ==="
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW TABLES FROM admin;" | head -n 40 | awk '{print "table="$1}'
+
+          echo "=== counts ==="
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.users;" | awk '{print "users_count="$1}'
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.user_wallet;" | awk '{print "user_wallet_count="$1}'
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.wallet_transactions;" | awk '{print "wallet_transactions_count="$1}'
+          for t in bookings booking user_bookings; do
+            if mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW TABLES FROM admin LIKE '$t';" | grep -qx "$t"; then
+              echo "bookings_table=$t"
+              mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT COUNT(*) FROM admin.$t;" | awk '{print "bookings_count="$1}'
+              break
             fi
+          done
+          echo "=== emp_id column ==="
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SHOW COLUMNS FROM admin.users LIKE 'emp_id';" | head -n 3 | awk '{print "emp_id_col="$0}' || echo "emp_id_col=ABSENT"
 
-            echo "=== iic_booking_ro accounts ==="
-            run_sql "SELECT user,host FROM mysql.user WHERE user='iic_booking_ro';" | awk '{print "iic_booking_ro_row user="$1" host="$2}'
-            COUNT_RO=$(run_sql "SELECT COUNT(*) FROM mysql.user WHERE user='iic_booking_ro';")
-            echo "iic_booking_ro_exists_count=$COUNT_RO"
-            # SHOW GRANTS for each host component found
-            while read -r u h; do
-              [ -z "${u:-}" ] && continue
-              echo "=== GRANTS for $u@$h ==="
-              sudo mysql -e "SHOW GRANTS FOR '$u'@'$h';" 2>/dev/null | sed 's/^/GRANT_LINE /' || echo "SHOW_GRANTS_FAIL host=$h"
-            done < <(sudo mysql -N -e "SELECT user,host FROM mysql.user WHERE user='iic_booking_ro';" 2>/dev/null)
+          echo "=== CURRENT_USER / grants visible to RO ==="
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "SELECT CURRENT_USER(); SHOW GRANTS;" | sed 's/^/GRANT_OR_USER /'
 
-            echo "=== compare notes ==="
-            echo "prior_snapshot_users=4333"
-            echo "prior_snapshot_user_wallet=1747"
-            echo "prior_snapshot_wallet_transactions=64244"
-            echo "prior_snapshot_bookings=57991"
-            echo "app_primary_db=RDS_POSTGRES_from_DATABASE_URL"
-            echo "mysql_role_hypothesis=host_mysqld_not_docker_not_compose"
-          else
-            echo "CANNOT_AUTH_NO_APPROVED_LOCAL_CREDENTIAL"
-            echo "DECISION_HINT=NOT_PROVEN_WITHOUT_CREDENTIAL"
-          fi
+          echo "=== write attempt should fail (expected) ==="
+          set +e
+          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "UPDATE admin.users SET emp_id=emp_id WHERE 1=0;" 2>/tmp/write_err.txt
+          wr=$?
+          set -e
+          echo "write_exit=$wr"
+          if [ "$wr" -ne 0 ]; then echo "account_appears_writable=FALSE"; else echo "account_appears_writable=TRUE_UNEXPECTED"; fi
+          head -n 5 /tmp/write_err.txt | sed -E 's/Password[^[:space:]]*/***/Ig' || true
+
+          echo "=== prior snapshot comparison markers ==="
+          echo "prior_users=4333 prior_wallets=1747 prior_txns=64244 prior_bookings=57991"
+          echo "DONE"
