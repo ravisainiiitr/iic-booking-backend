@@ -2,83 +2,15 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  docker_mysql_ro:
+  channel_i_phase12:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Phase 1-4 — network + create 172.18.% SELECT-only
-        env:
-          MYSQL_RO_PASSWORD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
-          MYSQL_PWD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
+      - name: Phase 1-2 Channel-I config + authorize (no secrets)
         run: |
           set -euo pipefail
-          unset HISTFILE || true
           DEPLOY=/home/ubuntu/iic-booking-backend
           cd "$DEPLOY"
-          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
-          IP="$(docker inspect "$CID" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' | awk '{print $1}')"
-          NET="$(docker inspect "$CID" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' | awk '{print $1}')"
-          SUBNET="$(docker network inspect "$NET" --format '{{(index .IPAM.Config 0).Subnet}}')"
-          echo "DJANGO_IP=$IP"
-          echo "DOCKER_NET=$NET"
-          echo "DOCKER_SUBNET=$SUBNET"
-          [ "$SUBNET" = "172.18.0.0/16" ] || { echo "STOP unexpected subnet $SUBNET"; exit 2; }
-          case "$IP" in 172.18.*) ;; *) echo "STOP ip $IP"; exit 2 ;; esac
-          HOST_PATTERN='172.18.%'
-          echo "MYSQL_HOST_PATTERN=$HOST_PATTERN"
-          printf '%s\n' "DJANGO_IP=$IP" "DOCKER_NET=$NET" "DOCKER_SUBNET=$SUBNET" "MYSQL_HOST_PATTERN=$HOST_PATTERN" > /tmp/mysql_docker_net.env
-
-          echo "=== localhost grants (RO app user) ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "SHOW GRANTS FOR CURRENT_USER();" | sed 's/^/GRANT_LOCAL /'
-
-          admin() { sudo mysql --defaults-file=/etc/mysql/debian.cnf "$@"; }
-          echo "=== admin path ==="
-          admin -N -e "SELECT 'ADMIN_OK';"
-
-          EXISTS="$(admin -N -e "SELECT COUNT(*) FROM mysql.user WHERE user='iic_booking_ro' AND host='${HOST_PATTERN}';")"
-          echo "existing_host_account_count=$EXISTS"
-
-          if [ "$EXISTS" = "0" ]; then
-            python3 - <<'PY'
-          import os
-          from pathlib import Path
-          pattern = "172.18.%"
-          pw = os.environ["MYSQL_RO_PASSWORD"]
-          pw_sql = pw.replace("\\", "\\\\").replace("'", "''")
-          sql = (
-              f"CREATE USER IF NOT EXISTS 'iic_booking_ro'@'{pattern}' IDENTIFIED BY '{pw_sql}';\n"
-              f"GRANT SELECT ON `admin`.* TO 'iic_booking_ro'@'{pattern}';\n"
-              "FLUSH PRIVILEGES;\n"
-              "SELECT user, host FROM mysql.user WHERE user='iic_booking_ro' ORDER BY host;\n"
-          )
-          Path("/tmp/create_ro_host.sql").write_text(sql)
-          print("sql_written=YES")
-          PY
-            admin < /tmp/create_ro_host.sql
-            shred -u /tmp/create_ro_host.sql 2>/dev/null || rm -f /tmp/create_ro_host.sql
-            echo "CREATE_HOST_ACCOUNT=DONE"
-          else
-            echo "CREATE_HOST_ACCOUNT=ALREADY_EXISTS"
-            admin -e "GRANT SELECT ON \`admin\`.* TO 'iic_booking_ro'@'${HOST_PATTERN}'; FLUSH PRIVILEGES;"
-          fi
-
-          echo "=== grants docker host ==="
-          admin -e "SHOW GRANTS FOR 'iic_booking_ro'@'${HOST_PATTERN}';" | sed 's/^/GRANT_DOCKER /'
-          echo "=== grants localhost preserved ==="
-          admin -e "SHOW GRANTS FOR 'iic_booking_ro'@'localhost';" | sed 's/^/GRANT_LOCALHOST /'
-
-          GRANTS="$(admin -N -e "SHOW GRANTS FOR 'iic_booking_ro'@'${HOST_PATTERN}';")"
-          echo "$GRANTS"
-          echo "$GRANTS" | grep -q 'SELECT' && echo has_SELECT=YES || { echo has_SELECT=NO; exit 2; }
-          echo "$GRANTS" | grep -qiE 'INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|GRANT OPTION|RELOAD|FILE|SUPER|ALL PRIVILEGES' \
-            && { echo "STOP elevated_or_write_priv"; exit 2; } || echo "grants_select_only=PASS"
-          unset MYSQL_RO_PASSWORD MYSQL_PWD || true
-
-      - name: Phase 5-10 — Django OldMySQLReader probe
-        run: |
-          set -euo pipefail
-          . /tmp/mysql_docker_net.env
-          DEPLOY=/home/ubuntu/iic-booking-backend
-          cd "$DEPLOY"
+          echo "HEAD=$(git rev-parse HEAD)"
           CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
           echo "django=$CID"
 
@@ -88,63 +20,71 @@ jobs:
           import django
           django.setup()
           from django.conf import settings
-          from iic_booking.users.legacy_ledger.reader import OldMySQLReader, assert_readonly_sql
+          from iic_booking.users.legacy_ledger.real_integration_guards import (
+              channel_i_preflight_status,
+              employee_id_claim_status,
+              omniport_redirect_uri_status,
+              real_integration_enabled,
+          )
+          from iic_booking.users.identity.channel_i_fixture import channel_i_fixture_mode_enabled
 
-          print("settings_host=", settings.OLD_MYSQL_HOST)
-          print("settings_port=", settings.OLD_MYSQL_PORT)
-          print("settings_db=", settings.OLD_MYSQL_DATABASE)
-          print("settings_user=", settings.OLD_MYSQL_USER)
-          print("fixture_fallback=NONE")
+          def present(v):
+              return "PRESENT" if (v is not None and str(v).strip() != "") else "ABSENT"
 
-          for sql, label in [
-              ("UPDATE admin.users SET emp_id=emp_id WHERE 1=0", "update"),
-              ("DELETE FROM admin.users WHERE 1=0", "delete"),
-          ]:
-              try:
-                  assert_readonly_sql(sql)
-                  print(f"readonly_guard_{label}=FAIL")
-                  raise SystemExit(2)
-              except ValueError:
-                  print(f"readonly_guard_{label}=PASS_REJECTED")
+          print("DEPLOYMENT_ENVIRONMENT=", getattr(settings, "DEPLOYMENT_ENVIRONMENT", None))
+          print("REAL_INTEGRATION_ENABLED=", getattr(settings, "REAL_INTEGRATION_ENABLED", None))
+          print("real_integration_enabled()=", real_integration_enabled())
+          print("CHANNEL_I_STAGING_FIXTURE_MODE=", getattr(settings, "CHANNEL_I_STAGING_FIXTURE_MODE", None))
+          print("channel_i_fixture_mode_enabled()=", channel_i_fixture_mode_enabled())
+          print("LEGACY_MYSQL_STAGING_FIXTURE_MODE=", getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", None))
+          print("LOCAL_STAGING_ACCEPTED=", getattr(settings, "LOCAL_STAGING_ACCEPTED", None))
+          print("OMNIPORT_CLIENT_ID=", present(getattr(settings, "OMNIPORT_CLIENT_ID", None)))
+          print("OMNIPORT_CLIENT_SECRET=", present(getattr(settings, "OMNIPORT_CLIENT_SECRET", None)))
+          print("OMNIPORT_REDIRECT_URI=", getattr(settings, "OMNIPORT_REDIRECT_URI", None))
+          print("CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=", repr(getattr(settings, "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM", None) or ""))
+          print("FRONTEND_URL=", getattr(settings, "FRONTEND_URL", None))
+          print("redirect_status=", omniport_redirect_uri_status())
+          print("channel_i_preflight=", channel_i_preflight_status())
+          print("employee_id_claim_status=", employee_id_claim_status())
 
-          with OldMySQLReader() as reader:
-              report = reader.connection_probe()
-              audit = reader.live_financial_audit()
-              print("connection=", "PASS" if report.get("ok") else "FAIL")
-              print("account_appears_writable=", report.get("account_appears_writable"))
-              cur = reader._conn.cursor()
-              cur.execute("SELECT @@hostname AS h, @@port AS p, @@server_uuid AS u, CURRENT_USER() AS cu, DATABASE() AS db")
-              row = cur.fetchone()
-              print("server_hostname=", row["h"])
-              print("server_port=", row["p"])
-              print("server_uuid=", row["u"])
-              print("current_user=", row["cu"])
-              print("database=", row["db"])
-              print("server_uuid_match=", "PASS" if row["u"] == "887bdd21-2e05-11ef-9ab5-0a770504c180" else "FAIL")
-              print("server_hostname_match=", "PASS" if row["h"] == "ip-10-0-1-153" else "FAIL")
-              for sql, label in [
-                  ("SELECT COUNT(*) AS c FROM users", "users"),
-                  ("SELECT COUNT(*) AS c FROM user_wallet", "user_wallet"),
-                  ("SELECT COUNT(*) AS c FROM wallet_transactions", "wallet_transactions"),
-                  ("SELECT COUNT(*) AS c FROM booking", "booking"),
-              ]:
-                  cur.execute(sql)
-                  print(f"{label}_count=", cur.fetchone()["c"])
-                  print(f"{label}_read=PASS")
-              cur.execute("SELECT id, user_id, balance FROM user_wallet LIMIT 1")
-              print("wallet_read=", "PASS" if cur.fetchone() else "EMPTY")
-              cur.execute("SELECT id, user_id, amount FROM wallet_transactions ORDER BY id DESC LIMIT 1")
-              print("ledger_read=", "PASS" if cur.fetchone() else "EMPTY")
-              cur.execute("SELECT id FROM booking ORDER BY id DESC LIMIT 1")
-              print("booking_read=", "PASS" if cur.fetchone() else "EMPTY")
-              for k, v in audit.items():
-                  if k != "type_samples":
-                      print(f"audit_{k}=", v)
-          print("production_writes=NO")
+          # ChannelIIdentityProfile table present?
+          from django.db import connection
+          with connection.cursor() as cur:
+              cur.execute("SELECT to_regclass('public.users_channeliidentityprofile')")
+              print("ChannelIIdentityProfile_table=", cur.fetchone()[0])
           PY
 
-          docker exec -w /app "$CID" python manage.py test_old_mysql
-          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
-          echo "channel_i_live=NOT_TESTED"
-          echo "employee_identity=NOT_TESTED"
-          echo "health=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
+          echo "=== authorize endpoint ==="
+          # Prefer public URL if reachable, else local django
+          for URL in \
+            "https://equip.iitr.ac.in/api/auth/omniport/authorize/" \
+            "http://127.0.0.1:8080/api/auth/omniport/authorize/"
+          do
+            echo "GET $URL"
+            code=$(curl -sS -o /tmp/authz.json -w '%{http_code}' --max-time 20 "$URL" || echo FAIL)
+            echo "http=$code"
+            python3 - <<'PY'
+          import json
+          d=json.load(open("/tmp/authz.json"))
+          # redact
+          auth=d.get("auth_url") or ""
+          # strip query values that might include client_id fully? client_id is not secret but avoid dumping full URL with state if needed — show structure only
+          from urllib.parse import urlparse, parse_qs
+          if auth:
+            u=urlparse(auth)
+            q=parse_qs(u.query)
+            print("fixture_mode=", d.get("fixture_mode"))
+            print("auth_host=", u.scheme+"://"+u.netloc+u.path)
+            print("redirect_uri_param=", (q.get("redirect_uri") or [None])[0])
+            print("response_type=", (q.get("response_type") or [None])[0])
+            print("has_state=", bool(q.get("state")))
+            print("has_client_id=", bool(q.get("client_id")))
+            # never print client_id value or state value
+          else:
+            print("body_keys=", sorted(d.keys()))
+            print("fixture_mode=", d.get("fixture_mode"))
+            print("error_code=", d.get("error_code"))
+            print("error=", (d.get("error") or "")[:120])
+          PY
+            break
+          done
