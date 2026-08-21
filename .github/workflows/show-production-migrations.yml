@@ -5,16 +5,29 @@ jobs:
   verify:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Omniport authorize probe
+      - name: Authorize JSON + wallet identity RO
         run: |
           set -euo pipefail
+          curl -sS --max-time 15 'https://equip.iitr.ac.in/api/auth/omniport/authorize/' -o /tmp/auth.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/auth.json'))
+          url=d.get('auth_url') or ''
+          print('authorize_http_json_keys=', sorted(d.keys()))
+          print('fixture_mode=', d.get('fixture_mode'))
+          print('auth_url_present=', bool(url))
+          print('auth_url_host=', url.split('/')[2] if '://' in url else None)
+          print('has_client_id_param=', 'client_id=' in url)
+          print('redirect_uri_in_url=', 'equip.iitr.ac.in' in url and 'callback' in url)
+          # redact
+          safe=url
+          for k in ('client_id','state'):
+              import re
+              safe=re.sub(rf'({k}=)[^&]+', rf'\1REDACTED', safe)
+          print('auth_url_redacted=', safe[:180])
+          print('authorize=', 'PASS' if url and not d.get('fixture_mode') and 'error' not in d else 'FAIL')
+          PY
+          # Wallet identity: durable profile table usable; no writes
           CID=$(docker compose -f /home/ubuntu/iic-booking-backend/docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -w /app "$CID" python manage.py shell -c 'from django.urls import reverse; print(reverse("api:omniport-auth-url")); print(reverse("api:omniport-callback"))'
-          for p in /api/auth/omniport/authorize/ /api/auth/omniport/callback/; do
-            code=$(curl -sS -o /tmp/o -w '%{http_code}' --max-time 15 -D /tmp/h "https://equip.iitr.ac.in$p" || true)
-            loc=$(grep -i '^location:' /tmp/h | head -n1 | tr -d '\r' || true)
-            echo "path=$p code=$code loc_present=$([ -n "$loc" ] && echo YES || echo NO)"
-            echo "$loc" | sed -E 's/(client_id=)[^&]+/\1REDACTED/; s/(state=)[^&]+/\1REDACTED/; s/(code=)[^&]+/\1REDACTED/' || true
-          done
-          echo "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=$(docker exec "$CID" printenv CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM || true)"
+          docker exec -w /app "$CID" python manage.py shell -c 'from users.models import ChannelIIdentityProfile; print("profile_table_queryable=", True); print("rows=", ChannelIIdentityProfile.objects.count())'
           echo "DONE"
