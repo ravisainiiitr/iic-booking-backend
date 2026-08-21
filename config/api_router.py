@@ -12,6 +12,7 @@ from rest_framework.routers import SimpleRouter
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
     omniport_callback,
+    channel_i_staging_fixture_login,
     login,
     register,
     logout,
@@ -715,6 +716,7 @@ urlpatterns = router.urls + [
     
     path("auth/omniport/authorize/", omniport_auth_url, name="omniport-auth-url"),
     path("auth/omniport/callback/", omniport_callback, name="omniport-callback"),
+    path("auth/channel-i/staging-fixture/", channel_i_staging_fixture_login, name="channel-i-staging-fixture"),
     path("profiles/me/", profile_me, name="profile-me"),
     path("profiles/me/avatar/", profile_me_avatar, name="profile-me-avatar"),
     path("profiles/me/external-billing/", external_billing_profile_me, name="external-billing-profile-me"),

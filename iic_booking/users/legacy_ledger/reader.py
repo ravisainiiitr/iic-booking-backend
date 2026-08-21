@@ -16,6 +16,26 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 WRITE_GRANT_TOKENS = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP", "TRUNCATE", "CREATE")
+READONLY_SQL_PREFIXES = ("SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "WITH")
+
+
+def assert_readonly_sql(sql: str) -> None:
+    """Refuse mutating SQL at the reader boundary (defense in depth)."""
+    text = (sql or "").strip().lstrip("(").strip()
+    if not text:
+        raise ValueError("Empty SQL refused by OldMySQLReader")
+    # Multi-statement: reject if a write verb appears after a semicolon.
+    compact = " ".join(text.split()).upper()
+    parts = [p.strip() for p in compact.split(";") if p.strip()]
+    for part in parts:
+        first = part.split(None, 1)[0].upper()
+        if first not in READONLY_SQL_PREFIXES:
+            raise ValueError(
+                f"OldMySQLReader refused non-read SQL starting with {first!r}. "
+                "REAL legacy integration is READ-ONLY "
+                "(no INSERT/UPDATE/DELETE/ALTER/DROP/TRUNCATE)."
+            )
+
 
 REQUIRED_TABLES = ("users", "user_wallet", "wallet_transactions")
 REQUIRED_COLUMNS = {
@@ -126,11 +146,13 @@ class OldMySQLReader:
         return self._conn.cursor()
 
     def fetchone(self, sql: str, params: tuple = ()):
+        assert_readonly_sql(sql)
         with self._cursor() as cur:
             cur.execute(sql, params)
             return cur.fetchone()
 
     def fetchall(self, sql: str, params: tuple = ()):
+        assert_readonly_sql(sql)
         with self._cursor() as cur:
             cur.execute(sql, params)
             return list(cur.fetchall())

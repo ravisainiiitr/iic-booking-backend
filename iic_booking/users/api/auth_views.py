@@ -420,6 +420,44 @@ def omniport_auth_url(request):
         - auth_url: The URL to redirect user to for Omniport login
         - state: Random state token for CSRF protection
     """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from iic_booking.users.identity.channel_i_fixture import (
+        channel_i_fixture_mode_enabled,
+        require_real_channel_i_credentials_when_fixture_off,
+    )
+
+    try:
+        if channel_i_fixture_mode_enabled():
+            return Response(
+                {
+                    "auth_url": None,
+                    "state": None,
+                    "fixture_mode": True,
+                    "message": (
+                        "CHANNEL_I_STAGING_FIXTURE_MODE is enabled. "
+                        "Use POST /api/auth/channel-i/staging-fixture/ with {case}."
+                    ),
+                    "fixture_endpoint": "/api/auth/channel-i/staging-fixture/",
+                    "environment": getattr(settings, "DEPLOYMENT_ENVIRONMENT", ""),
+                }
+            )
+        require_real_channel_i_credentials_when_fixture_off()
+    except ImproperlyConfigured as exc:
+        return Response(
+            {"error": str(exc), "error_code": "channel_i_config_required"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    if not (settings.OMNIPORT_CLIENT_ID or "").strip():
+        return Response(
+            {
+                "error": "OMNIPORT_CLIENT_ID is not configured for this environment.",
+                "error_code": "channel_i_credentials_missing",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
     state = secrets.token_urlsafe(32)
     redirect_uri = omniport_callback_url(request)
     
@@ -436,6 +474,75 @@ def omniport_auth_url(request):
         {
             "auth_url": settings.OMNIPORT_AUTH_URL + "?" + urlencode(params),
             "state": state,
+            "fixture_mode": False,
+        }
+    )
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def channel_i_staging_fixture_login(request):
+    """STAGING-ONLY: apply a Channel-I fixture payload through the real identity sync.
+
+    Never available unless CHANNEL_I_STAGING_FIXTURE_MODE + DEPLOYMENT_ENVIRONMENT=STAGING.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+    from rest_framework.authtoken.models import Token
+
+    from iic_booking.users.identity.channel_i_fixture import (
+        FIXTURE_CASES,
+        channel_i_fixture_mode_enabled,
+        fixture_payload,
+    )
+    from iic_booking.users.identity.sync import sync_channel_i_identity
+
+    try:
+        if not channel_i_fixture_mode_enabled():
+            return Response(
+                {"error": "Fixture mode disabled", "error_code": "fixture_mode_off"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    except ImproperlyConfigured as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+    case = (request.data.get("case") or request.query_params.get("case") or "").strip()
+    if not case:
+        return Response(
+            {"error": "case is required", "allowed": list(FIXTURE_CASES)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        user_info = fixture_payload(case)
+    except KeyError as exc:
+        return Response({"error": str(exc), "allowed": list(FIXTURE_CASES)}, status=400)
+
+    # Minimal user upsert mirroring callback identity keys (no OAuth tokens).
+    username = str(user_info.get("username") or "")
+    email = (
+        (user_info.get("contactInformation") or {}).get("instituteWebmailAddress")
+        or (user_info.get("contactInformation") or {}).get("emailAddress")
+        or f"{username}@staging.fixture.local"
+    )
+    user, _ = User.objects.get_or_create(
+        email=email.lower(),
+        defaults={
+            "username": username or email.split("@")[0],
+            "name": (user_info.get("person") or {}).get("fullName") or username,
+        },
+    )
+    sync_channel_i_identity(user, user_info)
+    token, _ = Token.objects.get_or_create(user=user)
+    return Response(
+        {
+            "mode": "STAGING_FIXTURE",
+            "case": case.upper(),
+            "token": token.key,
+            "user_id": user.pk,
+            "email": user.email,
+            "username": user.username,
+            "channel_i_user_id": str(user_info.get("userId")),
+            "evidence": "FIXTURE",
         }
     )
 
@@ -948,17 +1055,21 @@ def omniport_callback(request):
     if _should_send_welcome_email(user) and is_first_login:
         try:
             content = build_welcome_email(**welcome_email_kwargs_from_user(user))
+            # fail_silently=True: SMTP timeouts must not delay the OAuth redirect.
             send_mail(
                 subject=content.subject,
                 message=content.text_body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
                 html_message=content.html_body,
-                fail_silently=False,
+                fail_silently=True,
             )
         except Exception:
-            logger.exception("Failed to send first-login welcome email to %s", user.email)
-    
+            logger.exception(
+                "Failed to send first-login welcome email for user_id=%s",
+                getattr(user, "id", None),
+            )
+
     # Prepare response data
     response_data = {
         "token": token.key,
@@ -988,8 +1099,12 @@ def omniport_callback(request):
         # Encode parameters for URL
         from urllib.parse import urlencode
         redirect_url = f"{frontend_url}/auth/callback?{urlencode(redirect_params)}"
-        
-        logger.info(f"Redirecting user {user.email} to frontend: {redirect_url}")
+
+        # Never log token / email / query string — redirect params are credentials.
+        logger.info(
+            "Redirecting authenticated user_id=%s to frontend /auth/callback (params redacted)",
+            getattr(user, "id", None),
+        )
         return HttpResponseRedirect(redirect_url)
     
     # If POST request (from React frontend), return JSON response

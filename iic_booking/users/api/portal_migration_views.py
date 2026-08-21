@@ -49,14 +49,22 @@ def _dashboard_payload() -> dict:
     elif exception_qs.exists() or recon["overall_status"] == "EXCEPTION" or LegacyWalletSyncDeadLetter.objects.exists():
         health = "DEGRADED"
     mysql_configured = bool((getattr(settings, "OLD_MYSQL_HOST", "") or "").strip())
+    fixture_mysql = bool(getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", False))
     return {
         "health": health,
+        "environment": getattr(settings, "DEPLOYMENT_ENVIRONMENT", "UNKNOWN"),
+        "environment_label": getattr(settings, "ENVIRONMENT_LABEL", ""),
+        "staging_banner": "STAGING — NON-PRODUCTION",
+        "channel_i_fixture_mode": bool(getattr(settings, "CHANNEL_I_STAGING_FIXTURE_MODE", False)),
+        "legacy_mysql_mode": "STAGING_FIXTURE" if fixture_mysql else ("CONFIGURED" if mysql_configured else "NOT_CONFIGURED"),
         "phase": state.phase,
         "end_user_booking_enabled": state.end_user_booking_enabled,
         "incremental_sync_enabled": state.incremental_sync_enabled,
         "legacy_ledger_frozen": state.legacy_ledger_frozen,
-        "old_mysql_configured": mysql_configured,
-        "old_mysql_connection_status": "CONFIGURED" if mysql_configured else "NOT_CONFIGURED",
+        "old_mysql_configured": mysql_configured or fixture_mysql,
+        "old_mysql_connection_status": (
+            "STAGING_FIXTURE" if fixture_mysql else ("CONFIGURED" if mysql_configured else "NOT_CONFIGURED")
+        ),
         "last_successful_sync": state.last_sync_at.isoformat() if state.last_sync_at else None,
         "last_sync_error": state.last_sync_error,
         "last_sync_batch": state.last_sync_batch,
