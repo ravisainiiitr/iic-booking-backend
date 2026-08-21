@@ -2,85 +2,30 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  diag:
+  status:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Diagnose container→host MySQL auth path
-        env:
-          MYSQL_RO_PASSWORD: ${{ secrets.TEMP_EC2_MYSQL_RO_PASSWORD }}
+      - name: Post-apply safety status (RO)
         run: |
           set -euo pipefail
-          unset HISTFILE || true
           DEPLOY=/home/ubuntu/iic-booking-backend
           cd "$DEPLOY"
-          CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
-          echo "django=$CID HEAD=$(git rev-parse HEAD)"
-
-          echo "=== container env (non-secret) ==="
-          docker exec "$CID" printenv | grep -E '^OLD_MYSQL_(HOST|PORT|DATABASE|USER)=' || true
-          docker exec "$CID" printenv | grep -E '^OLD_MYSQL_PASSWORD=' >/dev/null && echo OLD_MYSQL_PASSWORD=PRESENT || echo OLD_MYSQL_PASSWORD=ABSENT
-
-          echo "=== resolve + TCP from container ==="
-          docker exec -i "$CID" python - <<'PY'
-          import os, socket, socket as S
-          host=os.environ.get("OLD_MYSQL_HOST","")
-          port=int(os.environ.get("OLD_MYSQL_PORT") or 3306)
-          print("host", host, "port", port)
-          try:
-              infos=socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-              print("resolved", infos[0][4] if infos else None)
-          except Exception as e:
-              print("resolve_fail", type(e).__name__, e)
-          s=socket.socket(); s.settimeout(5)
-          try:
-              s.connect((host, port)); print("TCP_OK")
-          except Exception as e:
-              print("TCP_FAIL", type(e).__name__, e)
-          finally:
-              s.close()
-          PY
-
-          echo "=== pymysql error detail (no password print) ==="
-          docker exec -i -e MYSQL_RO_PASSWORD="$MYSQL_RO_PASSWORD" "$CID" python - <<'PY'
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "tag=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          grep -n 'host.docker.internal' docker-compose.production.yml | head -n 5
+          grep -E '^OLD_MYSQL_(HOST|PORT|DATABASE|USER)=' .envs/.production/.django | sed 's/\r$//'
+          grep -E '^OLD_MYSQL_PASSWORD=' .envs/.production/.django >/dev/null && echo OLD_MYSQL_PASSWORD=PRESENT || echo OLD_MYSQL_PASSWORD=ABSENT
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
+          echo "health_http=$code"
+          docker exec -w /app "$CID" python - <<'PY'
           import os
-          import pymysql
-          host=os.environ.get("OLD_MYSQL_HOST")
-          port=int(os.environ.get("OLD_MYSQL_PORT") or 3306)
-          user=os.environ.get("OLD_MYSQL_USER")
-          password=os.environ.get("OLD_MYSQL_PASSWORD") or os.environ.get("MYSQL_RO_PASSWORD")
-          database=os.environ.get("OLD_MYSQL_DATABASE")
-          print("trying", user, "@", host, ":", port, "db=", database, "pwd=", "PRESENT" if password else "ABSENT")
-          try:
-              conn=pymysql.connect(host=host, port=port, user=user, password=password, database=database, connect_timeout=5)
-              with conn.cursor() as cur:
-                  cur.execute("SELECT CURRENT_USER(), @@hostname, COUNT(*) FROM users")
-                  print("CONNECT_OK", cur.fetchone())
-              conn.close()
-          except Exception as e:
-              print("CONNECT_FAIL", type(e).__name__, str(e)[:300])
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE","config.settings.production")
+          import django; django.setup()
+          from django.conf import settings
+          for k in ("DEPLOYMENT_ENVIRONMENT","REAL_INTEGRATION_ENABLED","USE_LEGACY_FIXTURES","LOCAL_STAGING_ACCEPTED"):
+              print(f"{k}={getattr(settings,k,None)!r}")
+          print("OLD_MYSQL_HOST=", getattr(settings,"OLD_MYSQL_HOST",None))
+          print("OLD_MYSQL_PORT=", getattr(settings,"OLD_MYSQL_PORT",None))
           PY
-
-          echo "=== host-side mysql.user for iic_booking_ro ==="
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -N -e "SELECT CURRENT_USER();" 2>/tmp/h.txt && echo HOST_TCP_AUTH_OK || (echo HOST_TCP_AUTH_FAIL; head -n3 /tmp/h.txt)
-          # list user hosts via RO if permitted; else skip
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "SHOW GRANTS;" 2>/dev/null | sed 's/^/GRANT /' || true
-
-          echo "=== from container to 172.17.0.1 and gateway ==="
-          docker exec -i "$CID" python - <<'PY'
-          import socket
-          for host in ("172.17.0.1", "host.docker.internal"):
-            for port in (3306,):
-              s=socket.socket(); s.settimeout(3)
-              try:
-                s.connect((host,port)); print(host, port, "TCP_OK")
-              except Exception as e:
-                print(host, port, "TCP_FAIL", type(e).__name__)
-              finally:
-                s.close()
-          PY
-
-          echo "=== container IP ==="
-          docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CID"
-          echo "=== mysqld bind / users via host client if possible ==="
-          # Use same approved password from env for host listing of mysql.user — RO user may lack privilege
-          mysql -h127.0.0.1 -P3306 -uiic_booking_ro --protocol=TCP -e "SELECT user,host FROM mysql.user WHERE user='iic_booking_ro';" 2>&1 | head -n 20 || true
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
