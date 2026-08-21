@@ -5,27 +5,25 @@ jobs:
   verify:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Post-migration RO verification
+      - name: Channel-I + claim RO probe
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          echo "django=$CID"
-          echo "HEAD=$(git rev-parse HEAD)"
-          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
-          echo "=== showmigrations users 0096-0100 ==="
-          docker exec -w /app "$CID" python manage.py showmigrations users 2>&1 | grep -E '0096|0097|0098|0099|0100' || true
-          echo "=== remaining pending ==="
-          PENDING=$(docker exec -w /app "$CID" python manage.py showmigrations 2>&1 | grep '\[ \]' || true)
-          if [ -z "$PENDING" ]; then echo "NONE_PENDING"; else echo "$PENDING"; fi
-          echo "=== equipment 0188 ==="
-          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>&1 | grep '0188' || echo "equipment_0188=ABSENT"
-          echo "=== schema + mysql ==="
-          echo 'ZnJvbSBkamFuZ28uZGIgaW1wb3J0IGNvbm5lY3Rpb24KZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwppbXBvcnQgb3MKdGFibGVzID0gY29ubmVjdGlvbi5pbnRyb3NwZWN0aW9uLnRhYmxlX25hbWVzKCkKcHJpbnQoInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlPSIsICJ1c2Vyc19jaGFubmVsaWlkZW50aXR5cHJvZmlsZSIgaW4gdGFibGVzKQpNb2RlbCA9IGFwcHMuZ2V0X21vZGVsKCJ1c2VycyIsICJDaGFubmVsSUlkZW50aXR5UHJvZmlsZSIpCnByaW50KCJtb2RlbF9vaz0iLCBNb2RlbCBpcyBub3QgTm9uZSkKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9IiwgTW9kZWwub2JqZWN0cy5jb3VudCgpKQp3aXRoIGNvbm5lY3Rpb24uY3Vyc29yKCkgYXMgYzoKICAgIGMuZXhlY3V0ZSgiU0VMRUNUIGNvbHVtbl9uYW1lIEZST00gaW5mb3JtYXRpb25fc2NoZW1hLmNvbHVtbnMgV0hFUkUgdGFibGVfbmFtZT0lcyBPUkRFUiBCWSBvcmRpbmFsX3Bvc2l0aW9uIiwgWyJ1c2Vyc19jaGFubmVsaWlkZW50aXR5cHJvZmlsZSJdKQogICAgcHJpbnQoInByb2ZpbGVfY29sdW1ucz0iLCBbclswXSBmb3IgciBpbiBjLmZldGNoYWxsKCldKQogICAgYy5leGVjdXRlKCJTRUxFQ1QgY29sdW1uX25hbWUgRlJPTSBpbmZvcm1hdGlvbl9zY2hlbWEuY29sdW1ucyBXSEVSRSB0YWJsZV9uYW1lPSVzIE9SREVSIEJZIG9yZGluYWxfcG9zaXRpb24iLCBbInVzZXJzX3BvcnRhbG1pZ3JhdGlvbnN0YXRlIl0pCiAgICBwcmludCgicG9ydGFsbWlncmF0aW9uc3RhdGVfY29sdW1ucz0iLCBbclswXSBmb3IgciBpbiBjLmZldGNoYWxsKCldKQpjbGFpbSA9IGdldGF0dHIoc2V0dGluZ3MsICJDSEFOTkVMX0lfRU1QTE9ZRUVfQ0xBSU0iLCBOb25lKSBvciBvcy5lbnZpcm9uLmdldCgiQ0hBTk5FTF9JX0VNUExPWUVFX0NMQUlNIikKcHJpbnQoImF1dGhvcml0YXRpdmVfY2xhaW09IiwgY2xhaW0pCnByaW50KCJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQ9IiwgZ2V0YXR0cihzZXR0aW5ncywgIlJFQUxfSU5URUdSQVRJT05fRU5BQkxFRCIsIG9zLmVudmlyb24uZ2V0KCJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQiKSkpCnByaW50KCJVU0VfRklYVFVSRV9BVVRIPSIsIGdldGF0dHIoc2V0dGluZ3MsICJVU0VfRklYVFVSRV9BVVRIIiwgb3MuZW52aXJvbi5nZXQoIlVTRV9GSVhUVVJFX0FVVEgiKSkpCnByaW50KCJERUJVRz0iLCBzZXR0aW5ncy5ERUJVRykKYiA9IGdldGF0dHIoc2V0dGluZ3MsICJBV1NfU1RPUkFHRV9CVUNLRVRfTkFNRSIsIE5vbmUpIG9yIG9zLmVudmlyb24uZ2V0KCJBV1NfU1RPUkFHRV9CVUNLRVRfTkFNRSIpCnByaW50KCJzM19idWNrZXRfY29uZmlndXJlZD0iLCBib29sKGIpKQpob3N0ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9IT1NUIikKcG9ydCA9IGludChvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BPUlQiLCAiMzMwNiIpKQp1c2VyID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9VU0VSIikKZGIgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0RBVEFCQVNFIikgb3Igb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9EQiIpCnB3ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9QQVNTV09SRCIpCnByaW50KCJteXNxbF9ob3N0PSIsIGhvc3QpCnByaW50KCJteXNxbF9kYj0iLCBkYikKcHJpbnQoIm15c3FsX3VzZXI9IiwgdXNlcikKdHJ5OgogICAgaW1wb3J0IE15U1FMZGIgYXMgZGJhcGkKZXhjZXB0IEV4Y2VwdGlvbjoKICAgIGltcG9ydCBweW15c3FsIGFzIGRiYXBpCmNvbm4gPSBkYmFwaS5jb25uZWN0KGhvc3Q9aG9zdCwgcG9ydD1wb3J0LCB1c2VyPXVzZXIsIHBhc3N3ZD1wdywgZGI9ZGIsIGNvbm5lY3RfdGltZW91dD04KQpjdXIgPSBjb25uLmN1cnNvcigpCmZvciB0IGluIFsidXNlcnMiLCAidXNlcl93YWxsZXQiLCAid2FsbGV0X3RyYW5zYWN0aW9ucyIsICJib29raW5nIl06CiAgICBjdXIuZXhlY3V0ZSgiU0VMRUNUIENPVU5UKCopIEZST00gYCVzYCIgJSB0KQogICAgcHJpbnQoIiVzX2NvdW50PSIgJSB0LCBjdXIuZmV0Y2hvbmUoKVswXSkKICAgIHByaW50KCIlc19yZWFkPSIgJSB0LCAiUEFTUyIpCmN1ci5leGVjdXRlKCJTSE9XIEdSQU5UUyIpCmdyYW50cyA9IFtyb3dbMF0gZm9yIHJvdyBpbiBjdXIuZmV0Y2hhbGwoKV0Kc2FmZSA9IFsoZy5yZXBsYWNlKHB3LCAiKioqIikgaWYgcHcgYW5kIHB3IGluIGcgZWxzZSBnKSBmb3IgZyBpbiBncmFudHNdCnByaW50KCJncmFudHNfc3VtbWFyeT0iLCBzYWZlKQpoYXNfd3JpdGUgPSBGYWxzZQpmb3IgZyBpbiBncmFudHM6CiAgICBndSA9IGcudXBwZXIoKQogICAgaWYgKCJPTiBgQURNSU5gIiBpbiBndSkgb3IgKCJPTiBBRE1JTiIgaW4gZ3UpIG9yICgiT04gKi4qIiBpbiBndSk6CiAgICAgICAgaWYgYW55KHggaW4gZ3UgZm9yIHggaW4gKCJJTlNFUlQiLCAiVVBEQVRFIiwgIkRFTEVURSIsICJBTEwgUFJJVklMRUdFUyIpKToKICAgICAgICAgICAgaGFzX3dyaXRlID0gVHJ1ZQpwcmludCgiYWNjb3VudF9hcHBlYXJzX3dyaXRhYmxlPSIsIGhhc193cml0ZSkKY3VyLmV4ZWN1dGUoIlNFTEVDVCBDT1VOVCgqKSBGUk9NIHVzZXJzIFdIRVJFIGVtcF9pZCBJUyBOT1QgTlVMTCBBTkQgZW1wX2lkPD4lcyIsIFsiIl0pCnByaW50KCJ1c2Vyc193aXRoX2VtcF9pZD0iLCBjdXIuZmV0Y2hvbmUoKVswXSkKY29ubi5jbG9zZSgpCnByaW50KCJteXNxbF9ybz0iLCAiUEFTUyIp' | base64 -d > /tmp/post_mig_verify.py
-          docker cp /tmp/post_mig_verify.py "$CID":/tmp/post_mig_verify.py
-          docker exec -i -w /app "$CID" python manage.py shell < /tmp/post_mig_verify.py
-          echo "=== health ==="
-          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
-          echo "readiness=$code"
-          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
-          echo "POST_MIGRATE_VERIFY_DONE=YES"
+          echo 'ZnJvbSBkamFuZ28uY29uZiBpbXBvcnQgc2V0dGluZ3MKaW1wb3J0IG9zCmtleXMgPSBbCiAiQ0hBTk5FTF9JX0VNUExPWUVFX0NMQUlNIiwKICJDSEFOTkVMX0lfQVVUSE9SSVRBVElWRV9FTVBMT1lFRV9JRF9DTEFJTSIsCiAiT01OSVBPUlRfUkVESVJFQ1RfVVJJIiwKICJVU0VfRklYVFVSRV9BVVRIIiwKICJGSVhUVVJFX0FVVEgiLAogIlJFQUxfSU5URUdSQVRJT05fRU5BQkxFRCIsCl0KZm9yIGsgaW4ga2V5czoKICAgIHYgPSBnZXRhdHRyKHNldHRpbmdzLCBrLCBOb25lKQogICAgaWYgdiBpcyBOb25lOgogICAgICAgIHYgPSBvcy5lbnZpcm9uLmdldChrKQogICAgaWYgayBpbiAoIk9NTklQT1JUX0NMSUVOVF9JRCIsICJPTU5JUE9SVF9DTElFTlRfU0VDUkVUIik6CiAgICAgICAgcHJpbnQoaywgIj0iLCAiUFJFU0VOVCIgaWYgdiBlbHNlICJBQlNFTlQiKQogICAgZWxzZToKICAgICAgICBwcmludChrLCAiPSIsIHYpCiMgcmVkaXJlY3QgcHJlc2VuY2UKcnUgPSBnZXRhdHRyKHNldHRpbmdzLCAiT01OSVBPUlRfUkVESVJFQ1RfVVJJIiwgTm9uZSkgb3Igb3MuZW52aXJvbi5nZXQoIk9NTklQT1JUX1JFRElSRUNUX1VSSSIpCnByaW50KCJyZWRpcmVjdF91cmlfc2V0PSIsIGJvb2wocnUpKQpwcmludCgicmVkaXJlY3RfdXJpX2hvc3Q9IiwgKHJ1LnNwbGl0KCIvIilbMl0gaWYgcnUgYW5kICI6Ly8iIGluIHJ1IGVsc2UgTm9uZSkpCmNpZCA9IGdldGF0dHIoc2V0dGluZ3MsICJPTU5JUE9SVF9DTElFTlRfSUQiLCBOb25lKSBvciBvcy5lbnZpcm9uLmdldCgiT01OSVBPUlRfQ0xJRU5UX0lEIikKcHJpbnQoIm9tbmlwb3J0X2NsaWVudF9pZD0iLCAiUFJFU0VOVCIgaWYgY2lkIGVsc2UgIkFCU0VOVCIpCnNlYyA9IGdldGF0dHIoc2V0dGluZ3MsICJPTU5JUE9SVF9DTElFTlRfU0VDUkVUIiwgTm9uZSkgb3Igb3MuZW52aXJvbi5nZXQoIk9NTklQT1JUX0NMSUVOVF9TRUNSRVQiKQpwcmludCgib21uaXBvcnRfY2xpZW50X3NlY3JldD0iLCAiUFJFU0VOVCIgaWYgc2VjIGVsc2UgIkFCU0VOVCIp' | base64 -d > /tmp/ci_probe.py
+          docker cp /tmp/ci_probe.py "$CID":/tmp/ci_probe.py
+          docker exec -i -w /app "$CID" python manage.py shell < /tmp/ci_probe.py
+          echo "=== authorize endpoint ==="
+          # expect redirect to Channel-I / oauth
+          code=$(curl -sS -o /tmp/auth_out -w '%{http_code}' --max-time 15 'https://equip.iitr.ac.in/api/auth/omniport/login/' || true)
+          loc=$(grep -i '^location:' /tmp/auth_out | head -n1 | tr -d '\r' || true)
+          echo "authorize_http=$code"
+          echo "authorize_location_present=$([ -n "$loc" ] && echo YES || echo NO)"
+          # redact query secrets if any
+          echo "$loc" | sed -E 's/(client_id=)[^&]+/\1REDACTED/; s/(state=)[^&]+/\1REDACTED/' || true
+          code2=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -L --max-redirs 0 'https://equip.iitr.ac.in/api/auth/omniport/login/' || true)
+          echo "authorize_no_follow=$code2"
+          # callback URL existence (should not 500 without code)
+          cb=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'https://equip.iitr.ac.in/api/auth/omniport/callback/' || true)
+          echo "callback_without_code=$cb"
+          echo "CHANNEL_I_PROBE_DONE=YES"
