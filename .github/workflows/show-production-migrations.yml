@@ -5,235 +5,68 @@ jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Phase 1 — identify :3306 listener
+      - name: RO MySQL identity via host socket / 127.0.0.1 (no env writes)
         run: |
           set -euo pipefail
-          echo "=== ss -lntp :3306 ==="
-          ss -lntp 2>/dev/null | awk 'NR==1 || /:3306/' || true
-          echo "=== docker ps (mysql/mariadb/db names) ==="
-          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}' | head -n 50
-          echo "=== containers publishing 3306 ==="
-          docker ps --format '{{.Names}} {{.Ports}}' | grep 3306 || echo "NO_DOCKER_PUBLISH_3306"
-          echo "=== system mysql/mariadb unit (if any) ==="
-          systemctl is-active mysql 2>/dev/null || echo "mysql_unit=inactive_or_absent"
-          systemctl is-active mariadb 2>/dev/null || echo "mariadb_unit=inactive_or_absent"
-          systemctl status mysql --no-pager -l 2>/dev/null | head -n 20 || true
-          systemctl status mariadb --no-pager -l 2>/dev/null | head -n 20 || true
-
-      - name: Phase 2 — compose/env DB connection keys (no secrets)
-        run: |
-          set -euo pipefail
-          DEPLOY=""
-          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
-            if [ -f "$d/docker-compose.production.yml" ]; then DEPLOY="$d"; break; fi
-          done
-          echo "DEPLOY_PATH=$DEPLOY"
-          cd "$DEPLOY"
-          echo "=== compose services mentioning mysql/mariadb/3306 ==="
-          grep -nE 'mysql|mariadb|3306|MYSQL_|POSTGRES|DATABASE' docker-compose.production.yml | head -n 80 || true
-          echo "=== production env DB-related keys (presence / non-secret values only) ==="
-          ENV=".envs/.production/.django"
-          if [ -f "$ENV" ]; then
-            grep -E '^(OLD_MYSQL_|LEGACY_MYSQL_|MYSQL_|POSTGRES_|DATABASE_|DB_|REDIS_|USE_DOCKER)' "$ENV" | sed -E 's/(PASSWORD|SECRET|KEY)=.*/\1=REDACTED/' || true
+          echo "=== listener reminder ==="
+          ss -lntp | awk 'NR==1 || /:3306/'
+          echo "=== try sudo mysql unix_socket (Ubuntu root) ==="
+          if sudo mysql -N -e "SELECT 'SOCKET_OK'; SELECT VERSION(); SELECT @@hostname; SELECT @@port; SELECT @@server_uuid;" 2>/tmp/mysql_err.txt; then
+            echo "AUTH=unix_socket_root_ok"
           else
-            echo "production_env=ABSENT"
-          fi
-          echo "=== classify hint ==="
-          if grep -qE 'image:.*mysql|image:.*mariadb|3306:3306' docker-compose.production.yml; then
-            echo "compose_suggests=APP_OR_COMPOSE_MYSQL"
-          else
-            echo "compose_suggests=NO_MYSQL_SERVICE_IN_COMPOSE"
+            echo "AUTH=unix_socket_root_fail"
+            sed -E 's/Password[^[:space:]]*/Password***/Ig' /tmp/mysql_err.txt | head -n 20 || true
           fi
 
-      - name: Phase 3–5 — RO identity of 127.0.0.1:3306 if reachable without inventing creds
-        run: |
-          set -euo pipefail
-          # Prefer connecting via an already-running MySQL container CLI if present.
-          MCID="$(docker ps --format '{{.Names}}' | grep -iE 'mysql|mariadb' | head -n 1 || true)"
-          echo "mysql_container=${MCID:-NONE}"
+          run_sql() {
+            sudo mysql -N -e "$1" 2>/dev/null
+          }
 
-          # Discover non-secret identity from container labels/env key names only
-          if [ -n "${MCID:-}" ]; then
-            echo "=== container inspect (selected fields) ==="
-            docker inspect "$MCID" --format 'Image={{.Config.Image}} Name={{.Name}} NetworkMode={{.HostConfig.NetworkMode}}'
-            docker inspect "$MCID" --format '{{range $k,$v := .Config.Env}}{{println $k}}{{end}}' 2>/dev/null | true
-            docker inspect "$MCID" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -E 's/(PASSWORD|SECRET|KEY|ROOT)=.*/\1=REDACTED/' | grep -iE 'MYSQL|MARIA|DATABASE' || true
-          fi
-
-          # Build a python probe that:
-          # 1) tries socket open to 127.0.0.1:3306
-          # 2) tries Django OLD_MYSQL_* if present in django container env
-          # 3) tries mysql client inside mysql container as root via socket if available (no password print)
-          cat > /tmp/ec2_mysql_identity.py <<'PY'
-          import os, socket, json, subprocess, sys
-
-          def tcp_open(host, port, timeout=3):
-              s = socket.socket()
-              s.settimeout(timeout)
-              try:
-                  s.connect((host, port))
-                  return True
-              except Exception as e:
-                  return False
-              finally:
-                  try: s.close()
-                  except Exception: pass
-
-          print("tcp_127_0_0_1_3306=", tcp_open("127.0.0.1", 3306))
-          print("tcp_127_0_0_1_13306=", tcp_open("127.0.0.1", 13306))
-
-          # Try PyMySQL with env from process if set (django container will run this)
-          try:
-              import pymysql
-          except Exception as e:
-              print("pymysql=", type(e).__name__)
-              pymysql = None
-
-          def try_connect(label, host, port, user, password, database=None):
-              if pymysql is None:
-                  print(label, "SKIP_NO_PYMYSQL")
-                  return None
-              if not user:
-                  print(label, "SKIP_NO_USER")
-                  return None
-              kw = dict(host=host, port=int(port), user=user, password=password or "",
-                        connect_timeout=5, read_timeout=10, charset="utf8mb4")
-              if database:
-                  kw["database"] = database
-              try:
-                  conn = pymysql.connect(**kw)
-              except Exception as e:
-                  print(label, "CONNECT_FAIL", type(e).__name__)
-                  return None
-              try:
-                  with conn.cursor() as cur:
-                      cur.execute("SELECT VERSION()")
-                      ver = cur.fetchone()[0]
-                      cur.execute("SELECT @@hostname, @@port, @@server_uuid")
-                      hostn, portv, uuid = cur.fetchone()
-                      print(label, "CONNECT_OK")
-                      print(label, "VERSION=", ver)
-                      print(label, "hostname=", hostn)
-                      print(label, "port=", portv)
-                      print(label, "server_uuid=", uuid)
-                      cur.execute("SHOW DATABASES")
-                      dbs = [r[0] for r in cur.fetchall()]
-                      print(label, "databases=", ",".join(sorted(dbs)))
-                      print(label, "admin_exists=", "admin" in dbs)
-                      if "admin" in dbs:
-                          # table existence + counts
-                          def count(sql):
-                              try:
-                                  cur.execute(sql)
-                                  return cur.fetchone()[0]
-                              except Exception as e:
-                                  print(label, "COUNT_FAIL", sql.split()[-1], type(e).__name__)
-                                  return None
-                          # prefer admin.schema
-                          for schema_prefix in ("admin.", ""):
-                              u = count(f"SELECT COUNT(*) FROM {schema_prefix}users")
-                              if u is not None:
-                                  w = count(f"SELECT COUNT(*) FROM {schema_prefix}user_wallet")
-                                  t = count(f"SELECT COUNT(*) FROM {schema_prefix}wallet_transactions")
-                                  # bookings table name variants used historically
-                                  b = None
-                                  for bt in ("bookings", "booking", "user_bookings"):
-                                      b = count(f"SELECT COUNT(*) FROM {schema_prefix}{bt}")
-                                      if b is not None:
-                                          print(label, "bookings_table=", bt)
-                                          break
-                                  print(label, "users_count=", u)
-                                  print(label, "user_wallet_count=", w)
-                                  print(label, "wallet_transactions_count=", t)
-                                  print(label, "bookings_count=", b)
-                                  # column smoke
-                                  try:
-                                      cur.execute(f"SHOW COLUMNS FROM {schema_prefix}users LIKE 'emp_id'")
-                                      print(label, "users_emp_id_column=", bool(cur.fetchone()))
-                                  except Exception as e:
-                                      print(label, "users_emp_id_column_error=", type(e).__name__)
-                                  break
-                      # grants for iic_booking_ro without guessing host: query mysql.user
-                      try:
-                          cur.execute("SELECT user, host FROM mysql.user WHERE user=%s", ("iic_booking_ro",))
-                          rows = cur.fetchall()
-                          print(label, "iic_booking_ro_user_rows=", len(rows))
-                          for u,h in rows:
-                              print(label, "iic_booking_ro_host_component=", h)
-                              try:
-                                  cur.execute(f"SHOW GRANTS FOR %s@%s", (u, h))
-                              except Exception:
-                                  cur.execute("SHOW GRANTS FOR CURRENT_USER()")
-                                  # fallback wrong; do proper:
-                              try:
-                                  cur.execute("SHOW GRANTS FOR %s@%s", (u, h))
-                                  grants = [r[0] for r in cur.fetchall()]
-                                  # redact nothing sensitive beyond grants text which is privilege info
-                                  for g in grants:
-                                      print(label, "GRANT=", g)
-                                  joined = " | ".join(grants).upper()
-                                  print(label, "has_select_admin=", ("SELECT" in joined and "ADMIN" in joined) or ("ON `ADMIN`" in joined) or ("ON ADMIN" in joined) or ("ON *.*" in joined and "SELECT" in joined))
-                                  writeish = any(x in joined for x in ["INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "GRANT OPTION"])
-                                  # SELECT-only accounts sometimes still show USAGE
-                                  print(label, "grant_text_has_write_keywords=", writeish and "GRANT OPTION" not in joined or writeish)
-                                  # refine: if only SELECT appears as DML
-                                  dml = [x for x in ["INSERT","UPDATE","DELETE"] if x in joined]
-                                  print(label, "dml_keywords=", ",".join(dml) if dml else "NONE")
-                              except Exception as e:
-                                  print(label, "SHOW_GRANTS_FAIL", type(e).__name__)
-                      except Exception as e:
-                          print(label, "user_lookup_fail=", type(e).__name__)
-                  return True
-              finally:
-                  conn.close()
-
-          # Candidates from environment (django container)
-          host = os.environ.get("OLD_MYSQL_HOST") or os.environ.get("LEGACY_MYSQL_HOST") or ""
-          port = os.environ.get("OLD_MYSQL_PORT") or os.environ.get("LEGACY_MYSQL_PORT") or "3306"
-          user = os.environ.get("OLD_MYSQL_USER") or os.environ.get("LEGACY_MYSQL_USER") or ""
-          password = os.environ.get("OLD_MYSQL_PASSWORD") or os.environ.get("LEGACY_MYSQL_PASSWORD") or ""
-          database = os.environ.get("OLD_MYSQL_DATABASE") or os.environ.get("LEGACY_MYSQL_DATABASE") or ""
-          print("django_env_OLD_MYSQL_USER=", "PRESENT" if user else "ABSENT")
-          print("django_env_OLD_MYSQL_HOST=", "PRESENT" if host else "ABSENT")
-          if user and host:
-              try_connect("via_django_old_mysql", host, port, user, password, database or None)
-
-          # Also try localhost with same user if password present from django env — only if user set
-          # (not inventing account; only reusing env if present)
-          if user and password:
-              try_connect("via_127_0_0_1_with_django_user", "127.0.0.1", 3306, user, password, "admin")
-          print("DONE")
-          PY
-
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n1 || true)"
-          echo "django=$CID"
-          if [ -n "$CID" ]; then
-            docker cp /tmp/ec2_mysql_identity.py "$CID":/tmp/ec2_mysql_identity.py
-            docker exec -w /app -e PYTHONPATH=/app "$CID" /app/.venv/bin/python /tmp/ec2_mysql_identity.py || true
-          fi
-
-          # If mysql container exists, try RO identity using container env MYSQL_ROOT_PASSWORD without printing it
-          if [ -n "${MCID:-}" ]; then
-            echo "=== mysql client inside container (root via env, output redacted for secrets) ==="
-            docker exec "$MCID" sh -lc '
-              set -e
-              if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
-                mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT VERSION(); SELECT @@hostname; SELECT @@port; SELECT @@server_uuid; SHOW DATABASES;" 2>/dev/null | sed "s/$MYSQL_ROOT_PASSWORD/REDACTED/g"
-                mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT COUNT(*) FROM mysql.user WHERE user=\"iic_booking_ro\";" 2>/dev/null || true
-                mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT user,host FROM mysql.user WHERE user=\"iic_booking_ro\";" 2>/dev/null || true
-                if mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW DATABASES LIKE \"admin\";" 2>/dev/null | grep -q admin; then
-                  echo ADMIN_EXISTS=YES
-                  mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT COUNT(*) FROM admin.users; SELECT COUNT(*) FROM admin.user_wallet; SELECT COUNT(*) FROM admin.wallet_transactions;" 2>/dev/null || \
-                  mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" admin -e "SELECT COUNT(*) FROM users; SELECT COUNT(*) FROM user_wallet; SELECT COUNT(*) FROM wallet_transactions;" 2>/dev/null || true
-                  mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW TABLES FROM admin;" 2>/dev/null | head -n 40 || true
-                  for h in localhost '%' 127.0.0.1; do
-                    mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW GRANTS FOR \"iic_booking_ro\"@\"$h\";" 2>/dev/null || true
-                  done
-                else
-                  echo ADMIN_EXISTS=NO
+          if sudo mysql -N -e "SELECT 1" >/dev/null 2>&1; then
+            echo "=== SHOW DATABASES ==="
+            run_sql "SHOW DATABASES;"
+            echo "=== admin exists? ==="
+            if run_sql "SHOW DATABASES LIKE 'admin';" | grep -qx admin; then
+              echo "ADMIN_EXISTS=YES"
+              echo "=== admin tables (first 40) ==="
+              run_sql "SHOW TABLES FROM admin;" | head -n 40
+              echo "=== counts ==="
+              run_sql "SELECT COUNT(*) FROM admin.users;" | awk '{print "users_count="$1}'
+              run_sql "SELECT COUNT(*) FROM admin.user_wallet;" | awk '{print "user_wallet_count="$1}'
+              run_sql "SELECT COUNT(*) FROM admin.wallet_transactions;" | awk '{print "wallet_transactions_count="$1}'
+              # bookings table discovery
+              for t in bookings booking user_bookings; do
+                if run_sql "SHOW TABLES FROM admin LIKE '$t';" | grep -qx "$t"; then
+                  echo "bookings_table=$t"
+                  run_sql "SELECT COUNT(*) FROM admin.$t;" | awk -v t="$t" '{print "bookings_count="$1}'
+                  break
                 fi
-              else
-                echo MYSQL_ROOT_PASSWORD_ENV=ABSENT
-              fi
-            ' || echo "mysql_container_cli_failed"
+              done
+              echo "=== users.emp_id column? ==="
+              run_sql "SHOW COLUMNS FROM admin.users LIKE 'emp_id';" | head -n 5 || echo "emp_id_column=ABSENT_OR_ERROR"
+            else
+              echo "ADMIN_EXISTS=NO"
+            fi
+
+            echo "=== iic_booking_ro accounts ==="
+            run_sql "SELECT user,host FROM mysql.user WHERE user='iic_booking_ro';" | awk '{print "iic_booking_ro_row user="$1" host="$2}'
+            COUNT_RO=$(run_sql "SELECT COUNT(*) FROM mysql.user WHERE user='iic_booking_ro';")
+            echo "iic_booking_ro_exists_count=$COUNT_RO"
+            # SHOW GRANTS for each host component found
+            while read -r u h; do
+              [ -z "${u:-}" ] && continue
+              echo "=== GRANTS for $u@$h ==="
+              sudo mysql -e "SHOW GRANTS FOR '$u'@'$h';" 2>/dev/null | sed 's/^/GRANT_LINE /' || echo "SHOW_GRANTS_FAIL host=$h"
+            done < <(sudo mysql -N -e "SELECT user,host FROM mysql.user WHERE user='iic_booking_ro';" 2>/dev/null)
+
+            echo "=== compare notes ==="
+            echo "prior_snapshot_users=4333"
+            echo "prior_snapshot_user_wallet=1747"
+            echo "prior_snapshot_wallet_transactions=64244"
+            echo "prior_snapshot_bookings=57991"
+            echo "app_primary_db=RDS_POSTGRES_from_DATABASE_URL"
+            echo "mysql_role_hypothesis=host_mysqld_not_docker_not_compose"
+          else
+            echo "CANNOT_AUTH_NO_APPROVED_LOCAL_CREDENTIAL"
+            echo "DECISION_HINT=NOT_PROVEN_WITHOUT_CREDENTIAL"
           fi
