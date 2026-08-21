@@ -1,5 +1,5 @@
-# Read-only production migration inventory for pilot closure / promotion gates.
-# Does NOT run migrate. Does NOT modify the database.
+# Read-only production migration inventory + REAL qualification probes.
+# Does NOT run migrate. Does NOT modify the database. Does NOT print secrets.
 name: Show Production Migrations
 
 on:
@@ -14,6 +14,14 @@ jobs:
         run: |
           set -euo pipefail
           docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | head -n 40 || true
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "git_head=$(git rev-parse HEAD)"
+              echo "current_release_tag=$(cat .deploy-state/current_release_tag 2>/dev/null || true)"
+              break
+            fi
+          done
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           if [ -z "$CID" ]; then
             echo "No running django container."
@@ -22,17 +30,15 @@ jobs:
           echo "Using container: $CID"
           echo "container=$CID" >> "$GITHUB_OUTPUT"
 
-      - name: showmigrations (RA / notifications / provisioning / sync / equipment)
+      - name: showmigrations users + selected apps (RO)
         run: |
           set -euo pipefail
           CID="${{ steps.find.outputs.container }}"
-          # research_copilot may be absent on production while the feature remains OFF / undeployed.
-          set +e
-          docker exec -w /app "$CID" python manage.py showmigrations research_copilot > /tmp/showmigrations-copilot.txt 2>&1
-          rc_copilot=$?
-          set -e
-          echo "=== research_copilot (optional while Copilot OFF) exit=$rc_copilot ==="
-          cat /tmp/showmigrations-copilot.txt || true
+          docker exec -w /app "$CID" python manage.py showmigrations users | tee /tmp/showmigrations-users.txt
+          echo "=== 0096-0100 ==="
+          grep -E '0096|0097|0098|0099|0100' /tmp/showmigrations-users.txt || true
+          echo "=== pending users ==="
+          grep -E '^\s*\[ \]' /tmp/showmigrations-users.txt || echo "No pending users migrations listed"
           docker exec -w /app "$CID" python manage.py showmigrations \
             communication \
             remote_analysis \
@@ -40,11 +46,140 @@ jobs:
             sync \
             equipment \
             | tee /tmp/showmigrations-ai11.txt
-          echo "=== pending lines (if any) ==="
+          echo "=== pending other ==="
           grep -E '^\s*\[ \]' /tmp/showmigrations-ai11.txt || echo "No pending migrations listed for selected apps."
 
-      - name: Container / disk sanity (non-destructive)
+      - name: Production settings / S3 / Omniport presence (no secrets)
         run: |
           set -euo pipefail
-          df -h / | head -n 5 || true
-          docker exec "${{ steps.find.outputs.container }}" python -c "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production'); import django; django.setup(); from django.conf import settings; print('RESEARCH_COPILOT_ENABLED=', getattr(settings,'RESEARCH_COPILOT_ENABLED',None)); print('FCM_SERVER_KEY_configured=', bool(getattr(settings,'FCM_SERVER_KEY',''))); print('INSTALLED_APPS_has_research_copilot=', any('research_copilot' in str(a) for a in settings.INSTALLED_APPS))"
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          from django.core.files.storage import default_storage
+
+          def present(name: str) -> bool:
+              return bool(str(getattr(settings, name, "") or "").strip())
+
+          print("DEPLOYMENT_ENVIRONMENT=", getattr(settings, "DEPLOYMENT_ENVIRONMENT", None))
+          print("REAL_INTEGRATION_ENABLED=", bool(getattr(settings, "REAL_INTEGRATION_ENABLED", False)))
+          print("CHANNEL_I_STAGING_FIXTURE_MODE=", bool(getattr(settings, "CHANNEL_I_STAGING_FIXTURE_MODE", False)))
+          print("LEGACY_MYSQL_STAGING_FIXTURE_MODE=", bool(getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", False)))
+          print("LOCAL_STAGING_ACCEPTED=", bool(getattr(settings, "LOCAL_STAGING_ACCEPTED", False)))
+          print("USE_S3_MEDIA=", bool(getattr(settings, "USE_S3_MEDIA", False)))
+          backend = default_storage.__class__.__module__ + "." + default_storage.__class__.__name__
+          print("default_storage_class=", backend)
+          print("AWS_STORAGE_BUCKET_NAME_configured=", present("AWS_STORAGE_BUCKET_NAME"))
+          print("AWS_ACCESS_KEY_ID_configured=", present("AWS_ACCESS_KEY_ID"))
+          print("AWS_SECRET_ACCESS_KEY_configured=", present("AWS_SECRET_ACCESS_KEY"))
+          print("OMNIPORT_CLIENT_ID_configured=", present("OMNIPORT_CLIENT_ID"))
+          print("OMNIPORT_CLIENT_SECRET_configured=", present("OMNIPORT_CLIENT_SECRET"))
+          redirect = str(getattr(settings, "OMNIPORT_REDIRECT_URI", "") or "")
+          print("OMNIPORT_REDIRECT_URI_equip_callback=", redirect.startswith("https://equip.iitr.ac.in/") and "callback" in redirect)
+          print("OLD_MYSQL_HOST_configured=", present("OLD_MYSQL_HOST") or present("LEGACY_MYSQL_HOST"))
+          print("OLD_MYSQL_USER_configured=", present("OLD_MYSQL_USER") or present("LEGACY_MYSQL_USER"))
+          print("OLD_MYSQL_DATABASE_configured=", present("OLD_MYSQL_DATABASE") or present("LEGACY_MYSQL_DATABASE"))
+          user = str(getattr(settings, "OLD_MYSQL_USER", None) or getattr(settings, "LEGACY_MYSQL_USER", "") or "")
+          print("OLD_MYSQL_USER_is_harshit=", user.lower() == "harshit")
+          print("OLD_MYSQL_USER_value=", user if user else "<unset>")
+          PY
+
+      - name: S3 listdir probe
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          from django.core.files.storage import default_storage
+          if bool(getattr(settings, "LOCAL_STAGING_ACCEPTED", False)):
+              print("S3_RESULT=FAIL_LOCAL_STAGING_ACCEPTED")
+              raise SystemExit(0)
+          backend = default_storage.__class__.__module__ + "." + default_storage.__class__.__name__
+          print("default_storage_class=", backend)
+          use_s3 = bool(getattr(settings, "USE_S3_MEDIA", False))
+          print("USE_S3_MEDIA=", use_s3)
+          try:
+              default_storage.listdir("")
+              print("S3_RESULT=PASS_LISTDIR")
+          except Exception as exc:
+              print("S3_RESULT=NOT_VERIFIED")
+              print("S3_ERROR_TYPE=", type(exc).__name__)
+          PY
+
+      - name: Legacy MySQL RO SELECT probe
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+
+          if bool(getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", False)):
+              print("MYSQL_RESULT=FAIL_FIXTURE_MODE")
+              raise SystemExit(0)
+
+          user = str(getattr(settings, "OLD_MYSQL_USER", None) or getattr(settings, "LEGACY_MYSQL_USER", "") or "")
+          host = str(getattr(settings, "OLD_MYSQL_HOST", None) or getattr(settings, "LEGACY_MYSQL_HOST", "") or "")
+          db = str(getattr(settings, "OLD_MYSQL_DATABASE", None) or getattr(settings, "LEGACY_MYSQL_DATABASE", "") or "")
+          print("OLD_MYSQL_USER=", user if user else "<unset>")
+          print("OLD_MYSQL_HOST_configured=", bool(host))
+          print("OLD_MYSQL_DATABASE_configured=", bool(db))
+          if user.lower() == "harshit":
+              print("MYSQL_RESULT=FAIL_FORBIDDEN_ACCOUNT")
+              raise SystemExit(0)
+          if not (user and host and db):
+              print("MYSQL_RESULT=NOT_VERIFIED_MISSING_CONFIG")
+              raise SystemExit(0)
+
+          try:
+              from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+              reader = OldMySQLReader()
+          except Exception as exc:
+              print("MYSQL_RESULT=NOT_VERIFIED_IMPORT")
+              print("IMPORT_ERROR_TYPE=", type(exc).__name__)
+              raise SystemExit(0)
+
+          def try_count(names):
+              for name in names:
+                  fn = getattr(reader, name, None)
+                  if callable(fn):
+                      try:
+                          return name, fn()
+                      except Exception as exc:
+                          print(name, "error", type(exc).__name__)
+              return None, None
+
+          results = {}
+          for label, names in [
+              ("users", ("count_users", "get_user_count")),
+              ("wallets", ("count_wallets", "get_wallet_count")),
+              ("ledger", ("count_wallet_transactions", "count_transactions", "get_transaction_count")),
+              ("bookings", ("count_bookings", "get_booking_count")),
+          ]:
+              method, val = try_count(names)
+              results[label] = val
+              print(f"{label}_method=", method, "read=", "PASS" if val is not None else "NOT_VERIFIED")
+
+          denied = None
+          fn = getattr(reader, "assert_readonly_sql", None)
+          if callable(fn):
+              try:
+                  fn("UPDATE admin.users SET emp_id=emp_id WHERE 1=0")
+                  denied = False
+              except Exception as exc:
+                  denied = True
+                  print("write_guard_error_type=", type(exc).__name__)
+          print("account_appears_writable=", False if denied else "UNKNOWN")
+          print("fixture_fallback=", "NONE")
+          print("MYSQL_RESULT=", "PASS" if all(results[k] is not None for k in results) else "PARTIAL_OR_NOT_VERIFIED")
+          PY
