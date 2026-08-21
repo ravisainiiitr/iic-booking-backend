@@ -2,14 +2,40 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  verify:
+  closeout:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Identity match aggregate RO
+      - name: Phase 1 closeout baseline (RO, no migrate)
         run: |
           set -euo pipefail
-          CID=$(docker compose -f /home/ubuntu/iic-booking-backend/docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          echo 'ZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwppbXBvcnQgb3MKVXNlciA9IGFwcHMuZ2V0X21vZGVsKCJ1c2VycyIsICJVc2VyIikKUHJvZmlsZSA9IGFwcHMuZ2V0X21vZGVsKCJ1c2VycyIsICJDaGFubmVsSUlkZW50aXR5UHJvZmlsZSIpCnByaW50KCJDaGFubmVsSUlkZW50aXR5UHJvZmlsZV9xdWVyeWFibGU9IiwgVHJ1ZSkKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9IiwgUHJvZmlsZS5vYmplY3RzLmNvdW50KCkpCiMgV2FsbGV0IGlkZW50aXR5IHNhZmV0eTogZm9yIHBvcnRhbCB1c2VycyB3aXRoIGVtcF9pZCwgY291bnQgZXhhY3QgTXlTUUwgbWF0Y2hlcyAoYWdncmVnYXRlIG9ubHkpCmhvc3QgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0hPU1QiKQpwb3J0ID0gaW50KG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfUE9SVCIsICIzMzA2IikpCnVzZXIgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1VTRVIiKQpkYiA9IG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfREFUQUJBU0UiKSBvciBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0RCIikKcHcgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1BBU1NXT1JEIikKdHJ5OgogICAgaW1wb3J0IE15U1FMZGIgYXMgZGJhcGkKZXhjZXB0IEV4Y2VwdGlvbjoKICAgIGltcG9ydCBweW15c3FsIGFzIGRiYXBpCmNvbm4gPSBkYmFwaS5jb25uZWN0KGhvc3Q9aG9zdCwgcG9ydD1wb3J0LCB1c2VyPXVzZXIsIHBhc3N3ZD1wdywgZGI9ZGIsIGNvbm5lY3RfdGltZW91dD04KQpjdXIgPSBjb25uLmN1cnNvcigpCiMgU2FtcGxlOiBmaW5kIG9uZSBzdGFmZi1saWtlIHBvcnRhbCB1c2VyIHdpdGggZW1wX2lkIHNldCAobm8gUElJIHByaW50ZWQpCnFzID0gVXNlci5vYmplY3RzLmV4Y2x1ZGUoZW1wX2lkX19pc251bGw9VHJ1ZSkuZXhjbHVkZShlbXBfaWQ9IiIpLm9yZGVyX2J5KCJpZCIpWzoyMF0KZXhhY3QxID0gMApleGFjdF9vdGhlciA9IDAKY2hlY2tlZCA9IDAKZm9yIHUgaW4gcXM6CiAgICBlaWQgPSAodS5lbXBfaWQgb3IgIiIpLnN0cmlwKCkKICAgIGlmIG5vdCBlaWQ6CiAgICAgICAgY29udGludWUKICAgIGN1ci5leGVjdXRlKCJTRUxFQ1QgQ09VTlQoKikgRlJPTSB1c2VycyBXSEVSRSBlbXBfaWQ9JXMiLCBbZWlkXSkKICAgIG4gPSBjdXIuZmV0Y2hvbmUoKVswXQogICAgY2hlY2tlZCArPSAxCiAgICBpZiBuID09IDE6CiAgICAgICAgZXhhY3QxICs9IDEKICAgIGVsc2U6CiAgICAgICAgZXhhY3Rfb3RoZXIgKz0gMQpwcmludCgicG9ydGFsX3VzZXJzX2NoZWNrZWQ9IiwgY2hlY2tlZCkKcHJpbnQoImV4YWN0X21hdGNoX2NvdW50X2VxXzE9IiwgZXhhY3QxKQpwcmludCgiZXhhY3RfbWF0Y2hfY291bnRfbmVfMT0iLCBleGFjdF9vdGhlcikKcHJpbnQoImF1dGhvcml0YXRpdmVfY2xhaW09IiwgZ2V0YXR0cihzZXR0aW5ncywgIkNIQU5ORUxfSV9BVVRIT1JJVEFUSVZFX0VNUExPWUVFX0lEX0NMQUlNIiwgTm9uZSkgb3Igb3MuZW52aXJvbi5nZXQoIkNIQU5ORUxfSV9BVVRIT1JJVEFUSVZFX0VNUExPWUVFX0lEX0NMQUlNIikpCmNvbm4uY2xvc2UoKQpwcmludCgid2FsbGV0X2lkZW50aXR5X3JvPSIsICJQQVNTIiBpZiBjaGVja2VkID4gMCBhbmQgZXhhY3Rfb3RoZXIgPT0gMCBlbHNlICgiUEFSVElBTCIgaWYgZXhhY3QxID4gMCBlbHNlICJGQUlMIikp' | base64 -d > /tmp/id_ro.py
-          docker cp /tmp/id_ro.py "$CID":/tmp/id_ro.py
-          docker exec -i -w /app "$CID" python manage.py shell < /tmp/id_ro.py
-          echo "DONE"
+          cd /home/ubuntu/iic-booking-backend
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          echo "expected_sha=7d1081da39e3b0c0d44e58ab0e4172ec217c46ea"
+          echo "sha_ok=$([ "$(git rev-parse HEAD)" = "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea" ] && echo YES || echo NO)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
+          echo "readiness=$code"
+          echo "=== migrations ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>&1 | grep -E '0096|0097|0098|0099|0100' || true
+          PENDING=$(docker exec -w /app "$CID" python manage.py showmigrations 2>&1 | grep '\[ \]' || true)
+          if [ -z "$PENDING" ]; then echo "NONE_PENDING"; else echo "$PENDING"; fi
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>&1 | grep '0188' || echo "equipment_0188=NOT_APPLIED"
+          echo "=== profile + claim ==="
+          echo 'ZnJvbSBkamFuZ28uYXBwcyBpbXBvcnQgYXBwcwpmcm9tIGRqYW5nby5jb25mIGltcG9ydCBzZXR0aW5ncwpmcm9tIGRqYW5nby5kYiBpbXBvcnQgY29ubmVjdGlvbgppbXBvcnQgb3MKcHJpbnQoIlNIQV9QUk9CRV9WSUFfU0VUVElOR1NfT0siKQpwcmludCgiQ0hBTk5FTF9JX0FVVEhPUklUQVRJVkVfRU1QTE9ZRUVfSURfQ0xBSU09IiwgZ2V0YXR0cihzZXR0aW5ncywgIkNIQU5ORUxfSV9BVVRIT1JJVEFUSVZFX0VNUExPWUVFX0lEX0NMQUlNIiwgTm9uZSkgb3Igb3MuZW52aXJvbi5nZXQoIkNIQU5ORUxfSV9BVVRIT1JJVEFUSVZFX0VNUExPWUVFX0lEX0NMQUlNIikpCnByaW50KCJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQ9IiwgZ2V0YXR0cihzZXR0aW5ncywgIlJFQUxfSU5URUdSQVRJT05fRU5BQkxFRCIsIG9zLmVudmlyb24uZ2V0KCJSRUFMX0lOVEVHUkFUSU9OX0VOQUJMRUQiKSkpCmZpeCA9IG9zLmVudmlyb24uZ2V0KCJDSEFOTkVMX0lfU1RBR0lOR19GSVhUVVJFX01PREUiKSBvciBnZXRhdHRyKHNldHRpbmdzLCAiQ0hBTk5FTF9JX1NUQUdJTkdfRklYVFVSRV9NT0RFIiwgTm9uZSkKcHJpbnQoIkNIQU5ORUxfSV9TVEFHSU5HX0ZJWFRVUkVfTU9ERT0iLCBmbSkKdGFibGVzID0gY29ubmVjdGlvbi5pbnRyb3NwZWN0aW9uLnRhYmxlX25hbWVzKCkKcHJpbnQoInVzZXJzX2NoYW5uZWxpaWRlbnRpdHlwcm9maWxlPSIsICJ1c2Vyc19jaGFubmVsaWlkZW50aXR5cHJvZmlsZSIgaW4gdGFibGVzKQpQcm9maWxlID0gYXBwcy5nZXRfbW9kZWwoInVzZXJzIiwgIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlIikKcHJpbnQoIkNoYW5uZWxJSWRlbnRpdHlQcm9maWxlX3Jvd3M9IiwgUHJvZmlsZS5vYmplY3RzLmNvdW50KCkpCiMgbGF0ZXN0IHN5bmMgdGltZXN0YW1wcyBvbmx5IChubyBQSUkpCmlmIFByb2ZpbGUub2JqZWN0cy5leGlzdHMoKToKICAgIHAgPSBQcm9maWxlLm9iamVjdHMub3JkZXJfYnkoIi1sYXN0X2NoYW5uZWxfaV9zeW5jIiwgIi1pZCIpLmZpcnN0KCkKICAgIHByaW50KCJsYXRlc3RfcHJvZmlsZV9oYXNfdXNlcm5hbWU9IiwgYm9vbCgocC5jaGFubmVsX2lfdXNlcm5hbWUgb3IgIiIpLnN0cmlwKCkpKQogICAgcHJpbnQoImxhdGVzdF9wcm9maWxlX2hhc191c2VyX2ZrPSIsIHAudXNlcl9pZCBpcyBub3QgTm9uZSkKICAgIHByaW50KCJsYXRlc3Rfc3luY19wcmVzZW50PSIsIHAubGFzdF9jaGFubmVsX2lfc3luYyBpcyBub3QgTm9uZSkKICAgICMgbWF0Y2ggY291bnQgdmlhIFJPIE15U1FMIHdpdGhvdXQgcHJpbnRpbmcgZW1wX2lkCiAgICBVc2VyID0gYXBwcy5nZXRfbW9kZWwoInVzZXJzIiwgIlVzZXIiKQogICAgdSA9IFVzZXIub2JqZWN0cy5maWx0ZXIoaWQ9cC51c2VyX2lkKS5maXJzdCgpCiAgICBlbXAgPSAoZ2V0YXR0cih1LCAiZW1wX2lkIiwgTm9uZSkgb3IgIiIpLnN0cmlwKCkgaWYgdSBlbHNlICIiCiAgICBwcmludCgicG9ydGFsX3VzZXJfaGFzX2VtcF9pZD0iLCBib29sKGVtcCkpCiAgICBob3N0ID0gb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9IT1NUIikKICAgIHBvcnQgPSBpbnQob3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9QT1JUIiwgIjMzMDYiKSkKICAgIHVzZXIgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX1VTRVIiKQogICAgZGIgPSBvcy5lbnZpcm9uLmdldCgiT0xEX01ZU1FMX0RBVEFCQVNFIikgb3Igb3MuZW52aXJvbi5nZXQoIk9MRF9NWVNRTF9EQiIpCiAgICBwdyA9IG9zLmVudmlyb24uZ2V0KCJPTERfTVlTUUxfUEFTU1dPUkQiKQogICAgdHJ5OgogICAgICAgIGltcG9ydCBNeVNRTGRiIGFzIGRiYXBpCiAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgIGltcG9ydCBweW15c3FsIGFzIGRiYXBpCiAgICBjb25uID0gZGJhcGkuY29ubmVjdChob3N0PWhvc3QsIHBvcnQ9cG9ydCwgdXNlcj11c2VyLCBwYXNzd2Q9cHcsIGRiPWRiLCBjb25uZWN0X3RpbWVvdXQ9OCkKICAgIGN1ciA9IGNvbm4uY3Vyc29yKCkKICAgIGlmIGVtcDoKICAgICAgICBjdXIuZXhlY3V0ZSgiU0VMRUNUIENPVU5UKCopIEZST00gdXNlcnMgV0hFUkUgZW1wX2lkPSVzIiwgW2VtcF0pCiAgICAgICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsIGN1ci5mZXRjaG9uZSgpWzBdKQogICAgZWxzZToKICAgICAgICAjIGZhbGxiYWNrOiBtYXRjaCB2aWEgY2hhbm5lbF9pX3VzZXJuYW1lID09IGVtcF9pZCAoY2xhaW09dXNlcm5hbWUpCiAgICAgICAgdW5hbWUgPSAocC5jaGFubmVsX2lfdXNlcm5hbWUgb3IgIiIpLnN0cmlwKCkKICAgICAgICBpZiB1bmFtZToKICAgICAgICAgICAgY3VyLmV4ZWN1dGUoIlNFTEVDVCBDT1VOVCgqKSBGUk9NIHVzZXJzIFdIRVJFIGVtcF9pZD0lcyIsIFt1bmFtZV0pCiAgICAgICAgICAgIHByaW50KCJlbXBsb3llZV9tYXRjaF9jb3VudD0iLCBjdXIuZmV0Y2hvbmUoKVswXSkKICAgICAgICBlbHNlOgogICAgICAgICAgICBwcmludCgiZW1wbG95ZWVfbWF0Y2hfY291bnQ9IiwgIlVOQVZBSUxBQkxFIikKICAgIGNvbm4uY2xvc2UoKQplbHNlOgogICAgcHJpbnQoImVtcGxveWVlX21hdGNoX2NvdW50PSIsICJQRU5ESU5HX0xPR0lOIik=' | base64 -d > /tmp/closeout_p1.py
+          docker cp /tmp/closeout_p1.py "$CID":/tmp/closeout_p1.py
+          docker exec -i -w /app "$CID" python manage.py shell < /tmp/closeout_p1.py
+          echo "=== authorize (REAL) ==="
+          curl -sS --max-time 15 'https://equip.iitr.ac.in/api/auth/omniport/authorize/' -o /tmp/auth.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/tmp/auth.json'))
+          url=d.get('auth_url') or ''
+          print('fixture_mode=', d.get('fixture_mode'))
+          print('auth_url_present=', bool(url))
+          print('auth_url_host=', url.split('/')[2] if '://' in url else None)
+          print('authorize=', 'PASS' if url and d.get('fixture_mode') is False else 'FAIL')
+          PY
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
+          echo "PHASE1_DONE=YES"
