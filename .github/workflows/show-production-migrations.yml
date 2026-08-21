@@ -5,25 +5,19 @@ jobs:
   verify:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Channel-I + claim RO probe
+      - name: Discover Omniport auth paths
         run: |
           set -euo pipefail
-          cd /home/ubuntu/iic-booking-backend
-          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          echo 'ZnJvbSBkamFuZ28uY29uZiBpbXBvcnQgc2V0dGluZ3MKaW1wb3J0IG9zCmtleXMgPSBbCiAiQ0hBTk5FTF9JX0VNUExPWUVFX0NMQUlNIiwKICJDSEFOTkVMX0lfQVVUSE9SSVRBVElWRV9FTVBMT1lFRV9JRF9DTEFJTSIsCiAiT01OSVBPUlRfUkVESVJFQ1RfVVJJIiwKICJVU0VfRklYVFVSRV9BVVRIIiwKICJGSVhUVVJFX0FVVEgiLAogIlJFQUxfSU5URUdSQVRJT05fRU5BQkxFRCIsCl0KZm9yIGsgaW4ga2V5czoKICAgIHYgPSBnZXRhdHRyKHNldHRpbmdzLCBrLCBOb25lKQogICAgaWYgdiBpcyBOb25lOgogICAgICAgIHYgPSBvcy5lbnZpcm9uLmdldChrKQogICAgaWYgayBpbiAoIk9NTklQT1JUX0NMSUVOVF9JRCIsICJPTU5JUE9SVF9DTElFTlRfU0VDUkVUIik6CiAgICAgICAgcHJpbnQoaywgIj0iLCAiUFJFU0VOVCIgaWYgdiBlbHNlICJBQlNFTlQiKQogICAgZWxzZToKICAgICAgICBwcmludChrLCAiPSIsIHYpCiMgcmVkaXJlY3QgcHJlc2VuY2UKcnUgPSBnZXRhdHRyKHNldHRpbmdzLCAiT01OSVBPUlRfUkVESVJFQ1RfVVJJIiwgTm9uZSkgb3Igb3MuZW52aXJvbi5nZXQoIk9NTklQT1JUX1JFRElSRUNUX1VSSSIpCnByaW50KCJyZWRpcmVjdF91cmlfc2V0PSIsIGJvb2wocnUpKQpwcmludCgicmVkaXJlY3RfdXJpX2hvc3Q9IiwgKHJ1LnNwbGl0KCIvIilbMl0gaWYgcnUgYW5kICI6Ly8iIGluIHJ1IGVsc2UgTm9uZSkpCmNpZCA9IGdldGF0dHIoc2V0dGluZ3MsICJPTU5JUE9SVF9DTElFTlRfSUQiLCBOb25lKSBvciBvcy5lbnZpcm9uLmdldCgiT01OSVBPUlRfQ0xJRU5UX0lEIikKcHJpbnQoIm9tbmlwb3J0X2NsaWVudF9pZD0iLCAiUFJFU0VOVCIgaWYgY2lkIGVsc2UgIkFCU0VOVCIpCnNlYyA9IGdldGF0dHIoc2V0dGluZ3MsICJPTU5JUE9SVF9DTElFTlRfU0VDUkVUIiwgTm9uZSkgb3Igb3MuZW52aXJvbi5nZXQoIk9NTklQT1JUX0NMSUVOVF9TRUNSRVQiKQpwcmludCgib21uaXBvcnRfY2xpZW50X3NlY3JldD0iLCAiUFJFU0VOVCIgaWYgc2VjIGVsc2UgIkFCU0VOVCIp' | base64 -d > /tmp/ci_probe.py
-          docker cp /tmp/ci_probe.py "$CID":/tmp/ci_probe.py
-          docker exec -i -w /app "$CID" python manage.py shell < /tmp/ci_probe.py
-          echo "=== authorize endpoint ==="
-          # expect redirect to Channel-I / oauth
-          code=$(curl -sS -o /tmp/auth_out -w '%{http_code}' --max-time 15 'https://equip.iitr.ac.in/api/auth/omniport/login/' || true)
-          loc=$(grep -i '^location:' /tmp/auth_out | head -n1 | tr -d '\r' || true)
-          echo "authorize_http=$code"
-          echo "authorize_location_present=$([ -n "$loc" ] && echo YES || echo NO)"
-          # redact query secrets if any
-          echo "$loc" | sed -E 's/(client_id=)[^&]+/\1REDACTED/; s/(state=)[^&]+/\1REDACTED/' || true
-          code2=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 -L --max-redirs 0 'https://equip.iitr.ac.in/api/auth/omniport/login/' || true)
-          echo "authorize_no_follow=$code2"
-          # callback URL existence (should not 500 without code)
-          cb=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 'https://equip.iitr.ac.in/api/auth/omniport/callback/' || true)
-          echo "callback_without_code=$cb"
-          echo "CHANNEL_I_PROBE_DONE=YES"
+          CID=$(docker compose -f /home/ubuntu/iic-booking-backend/docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -w /app "$CID" python manage.py shell -c 'from django.urls import reverse; print(reverse("api:omniport-auth")); print(reverse("api:omniport-callback"))'
+          for p in /api/auth/omniport/ /api/auth/omniport/login/ /api/auth/omniport/authorize/ /api/auth/channel-i/ /api/auth/omniport; do
+            code=$(curl -sS -o /tmp/o -w '%{http_code}' --max-time 10 -D /tmp/h "https://equip.iitr.ac.in$p" || true)
+            loc=$(grep -i '^location:' /tmp/h | head -n1 | tr -d '\r' || true)
+            echo "path=$p code=$code loc_present=$([ -n "$loc" ] && echo YES || echo NO)"
+            echo "$loc" | sed -E 's/(client_id=)[^&]+/\1REDACTED/; s/(state=)[^&]+/\1REDACTED/' || true
+          done
+          # also match exact emp_id for previously qualified operator without printing PII:
+          # use count-only: we cannot re-run browser login; verify claim + redirect + profile table ready
+          echo "claim_setting_check:"
+          docker exec -w /app "$CID" printenv CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM || true
+          echo "DONE"
