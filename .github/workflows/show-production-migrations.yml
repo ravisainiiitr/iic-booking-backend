@@ -2,89 +2,49 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  channel_i_phase12:
+  token_fail:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Phase 1-2 Channel-I config + authorize (no secrets)
+      - name: Diagnose token_creation_failed (RO logs + schema)
         run: |
           set -euo pipefail
           DEPLOY=/home/ubuntu/iic-booking-backend
           cd "$DEPLOY"
-          echo "HEAD=$(git rev-parse HEAD)"
           CID="$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)"
-          echo "django=$CID"
+          echo "django=$CID HEAD=$(git rev-parse HEAD)"
+
+          echo "=== recent django logs (token/omniport/auth) ==="
+          docker logs "$CID" --since 30m 2>&1 | grep -iE 'token_creation|regenerate|auth token|Omniport|omniport|user_creation|identity sync|ProgrammingError|relation|authtoken|IntegrityError|OperationalError|Failed to create authentication' | tail -n 80 || true
+
+          echo "=== broader error tail ==="
+          docker logs "$CID" --since 30m 2>&1 | grep -iE 'ERROR|Exception|Traceback' | tail -n 60 || true
 
           docker exec -i -w /app "$CID" python - <<'PY'
           import os
-          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
-          import django
-          django.setup()
-          from django.conf import settings
-          from iic_booking.users.legacy_ledger.real_integration_guards import (
-              channel_i_preflight_status,
-              employee_id_claim_status,
-              omniport_redirect_uri_status,
-              real_integration_enabled,
-          )
-          from iic_booking.users.identity.channel_i_fixture import channel_i_fixture_mode_enabled
-
-          def present(v):
-              return "PRESENT" if (v is not None and str(v).strip() != "") else "ABSENT"
-
-          print("DEPLOYMENT_ENVIRONMENT=", getattr(settings, "DEPLOYMENT_ENVIRONMENT", None))
-          print("REAL_INTEGRATION_ENABLED=", getattr(settings, "REAL_INTEGRATION_ENABLED", None))
-          print("real_integration_enabled()=", real_integration_enabled())
-          print("CHANNEL_I_STAGING_FIXTURE_MODE=", getattr(settings, "CHANNEL_I_STAGING_FIXTURE_MODE", None))
-          print("channel_i_fixture_mode_enabled()=", channel_i_fixture_mode_enabled())
-          print("LEGACY_MYSQL_STAGING_FIXTURE_MODE=", getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", None))
-          print("LOCAL_STAGING_ACCEPTED=", getattr(settings, "LOCAL_STAGING_ACCEPTED", None))
-          print("OMNIPORT_CLIENT_ID=", present(getattr(settings, "OMNIPORT_CLIENT_ID", None)))
-          print("OMNIPORT_CLIENT_SECRET=", present(getattr(settings, "OMNIPORT_CLIENT_SECRET", None)))
-          print("OMNIPORT_REDIRECT_URI=", getattr(settings, "OMNIPORT_REDIRECT_URI", None))
-          print("CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=", repr(getattr(settings, "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM", None) or ""))
-          print("FRONTEND_URL=", getattr(settings, "FRONTEND_URL", None))
-          print("redirect_status=", omniport_redirect_uri_status())
-          print("channel_i_preflight=", channel_i_preflight_status())
-          print("employee_id_claim_status=", employee_id_claim_status())
-
-          # ChannelIIdentityProfile table present?
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE","config.settings.production")
+          import django; django.setup()
           from django.db import connection
           with connection.cursor() as cur:
-              cur.execute("SELECT to_regclass('public.users_channeliidentityprofile')")
-              print("ChannelIIdentityProfile_table=", cur.fetchone()[0])
+              for t in (
+                  "authtoken_token",
+                  "users_user",
+                  "users_channeliidentityprofile",
+              ):
+                  cur.execute("SELECT to_regclass(%s)", (f"public.{t}",))
+                  print(f"table_{t}=", cur.fetchone()[0])
+              cur.execute("""
+                SELECT column_name, data_type
+                FROM information_schema.columns
+                WHERE table_name='authtoken_token'
+                ORDER BY ordinal_position
+              """)
+              cols=cur.fetchall()
+              print("authtoken_columns=", [c[0] for c in cols])
+          from django.conf import settings
+          print("AUTH_TOKEN_MODEL=", getattr(settings,"REST_FRAMEWORK",{}).get("DEFAULT_AUTHENTICATION_CLASSES"))
+          try:
+              from rest_framework.authtoken.models import Token
+              print("Token_objects_count=", Token.objects.count())
+          except Exception as e:
+              print("Token_count_error=", type(e).__name__, str(e)[:200])
           PY
-
-          echo "=== authorize endpoint ==="
-          # Prefer public URL if reachable, else local django
-          for URL in \
-            "https://equip.iitr.ac.in/api/auth/omniport/authorize/" \
-            "http://127.0.0.1:8080/api/auth/omniport/authorize/"
-          do
-            echo "GET $URL"
-            code=$(curl -sS -o /tmp/authz.json -w '%{http_code}' --max-time 20 "$URL" || echo FAIL)
-            echo "http=$code"
-            python3 - <<'PY'
-          import json
-          d=json.load(open("/tmp/authz.json"))
-          # redact
-          auth=d.get("auth_url") or ""
-          # strip query values that might include client_id fully? client_id is not secret but avoid dumping full URL with state if needed — show structure only
-          from urllib.parse import urlparse, parse_qs
-          if auth:
-            u=urlparse(auth)
-            q=parse_qs(u.query)
-            print("fixture_mode=", d.get("fixture_mode"))
-            print("auth_host=", u.scheme+"://"+u.netloc+u.path)
-            print("redirect_uri_param=", (q.get("redirect_uri") or [None])[0])
-            print("response_type=", (q.get("response_type") or [None])[0])
-            print("has_state=", bool(q.get("state")))
-            print("has_client_id=", bool(q.get("client_id")))
-            # never print client_id value or state value
-          else:
-            print("body_keys=", sorted(d.keys()))
-            print("fixture_mode=", d.get("fixture_mode"))
-            print("error_code=", d.get("error_code"))
-            print("error=", (d.get("error") or "")[:120])
-          PY
-            break
-          done
