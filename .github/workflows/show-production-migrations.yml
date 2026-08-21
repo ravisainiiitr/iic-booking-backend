@@ -2,91 +2,59 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  http_user2:
+  curl_user:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: APIRequestFactory reproduce auth/user with host
+      - name: curl /api/auth/user/ via localhost:8080
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -i -w /app "$CID" python - <<'PY'
-          import os, traceback
+          # Create temp token inside container, write key to file mounted? Use docker exec python to curl from host via print only status
+          KEYFILE=$(mktemp)
+          docker exec -i -w /app "$CID" python - <<'PY' > "$KEYFILE"
+          import os
           os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
           import django; django.setup()
           from django.contrib.auth import get_user_model
           from rest_framework.authtoken.models import Token
-          from rest_framework.test import APIRequestFactory, force_authenticate
-          from iic_booking.users.api.auth_views import current_user
-          from iic_booking.users.rbac import list_effective_permission_codes, user_has_admin_panel_access, list_effective_admin_module_keys
-          User=get_user_model()
-          for pk in (56, 66):
-              u=User.objects.filter(pk=pk).first()
-              print('exists_pk', pk, bool(u))
-          u=User.objects.filter(pk=56).first() or User.objects.filter(pk=66).first()
-          print('using_pk', u.pk, 'type', u.user_type)
-          # exercise rbac helpers alone
-          for name, fn in [
-              ('perms', lambda: list_effective_permission_codes(u)),
-              ('admin', lambda: user_has_admin_panel_access(u)),
-              ('modules', lambda: list_effective_admin_module_keys(u)),
-          ]:
-              try:
-                  print(name, 'OK', fn())
-              except Exception as e:
-                  print(name, 'FAIL', type(e).__name__, str(e)[:250])
-                  traceback.print_exc()
+          u=get_user_model().objects.get(pk=66)
           Token.objects.filter(user=u).delete()
-          tok=Token.objects.create(user=u)
-          factory=APIRequestFactory()
-          req=factory.get('/api/auth/user/', HTTP_HOST='equip.iitr.ac.in')
-          force_authenticate(req, user=u, token=tok)
-          try:
-              resp=current_user(req)
-              print('current_user_status', resp.status_code)
-              if hasattr(resp,'data'):
-                  print('current_user_keys', sorted(list(resp.data.keys()))[:15])
-          except Exception as e:
-              print('current_user_EXC', type(e).__name__, str(e)[:300])
-              traceback.print_exc()
-          # also via ASGI-ish full view dispatch
-          from django.test import RequestFactory
-          from django.contrib.auth.models import AnonymousUser
-          rf=RequestFactory()
-          req2=rf.get('/api/auth/user/', HTTP_HOST='equip.iitr.ac.in')
-          req2.user=u
-          req2.META['HTTP_AUTHORIZATION']=f'Token {tok.key}'
-          try:
-              from rest_framework.request import Request
-              from rest_framework.parsers import JSONParser
-              drf_req=Request(req2, parsers=[JSONParser()])
-              # authenticate manually
-              from iic_booking.users.api.token_auth import TokenAuthenticationWithInactivity
-              auth=TokenAuthenticationWithInactivity().authenticate(drf_req)
-              print('authenticate_ok', bool(auth), 'auth_user_pk', auth[0].pk if auth else None)
-          except Exception as e:
-              print('authenticate_FAIL', type(e).__name__, str(e)[:250])
-              traceback.print_exc()
-          Token.objects.filter(pk=tok.pk).delete()
-          print('temp_token_destroyed=YES')
+          t=Token.objects.create(user=u)
+          print(t.key)
           PY
-
-          echo "=== curl localhost with Authorization from newly created then deleted is hard; instead scrape latest Internal Server Error stack ==="
-          docker logs "$CID" --since 30m 2>&1 | sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi' > /tmp/l.txt
-          python3 - <<'PY'
-          from pathlib import Path
-          lines=Path('/tmp/l.txt').read_text(errors='replace').splitlines()
-          for i,l in enumerate(lines):
-              if 'Internal Server Error' in l or ('ERROR' in l and 'api/auth/user' in l) or ('GET /api/auth/user' in l):
-                  print('\n'.join(lines[max(0,i-5):min(len(lines),i+60)]))
-                  print('====')
-          # also search ProgrammingError not from sync
-          for i,l in enumerate(lines):
-              if 'ProgrammingError' in l and 'channeliidentity' in l.lower():
-                  # print if nearby current_user/serializer/rbac
-                  window='\n'.join(lines[max(0,i-30):min(len(lines),i+5)])
-                  if any(x in window for x in ('current_user','UserSerializer','gender_from','rbac','auth/user','auth_views')):
-                      print('NEAR USER PATH')
-                      print(window)
-                      print('====')
+          KEY=$(cat "$KEYFILE" | tr -d '\r\n')
+          rm -f "$KEYFILE"
+          echo "temp_token_len=${#KEY}"
+          for path in /api/auth/user/ /api/auth/user /api/auth/profile/me/; do
+            code=$(curl -sS -o /tmp/body.json -w '%{http_code}' --max-time 15 \
+              -H "Authorization: Token $KEY" \
+              -H "Host: equip.iitr.ac.in" \
+              "http://127.0.0.1:8080$path" || echo FAIL)
+            echo "path=$path http=$code"
+            python3 - <<'PY'
+          import json
+          try:
+            d=json.load(open('/tmp/body.json'))
+            if isinstance(d, dict):
+              print('keys=', sorted(d.keys())[:12])
+              print('detail=', (d.get('detail') or d.get('error') or '')[:120])
+              print('id_present=', 'id' in d)
+            else:
+              print('body_type', type(d))
+          except Exception as e:
+            print('body_parse_fail', type(e).__name__, open('/tmp/body.json','rb').read()[:120])
           PY
+          done
+          # destroy token
+          docker exec -i -w /app -e KEY="$KEY" "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from rest_framework.authtoken.models import Token
+          Token.objects.filter(key=os.environ['KEY']).delete()
+          print('destroyed=YES')
+          PY
+          unset KEY
+          echo "=== recent Internal Server Error around auth/user if any ==="
+          docker logs "$CID" --since 10m 2>&1 | sed -E 's/[0-9a-f]{32,}/[REDACTED]/gi' | grep -nE 'api/auth/user|Internal Server Error|ERROR 2026' | tail -n 30 || true
