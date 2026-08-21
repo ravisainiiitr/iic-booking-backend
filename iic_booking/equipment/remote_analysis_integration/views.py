@@ -532,10 +532,9 @@ def booking_analysis_data_selection(request, booking_id: int):
     if not isinstance(body, dict):
         body = {}
     source_raw = body.get("source_booking_id") or body.get("source_booking_pk") or booking.booking_id
-    try:
-        source_booking_id = int(source_raw)
-    except (TypeError, ValueError):
+    if source_raw in (None, ""):
         return Response({"detail": "source_booking_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+    source_booking_id = source_raw
     file_names = body.get("file_names") or body.get("files") or []
     if isinstance(file_names, str):
         file_names = [file_names]

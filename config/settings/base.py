@@ -407,6 +407,23 @@ LEGACY_MYSQL_USER = env("LEGACY_MYSQL_USER", default="")
 LEGACY_MYSQL_PASSWORD = env("LEGACY_MYSQL_PASSWORD", default="")
 LEGACY_MYSQL_DATABASE = env("LEGACY_MYSQL_DATABASE", default="admin")
 
+# Operator-supplied old-portal MySQL (preferred names). Fall back to LEGACY_MYSQL_*.
+# Never commit these values. Django containers must not use 127.0.0.1 for host MySQL.
+OLD_MYSQL_HOST = env("OLD_MYSQL_HOST", default=LEGACY_MYSQL_HOST)
+OLD_MYSQL_PORT = env.int("OLD_MYSQL_PORT", default=LEGACY_MYSQL_PORT)
+OLD_MYSQL_USER = env("OLD_MYSQL_USER", default=LEGACY_MYSQL_USER)
+OLD_MYSQL_PASSWORD = env("OLD_MYSQL_PASSWORD", default=LEGACY_MYSQL_PASSWORD)
+OLD_MYSQL_DATABASE = env("OLD_MYSQL_DATABASE", default=LEGACY_MYSQL_DATABASE)
+OLD_MYSQL_CONNECT_TIMEOUT = env.int("OLD_MYSQL_CONNECT_TIMEOUT", default=15)
+OLD_MYSQL_READ_TIMEOUT = env.int("OLD_MYSQL_READ_TIMEOUT", default=60)
+PORTAL_MIGRATION_SYNC_INTERVAL_SECONDS = env.int("PORTAL_MIGRATION_SYNC_INTERVAL_SECONDS", default=300)
+PORTAL_MIGRATION_BATCH_SIZE = env.int("PORTAL_MIGRATION_BATCH_SIZE", default=500)
+# Optional operator SSH tunnel (used only by management command; key path is env, not git).
+OLD_MYSQL_SSH_HOST = env("OLD_MYSQL_SSH_HOST", default="")
+OLD_MYSQL_SSH_PORT = env.int("OLD_MYSQL_SSH_PORT", default=22)
+OLD_MYSQL_SSH_USER = env("OLD_MYSQL_SSH_USER", default="")
+OLD_MYSQL_SSH_KEY = env("OLD_MYSQL_SSH_KEY", default="")
+
 # ADMIN
 # ------------------------------------------------------------------------------
 # Django Admin URL.
@@ -597,6 +614,15 @@ OMNIPORT_USERINFO_URL = env(
     "OMNIPORT_USERINFO_URL",
     default="https://channeli.in/open_auth/get_user_data/",
 )
+# Empty until IMG/operator confirms which userinfo path is the institutional Employee ID.
+# Live confirmation (2026-08-20): staff Employee ID = username; student ID = student.enrolmentNumber.
+# Recommended production value after review: operator_confirmed_map
+# Other values: username | student.enrolmentNumber | facultyMember.employeeId
+# Username is NEVER treated as Employee ID when this setting is empty.
+CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM = env(
+    "CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM",
+    default="",
+)
 OMNIPORT_LOGOUT_URL = env(
     "OMNIPORT_LOGOUT_URL",
     default="https://channeli.in/accounts/logout/",
@@ -640,6 +666,13 @@ COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default=COPILOT_PROVIDER or "
 OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://127.0.0.1:11434")
 OLLAMA_MODEL = env("OLLAMA_MODEL", default="llama3.2:3b")
 COMPATIBLE_FRONTEND_MIN = env("COMPATIBLE_FRONTEND_MIN", default="2.5.2-r2")
+# Administrator-approved Wallet Credit Facility (request → approve → ledger credit).
+# Default False for controlled staging/pilot. Student restriction is always enforced when enabled.
+WALLET_CREDIT_FACILITY_V2_ENABLED = env.bool("WALLET_CREDIT_FACILITY_V2_ENABLED", default=False)
+WALLET_CREDIT_ENABLED = env.bool("WALLET_CREDIT_ENABLED", default=False)
+HOD_AFFILIATION_ENABLED = env.bool("HOD_AFFILIATION_ENABLED", default=False)
+STUDENT_LIFECYCLE_ENABLED = env.bool("STUDENT_LIFECYCLE_ENABLED", default=False)
+DEPARTMENT_MAPPING_ENABLED = env.bool("DEPARTMENT_MAPPING_ENABLED", default=False)
 COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # Optional JSON override for installer matrix, e.g.
 # {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}

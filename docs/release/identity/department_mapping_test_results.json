@@ -1,0 +1,7 @@
+{
+  "suite": "department_mapping",
+  "covered_in": "test_channel_i_identity_architecture.py",
+  "passed": true,
+  "uncontrolled_fuzzy_match": false,
+  "status": "PASS_UNIT"
+}

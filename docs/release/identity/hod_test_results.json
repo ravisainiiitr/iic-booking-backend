@@ -1,0 +1,7 @@
+{
+  "suite": "hod_affiliation",
+  "covered_in": "test_channel_i_identity_architecture.py::test_hod_join_enforcement",
+  "passed": true,
+  "live_ui_tested": false,
+  "status": "PASS_UNIT"
+}

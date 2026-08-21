@@ -39,6 +39,14 @@ from .forms import UserAdminCreationForm
 from .models.wallet_sric_settings import WalletSricSettings
 from .models.test_account_email_settings import TestAccountEmailSettings
 from .models.wallet_credit_facility_settings import WalletCreditFacilitySettings
+from .models.wallet_credit_facility import (
+    WalletCreditPolicy,
+    WalletCreditFacility,
+    WalletCreditLedgerEntry,
+    WalletCreditInvoice,
+    WalletCreditPayment,
+    WalletCreditAuditEvent,
+)
 from .models.wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .models.department_faculty_credit_facility import (
     DepartmentFacultyCreditFacilitySettings,
@@ -68,6 +76,12 @@ from .models import (
     AuthSettings,
     UserTypeInactivityTimeout,
     UserEquipmentSupplyChainRole,
+    PortalMigrationState,
+    LegacyWalletAccountMapping,
+    LegacyWalletLedgerEntry,
+    LegacyWalletSyncDeadLetter,
+    PortalMigrationPhaseTransition,
+    LegacyBookingHistoryRecord,
 )
 from rest_framework.authtoken.models import Token
 
@@ -699,20 +713,19 @@ class AuthSettingsAdmin(admin.ModelAdmin):
 
 @admin.register(WalletCreditFacilitySettings)
 class WalletCreditFacilitySettingsAdmin(admin.ModelAdmin):
-    """Singleton: threshold, credit window days, max credit for faculty recharge overdraft."""
+    """Singleton: threshold, credit window days, max credit for faculty recharge overdraft (RETIRED)."""
 
     list_display = ["__str__", "balance_threshold_inr", "credit_window_days", "max_credit_inr"]
 
     fieldsets = (
         (
-            _("Credit facility"),
+            _("Credit facility (retired)"),
             {
                 "fields": ("balance_threshold_inr", "credit_window_days", "max_credit_inr"),
                 "description": _(
-                    "When a faculty member’s department sub-wallet balance is below the threshold, "
-                    "they may opt into a temporary credit line while a wallet recharge request is pending. "
-                    "The line is capped at the lesser of “Maximum credit” and the requested recharge amount. "
-                    "If parse credit does not arrive within the window, bookings for that department are blocked."
+                    "RETIRED: automatic recharge temporary credit is disabled. "
+                    "Use Wallet Credit Policy / Wallet Credit Facility for administrator-approved credit. "
+                    "Historical settings and recharge rows are retained for audit."
                 ),
             },
         ),
@@ -720,6 +733,182 @@ class WalletCreditFacilitySettingsAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return not WalletCreditFacilitySettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(WalletCreditPolicy)
+class WalletCreditPolicyAdmin(admin.ModelAdmin):
+    list_display = [
+        "singleton_key",
+        "enabled",
+        "max_credit_amount",
+        "min_request_amount",
+        "max_outstanding_amount",
+        "max_credit_duration_days",
+        "updated_at",
+    ]
+
+    def has_add_permission(self, request):
+        return not WalletCreditPolicy.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(WalletCreditFacility)
+class WalletCreditFacilityAdmin(admin.ModelAdmin):
+    list_display = [
+        "public_reference",
+        "user",
+        "requested_amount",
+        "approved_amount",
+        "outstanding_amount",
+        "status",
+        "due_date",
+        "created_at",
+    ]
+    list_filter = ["status"]
+    search_fields = ["public_reference", "user__email", "user__emp_id", "user__name"]
+    raw_id_fields = ["user", "department", "sub_wallet", "approved_by", "rejected_by"]
+    readonly_fields = [
+        "public_reference",
+        "requested_amount",
+        "profile_snapshot",
+        "credit_posting_key",
+        "created_at",
+        "updated_at",
+    ]
+
+
+@admin.register(WalletCreditLedgerEntry)
+class WalletCreditLedgerEntryAdmin(admin.ModelAdmin):
+    list_display = ["reference", "facility", "kind", "amount", "created_at"]
+    list_filter = ["kind"]
+    search_fields = ["reference", "facility__public_reference"]
+    raw_id_fields = ["facility", "subwallet_transaction", "created_by"]
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(WalletCreditInvoice)
+class WalletCreditInvoiceAdmin(admin.ModelAdmin):
+    list_display = [
+        "invoice_number",
+        "facility",
+        "status",
+        "approved_credit",
+        "amount_settled",
+        "outstanding_amount",
+        "due_date",
+    ]
+    list_filter = ["status"]
+    search_fields = ["invoice_number", "facility__public_reference"]
+    raw_id_fields = ["facility", "issued_by"]
+
+
+@admin.register(WalletCreditPayment)
+class WalletCreditPaymentAdmin(admin.ModelAdmin):
+    list_display = ["receipt_number", "facility", "amount", "payment_date", "mode", "created_at"]
+    search_fields = ["receipt_number", "utr_or_reference", "facility__public_reference"]
+    raw_id_fields = ["facility", "invoice", "ledger_entry", "recorded_by"]
+
+
+@admin.register(WalletCreditAuditEvent)
+class WalletCreditAuditEventAdmin(admin.ModelAdmin):
+    list_display = ["facility", "action", "actor", "created_at"]
+    list_filter = ["action"]
+    search_fields = ["facility__public_reference", "action"]
+    raw_id_fields = ["facility", "actor"]
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+from .models.channel_i_identity import (
+    ChannelIIdentityProfile,
+    ChannelIIdentityHistory,
+    StudentDegreeClassification,
+    ChannelIDepartmentMapping,
+    HeadOfDepartmentAssignment,
+    UserAffiliation,
+    StudentValidityExtension,
+    StudentLifecycleEvent,
+)
+
+
+@admin.register(ChannelIIdentityProfile)
+class ChannelIIdentityProfileAdmin(admin.ModelAdmin):
+    list_display = ["user", "channel_i_user_id", "student_degree_name", "student_department_name", "validity_source"]
+    search_fields = ["user__email", "channel_i_user_id", "channel_i_username"]
+    raw_id_fields = ["user"]
+    readonly_fields = ["last_channel_i_sync", "profile_last_changed_at"]
+
+
+@admin.register(ChannelIIdentityHistory)
+class ChannelIIdentityHistoryAdmin(admin.ModelAdmin):
+    list_display = ["profile", "field_name", "recorded_at"]
+    search_fields = ["profile__user__email", "field_name"]
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(StudentDegreeClassification)
+class StudentDegreeClassificationAdmin(admin.ModelAdmin):
+    list_display = ["channel_i_degree_name", "classification", "active"]
+    list_filter = ["classification", "active"]
+    search_fields = ["channel_i_degree_name"]
+
+
+@admin.register(ChannelIDepartmentMapping)
+class ChannelIDepartmentMappingAdmin(admin.ModelAdmin):
+    list_display = ["channel_i_department_name", "internal_department", "active"]
+    list_filter = ["active"]
+    search_fields = ["channel_i_department_name"]
+    raw_id_fields = ["internal_department"]
+
+
+@admin.register(HeadOfDepartmentAssignment)
+class HeadOfDepartmentAssignmentAdmin(admin.ModelAdmin):
+    list_display = ["user", "department", "active", "effective_from", "effective_to"]
+    list_filter = ["active"]
+    raw_id_fields = ["user", "department", "created_by"]
+
+
+@admin.register(UserAffiliation)
+class UserAffiliationAdmin(admin.ModelAdmin):
+    list_display = ["user", "kind", "related_user", "department", "active"]
+    list_filter = ["kind", "active"]
+    raw_id_fields = ["user", "related_user", "department", "wallet_join_request"]
+
+
+@admin.register(StudentValidityExtension)
+class StudentValidityExtensionAdmin(admin.ModelAdmin):
+    list_display = ["student", "previous_expiry", "requested_expiry", "status"]
+    list_filter = ["status"]
+    raw_id_fields = ["student", "requested_by", "approved_by"]
+
+
+@admin.register(StudentLifecycleEvent)
+class StudentLifecycleEventAdmin(admin.ModelAdmin):
+    list_display = ["user", "action", "reason", "created_at"]
+    list_filter = ["action"]
+    raw_id_fields = ["user", "actor"]
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
     def has_delete_permission(self, request, obj=None):
         return False
@@ -2071,3 +2260,57 @@ class UserEquipmentSupplyChainRoleAdmin(admin.ModelAdmin):
     list_filter = ("role",)
     search_fields = ("user__email", "user__name")
     autocomplete_fields = ("user",)
+
+
+@admin.register(PortalMigrationState)
+class PortalMigrationStateAdmin(admin.ModelAdmin):
+    list_display = ("phase", "end_user_booking_enabled", "legacy_ledger_frozen", "last_wallet_txn_watermark", "updated_at")
+
+
+@admin.register(LegacyWalletAccountMapping)
+class LegacyWalletAccountMappingAdmin(admin.ModelAdmin):
+    list_display = ("employee_id", "old_user_id", "mapping_status", "reconciliation_status", "new_user")
+    list_filter = ("mapping_status", "reconciliation_status")
+    search_fields = ("employee_id", "old_email", "old_name")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(LegacyWalletLedgerEntry)
+class LegacyWalletLedgerEntryAdmin(admin.ModelAdmin):
+    list_display = ("source_transaction_id", "employee_id", "direction", "amount", "occurred_at")
+    search_fields = ("employee_id", "source_transaction_id", "utr")
+    readonly_fields = (
+        "mapping", "employee_id", "source_system", "source_transaction_id", "source_wallet_id",
+        "source_user_id", "occurred_at", "direction", "amount", "running_balance_source",
+        "description", "reference", "utr", "migration_batch", "checksum", "imported_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(LegacyWalletSyncDeadLetter)
+class LegacyWalletSyncDeadLetterAdmin(admin.ModelAdmin):
+    list_display = ("source_transaction_id", "employee_id", "reason", "updated_at")
+    list_filter = ("reason",)
+    search_fields = ("employee_id", "source_transaction_id")
+
+
+@admin.register(PortalMigrationPhaseTransition)
+class PortalMigrationPhaseTransitionAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "from_phase", "to_phase", "actor_email")
+    readonly_fields = ("from_phase", "to_phase", "actor_email", "note", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+

@@ -22,6 +22,21 @@ CONTROL_RESULT_FILE_NAMES = {
     ".workspace-ready",
     ".workspace_ready",
     "workspace_ready",
+    "thumbs.db",
+    "desktop.ini",
+    ".ds_store",
+}
+
+CONTROL_RESULT_EXTENSIONS = {
+    ".tmp",
+    ".temp",
+    ".partial",
+    ".part",
+    ".crdownload",
+    ".download",
+    ".lock",
+    ".swp",
+    ".swo",
 }
 
 
@@ -214,13 +229,27 @@ def has_material_result_files(booking: Booking) -> bool:
     Ignores known control/marker files (e.g. workspace-ready) and missing/empty entries.
     Uses the existing unified result-source merge (S3 + DSA + operator uploads).
     """
-    merged = merge_booking_result_files(booking=booking, s3_files=[], request=None)
+    s3_files: list[dict[str, Any]] = []
+    try:
+        from iic_booking.equipment.api_views import _list_booking_result_files_from_s3
+
+        virtual = (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
+        ok, listed = _list_booking_result_files_from_s3(virtual)
+        if ok and listed:
+            s3_files = listed
+    except Exception:  # noqa: BLE001
+        s3_files = []
+    merged = merge_booking_result_files(booking=booking, s3_files=s3_files, request=None)
     for entry in merged:
         name = str(entry.get("name") or "").strip()
         if not name:
             continue
         leaf = Path(name).name.strip().lower()
+        if not leaf or leaf.startswith("."):
+            continue
         if leaf in CONTROL_RESULT_FILE_NAMES:
+            continue
+        if Path(leaf).suffix in CONTROL_RESULT_EXTENSIONS:
             continue
         size = int(entry.get("size_bytes") or 0)
         if size <= 0:

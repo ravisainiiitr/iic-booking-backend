@@ -186,7 +186,10 @@ class BookingAnalysisDataBrowserService:
             "booking_end_time": timezone.localtime(end).strftime("%H:%M") if end else None,
             "status": booking.status,
             "is_current": is_current,
+            "file_count": sum(len(folder["files"]) for folder in self._folders(entries)),
+            "total_size_bytes": sum(int(e.get("size_bytes") or 0) for e in entries),
             "folders": self._folders(entries),
+            "booking_reference": virtual_id,
             "_booking_date_obj": timezone.localtime(start).date() if start else None,
             "_equipment_haystack": f"{equipment_name} {equipment_code}".lower(),
         }
@@ -304,17 +307,27 @@ class BookingAnalysisDataBrowserService:
             raise PermissionError("You do not have access to the selected booking data.")
 
         entries = self.staging.list_raw_entries(source, request=request)
+        requested_subset = bool(folder_path) or bool(file_names)
         matched = self._match_entries(entries, folder_path=folder_path, file_names=file_names)
-        if not matched:
+        if requested_subset and not matched:
             raise ValueError("No matching files found for the selection.")
+        if not requested_subset:
+            matched = list(entries)
 
+        kind = "current" if source.pk == booking.pk else "previous"
         selection = {
+            "source": kind,
             "source_booking_pk": source.pk,
+            "source_booking_id": source.pk,
             "source_virtual_booking_id": (source.virtual_booking_id or "").strip(),
+            "virtual_booking_id": (source.virtual_booking_id or "").strip(),
             "folder_path": (folder_path or "").strip("/"),
             "file_names": [str(n) for n in (file_names or [])],
             "matched_file_names": [str(e.get("name") or "") for e in matched],
+            "file_count": len(matched),
+            "total_size_bytes": sum(int(e.get("size_bytes") or 0) for e in matched),
             "selected_at": timezone.now().isoformat(),
+            "confirmed_at": timezone.now().isoformat(),
             "selected_by_id": getattr(user, "pk", None),
         }
 
@@ -349,13 +362,15 @@ class BookingAnalysisDataBrowserService:
         if not raw:
             return booking
         qs = Booking.objects.select_related("equipment", "user")
+        found = None
         if raw.isdigit():
             found = qs.filter(pk=int(raw)).first()
-            if found:
-                return found
-        found = qs.filter(virtual_booking_id=raw).first()
+        if found is None:
+            found = qs.filter(virtual_booking_id=raw).first()
         if not found:
             raise ValueError(f"Unknown source booking '{raw}'.")
+        if found.user_id != booking.user_id or found.equipment_id != booking.equipment_id:
+            raise PermissionError("You are not authorized to use that booking's data.")
         return found
 
     @staticmethod
@@ -380,11 +395,19 @@ class BookingAnalysisDataBrowserService:
 
     @staticmethod
     def _record_selection(booking: Booking, workspace, user, selection: dict[str, Any]) -> None:
-        """Persist the selection on the existing workspace audit trail (no new schema)."""
+        """Persist selection on the booking (before allocation) and workspace audit trail."""
         from iic_booking.remote_analysis.workspace_models import WorkspaceAudit
 
         payload = dict(selection)
         payload["booking_pk"] = booking.pk
+        try:
+            booking.analysis_data_selection = payload
+            booking.save(update_fields=["analysis_data_selection", "updated_at"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Data browser: failed to persist selection JSON for booking %s: %s", booking.pk, exc)
+
+        if workspace is None:
+            return
         try:
             WorkspaceAudit.objects.create(
                 workspace=workspace,
@@ -397,7 +420,10 @@ class BookingAnalysisDataBrowserService:
             logger.warning("Data browser: failed to audit selection for booking %s: %s", booking.pk, exc)
 
     def latest_selection(self, booking: Booking) -> dict[str, Any] | None:
-        """Most recent recorded selection for this booking's workspace, if any."""
+        """Most recent recorded selection for this booking, if any."""
+        stored = getattr(booking, "analysis_data_selection", None) or {}
+        if stored:
+            return stored
         from iic_booking.remote_analysis.workspace_models import WorkspaceAudit
 
         workspace = self.workspace.get_for_booking(booking)

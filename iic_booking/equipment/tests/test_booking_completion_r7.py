@@ -45,6 +45,7 @@ def _equipment(**kwargs):
         "slot_duration_minutes": 60,
         "user_rating_enabled": False,
         "enable_remote_analysis": True,
+        "auto_complete_booking": True,
     }
     defaults.update(kwargs)
     return Equipment.objects.create(**defaults)

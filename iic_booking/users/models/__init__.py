@@ -26,6 +26,31 @@ from .wallet import (
     WalletPeerTransferStatus,
 )
 from .wallet_credit_facility_settings import WalletCreditFacilitySettings
+from .wallet_credit_facility import (
+    WalletCreditPolicy,
+    WalletCreditFacility,
+    WalletCreditFacilityStatus,
+    WalletCreditLedgerEntry,
+    WalletCreditLedgerKind,
+    WalletCreditInvoice,
+    WalletCreditInvoiceStatus,
+    WalletCreditPayment,
+    WalletCreditAuditEvent,
+)
+from .channel_i_identity import (
+    ChannelIIdentityProfile,
+    ChannelIIdentityHistory,
+    StudentDegreeClassification,
+    ChannelIDepartmentMapping,
+    HeadOfDepartmentAssignment,
+    UserAffiliation,
+    StudentValidityExtension,
+    StudentLifecycleEvent,
+    PortalUserClassification,
+    DegreeClassificationKind,
+    StudentValiditySource,
+    AffiliationKind,
+)
 from .wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .department_faculty_credit_facility import (
     DepartmentFacultyCreditFacilitySettings,
@@ -55,6 +80,17 @@ from .equipment_supply_chain_role import (
 from .rbac import PermissionDefinition, DeptAdminPermissionGrant, StaffPermissionGrant
 from .admin_panel_access import AdminPanelRoleConfig
 from .sync_agent import SyncAgent
+from .portal_migration import (
+    PortalMigrationPhase,
+    PortalMigrationState,
+    LegacyWalletMappingStatus,
+    LegacyLedgerDirection,
+    LegacyWalletAccountMapping,
+    LegacyWalletLedgerEntry,
+    LegacyWalletSyncDeadLetter,
+    PortalMigrationPhaseTransition,
+    LegacyBookingHistoryRecord,
+)
 
 __all__ = [
     "UserManager",
@@ -78,6 +114,15 @@ __all__ = [
     "WalletRechargeMode",
     "WalletRechargeRequestAuditLog",
     "WalletCreditFacilitySettings",
+    "WalletCreditPolicy",
+    "WalletCreditFacility",
+    "WalletCreditFacilityStatus",
+    "WalletCreditLedgerEntry",
+    "WalletCreditLedgerKind",
+    "WalletCreditInvoice",
+    "WalletCreditInvoiceStatus",
+    "WalletCreditPayment",
+    "WalletCreditAuditEvent",
     "WalletStudentRechargeSettings",
     "DepartmentFacultyCreditFacilitySettings",
     "FacultyDepartmentCreditFacility",
@@ -110,5 +155,26 @@ __all__ = [
     "StaffPermissionGrant",
     "AdminPanelRoleConfig",
     "SyncAgent",
+    "PortalMigrationPhase",
+    "PortalMigrationState",
+    "LegacyWalletMappingStatus",
+    "LegacyLedgerDirection",
+    "LegacyWalletAccountMapping",
+    "LegacyWalletLedgerEntry",
+    "LegacyWalletSyncDeadLetter",
+    "PortalMigrationPhaseTransition",
+    "LegacyBookingHistoryRecord",
+    "ChannelIIdentityProfile",
+    "ChannelIIdentityHistory",
+    "StudentDegreeClassification",
+    "ChannelIDepartmentMapping",
+    "HeadOfDepartmentAssignment",
+    "UserAffiliation",
+    "StudentValidityExtension",
+    "StudentLifecycleEvent",
+    "PortalUserClassification",
+    "DegreeClassificationKind",
+    "StudentValiditySource",
+    "AffiliationKind",
 ]
 
