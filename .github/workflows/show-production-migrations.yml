@@ -146,4 +146,4 @@ jobs:
           print("MYSQL_RESULT=", "PASS" if all(v is not None for v in results.values()) else "PARTIAL_OR_NOT_VERIFIED")
           PY
           docker cp /tmp/prod_ro_probe.py "$CID":/tmp/prod_ro_probe.py
-          docker exec -w /app "$CID" python /tmp/prod_ro_probe.py
+          docker exec -w /app -e PYTHONPATH=/app "$CID" /app/.venv/bin/python /tmp/prod_ro_probe.py
