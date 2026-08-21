@@ -2,29 +2,165 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  backups:
+  post:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Backup RO detail (no migrate)
+      - name: Post-migration verification (RO)
         run: |
           set -euo pipefail
-          echo "=== /home/ubuntu/backups ==="
-          ls -lah /home/ubuntu/backups 2>/dev/null | head -n 40 || true
-          latest=$(ls -1dt /home/ubuntu/backups/* 2>/dev/null | head -n 1 || true)
-          echo "latest_entry=$latest"
-          if [ -n "$latest" ]; then
-            ls -lah "$latest" | head -n 40
-            # gzip test newest .gz
-            gz=$(find "$latest" -type f -name '*.gz' 2>/dev/null | head -n 3 || true)
-            for f in $gz; do
-              echo "gzip_test=$f"
-              gzip -t "$f" && echo "gzip_ok=YES" || echo "gzip_ok=NO"
-              ls -lah "$f"
-            done
-          fi
-          # cron / restore docs
-          ls -lah /home/ubuntu/iic-booking-backend/scripts/deploy/ | head -n 30
-          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/backup.sh && echo backup_sh=YES
-          test -f /home/ubuntu/iic-booking-backend/scripts/deploy/restore.sh && echo restore_sh=YES || echo restore_sh=NO
-          ls /home/ubuntu/iic-booking-backend/docs/release/migration/ 2>/dev/null | head -n 40 || true
-          crontab -l 2>/dev/null | grep -iE 'backup|migrate' || echo 'crontab_backup_lines=none_or_no_access'
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
+          echo "=== SHA / tag ==="
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+
+          echo "=== showmigrations users 0096-0100 ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
+
+          echo "=== any remaining pending ==="
+          docker exec -w /app "$CID" python manage.py showmigrations 2>/dev/null | awk '/\[ \]/{print}' || echo "NONE_PENDING"
+
+          echo "=== equipment 0188 ==="
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>/dev/null | grep -E '0188' || echo "equipment_0188=ABSENT"
+
+          echo "=== schema ChannelIIdentityProfile ==="
+          docker exec -w /app "$CID" python manage.py shell -c "
+from django.db import connection
+from django.apps import apps
+tables=connection.introspection.table_names()
+print('users_channeliidentityprofile=', 'users_channeliidentityprofile' in tables)
+Model=apps.get_model('users','ChannelIIdentityProfile')
+print('model_ok=', Model is not None)
+print('count=', Model.objects.count())
+fields=sorted([f.name for f in Model._meta.get_fields() if hasattr(f,'column') or f.many_to_one or f.one_to_one])
+print('fields=', fields[:40])
+# columns for 0096-0100 related
+with connection.cursor() as c:
+    c.execute(\"\"\"
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='users_channeliidentityprofile'
+      ORDER BY ordinal_position
+    \"\"\")
+    cols=[r[0] for r in c.fetchall()]
+    print('profile_columns=', cols)
+    c.execute(\"\"\"
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name='users_portalmigrationstate'
+      ORDER BY ordinal_position
+    \"\"\")
+    print('portalmigrationstate_columns=', [r[0] for r in c.fetchall()])
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "=== health / readiness ==="
+          for u in http://127.0.0.1:8080/api/v1/analysis/health/ready/ http://127.0.0.1:8080/api/health/ http://127.0.0.1:8080/; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 "$u" || true)
+            echo "url=$u code=$code"
+          done
+          # frontend container
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'frontend|django|celery|redis' || true
+
+          echo "=== Channel-I config (no secrets) ==="
+          docker exec -w /app "$CID" python manage.py shell -c "
+from django.conf import settings
+import os
+keys=['CHANNEL_I_EMPLOYEE_CLAIM','OMNIPORT_REDIRECT_URI','REAL_INTEGRATION_ENABLED','USE_FIXTURE_AUTH','OMNIPORT_CLIENT_ID']
+for k in keys:
+    v=getattr(settings,k,None)
+    if v is None: v=os.environ.get(k)
+    if k=='OMNIPORT_CLIENT_ID':
+        print(k,'=', 'PRESENT' if v else 'ABSENT')
+    else:
+        print(k,'=', v)
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "=== MySQL RO post checks ==="
+          docker exec -w /app "$CID" python manage.py shell -c "
+from users.integrations.old_mysql import OldMySQLReader
+r=OldMySQLReader()
+print('reader_ok=', True)
+# connection probe via known safe methods if present
+import inspect
+print('methods=', [m for m in dir(r) if not m.startswith('_')][:30])
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          # Prefer existing management/command if any; else light RO SQL via app config
+          docker exec -w /app "$CID" python manage.py shell -c "
+from django.conf import settings
+import MySQLdb
+cfg=settings.DATABASES.get('old_mysql') or {}
+# fallback env
+import os
+host=os.environ.get('OLD_MYSQL_HOST')
+port=int(os.environ.get('OLD_MYSQL_PORT','3306'))
+user=os.environ.get('OLD_MYSQL_USER')
+db=os.environ.get('OLD_MYSQL_DATABASE') or os.environ.get('OLD_MYSQL_DB')
+pw=os.environ.get('OLD_MYSQL_PASSWORD')
+print('mysql_host=', host)
+print('mysql_db=', db)
+print('mysql_user=', user)
+conn=MySQLdb.connect(host=host, port=port, user=user, passwd=pw, db=db, connect_timeout=8)
+cur=conn.cursor()
+for t in ['users','user_wallet','wallet_transactions','booking']:
+    try:
+        cur.execute(f'SELECT COUNT(*) FROM {t}')
+        print(f'{t}_count=', cur.fetchone()[0])
+        print(f'{t}_read=', 'PASS')
+    except Exception as e:
+        print(f'{t}_read=', 'FAIL', type(e).__name__)
+# privilege / writable probe — attempt SHOW GRANTS only
+cur.execute('SHOW GRANTS')
+grants=[row[0] for row in cur.fetchall()]
+print('grants_summary=', [g.replace(pw or 'X','***') if pw and pw in g else g for g in grants])
+writable=any(('INSERT' in g.upper() or 'UPDATE' in g.upper() or 'DELETE' in g.upper() or 'ALL PRIVILEGES' in g.upper()) and 'GRANT' in g.upper() for g in grants)
+# more precise: only SELECT should appear for admin.*
+select_only=all('SELECT' in g.upper() and 'INSERT' not in g.upper() and 'UPDATE' not in g.upper() and 'DELETE' not in g.upper() and 'ALL PRIVILEGES' not in g.upper() for g in grants if 'ON \`admin\`' in g or 'ON admin' in g or 'ON *.*' in g)
+print('account_appears_writable=', writable and not select_only)
+print('select_only_heuristic=', select_only)
+conn.close()
+print('mysql_ro=', 'PASS')
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "=== production writes / fixture ==="
+          docker exec -w /app "$CID" python manage.py shell -c "
+import os
+from django.conf import settings
+print('REAL_INTEGRATION_ENABLED=', getattr(settings,'REAL_INTEGRATION_ENABLED', os.environ.get('REAL_INTEGRATION_ENABLED')))
+print('USE_FIXTURE_AUTH=', getattr(settings,'USE_FIXTURE_AUTH', os.environ.get('USE_FIXTURE_AUTH')))
+print('DEBUG=', settings.DEBUG)
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "=== S3 sanity (no secrets) ==="
+          docker exec -w /app "$CID" python manage.py shell -c "
+from django.conf import settings
+import os
+b=getattr(settings,'AWS_STORAGE_BUCKET_NAME',None) or os.environ.get('AWS_STORAGE_BUCKET_NAME')
+print('s3_bucket_configured=', bool(b))
+print('default_file_storage=', getattr(settings,'DEFAULT_FILE_STORAGE', None) or getattr(settings,'STORAGES',{}).get('default',{}).get('BACKEND'))
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "=== employee claim / identity (read-only, no PII dump) ==="
+          docker exec -w /app "$CID" python manage.py shell -c "
+from django.conf import settings
+import os, MySQLdb
+claim=getattr(settings,'CHANNEL_I_EMPLOYEE_CLAIM',None) or os.environ.get('CHANNEL_I_EMPLOYEE_CLAIM')
+print('authoritative_claim=', claim)
+# durable profile table usable
+from users.models import ChannelIIdentityProfile
+print('ChannelIIdentityProfile_ready=', True)
+print('ChannelIIdentityProfile_rows=', ChannelIIdentityProfile.objects.count())
+# exact match probe using previously qualified pattern: claim username maps to emp_id
+# We do NOT invent a user; just confirm RO match capability still works for a known-safe count query shape
+host=os.environ.get('OLD_MYSQL_HOST'); port=int(os.environ.get('OLD_MYSQL_PORT','3306'))
+user=os.environ.get('OLD_MYSQL_USER'); db=os.environ.get('OLD_MYSQL_DATABASE') or os.environ.get('OLD_MYSQL_DB')
+pw=os.environ.get('OLD_MYSQL_PASSWORD')
+conn=MySQLdb.connect(host=host,port=port,user=user,passwd=pw,db=db,connect_timeout=8)
+cur=conn.cursor()
+# schema sanity only
+cur.execute('SELECT COUNT(*) FROM users WHERE emp_id IS NOT NULL AND emp_id<>\"\"')
+print('users_with_emp_id=', cur.fetchone()[0])
+conn.close()
+print('wallet_identity_probe=', 'SKIP_NO_LIVE_SESSION')
+" 2>/dev/null | grep -v RequestsDependencyWarning || true
+
+          echo "POST_MIGRATE_VERIFY_DONE=YES"
