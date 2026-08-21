@@ -1,11 +1,13 @@
 # REAL Integration — Staging-Qualified Release Freeze
 
 **Release / version identifier:** `v2.5.2-real-integration-staging-qualified`  
+**Freeze commit:** `bd71757` (`release/real-integration-staging-qualified`)  
 **Freeze date (UTC):** 2026-08-21  
 **Base worktree commit (pre-freeze):** `f7783f9`  
 **Production commit (running):** historically `ced49a2` / public API `portal_version=2.5.2` (empty git SHAs)  
 **This document authorizes:** git freeze / local commit only  
-**This document does NOT authorize:** production deploy, SSH, env edits, migrate, or REAL enablement
+**This document does NOT authorize:** production deploy, SSH, env edits, migrate, or REAL enablement  
+**Push / deploy performed:** NO
 
 ---
 
