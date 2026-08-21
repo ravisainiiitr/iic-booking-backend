@@ -4,7 +4,8 @@
 #   ./scripts/deploy/deploy.sh
 #   COMPOSE_PROFILES=guacamole,flower PORTAL_BASE_URL=https://booking.iitr.ac.in ./scripts/deploy/deploy.sh
 #
-# Does not change application business logic — build, migrate, restart, verify.
+# Does not change application business logic — build, restart, verify.
+# DEPLOYMENT ≠ MIGRATION: does not run manage.py migrate.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,9 +67,8 @@ log "Starting postgres + redis"
 compose up -d postgres redis
 sleep 5
 
-# 6) Migrations + static (via one-off django or start script)
-log "Applying migrations + collectstatic"
-compose run --rm --no-deps django python manage.py migrate --noinput
+# 6) Static + RA settings sync only (NO migrate — DEPLOYMENT ≠ MIGRATION)
+log "collectstatic + sync_remote_analysis_settings (migrate skipped; use scripts/deploy/migrate-production.sh)"
 compose run --rm --no-deps django python manage.py collectstatic --noinput
 compose run --rm --no-deps django python manage.py sync_remote_analysis_settings || true
 
