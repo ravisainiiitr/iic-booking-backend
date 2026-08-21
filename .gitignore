@@ -285,3 +285,8 @@ iic_booking/media/
 # Deploy automation local state / backups
 backups/deploy/
 .deploy-state/
+
+# Staging secrets
+.envs/.staging/.django
+.envs/.staging/.frontend
+

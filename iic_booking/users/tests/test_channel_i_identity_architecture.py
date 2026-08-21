@@ -118,23 +118,31 @@ class IdentityArchitectureTests(TestCase):
             code="MECHID",
             department_type=DepartmentType.INTERNAL,
         )
-        StudentDegreeClassification.objects.create(
-            channel_i_degree_name="B.Tech",
+        StudentDegreeClassification.objects.update_or_create(
             channel_i_degree_name_normalized=normalize_label("B.Tech"),
-            classification=DegreeClassificationKind.UNDERGRADUATE,
-            active=True,
+            defaults={
+                "channel_i_degree_name": "B.Tech",
+                "classification": DegreeClassificationKind.UNDERGRADUATE,
+                "active": True,
+            },
         )
-        StudentDegreeClassification.objects.create(
-            channel_i_degree_name="M.Tech",
+        StudentDegreeClassification.objects.update_or_create(
             channel_i_degree_name_normalized=normalize_label("M.Tech"),
-            classification=DegreeClassificationKind.POSTGRADUATE,
-            active=True,
+            defaults={
+                "channel_i_degree_name": "M.Tech",
+                "classification": DegreeClassificationKind.POSTGRADUATE,
+                "active": True,
+            },
         )
-        ChannelIDepartmentMapping.objects.create(
-            channel_i_department_name="Department of Mechanical Engineering",
-            channel_i_department_name_normalized=normalize_label("Department of Mechanical Engineering"),
-            internal_department=self.dept,
-            active=True,
+        ChannelIDepartmentMapping.objects.update_or_create(
+            channel_i_department_name_normalized=normalize_label(
+                "Department of Mechanical Engineering"
+            ),
+            defaults={
+                "channel_i_department_name": "Department of Mechanical Engineering",
+                "internal_department": self.dept,
+                "active": True,
+            },
         )
         self.admin = User.objects.create_user(
             email="admin.ident@test.iitr.ac.in",

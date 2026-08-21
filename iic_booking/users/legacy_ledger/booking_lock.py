@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.utils import timezone
 
 from iic_booking.users.models import UserType
@@ -56,8 +57,10 @@ def booking_status_payload(user=None) -> dict:
         "end_user_booking_enabled": state.end_user_booking_enabled,
         "locked_for_this_user": locked,
         "message": message,
+        "code": "MIGRATION_BOOKING_NOT_ACTIVE" if locked else "",
         "booking_opens_at": state.booking_opens_at.isoformat() if state.booking_opens_at else None,
         "phase": state.phase,
         "legacy_ledger_frozen": state.legacy_ledger_frozen,
         "last_wallet_txn_watermark": state.last_wallet_txn_watermark,
+        "environment": getattr(settings, "DEPLOYMENT_ENVIRONMENT", "UNKNOWN"),
     }

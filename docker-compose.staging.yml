@@ -1,0 +1,203 @@
+# Isolated STAGING stack — NEVER point DATABASE_URL at production RDS.
+#
+# Project name isolates containers/volumes from production compose.
+#
+# Usage (from backend repo root):
+#   cp docs/release/migration/sample.env.staging .envs/.staging/.django
+#   # edit secrets — generate unique DJANGO_SECRET_KEY / POSTGRES_PASSWORD
+#   docker compose -f docker-compose.staging.yml --env-file .envs/.staging/.django up -d --build
+#
+# CRITICAL — environment loading:
+#   django/celery services use env_file: ./.envs/.staging/.django
+#   Docker bakes env_file into the container at *create* time.
+#   After editing .envs/.staging/.django you MUST recreate (restart is not enough):
+#     docker compose -f docker-compose.staging.yml --env-file .envs/.staging/.django \
+#       up -d --force-recreate --no-deps django celeryworker celerybeat
+#
+# Legacy MySQL via Windows SSH tunnel for LOCAL staging qualification:
+#   OLD_MYSQL_HOST=host.docker.internal
+#   OLD_MYSQL_PORT=13306
+#   OLD_MYSQL_DATABASE=admin
+#   OLD_MYSQL_USER=iic_booking_ro   # SELECT-only; never use broad accounts in Django
+#   (operator opens: Windows 127.0.0.1:13306 -> SSH jump -> MySQL 127.0.0.1:3306)
+#   Do NOT use 127.0.0.1 inside the Django container for that tunnel.
+#   Keep the SSH tunnel process running while probing.
+#
+# Omniport redirect for this qualification (path must be exact):
+#   OMNIPORT_REDIRECT_URI=https://equip.iitr.ac.in/api/auth/omniport/callback/
+#   Do NOT use /api/v1/auth/channel-i/callback/
+#
+# REAL_INTEGRATION_ENABLED=false until operator manually enables after probes.
+#
+# Host ports (defaults — avoid colliding with production 8080/8000):
+#   Django API:  8180 -> 5000
+#   Frontend:    8100 -> 80   (see frontend docker-compose.staging.yml)
+#   Flower:      5556 (profile)
+
+name: iic-booking-staging
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
+x-django: &django
+  build:
+    context: .
+    dockerfile: ./compose/production/django/Dockerfile
+  image: iic_booking_staging_django
+  restart: unless-stopped
+  env_file:
+    - ./.envs/.staging/.django
+  environment:
+    TZ: Asia/Kolkata
+    DJANGO_SETTINGS_MODULE: config.settings.staging
+    DEPLOYMENT_ENVIRONMENT: STAGING
+    PORTAL_VERSION: ${PORTAL_VERSION:-staging}
+    GIT_SHA: ${GIT_SHA:-}
+    BACKEND_GIT_COMMIT: ${BACKEND_GIT_COMMIT:-f7783f9}
+  # Reach Windows/macOS host services (SSH tunnel for legacy MySQL).
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - staging_media:/app/iic_booking/media
+    # staticfiles stays in the image filesystem (django-owned). A named volume
+    # remounts as root and breaks collectstatic in /start for staging.
+  networks:
+    - staging_net
+  logging: *default-logging
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: iic-booking-staging-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-iic_booking_staging}
+      POSTGRES_USER: ${POSTGRES_USER:-iic_booking_staging}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .envs/.staging/.django}
+      TZ: Asia/Kolkata
+    volumes:
+      - staging_postgres:/var/lib/postgresql/data
+    networks:
+      - staging_net
+    logging: *default-logging
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER:-iic_booking_staging} -d $${POSTGRES_DB:-iic_booking_staging}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    # Optional host bind for local tools — not published by default
+    # ports:
+    #   - "5433:5432"
+
+  redis:
+    image: docker.io/redis:7.2
+    container_name: iic-booking-staging-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - staging_redis:/data
+    networks:
+      - staging_net
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  django:
+    <<: *django
+    container_name: iic-booking-staging-django
+    ports:
+      - "${STAGING_API_HOST_PORT:-8180}:5000"
+    command: /start
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/api/v1/analysis/health/ready/', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  celeryworker:
+    <<: *django
+    container_name: iic-booking-staging-celeryworker
+    image: iic_booking_staging_celeryworker
+    command: /start-celeryworker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_started
+
+  celerybeat:
+    <<: *django
+    container_name: iic-booking-staging-celerybeat
+    image: iic_booking_staging_celerybeat
+    command: /start-celerybeat
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_started
+
+  flower:
+    <<: *django
+    profiles: ["flower"]
+    container_name: iic-booking-staging-flower
+    image: iic_booking_staging_flower
+    command: /start-flower
+    ports:
+      - "${STAGING_FLOWER_HOST_PORT:-5556}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+      django:
+        condition: service_started
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: iic-booking-staging-mailpit
+    restart: unless-stopped
+    ports:
+      - "${STAGING_MAILPIT_UI_PORT:-8025}:8025"
+      - "${STAGING_MAILPIT_SMTP_PORT:-1025}:1025"
+    networks:
+      - staging_net
+    logging: *default-logging
+
+networks:
+  staging_net:
+    driver: bridge
+    name: iic-booking-staging-net
+
+volumes:
+  staging_postgres:
+    name: iic-booking-staging-postgres
+  staging_redis:
+    name: iic-booking-staging-redis
+  staging_media:
+    name: iic-booking-staging-media

@@ -1,0 +1,111 @@
+{
+  "mode": "STAGING_FIXTURE",
+  "description": "Representative legacy wallet + booking snapshot for staging qualification. NOT production data.",
+  "users": [
+    {"id": 101, "emp_id": "100673", "name": "Staff Owner", "email": "staff.owner@legacy.local"},
+    {"id": 102, "emp_id": "24117002", "name": "UG Open", "email": "ug.open@legacy.local"},
+    {"id": 103, "emp_id": "", "name": "Missing Emp", "email": "missing@legacy.local"},
+    {"id": 104, "emp_id": "DUP001", "name": "Dup A", "email": "dupa@legacy.local"},
+    {"id": 105, "emp_id": "DUP001", "name": "Dup B", "email": "dupb@legacy.local"},
+    {"id": 106, "emp_id": "ORPHAN99", "name": "Orphan Wallet User", "email": "orphan@legacy.local"},
+    {"id": 107, "emp_id": "MISMATCH1", "name": "Mismatch User", "email": "mismatch@legacy.local"}
+  ],
+  "wallets": [
+    {"id": 1, "user_id": 101, "balance": "100.00"},
+    {"id": 2, "user_id": 102, "balance": "50.00"},
+    {"id": 3, "user_id": 106, "balance": "5.00"},
+    {"id": 4, "user_id": 107, "balance": "999.00"}
+  ],
+  "transactions": [
+    {
+      "id": 1001,
+      "user_id": 101,
+      "amount": "120.00",
+      "balance": "120.00",
+      "transaction_type": 1,
+      "create_date": "2024-01-01T10:00:00+00:00",
+      "description": "Recharge UTR: STG001",
+      "created_by": "legacy"
+    },
+    {
+      "id": 1002,
+      "user_id": 101,
+      "amount": "20.00",
+      "balance": "100.00",
+      "transaction_type": 2,
+      "create_date": "2024-01-02T10:00:00+00:00",
+      "description": "Booking #9001",
+      "created_by": "legacy"
+    },
+    {
+      "id": 1003,
+      "user_id": 102,
+      "amount": "50.00",
+      "balance": "50.00",
+      "transaction_type": 1,
+      "create_date": "2024-02-01T10:00:00+00:00",
+      "description": "Opening credit",
+      "created_by": "legacy"
+    },
+    {
+      "id": 1004,
+      "user_id": 107,
+      "amount": "10.00",
+      "balance": "10.00",
+      "transaction_type": 1,
+      "create_date": "2024-03-01T10:00:00+00:00",
+      "description": "Suspicious tiny credit vs stored 999",
+      "created_by": "legacy"
+    },
+    {
+      "id": 1005,
+      "user_id": 106,
+      "amount": "5.00",
+      "balance": "5.00",
+      "transaction_type": 1,
+      "create_date": "2024-03-02T10:00:00+00:00",
+      "description": "Orphan wallet credit",
+      "created_by": "legacy"
+    }
+  ],
+  "bookings": [
+    {
+      "id": 9001,
+      "legacy_booking_id": 9001,
+      "employee_id": "100673",
+      "equipment": "SEM Fixture",
+      "status": "COMPLETED",
+      "charges": "20.00",
+      "sample": "sample-A",
+      "result_ref": "R-9001"
+    },
+    {
+      "id": 9002,
+      "legacy_booking_id": 9002,
+      "employee_id": "24117002",
+      "equipment": "XRD Fixture",
+      "status": "CANCELLED",
+      "charges": "0.00",
+      "cancellation": true
+    },
+    {
+      "id": 9003,
+      "legacy_booking_id": 9003,
+      "employee_id": "24117002",
+      "equipment": "AFM Fixture",
+      "status": "COMPLETED",
+      "charges": "15.00"
+    },
+    {
+      "exclude": true,
+      "exclude_reason": "test_account_booking",
+      "legacy_booking_id": 9004,
+      "employee_id": "TEST"
+    },
+    {
+      "legacy_booking_id": null,
+      "employee_id": "100673",
+      "status": "BROKEN"
+    }
+  ]
+}
