@@ -2,82 +2,97 @@ name: Show Production Migrations
 on:
   workflow_dispatch:
 jobs:
-  set_claim:
+  phase0:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Set CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=username and recreate
+      - name: Phase 0–2 pre-migration verification (NO migrate)
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
-          ENV=.envs/.production/.django
-          # upsert claim without printing secrets
+          echo "=== SHA / tag ==="
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || true)"
+          echo "expected_prompt_sha=fdda7bee2167c33c5b8d49437c6e33838c077180"
+          echo "sha_matches_prompt_fdda7be=$([ "$(git rev-parse HEAD)" = "fdda7bee2167c33c5b8d49437c6e33838c077180" ] && echo YES || echo NO)"
+
+          echo "=== health ==="
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
+          echo "health=$code"
+
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
+
+          echo "=== users 0096-0100 ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
+
+          echo "=== ALL pending migrations (any app) ==="
+          docker exec -w /app "$CID" python manage.py showmigrations 2>/dev/null | awk '
+            /^[a-zA-Z0-9_]/ { app=$1 }
+            /\[ \]/ {
+              # pending
+              gsub(/^\s+\[ \] /, "", $0)
+              print "PENDING", app, $0
+            }
+          ' || true
+
+          echo "=== equipment 0188 presence ==="
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>/dev/null | grep -E '0188|r14|R14' || echo "equipment_0188_or_r14=NOT_IN_SHOWMIGRATIONS"
+
+          echo "=== migrate plan (dry) ==="
+          docker exec -w /app "$CID" python manage.py migrate --plan 2>/dev/null | tee /tmp/migrate_plan.txt | tail -n 80
+          echo "=== plan contains equipment.0188? ==="
+          grep -E 'equipment\.0188|0188_' /tmp/migrate_plan.txt && echo "UNEXPECTED_0188=YES" || echo "UNEXPECTED_0188=NO"
+          echo "=== plan apps ==="
+          grep -E '^\s*(Migrating|Applying)' /tmp/migrate_plan.txt | head -n 60 || true
+          # Extract planned migration names
+          grep -oE '[a-zA-Z0-9_]+\.[0-9]{4}_[a-zA-Z0-9_]+' /tmp/migrate_plan.txt | sort -u | tee /tmp/planned.txt || true
+          echo "=== planned list ==="
+          cat /tmp/planned.txt || true
+          # Flag if anything outside users 0096-0100
           python3 - <<'PY'
           from pathlib import Path
-          p=Path('.envs/.production/.django')
-          text=p.read_text()
-          lines=text.splitlines(keepends=True)
-          key='CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM'
-          val='username'
-          out=[]; seen=False
-          for line in lines:
-              s=line.lstrip('\ufeff')
-              if s.strip().startswith('#') or '=' not in s.strip() or not s.strip():
-                  out.append(line); continue
-              k=s.strip().split('=',1)[0]
-              if k==key:
-                  out.append(f'{key}={val}\n'); seen=True
-              else:
-                  out.append(line)
-          if not seen:
-              out.append(f'{key}={val}\n')
-          p.write_text(''.join(out))
-          print('claim_written=username')
+          allowed={
+            'users.0096_portal_migration_legacy_ledger',
+            'users.0097_portal_migration_observability',
+            'users.0098_wallet_credit_facility_v2',
+            'users.0099_channel_i_identity_architecture',
+            'users.0100_channel_i_gender_enrolment',
+          }
+          # also allow short forms from plan
+          lines=[l.strip() for l in Path('/tmp/planned.txt').read_text().splitlines() if l.strip()]
+          unexpected=[]
+          users_hits=[]
+          for l in lines:
+              if l.startswith('users.009') or l.startswith('users.0100'):
+                  users_hits.append(l)
+              # normalize: plan may print app.migration
+              if not (l.startswith('users.0096') or l.startswith('users.0097') or l.startswith('users.0098') or l.startswith('users.0099') or l.startswith('users.0100')):
+                  # ignore non-migration tokens
+                  if '.' in l and any(ch.isdigit() for ch in l.split('.',1)[0][-1:]+l):
+                      # keep if looks like app.NNNN_
+                      parts=l.split('.',1)
+                      if len(parts)==2 and parts[1][:4].isdigit():
+                          if not (parts[0]=='users' and parts[1][:4] in {'0096','0097','0098','0099','0100'}):
+                              unexpected.append(l)
+          print('planned_count=', len(lines))
+          print('users_target_hits=', users_hits)
+          print('unexpected_migrations=', unexpected if unexpected else 'NONE')
+          print('plan_only_users_0096_0100=', 'YES' if not unexpected else 'NO')
           PY
-          grep -E '^CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM=' "$ENV" | sed 's/\r$//'
-          # ensure start has no migrate
-          grep -E 'migrate' compose/production/django/start | grep -vE '^\s*#|Do NOT' && exit 2 || echo start_no_migrate=OK
-          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker celerybeat
-          for i in $(seq 1 40); do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)
-            [ "$code" = "200" ] && break
-            sleep 3
+
+          echo "=== backup evidence ==="
+          for d in /home/ubuntu/backups /home/ubuntu/iic-booking-backend/backups /var/backups/iic /home/ubuntu/iic-booking-backend/.backups /opt/backups; do
+            [ -d "$d" ] && echo "backup_dir=$d" && ls -lt "$d" 2>/dev/null | head -n 15 || true
           done
-          echo "health=$code"
-          [ "$code" = "200" ]
-          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -i -w /app "$CID" python - <<'PY'
-          import os
-          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
-          import django; django.setup()
-          from django.conf import settings
-          from iic_booking.users.legacy_ledger.real_integration_guards import employee_id_claim_status, channel_i_preflight_status
-          from iic_booking.users.legacy_ledger.real_integration_live_evidence import probe_live_channel_i_identity, write_live_channel_i_evidence
-          from iic_booking.users.identity.channel_i_fixture import channel_i_fixture_mode_enabled
-          print('CLAIM=', settings.CHANNEL_I_AUTHORITATIVE_EMPLOYEE_ID_CLAIM)
-          print('fixture=', channel_i_fixture_mode_enabled())
-          print('employee_id_claim_status=', employee_id_claim_status())
-          print('channel_i_preflight=', channel_i_preflight_status().get('status'), channel_i_preflight_status().get('evidence_class'))
-          probe=probe_live_channel_i_identity()
-          print('durable_probe=', {k: probe.get(k) for k in ('status','evidence_class','live_oauth','live_userinfo','claim','exact_match_count','employee_identity_pass','wallet_identity','fixture_fallback','reason')})
-          # Pre-migration evidence file (redacted)
-          path=write_live_channel_i_evidence({
-              **probe,
-              'status': 'PASS' if probe.get('exact_match_count')==1 or True else probe.get('status'),
-              'evidence_class': 'REAL',
-              'live_oauth': 'PASS',
-              'live_userinfo': 'PASS',
-              'redirect': 'PASS',
-              'claim': 'username',
-              'claim_pass': True,
-              'employee_identity_pass': True,
-              'exact_match_count': 1,
-              'wallet_identity': 'PASS',
-              'fixture_fallback': 'NONE',
-              'verification_method': 'operator_login_plus_portal_emp_id_legacy_exact_match',
-              'reason': 'Operator Channel-I login SUCCESS; claim username configured from live userinfo (only available claim); portal emp_id exact match admin.users.emp_id count=1; ChannelIIdentityProfile pending 0099',
-          })
-          print('evidence_path_written=', path)
-          print('HEAD_note=7d1081d')
-          print('migration=NOT_PERFORMED')
-          PY
-          docker exec -w /app "$CID" python manage.py showmigrations users 2>/dev/null | grep -E '0096|0097|0098|0099|0100' || true
+          # known nightly pattern from prior qualification
+          find /home/ubuntu -maxdepth 4 -type d -name 'nightly-*' 2>/dev/null | head -n 10 || true
+          find /home/ubuntu -maxdepth 5 -type f \( -name '*.sql.gz' -o -name '*.dump' -o -name '*backup*' \) 2>/dev/null | head -n 30 || true
+          ls -lt /home/ubuntu/iic-booking-backend/scripts/deploy/ 2>/dev/null | head -n 20 || true
+          test -f scripts/deploy/backup.sh && echo backup_script=PRESENT || echo backup_script=ABSENT
+          test -f scripts/deploy/migrate-production.sh && echo migrate_script=PRESENT || echo migrate_script=ABSENT
+          ls docs/release/migration/* 2>/dev/null | head -n 40 || true
+
+          echo "=== gated workflow confirm string ==="
+          echo "actions_confirm=MIGRATE"
+          echo "script_confirm=CONFIRM_MIGRATE=YES"
+          echo "MIGRATE_EXECUTED=NO"
