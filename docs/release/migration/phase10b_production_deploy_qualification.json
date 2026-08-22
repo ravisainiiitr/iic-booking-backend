@@ -1,0 +1,153 @@
+{
+  "phase": "10B",
+  "audit_mode": "DEPLOY_PLUS_READ_ONLY_QUALIFICATION",
+  "generated_at_utc": "2026-08-22T07:32:00+00:00",
+  "verdict": "NOT READY — BLOCKERS LISTED",
+  "production_writes_performed": ["application_deploy_only"],
+  "pr_90": {
+    "number": 90,
+    "state": "MERGED",
+    "merged_at": "2026-08-22T07:14:28Z",
+    "merge_commit_sha": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b",
+    "url": "https://github.com/ravisainiiitr/iic-booking-backend/pull/90"
+  },
+  "pr_86": {
+    "number": 86,
+    "state": "OPEN",
+    "status": "UNTOUCHED"
+  },
+  "release": {
+    "tag": "v2.5.2-portal-migration-phase8-production",
+    "tag_points_to": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b",
+    "pre_merge_candidate_sha": "9666952434fb08a28cc76005d37374429c729d71",
+    "note": "Deploy used merge commit tag, not pre-merge branch SHA alone"
+  },
+  "deployment": {
+    "workflow_run": 32559599412,
+    "workflow_url": "https://github.com/ravisainiiitr/iic-booking-backend/actions/runs/32559599412",
+    "deployed_sha": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b",
+    "previous_tag": "v2.5.2-channel-i-user-savepoint",
+    "sha_match": true,
+    "result": "PASS"
+  },
+  "health": {
+    "api_version": "PASS",
+    "readiness": "PASS",
+    "django": "PASS",
+    "celeryworker": "PASS",
+    "celerybeat": "PASS",
+    "redis": "PASS (healthy)",
+    "frontend": "PASS (version endpoint + installer-auth gate)"
+  },
+  "auto_migrate": {
+    "migrate_executed": false,
+    "provisioning_post": false,
+    "migrate_workflow": false,
+    "evidence": "compose/production/django/start has no migrate; deploy log confirms no auto-migrate"
+  },
+  "migrations": {
+    "0096_0100": "APPLIED",
+    "0101_0103": "PENDING",
+    "unexpected": "NONE",
+    "forbidden_0188_r14": "ABSENT",
+    "migrate_plan": "users.0101, users.0102, users.0103 only"
+  },
+  "backup": {
+    "identifier": "nightly-20260822",
+    "path": "/home/ubuntu/backups/nightly/nightly-20260822/db/portal.sql.gz",
+    "size": "32M",
+    "timestamp": "2026-08-22T02:30Z",
+    "gzip_test": "PASS",
+    "integrity_workflow": 32559579454
+  },
+  "mysql_ro": {
+    "user": "iic_booking_ro",
+    "host": "host.docker.internal",
+    "database": "admin",
+    "authentication": "PASS",
+    "users_table": true,
+    "user_wallet_table": true,
+    "wallet_transactions_table": true,
+    "booking_table": true,
+    "column_map_ready": false,
+    "column_map_blocker": "no_resolvable_datetime_strategy"
+  },
+  "mysql_column_map": {
+    "booking_id": "id",
+    "user_id": "user_id",
+    "equipment_id": "equipment_id",
+    "booking_date": "booking_date",
+    "status": "status",
+    "amount": "charge",
+    "start_time": null,
+    "end_time": null,
+    "cancelled_flag": null,
+    "note": "Production booking table has time_required (17 cols); operator column-map file required for datetime strategy"
+  },
+  "equipment_mapping": {
+    "status": "BLOCKED_BY_MIGRATION",
+    "reason": "users.0102 not applied — LegacyEquipmentMapping table absent"
+  },
+  "legacy_discovery": {
+    "status": "BLOCKED",
+    "reason": "Column map not ready (datetime); full fetch requires 0102 + approved column map"
+  },
+  "conflict_analysis": {
+    "status": "NOT_EXECUTED",
+    "reason": "Blocked by column map + 0102"
+  },
+  "test_account_dry_run": {
+    "test_users": 1067,
+    "test_bookings": 218,
+    "deletion_performed": false
+  },
+  "email_recipient_dry_run": {
+    "total_recipients": 1045,
+    "faculty": 977,
+    "students": 58,
+    "oic": 7,
+    "admin": 3,
+    "skipped": 72,
+    "invalid_email": 0,
+    "duplicate_email": 0,
+    "smtp_sends": 0
+  },
+  "production_hard_off": {
+    "REAL_INTEGRATION_ENABLED": false,
+    "CHANNEL_I_STAGING_FIXTURE_MODE": false,
+    "LEGACY_MYSQL_STAGING_FIXTURE_MODE": false,
+    "LOCAL_STAGING_ACCEPTED": false,
+    "DEPLOYMENT_ENVIRONMENT": "PRODUCTION"
+  },
+  "frontend_migration_ui": "NOT DEPLOYED",
+  "phase_8_on_production": {
+    "8A_code": "DEPLOYED",
+    "8B_code": "DEPLOYED",
+    "8C_code": "DEPLOYED",
+    "8A_schema": "PENDING_0101",
+    "8B_schema": "PENDING_0102",
+    "8C_schema": "PENDING_0103"
+  },
+  "t0_status": "NOT ACTIVATED",
+  "qualification_tooling": {
+    "phase10_workflow": "FAILED — ImportError preview_templates from migration_emails (should be migration_notifications)",
+    "supplemental_workflow": 32559788849,
+    "supplemental_result": "PASS"
+  },
+  "blockers": [
+    "users.0101–0103 pending — separate explicit MIGRATE approval required",
+    "MySQL booking datetime strategy not auto-resolved (time_required needs operator column-map)",
+    "Legacy upcoming-week discovery blocked until column map + 0102",
+    "Equipment mapping blocked until users.0102 applied",
+    "migration_production_legacy_qualification ImportError on deployed code",
+    "Frontend migration UX not committed/merged/deployed"
+  ],
+  "hard_stop": {
+    "migrate": "NOT RUN",
+    "t0_activation": "NOT RUN",
+    "legacy_blocks": "NOT CREATED",
+    "emails": "NOT SENT",
+    "refunds": "NOT ISSUED",
+    "test_cleanup": "NOT RUN"
+  }
+}

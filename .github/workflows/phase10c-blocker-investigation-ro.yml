@@ -1,0 +1,81 @@
+# Phase 10C — read-only blocker investigation on production (no migrate, no writes).
+name: Phase 10C Blocker Investigation RO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  investigate:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Phase 10C read-only investigation
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          git fetch --tags origin master 2>/dev/null || true
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "deploy_head=$(git rev-parse HEAD)"
+          echo "django=$CID"
+
+          echo "=== datetime investigation (inline — deployed image) ==="
+          docker exec -w /app "$CID" python -c "
+          import os, json
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          # Inline minimal investigation if command not yet in deployed image
+          try:
+              from iic_booking.users.legacy_ledger.legacy_booking_mysql import investigate_legacy_booking_datetime
+              report = investigate_legacy_booking_datetime()
+          except ImportError:
+              from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+              from iic_booking.users.legacy_ledger.legacy_booking_mysql import resolve_booking_column_map
+              reader = OldMySQLReader()
+              with reader:
+                  cols = {c['Field']: c.get('Type') for c in reader.fetchall('SHOW COLUMNS FROM booking')}
+                  stats = reader.fetchone('SELECT COUNT(*) AS total, COUNT(DISTINCT time_required) AS dtr, MIN(time_required) AS min_tr, MAX(time_required) AS max_tr FROM booking')
+                  top = reader.fetchall('SELECT time_required, COUNT(*) AS c FROM booking GROUP BY time_required ORDER BY c DESC LIMIT 15')
+              report = {'ok': True, 'booking_columns': cols, 'stats': stats, 'top_time_required': top, 'auto_map': resolve_booking_column_map(list(cols.keys()))}
+          print(json.dumps(report, indent=2, default=str))
+          " | tee /tmp/phase10c_datetime.json
+
+          echo "=== equipment inventory (legacy MySQL + new portal) ==="
+          docker exec -w /app "$CID" python -c "
+          import os, json
+          os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          try:
+              from iic_booking.users.legacy_ledger.legacy_equipment_inventory import build_equipment_mapping_candidate_report
+              report = build_equipment_mapping_candidate_report()
+          except ImportError:
+              from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+              from iic_booking.equipment.models import Equipment
+              reader = OldMySQLReader()
+              with reader:
+                  tables = [next(iter(t.values())) for t in reader.fetchall('SHOW TABLES')]
+                  eq_table = 'equipment' if 'equipment' in tables else None
+                  legacy = reader.fetchall(f'SELECT id, name FROM {eq_table} ORDER BY id LIMIT 5000') if eq_table else []
+              new_count = Equipment.objects.count()
+              report = {'ok': bool(eq_table), 'legacy_table': eq_table, 'legacy_count': len(legacy), 'new_portal_count': new_count, 'unmapped': len(legacy)}
+          slim = {k: report.get(k) for k in ['ok','legacy_inventory','new_portal_inventory','mapped','unmapped','ambiguous','note'] if k in report}
+          slim['legacy_count'] = (report.get('legacy_inventory') or {}).get('count') or report.get('legacy_count')
+          slim['new_count'] = (report.get('new_portal_inventory') or {}).get('count') or report.get('new_portal_count')
+          print(json.dumps(slim, indent=2, default=str))
+          " | tee /tmp/phase10c_equipment.json
+
+          echo "=== qualification import smoke ==="
+          docker exec -w /app "$CID" python -c "
+          import importlib
+          importlib.import_module('iic_booking.users.management.commands.migration_production_legacy_qualification')
+          print('qualification_import=FAIL_EXPECTED_ON_DEPLOYED_SHA')
+          " 2>&1 || echo "qualification_import_still_broken_on_deployed_image=YES"
+
+          echo "=== dry-runs ==="
+          docker exec -w /app "$CID" python manage.py migration_cleanup_test_accounts --dry-run 2>&1 | tail -n 8 || true
+          docker exec -w /app "$CID" python -c "
+          import os, json; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from iic_booking.users.legacy_ledger.migration_notifications import select_notification_candidates
+          r = select_notification_candidates()
+          print(json.dumps({'total_recipients': r['total_recipients'], 'faculty': r['faculty'], 'students': r['students'], 'oic': r['oic'], 'admin': r['admin'], 'emails_sent': 0}, indent=2))
+          "
+          echo "PHASE10C_RO_DONE=YES"

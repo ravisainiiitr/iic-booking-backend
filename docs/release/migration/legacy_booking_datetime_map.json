@@ -1,0 +1,32 @@
+{
+  "_contract": "Operator-approved legacy booking datetime + status mapping for Phase 8B discovery",
+  "_status": "OPERATOR_REQUIRED",
+  "_production_sha_at_creation": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b",
+  "_notes": [
+    "Do not deploy discovery until every OPERATOR_REQUIRED field is explicitly approved.",
+    "Production booking table has booking_date + time_required; no start_time/end_time columns.",
+    "Run: python manage.py migration_investigate_legacy_datetime before filling semantics."
+  ],
+  "booking_id": "id",
+  "user_id": "user_id",
+  "equipment_id": "equipment_id",
+  "booking_date_column": "booking_date",
+  "start_time_column": null,
+  "end_time_column": null,
+  "duration_column": "time_required",
+  "time_required_semantics": "OPERATOR_REQUIRED",
+  "datetime_strategy": "OPERATOR_REQUIRED",
+  "timezone": "Asia/Kolkata",
+  "status_column": "status",
+  "status_mapping": "OPERATOR_REQUIRED",
+  "cancellation_mapping": {
+    "is_deleted_column": "is_deleted",
+    "is_active_column": "is_active",
+    "semantics": "OPERATOR_REQUIRED",
+    "notes": "Production has is_deleted and is_active flags; map cancelled/completed explicitly."
+  },
+  "completion_mapping": "OPERATOR_REQUIRED",
+  "amount_column": "charge",
+  "approved_by": null,
+  "approved_at_utc": null
+}

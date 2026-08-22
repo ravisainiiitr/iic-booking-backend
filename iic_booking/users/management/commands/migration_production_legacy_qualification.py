@@ -32,9 +32,12 @@ from iic_booking.users.legacy_ledger.legacy_booking_mysql import (
     fetch_legacy_bookings_for_window,
     map_legacy_identities,
 )
-from iic_booking.users.legacy_ledger.migration_emails import preview_templates
-from iic_booking.users.legacy_ledger.migration_notifications import select_notification_candidates
+from iic_booking.users.legacy_ledger.migration_notifications import (
+    preview_templates,
+    select_notification_candidates,
+)
 from iic_booking.users.models import User
+from iic_booking.users.models.portal_migration import PortalMigrationState
 
 PHASE8_MIGRATIONS = ("0101", "0102", "0103")
 FORBIDDEN = ("equipment.0188", "r14")

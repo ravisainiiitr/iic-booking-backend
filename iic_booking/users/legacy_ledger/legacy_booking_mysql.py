@@ -69,7 +69,7 @@ def resolve_booking_column_map(
 ) -> dict[str, Any]:
     """Build semantic→physical column map from live schema or operator file."""
     available = set(booking_columns)
-    operator_map = operator_map or {}
+    operator_map = dict(operator_map or {})
     resolved: dict[str, str | None] = {}
     status: dict[str, str] = {}
     blockers: list[str] = []
@@ -89,21 +89,39 @@ def resolve_booking_column_map(
         resolved[semantic] = col
         status[semantic] = st
 
-    # Datetime strategy: prefer combined columns; else date+time pair
-    datetime_strategy = None
-    if resolved.get("start_datetime") and resolved.get("end_datetime"):
-        datetime_strategy = "COMBINED_DATETIME"
-    elif (
-        resolved.get("booking_date")
-        and resolved.get("start_time")
-        and resolved.get("end_time")
-        and status.get("start_datetime") != "OPERATOR_VERIFIED"
-    ):
-        datetime_strategy = "DATE_PLUS_TIME"
-    elif resolved.get("start_datetime") or resolved.get("end_datetime"):
-        blockers.append("partial_datetime_columns")
-    else:
-        blockers.append("no_resolvable_datetime_strategy")
+    # Operator-only duration column (e.g. production time_required)
+    duration_col = operator_map.get("duration_column")
+    if duration_col:
+        if duration_col not in available:
+            blockers.append(f"operator_map.duration_column={duration_col} not in booking table")
+        else:
+            resolved["duration"] = duration_col
+            status["duration"] = "OPERATOR_VERIFIED"
+
+    # Datetime strategy: operator override, else auto-detect
+    datetime_strategy = operator_map.get("datetime_strategy")
+    if datetime_strategy == "DATE_PLUS_DURATION":
+        if not (resolved.get("booking_date") and resolved.get("duration")):
+            blockers.append("DATE_PLUS_DURATION requires booking_date + duration_column")
+        elif operator_map.get("time_required_semantics") in (None, "", "UNKNOWN", "OPERATOR_REQUIRED"):
+            blockers.append("DATE_PLUS_DURATION requires approved time_required_semantics")
+    elif datetime_strategy == "DATE_PLUS_TIME":
+        if not (resolved.get("booking_date") and resolved.get("start_time") and resolved.get("end_time")):
+            blockers.append("DATE_PLUS_TIME requires booking_date + start_time + end_time")
+    elif not datetime_strategy:
+        if resolved.get("start_datetime") and resolved.get("end_datetime"):
+            datetime_strategy = "COMBINED_DATETIME"
+        elif (
+            resolved.get("booking_date")
+            and resolved.get("start_time")
+            and resolved.get("end_time")
+            and status.get("start_datetime") != "OPERATOR_VERIFIED"
+        ):
+            datetime_strategy = "DATE_PLUS_TIME"
+        elif resolved.get("start_datetime") or resolved.get("end_datetime"):
+            blockers.append("partial_datetime_columns")
+        else:
+            blockers.append("no_resolvable_datetime_strategy")
 
     required = ["booking_id", "user_id", "equipment_id", "status"]
     for req in required:
@@ -118,6 +136,17 @@ def resolve_booking_column_map(
         "resolved": resolved,
         "status": status,
         "blockers": blockers,
+        "operator_semantics": {
+            k: operator_map.get(k)
+            for k in (
+                "time_required_semantics",
+                "timezone",
+                "status_mapping",
+                "cancellation_mapping",
+                "completion_mapping",
+            )
+            if operator_map.get(k)
+        },
     }
 
 
@@ -162,6 +191,29 @@ def _combine_dt(row: dict, col_map: dict[str, str | None], strategy: str, tz) ->
     if strategy == "COMBINED_DATETIME":
         start = row.get(col_map["start_datetime"])
         end = row.get(col_map["end_datetime"])
+        return start, end
+    if strategy == "DATE_PLUS_DURATION":
+        d = row.get(col_map["booking_date"])
+        duration_raw = row.get(col_map.get("duration"))
+        if not isinstance(d, date) or duration_raw is None:
+            return None, None
+        # Interpretation deferred to approved operator semantics — only timedelta/time supported here.
+        if isinstance(duration_raw, timedelta):
+            delta = duration_raw
+        elif isinstance(duration_raw, time):
+            start = datetime.combine(d, duration_raw)
+            if timezone.is_naive(start):
+                start = timezone.make_aware(start, tz)
+            # End unknown without semantics — caller must supply DATE_PLUS_TIME or COMBINED_DATETIME
+            return start, None
+        elif isinstance(duration_raw, (int, float, Decimal)):
+            delta = timedelta(hours=float(duration_raw))
+        else:
+            return None, None
+        start = datetime.combine(d, time(0, 0))
+        if timezone.is_naive(start):
+            start = timezone.make_aware(start, tz)
+        end = start + delta
         return start, end
     d = row.get(col_map["booking_date"])
     st = row.get(col_map["start_time"])
@@ -435,4 +487,125 @@ def build_t0_dataset_summary(
         "email_recipients": email_recipients,
         "t0_ready": len(blockers) == 0,
         "blockers": blockers,
+    }
+
+
+def investigate_legacy_booking_datetime() -> dict[str, Any]:
+    """
+    READ-ONLY production-safe investigation of booking_date + time_required semantics.
+    No PII: aggregates and type metadata only.
+    """
+    try:
+        reader = OldMySQLReader()
+    except OldMySQLNotConfigured as exc:
+        return {"ok": False, "error": str(exc)}
+
+    with reader:
+        probe = reader.connection_probe()
+        booking_cols = {
+            c["Field"]: c.get("Type")
+            for c in reader.fetchall("SHOW COLUMNS FROM `booking`")
+        }
+        create_row = reader.fetchone("SHOW CREATE TABLE `booking`")
+        create_sql = (create_row or {}).get("Create Table") or ""
+        # Redact any DEFAULT/comment literals that might embed emails — keep structure only
+        create_redacted = create_sql[:4000] if create_sql else ""
+
+        stats = reader.fetchone(
+            """
+            SELECT
+              COUNT(*) AS total_rows,
+              COUNT(DISTINCT `time_required`) AS distinct_time_required,
+              MIN(`time_required`) AS min_time_required,
+              MAX(`time_required`) AS max_time_required,
+              MIN(`booking_date`) AS min_booking_date,
+              MAX(`booking_date`) AS max_booking_date,
+              SUM(CASE WHEN `is_deleted` = 1 THEN 1 ELSE 0 END) AS deleted_rows,
+              SUM(CASE WHEN `is_active` = 0 THEN 1 ELSE 0 END) AS inactive_rows
+            FROM `booking`
+            """
+        )
+        top_time_required = reader.fetchall(
+            """
+            SELECT `time_required`, COUNT(*) AS row_count
+            FROM `booking`
+            GROUP BY `time_required`
+            ORDER BY row_count DESC
+            LIMIT 20
+            """
+        )
+        top_status = reader.fetchall(
+            """
+            SELECT `status`, COUNT(*) AS row_count
+            FROM `booking`
+            GROUP BY `status`
+            ORDER BY row_count DESC
+            LIMIT 20
+            """
+        )
+        pattern_sample = reader.fetchall(
+            """
+            SELECT `booking_date`, `time_required`, `status`,
+                   SUM(CASE WHEN `is_deleted` = 1 THEN 1 ELSE 0 END) AS deleted_cnt,
+                   COUNT(*) AS row_count
+            FROM `booking`
+            GROUP BY `booking_date`, `time_required`, `status`
+            ORDER BY row_count DESC
+            LIMIT 25
+            """
+        )
+
+    tr_type = booking_cols.get("time_required", "UNKNOWN")
+    bd_type = booking_cols.get("booking_date", "UNKNOWN")
+    findings: list[str] = []
+    semantics = "OPERATOR_REQUIRED"
+
+    tr_lower = (tr_type or "").lower()
+    if "time" in tr_lower and "int" not in tr_lower:
+        findings.append("time_required column type appears TIME-like — may encode slot start time")
+        semantics = "CANDIDATE_START_TIME_ONLY"
+    elif "int" in tr_lower or "decimal" in tr_lower or "float" in tr_lower:
+        findings.append("time_required column type appears numeric — may encode duration in hours/minutes/slots")
+        semantics = "CANDIDATE_DURATION_NUMERIC"
+    elif "varchar" in tr_lower or "char" in tr_lower:
+        findings.append("time_required column type appears textual — encoded range possible")
+        semantics = "CANDIDATE_ENCODED_TEXT"
+    else:
+        findings.append(f"time_required MySQL type={tr_type} — semantics not inferable from schema alone")
+
+    auto_map = resolve_booking_column_map(list(booking_cols.keys()))
+    return {
+        "ok": True,
+        "mysql_probe_summary": {
+            "database": probe.get("database"),
+            "server_version": probe.get("server_version"),
+            "read_only_account": not probe.get("account_appears_writable"),
+        },
+        "booking_date_column": {
+            "name": "booking_date",
+            "mysql_type": bd_type,
+        },
+        "time_required_column": {
+            "name": "time_required",
+            "mysql_type": tr_type,
+            "inferred_semantics": semantics,
+            "findings": findings,
+        },
+        "lifecycle_columns": {
+            "is_deleted": booking_cols.get("is_deleted"),
+            "is_active": booking_cols.get("is_active"),
+            "status": booking_cols.get("status"),
+        },
+        "aggregate_stats": stats,
+        "top_time_required_values": top_time_required,
+        "top_status_values": top_status,
+        "pattern_sample_redacted": pattern_sample,
+        "show_create_table_excerpt": create_redacted,
+        "auto_column_map": auto_map,
+        "operator_action": (
+            "Approve docs/release/migration/legacy_booking_datetime_map.json "
+            "with time_required_semantics and datetime_strategy before discovery."
+            if not auto_map.get("ready")
+            else "Auto map ready"
+        ),
     }

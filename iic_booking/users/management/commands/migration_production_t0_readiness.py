@@ -32,11 +32,11 @@ from iic_booking.users.legacy_ledger.booking_lock import (
     OLD_PORTAL_MIGRATION_BANNER,
     legacy_portal_mutating_booking_blocked,
 )
-from iic_booking.users.legacy_ledger.migration_emails import (
-    classify_migration_template,
+from iic_booking.users.legacy_ledger.migration_emails import classify_migration_template
+from iic_booking.users.legacy_ledger.migration_notifications import (
     preview_templates,
+    select_notification_candidates,
 )
-from iic_booking.users.legacy_ledger.migration_notifications import select_notification_candidates
 from iic_booking.users.models import User
 from iic_booking.users.models.portal_migration import PortalMigrationState
 from iic_booking.users.models.user_type import UserType
