@@ -1,0 +1,112 @@
+{
+  "status": "POST_RELEASE_AUDIT_PASS",
+  "audit_mode": "READ_ONLY",
+  "production_modifications": [],
+  "migrate_run": false,
+  "redeploy_run": false,
+  "audit_workflow_run_id": 32509466243,
+  "production": {
+    "sha": "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea",
+    "tag": "v2.5.2-channel-i-user-savepoint",
+    "sha_ok": true,
+    "sha_drift": false,
+    "version_api": {
+      "http": 200,
+      "portal_version": "2.5.2",
+      "backend_version": "2.5.2",
+      "frontend_version": "2.5.2",
+      "build_date": "2026-08-21"
+    }
+  },
+  "migrations": {
+    "0096": "APPLIED",
+    "0097": "APPLIED",
+    "0098": "APPLIED",
+    "0099": "APPLIED",
+    "0100": "APPLIED",
+    "pending": [],
+    "equipment_0188": "NOT_APPLIED",
+    "r14": "NOT_APPLIED"
+  },
+  "environment_safety": {
+    "DEPLOYMENT_ENVIRONMENT": "PRODUCTION",
+    "REAL_INTEGRATION_ENABLED": false,
+    "CHANNEL_I_STAGING_FIXTURE_MODE": false,
+    "LEGACY_MYSQL_STAGING_FIXTURE_MODE": false,
+    "LOCAL_STAGING_ACCEPTED": false,
+    "DEBUG": false,
+    "channel_i_fixture_mode_enabled": false,
+    "claim": "username"
+  },
+  "channel_i": {
+    "authorize": "PASS",
+    "callback": "PASS",
+    "fixture_mode": false,
+    "evidence_class": "REAL",
+    "claim": "username"
+  },
+  "identity": {
+    "employee_match_count": 1,
+    "ChannelIIdentityProfile_rows": 1,
+    "durable_identity": "PASS"
+  },
+  "mysql_ro": {
+    "result": "PASS",
+    "user": "iic_booking_ro",
+    "database": "admin",
+    "account_appears_writable": false,
+    "grants": ["USAGE ON *.*", "SELECT ON admin.*"],
+    "users": "PASS",
+    "wallet": "PASS",
+    "ledger": "PASS",
+    "booking": "PASS"
+  },
+  "s3": {
+    "result": "PASS",
+    "backend": "storages.backends.s3boto3.S3Boto3Storage",
+    "list_objects_readonly": true
+  },
+  "backup": {
+    "result": "PASS",
+    "newest_nightly": "nightly-20260821",
+    "gzip_ok": true,
+    "scripts_present": true
+  },
+  "health": {
+    "django": "PASS",
+    "api": "PASS",
+    "frontend": "PASS",
+    "celery": "PASS",
+    "celery_beat": "PASS",
+    "redis": "PASS"
+  },
+  "log_audit": {
+    "secret_in_logs": false,
+    "django_error_critical_traceback_matches_last_400": 4,
+    "mysql_auth_fail": 0,
+    "celery_error_matches_last_200": 0,
+    "redis_error_matches_last_100": 0,
+    "classification": "NO_CRITICAL_INCIDENT_IDENTIFIED"
+  },
+  "startup_auto_migrate": {
+    "present": false,
+    "start_cmd": ["/start"],
+    "evidence": "compose/production/django/start forbids manage.py migrate"
+  },
+  "rollback_readiness": {
+    "result": "PASS",
+    "app_rollback_ne_db_rollback": true,
+    "prior_tag": "v2.5.40-r13-ghost-reserved",
+    "prior_tag_commit": "20321ff5a2d77a498951a7866f1514c45cb2e490",
+    "documented_prior_sha": "ced49a24e17819700f28be4d50553e6547a024f1",
+    "documented_sha_note": "Commit exists; tag tip is 20321ff merge — prefer tag or host previous_git_ref",
+    "rollback_executed": false
+  },
+  "secret_audit": {
+    "env_tracked": false,
+    "secret_in_logs": false,
+    "result": "PASS"
+  },
+  "monitoring_recommendations_documented": true,
+  "final": "POST_RELEASE_AUDIT_PASS"
+}

@@ -19,11 +19,24 @@ from iic_booking.users.models.portal_migration import (
     LegacyWalletLedgerEntry,
     LegacyWalletMappingStatus,
     LegacyWalletSyncDeadLetter,
+    MigrationBookingSettlement,
+    MigrationSettlementType,
     PortalMigrationPhase,
     PortalMigrationPhaseTransition,
     PortalMigrationState,
 )
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.legacy_ledger.migration_refund import (
+    MigrationRefundError,
+    actor_can_access_booking_for_settlement,
+    can_issue_migration_refund,
+    classify_settlement_eligibility,
+    get_completed_settlement,
+    issue_migration_refund,
+    migration_settlement_window_open,
+    scoped_bookings_queryset,
+    settlement_payload,
+)
 
 
 def _is_migration_admin(user) -> bool:
@@ -92,6 +105,12 @@ def _dashboard_payload() -> dict:
             "last_successful_sync": state.last_sync_at.isoformat() if state.last_sync_at else None,
         },
         "next_operator_hint": PHASE_OPERATOR_HINTS.get(state.phase, ""),
+        "booking_migration_mode": state.booking_migration_mode,
+        "migration_start_at": state.migration_start_at.isoformat() if state.migration_start_at else None,
+        "migration_window_end_at": (
+            state.migration_window_end_at.isoformat() if state.migration_window_end_at else None
+        ),
+        "new_portal_url": state.new_portal_url,
         "recent_transitions": list(
             PortalMigrationPhaseTransition.objects.values("from_phase", "to_phase", "actor_email", "created_at")[:10]
         ),
@@ -130,6 +149,27 @@ def portal_migration_admin_state(request):
 
             raw = data.get("booking_opens_at")
             state.booking_opens_at = parse_datetime(str(raw)) if raw else None
+        if "migration_start_at" in data:
+            from django.utils.dateparse import parse_datetime
+
+            raw = data.get("migration_start_at")
+            state.migration_start_at = parse_datetime(str(raw)) if raw else None
+        if "migration_window_end_at" in data:
+            from django.utils.dateparse import parse_datetime
+
+            raw = data.get("migration_window_end_at")
+            state.migration_window_end_at = parse_datetime(str(raw)) if raw else None
+        if "booking_migration_mode" in data:
+            mode = str(data.get("booking_migration_mode") or "NORMAL").upper()
+            allowed = {"NORMAL", "PREPARATION", "FREEZE", "ACTIVE", "SETTLEMENT", "COMPLETED"}
+            if mode not in allowed:
+                return Response(
+                    {"error": f"Invalid booking_migration_mode. Allowed: {sorted(allowed)}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            state.booking_migration_mode = mode
+        if "new_portal_url" in data:
+            state.new_portal_url = str(data.get("new_portal_url") or "")
         state.save()
     return Response({**booking_status_payload(request.user), **_dashboard_payload()}, status=status.HTTP_200_OK)
 
@@ -248,3 +288,167 @@ def portal_migration_dead_letters(request):
         for d in qs[:limit]
     ]
     return Response({"count": qs.count(), "results": rows}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def booking_migration_settlement_detail(request, booking_id):
+    """Read-only migration settlement status for a booking."""
+    if not can_issue_migration_refund(request.user):
+        return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+    from iic_booking.equipment.models import Booking
+
+    try:
+        booking = Booking.objects.select_related("user", "equipment").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not actor_can_access_booking_for_settlement(request.user, booking):
+        return Response({"error": "Booking is outside your operational scope."}, status=status.HTTP_403_FORBIDDEN)
+    settlement = get_completed_settlement(booking) or (
+        MigrationBookingSettlement.objects.filter(
+            booking=booking, settlement_type=MigrationSettlementType.MIGRATION_REFUND
+        )
+        .order_by("-id")
+        .first()
+    )
+    freeze_before = PortalMigrationState.get_solo().end_user_booking_enabled
+    payload = settlement_payload(settlement, booking)
+    payload["booking_id"] = booking.booking_id
+    payload["booking_status"] = booking.status
+    payload["end_user_booking_enabled"] = freeze_before
+    payload["migration_window_open"] = migration_settlement_window_open()
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def booking_migration_refund(request, booking_id):
+    """Issue one-time MIGRATION_REFUND for an eligible booking (OIC / Main Admin only)."""
+    from iic_booking.equipment.models import Booking
+
+    try:
+        booking = Booking.objects.select_related(
+            "user", "equipment", "equipment__internal_department"
+        ).get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    confirm = bool(
+        request.data.get("confirm") is True
+        or str(request.data.get("confirm", "")).lower() in ("1", "true", "yes")
+    )
+    reason = request.data.get("reason") or request.data.get("notes") or ""
+    freeze_before = PortalMigrationState.get_solo().end_user_booking_enabled
+    slots_before = set(booking.daily_slots.values_list("id", flat=True))
+    booking_status_before = booking.status
+
+    try:
+        settlement = issue_migration_refund(
+            booking=booking,
+            actor=request.user,
+            reason=reason,
+            confirm=confirm,
+        )
+    except MigrationRefundError as exc:
+        return Response(
+            {"error": str(exc), "error_code": exc.code},
+            status=exc.http_status,
+        )
+
+    booking.refresh_from_db()
+    freeze_after = PortalMigrationState.get_solo().end_user_booking_enabled
+    slots_after = set(booking.daily_slots.values_list("id", flat=True))
+    return Response(
+        {
+            "message": "Migration refund completed.",
+            "settlement": settlement_payload(settlement, booking),
+            "safety": {
+                "end_user_booking_enabled_unchanged": freeze_before == freeze_after,
+                "booking_status_unchanged": booking_status_before == booking.status,
+                "slots_not_freed": slots_before == slots_after,
+                "new_booking_created": False,
+            },
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def portal_migration_settlements_report(request):
+    """Department-wide (Main Admin) or OIC-scoped migration settlement report."""
+    if not can_issue_migration_refund(request.user):
+        return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+    qs = scoped_bookings_queryset(request.user)
+    dept = request.GET.get("department_id")
+    equipment_id = request.GET.get("equipment_id")
+    booking_status = request.GET.get("booking_status")
+    refund_status = (request.GET.get("refund_status") or "").strip().lower()
+
+    if dept:
+        qs = qs.filter(equipment__internal_department_id=dept)
+    if equipment_id:
+        qs = qs.filter(equipment_id=equipment_id)
+    if booking_status:
+        qs = qs.filter(status=booking_status)
+
+    limit = min(int(request.GET.get("limit", 200)), 1000)
+    rows = []
+    counts = {
+        "pending_migration_settlement": 0,
+        "refund_completed": 0,
+        "refund_failed": 0,
+        "already_settled": 0,
+        "non_refundable": 0,
+    }
+    for booking in qs.order_by("-booking_id")[:limit]:
+        bucket = classify_settlement_eligibility(booking)
+        if bucket == "already_settled":
+            counts["already_settled"] += 1
+            counts["refund_completed"] += 1
+        elif bucket == "refund_failed":
+            counts["refund_failed"] += 1
+        elif bucket == "non_refundable":
+            counts["non_refundable"] += 1
+        else:
+            counts["pending_migration_settlement"] += 1
+        if refund_status:
+            mapping = {
+                "pending": "pending_migration_settlement",
+                "completed": "already_settled",
+                "failed": "refund_failed",
+                "already_settled": "already_settled",
+                "non_refundable": "non_refundable",
+            }
+            want = mapping.get(refund_status, refund_status)
+            if bucket != want:
+                continue
+        settlement = get_completed_settlement(booking)
+        rows.append(
+            {
+                "booking_id": booking.booking_id,
+                "booking_status": booking.status,
+                "equipment_id": booking.equipment_id,
+                "equipment_code": getattr(booking.equipment, "code", ""),
+                "department_id": getattr(booking.equipment, "internal_department_id", None),
+                "user_id": booking.user_id,
+                "eligibility": bucket,
+                "settlement": settlement_payload(settlement, booking),
+            }
+        )
+
+    return Response(
+        {
+            "migration_window_open": migration_settlement_window_open(),
+            "counts": counts,
+            "count": len(rows),
+            "results": rows,
+            "scope": (
+                "all_departments"
+                if (getattr(request.user, "is_superuser", False) or request.user.user_type == UserType.ADMIN)
+                else "oic_equipment"
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )

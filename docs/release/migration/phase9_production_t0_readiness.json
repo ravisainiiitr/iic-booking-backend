@@ -1,0 +1,128 @@
+{
+  "phase": "9",
+  "audit_mode": "READ_ONLY",
+  "generated_at_utc": "2026-08-22T05:30:00+00:00",
+  "production_writes_during_phase": [],
+  "verdict": "PRODUCTION MIGRATION BLOCKED — DO NOT PROCEED",
+  "production": {
+    "git_sha": "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea",
+    "git_tag": "v2.5.2-channel-i-user-savepoint",
+    "version_api": {
+      "portal_version": "2.5.2",
+      "backend_version": "2.5.2",
+      "frontend_version": "2.5.2",
+      "build_date": "2026-08-22",
+      "git_commit_field": ""
+    },
+    "deployment_timestamp": "2026-08-21 (post-release audit workflow 32509466243); build_date bumped 2026-08-22 on /api/version/",
+    "docker_image": "production compose stack (django/celery/redis/frontend) — exact image digest requires host RO inspect",
+    "repo_phase8_code_sha": "81c012bc9b8a45c3cdfee5d412689fce1dd292d0",
+    "phase8_code_deployed": false
+  },
+  "health": {
+    "api_version": "PASS",
+    "api_health_ready": "PASS",
+    "api_health_root": "404 (endpoint not exposed; use /api/v1/analysis/health/ready/)",
+    "overall": "PASS"
+  },
+  "migrations": {
+    "0096": "APPLIED",
+    "0097": "APPLIED",
+    "0098": "APPLIED",
+    "0099": "APPLIED",
+    "0100": "APPLIED",
+    "0101": "NOT_APPLIED",
+    "0102": "NOT_APPLIED",
+    "0103": "NOT_APPLIED",
+    "equipment_0188": "NOT_APPLIED",
+    "r14": "NOT_APPLIED",
+    "source": "production_post_release_audit.json + approved RO showmigrations workflow"
+  },
+  "environment_safety": {
+    "DEPLOYMENT_ENVIRONMENT": "PRODUCTION",
+    "fixture_modes_disabled": true,
+    "LOCAL_STAGING_ACCEPTED": false,
+    "REAL_INTEGRATION_ENABLED": false,
+    "channel_i_real": true,
+    "claim": "username",
+    "hard_off_intact": true
+  },
+  "backup": {
+    "result": "PASS",
+    "newest_nightly": "nightly-20260821",
+    "gzip_ok": true,
+    "restore_verify_script_present": true,
+    "note": "Verify backup predates T0 window immediately before GO"
+  },
+  "user_population": {
+    "status": "NOT_EXECUTED_ON_PRODUCTION_HOST",
+    "reason": "Phase 9 RO counts require migration_production_t0_readiness on production host after Phase 8 code deploy",
+    "role_buckets": [
+      "faculty",
+      "student",
+      "oic_manager",
+      "main_administrator",
+      "lab_in_charge",
+      "department_admin",
+      "normal_user_other",
+      "staff_other",
+      "unsupported_ambiguous",
+      "missing_user_type"
+    ],
+    "is_test_account_count": "PENDING_HOST_RO"
+  },
+  "email_recipient_dry_run": {
+    "status": "NOT_EXECUTED_ON_PRODUCTION",
+    "emails_sent": 0,
+    "note": "Use select_notification_candidates via migration_production_t0_readiness — never create_notification_batch on prod audit"
+  },
+  "email_templates": {
+    "status": "CODE_VERIFIED",
+    "templates": ["FACULTY_MIGRATION", "STUDENT_MIGRATION", "OIC_MIGRATION", "ADMIN_MIGRATION"],
+    "unsupported_roles_policy": {
+      "operator": "Lab-in-Charge — manual operational briefing",
+      "dept_admin": "Department Admin — manual operational briefing",
+      "other_external_types": "Excluded from blast; in-app redirect at T0"
+    }
+  },
+  "equipment_mapping": {
+    "status": "BLOCKED",
+    "reason": "users.0102 not applied — LegacyEquipmentMapping table absent on production",
+    "mapped": 0,
+    "unmapped": "UNKNOWN",
+    "ready": false
+  },
+  "legacy_booking_discovery": {
+    "status": "NOT_EXECUTED",
+    "reason": "Live MySQL booking column map not hard-coded; requires operator-verified export + --legacy-rows-file",
+    "eligible": null,
+    "unmapped": null,
+    "conflicts": null
+  },
+  "test_account_cleanup_dry_run": {
+    "status": "NOT_EXECUTED_ON_PRODUCTION",
+    "note": "Run migration_cleanup_test_accounts --dry-run on host; selects is_test_account=True only"
+  },
+  "blockers": [
+    "Phase 8A/8B/8C application code not deployed to production (SHA drift vs repo)",
+    "users.0101–0103 not applied — separate production migration approval required",
+    "LegacyEquipmentMapping / LegacyBookingBlock / MigrationNotificationBatch tables absent",
+    "Production equipment mapping audit cannot run",
+    "Upcoming-week legacy booking discovery not executed",
+    "Production user role counts and email recipient audit not executed on host",
+    "Production test-account cleanup dry-run not executed on host"
+  ],
+  "go_no_go_gates": {
+    "production_health_PASS": true,
+    "backup_PASS": true,
+    "migrations_0096_0100_PASS": true,
+    "0101_0103_separate_approval": false,
+    "equipment_mappings_100_percent": false,
+    "legacy_bookings_100_percent_resolvable": false,
+    "zero_unmapped_eligible": false,
+    "zero_slot_conflicts": false,
+    "test_cleanup_dry_run_safe": false,
+    "email_dry_run_zero_sends": true,
+    "no_production_writes_in_phase9": true
+  }
+}

@@ -1,0 +1,68 @@
+# Phase 10 — Production RO Legacy Qualification (post deploy + migrate)
+
+name: Phase 10 Production Legacy Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      column_map_file:
+        description: Optional host path to operator-approved booking column map JSON (inside container mount)
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Phase 10 read-only qualification
+        env:
+          COLUMN_MAP: ${{ inputs.column_map_file }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "=== DEPLOY SHA ==="
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo none)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
+
+          echo "=== 10.3 migrations before/after check ==="
+          docker exec -w /app "$CID" python manage.py showmigrations users 2>&1 | grep -E '0096|0097|0098|0099|0100|0101|0102|0103' || true
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>&1 | grep '0188' || echo "equipment_0188=ABSENT"
+
+          echo "=== 10.4 backup probe ==="
+          newest=$(ls -1dt /home/ubuntu/backups/nightly/nightly-* 2>/dev/null | head -n1 || true)
+          echo "newest_nightly=$newest"
+          if [[ -n "$newest" && -f "$newest/db/portal.sql.gz" ]]; then
+            gzip -t "$newest/db/portal.sql.gz" && echo "gzip_ok=YES"
+            ls -lah "$newest/db/portal.sql.gz"
+          else
+            echo "BACKUP=NOT_FOUND"
+          fi
+
+          echo "=== 10.5 migration plan (read-only) ==="
+          docker exec -w /app "$CID" python manage.py migrate --plan 2>&1 | tee /tmp/migrate_plan.txt || true
+          if grep -Ei '0188|phase.?r14|\br14\b' /tmp/migrate_plan.txt; then
+            echo "FORBIDDEN_MIGRATION_IN_PLAN=YES"
+            exit 2
+          fi
+
+          ARGS=""
+          if [[ -n "${COLUMN_MAP}" ]]; then
+            ARGS="--column-map-file ${COLUMN_MAP}"
+          fi
+
+          echo "=== 10.8–10.21 legacy qualification ==="
+          docker exec -w /app "$CID" python manage.py migration_production_legacy_qualification $ARGS \
+            --json-out /tmp/phase10_readiness.json
+          docker cp "$CID":/tmp/phase10_readiness.json ./docs/release/migration/phase10_production_migration_readiness.json || true
+
+          echo "=== dry-runs ==="
+          docker exec -w /app "$CID" python manage.py migration_cleanup_test_accounts --dry-run || true
+
+          echo "=== health ==="
+          curl -sS -o /dev/null -w 'ready=%{http_code}\n' --max-time 10 http://127.0.0.1:8080/api/v1/analysis/health/ready/
+          curl -sS --max-time 10 http://127.0.0.1:8080/api/version/ | head -c 400 || true
+          echo
+          echo "PHASE10_QUALIFICATION_DONE=YES"
