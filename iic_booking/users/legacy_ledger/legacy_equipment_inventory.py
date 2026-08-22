@@ -12,14 +12,17 @@ from iic_booking.users.legacy_ledger.reader import OldMySQLNotConfigured, OldMyS
 LEGACY_EQUIPMENT_TABLE_CANDIDATES = ("equipment", "equipments", "instrument", "instruments")
 
 
-def _legacy_equipment_table(reader: OldMySQLReader) -> str | None:
-    tables = {next(iter(t.values())) for t in reader.fetchall("SHOW TABLES")}
-    hits = [t for t in LEGACY_EQUIPMENT_TABLE_CANDIDATES if t in tables]
+def _legacy_equipment_table(reader: OldMySQLReader) -> tuple[str | None, list[str]]:
+    tables = sorted(next(iter(t.values())) for t in reader.fetchall("SHOW TABLES"))
+    hits = [t for t in tables if t in LEGACY_EQUIPMENT_TABLE_CANDIDATES]
+    equipment_like = [t for t in tables if "equip" in t.lower() or "instrument" in t.lower()]
     if len(hits) == 1:
-        return hits[0]
+        return hits[0], tables
     if hits:
-        return hits[0]  # report ambiguity in output
-    return None
+        return hits[0], tables
+    if len(equipment_like) == 1:
+        return equipment_like[0], tables
+    return None, tables
 
 
 def fetch_legacy_equipment_inventory() -> dict[str, Any]:
@@ -30,9 +33,31 @@ def fetch_legacy_equipment_inventory() -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
     with reader:
-        table = _legacy_equipment_table(reader)
+        table, all_tables = _legacy_equipment_table(reader)
         if not table:
-            return {"ok": False, "error": "legacy_equipment_table_not_found", "tables_checked": LEGACY_EQUIPMENT_TABLE_CANDIDATES}
+            # Fallback: distinct equipment_id from booking (ids only, no names)
+            if "booking" not in all_tables:
+                return {
+                    "ok": False,
+                    "error": "legacy_equipment_table_not_found",
+                    "tables_checked": LEGACY_EQUIPMENT_TABLE_CANDIDATES,
+                    "equipment_like_tables": [t for t in all_tables if "equip" in t.lower()],
+                }
+            rows = reader.fetchall(
+                "SELECT DISTINCT `equipment_id` AS legacy_id FROM `booking` "
+                "WHERE `equipment_id` IS NOT NULL ORDER BY `equipment_id`"
+            )
+            for row in rows:
+                row["legacy_name"] = None
+                row["legacy_code"] = None
+            return {
+                "ok": True,
+                "source": "booking.distinct_equipment_id",
+                "table": None,
+                "legacy_equipment": rows,
+                "count": len(rows),
+                "note": "No dedicated equipment table found; ids sourced from booking only.",
+            }
         cols = {c["Field"] for c in reader.fetchall(f"SHOW COLUMNS FROM `{table}`")}
         id_col = "id" if "id" in cols else None
         name_col = next((c for c in ("name", "equipment_name", "title", "equipment_title") if c in cols), None)

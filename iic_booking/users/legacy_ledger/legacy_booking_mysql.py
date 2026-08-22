@@ -105,6 +105,11 @@ def resolve_booking_column_map(
             blockers.append("DATE_PLUS_DURATION requires booking_date + duration_column")
         elif operator_map.get("time_required_semantics") in (None, "", "UNKNOWN", "OPERATOR_REQUIRED"):
             blockers.append("DATE_PLUS_DURATION requires approved time_required_semantics")
+    elif datetime_strategy == "BOOKING_DATETIME_PLUS_DURATION_MINUTES":
+        if not (resolved.get("booking_date") and resolved.get("duration")):
+            blockers.append("BOOKING_DATETIME_PLUS_DURATION_MINUTES requires booking_date + duration_column")
+        elif operator_map.get("time_required_semantics") in (None, "", "UNKNOWN", "OPERATOR_REQUIRED"):
+            blockers.append("BOOKING_DATETIME_PLUS_DURATION_MINUTES requires approved time_required_semantics")
     elif datetime_strategy == "DATE_PLUS_TIME":
         if not (resolved.get("booking_date") and resolved.get("start_time") and resolved.get("end_time")):
             blockers.append("DATE_PLUS_TIME requires booking_date + start_time + end_time")
