@@ -48,7 +48,7 @@ x-django: &django
 
 services:
   postgres:
-    image: docker.io/postgres:16-alpine
+    image: docker.io/postgres:18-alpine
     restart: unless-stopped
     env_file:
       - ./.envs/.production/.django
@@ -160,7 +160,7 @@ services:
 
   guacamole-db:
     profiles: ["guacamole"]
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: guacamole_db
