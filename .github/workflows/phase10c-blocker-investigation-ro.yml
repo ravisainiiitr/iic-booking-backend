@@ -53,7 +53,7 @@ jobs:
               with reader:
                   tables = [next(iter(t.values())) for t in reader.fetchall('SHOW TABLES')]
                   eq_table = 'equipment' if 'equipment' in tables else None
-                  legacy = reader.fetchall(f'SELECT id, name FROM {eq_table} ORDER BY id LIMIT 5000') if eq_table else []
+                  legacy = reader.fetchall(f'SELECT id AS legacy_id FROM `{eq_table}` ORDER BY id LIMIT 5000') if eq_table else []
               new_count = Equipment.objects.count()
               report = {'ok': bool(eq_table), 'legacy_table': eq_table, 'legacy_count': len(legacy), 'new_portal_count': new_count, 'unmapped': len(legacy)}
           slim = {k: report.get(k) for k in ['ok','legacy_inventory','new_portal_inventory','mapped','unmapped','ambiguous','note'] if k in report}

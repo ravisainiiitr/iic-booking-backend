@@ -35,15 +35,19 @@ def fetch_legacy_equipment_inventory() -> dict[str, Any]:
             return {"ok": False, "error": "legacy_equipment_table_not_found", "tables_checked": LEGACY_EQUIPMENT_TABLE_CANDIDATES}
         cols = {c["Field"] for c in reader.fetchall(f"SHOW COLUMNS FROM `{table}`")}
         id_col = "id" if "id" in cols else None
-        name_col = next((c for c in ("name", "equipment_name", "title", "code") if c in cols), None)
-        code_col = next((c for c in ("code", "equipment_code", "short_name") if c in cols), None)
+        name_col = next((c for c in ("name", "equipment_name", "title", "equipment_title") if c in cols), None)
+        code_col = next((c for c in ("code", "equipment_code", "short_name", "eq_code") if c in cols), None)
         if not id_col:
             return {"ok": False, "error": "legacy_equipment_id_column_not_found", "columns": sorted(cols)}
         select = [f"`{id_col}` AS legacy_id"]
         if name_col:
             select.append(f"`{name_col}` AS legacy_name")
+        else:
+            select.append("NULL AS legacy_name")
         if code_col:
             select.append(f"`{code_col}` AS legacy_code")
+        else:
+            select.append("NULL AS legacy_code")
         rows = reader.fetchall(f"SELECT {', '.join(select)} FROM `{table}` ORDER BY `{id_col}`")
     return {
         "ok": True,
