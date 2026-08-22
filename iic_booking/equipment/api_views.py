@@ -3198,6 +3198,28 @@ def _book_equipment_impl(request, pk):
                 visible_week_start = parse_date(ws) if isinstance(ws, str) else ws
                 visible_week_end = parse_date(we) if isinstance(we, str) else we
         if daily_slots.count() != len(slot_ids):
+            from iic_booking.users.legacy_ledger.booking_bridge import (
+                LEGACY_BLOCK_MESSAGE,
+                LEGACY_MIGRATION_SLOT_BLOCKED,
+                slots_blocked_by_legacy_migration,
+            )
+
+            if slots_blocked_by_legacy_migration(list(slot_ids)):
+                _create_booking_attempt_log(
+                    request, equipment, BookingAttemptOutcome.FAILED,
+                    failure_reason=LEGACY_MIGRATION_SLOT_BLOCKED,
+                    slots_requested=len(slot_ids),
+                    number_of_samples=request.data.get("number_of_samples") or 1,
+                    additional_info=_get_additional_info_from_request(request, equipment),
+                )
+                return Response(
+                    {
+                        "error": LEGACY_BLOCK_MESSAGE,
+                        "code": LEGACY_MIGRATION_SLOT_BLOCKED,
+                        "message": LEGACY_BLOCK_MESSAGE,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             if book_any_available_slots:
                 required_minutes = _get_slots_duration_minutes(slot_ids)
                 if required_minutes > 0:
@@ -3335,6 +3357,28 @@ def _book_equipment_impl(request, pk):
             )
             unavailable_slots = [s.id for s in daily_slots if not checker(s)]
             if unavailable_slots:
+                from iic_booking.users.legacy_ledger.booking_bridge import (
+                    LEGACY_BLOCK_MESSAGE,
+                    LEGACY_MIGRATION_SLOT_BLOCKED,
+                    slots_blocked_by_legacy_migration,
+                )
+
+                if slots_blocked_by_legacy_migration(unavailable_slots):
+                    _create_booking_attempt_log(
+                        request, equipment, BookingAttemptOutcome.FAILED,
+                        failure_reason=LEGACY_MIGRATION_SLOT_BLOCKED,
+                        slots_requested=len(slot_ids),
+                        number_of_samples=request.data.get("number_of_samples") or 1,
+                        additional_info=_get_additional_info_from_request(request, equipment),
+                    )
+                    return Response(
+                        {
+                            "error": LEGACY_BLOCK_MESSAGE,
+                            "code": LEGACY_MIGRATION_SLOT_BLOCKED,
+                            "message": LEGACY_BLOCK_MESSAGE,
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 _create_booking_attempt_log(
                     request, equipment, BookingAttemptOutcome.FAILED,
                     failure_reason=f"Slots {unavailable_slots} are not available for booking.",
@@ -4089,6 +4133,21 @@ def _book_equipment_impl(request, pk):
             err_lower = err_msg.lower()
             slot_occupied_error = ("occupied" in err_lower) or ("all slots" in err_lower)
             if slot_occupied_error:
+                from iic_booking.users.legacy_ledger.booking_bridge import (
+                    LEGACY_BLOCK_MESSAGE,
+                    LEGACY_MIGRATION_SLOT_BLOCKED,
+                    slots_blocked_by_legacy_migration,
+                )
+
+                if slots_blocked_by_legacy_migration(list(slot_ids or [])):
+                    return Response(
+                        {
+                            "error": LEGACY_BLOCK_MESSAGE,
+                            "code": LEGACY_MIGRATION_SLOT_BLOCKED,
+                            "message": LEGACY_BLOCK_MESSAGE,
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 return Response(
                     _enrich_failed_booking_response(
                         equipment,
@@ -4108,6 +4167,32 @@ def _book_equipment_impl(request, pk):
                 x in err_msg
                 for x in ("slot", "lock", "available", "booked", "no longer", "already", "occupied")
             ):
+                from iic_booking.users.legacy_ledger.booking_bridge import (
+                    LEGACY_BLOCK_MESSAGE,
+                    LEGACY_MIGRATION_SLOT_BLOCKED,
+                    slots_blocked_by_legacy_migration,
+                )
+
+                if slots_blocked_by_legacy_migration(list(slot_ids or [])):
+                    try:
+                        _create_booking_attempt_log(
+                            request, equipment, BookingAttemptOutcome.FAILED,
+                            failure_reason=LEGACY_MIGRATION_SLOT_BLOCKED,
+                            slots_requested=len(slot_ids),
+                            number_of_samples=request.data.get("number_of_samples") or 1,
+                            duration_minutes=total_time_minutes,
+                            additional_info=_get_additional_info_from_request(request, equipment),
+                        )
+                    except TransactionManagementError:
+                        pass
+                    return Response(
+                        {
+                            "error": LEGACY_BLOCK_MESSAGE,
+                            "code": LEGACY_MIGRATION_SLOT_BLOCKED,
+                            "message": LEGACY_BLOCK_MESSAGE,
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 try:
                     _create_booking_attempt_log(
                         request, equipment, BookingAttemptOutcome.FAILED,

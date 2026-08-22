@@ -101,6 +101,21 @@ from iic_booking.users.api.portal_migration_views import (
     portal_migration_dead_letters,
     portal_migration_mapping_report,
     portal_migration_transition,
+    booking_migration_refund,
+    booking_migration_settlement_detail,
+    portal_migration_settlements_report,
+)
+from iic_booking.users.api.portal_legacy_bridge_views import (
+    portal_legacy_batch_abort,
+    portal_legacy_booking_blocks,
+    portal_legacy_equipment_mapping_detail,
+    portal_legacy_equipment_mapping_validate,
+    portal_legacy_equipment_mappings,
+    portal_legacy_migration_dry_run,
+    portal_legacy_migration_overview,
+    portal_legacy_portal_action_gate,
+    portal_migration_email_preview,
+    portal_migration_notification_dry_run,
 )
 from iic_booking.users.api.wallet_peer_transfer_views import (
     wallet_peer_transfer_eligible_recipients,
@@ -486,6 +501,19 @@ urlpatterns = router.urls + [
     path("v1/portal-migration/admin/transition/", portal_migration_transition, name="portal-migration-admin-transition-v1"),
     path("v1/portal-migration/admin/mappings/", portal_migration_mapping_report, name="portal-migration-admin-mappings-v1"),
     path("v1/portal-migration/admin/dead-letters/", portal_migration_dead_letters, name="portal-migration-admin-dead-letters-v1"),
+    path("v1/portal-migration/admin/settlements/", portal_migration_settlements_report, name="portal-migration-admin-settlements-v1"),
+    path("v1/portal-migration/admin/equipment-mappings/", portal_legacy_equipment_mappings, name="portal-legacy-equipment-mappings-v1"),
+    path("v1/portal-migration/admin/equipment-mappings/validate/", portal_legacy_equipment_mapping_validate, name="portal-legacy-equipment-mappings-validate-v1"),
+    path("v1/portal-migration/admin/equipment-mappings/<int:mapping_id>/", portal_legacy_equipment_mapping_detail, name="portal-legacy-equipment-mapping-detail-v1"),
+    path("v1/portal-migration/admin/legacy-blocks/", portal_legacy_booking_blocks, name="portal-legacy-booking-blocks-v1"),
+    path("v1/portal-migration/admin/legacy-overview/", portal_legacy_migration_overview, name="portal-legacy-migration-overview-v1"),
+    path("v1/portal-migration/admin/legacy-dry-run/", portal_legacy_migration_dry_run, name="portal-legacy-migration-dry-run-v1"),
+    path("v1/portal-migration/admin/batches/<int:batch_id>/abort/", portal_legacy_batch_abort, name="portal-legacy-batch-abort-v1"),
+    path("v1/portal-migration/legacy-portal/action-gate/", portal_legacy_portal_action_gate, name="portal-legacy-action-gate-v1"),
+    path("v1/portal-migration/admin/email-preview/", portal_migration_email_preview, name="portal-migration-email-preview-v1"),
+    path("v1/portal-migration/admin/notification-dry-run/", portal_migration_notification_dry_run, name="portal-migration-notification-dry-run-v1"),
+    path("v1/bookings/<int:booking_id>/migration-settlement/", booking_migration_settlement_detail, name="booking-migration-settlement-v1"),
+    path("v1/bookings/<int:booking_id>/migration-refund/", booking_migration_refund, name="booking-migration-refund-v1"),
     # Booking ↔ Remote Analysis integration
     path(
         "v1/bookings/analysis/dashboard/",
@@ -943,6 +971,19 @@ urlpatterns = router.urls + [
     path("portal-migration/admin/transition/", portal_migration_transition, name="portal-migration-admin-transition"),
     path("portal-migration/admin/mappings/", portal_migration_mapping_report, name="portal-migration-admin-mappings"),
     path("portal-migration/admin/dead-letters/", portal_migration_dead_letters, name="portal-migration-admin-dead-letters"),
+    path("portal-migration/admin/settlements/", portal_migration_settlements_report, name="portal-migration-admin-settlements"),
+    path("portal-migration/admin/equipment-mappings/", portal_legacy_equipment_mappings, name="portal-legacy-equipment-mappings"),
+    path("portal-migration/admin/equipment-mappings/validate/", portal_legacy_equipment_mapping_validate, name="portal-legacy-equipment-mappings-validate"),
+    path("portal-migration/admin/equipment-mappings/<int:mapping_id>/", portal_legacy_equipment_mapping_detail, name="portal-legacy-equipment-mapping-detail"),
+    path("portal-migration/admin/legacy-blocks/", portal_legacy_booking_blocks, name="portal-legacy-booking-blocks"),
+    path("portal-migration/admin/legacy-overview/", portal_legacy_migration_overview, name="portal-legacy-migration-overview"),
+    path("portal-migration/admin/legacy-dry-run/", portal_legacy_migration_dry_run, name="portal-legacy-migration-dry-run"),
+    path("portal-migration/admin/batches/<int:batch_id>/abort/", portal_legacy_batch_abort, name="portal-legacy-batch-abort"),
+    path("portal-migration/legacy-portal/action-gate/", portal_legacy_portal_action_gate, name="portal-legacy-action-gate"),
+    path("portal-migration/admin/email-preview/", portal_migration_email_preview, name="portal-migration-email-preview"),
+    path("portal-migration/admin/notification-dry-run/", portal_migration_notification_dry_run, name="portal-migration-notification-dry-run"),
+    path("bookings/<int:booking_id>/migration-settlement/", booking_migration_settlement_detail, name="booking-migration-settlement"),
+    path("bookings/<int:booking_id>/migration-refund/", booking_migration_refund, name="booking-migration-refund"),
     
     # Project endpoints
     path("projects/", project_list, name="project-list"),  # GET: List projects, POST: Create project

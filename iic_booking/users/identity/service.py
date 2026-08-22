@@ -86,7 +86,14 @@ class UserIdentityService:
         pk = getattr(user, "pk", None)
         if not pk:
             return None
-        return ChannelIIdentityProfile.objects.filter(user_id=pk).first()
+        from django.db import transaction
+
+        try:
+            with transaction.atomic():
+                return ChannelIIdentityProfile.objects.filter(user_id=pk).first()
+        except Exception:
+            # Table may not exist until users.0099 is migrated.
+            return None
 
     @staticmethod
     def classify_degree(degree_name: str) -> tuple[str, str]:

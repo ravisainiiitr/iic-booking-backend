@@ -1,0 +1,93 @@
+{
+  "phase": "10",
+  "audit_mode": "READ_ONLY_QUALIFICATION",
+  "generated_at_utc": "2026-08-22T05:35:00+00:00",
+  "verdict": "PRODUCTION MIGRATION BLOCKED — DO NOT PROCEED",
+  "production_writes_performed": [],
+  "deployment": {
+    "target_sha": "NOT_TAGGED — Phase 8A/8B/8C uncommitted on disk",
+    "actual_deployed_sha": "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea",
+    "actual_deployed_tag": "v2.5.2-channel-i-user-savepoint",
+    "deployment_result": "NOT_EXECUTED",
+    "reason": "Phase 8 runtime + migrations 0101–0103 exist locally but are NOT committed to git; cannot deploy unreviewed local commit; PR #86 excluded"
+  },
+  "preflight_10_1": {
+    "result": "FILES_PASS_TESTS_NOT_RUN",
+    "required_files": "20/20 present on disk",
+    "migrations_0101_0103": "present on disk, NOT in git",
+    "equipment_0188": "ABSENT",
+    "r14": "ABSENT",
+    "phase8a_tests": "NOT_RUN (requires staging DB)",
+    "phase8b_tests": "NOT_RUN",
+    "phase8c_tests": "NOT_RUN",
+    "real_integration_tests": "NOT_RUN",
+    "expected_minimum": 84
+  },
+  "migration": {
+    "0101": "NOT_APPLIED",
+    "0102": "NOT_APPLIED",
+    "0103": "NOT_APPLIED",
+    "0096_0100": "APPLIED",
+    "unexpected": "NONE",
+    "operator_approval_migrate": "NOT_PROVIDED",
+    "auto_migrate_detected": false
+  },
+  "backup": {
+    "result": "PASS (prior audit)",
+    "newest_nightly": "nightly-20260821",
+    "pre_migration_fresh_backup": "REQUIRED at T-1 before migrate"
+  },
+  "mysql_column_map": {
+    "result": "NOT_EXECUTED",
+    "reason": "Requires production django container RO access to OLD_MYSQL via host.docker.internal",
+    "tool": "legacy_booking_mysql.discover_mysql_booking_schema()"
+  },
+  "equipment_mapping": {
+    "result": "BLOCKED",
+    "reason": "users.0102 not applied; LegacyEquipmentMapping table absent"
+  },
+  "legacy_booking_discovery": {
+    "upcoming_week_total": null,
+    "eligible": null,
+    "unmapped": null,
+    "identity_exceptions": null,
+    "slot_conflicts": null,
+    "existing_new_booking_conflicts": null
+  },
+  "dry_runs": {
+    "test_accounts": "NOT_EXECUTED_ON_PRODUCTION",
+    "email_recipients": "NOT_EXECUTED_ON_PRODUCTION",
+    "emails_sent": 0
+  },
+  "code_verification": {
+    "freeze_contract": "PASS (code)",
+    "new_portal_blocking_409": "PASS (code + staging tests)",
+    "refund_rbac": "PASS (code)",
+    "main_admin_global_view": "PASS (code)",
+    "reconciliation": "PASS (code)",
+    "abort": "PASS (code)"
+  },
+  "blockers": [
+    "Phase 8A/8B/8C code NOT committed to git — cannot deploy reviewed release",
+    "Production deployment NOT executed (10.2)",
+    "users.0101–0103 NOT applied — operator MIGRATE not invoked (10.6)",
+    "MySQL booking column map NOT discovered on production (10.9)",
+    "Legacy booking qualification NOT executed (10.10–10.13)",
+    "Equipment mappings cannot be verified until 0102 applied",
+    "Phase 8 test suites NOT executed in this phase (DATABASE_URL/staging DB required)"
+  ],
+  "operator_sequence_remaining": [
+    "Commit + tag Phase 8 release candidate (exclude PR #86 / 0188 / R14)",
+    "Run Phase 8 tests on staging DB (8A=22, 8B=21, 8C=11, REAL=30)",
+    "Deploy Backend workflow with approved release_tag",
+    "Verify SHA + health + no auto-migrate",
+    "Verify backup immediately before migrate",
+    "migrate --plan review (no 0188/R14)",
+    "Migrate Production workflow with confirm_migrate=MIGRATE",
+    "Post-migrate verify 0101–0103",
+    "Load explicit equipment mappings",
+    "Configure migration_start_at / migration_window_end_at",
+    "Run phase10-production-qualification workflow",
+    "Explicit operator GO before Phase 11 T0"
+  ]
+}

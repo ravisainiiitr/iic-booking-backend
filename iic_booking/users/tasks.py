@@ -227,3 +227,19 @@ def expire_channel_i_students() -> int:
     n = expire_due_students()
     logger.info("expire_channel_i_students: disabled_count=%s", n)
     return n
+
+
+@shared_task(name="users.send_migration_notification_recipient", bind=True, max_retries=3)
+def send_migration_notification_recipient(self, recipient_id: int) -> dict:
+    """Deliver one Phase 8C migration notification (staging/Mailpit). Never production."""
+    from django.conf import settings as dj_settings
+
+    env = str(getattr(dj_settings, "DEPLOYMENT_ENVIRONMENT", "") or "").upper()
+    if env in {"PRODUCTION", "PROD"}:
+        return {"status": "BLOCKED", "reason": "production"}
+    from iic_booking.users.legacy_ledger.migration_notifications import deliver_notification_recipient
+
+    try:
+        return deliver_notification_recipient(recipient_id)
+    except Exception as exc:
+        raise self.retry(exc=exc, countdown=30) from exc

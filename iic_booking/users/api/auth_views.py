@@ -1024,9 +1024,16 @@ def omniport_callback(request):
     try:
         from iic_booking.users.identity.sync import sync_channel_i_identity
 
-        sync_channel_i_identity(user, user_info)
+        # ATOMIC_REQUESTS=True: a failed sync must not abort the outer request
+        # transaction (e.g. users_channeliidentityprofile missing before 0099).
+        # Nested atomic() creates a savepoint so token creation can still succeed.
+        with transaction.atomic():
+            sync_channel_i_identity(user, user_info)
     except Exception:
-        logger.exception("Channel-I identity sync failed for user_id=%s (login continues)", getattr(user, "id", None))
+        logger.exception(
+            "Channel-I identity sync failed for user_id=%s (login continues)",
+            getattr(user, "id", None),
+        )
 
     # Get or create Django auth token (regenerate so this session gets the token; any other session will get 401)
     try:

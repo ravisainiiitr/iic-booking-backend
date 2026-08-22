@@ -73,6 +73,15 @@ class PortalMigrationState(models.Model):
     # Set False for the official parallel week.
     end_user_booking_enabled = models.BooleanField(default=True)
     booking_opens_at = models.DateTimeField(null=True, blank=True)
+    # Phase 8B — explicit migration window (app TIME_ZONE; never invent machine TZ).
+    migration_start_at = models.DateTimeField(null=True, blank=True)
+    migration_window_end_at = models.DateTimeField(null=True, blank=True)
+    booking_migration_mode = models.CharField(
+        max_length=16,
+        default="NORMAL",
+        help_text=_("NORMAL|PREPARATION|FREEZE|ACTIVE|SETTLEMENT|COMPLETED"),
+    )
+    new_portal_url = models.URLField(blank=True, default="")
     booking_lock_message = models.TextField(
         blank=True,
         default=(
@@ -269,3 +278,407 @@ class LegacyBookingHistoryRecord(models.Model):
                 name="uniq_legacy_booking_source_id",
             )
         ]
+
+
+class MigrationSettlementType(models.TextChoices):
+    MIGRATION_REFUND = "MIGRATION_REFUND", _("Migration refund")
+
+
+class MigrationSettlementStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    COMPLETED = "COMPLETED", _("Completed")
+    FAILED = "FAILED", _("Failed")
+    REJECTED = "REJECTED", _("Rejected")
+
+
+class MigrationBookingSettlement(models.Model):
+    """One-time migration financial settlement for a portal booking.
+
+    Money movement MUST go through SubWallet.credit / existing ledger — never
+    mutate wallet.balance directly. Successful MIGRATION_REFUND is unique per booking.
+    Does not unlock end-user booking freeze or free booking slots.
+    """
+
+    booking = models.ForeignKey(
+        "equipment.Booking",
+        on_delete=models.PROTECT,
+        related_name="migration_settlements",
+    )
+    legacy_booking_id = models.PositiveBigIntegerField(
+        db_index=True,
+        help_text=_("Portal booking_id at settlement time (audit copy)."),
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.PROTECT,
+        related_name="migration_booking_settlements",
+    )
+    settlement_type = models.CharField(
+        max_length=32,
+        choices=MigrationSettlementType.choices,
+        default=MigrationSettlementType.MIGRATION_REFUND,
+        db_index=True,
+    )
+    original_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    refund_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=8, default="INR")
+    reason = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        choices=MigrationSettlementStatus.choices,
+        default=MigrationSettlementStatus.PENDING,
+        db_index=True,
+    )
+    processed_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="migration_settlements_processed",
+    )
+    processed_by_role = models.CharField(max_length=32, blank=True, default="")
+    processed_at = models.DateTimeField(null=True, blank=True)
+    reference = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    wallet_transaction = models.ForeignKey(
+        "users.SubWalletTransaction",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="migration_settlements",
+    )
+    failure_detail = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Migration booking settlement")
+        verbose_name_plural = _("Migration booking settlements")
+        indexes = [
+            models.Index(fields=["status", "settlement_type"]),
+            models.Index(fields=["legacy_booking_id", "status"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["booking", "settlement_type"],
+                condition=models.Q(status="COMPLETED"),
+                name="uniq_completed_migration_refund_per_booking",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.settlement_type} booking={self.legacy_booking_id} {self.status}"
+
+
+class LegacyEquipmentMappingStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", _("Active")
+    UNMAPPED = "UNMAPPED", _("Unmapped")
+    DISABLED = "DISABLED", _("Disabled")
+    CONFLICT = "CONFLICT", _("Conflict")
+    RETIRED = "RETIRED", _("Retired")
+
+
+class LegacyEquipmentMapping(models.Model):
+    """Explicit OLD → NEW equipment mapping. No fuzzy runtime name matching."""
+
+    old_equipment_id = models.PositiveBigIntegerField(db_index=True)
+    old_equipment_code = models.CharField(max_length=64, blank=True, default="")
+    old_equipment_name = models.CharField(max_length=255, blank=True, default="")
+    new_equipment = models.ForeignKey(
+        "equipment.Equipment",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="legacy_equipment_mappings",
+    )
+    department = models.ForeignKey(
+        "users.Department",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="legacy_equipment_mappings",
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=LegacyEquipmentMappingStatus.choices,
+        default=LegacyEquipmentMappingStatus.UNMAPPED,
+        db_index=True,
+    )
+    mapping_reason = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="legacy_equipment_mappings_created",
+    )
+    updated_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="legacy_equipment_mappings_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Legacy equipment mapping")
+        verbose_name_plural = _("Legacy equipment mappings")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["old_equipment_id"],
+                name="uniq_legacy_equipment_old_id",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"old:{self.old_equipment_id}→new:{getattr(self.new_equipment, 'equipment_id', None)} ({self.status})"
+
+
+class LegacyBookingMigrationBatchStatus(models.TextChoices):
+    DRAFT = "DRAFT", _("Draft")
+    VALIDATED = "VALIDATED", _("Validated")
+    ARMED = "ARMED", _("Armed")
+    ACTIVE = "ACTIVE", _("Active")
+    COMPLETED = "COMPLETED", _("Completed")
+    ABORTED = "ABORTED", _("Aborted")
+
+
+class LegacyBookingMigrationBatch(models.Model):
+    """Auditable migration batch for legacy booking slot protection."""
+
+    window_start = models.DateTimeField()
+    window_end = models.DateTimeField()
+    status = models.CharField(
+        max_length=16,
+        choices=LegacyBookingMigrationBatchStatus.choices,
+        default=LegacyBookingMigrationBatchStatus.DRAFT,
+        db_index=True,
+    )
+    created_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="legacy_booking_migration_batches",
+    )
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    counts = models.JSONField(default=dict, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        verbose_name = _("Legacy booking migration batch")
+        verbose_name_plural = _("Legacy booking migration batches")
+        ordering = ["-started_at"]
+
+    def __str__(self) -> str:
+        return f"Batch {self.pk} {self.status}"
+
+
+class LegacyBookingBlockStatus(models.TextChoices):
+    ACTIVE = "ACTIVE", _("Active")
+    RELEASED = "RELEASED", _("Released")
+    CONFLICT = "CONFLICT", _("Conflict")
+    CANCELLED = "CANCELLED", _("Cancelled")
+
+
+class LegacyBookingBlock(models.Model):
+    """Migration reservation metadata. Occupancy is enforced by DailySlot.BLOCKED.
+
+    Do not treat this as a normal Booking. Slot IDs claimed are stored for release/abort.
+    """
+
+    BLOCKED_LABEL_PREFIX = "LEGACY_MIGRATION:"
+
+    legacy_booking_id = models.PositiveBigIntegerField(db_index=True)
+    new_equipment = models.ForeignKey(
+        "equipment.Equipment",
+        on_delete=models.PROTECT,
+        related_name="legacy_booking_blocks",
+    )
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    source = models.CharField(max_length=32, default="LEGACY_PORTAL")
+    status = models.CharField(
+        max_length=16,
+        choices=LegacyBookingBlockStatus.choices,
+        default=LegacyBookingBlockStatus.ACTIVE,
+        db_index=True,
+    )
+    migration_batch = models.ForeignKey(
+        LegacyBookingMigrationBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="blocks",
+    )
+    slot_ids = models.JSONField(default=list, blank=True)
+    legacy_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    released_reason = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        verbose_name = _("Legacy booking block")
+        verbose_name_plural = _("Legacy booking blocks")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["legacy_booking_id", "source"],
+                condition=models.Q(status="ACTIVE"),
+                name="uniq_active_legacy_booking_block",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["new_equipment", "status", "start_at", "end_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"LegacyBlock {self.legacy_booking_id} {self.status}"
+
+    @property
+    def blocked_label(self) -> str:
+        return f"{self.BLOCKED_LABEL_PREFIX}{self.legacy_booking_id}"
+
+
+class MigrationNotificationTemplate(models.TextChoices):
+    FACULTY_MIGRATION = "FACULTY_MIGRATION", _("Faculty migration")
+    STUDENT_MIGRATION = "STUDENT_MIGRATION", _("Student migration")
+    OIC_MIGRATION = "OIC_MIGRATION", _("OIC migration")
+    ADMIN_MIGRATION = "ADMIN_MIGRATION", _("Main Administrator migration")
+
+
+class MigrationNotificationStatus(models.TextChoices):
+    PENDING = "PENDING", _("Pending")
+    QUEUED = "QUEUED", _("Queued")
+    SENT = "SENT", _("Sent")
+    FAILED = "FAILED", _("Failed")
+    SKIPPED = "SKIPPED", _("Skipped")
+
+
+class MigrationNotificationBatch(models.Model):
+    """Auditable email batch for Phase 8C migration communication (async via Celery)."""
+
+    migration_batch = models.ForeignKey(
+        LegacyBookingMigrationBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="notification_batches",
+    )
+    dry_run = models.BooleanField(default=False)
+    status = models.CharField(max_length=16, default="DRAFT", db_index=True)
+    created_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="migration_notification_batches_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    counts = models.JSONField(default=dict, blank=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        verbose_name = _("Migration notification batch")
+        verbose_name_plural = _("Migration notification batches")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"NotificationBatch {self.pk} {self.status}"
+
+
+class MigrationNotificationRecipient(models.Model):
+    """One recipient row per migration notification batch (idempotent per batch+user)."""
+
+    batch = models.ForeignKey(
+        MigrationNotificationBatch,
+        on_delete=models.CASCADE,
+        related_name="recipients",
+    )
+    user = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="migration_notifications",
+    )
+    recipient_email = models.EmailField()
+    role = models.CharField(max_length=32, blank=True, default="")
+    template = models.CharField(
+        max_length=32,
+        choices=MigrationNotificationTemplate.choices,
+        db_index=True,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=MigrationNotificationStatus.choices,
+        default=MigrationNotificationStatus.PENDING,
+        db_index=True,
+    )
+    queued_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    retry_count = models.PositiveSmallIntegerField(default=0)
+    failure_reason = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("Migration notification recipient")
+        verbose_name_plural = _("Migration notification recipients")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["batch", "user"],
+                name="uniq_migration_notification_batch_user",
+            ),
+            models.UniqueConstraint(
+                fields=["batch", "recipient_email", "template"],
+                name="uniq_migration_notification_batch_email_template",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["status", "template"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.template} → {self.recipient_email} ({self.status})"
+
+
+class MigrationT0Event(models.Model):
+    """Immutable audit row for staging/production T0 simulation steps."""
+
+    environment = models.CharField(max_length=32, default="STAGING")
+    t0_at = models.DateTimeField(null=True, blank=True)
+    booking_migration_mode = models.CharField(max_length=16, blank=True, default="")
+    migration_batch = models.ForeignKey(
+        LegacyBookingMigrationBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="t0_events",
+    )
+    notification_batch = models.ForeignKey(
+        MigrationNotificationBatch,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="t0_events",
+    )
+    steps = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="migration_t0_events",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        verbose_name = _("Migration T0 event")
+        verbose_name_plural = _("Migration T0 events")
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"T0 {self.environment} {self.t0_at}"

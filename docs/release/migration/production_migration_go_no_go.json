@@ -1,0 +1,73 @@
+{
+  "status": "PRODUCTION_CLOSEOUT_PASS",
+  "migrate_executed_prior": true,
+  "this_phase_migrate": false,
+  "operator_channel_i_login": "DONE",
+  "workflow": {
+    "name": "Migrate Production",
+    "run_id": 32506064057,
+    "result": "PASS"
+  },
+  "timing": {
+    "migration_start_utc": "2026-08-21T17:02:34Z",
+    "migration_completion_utc": "2026-08-21T17:03:44Z",
+    "backup_timestamp": "2026-08-21T02:30:00",
+    "backup_artifact": "/home/ubuntu/backups/nightly/nightly-20260821/db/portal.sql.gz",
+    "backup_gzip_ok": true,
+    "post_login_verify_run_id": 32508928935
+  },
+  "production": {
+    "sha": "7d1081da39e3b0c0d44e58ab0e4172ec217c46ea",
+    "tag": "v2.5.2-channel-i-user-savepoint",
+    "sha_ok": true,
+    "health": "PASS",
+    "readiness_http": 200,
+    "frontend": "PASS",
+    "celery": "PASS",
+    "redis": "PASS"
+  },
+  "migrations": {
+    "0096": "APPLIED",
+    "0097": "APPLIED",
+    "0098": "APPLIED",
+    "0099": "APPLIED",
+    "0100": "APPLIED",
+    "unexpected": [],
+    "pending": [],
+    "equipment_0188": "NOT_APPLIED",
+    "r14": "NOT_APPLIED"
+  },
+  "channel_i": {
+    "authorize": "PASS",
+    "callback": "PASS",
+    "live_userinfo": "PASS",
+    "fixture_fallback": "NONE",
+    "fixture_mode": false,
+    "evidence_class": "REAL",
+    "claim": "username",
+    "employee_match_count": 1
+  },
+  "ChannelIIdentityProfile": {
+    "table_present": true,
+    "rows": 1,
+    "durable_identity": "PASS",
+    "manual_insert": false
+  },
+  "wallet_identity": "PASS",
+  "mysql_ro": "PASS",
+  "wallet": "PASS",
+  "ledger": "PASS",
+  "booking": "PASS",
+  "s3": "PASS",
+  "backup": "PASS",
+  "production_write_audit": {
+    "wallet_writes": false,
+    "ledger_writes": false,
+    "booking_writes": false,
+    "manual_mysql_writes": false,
+    "schema_writes": false,
+    "migrate_this_phase": false,
+    "normal_channel_i_profile_sync": true
+  },
+  "final_go_no_go": "PRODUCTION_CLOSEOUT_PASS"
+}
