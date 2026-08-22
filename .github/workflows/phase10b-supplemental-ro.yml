@@ -1,0 +1,69 @@
+# Phase 10B supplemental READ-ONLY checks (no migrate, no writes).
+name: Phase 10B Supplemental RO
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ro:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Phase 10B supplemental read-only checks
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "HEAD=$(git rev-parse HEAD)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          echo "django=$CID"
+
+          echo "=== hard-OFF settings ==="
+          docker exec -w /app "$CID" python -c "
+          import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from django.conf import settings
+          keys=['DEPLOYMENT_ENVIRONMENT','REAL_INTEGRATION_ENABLED','CHANNEL_I_STAGING_FIXTURE_MODE','LEGACY_MYSQL_STAGING_FIXTURE_MODE','LOCAL_STAGING_ACCEPTED']
+          for k in keys: print(f'{k}={getattr(settings,k,None)}')
+          "
+
+          echo "=== test-account dry-run ==="
+          docker exec -w /app "$CID" python manage.py migration_cleanup_test_accounts --dry-run || true
+
+          echo "=== email recipient dry-run (select only, no send) ==="
+          docker exec -w /app "$CID" python -c "
+          import os, json; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from iic_booking.users.legacy_ledger.migration_notifications import select_notification_candidates
+          r = select_notification_candidates()
+          out = {k: r.get(k) for k in ['total_recipients','faculty','students','oic','admin','skipped','invalid_email','duplicate_email']}
+          out['emails_sent'] = 0
+          print(json.dumps(out, indent=2))
+          "
+
+          echo "=== MySQL RO schema discovery (redacted) ==="
+          docker exec -w /app "$CID" python -c "
+          import os, json; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production')
+          import django; django.setup()
+          from iic_booking.users.legacy_ledger.legacy_booking_mysql import discover_mysql_booking_schema
+          from django.conf import settings
+          print('mysql_user=' + str(getattr(settings,'OLD_MYSQL_USER','')))
+          print('mysql_host=' + str(getattr(settings,'OLD_MYSQL_HOST','')))
+          print('mysql_database=' + str(getattr(settings,'OLD_MYSQL_DATABASE','')))
+          s = discover_mysql_booking_schema()
+          # Redact: no PII, column names/types only
+          slim = {
+            'ok': s.get('ok'),
+            'booking_column_count': s.get('booking_column_count'),
+            'booking_column_names': s.get('booking_column_names'),
+            'users_identity': s.get('users_identity'),
+            'column_map_status': (s.get('column_map') or {}).get('status'),
+            'column_map_resolved': (s.get('column_map') or {}).get('resolved'),
+            'column_map_blockers': (s.get('column_map') or {}).get('blockers'),
+            'wallet_tables_present': s.get('wallet_tables_present'),
+          }
+          print(json.dumps(slim, indent=2, default=str))
+          " || echo "MYSQL_DISCOVERY_FAILED"
+
+          echo "=== celery/redis ==="
+          docker compose -f docker-compose.production.yml ps | grep -E 'celery|redis' || true
+          curl -sS -o /dev/null -w 'ready=%{http_code}\n' --max-time 10 http://127.0.0.1:8080/api/v1/analysis/health/ready/
+          echo "PHASE10B_SUPPLEMENTAL_DONE=YES"
