@@ -1,9 +1,7 @@
 # Per-user-type dynamic input fields + HOUR time_formula help text
 #
-# Production note: an earlier atomic attempt failed mid-way on PostgreSQL
-# ("pending trigger events"). A follow-up non-atomic attempt added user_type
-# then failed on expand while the OLD unique (equipment, field_key) still
-# existed. This migration is therefore idempotent on the database side.
+# Production may already have user_type column from a partial earlier attempt.
+# Steps are idempotent and ordered so historical models see user_type before ORM expand.
 
 from django.db import migrations, models
 
@@ -40,7 +38,6 @@ def swap_unique_to_include_user_type(apps, schema_editor):
     """
     table = "equipment_dynamicinputfield"
     with schema_editor.connection.cursor() as cursor:
-        # Only UNIQUE constraints (contype='u'), never PRIMARY KEY ('p').
         cursor.execute(
             """
             SELECT c.conname
@@ -128,6 +125,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # 1) Column exists in DB + historical model before ORM expand.
         migrations.SeparateDatabaseAndState(
             state_operations=[
                 migrations.AddField(
@@ -141,6 +139,18 @@ class Migration(migrations.Migration):
                         max_length=50,
                     ),
                 ),
+            ],
+            database_operations=[
+                migrations.RunPython(ensure_user_type_column, noop_reverse),
+            ],
+        ),
+        # 2) Allow duplicate field_key across user types.
+        migrations.RunPython(swap_unique_to_include_user_type, noop_reverse),
+        # 3) Copy shared rows per STANDARD charge-profile user type.
+        migrations.RunPython(expand_input_fields_per_user_type, noop_reverse),
+        # 4) Remaining Django state (DB unique already applied via SQL above).
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
                 migrations.AlterField(
                     model_name="chargeprofile",
                     name="time_formula",
@@ -168,10 +178,6 @@ class Migration(migrations.Migration):
                     },
                 ),
             ],
-            database_operations=[
-                migrations.RunPython(ensure_user_type_column, noop_reverse),
-                migrations.RunPython(swap_unique_to_include_user_type, noop_reverse),
-                migrations.RunPython(expand_input_fields_per_user_type, noop_reverse),
-            ],
+            database_operations=[],
         ),
     ]
