@@ -651,6 +651,7 @@ class DynamicInputFieldSerializer(serializers.ModelSerializer):
     class Meta:
         model = DynamicInputField
         fields = [
+            'user_type',
             'field_key',
             'field_label',
             'field_type',
@@ -1518,8 +1519,47 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         return EquipmentAdditionalAccessorySerializer(qs, many=True).data
 
     def get_input_fields(self, obj):
-        fields = DynamicInputFieldSerializer(obj.input_fields.all().order_by("field_key"), many=True).data
-        # Always include Any Other Requirements at the end for all equipment booking forms.
+        """
+        Booking: fields for the effective user type (fallback: legacy empty user_type).
+        Admin equipment form: pass ?all_input_fields=1 for every per-user-type field.
+        Book-for-user / charge estimate: pass ?for_user_type=<code>.
+        """
+        request = self.context.get("request")
+        qs = obj.input_fields.all()
+        want_all = False
+        override_user_type = None
+        if request is not None:
+            want_all = str(request.query_params.get("all_input_fields") or "").lower() in (
+                "1",
+                "true",
+                "yes",
+            )
+            if getattr(request, "_force_all_input_fields", False):
+                want_all = True
+            override_user_type = (request.query_params.get("for_user_type") or "").strip() or None
+        if want_all:
+            return DynamicInputFieldSerializer(
+                qs.order_by("user_type", "field_key"), many=True
+            ).data
+
+        user_type = override_user_type
+        if not user_type and request is not None:
+            user = getattr(request, "user", None)
+            if user and getattr(user, "is_authenticated", False):
+                user_type = getattr(user, "user_type", None)
+        if user_type:
+            typed = qs.filter(user_type=user_type).order_by("field_key")
+            if typed.exists():
+                fields = DynamicInputFieldSerializer(typed, many=True).data
+            else:
+                fields = DynamicInputFieldSerializer(
+                    qs.filter(user_type="").order_by("field_key"), many=True
+                ).data
+        else:
+            fields = DynamicInputFieldSerializer(
+                qs.filter(user_type="").order_by("field_key"), many=True
+            ).data
+        fields = list(fields)
         fields.append(_comments_input_field_schema())
         return fields
 
@@ -1558,18 +1598,24 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         return serializer.data
 
     def get_viewer_profile_type(self, obj):
-        """Calculation profile type for the requesting user (falls back to equipment)."""
+        """Calculation profile type for the requesting (or ?for_user_type=) user."""
         request = self.context.get("request")
         user = getattr(request, "user", None) if request else None
-        if not user or not getattr(user, "is_authenticated", False):
-            return obj.profile_type
-        user_type = getattr(user, "user_type", None)
+        override_user_type = None
+        if request is not None:
+            override_user_type = (request.query_params.get("for_user_type") or "").strip() or None
+        user_type = override_user_type or (getattr(user, "user_type", None) if user else None)
         if not user_type:
             return obj.profile_type
         try:
             from iic_booking.equipment.pi_pricing import resolve_pricing_profile_for_user
 
-            pricing = resolve_pricing_profile_for_user(user, obj)
+            if override_user_type:
+                pricing = ChargeProfilePricingProfile.STANDARD
+            elif user and getattr(user, "is_authenticated", False):
+                pricing = resolve_pricing_profile_for_user(user, obj)
+            else:
+                pricing = ChargeProfilePricingProfile.STANDARD
         except Exception:
             pricing = ChargeProfilePricingProfile.STANDARD
         cp = (
@@ -1658,6 +1704,7 @@ class EquipmentAdditionalAccessoryWriteSerializer(serializers.Serializer):
 
 class DynamicInputFieldWriteSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False, allow_null=True)
+    user_type = serializers.CharField(max_length=50, allow_blank=True, required=False, default="")
     field_key = serializers.CharField(max_length=1)
     field_label = serializers.CharField(max_length=255)
     # Match DynamicInputField.field_type (max_length=32); ICPMS_STANDARD_COVERAGE is 23 chars.
@@ -1942,10 +1989,15 @@ def _create_related(equipment, inlines, actor=None):
         )
     for item in inlines.get('input_fields', []):
         DynamicInputField.objects.create(
-            equipment=equipment, field_key=item['field_key'], field_label=item['field_label'],
-            field_type=item['field_type'], is_required=item.get('is_required', False),
+            equipment=equipment,
+            user_type=str(item.get('user_type') or '').strip(),
+            field_key=item['field_key'],
+            field_label=item['field_label'],
+            field_type=item['field_type'],
+            is_required=item.get('is_required', False),
             editing_required=item.get('editing_required', False),
-            default_value=item.get('default_value') or '', options=item.get('options', []) or [],
+            default_value=item.get('default_value') or '',
+            options=item.get('options', []) or [],
             help_text=item.get('help_text') or '',
             source_element_field_key=(item.get('source_element_field_key') or '').strip() or None,
         )
@@ -2140,16 +2192,16 @@ def _sync_related(equipment, inlines, actor=None):
                 is_enabled=item.get('is_enabled', prev_add_enabled.get(name, True)),
             )
     if inlines.get('input_fields') is not None:
-        # Upsert by field_key (A-Z only). Never persist the synthetic booking "comments" field.
-        keep_keys = set()
+        # Upsert by (user_type, field_key). Never persist the synthetic booking "comments" field.
+        keep_pairs = set()
         for item in inlines['input_fields']:
             key = str(item.get('field_key') or '').strip().upper()
-            if len(key) != 1 or not key.isalpha() or key == 'C' and str(item.get('field_label') or '').lower().startswith('any other'):
-                # Skip invalid keys; also skip labels that match the universal comments schema if mis-sent as C.
-                if key != 'C' or 'any other requirements' not in str(item.get('field_label') or '').lower():
-                    if len(key) != 1 or not key.isalpha():
-                        continue
-            keep_keys.add(key)
+            ut = str(item.get('user_type') or '').strip()
+            if len(key) != 1 or not key.isalpha():
+                continue
+            if 'any other requirements' in str(item.get('field_label') or '').lower():
+                continue
+            keep_pairs.add((ut, key))
             defaults = {
                 'field_label': item['field_label'],
                 'field_type': item['field_type'],
@@ -2162,10 +2214,15 @@ def _sync_related(equipment, inlines, actor=None):
             }
             DynamicInputField.objects.update_or_create(
                 equipment=equipment,
+                user_type=ut,
                 field_key=key,
                 defaults=defaults,
             )
-        DynamicInputField.objects.filter(equipment=equipment).exclude(field_key__in=keep_keys).delete()
+        # Delete rows not present in payload (per user_type).
+        existing = DynamicInputField.objects.filter(equipment=equipment)
+        for row in existing:
+            if (row.user_type or "", row.field_key) not in keep_pairs:
+                row.delete()
     if inlines.get('charge_profiles') is not None:
         from django.db.models import Count
         payload_user_types = {item['user_type'] for item in inlines['charge_profiles']}
@@ -2854,15 +2911,29 @@ class BookingSerializer(serializers.ModelSerializer):
         return None
     
     def get_input_fields(self, obj):
-        """Return all equipment user input fields for booking user-input display section."""
+        """Return equipment input fields for this booking's user type (snapshot / CP)."""
         if not obj.equipment_id:
             return [_comments_input_field_schema()]
+        user_type = (
+            (getattr(obj, "user_type_snapshot", None) or "").strip()
+            or (getattr(getattr(obj, "charge_profile", None), "user_type", None) or "").strip()
+            or (getattr(getattr(obj, "user", None), "user_type", None) or "").strip()
+        )
         cache = self._get_input_fields_cache()
-        if obj.equipment_id not in cache:
+        cache_key = (obj.equipment_id, user_type or "")
+        if cache_key not in cache:
             from .models import DynamicInputField
-            fields = DynamicInputField.objects.filter(equipment_id=obj.equipment_id).order_by('field_key')
-            cache[obj.equipment_id] = [self._build_input_field_item(f) for f in fields]
-        result = list(cache[obj.equipment_id])
+            qs = DynamicInputField.objects.filter(equipment_id=obj.equipment_id)
+            if user_type:
+                typed = qs.filter(user_type=user_type).order_by("field_key")
+                if typed.exists():
+                    fields = typed
+                else:
+                    fields = qs.filter(user_type="").order_by("field_key")
+            else:
+                fields = qs.filter(user_type="").order_by("field_key")
+            cache[cache_key] = [self._build_input_field_item(f) for f in fields]
+        result = list(cache[cache_key])
         # Universal free-text comments field must be shown as the last input.
         result.append(_comments_input_field_schema())
         return result

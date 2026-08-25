@@ -435,7 +435,18 @@ class DynamicInputFieldInline(admin.TabularInline):
     model = DynamicInputField
     extra = 0
     fk_name = 'equipment'
-    fields = ['field_key', 'field_label', 'field_type', 'is_required', 'editing_required', 'default_value', 'options_text', 'help_text', 'source_element_field_key']
+    fields = [
+        'user_type',
+        'field_key',
+        'field_label',
+        'field_type',
+        'is_required',
+        'editing_required',
+        'default_value',
+        'options_text',
+        'help_text',
+        'source_element_field_key',
+    ]
     classes = ['collapse']
 
 

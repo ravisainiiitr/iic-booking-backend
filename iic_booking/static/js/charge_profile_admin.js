@@ -98,23 +98,24 @@
                 }
                 
             } else if (profileType === 'HOUR') {
-                // HOUR: Show primary_unit_charge, secondary_unit_charge, hide time_formula
+                // HOUR: Show primary + time_formula (generic formula or legacy B).
+                // Blank / "B" formula keeps legacy slot×B; other formulas use SAMPLE-style eval (no toggle).
                 $primaryUnitChargeField.show();
                 $secondaryUnitChargeField.show();
-                $timeFormulaField.hide();
+                $timeFormulaField.show();
                 $breakpointField.hide();
                 $secondaryFlatChargeField.hide();
                 
                 // Add/update pricing description
                 var pricingDesc = '<strong>Pricing Section:</strong><br>' +
                     'Primary unit charge: Charge per hour<br>' +
-                    'Secondary unit charge: Additional charge when toggle is enabled<br><br>' +
-                    '<strong>Generic Fields:</strong> A, B, C, D, E, F, G<br>' +
-                    '&nbsp;&nbsp;No of samples -> A<br>' +
-                    '&nbsp;&nbsp;No of slots -> B<br>' +
-                    '&nbsp;&nbsp;Toggle -> C<br><br>' +
-                    '<strong>Time Formula:</strong> Slot Duration * No of slots<br><br>' +
-                    '<strong>Charge Calculation:</strong> (Time per slot/60) * primary unit charge. If enable toggle input then ((Time per slot/60) * primary unit charge) + secondary unit charge.';
+                    'Secondary unit charge: Legacy toggle surcharge only (blank / B time formula)<br><br>' +
+                    '<strong>Generic Fields:</strong> A, B, C, D, E, F, G (per user type)<br>' +
+                    '&nbsp;&nbsp;Legacy: No of slots -> B; Toggle -> C<br><br>' +
+                    '<strong>Time Formula:</strong> Generic formula (same engine as SAMPLE), e.g. ((((C-B)/D)*E)*A)/60<br>' +
+                    'Leave blank or use B for legacy: Slot Duration × No of slots (field B).<br><br>' +
+                    '<strong>Charge Calculation:</strong> Formula path: (total_time_minutes/60) × primary unit charge (no toggle).<br>' +
+                    'Legacy B path: (time/60) × primary; if toggle C enabled, + secondary unit charge.';
                 
                 if ($pricingDescription.length) {
                     $pricingDescription.html(pricingDesc);
@@ -127,6 +128,14 @@
                     if ($fieldsContainer.length) {
                         $fieldsContainer.first().before('<div class="pricing-description help" style="margin-bottom: 10px; padding: 10px; background: #f8f9fa; border-left: 3px solid #007cba;">' + pricingDesc + '</div>');
                     }
+                }
+
+                var $timeFormulaHelp = $timeFormulaField.find('.help, .help-text');
+                if ($timeFormulaHelp.length) {
+                    $timeFormulaHelp.html(
+                        'HOUR Time Formula: use a generic expression (A–G), e.g. ((((C-B)/D)*E)*A)/60. ' +
+                        'Blank or B = legacy Slot Duration × B. Result is minutes.'
+                    );
                 }
                 
             } else if (profileType === 'SAMPLE_ELEMENT') {
@@ -275,9 +284,9 @@
                 updateTimeCalculationDescription(profileType, $timeCalculationFieldset);
                 
             } else if (profileType === 'HOUR') {
-                // HOUR: Hide breakpoint and time_formula, show secondary_flat_charge
+                // HOUR: Show time_formula (generic or legacy B); hide breakpoint
                 $breakpointField.hide();
-                $timeFormulaField.hide();
+                $timeFormulaField.show();
                 $secondaryFlatChargeField.show();
                 
                 // Update pricing description
@@ -368,7 +377,7 @@
 
             var descriptions = {
                 'SAMPLE': 'Time Formula: (A * C) + B. Generic Fields: A, B, C, D, E, F, G.',
-                'HOUR': 'Time Formula: Slot Duration * No of slots. Generic Fields: A (No of samples), B (No of slots), C (Toggle), D, E, F, G.',
+                'HOUR': 'HOUR Time Formula: generic A–G expression (result in minutes), e.g. ((((C-B)/D)*E)*A)/60. Blank or B = legacy Slot Duration × B. Formula path has no toggle surcharge.',
                 'SAMPLE_ELEMENT': 'Time Formula: (A * C) + B. Generic Fields: A (No of samples), B (No of elements), C, D, E, F, G.'
             };
 

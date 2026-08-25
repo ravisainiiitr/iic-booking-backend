@@ -2590,6 +2590,7 @@ def admin_api_router():
             serializer.is_valid(raise_exception=True)
             self.perform_create(serializer)
             instance = serializer.instance
+            request._force_all_input_fields = True
             detail_serializer = EquipmentDetailSerializer(instance, context={"request": request})
             return Response(detail_serializer.data, status=status.HTTP_201_CREATED)
 
@@ -2600,6 +2601,7 @@ def admin_api_router():
             serializer = self.get_serializer(instance, data=request.data, partial=partial)
             serializer.is_valid(raise_exception=True)
             self.perform_update(serializer)
+            request._force_all_input_fields = True
             detail_serializer = EquipmentDetailSerializer(instance, context={"request": request})
             return Response(detail_serializer.data)
 

@@ -1432,12 +1432,16 @@ class ChargeProfile(models.Model):
         help_text=_('Breakpoint value for tiered pricing')
     )
     
-    # Time calculation formula (for SAMPLE and SAMPLE_ELEMENT)
+    # Time calculation formula (SAMPLE / SAMPLE_ELEMENT / HOUR with generic formula)
     time_formula = models.CharField(
         max_length=500,
         blank=True,
         null=True,
-        help_text=_('Formula for time calculation (e.g., "(A * C) + B")')
+        help_text=_(
+            'Formula for time calculation using fields A–G '
+            '(e.g. "(A * C) + B" or "((((C-B)/D)*E)*A)/60"). '
+            'HOUR: leave blank or set to "B" for legacy B×slot-duration behavior.'
+        )
     )
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1556,6 +1560,13 @@ class DynamicInputField(models.Model):
         null=True,
         blank=True,
     )
+    user_type = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_('User type this input field applies to (charge-profile scoped)'),
+    )
     field_key = models.CharField(
         max_length=1,
         choices=FIELD_KEYS,
@@ -1618,11 +1629,11 @@ class DynamicInputField(models.Model):
     class Meta:
         verbose_name = _('Dynamic Input Field')
         verbose_name_plural = _('Dynamic Input Fields')
-        unique_together = [['equipment', 'field_key']]
-        ordering = ['equipment', 'field_key']
+        unique_together = [['equipment', 'user_type', 'field_key']]
+        ordering = ['equipment', 'user_type', 'field_key']
     
     def __str__(self):
-        return f"{self.equipment} - {self.field_key}: {self.field_label}"
+        return f"{self.equipment.code if self.equipment else ''} [{self.user_type or '*'}] - {self.field_key}: {self.field_label}"
 
 class MultiParamDefinition(models.Model):
     """Slot option definitions for MULTI_PARAM charge profiles.

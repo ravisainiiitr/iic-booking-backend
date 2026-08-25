@@ -24,6 +24,23 @@ def get_charge_profile_type(charge_profile) -> Optional[str]:
     return getattr(eq, "profile_type", None) if eq else None
 
 
+def hour_uses_legacy_b_slots(charge_profile) -> bool:
+    """
+    Legacy HOUR: time = B × slot_duration (and charge uses B + optional C toggle).
+
+    Compatibility: blank formula, or formula that is effectively just "B"
+    (operators historically wrote B in Time formula for slot count).
+    Any other non-empty formula uses the generic SAMPLE-style formula engine.
+    """
+    formula = (getattr(charge_profile, "time_formula", None) or "").strip()
+    if not formula:
+        return True
+    normalized = "".join(formula.split()).upper()
+    if normalized in ("B", "B*SLOT_DURATION", "SLOT_DURATION*B", "B*SLOTDURATION", "SLOTDURATION*B"):
+        return True
+    return False
+
+
 def quantize_money(value: Any) -> Decimal:
     """Round monetary amounts to the nearest whole rupee (₹)."""
     return safe_decimal(value).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
@@ -333,7 +350,7 @@ class TimeCalculationEngine:
             )
         elif profile_type == ChargeProfileType.HOUR:
             return TimeCalculationEngine._calculate_hour_time(
-                input_values, slot_duration_minutes
+                charge_profile, input_values, slot_duration_minutes
             )
         elif profile_type == ChargeProfileType.MULTI_PARAM:
             return TimeCalculationEngine._calculate_multi_param_time(
@@ -413,18 +430,22 @@ class TimeCalculationEngine:
     
     @staticmethod
     def _calculate_hour_time(
+        charge_profile: ChargeProfile,
         input_values: Dict[str, Any],
-        slot_duration_minutes: int,
+        slot_duration_minutes: Optional[int],
     ) -> int:
         """Calculate time for HOUR profile type.
-        
-        Time = input B value * slot_duration_minutes
+
+        Legacy (blank / \"B\" formula): B × slot_duration_minutes.
+        New: evaluate charge_profile.time_formula like SAMPLE (generic A–G).
         """
-        # Get input B value (number of slots)
-        b_value = input_values.get('B', 0)
-        num_slots = safe_float(b_value, 0.0)
-        
-        return int(num_slots * slot_duration_minutes)
+        if hour_uses_legacy_b_slots(charge_profile):
+            b_value = input_values.get("B", 0)
+            num_slots = safe_float(b_value, 0.0)
+            return int(num_slots * (slot_duration_minutes or 0))
+        return TimeCalculationEngine._calculate_formula_time(
+            charge_profile, input_values, slot_duration_minutes
+        )
     
     
     @staticmethod
@@ -593,47 +614,49 @@ class ChargeCalculationEngine:
         total_time_minutes: int
     ) -> Tuple[Decimal, List[Dict[str, Any]]]:
         """Calculate charge for HOUR profile type.
-        
-        Inputs:
-            A: Number of samples
-            B: Number of slots
-            C: Toggle (enabled/disabled)
-        
-        Charge Calculation:
-            Base: (Time per slot / 60) * primary_unit_charge
-            If toggle (C) enabled: Base + secondary_unit_charge
+
+        Legacy (blank / \"B\" formula):
+            Base: (slot_duration/60) * primary * B; + secondary if C toggle on.
+        Formula-based HOUR (no toggle):
+            (total_time_minutes / 60) * primary_unit_charge.
         """
         breakdown = []
         total_charge = Decimal('0.00')
-        
-        # Get slot duration from equipment
+
+        if not hour_uses_legacy_b_slots(charge_profile):
+            hours = safe_decimal(total_time_minutes) / Decimal("60")
+            if hours <= 0:
+                return Decimal("0.00"), breakdown
+            total_charge = hours * charge_profile.primary_unit_charge
+            breakdown.append({
+                "description": (
+                    f"{float(hours):.4g} hour(s) @ {charge_profile.primary_unit_charge} per hour "
+                    f"(formula time {total_time_minutes} min)"
+                ),
+                "amount": float(total_charge),
+            })
+            return total_charge, breakdown
+
+        # --- Legacy B × slot + optional C toggle ---
         slot_duration_minutes = charge_profile.equipment.slot_duration_minutes if charge_profile.equipment else 0
         
         if slot_duration_minutes <= 0:
             return Decimal('0.00'), breakdown
         
-        # Get toggle value (C) - check if enabled
         toggle_value = input_values.get('C', 0)
         try:
-            # Toggle is enabled if C is truthy (1, '1', True, 'true', etc.)
             toggle_enabled = bool(toggle_value) and str(toggle_value).lower() not in ['0', 'false', 'no', '']
         except (ValueError, TypeError):
             toggle_enabled = False
         
-        # Get number of slots (B)
         b_value = input_values.get('B', 0)
         num_slots = safe_decimal(b_value)
         
         if num_slots <= 0:
             return Decimal('0.00'), breakdown
         
-        # Calculate time per slot in hours
         time_per_slot_hours = safe_decimal(slot_duration_minutes) / Decimal('60')
-        
-        # Base charge per slot: (Time per slot / 60) * primary_unit_charge
         charge_per_slot = time_per_slot_hours * charge_profile.primary_unit_charge
-        
-        # Total base charge for all slots
         base_charge = charge_per_slot * num_slots
         breakdown.append({
             'description': f'{num_slots} slot(s) × {time_per_slot_hours:.2f} hours @ {charge_profile.primary_unit_charge} per hour',
@@ -641,7 +664,6 @@ class ChargeCalculationEngine:
         })
         total_charge = base_charge
         
-        # Add secondary unit charge if toggle is enabled
         if toggle_enabled and charge_profile.secondary_unit_charge:
             total_charge += charge_profile.secondary_unit_charge
             breakdown.append({
