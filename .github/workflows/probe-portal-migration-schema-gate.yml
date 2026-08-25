@@ -14,7 +14,7 @@ jobs:
           echo "HEAD=$(git rev-parse HEAD)"
           echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo none)"
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
-          docker exec -w /app "$CID" python - <<'PY'
+          docker exec -i -w /app "$CID" python - <<'PY'
           import os, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
@@ -43,8 +43,10 @@ jobs:
               req = getattr(factory, method)(path)
               force_authenticate(req, user=admin)
               resp = view(req)
-              print(path, resp.status_code, getattr(resp, "data", {}) and (resp.data.get("code") or resp.data.get("approval_status") or resp.data.get("schema", {}).get("code") or list(resp.data.keys())[:4]))
-              assert resp.status_code != 500, (path, resp.status_code, getattr(resp, "data", None))
+              code = getattr(resp, "data", {}) or {}
+              marker = code.get("code") or code.get("approval_status") or (code.get("schema") or {}).get("code") or list(code.keys())[:4]
+              print(path, resp.status_code, marker)
+              assert resp.status_code != 500, (path, resp.status_code, code)
               return resp
 
           hit(v.portal_datetime_contract, "/api/portal-migration/admin/datetime-contract/")
