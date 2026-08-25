@@ -1,0 +1,27 @@
+{
+  "phase": "10M-hotfix",
+  "title": "SCHEMA_PENDING graceful degrade for portal-migration admin APIs",
+  "datetime_utc": "2026-08-25T10:00:48Z",
+  "root_cause": "ORM SELECT of PortalMigrationState.migration_start_at / LegacyEquipmentMapping before users.0102 — ProgrammingError → HTTP 500 (also poisoned ATOMIC_REQUESTS on datetime-contract validation path)",
+  "classification": {
+    "expected_until_schema": ["equipment-mappings", "legacy-bookings", "go-no-go ORM paths", "window PATCH"],
+    "genuine_bug": "uncaught ProgrammingError / missing graceful SCHEMA_PENDING responses"
+  },
+  "fix_sha": "b0f48f4844d8d56a4a3289b2311ea02c8bcd3670",
+  "release_tag": "v2.5.4-portal-migration-schema-pending",
+  "deploy_run": "https://github.com/ravisainiiitr/iic-booking-backend/actions/runs/32834352910",
+  "probe_run": "https://github.com/ravisainiiitr/iic-booking-backend/actions/runs/32834978860",
+  "migrate_run": false,
+  "verification": {
+    "datetime-contract": "200 OPERATOR_REQUIRED (file-based; approve usable)",
+    "equipment-mappings": "503 SCHEMA_PENDING",
+    "legacy-bookings": "503 SCHEMA_PENDING",
+    "phase10m-go-no-go": "200 SCHEMA_PENDING",
+    "phase10l-go-no-go": "200 SCHEMA_PENDING",
+    "dashboard": "200 SCHEMA_PENDING",
+    "schema_pending": ["0101", "0102", "0103", "0104"],
+    "has_migration_start_at": false
+  },
+  "datetime_approve_now": true,
+  "window_persist_gate": "OPERATOR_REQUIRED — needs Migrate Production 0101–0104 then operator-supplied ISO dates"
+}
