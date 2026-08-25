@@ -231,6 +231,41 @@ class ApiTests(TestCase):
         res = self.client.get("/api/portal-migration/admin/equipment-mappings/")
         self.assertEqual(res.status_code, 200)
 
+    def test_admin_unmap_and_retire_and_delete_mapping(self):
+        m = LegacyEquipmentMapping.objects.create(
+            old_equipment_id=8801,
+            old_equipment_name="Gone Instrument",
+            new_equipment=self.eq,
+            status=LegacyEquipmentMappingStatus.ACTIVE,
+        )
+        self.client.force_authenticate(user=self.admin)
+        unmap = self.client.patch(
+            f"/api/portal-migration/admin/equipment-mappings/{m.id}/",
+            {"status": "UNMAPPED", "new_equipment_id": None},
+            format="json",
+        )
+        self.assertEqual(unmap.status_code, 200, unmap.content)
+        m.refresh_from_db()
+        self.assertEqual(m.status, LegacyEquipmentMappingStatus.UNMAPPED)
+        self.assertIsNone(m.new_equipment_id)
+
+        retire = self.client.patch(
+            f"/api/portal-migration/admin/equipment-mappings/{m.id}/",
+            {
+                "status": "RETIRED",
+                "new_equipment_id": None,
+                "mapping_reason": "no longer exists",
+            },
+            format="json",
+        )
+        self.assertEqual(retire.status_code, 200, retire.content)
+        m.refresh_from_db()
+        self.assertEqual(m.status, LegacyEquipmentMappingStatus.RETIRED)
+
+        deleted = self.client.delete(f"/api/portal-migration/admin/equipment-mappings/{m.id}/")
+        self.assertEqual(deleted.status_code, 200, deleted.content)
+        self.assertFalse(LegacyEquipmentMapping.objects.filter(pk=m.id).exists())
+
     def test_test_account_dry_run_api(self):
         self.client.force_authenticate(user=self.admin)
         res = self.client.get("/api/portal-migration/admin/test-account-dry-run/")

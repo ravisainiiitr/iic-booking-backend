@@ -127,13 +127,29 @@ def portal_legacy_equipment_mappings(request):
         mapped_in_window = sum(
             1 for r in table if r.get("mapping_status") == LegacyEquipmentMappingStatus.ACTIVE and int(r.get("legacy_booking_count") or 0) > 0
         )
+        not_required_statuses = {
+            LegacyEquipmentMappingStatus.DISABLED,
+            LegacyEquipmentMappingStatus.RETIRED,
+        }
         unmapped_in_window = sum(
-            1 for r in table if r.get("mapping_status") != LegacyEquipmentMappingStatus.ACTIVE and int(r.get("legacy_booking_count") or 0) > 0
+            1
+            for r in table
+            if r.get("mapping_status") not in (
+                {LegacyEquipmentMappingStatus.ACTIVE} | not_required_statuses
+            )
+            and int(r.get("legacy_booking_count") or 0) > 0
         )
         if mapped_filter == "mapped":
             table = [r for r in table if r.get("mapping_status") == LegacyEquipmentMappingStatus.ACTIVE]
         elif mapped_filter == "unmapped":
-            table = [r for r in table if r.get("mapping_status") != LegacyEquipmentMappingStatus.ACTIVE]
+            table = [
+                r
+                for r in table
+                if r.get("mapping_status")
+                not in ({LegacyEquipmentMappingStatus.ACTIVE} | not_required_statuses)
+            ]
+        elif mapped_filter in ("not_required", "retired", "disabled"):
+            table = [r for r in table if r.get("mapping_status") in not_required_statuses]
         min_bookings = request.GET.get("min_booking_count")
         if min_bookings is not None:
             try:
@@ -230,7 +246,7 @@ def portal_legacy_equipment_mapping_export(request):
     return Response({"count": len(table), "results": table}, status=status.HTTP_200_OK)
 
 
-@api_view(["GET", "PATCH"])
+@api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def portal_legacy_equipment_mapping_detail(request, mapping_id):
     if not _is_main_admin(request.user):
@@ -241,6 +257,13 @@ def portal_legacy_equipment_mapping_detail(request, mapping_id):
         return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     if request.method == "GET":
         return Response(_mapping_row(m), status=status.HTTP_200_OK)
+    if request.method == "DELETE":
+        old_id = m.old_equipment_id
+        m.delete()
+        return Response(
+            {"ok": True, "deleted": True, "mapping_id": mapping_id, "old_equipment_id": old_id},
+            status=status.HTTP_200_OK,
+        )
     data = request.data or {}
     new_status = m.status
     new_eq_id = getattr(m.new_equipment, "equipment_id", None) if m.new_equipment else None
@@ -258,6 +281,14 @@ def portal_legacy_equipment_mapping_detail(request, mapping_id):
                 new_eq_id = int(raw)
             except ValueError:
                 return Response({"error": "invalid new_equipment_id"}, status=status.HTTP_400_BAD_REQUEST)
+    # Unmap / not-required: clearing the new link must not leave status ACTIVE.
+    if new_eq_id is None and new_status == LegacyEquipmentMappingStatus.ACTIVE:
+        if "status" in data:
+            return Response(
+                {"error": "ACTIVE mapping requires new_equipment_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        new_status = LegacyEquipmentMappingStatus.UNMAPPED
     validation = validate_legacy_equipment_mapping_save(
         old_equipment_id=m.old_equipment_id,
         new_equipment_id=new_eq_id,
@@ -269,7 +300,7 @@ def portal_legacy_equipment_mapping_detail(request, mapping_id):
             {"error": "validation_failed", "errors": validation["errors"], "warnings": validation["warnings"]},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if "status" in data:
+    if "status" in data or new_status != m.status:
         m.status = new_status
     if "new_equipment_id" in data:
         raw = data.get("new_equipment_id")
