@@ -1,0 +1,47 @@
+{
+  "phase": "10M",
+  "production_sha_before": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b",
+  "production_tag_before": "v2.5.2-portal-migration-phase8-production",
+  "local_backend_base": "84aa6e5",
+  "release_branch": "release/portal-migration-phase10d-10l-datetime-window",
+  "uncommitted_phases_included": [
+    "10D",
+    "10E",
+    "10F",
+    "10G",
+    "10H",
+    "10I",
+    "10J",
+    "10K",
+    "10L",
+    "10M-code-deploy"
+  ],
+  "reviewed_released": false,
+  "push_executed": false,
+  "deploy_executed": false,
+  "migrate_authorized": false,
+  "migrate_executed": false,
+  "pr_number": null,
+  "release_tag": null,
+  "push_authorization": "GRANTED — user explicit push to production for datetime/window UI",
+  "schema_status": "OPERATOR_REQUIRED after code deploy (0101–0104 not applied)",
+  "required_migration_release": [
+    "users/0101–0104 (0102 adds migration_start_at)",
+    "legacy_ledger datetime/equipment/booking bridge",
+    "portal migration admin APIs (incl. phase10l/10m-go-no-go)",
+    "AdminPortalMigration + LegacyEquipment/Booking mapping UI"
+  ],
+  "deployment_order": [
+    "commit/push backend migration RC + immutable release tag",
+    "commit/push frontend migration UI (master → Deploy Frontend)",
+    "Deploy Backend with release_tag (no auto-migrate)",
+    "verify datetime-contract + admin state window endpoints + UI",
+    "STOP — schema migrate requires separate auth",
+    "AWS Console backup verify (operator)",
+    "showmigrations + migrate --plan only after schema auth",
+    "RO discovery only after datetime+window",
+    "Separate T0 authorization (not this deploy)"
+  ],
+  "rollback": "APP ROLLBACK != DATABASE ROLLBACK — redeploy previous tag v2.5.2-portal-migration-phase8-production",
+  "evidence": "docs/release/migration/phase10m_production_code_deploy.json"
+}

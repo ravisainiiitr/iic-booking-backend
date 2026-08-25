@@ -93,3 +93,68 @@ def get_active_mapping_for_old_id(old_equipment_id: int) -> LegacyEquipmentMappi
         .select_related("new_equipment")
         .first()
     )
+
+
+def validate_legacy_equipment_mapping_save(
+    *,
+    old_equipment_id: int,
+    new_equipment_id: int | None,
+    status: str,
+    exclude_mapping_id: int | None = None,
+    discovered_old_ids: set[int] | None = None,
+) -> dict[str, Any]:
+    """
+    Pre-save validation for explicit administrator equipment mapping.
+    Does not perform fuzzy automatic mapping.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if discovered_old_ids is not None and old_equipment_id not in discovered_old_ids:
+        warnings.append(
+            f"legacy_equipment_id={old_equipment_id} not found in discovered legacy bookings "
+            "(may still be valid if inventory-only mapping)"
+        )
+
+    dup_qs = LegacyEquipmentMapping.objects.filter(old_equipment_id=old_equipment_id)
+    if exclude_mapping_id:
+        dup_qs = dup_qs.exclude(pk=exclude_mapping_id)
+    if dup_qs.exists():
+        errors.append("duplicate_legacy_equipment_mapping")
+
+    if status not in LegacyEquipmentMappingStatus.values:
+        errors.append("invalid_mapping_status")
+
+    new_eq = None
+    if new_equipment_id is not None:
+        try:
+            new_eq = Equipment.objects.get(pk=int(new_equipment_id))
+        except (ValueError, Equipment.DoesNotExist):
+            errors.append("invalid_new_equipment_id")
+        if new_eq:
+            eq_status = (new_eq.status or "").strip()
+            if eq_status and eq_status != EquipmentStatus.ACTIVE:
+                errors.append("new_equipment_not_active")
+
+    if status == LegacyEquipmentMappingStatus.ACTIVE:
+        if new_eq is None:
+            errors.append("active_mapping_requires_new_equipment")
+        else:
+            clash = LegacyEquipmentMapping.objects.filter(
+                new_equipment=new_eq,
+                status=LegacyEquipmentMappingStatus.ACTIVE,
+            )
+            if exclude_mapping_id:
+                clash = clash.exclude(pk=exclude_mapping_id)
+            if clash.exists():
+                other = clash.first()
+                warnings.append(
+                    f"multiple legacy equipment IDs map to new equipment {new_eq.equipment_id} "
+                    f"(existing mapping id={other.pk if other else '?'}) — confirm explicitly"
+                )
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+    }

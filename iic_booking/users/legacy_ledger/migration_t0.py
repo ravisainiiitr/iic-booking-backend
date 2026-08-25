@@ -53,6 +53,24 @@ def run_staging_t0(
     if not confirm_staging_t0:
         raise RuntimeError("Pass confirm_staging_t0=True after dry-run READY.")
 
+    from iic_booking.users.legacy_ledger.datetime_contract import (
+        contract_blocks_t0,
+        load_datetime_contract,
+        validate_contract_for_discovery,
+    )
+    from django.db import connection
+
+    contract = load_datetime_contract()
+    if contract_blocks_t0(contract):
+        return {"ok": False, "stage": "datetime_contract", "error": "datetime_contract_not_approved"}
+    gate = validate_contract_for_discovery(contract)
+    if not gate.get("ready_for_discovery"):
+        return {"ok": False, "stage": "datetime_contract", "gate": gate}
+
+    tables = set(connection.introspection.table_names())
+    if "users_legacybookingblock" not in tables:
+        return {"ok": False, "stage": "migrations", "error": "users.0101–0104 schema not applied"}
+
     dry = migration_dry_run(legacy_rows)
     if dry.get("verdict") != "READY FOR MIGRATION":
         return {"ok": False, "stage": "validate", "dry_run": dry}

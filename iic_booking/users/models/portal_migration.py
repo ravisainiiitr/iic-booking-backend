@@ -483,6 +483,14 @@ class LegacyBookingBlockStatus(models.TextChoices):
     CANCELLED = "CANCELLED", _("Cancelled")
 
 
+class LegacyUserMappingStatus(models.TextChoices):
+    """User identity on a legacy block — independent of slot occupancy."""
+
+    UNRESOLVED = "UNRESOLVED", _("Unresolved")
+    RESOLVED_CHANNEL_I = "RESOLVED_CHANNEL_I", _("Resolved via Channel-I")
+    NOT_REQUIRED_FOR_BLOCK = "NOT_REQUIRED_FOR_BLOCK", _("Not required for block")
+
+
 class LegacyBookingBlock(models.Model):
     """Migration reservation metadata. Occupancy is enforced by DailySlot.BLOCKED.
 
@@ -492,6 +500,9 @@ class LegacyBookingBlock(models.Model):
     BLOCKED_LABEL_PREFIX = "LEGACY_MIGRATION:"
 
     legacy_booking_id = models.PositiveBigIntegerField(db_index=True)
+    legacy_user_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
+    legacy_employee_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    legacy_equipment_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
     new_equipment = models.ForeignKey(
         "equipment.Equipment",
         on_delete=models.PROTECT,
@@ -499,6 +510,22 @@ class LegacyBookingBlock(models.Model):
     )
     start_at = models.DateTimeField()
     end_at = models.DateTimeField()
+    duration_minutes = models.PositiveIntegerField(null=True, blank=True)
+    source_status = models.CharField(max_length=32, blank=True, default="")
+    user_mapping_status = models.CharField(
+        max_length=32,
+        choices=LegacyUserMappingStatus.choices,
+        default=LegacyUserMappingStatus.NOT_REQUIRED_FOR_BLOCK,
+        db_index=True,
+    )
+    user_mapping_source = models.CharField(max_length=64, blank=True, default="")
+    resolved_user = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="resolved_legacy_booking_blocks",
+    )
     source = models.CharField(max_length=32, default="LEGACY_PORTAL")
     status = models.CharField(
         max_length=16,

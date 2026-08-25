@@ -1,0 +1,41 @@
+{
+  "phase": "10M",
+  "title": "Production code deploy — datetime contract + migration window UI/API",
+  "datetime_utc": "2026-08-25T09:20:00Z",
+  "authorization": "User explicit: push changes to production for datetime contract approve + migration window UI",
+  "safety": {
+    "migrate_run": false,
+    "t0_activated": false,
+    "emails_sent": false,
+    "legacy_mysql_writes": false,
+    "users_bookings_wallets_migrated": false,
+    "datetime_approved_by_deploy": false,
+    "window_dates_invented": false,
+    "note": "DEPLOYMENT ≠ MIGRATION; schema 0101–0104 remain OPERATOR_REQUIRED"
+  },
+  "previous_production": {
+    "tag": "v2.5.2-portal-migration-phase8-production",
+    "sha": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b"
+  },
+  "release_branch": "release/portal-migration-phase10d-10l-datetime-window",
+  "includes": [
+    "users.0101–0104 migration files in image (0104 new; 0101–0103 already on master)",
+    "datetime-contract GET/POST API",
+    "admin state PATCH migration_start_at / migration_window_end_at",
+    "phase readiness / GO-NO-GO endpoints",
+    "legacy equipment/booking mapping APIs"
+  ],
+  "excludes": [
+    "RAA / Copilot / R12 / R14 unrelated noise",
+    "auto-migrate",
+    "Migrate Production workflow"
+  ],
+  "deploy_mechanism": "Deploy Backend workflow_dispatch with release_tag (no auto-migrate)",
+  "schema_after_deploy": "OPERATOR_REQUIRED — showmigrations should still list 0101–0104 pending",
+  "frontend_companion": "iic-booking-frontend master push of AdminPortalMigration datetime/window/GO-NO-GO",
+  "push_executed": false,
+  "deploy_executed": false,
+  "release_tag": null,
+  "backend_sha": null,
+  "frontend_sha": null
+}

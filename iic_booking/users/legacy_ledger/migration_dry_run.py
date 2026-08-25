@@ -6,6 +6,7 @@ from typing import Any, Iterable
 
 from iic_booking.users.legacy_ledger.booking_bridge import discover_legacy_bookings, reconcile_legacy_blocks
 from iic_booking.users.legacy_ledger.equipment_mapping import validate_legacy_equipment_mappings
+from iic_booking.users.legacy_ledger.legacy_user_resolution import summarize_user_mapping_counts
 from iic_booking.users.models import User
 from iic_booking.users.models.portal_migration import (
     LegacyBookingBlock,
@@ -19,6 +20,19 @@ def migration_dry_run(legacy_rows: Iterable[dict] | None = None) -> dict[str, An
     mapping = validate_legacy_equipment_mappings()
     discovery = discover_legacy_bookings(legacy_rows or [])
     recon = reconcile_legacy_blocks()
+    flat_rows = []
+    for bucket in (
+        "eligible",
+        "unmapped",
+        "conflicting",
+        "cancelled",
+        "completed",
+        "outside_window",
+        "invalid",
+        "duplicate",
+    ):
+        flat_rows.extend(discovery.get(bucket) or [])
+    user_map_counts = summarize_user_mapping_counts(flat_rows)
     test_users = User.objects.filter(is_test_account=True).count()
     from iic_booking.equipment.models import Booking
     from iic_booking.users.models.portal_migration import (
@@ -65,6 +79,9 @@ def migration_dry_run(legacy_rows: Iterable[dict] | None = None) -> dict[str, An
         },
         "equipment_mapping": mapping["counts"],
         "discovery": discovery["counts"],
+        "user_identity_resolved": user_map_counts.get("resolved", 0),
+        "user_identity_unresolved": user_map_counts.get("unresolved", 0),
+        "user_mapping_blocks_readiness": False,
         "legacy_booking_count": sum(discovery["counts"].values()),
         "eligible_block_count": discovery["counts"].get("eligible", 0),
         "conflict_count": discovery["counts"].get("conflicting", 0),

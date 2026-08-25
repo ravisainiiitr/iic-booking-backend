@@ -312,7 +312,7 @@ class Phase8CStagingSimulationTests(TestCase):
         self.assertEqual(report["counts"]["unmapped"], 1)
         self.assertEqual(report["counts"]["cancelled"], 1)
         self.assertEqual(report["counts"]["completed"], 1)
-        self.assertEqual(report["counts"]["invalid"], 1)  # outside window
+        self.assertEqual(report["counts"]["outside_window"], 1)  # outside window
         self.assertGreaterEqual(report["counts"]["conflicting"], 1)
         self.assertEqual(LegacyBookingBlock.objects.filter(legacy_booking_id=1).count(), 0)
 
@@ -322,7 +322,11 @@ class Phase8CStagingSimulationTests(TestCase):
         self.assertIn("settlement_count", report)
         self.assertIn("freeze_state", report)
 
-    def test_staging_t0_and_freeze_and_blocks(self):
+    @patch("iic_booking.users.legacy_ledger.datetime_contract.validate_contract_for_discovery")
+    @patch("iic_booking.users.legacy_ledger.datetime_contract.contract_blocks_t0")
+    def test_staging_t0_and_freeze_and_blocks(self, mock_blocks, mock_gate):
+        mock_blocks.return_value = False
+        mock_gate.return_value = {"ready_for_discovery": True, "blockers": []}
         eligible_only = [r for r in self.fixture if r["legacy_booking_id"] in {2, 3, 8}]
         result = run_staging_t0(
             legacy_rows=eligible_only,

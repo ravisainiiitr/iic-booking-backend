@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from iic_booking.equipment.models import DailySlot, Equipment, SlotStatus
 from iic_booking.users.legacy_ledger.equipment_mapping import get_active_mapping_for_old_id
@@ -16,8 +17,10 @@ from iic_booking.users.models.portal_migration import (
     LegacyBookingBlockStatus,
     LegacyBookingMigrationBatch,
     LegacyBookingMigrationBatchStatus,
+    LegacyUserMappingStatus,
     PortalMigrationState,
 )
+from iic_booking.users.legacy_ledger.legacy_user_resolution import classify_user_mapping_for_row
 
 LEGACY_MIGRATION_SLOT_BLOCKED = "LEGACY_MIGRATION_SLOT_BLOCKED"
 LEGACY_BLOCK_MESSAGE = (
@@ -33,9 +36,15 @@ def migration_window(state: PortalMigrationState | None = None) -> tuple[datetim
 
 def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize fixture/legacy discovery rows. Does not invent MySQL column names."""
+
+    def _coerce_dt(v):
+        if isinstance(v, str):
+            return parse_datetime(v.replace("Z", "+00:00"))
+        return v
+
     legacy_id = row.get("legacy_booking_id") or row.get("source_booking_id") or row.get("id")
-    start = row.get("start_at") or row.get("start") or row.get("start_datetime")
-    end = row.get("end_at") or row.get("end") or row.get("end_datetime")
+    start = _coerce_dt(row.get("start_at") or row.get("start") or row.get("start_datetime"))
+    end = _coerce_dt(row.get("end_at") or row.get("end") or row.get("end_datetime"))
     old_eq = row.get("old_equipment_id") or row.get("equipment_id") or row.get("old_equipment")
     status = str(row.get("status") or row.get("booking_status") or "").upper()
     amount = row.get("amount") or row.get("booking_amount") or row.get("total_charge") or 0
@@ -46,6 +55,9 @@ def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
         "old_equipment_id": int(old_eq) if old_eq is not None else None,
         "status": status,
         "amount": Decimal(str(amount or 0)),
+        "legacy_user_id": row.get("legacy_user_id") or row.get("user_id"),
+        "employee_id": str(row.get("employee_id") or row.get("emp_id") or "").strip(),
+        "duration_minutes": row.get("duration_minutes"),
         "user_key": str(row.get("employee_id") or row.get("emp_id") or row.get("user_id") or ""),
         "raw": row,
     }
@@ -59,13 +71,14 @@ def classify_discovery_row(norm: dict[str, Any], window_start, window_end) -> st
         return "cancelled"
     if st in {"COMPLETED", "DONE"}:
         return "completed"
-    # window: start_at in [window_start, window_end)
     start = norm["start_at"]
     if timezone.is_naive(start):
         start = timezone.make_aware(start, timezone.get_current_timezone())
     if window_start and start < window_start:
-        return "invalid"
+        return "outside_window"
     if window_end and start >= window_end:
+        return "outside_window"
+    if not norm["start_at"] or not norm["end_at"]:
         return "invalid"
     if not norm["old_equipment_id"]:
         return "unmapped"
@@ -91,15 +104,28 @@ def discover_legacy_bookings(
         "conflicting": [],
         "cancelled": [],
         "completed": [],
+        "outside_window": [],
         "invalid": [],
+        "duplicate": [],
     }
+    seen_legacy_ids: set[int] = set()
     for raw in rows:
         norm = normalize_row(raw)
-        bucket = classify_discovery_row(norm, window_start, window_end)
+        if norm["legacy_booking_id"] is not None and norm["legacy_booking_id"] in seen_legacy_ids:
+            bucket = "duplicate"
+        elif norm["legacy_booking_id"] is not None:
+            seen_legacy_ids.add(norm["legacy_booking_id"])
+            bucket = classify_discovery_row(norm, window_start, window_end)
+        else:
+            bucket = "invalid"
         mapping = (
             get_active_mapping_for_old_id(norm["old_equipment_id"])
             if norm.get("old_equipment_id")
             else None
+        )
+        user_map = classify_user_mapping_for_row(
+            legacy_employee_id=norm.get("employee_id"),
+            legacy_user_id=int(norm["legacy_user_id"]) if norm.get("legacy_user_id") is not None else None,
         )
         entry = {
             "legacy_booking_id": norm["legacy_booking_id"],
@@ -107,12 +133,16 @@ def discover_legacy_bookings(
             "new_equipment_id": getattr(mapping.new_equipment, "equipment_id", None) if mapping else None,
             "start_at": norm["start_at"].isoformat() if hasattr(norm["start_at"], "isoformat") else norm["start_at"],
             "end_at": norm["end_at"].isoformat() if hasattr(norm["end_at"], "isoformat") else norm["end_at"],
+            "duration_minutes": norm.get("duration_minutes"),
             "status": norm["status"],
             "amount": str(norm["amount"]),
             "mapping_status": mapping.status if mapping else "UNMAPPED",
             "eligibility": bucket,
-            # no PII beyond opaque user_key presence
-            "user_key_present": bool(norm["user_key"]),
+            "legacy_user_id": norm.get("legacy_user_id"),
+            "legacy_employee_id": user_map.get("legacy_employee_id") or "",
+            "user_mapping_status": user_map.get("user_mapping_status"),
+            "user_mapping_source": user_map.get("user_mapping_source"),
+            "resolved_user_id": user_map.get("resolved_user_id"),
         }
         if bucket == "eligible" and mapping:
             # soft conflict preview: overlapping ACTIVE blocks on same equipment
@@ -166,6 +196,14 @@ def arm_legacy_block(
     end_at,
     batch: LegacyBookingMigrationBatch | None = None,
     payload: dict | None = None,
+    legacy_user_id: int | None = None,
+    legacy_employee_id: str = "",
+    legacy_equipment_id: int | None = None,
+    duration_minutes: int | None = None,
+    source_status: str = "",
+    user_mapping_status: str | None = None,
+    user_mapping_source: str = "",
+    resolved_user=None,
 ) -> LegacyBookingBlock:
     """Create ACTIVE block and mark overlapping AVAILABLE slots BLOCKED (hybrid protection)."""
     if LegacyBookingBlock.objects.filter(
@@ -177,29 +215,36 @@ def arm_legacy_block(
 
     slots = find_overlapping_slots(equipment, start_at, end_at)
     # Conflict if any already BOOKED
+    block_fields = dict(
+        legacy_booking_id=legacy_booking_id,
+        legacy_user_id=legacy_user_id,
+        legacy_employee_id=(legacy_employee_id or "")[:64],
+        legacy_equipment_id=legacy_equipment_id,
+        new_equipment=equipment,
+        start_at=start_at,
+        end_at=end_at,
+        duration_minutes=duration_minutes,
+        source_status=(source_status or "")[:32],
+        user_mapping_status=user_mapping_status or LegacyUserMappingStatus.UNRESOLVED,
+        user_mapping_source=(user_mapping_source or "")[:64],
+        resolved_user=resolved_user,
+        migration_batch=batch,
+        legacy_payload=payload or {},
+    )
+
     if any(s.status == SlotStatus.BOOKED for s in slots):
         block = LegacyBookingBlock.objects.create(
-            legacy_booking_id=legacy_booking_id,
-            new_equipment=equipment,
-            start_at=start_at,
-            end_at=end_at,
+            **block_fields,
             status=LegacyBookingBlockStatus.CONFLICT,
-            migration_batch=batch,
             slot_ids=[],
-            legacy_payload=payload or {},
         )
         return block
 
     try:
         with transaction.atomic():
             block = LegacyBookingBlock.objects.create(
-                legacy_booking_id=legacy_booking_id,
-                new_equipment=equipment,
-                start_at=start_at,
-                end_at=end_at,
+                **block_fields,
                 status=LegacyBookingBlockStatus.ACTIVE,
-                migration_batch=batch,
-                legacy_payload=payload or {},
             )
             claimed: list[int] = []
             label = block.blocked_label

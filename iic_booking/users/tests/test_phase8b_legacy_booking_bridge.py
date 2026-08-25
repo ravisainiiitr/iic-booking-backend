@@ -261,7 +261,7 @@ class LegacyDiscoveryAndBlockTests(TestCase):
         self.assertEqual(report["counts"]["unmapped"], 1)
         self.assertEqual(report["counts"]["cancelled"], 1)
         self.assertEqual(report["counts"]["completed"], 1)
-        self.assertEqual(report["counts"]["invalid"], 1)
+        self.assertEqual(report["counts"]["outside_window"], 1)
 
     def test_arm_block_and_release(self):
         start = self.start + timedelta(hours=3)

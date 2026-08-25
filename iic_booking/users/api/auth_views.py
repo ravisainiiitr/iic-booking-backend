@@ -1035,6 +1035,18 @@ def omniport_callback(request):
             getattr(user, "id", None),
         )
 
+    try:
+        from iic_booking.users.legacy_ledger.legacy_user_resolution import (
+            resolve_legacy_blocks_for_channel_i_user,
+        )
+
+        resolve_legacy_blocks_for_channel_i_user(user)
+    except Exception:
+        logger.exception(
+            "Legacy booking user mapping enrichment failed for user_id=%s (login continues)",
+            getattr(user, "id", None),
+        )
+
     # Get or create Django auth token (regenerate so this session gets the token; any other session will get 401)
     try:
         token = _regenerate_auth_token(user)

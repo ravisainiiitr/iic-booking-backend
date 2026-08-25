@@ -26,7 +26,7 @@ from iic_booking.users.legacy_ledger.equipment_mapping import (
     get_active_mapping_for_old_id,
     validate_legacy_equipment_mappings,
 )
-from iic_booking.users.legacy_ledger.reader import OldMySQLNotConfigured, OldMySQLReader
+from iic_booking.users.legacy_ledger.reader import OldMySQLConnectionError, OldMySQLNotConfigured, OldMySQLReader
 from iic_booking.users.models import User
 from iic_booking.users.models.portal_migration import PortalMigrationState
 
@@ -162,34 +162,37 @@ def discover_mysql_booking_schema() -> dict[str, Any]:
     except OldMySQLNotConfigured as exc:
         return {"ok": False, "error": str(exc)}
 
-    with reader:
-        schema = reader.discover_schema()
-        booking_cols = [c["Field"] for c in schema.get("columns", {}).get("booking", [])]
-        users_cols = [c["Field"] for c in schema.get("columns", {}).get("users", [])]
-        users_avail = set(users_cols)
-        user_identity = {}
-        for semantic, candidates in USERS_IDENTITY_CANDIDATES.items():
-            col, st = _pick_unique(candidates, users_avail)
-            user_identity[semantic] = {"column": col, "status": st}
+    try:
+        with reader:
+            schema = reader.discover_schema()
+            booking_cols = [c["Field"] for c in schema.get("columns", {}).get("booking", [])]
+            users_cols = [c["Field"] for c in schema.get("columns", {}).get("users", [])]
+            users_avail = set(users_cols)
+            user_identity = {}
+            for semantic, candidates in USERS_IDENTITY_CANDIDATES.items():
+                col, st = _pick_unique(candidates, users_avail)
+                user_identity[semantic] = {"column": col, "status": st}
 
-        col_map = resolve_booking_column_map(booking_cols)
-        # Redacted types only — no sample row data
-        booking_types = {
-            c["Field"]: c.get("Type")
-            for c in schema.get("columns", {}).get("booking", [])
-        }
-        return {
-            "ok": col_map["ready"],
-            "booking_column_count": len(booking_cols),
-            "booking_column_names": sorted(booking_cols),
-            "booking_column_types_redacted": booking_types,
-            "users_identity": user_identity,
-            "column_map": col_map,
-            "wallet_tables_present": {
-                t: t in schema.get("columns", {})
-                for t in ("users", "user_wallet", "wallet_transactions", "booking")
-            },
-        }
+            col_map = resolve_booking_column_map(booking_cols)
+            # Redacted types only — no sample row data
+            booking_types = {
+                c["Field"]: c.get("Type")
+                for c in schema.get("columns", {}).get("booking", [])
+            }
+            return {
+                "ok": col_map["ready"],
+                "booking_column_count": len(booking_cols),
+                "booking_column_names": sorted(booking_cols),
+                "booking_column_types_redacted": booking_types,
+                "users_identity": user_identity,
+                "column_map": col_map,
+                "wallet_tables_present": {
+                    t: t in schema.get("columns", {})
+                    for t in ("users", "user_wallet", "wallet_transactions", "booking")
+                },
+            }
+    except OldMySQLConnectionError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def _combine_dt(row: dict, col_map: dict[str, str | None], strategy: str, tz) -> tuple[Any, Any]:
@@ -206,19 +209,37 @@ def _combine_dt(row: dict, col_map: dict[str, str | None], strategy: str, tz) ->
         if isinstance(duration_raw, timedelta):
             delta = duration_raw
         elif isinstance(duration_raw, time):
-            start = datetime.combine(d, duration_raw)
+            start = datetime.combine(d if isinstance(d, date) else d.date(), duration_raw)
             if timezone.is_naive(start):
                 start = timezone.make_aware(start, tz)
-            # End unknown without semantics — caller must supply DATE_PLUS_TIME or COMBINED_DATETIME
             return start, None
         elif isinstance(duration_raw, (int, float, Decimal)):
             delta = timedelta(hours=float(duration_raw))
         else:
             return None, None
-        start = datetime.combine(d, time(0, 0))
-        if timezone.is_naive(start):
+        start = datetime.combine(d, time(0, 0)) if isinstance(d, date) and not isinstance(d, datetime) else d
+        if isinstance(start, datetime) and timezone.is_naive(start):
             start = timezone.make_aware(start, tz)
         end = start + delta
+        return start, end
+    if strategy == "BOOKING_DATETIME_PLUS_DURATION_MINUTES":
+        start_raw = row.get(col_map["booking_date"])
+        duration_raw = row.get(col_map.get("duration"))
+        if start_raw is None or duration_raw is None:
+            return None, None
+        if isinstance(start_raw, datetime):
+            start = start_raw
+        elif isinstance(start_raw, date):
+            start = datetime.combine(start_raw, time(0, 0))
+        else:
+            return None, None
+        if timezone.is_naive(start):
+            start = timezone.make_aware(start, tz)
+        try:
+            minutes = int(duration_raw)
+        except (TypeError, ValueError):
+            return None, None
+        end = start + timedelta(minutes=minutes)
         return start, end
     d = row.get(col_map["booking_date"])
     st = row.get(col_map["start_time"])
@@ -290,6 +311,14 @@ def fetch_legacy_bookings_for_window(
         sql = f"SELECT {', '.join(f'`{c}`' for c in select_cols)} FROM `booking`"
         rows = reader.fetchall(sql)
 
+        # Resolve legacy users.emp_id for booking.user_id (authoritative employee identity)
+        user_ids = {
+            int(row[cm["user_id"]])
+            for row in rows
+            if row.get(cm["user_id"]) is not None
+        }
+        legacy_users = reader.users_by_ids(sorted(user_ids)) if user_ids else {}
+
     normalized: list[dict] = []
     for row in rows:
         start_at, end_at = _combine_dt(row, cm, strategy, tz)
@@ -303,7 +332,15 @@ def fetch_legacy_bookings_for_window(
         if start_at < window_start or start_at >= window_end:
             continue
         legacy_user_id = row.get(cm["user_id"])
-        emp_id = None
+        legacy_user = legacy_users.get(int(legacy_user_id)) if legacy_user_id is not None else None
+        emp_id = str((legacy_user or {}).get("emp_id") or "").strip()
+        duration_raw = row.get(cm.get("duration")) if cm.get("duration") else None
+        duration_minutes = None
+        if duration_raw is not None:
+            try:
+                duration_minutes = int(duration_raw)
+            except (TypeError, ValueError):
+                duration_minutes = None
         normalized.append(
             {
                 "legacy_booking_id": int(row[cm["booking_id"]]),
@@ -314,6 +351,7 @@ def fetch_legacy_bookings_for_window(
                 "amount": str(row.get(cm["amount"]) or 0),
                 "legacy_user_id": legacy_user_id,
                 "employee_id": emp_id,
+                "duration_minutes": duration_minutes,
             }
         )
 
@@ -346,12 +384,18 @@ def fetch_legacy_bookings_for_window(
 
 def map_legacy_identities(eligible_rows: list[dict]) -> dict[str, Any]:
     """
-    Map legacy user_id → new portal User via users.emp_id (authoritative).
-    Loads legacy users.emp_id via OldMySQLReader when legacy_user_id present.
+    Report legacy user_id → new portal User via users.emp_id (authoritative).
+
+    Unresolved new-portal users do NOT block slot occupancy or migration readiness.
     """
     exceptions: list[dict] = []
     mapped = 0
-    legacy_user_ids = {int(r["legacy_user_id"]) for r in eligible_rows if r.get("legacy_user_id") is not None}
+    unresolved = 0
+    legacy_user_ids = {
+        int(r["legacy_user_id"])
+        for r in eligible_rows
+        if r.get("legacy_user_id") is not None and not str(r.get("employee_id") or "").strip()
+    }
     legacy_users: dict[int, dict] = {}
     if legacy_user_ids:
         try:
@@ -363,14 +407,16 @@ def map_legacy_identities(eligible_rows: list[dict]) -> dict[str, Any]:
 
     for row in eligible_rows:
         lid = row.get("legacy_user_id")
-        if lid is None:
+        emp = str(row.get("employee_id") or "").strip()
+        if not emp and lid is not None:
+            legacy = legacy_users.get(int(lid))
+            if not legacy:
+                exceptions.append({"legacy_booking_id": row.get("legacy_booking_id"), "reason": "legacy_user_not_found"})
+                continue
+            emp = str(legacy.get("emp_id") or "").strip()
+        if lid is None and not emp:
             exceptions.append({"legacy_booking_id": row.get("legacy_booking_id"), "reason": "missing_legacy_user_id"})
             continue
-        legacy = legacy_users.get(int(lid))
-        if not legacy:
-            exceptions.append({"legacy_booking_id": row.get("legacy_booking_id"), "reason": "legacy_user_not_found"})
-            continue
-        emp = str(legacy.get("emp_id") or "").strip()
         if not emp:
             exceptions.append({"legacy_booking_id": row.get("legacy_booking_id"), "reason": "missing_emp_id"})
             continue
@@ -378,15 +424,26 @@ def map_legacy_identities(eligible_rows: list[dict]) -> dict[str, Any]:
         if matches == 1:
             mapped += 1
         elif matches == 0:
-            exceptions.append({"legacy_booking_id": row.get("legacy_booking_id"), "reason": "no_new_portal_user_for_emp_id"})
+            unresolved += 1
+            exceptions.append(
+                {
+                    "legacy_booking_id": row.get("legacy_booking_id"),
+                    "reason": "no_new_portal_user_for_emp_id",
+                    "informational": True,
+                }
+            )
         else:
             exceptions.append({"legacy_booking_id": row.get("legacy_booking_id"), "reason": "ambiguous_emp_id_match"})
 
+    hard_exceptions = [e for e in exceptions if not e.get("informational")]
     return {
-        "ok": len(exceptions) == 0,
+        "ok": True,
         "mapped_count": mapped,
+        "unresolved_count": unresolved,
         "exception_count": len(exceptions),
+        "hard_exception_count": len(hard_exceptions),
         "exceptions_sample": exceptions[:20],
+        "user_mapping_blocks_readiness": False,
     }
 
 
@@ -467,8 +524,7 @@ def build_t0_dataset_summary(
     blockers = []
     if (counts.get("unmapped") or 0) > 0:
         blockers.append("unmapped_equipment")
-    if identity_exceptions > 0:
-        blockers.append("unresolved_identities")
+    # unresolved_identities is informational only — does NOT block T0 readiness (Phase 10D)
     if (slot_audit.get("slot_conflicts") or 0) > 0:
         blockers.append("slot_conflicts")
     if (slot_audit.get("duplicate_eligible_records") or 0) > 0:
@@ -480,10 +536,12 @@ def build_t0_dataset_summary(
         "eligible_legacy_bookings": counts.get("eligible", 0),
         "cancelled": counts.get("cancelled", 0),
         "completed": counts.get("completed", 0),
+        "outside_window": counts.get("outside_window", 0),
         "outside_window_invalid": counts.get("invalid", 0),
         "unmapped_equipment": counts.get("unmapped", 0),
         "conflicting_discovery": counts.get("conflicting", 0),
         "unresolved_identities": identity_exceptions,
+        "user_mapping_blocks_readiness": False,
         "target_slots": slot_audit.get("target_slot_found", 0),
         "slot_conflicts": slot_audit.get("slot_conflicts", 0),
         "existing_new_bookings": slot_audit.get("existing_new_booking_conflicts", 0),
