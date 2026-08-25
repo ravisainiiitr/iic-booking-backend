@@ -40,7 +40,6 @@ from iic_booking.users.repositories.wallet_repository import WalletRepository
 
 logger = logging.getLogger(__name__)
 
-
 def _format_datetime_for_email(dt: datetime | None) -> str:
     """Local date/time string for transactional emails (aligned with booking_events slot formatting)."""
     if not dt:
@@ -50,7 +49,6 @@ def _format_datetime_for_email(dt: datetime | None) -> str:
     except Exception:
         dt_local = dt
     return dt_local.strftime("%Y-%m-%d %H:%M:%S")
-
 
 def _get_external_gst_percent():
     """Return GST percentage for external users. Default 18."""
@@ -62,7 +60,6 @@ def _get_external_gst_percent():
         pass
     return Decimal("18")
 
-
 def _student_booking_description_suffix(wallet_target, booking_user):
     """Suffix for transaction description when student uses faculty wallet."""
     if not wallet_target or not booking_user:
@@ -72,7 +69,6 @@ def _student_booking_description_suffix(wallet_target, booking_user):
         return ""
     student_label = (getattr(booking_user, "name", None) or getattr(booking_user, "email", "") or "").strip() or f"User #{booking_user.id}"
     return f" - Student: {student_label}"
-
 
 def _resolve_charge_profile_for_user(equipment: Equipment, booking_user):
     """
@@ -118,7 +114,6 @@ def _resolve_charge_profile_for_user(equipment: Equipment, booking_user):
     except ChargeProfile.DoesNotExist:
         return None, user_type, is_external
 
-
 def reduce_waitlist_inputs_to_fit_available_slots(
     equipment: Equipment,
     booking_user,
@@ -150,20 +145,6 @@ def reduce_waitlist_inputs_to_fit_available_slots(
     if not charge_profile:
         return None
 
-    class ChargeProfileWithType:
-        def __init__(self, cp, equip):
-            self.equipment = cp.equipment
-            self.user_type = cp.user_type
-            self.is_active = cp.is_active
-            self.primary_unit_charge = cp.primary_unit_charge
-            self.secondary_unit_charge = cp.secondary_unit_charge
-            self.breakpoint = cp.breakpoint
-            self.time_formula = cp.time_formula
-            self.pricing_profile = getattr(cp, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-            self.profile_type = getattr(equip, "profile_type", None)
-
-    cp_with_type = ChargeProfileWithType(charge_profile, equipment)
-
     def reduce_key_for_profile(profile_type: str | None) -> str | None:
         # Match api_views._get_reduce_key_for_single_slot
         pt = (profile_type or "").strip().upper()
@@ -174,7 +155,11 @@ def reduce_waitlist_inputs_to_fit_available_slots(
         return None
 
     base_inputs = dict(input_values or {})
-    key = reduce_key_for_profile(getattr(equipment, "profile_type", None))
+    from .calculators import get_charge_profile_type
+
+    key = reduce_key_for_profile(
+        get_charge_profile_type(charge_profile) or getattr(equipment, "profile_type", None)
+    )
     if not key:
         return None
 
@@ -195,7 +180,7 @@ def reduce_waitlist_inputs_to_fit_available_slots(
             try:
                 effective_time = int(
                     TimeCalculationEngine.calculate_time(
-                        cp_with_type,
+                        charge_profile,
                         safe_inputs,
                         slot_duration_minutes=slot_duration,
                     )
@@ -230,7 +215,7 @@ def reduce_waitlist_inputs_to_fit_available_slots(
         try:
             effective_time = int(
                 TimeCalculationEngine.calculate_time(
-                    cp_with_type,
+                    charge_profile,
                     safe_inputs,
                     slot_duration_minutes=slot_duration,
                 )
@@ -247,7 +232,6 @@ def reduce_waitlist_inputs_to_fit_available_slots(
         return safe_inputs, effective_time, slots_needed
 
     return None
-
 
 def create_booking_for_waitlist_user(
     equipment: Equipment,
@@ -350,23 +334,10 @@ def create_booking_for_waitlist_user(
     start_time = daily_slots.first().start_datetime
     booking_date = start_time
 
-    class ChargeProfileWithType:
-        def __init__(self, cp, equip):
-            self.equipment = cp.equipment
-            self.user_type = cp.user_type
-            self.is_active = cp.is_active
-            self.primary_unit_charge = cp.primary_unit_charge
-            self.secondary_unit_charge = cp.secondary_unit_charge
-            self.breakpoint = cp.breakpoint
-            self.time_formula = cp.time_formula
-            self.pricing_profile = getattr(cp, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-            self.profile_type = getattr(equip, "profile_type", None)
-
-    charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
     safe_input_values = build_safe_input_values_for_charge_calculation(input_values or {}, equipment=equipment)
     try:
         total_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-            charge_profile_with_type,
+            charge_profile,
             safe_input_values,
             total_time_minutes,
             selected_parameters=selected_parameters,

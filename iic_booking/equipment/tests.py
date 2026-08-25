@@ -27,21 +27,6 @@ from iic_booking.users.models import Department, DepartmentType
 from iic_booking.users.models.user_type import UserType
 
 
-class ChargeProfileWithType:
-    """Mirrors api_views wrapper: profile_type lives on equipment."""
-
-    def __init__(self, charge_profile, equipment):
-        self.equipment = charge_profile.equipment
-        self.user_type = charge_profile.user_type
-        self.is_active = charge_profile.is_active
-        self.primary_unit_charge = charge_profile.primary_unit_charge
-        self.secondary_unit_charge = charge_profile.secondary_unit_charge
-        self.breakpoint = charge_profile.breakpoint
-        self.time_formula = charge_profile.time_formula
-        self.pricing_profile = charge_profile.pricing_profile
-        self.profile_type = equipment.profile_type
-
-
 class ChargeApproximationTests(TestCase):
     def test_quantize_money_rounds_to_nearest_rupee(self):
         self.assertEqual(quantize_money("10.335"), Decimal("10"))
@@ -68,6 +53,7 @@ class ICPMSChargeTests(TestCase):
         self.charge_profile = ChargeProfile.objects.create(
             equipment=self.equipment,
             user_type="internal_faculty",
+            profile_type=EquipmentProfileType.SAMPLE_ELEMENT,
             primary_unit_charge=Decimal("10.00"),
             secondary_unit_charge=Decimal("2.50"),
             breakpoint=Decimal("5"),
@@ -87,10 +73,9 @@ class ICPMSChargeTests(TestCase):
         )
 
     def test_icpms_charge_uses_a_plus_3c_plus_1(self):
-        profile = ChargeProfileWithType(self.charge_profile, self.equipment)
         input_values = {"A": 2, "B": 3, "D": 1}
         total, breakdown = ChargeCalculationEngine.calculate_charge(
-            profile, input_values, total_time_minutes=60
+            self.charge_profile, input_values, total_time_minutes=60
         )
         # A=2, C=1 => 2 + 3*1 + 1 blank = 6 runs @ ₹10
         self.assertEqual(total, Decimal("60.00"))
@@ -107,11 +92,12 @@ class ICPMSChargeTests(TestCase):
         charge_profile = ChargeProfile.objects.create(
             equipment=equipment,
             user_type="internal_faculty",
+            profile_type=EquipmentProfileType.SAMPLE_ELEMENT,
             primary_unit_charge=Decimal("10.00"),
             secondary_unit_charge=Decimal("0.00"),
             breakpoint=Decimal("99"),
         )
-        profile = ChargeProfileWithType(charge_profile, equipment)
+        profile = charge_profile
         total, _ = ChargeCalculationEngine.calculate_charge(
             profile, {"A": 2, "B": 1, "C": 1}, total_time_minutes=60
         )

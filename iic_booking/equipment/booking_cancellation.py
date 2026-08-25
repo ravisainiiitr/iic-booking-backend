@@ -145,24 +145,8 @@ def partial_cancel_reduction_key(profile_type) -> str | None:
 
 
 def _charge_profile_proxy(booking: Booking):
-    cp = booking.charge_profile
-    eq = booking.equipment
-
-    class _Proxy:
-        def __init__(self, profile, equipment):
-            self.equipment = profile.equipment
-            self.user_type = profile.user_type
-            self.is_active = profile.is_active
-            self.primary_unit_charge = profile.primary_unit_charge
-            self.secondary_unit_charge = profile.secondary_unit_charge
-            self.breakpoint = profile.breakpoint
-            self.time_formula = profile.time_formula
-            self.pricing_profile = getattr(
-                profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD
-            )
-            self.profile_type = getattr(equipment, "profile_type", None)
-
-    return _Proxy(cp, eq)
+    """Return the booking's charge profile (profile_type lives on ChargeProfile)."""
+    return booking.charge_profile
 
 
 def _get_external_gst_percent() -> Decimal:

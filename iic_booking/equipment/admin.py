@@ -652,13 +652,19 @@ class ChargeProfileForm(forms.ModelForm):
                 "and have it verified by the Officer in Charge before results are released."
             )
 
-        # For MULTI_PARAM equipment, charge fields are hidden in UI and filled from slot options
+        # For MULTI_PARAM profiles, charge fields are hidden in UI and filled from slot options
         equipment = self._parent_equipment or (
             self.instance.equipment if self.instance and self.instance.pk else None
         )
-        if equipment and getattr(equipment, "profile_type", None) == "MULTI_PARAM":
-            self.fields["primary_unit_charge"].required = False
-            self.fields["secondary_unit_charge"].required = False
+        row_type = getattr(self.instance, "profile_type", None) or (
+            getattr(equipment, "profile_type", None) if equipment else None
+        )
+        if row_type == "MULTI_PARAM":
+            for fname in ("primary_unit_charge", "secondary_unit_charge", "breakpoint", "time_formula"):
+                if fname in self.fields:
+                    self.fields[fname].required = False
+                    if fname in ("primary_unit_charge", "secondary_unit_charge"):
+                        self.fields[fname].widget = forms.HiddenInput()
 
     def clean(self):
         cleaned_data = super().clean()
@@ -667,7 +673,10 @@ class ChargeProfileForm(forms.ModelForm):
         )
         if not equipment and cleaned_data.get("equipment"):
             equipment = cleaned_data["equipment"]
-        if equipment and getattr(equipment, "profile_type", None) == "MULTI_PARAM":
+        row_type = cleaned_data.get("profile_type") or (
+            getattr(equipment, "profile_type", None) if equipment else None
+        )
+        if row_type == "MULTI_PARAM":
             if cleaned_data.get("primary_unit_charge") is None or cleaned_data.get("primary_unit_charge") == "":
                 cleaned_data["primary_unit_charge"] = Decimal("0.00")
             if cleaned_data.get("secondary_unit_charge") is None or cleaned_data.get("secondary_unit_charge") == "":
@@ -684,6 +693,7 @@ class ChargeProfileInline(admin.StackedInline):
     fk_name = 'equipment'
     fields = [
         'user_type',
+        'profile_type',
         'pricing_profile',
         'is_active',
         'require_istem_fbr',
@@ -785,6 +795,7 @@ class PIChargeProfileInline(admin.StackedInline):
     verbose_name_plural = _("PI Charge Profiles")
     fields = [
         "user_type",
+        "profile_type",
         "pricing_profile",
         "is_active",
         "require_istem_fbr",

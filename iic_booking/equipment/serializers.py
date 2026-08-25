@@ -584,6 +584,9 @@ class PIChargeProfileWriteSerializer(serializers.Serializer):
     """Write payload for PI ChargeProfile rows (pricing_profile forced to PI)."""
 
     user_type = serializers.CharField(max_length=50)
+    profile_type = serializers.ChoiceField(
+        choices=EquipmentProfileType.choices, required=False, allow_null=True
+    )
     is_active = serializers.BooleanField(default=True)
     require_istem_fbr = serializers.BooleanField(default=False, required=False)
     show_charge_breakdown = serializers.BooleanField(default=True, required=False)
@@ -796,11 +799,15 @@ def _comments_input_field_schema():
 class ChargeProfileSerializer(serializers.ModelSerializer):
     """Serializer for ChargeProfile model."""
 
+    profile_type_display = serializers.SerializerMethodField()
+
     class Meta:
         model = ChargeProfile
         fields = [
             'equipment',
             'user_type',
+            'profile_type',
+            'profile_type_display',
             'is_active',
             'require_istem_fbr',
             'show_charge_breakdown',
@@ -812,6 +819,15 @@ class ChargeProfileSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+    def get_profile_type_display(self, obj):
+        pt = obj.effective_profile_type
+        if not pt:
+            return None
+        try:
+            return str(EquipmentProfileType(pt).label)
+        except ValueError:
+            return pt
 
 
 class MultiParamDefinitionSerializer(serializers.ModelSerializer):
@@ -1328,6 +1344,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     charge_profiles = serializers.SerializerMethodField()
     equipment_pis = serializers.SerializerMethodField()
     pi_charge_profiles = serializers.SerializerMethodField()
+    viewer_profile_type = serializers.SerializerMethodField()
+    viewer_profile_type_display = serializers.SerializerMethodField()
     slot_masters = SlotMasterSerializer(many=True, read_only=True)
     slot_options = MultiParamDefinitionSerializer(many=True, read_only=True, source='param_definitions')
     operators = serializers.SerializerMethodField()
@@ -1344,6 +1362,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'description',
             'profile_type',
             'profile_type_display',
+            'viewer_profile_type',
+            'viewer_profile_type_display',
             'status',
             'status_display',
             'location',
@@ -1517,7 +1537,12 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             result.append({
                 'user_type': cp.user_type,
                 'user_type_display': str(choices_dict.get(cp.user_type, cp.user_type)),
-                'profile_type_display': obj.get_profile_type_display() if obj.profile_type else None,
+                'profile_type': cp.effective_profile_type,
+                'profile_type_display': (
+                    str(EquipmentProfileType(cp.effective_profile_type).label)
+                    if cp.effective_profile_type
+                    else None
+                ),
                 'primary_unit_charge': str(cp.primary_unit_charge),
             })
         return result
@@ -1531,6 +1556,46 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         qs = obj.charge_profiles.filter(pricing_profile=ChargeProfilePricingProfile.STANDARD).order_by("user_type")
         serializer = ChargeProfileSerializer(qs, many=True, context=self.context)
         return serializer.data
+
+    def get_viewer_profile_type(self, obj):
+        """Calculation profile type for the requesting user (falls back to equipment)."""
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        if not user or not getattr(user, "is_authenticated", False):
+            return obj.profile_type
+        user_type = getattr(user, "user_type", None)
+        if not user_type:
+            return obj.profile_type
+        try:
+            from iic_booking.equipment.pi_pricing import resolve_pricing_profile_for_user
+
+            pricing = resolve_pricing_profile_for_user(user, obj)
+        except Exception:
+            pricing = ChargeProfilePricingProfile.STANDARD
+        cp = (
+            obj.charge_profiles.filter(
+                user_type=user_type,
+                pricing_profile=pricing,
+                is_active=True,
+            ).first()
+            or obj.charge_profiles.filter(
+                user_type=user_type,
+                pricing_profile=ChargeProfilePricingProfile.STANDARD,
+                is_active=True,
+            ).first()
+        )
+        if cp:
+            return cp.effective_profile_type
+        return obj.profile_type
+
+    def get_viewer_profile_type_display(self, obj):
+        pt = self.get_viewer_profile_type(obj)
+        if not pt:
+            return None
+        try:
+            return str(EquipmentProfileType(pt).label)
+        except ValueError:
+            return pt
 
     def get_equipment_pis(self, obj):
         qs = obj.equipment_pis.select_related("faculty", "assigned_by").order_by("faculty__name", "faculty__email")
@@ -1607,6 +1672,9 @@ class DynamicInputFieldWriteSerializer(serializers.Serializer):
 
 class ChargeProfileWriteSerializer(serializers.Serializer):
     user_type = serializers.CharField(max_length=50)
+    profile_type = serializers.ChoiceField(
+        choices=EquipmentProfileType.choices, required=False, allow_null=True
+    )
     is_active = serializers.BooleanField(default=True)
     require_istem_fbr = serializers.BooleanField(default=False, required=False)
     show_charge_breakdown = serializers.BooleanField(default=True, required=False)
@@ -1883,9 +1951,11 @@ def _create_related(equipment, inlines, actor=None):
         )
     for item in inlines.get('charge_profiles', []):
         show_bd = item.get('show_charge_breakdown', True)
+        cp_type = item.get('profile_type') or equipment.profile_type
         ChargeProfile.objects.create(
             equipment=equipment,
             user_type=item['user_type'],
+            profile_type=cp_type,
             pricing_profile=ChargeProfilePricingProfile.STANDARD,
             is_active=item.get('is_active', True),
             require_istem_fbr=item.get('require_istem_fbr', False),
@@ -1897,6 +1967,7 @@ def _create_related(equipment, inlines, actor=None):
         ChargeProfile.objects.create(
             equipment=equipment,
             user_type=item['user_type'],
+            profile_type=cp_type,
             pricing_profile=ChargeProfilePricingProfile.DISCOUNTED,
             is_active=True,
             require_istem_fbr=item.get('require_istem_fbr', False),
@@ -1908,9 +1979,11 @@ def _create_related(equipment, inlines, actor=None):
         )
     for item in inlines.get('pi_charge_profiles', []):
         show_bd = item.get('show_charge_breakdown', True)
+        cp_type = item.get('profile_type') or equipment.profile_type
         ChargeProfile.objects.create(
             equipment=equipment,
             user_type=item['user_type'],
+            profile_type=cp_type,
             pricing_profile=ChargeProfilePricingProfile.PI,
             is_active=item.get('is_active', True),
             require_istem_fbr=item.get('require_istem_fbr', False),
@@ -2109,6 +2182,7 @@ def _sync_related(equipment, inlines, actor=None):
         for item in inlines['charge_profiles']:
             user_type = item['user_type']
             show_bd = item.get('show_charge_breakdown', True)
+            cp_type = item.get('profile_type') or equipment.profile_type
             # STANDARD (editable by equipment admin UI)
             profile, created = ChargeProfile.objects.get_or_create(
                 equipment=equipment,
@@ -2118,6 +2192,7 @@ def _sync_related(equipment, inlines, actor=None):
                     'is_active': item.get('is_active', True),
                     'require_istem_fbr': item.get('require_istem_fbr', False),
                     'show_charge_breakdown': show_bd,
+                    'profile_type': cp_type,
                     'primary_unit_charge': item['primary_unit_charge'],
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
                     'breakpoint': item.get('breakpoint'),
@@ -2128,6 +2203,7 @@ def _sync_related(equipment, inlines, actor=None):
                 profile.is_active = item.get('is_active', True)
                 profile.require_istem_fbr = item.get('require_istem_fbr', False)
                 profile.show_charge_breakdown = show_bd
+                profile.profile_type = cp_type
                 profile.primary_unit_charge = item['primary_unit_charge']
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
                 profile.breakpoint = item.get('breakpoint')
@@ -2143,6 +2219,7 @@ def _sync_related(equipment, inlines, actor=None):
                     'is_active': True,
                     'require_istem_fbr': item.get('require_istem_fbr', False),
                     'show_charge_breakdown': show_bd,
+                    'profile_type': cp_type,
                     'primary_unit_charge': 0,
                     'secondary_unit_charge': 0,
                     'breakpoint': item.get('breakpoint'),
@@ -2153,6 +2230,7 @@ def _sync_related(equipment, inlines, actor=None):
                 discounted_profile.is_active = True
                 discounted_profile.require_istem_fbr = item.get('require_istem_fbr', False)
                 discounted_profile.show_charge_breakdown = show_bd
+                discounted_profile.profile_type = cp_type
                 discounted_profile.primary_unit_charge = 0
                 discounted_profile.secondary_unit_charge = 0
                 discounted_profile.breakpoint = item.get('breakpoint')
@@ -2161,6 +2239,21 @@ def _sync_related(equipment, inlines, actor=None):
         for profile in existing:
             if profile.user_type not in payload_user_types and profile.booking_count == 0:
                 profile.delete()
+        # Derive legacy equipment.profile_type from first active STANDARD row (list filter / old clients).
+        first_std = (
+            ChargeProfile.objects.filter(
+                equipment=equipment,
+                pricing_profile=ChargeProfilePricingProfile.STANDARD,
+                is_active=True,
+            )
+            .exclude(profile_type__isnull=True)
+            .exclude(profile_type="")
+            .order_by("user_type")
+            .first()
+        )
+        if first_std and first_std.profile_type and equipment.profile_type != first_std.profile_type:
+            equipment.profile_type = first_std.profile_type
+            equipment.save(update_fields=["profile_type"])
     if inlines.get('pi_charge_profiles') is not None:
         from django.db.models import Count
         payload_user_types = {item['user_type'] for item in inlines['pi_charge_profiles']}
@@ -2172,6 +2265,7 @@ def _sync_related(equipment, inlines, actor=None):
         for item in inlines['pi_charge_profiles']:
             user_type = item['user_type']
             show_bd = item.get('show_charge_breakdown', True)
+            cp_type = item.get('profile_type') or equipment.profile_type
             profile, created = ChargeProfile.objects.get_or_create(
                 equipment=equipment,
                 user_type=user_type,
@@ -2180,6 +2274,7 @@ def _sync_related(equipment, inlines, actor=None):
                     'is_active': item.get('is_active', True),
                     'require_istem_fbr': item.get('require_istem_fbr', False),
                     'show_charge_breakdown': show_bd,
+                    'profile_type': cp_type,
                     'primary_unit_charge': item['primary_unit_charge'],
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
                     'breakpoint': item.get('breakpoint'),
@@ -2190,6 +2285,7 @@ def _sync_related(equipment, inlines, actor=None):
                 profile.is_active = item.get('is_active', True)
                 profile.require_istem_fbr = item.get('require_istem_fbr', False)
                 profile.show_charge_breakdown = show_bd
+                profile.profile_type = cp_type
                 profile.primary_unit_charge = item['primary_unit_charge']
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
                 profile.breakpoint = item.get('breakpoint')
@@ -2202,6 +2298,7 @@ def _sync_related(equipment, inlines, actor=None):
                 performed_by=actor_user,
                 details={
                     "user_type": user_type,
+                    "profile_type": cp_type,
                     "primary_unit_charge": str(item['primary_unit_charge']),
                     "created": created,
                 },
@@ -2284,10 +2381,8 @@ class BookingSerializer(serializers.ModelSerializer):
     equipment_atmosphere_sensitive_sample_enabled = serializers.BooleanField(
         source='equipment.atmosphere_sensitive_sample_enabled', read_only=True, default=False
     )
-    equipment_profile_type = serializers.CharField(source='equipment.profile_type', read_only=True)
-    equipment_profile_type_display = serializers.CharField(
-        source='equipment.get_profile_type_display', read_only=True
-    )
+    equipment_profile_type = serializers.SerializerMethodField()
+    equipment_profile_type_display = serializers.SerializerMethodField()
     user_email = serializers.CharField(source='user.email', read_only=True)
     user_name = serializers.SerializerMethodField()
     user_phone = serializers.SerializerMethodField()
@@ -2554,26 +2649,14 @@ class BookingSerializer(serializers.ModelSerializer):
             if not cp or not eq:
                 return stored
 
-            class _ChargeProfileProxy:
-                def __init__(self, profile, equipment):
-                    self.equipment = profile.equipment
-                    self.user_type = profile.user_type
-                    self.is_active = profile.is_active
-                    self.primary_unit_charge = profile.primary_unit_charge
-                    self.secondary_unit_charge = profile.secondary_unit_charge
-                    self.breakpoint = profile.breakpoint
-                    self.time_formula = profile.time_formula
-                    self.pricing_profile = getattr(profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-                    self.profile_type = getattr(equipment, "profile_type", None)
-
             safe_inputs = build_safe_input_values_for_charge_calculation(obj.input_values, equipment=eq)
             from .print_3d_views import apply_print_analysis_to_input_values
+            from .calculators import get_charge_profile_type
 
-            if getattr(eq, "profile_type", None) == EquipmentProfileType.PRINT_3D:
+            if get_charge_profile_type(cp) == EquipmentProfileType.PRINT_3D:
                 safe_inputs = apply_print_analysis_to_input_values(obj, safe_inputs)
-            proxy = _ChargeProfileProxy(cp, eq)
             _, fresh_core = ChargeCalculationEngine.calculate_charge(
-                proxy,
+                cp,
                 safe_inputs,
                 int(obj.total_time_minutes or 0),
                 selected_parameters=obj.selected_parameters,
@@ -2710,6 +2793,25 @@ class BookingSerializer(serializers.ModelSerializer):
             return out
         except Exception:
             return []
+
+    def get_equipment_profile_type(self, obj):
+        """Effective calculation type: booking charge profile, else equipment legacy."""
+        from .calculators import get_charge_profile_type
+
+        cp = getattr(obj, "charge_profile", None)
+        if cp:
+            return get_charge_profile_type(cp)
+        eq = getattr(obj, "equipment", None)
+        return getattr(eq, "profile_type", None) if eq else None
+
+    def get_equipment_profile_type_display(self, obj):
+        pt = self.get_equipment_profile_type(obj)
+        if not pt:
+            return None
+        try:
+            return str(EquipmentProfileType(pt).label)
+        except ValueError:
+            return pt
 
     def get_user_name(self, obj):
         """Return user's display name (Prof. for faculty) or email."""

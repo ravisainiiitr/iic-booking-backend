@@ -1367,6 +1367,14 @@ class ChargeProfile(models.Model):
         help_text=_('User type this profile applies to')
     )
 
+    profile_type = models.CharField(
+        max_length=20,
+        choices=EquipmentProfileType.choices,
+        help_text=_('Calculation profile type for this user type (SAMPLE, HOUR, …)'),
+        null=True,
+        blank=True,
+    )
+
     pricing_profile = models.CharField(
         max_length=20,
         choices=ChargeProfilePricingProfile.choices,
@@ -1441,8 +1449,24 @@ class ChargeProfile(models.Model):
         unique_together = [['equipment', 'user_type', 'pricing_profile']]
         ordering = ['equipment', 'user_type', 'pricing_profile']
     
+    @property
+    def effective_profile_type(self):
+        """Prefer this row's profile_type; fall back to equipment-level legacy field."""
+        if self.profile_type:
+            return self.profile_type
+        if self.equipment_id:
+            return self.equipment.profile_type
+        return None
+
     def __str__(self):
-        profile_type_display = self.equipment.get_profile_type_display() if self.equipment else ""
+        pt = self.effective_profile_type
+        if pt:
+            try:
+                profile_type_display = EquipmentProfileType(pt).label
+            except ValueError:
+                profile_type_display = pt
+        else:
+            profile_type_display = ""
         return f"{self.equipment.code if self.equipment else ''} - {self.user_type} - {self.pricing_profile} - {profile_type_display}"
 
 

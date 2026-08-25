@@ -13,6 +13,17 @@ ICPMS_STANDARDS_RUNS_PER_STANDARD = Decimal("3")
 ICPMS_BLANK_SAMPLE_UNITS = Decimal("1")
 
 
+def get_charge_profile_type(charge_profile) -> Optional[str]:
+    """Resolve calculation mode: ChargeProfile.profile_type, else equipment legacy."""
+    pt = getattr(charge_profile, "profile_type", None)
+    if pt:
+        return pt
+    if hasattr(charge_profile, "effective_profile_type"):
+        return charge_profile.effective_profile_type
+    eq = getattr(charge_profile, "equipment", None)
+    return getattr(eq, "profile_type", None) if eq else None
+
+
 def quantize_money(value: Any) -> Decimal:
     """Round monetary amounts to the nearest whole rupee (₹)."""
     return safe_decimal(value).quantize(MONEY_QUANTIZE, rounding=ROUND_HALF_UP)
@@ -312,25 +323,26 @@ class TimeCalculationEngine:
         """
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"Calculating time for charge profile: {charge_profile.profile_type}")
+        profile_type = get_charge_profile_type(charge_profile)
+        logger.info(f"Calculating time for charge profile: {profile_type}")
         logger.info(f"Input values: {input_values}")
         logger.info(f"Slot duration minutes: {slot_duration_minutes}")
-        if charge_profile.profile_type in [ChargeProfileType.SAMPLE, ChargeProfileType.SAMPLE_ELEMENT]:
+        if profile_type in [ChargeProfileType.SAMPLE, ChargeProfileType.SAMPLE_ELEMENT]:
             return TimeCalculationEngine._calculate_formula_time(
                 charge_profile, input_values, slot_duration_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.HOUR:
+        elif profile_type == ChargeProfileType.HOUR:
             return TimeCalculationEngine._calculate_hour_time(
                 input_values, slot_duration_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.MULTI_PARAM:
+        elif profile_type == ChargeProfileType.MULTI_PARAM:
             return TimeCalculationEngine._calculate_multi_param_time(
                 charge_profile, input_values
             )
-        elif charge_profile.profile_type == ChargeProfileType.PRINT_3D:
+        elif profile_type == ChargeProfileType.PRINT_3D:
             return TimeCalculationEngine._calculate_print_3d_time(input_values)
         else:
-            raise ValidationError(f"Unsupported profile type: {charge_profile.profile_type}")
+            raise ValidationError(f"Unsupported profile type: {profile_type}")
     
     @staticmethod
     def _calculate_multi_param_time(
@@ -506,23 +518,24 @@ class ChargeCalculationEngine:
                 [{"description": "Discounted Charge Profile", "amount": 0.0}],
             )
 
-        if charge_profile.profile_type == ChargeProfileType.SAMPLE:
+        profile_type = get_charge_profile_type(charge_profile)
+        if profile_type == ChargeProfileType.SAMPLE:
             total, breakdown = ChargeCalculationEngine._calculate_sample_charge(
                 charge_profile, input_values, total_time_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.HOUR:
+        elif profile_type == ChargeProfileType.HOUR:
             total, breakdown = ChargeCalculationEngine._calculate_hour_charge(
                 charge_profile, input_values, total_time_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.SAMPLE_ELEMENT:
+        elif profile_type == ChargeProfileType.SAMPLE_ELEMENT:
             total, breakdown = ChargeCalculationEngine._calculate_sample_element_charge(
                 charge_profile, input_values
             )
-        elif charge_profile.profile_type == ChargeProfileType.MULTI_PARAM:
+        elif profile_type == ChargeProfileType.MULTI_PARAM:
             total, breakdown = ChargeCalculationEngine._calculate_multi_param_charge(
                 charge_profile, input_values, total_time_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.PRINT_3D:
+        elif profile_type == ChargeProfileType.PRINT_3D:
             total, breakdown = ChargeCalculationEngine._calculate_print_3d_charge(
                 charge_profile, input_values, total_time_minutes
             )

@@ -210,7 +210,6 @@ logger = logging.getLogger(__name__)
 # Cap "book any" alternative-slot scans — unbounded select_for_update iteration can take minutes.
 _BOOK_ANY_ALT_SLOT_SCAN_LIMIT = 4000
 
-
 def _is_admin_panel_user(user) -> bool:
     """True for admin / OIC / operator / finance; matches user_type case-insensitively."""
     if not user or not getattr(user, "is_authenticated", False):
@@ -223,7 +222,6 @@ def _is_admin_panel_user(user) -> bool:
         return True
     u_norm = str(ut).strip().lower()
     return any(str(c).strip().lower() == u_norm for c in codes)
-
 
 def _actor_may_book_on_behalf(actor, equipment) -> str | None:
     """
@@ -246,7 +244,6 @@ def _actor_may_book_on_behalf(actor, equipment) -> str | None:
             return "You can only book on behalf of users for equipment in your assigned department."
         return None
     return "You don't have permission to book on behalf of another user."
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -333,14 +330,12 @@ def equipment_book_for_user_info(request, pk: int):
         }
     )
 
-
 # User-facing message when slot(s) were taken by another user (concurrent booking)
 SLOTS_ALREADY_OCCUPIED_MESSAGE = (
     "The selected slot(s) have already been booked by another user. Please choose a different slot."
 )
 
 ISTEM_PORTAL_URL = "https://www.istem.gov.in/"
-
 
 def _booking_requires_istem_fbr_results_block(booking) -> bool:
     """True when booking is in the I-STEM FBR workflow and FBR is not yet executed."""
@@ -349,11 +344,9 @@ def _booking_requires_istem_fbr_results_block(booking) -> bool:
         return False
     return st != IstemFbrStatus.EXECUTED
 
-
 def _booking_istem_portal_url(booking) -> str:
     equipment = getattr(booking, "equipment", None)
     return get_equipment_istem_portal_url(equipment) if equipment else ISTEM_PORTAL_URL
-
 
 def _ensure_istem_fbr_initialized(booking) -> None:
     """If charge profile requires I-STEM but booking predates the flag, initialize workflow status."""
@@ -370,7 +363,6 @@ def _ensure_istem_fbr_initialized(booking) -> None:
         return
     booking.istem_fbr_status = IstemFbrStatus.PENDING_FBR
     booking.save(update_fields=["istem_fbr_status", "updated_at"])
-
 
 def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
@@ -390,7 +382,6 @@ def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
         temporary_oic=user,
         resume_at__gt=now_ts,
     ).exists()
-
 
 def _notify_oic_istem_fbr_submitted(booking) -> None:
     """Email OIC(s) for the equipment when external user submits I-STEM FBR."""
@@ -426,7 +417,6 @@ def _notify_oic_istem_fbr_submitted(booking) -> None:
     except Exception:
         pass
 
-
 def _to_float_or_none(value):
     """Best-effort numeric conversion for dynamic input field validation."""
     if value is None:
@@ -444,7 +434,6 @@ def _to_float_or_none(value):
         except (TypeError, ValueError):
             return None
     return None
-
 
 def _resolve_numeric_max_for_field_a(field, input_values, equipment):
     """
@@ -490,7 +479,6 @@ def _resolve_numeric_max_for_field_a(field, input_values, equipment):
     if isinstance(opts, dict):
         return _to_float_or_none(opts.get("max"))
     return None
-
 
 def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user=None):
     """
@@ -583,7 +571,6 @@ DEFAULT_CALENDAR_COLORS = {
     "sunday_color": "#e9d5ff",            # Soft lavender
 }
 
-
 def get_calendar_colors():
     """Return admin-configurable colors for the weekly calendar. Used in equipment_daily_slots response."""
     try:
@@ -633,7 +620,6 @@ def get_calendar_colors():
         out["external_gst_percent"] = 18
         return out
 
-
 # Booking status colours editable by Lab In-charge (operator) and OIC (manager) from their dashboard.
 # Stored per-user + per-equipment; never writes admin CalendarColorSetting.
 LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
@@ -643,14 +629,12 @@ LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
     "COMPLETED",
 )
 
-
 def _lab_dashboard_editable_defaults() -> dict:
     admin_colors = (get_calendar_colors() or {}).get("slot_colors") or {}
     return {
         key: admin_colors.get(key) or DEFAULT_CALENDAR_COLORS["slot_colors"].get(key)
         for key in LAB_DASHBOARD_EDITABLE_SLOT_COLORS
     }
-
 
 def _sanitize_lab_slot_colors(incoming) -> dict:
     out = {}
@@ -665,14 +649,12 @@ def _sanitize_lab_slot_colors(incoming) -> dict:
             out[key] = value
     return out
 
-
 def _lab_user_may_configure_equipment(user, equipment_id: int) -> bool:
     """True if operator/manager/admin may set personal calendar colours for this equipment."""
     allowed = _get_equipment_ids_for_log_access(user)
     if allowed is None:
         return Equipment.objects.filter(pk=equipment_id).exists()
     return int(equipment_id) in {int(x) for x in allowed}
-
 
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
@@ -757,7 +739,6 @@ def lab_dashboard_calendar_colors(request):
         }
     )
 
-
 def get_external_gst_percent():
     """Return the GST percentage (0-100) for external users from BookingChargeSetting. Default 18."""
     try:
@@ -767,7 +748,6 @@ def get_external_gst_percent():
     except Exception:
         pass
     return Decimal("18")
-
 
 def get_external_return_shipping_fee_amount() -> Decimal:
     """
@@ -782,7 +762,6 @@ def get_external_return_shipping_fee_amount() -> Decimal:
         pass
     return Decimal("0.00")
 
-
 def get_internal_slot_window_setting():
     """Return the singleton InternalUserSlotWindowSetting if it exists and has both weekday and time set."""
     try:
@@ -792,7 +771,6 @@ def get_internal_slot_window_setting():
     except Exception:
         pass
     return None
-
 
 def get_slot_window_reference_datetime_for_local_week(containing_dt, ref_weekday, ref_time):
     """
@@ -813,9 +791,7 @@ def get_slot_window_reference_datetime_for_local_week(containing_dt, ref_weekday
     ref_naive = dt_class.combine(ref_date, ref_time)
     return tz.make_aware(ref_naive, tz.get_current_timezone())
 
-
 PEAK_SLOT_WAITLIST_AFTER_REFERENCE_MINUTES = 30
-
 
 def get_equipment_slot_window_reference_config(equipment):
     """Return (reference_weekday, reference_time) for internal slot-window rules.
@@ -831,7 +807,6 @@ def get_equipment_slot_window_reference_config(equipment):
     if setting is not None:
         return setting.reference_weekday, setting.reference_time
     return None, None
-
 
 def get_internal_slot_window_date_bounds(equipment, at=None):
     """
@@ -860,7 +835,6 @@ def get_internal_slot_window_date_bounds(equipment, at=None):
         return week_monday, week_monday + timedelta(days=6), True
     return week_monday, week_monday + timedelta(days=13), False
 
-
 def is_slot_window_peak_waitlist_period(equipment, at=None):
     """
     True when local time is in [this week's slot-window reference datetime,
@@ -884,7 +858,6 @@ def is_slot_window_peak_waitlist_period(equipment, at=None):
     local_at = timezone.localtime(at)
     return ref_dt <= local_at < peak_end
 
-
 def user_can_access_booking_for_maintenance_slots_api(request_user, booking) -> bool:
     """
     True if this user may act on the booking for slots API (owner or wallet supervisor).
@@ -899,7 +872,6 @@ def user_can_access_booking_for_maintenance_slots_api(request_user, booking) -> 
         student_id=booking.user_id,
         status=WalletJoinRequestStatus.APPROVED,
     ).exists()
-
 
 def get_slot_window_deadline_for_request(requested_at, equipment):
     """
@@ -921,7 +893,6 @@ def get_slot_window_deadline_for_request(requested_at, equipment):
     tz = timezone.get_current_timezone()
     next_dt = timezone.make_aware(next_dt_naive, tz)
     return next_dt - timedelta(minutes=15)
-
 
 def get_disruption_choice_deadline_at(requested_at, equipment):
     """
@@ -945,7 +916,6 @@ def get_disruption_choice_deadline_at(requested_at, equipment):
     next_dt = timezone.make_aware(next_dt_naive, tz)
     return next_dt + timedelta(hours=1)
 
-
 def get_effective_expiry_at(urgent_request, validity_days):
     """
     Return the effective expiry datetime for an urgent request: the earlier of
@@ -960,7 +930,6 @@ def get_effective_expiry_at(urgent_request, validity_days):
     if slot_deadline is None:
         return validity_end
     return min(validity_end, slot_deadline)
-
 
 def get_approved_urgent_requests_last_6_months(user_id, equipment_id):
     """
@@ -979,7 +948,6 @@ def get_approved_urgent_requests_last_6_months(user_id, equipment_id):
     ).order_by("-decided_at").values("id", "requested_at", "decided_at")
     return list(qs)
 
-
 def _format_approved_urgent_6m(rows):
     """Turn list of dicts with id, requested_at, decided_at into API-safe list with ISO dates."""
     out = []
@@ -990,7 +958,6 @@ def _format_approved_urgent_6m(rows):
             "decided_at": r["decided_at"].isoformat() if r.get("decided_at") else None,
         })
     return out
-
 
 def _get_no_slot_log_for_urgent_display(user, equipment):
     """
@@ -1022,7 +989,6 @@ def _get_no_slot_log_for_urgent_display(user, equipment):
             e["requested_at"] = e["requested_at"].isoformat()
     return log_count, log_recent
 
-
 def _ensure_booking_result_file_table():
     """Create equipment_bookingresultfile table if it does not exist (e.g. migration not applied)."""
     if connection.vendor != "postgresql":
@@ -1037,7 +1003,6 @@ def _ensure_booking_result_file_table():
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL
             );
         """)
-
 
 def user_can_see_equipment(user, equipment):
     """
@@ -1075,7 +1040,6 @@ def user_can_see_equipment(user, equipment):
         return True
     return is_equipment_visible_on_date(equipment, timezone.localdate())
 
-
 def equipment_visibility_denied_response(user):
     """
     Authenticated users get an explicit forbidden response so the SPA can stop retrying
@@ -1091,14 +1055,12 @@ def equipment_visibility_denied_response(user):
         )
     return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-
 def user_can_see_equipment_image(user, equipment):
     """
     Equipment photos are public (no login required).
     Booking, slots, and detail APIs still enforce visibility via user_can_see_equipment.
     """
     return True
-
 
 def get_visible_equipment_queryset(user):
     """
@@ -1138,7 +1100,6 @@ def get_visible_equipment_queryset(user):
     from .mode_utils import filter_queryset_for_mode_catalog
     return filter_queryset_for_mode_catalog(queryset, user)
 
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_category_list(request):
@@ -1146,7 +1107,6 @@ def equipment_category_list(request):
     categories = EquipmentCategory.objects.all().order_by('name')
     serializer = EquipmentCategorySerializer(categories, many=True)
     return Response({"categories": serializer.data}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -1274,7 +1234,6 @@ def equipment_form_choices(request):
         ],
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_list_oic_users(request):
@@ -1302,7 +1261,6 @@ def temporary_oic_list_oic_users(request):
         ],
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_my_equipments(request):
@@ -1324,7 +1282,6 @@ def temporary_oic_my_equipments(request):
             for e in equipments
         ],
     }, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -1401,7 +1358,6 @@ def temporary_oic_create(request):
         "message": "Temporary OIC assigned. They can manage this equipment until the resume date and time.",
     }, status=status.HTTP_201_CREATED)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_list_mine(request):
@@ -1436,7 +1392,6 @@ def temporary_oic_list_mine(request):
         ],
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_cancel(request, delegation_id):
@@ -1452,7 +1407,6 @@ def temporary_oic_cancel(request, delegation_id):
         return Response({"error": "Delegation not found or you are not the primary OIC."}, status=status.HTTP_404_NOT_FOUND)
     delegation.delete()
     return Response({"message": "Temporary OIC delegation cancelled."}, status=status.HTTP_200_OK)
-
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
@@ -1501,7 +1455,6 @@ def temporary_oic_update(request, delegation_id):
         "temporary_oic_name": delegation.temporary_oic.name or delegation.temporary_oic.email,
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_catalog_departments(request):
@@ -1532,7 +1485,6 @@ def equipment_catalog_departments(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -1620,7 +1572,6 @@ def equipment_list(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -1723,14 +1674,12 @@ def equipment_ratings(request, equipment_id: int):
         status=status.HTTP_200_OK,
     )
 
-
 def _parse_elements_csv(raw: str) -> set[str]:
     if not raw:
         return set()
     # Normalize: split by comma, strip spaces, drop empties, uppercase symbols
     parts = [p.strip() for p in str(raw).split(",")]
     return {p.upper() for p in parts if p}
-
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -1825,7 +1774,6 @@ def icpms_min_standards_cover(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def icpms_available_standards(request):
@@ -1869,7 +1817,6 @@ def icpms_available_standards(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def icpms_standards_full_list(request):
@@ -1900,7 +1847,6 @@ def icpms_standards_full_list(request):
             }
         )
     return Response({"count": len(out), "standards": out}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET", "PATCH"])
 @permission_classes([AllowAny])
@@ -1975,7 +1921,6 @@ def equipment_detail(request, pk):
     serializer = EquipmentDetailSerializer(equipment, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @authentication_classes([])  # Ignore invalid Authorization headers (stale tokens) for anonymous img loads
 @permission_classes([AllowAny])
@@ -2020,7 +1965,6 @@ def equipment_image_proxy(request, pk):
     response["Cache-Control"] = "public, max-age=86400"
     response["Content-Length"] = len(content)
     return response
-
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -2165,28 +2109,8 @@ def equipment_calculate(request, pk):
     
     # Calculate time
     try:
-        # Create a temporary charge profile object with profile_type from equipment
-        # This is a workaround since calculators expect charge_profile.profile_type
-        # but it's actually on equipment
-        class ChargeProfileWithType:
-            def __init__(self, charge_profile, equipment):
-                self.equipment = charge_profile.equipment
-                self.user_type = charge_profile.user_type
-                self.is_active = charge_profile.is_active
-                self.primary_unit_charge = charge_profile.primary_unit_charge
-                self.secondary_unit_charge = charge_profile.secondary_unit_charge
-                self.breakpoint = charge_profile.breakpoint
-                self.time_formula = charge_profile.time_formula
-                self.pricing_profile = getattr(charge_profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-                self.profile_type = equipment.profile_type
-                # secondary_flat_charge is referenced in calculators but doesn't exist in model
-                # Set to None (calculators check if it exists before using)
-                # self.secondary_flat_charge = getattr(charge_profile, 'secondary_flat_charge', None)
-        
-        charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
-        
         total_time_minutes = TimeCalculationEngine.calculate_time(
-            charge_profile_with_type,
+            charge_profile,
             input_values,
             slot_duration_minutes=equipment.slot_duration_minutes
         )
@@ -2199,7 +2123,7 @@ def equipment_calculate(request, pk):
     # Calculate charge
     try:
         total_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-            charge_profile_with_type,
+            charge_profile,
             input_values,
             total_time_minutes,
             selected_parameters=None
@@ -2268,9 +2192,8 @@ def equipment_calculate(request, pk):
                 pricing_profile=ChargeProfilePricingProfile.STANDARD,
                 is_active=True,
             )
-            std_with_type = ChargeProfileWithType(std_profile, equipment)
             std_base, _ = ChargeCalculationEngine.calculate_charge(
-                std_with_type,
+                std_profile,
                 input_values,
                 total_time_minutes,
                 selected_parameters=None,
@@ -2317,7 +2240,11 @@ def equipment_calculate(request, pk):
         "equipment_code": equipment.code,
         "equipment_name": equipment.name,
         "user_type": user_type,
-        "profile_type": equipment.profile_type,
+        "profile_type": (
+            getattr(charge_profile, "effective_profile_type", None)
+            or getattr(charge_profile, "profile_type", None)
+            or equipment.profile_type
+        ),
         "pricing_profile": pricing_profile,
         "applied_profile": applied_profile_label,
         "normal_charge": str(normal_charge_value),
@@ -2348,7 +2275,6 @@ def equipment_calculate(request, pk):
     
     return Response(response_data, status=status.HTTP_200_OK)
 
-
 def _calculate_one_proforma_line(request_user, equipment, input_values):
     """
     Calculate time and charge for one equipment with given input_values, for the given user's type.
@@ -2365,22 +2291,9 @@ def _calculate_one_proforma_line(request_user, equipment, input_values):
     except ChargeProfile.DoesNotExist:
         return None, f"No charge profile for equipment {equipment.equipment_id} and user type {user_type}."
 
-    class ChargeProfileWithType:
-        def __init__(self, cp, eq):
-            self.equipment = cp.equipment
-            self.user_type = cp.user_type
-            self.is_active = cp.is_active
-            self.primary_unit_charge = cp.primary_unit_charge
-            self.secondary_unit_charge = cp.secondary_unit_charge
-            self.breakpoint = cp.breakpoint
-            self.time_formula = cp.time_formula
-            self.pricing_profile = getattr(cp, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-            self.profile_type = eq.profile_type
-
-    cp_with_type = ChargeProfileWithType(charge_profile, equipment)
     try:
         total_time_minutes = TimeCalculationEngine.calculate_time(
-            cp_with_type,
+            charge_profile,
             input_values,
             slot_duration_minutes=equipment.slot_duration_minutes,
         )
@@ -2388,7 +2301,7 @@ def _calculate_one_proforma_line(request_user, equipment, input_values):
         return None, f"Time calculation failed for {equipment.code}: {e}"
     try:
         base_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-            cp_with_type,
+            charge_profile,
             input_values,
             total_time_minutes,
             selected_parameters=None,
@@ -2412,7 +2325,12 @@ def _calculate_one_proforma_line(request_user, equipment, input_values):
         "equipment_id": equipment.equipment_id,
         "equipment_code": equipment.code or "",
         "equipment_name": equipment.name or "",
-        "profile_type": equipment.profile_type or "",
+        "profile_type": (
+            getattr(charge_profile, "effective_profile_type", None)
+            or getattr(charge_profile, "profile_type", None)
+            or equipment.profile_type
+            or ""
+        ),
         "input_values": input_values,
         "total_time_minutes": total_time_minutes,
         "charge_breakdown": charge_breakdown if getattr(charge_profile, "show_charge_breakdown", True) else [],
@@ -2422,7 +2340,6 @@ def _calculate_one_proforma_line(request_user, equipment, input_values):
         "gst_amount": str(gst_amount),
         "total_charge": str(total_charge),
     }, None
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -2509,7 +2426,6 @@ def proforma_invoice_calculate(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -2843,7 +2759,6 @@ def equipment_daily_slots(request, pk):
         status=status.HTTP_200_OK,
     )
 
-
 @transaction.non_atomic_requests
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -2897,7 +2812,6 @@ def book_equipment(request, pk):
             {"error": f"Error creating booking: {exc}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
 
 def _book_equipment_impl(request, pk):
     from django.db import transaction
@@ -3245,21 +3159,10 @@ def _book_equipment_impl(request, pk):
                             except ChargeProfile.DoesNotExist:
                                 charge_profile_early = None
                             if charge_profile_early:
-                                class ChargeProfileWithType:
-                                    def __init__(self, cp, eq):
-                                        self.equipment = cp.equipment
-                                        self.user_type = cp.user_type
-                                        self.is_active = cp.is_active
-                                        self.primary_unit_charge = cp.primary_unit_charge
-                                        self.secondary_unit_charge = cp.secondary_unit_charge
-                                        self.breakpoint = cp.breakpoint
-                                        self.time_formula = cp.time_formula
-                                        self.pricing_profile = getattr(cp, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-                                        self.profile_type = getattr(eq, "profile_type", None)
-                                cp_with_type = ChargeProfileWithType(charge_profile_early, equipment)
+
                                 slot_dur = getattr(equipment, "slot_duration_minutes", None) or 60
                                 red = _try_reduce_to_single_slot(
-                                    equipment, cp_with_type, input_values, slot_dur
+                                    equipment, charge_profile_early, input_values, slot_dur
                                 )
                                 if red:
                                     reduced_input_values, _single_slot_time = red
@@ -3567,23 +3470,12 @@ def _book_equipment_impl(request, pk):
                 status=status.HTTP_404_NOT_FOUND,
             )
         perf.mark("charge_profile_loaded")
-        class ChargeProfileWithType:
-            def __init__(self, charge_profile, equipment):
-                self.equipment = charge_profile.equipment
-                self.user_type = charge_profile.user_type
-                self.is_active = charge_profile.is_active
-                self.primary_unit_charge = charge_profile.primary_unit_charge
-                self.secondary_unit_charge = charge_profile.secondary_unit_charge
-                self.breakpoint = charge_profile.breakpoint
-                self.time_formula = charge_profile.time_formula
-                self.pricing_profile = getattr(charge_profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-                self.profile_type = equipment.profile_type
-        charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
+
         from .calculators import build_safe_input_values_for_charge_calculation
         safe_input_values = build_safe_input_values_for_charge_calculation(input_values, equipment=equipment)
         try:
             calculated_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-                charge_profile_with_type,
+                charge_profile,
                 safe_input_values,
                 total_time_minutes,
                 selected_parameters=None,
@@ -3792,7 +3684,7 @@ def _book_equipment_impl(request, pk):
                             start_time = locked_slots[0].start_datetime
                             end_time = locked_slots[-1].end_datetime
                             calculated_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-                                charge_profile_with_type, safe_input_values, total_time_minutes, selected_parameters=None
+                                charge_profile, safe_input_values, total_time_minutes, selected_parameters=None
                             )
                             total_charge = calculated_charge
                             if UserType.is_external_user(user_type):
@@ -3827,7 +3719,7 @@ def _book_equipment_impl(request, pk):
                             if book_even_if_single_slot_available:
                                 slot_dur = getattr(equipment, "slot_duration_minutes", None) or 60
                                 red = _try_reduce_to_single_slot(
-                                    equipment, charge_profile_with_type, input_values, slot_dur
+                                    equipment, charge_profile, input_values, slot_dur
                                 )
                                 if red:
                                     reduced_input_values, single_slot_time = red
@@ -3858,7 +3750,7 @@ def _book_equipment_impl(request, pk):
                                         input_values = dict(reduced_input_values)
                                         input_values_adjusted_for_single_slot[0] = True
                                         calculated_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-                                            charge_profile_with_type, reduced_input_values, single_slot_time, selected_parameters=None
+                                            charge_profile, reduced_input_values, single_slot_time, selected_parameters=None
                                         )
                                         total_charge = calculated_charge
                                         if UserType.is_external_user(user_type):
@@ -4395,20 +4287,7 @@ def _book_equipment_impl(request, pk):
     # Calculate time and charge
     # Always calculate to ensure accuracy, but allow override if provided
     try:
-        # Create a temporary charge profile object with profile_type from equipment
-        class ChargeProfileWithType:
-            def __init__(self, charge_profile, equipment):
-                self.equipment = charge_profile.equipment
-                self.user_type = charge_profile.user_type
-                self.is_active = charge_profile.is_active
-                self.primary_unit_charge = charge_profile.primary_unit_charge
-                self.secondary_unit_charge = charge_profile.secondary_unit_charge
-                self.breakpoint = charge_profile.breakpoint
-                self.time_formula = charge_profile.time_formula
-                self.pricing_profile = getattr(charge_profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-                self.profile_type = equipment.profile_type
-        
-        charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
+
         
         # Ensure input_values are safe for calculations (no lists, dicts, etc. that can't be converted)
         safe_input_values = {}
@@ -4439,13 +4318,13 @@ def _book_equipment_impl(request, pk):
 
         # Calculate time in minutes
         calculated_time_minutes = TimeCalculationEngine.calculate_time(
-            charge_profile_with_type,
+            charge_profile,
             safe_input_values,
             slot_duration_minutes=equipment.slot_duration_minutes
         )
         # Calculate charge
         calculated_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-            charge_profile_with_type,
+            charge_profile,
             safe_input_values,
             calculated_time_minutes,
             selected_parameters=None
@@ -4809,7 +4688,6 @@ def _book_equipment_impl(request, pk):
         status=status.HTTP_201_CREATED,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def approaching_sample_submission_deadlines(request):
@@ -4821,7 +4699,6 @@ def approaching_sample_submission_deadlines(request):
 
     items = list_approaching_sample_submission_for_user(request.user)
     return Response({"items": items, "count": len(items)}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -5170,7 +5047,6 @@ def list_bookings(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def booking_stats(request):
@@ -5239,7 +5115,6 @@ def booking_stats(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -5334,7 +5209,6 @@ def dashboard_summary(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -5765,11 +5639,9 @@ def lab_operator_dashboard(request):
         status=status.HTTP_200_OK,
     )
 
-
 # ============================================================================
 # Operator leave management (Lab operator dashboard)
 # ============================================================================
-
 
 def _leave_request_email_context(req: OperatorLeaveRequest, *, reviewer=None) -> dict:
     app_name = getattr(settings, "APP_NAME", None) or getattr(settings, "SITE_NAME", None) or "IIC Booking"
@@ -5787,7 +5659,6 @@ def _leave_request_email_context(req: OperatorLeaveRequest, *, reviewer=None) ->
         "leave_management_url": get_frontend_absolute_url("/leave-management"),
         "team_calendar_url": get_frontend_absolute_url("/team-calendar"),
     }
-
 
 def _leave_request_oic_recipients_for_operator(operator_user: User):
     """
@@ -5822,7 +5693,6 @@ def _leave_request_oic_recipients_for_operator(operator_user: User):
         recipients[u.id] = u
 
     return list(recipients.values())
-
 
 def _send_leave_submission_emails(req: OperatorLeaveRequest):
     """
@@ -5859,7 +5729,6 @@ def _send_leave_submission_emails(req: OperatorLeaveRequest):
     except Exception:
         logger.exception("Failed to send leave submission email(s) to OIC(s) (leave_id=%s).", req.id)
 
-
 def _send_leave_decision_email(req: OperatorLeaveRequest, *, reviewer: User):
     """Send decision (approved/rejected) to operator."""
     operator = req.operator
@@ -5882,7 +5751,6 @@ def _send_leave_decision_email(req: OperatorLeaveRequest, *, reviewer: User):
         created_by=reviewer,
     )
 
-
 def _parse_oic_leave_intimation_extra_emails() -> list[str]:
     """Comma/semicolon/newline-separated addresses from OIC_LEAVE_INTIMATION_EXTRA_EMAILS."""
     raw = getattr(settings, "OIC_LEAVE_INTIMATION_EXTRA_EMAILS", "") or ""
@@ -5900,7 +5768,6 @@ def _parse_oic_leave_intimation_extra_emails() -> list[str]:
         out.append(e)
     return out
 
-
 def _add_department_head_intimation_recipient(oic_user: User, recipients: dict[int, User]) -> None:
     from iic_booking.users.models import Department
 
@@ -5913,7 +5780,6 @@ def _add_department_head_intimation_recipient(oic_user: User, recipients: dict[i
     h = dept.head
     if h and getattr(h, "is_active", False) and getattr(h, "email", ""):
         recipients[h.id] = h
-
 
 def _merge_extra_env_emails_into_intimation_targets(oic_user: User, recipients: dict[int, User]) -> list[str]:
     """
@@ -5933,7 +5799,6 @@ def _merge_extra_env_emails_into_intimation_targets(oic_user: User, recipients: 
         else:
             raw_out.append(addr.strip())
     return raw_out
-
 
 def _collect_oic_leave_intimation_recipients(oic_user: User) -> tuple[dict[int, User], list[str]]:
     """
@@ -5961,7 +5826,6 @@ def _collect_oic_leave_intimation_recipients(oic_user: User) -> tuple[dict[int, 
     _add_department_head_intimation_recipient(oic_user, recipients)
     raw_extra = _merge_extra_env_emails_into_intimation_targets(oic_user, recipients)
     return recipients, raw_extra
-
 
 def _send_operator_leave_oic_intimation_raw(email_addr: str, req: OperatorLeaveRequest) -> None:
     """Send OIC leave FYI template to an address that is not a registered user (no CommunicationLog user FK)."""
@@ -5996,7 +5860,6 @@ def _send_operator_leave_oic_intimation_raw(email_addr: str, req: OperatorLeaveR
         msg.attach_alternative(html_message, "text/html")
     msg.send(fail_silently=False)
 
-
 def _send_leave_oic_self_leave_intimations(req: OperatorLeaveRequest):
     """Auto-approved OIC leave: confirmation to submitter + FYI to co-OICs, department head, env list."""
     try:
@@ -6029,7 +5892,6 @@ def _send_leave_oic_self_leave_intimations(req: OperatorLeaveRequest):
                 "Failed to send OIC self-leave intimation to raw address %s (leave_id=%s).", addr, req.id
             )
 
-
 def _operator_leave_span_valid(req: OperatorLeaveRequest) -> bool:
     if req.start_date > req.end_date:
         return False
@@ -6040,7 +5902,6 @@ def _operator_leave_span_valid(req: OperatorLeaveRequest) -> bool:
         ):
             return False
     return True
-
 
 def _apply_resume_duty_leave_adjustment(
     req: OperatorLeaveRequest, acting_user: User
@@ -6101,7 +5962,6 @@ def _apply_resume_duty_leave_adjustment(
         "updated_coverages": n,
     }, None
 
-
 def _leave_weight_in_range(req: OperatorLeaveRequest, range_start, range_end) -> float:
     """Return leave days in [range_start, range_end], accounting for FN/AN half-days."""
     from datetime import date as date_cls
@@ -6121,7 +5981,6 @@ def _leave_weight_in_range(req: OperatorLeaveRequest, range_start, range_end) ->
     if end_sess == OperatorLeaveRequest.Session.FN:
         days -= 0.5
     return max(days, 0.0)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -6156,7 +6015,6 @@ def operator_leave_summary(request):
         total += _leave_weight_in_range(req, year_start, year_end)
 
     return Response({"approved_days_this_year": total}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -6296,7 +6154,6 @@ def operator_leave_requests(request):
         threading.Thread(target=_send_leave_submission_emails, args=(req,), daemon=True).start()
     return Response({"id": req.id, "status": req.status}, status=status.HTTP_201_CREATED)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def operator_leave_request_resume(request, leave_id: int):
@@ -6314,7 +6171,6 @@ def operator_leave_request_resume(request, leave_id: int):
     if err:
         return Response(err[1], status=err[0])
     return Response(payload, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -6364,7 +6220,6 @@ def oic_leave_requests_pending(request):
             }
         )
     return Response({"leaves": out}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -6416,7 +6271,6 @@ def oic_leave_requests_approved(request):
         )
     return Response({"leaves": out}, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def oic_leave_request_approve(request, leave_id: int):
@@ -6446,7 +6300,6 @@ def oic_leave_request_approve(request, leave_id: int):
     threading.Thread(target=_send_leave_decision_email, kwargs={"req": req, "reviewer": request.user}, daemon=True).start()
     return Response({"id": req.id, "status": req.status}, status=status.HTTP_200_OK)
 
-
 def _leave_session_window_to_datetimes(req: OperatorLeaveRequest):
     """
     Convert OperatorLeaveRequest date+session range to timezone-aware datetime window.
@@ -6463,7 +6316,6 @@ def _leave_session_window_to_datetimes(req: OperatorLeaveRequest):
     if ends_at < starts_at:
         starts_at, ends_at = ends_at, starts_at
     return starts_at, ends_at
-
 
 def _acting_operator_has_overlapping_leave(operator_user: User, starts_at, ends_at) -> bool:
     """True if operator has any PENDING/APPROVED leave overlapping the datetime window."""
@@ -6483,7 +6335,6 @@ def _acting_operator_has_overlapping_leave(operator_user: User, starts_at, ends_
         start_date__lte=end_date,
         end_date__gte=start_date,
     ).exists()
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -6548,7 +6399,6 @@ def oic_leave_request_coverage_options(request, leave_id: int):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -6639,7 +6489,6 @@ def oic_leave_request_approve_with_coverage(request, leave_id: int):
     threading.Thread(target=_send_leave_decision_email, kwargs={"req": req, "reviewer": request.user}, daemon=True).start()
     return Response({"id": req.id, "status": req.status, "coverage_ids": created_rows}, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def oic_leave_request_coverages(request, leave_id: int):
@@ -6671,7 +6520,6 @@ def oic_leave_request_coverages(request, leave_id: int):
             }
         )
     return Response({"coverages": out}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -6759,7 +6607,6 @@ def oic_leave_request_set_coverages(request, leave_id: int):
 
     return Response({"coverage_ids": created_rows}, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def oic_leave_request_reject(request, leave_id: int):
@@ -6794,7 +6641,6 @@ def oic_leave_request_reject(request, leave_id: int):
     threading.Thread(target=_send_leave_decision_email, kwargs={"req": req, "reviewer": request.user}, daemon=True).start()
     return Response({"id": req.id, "status": req.status}, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def oic_leave_request_resume(request, leave_id: int):
@@ -6816,7 +6662,6 @@ def oic_leave_request_resume(request, leave_id: int):
     if err:
         return Response(err[1], status=err[0])
     return Response(payload, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -7036,13 +6881,11 @@ def team_calendar_department_leaves(request):
         status=status.HTTP_200_OK,
     )
 
-
 def _is_internal_user(user):
     """True if user is student or faculty (internal)."""
     if not user or not getattr(user, "user_type", None):
         return False
     return user.user_type in UserType.get_internal_user_codes()
-
 
 def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -> dict:
     """Shape waitlist entry like booking-list row for My Bookings history."""
@@ -7159,21 +7002,9 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
             if not cp:
                 cp = ChargeProfile.objects.filter(equipment=equipment, is_active=True).order_by("id").first()
             if cp:
-                class _ChargeProfileProxy:
-                    def __init__(self, profile, eq):
-                        self.equipment = profile.equipment
-                        self.user_type = profile.user_type
-                        self.is_active = profile.is_active
-                        self.primary_unit_charge = profile.primary_unit_charge
-                        self.secondary_unit_charge = profile.secondary_unit_charge
-                        self.breakpoint = profile.breakpoint
-                        self.time_formula = profile.time_formula
-                        self.pricing_profile = getattr(profile, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-                        self.profile_type = getattr(eq, "profile_type", None)
 
                 total_time_minutes = int(
-                    TimeCalculationEngine.calculate_time(
-                        _ChargeProfileProxy(cp, equipment),
+                    TimeCalculationEngine.calculate_time(cp,
                         safe_inputs,
                         slot_duration_minutes=slot_duration,
                     )
@@ -7357,7 +7188,6 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
         "booking_attempt_additional_info": getattr(attempt, "additional_info", None) if attempt else None,
     }
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def log_no_slot_allocation(request):
@@ -7403,7 +7233,6 @@ def log_no_slot_allocation(request):
         {"message": "Logged."},
         status=status.HTTP_201_CREATED,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -7463,7 +7292,6 @@ def log_booking_attempt(request):
         {"message": "Logged."},
         status=status.HTTP_201_CREATED,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -7706,7 +7534,6 @@ def create_urgent_booking_request(request):
         status=status.HTTP_201_CREATED,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_approved_urgent_history(request):
@@ -7741,7 +7568,6 @@ def get_approved_urgent_history(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -7791,7 +7617,6 @@ def list_my_urgent_booking_requests(request):
         {"urgent_requests": results, "total_count": total_count, "limit": limit, "offset": offset},
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -7925,7 +7750,6 @@ def list_urgent_booking_requests(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_urgent_request_detail(request, request_id):
@@ -8032,7 +7856,6 @@ def get_urgent_request_detail(request, request_id):
     }
     return Response(result, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_no_slot_log_for_user(request, user_id):
@@ -8064,7 +7887,6 @@ def get_no_slot_log_for_user(request, user_id):
         {"user_id": target_user.id, "user_name": target_user.name or target_user.email, "entries": entries},
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -8177,7 +7999,6 @@ def list_booking_attempt_logs(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_my_unsuccessful_booking_attempts(request):
@@ -8284,7 +8105,6 @@ def get_my_unsuccessful_booking_attempts(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_my_waitlist_entries(request):
@@ -8302,7 +8122,6 @@ def list_my_waitlist_entries(request):
         position = active_waitlist_position(entry) or 0
         results.append(_serialize_waitlist_entry_for_history(entry, position))
     return Response({"entries": results, "count": len(results)}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -8348,7 +8167,6 @@ def cancel_my_waitlist_entry(request, entry_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -8408,7 +8226,6 @@ def submit_waitlist_sample(request, entry_id):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def delete_booking_attempt_log(request, log_id):
@@ -8427,7 +8244,6 @@ def delete_booking_attempt_log(request, log_id):
         return Response({"error": "Log entry not found."}, status=status.HTTP_404_NOT_FOUND)
     log.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -8477,7 +8293,6 @@ def get_booking_attempt_log_quota_breakdown(request, log_id):
         log.user, log.equipment, quota_type, reference_date, failure_reason
     )
     return Response(breakdown, status=status.HTTP_200_OK)
-
 
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
@@ -8646,7 +8461,6 @@ def update_urgent_booking_request(request, request_id):
         status=status.HTTP_200_OK,
     )
 
-
 def _get_wallet_supervisor_user(request_user):
     """
     Faculty (wallet owner) who should receive urgent REVIEWER_URGENT notifications and may approve
@@ -8677,12 +8491,10 @@ def _get_wallet_supervisor_user(request_user):
         return User.objects.filter(pk=wallet.user_id).first()
     return None
 
-
 def _is_wallet_owner_for_urgent_request(user, urg):
     """True if user is the wallet faculty supervisor for the requester (same logic as list + email)."""
     sup = _get_wallet_supervisor_user(urg.user)
     return sup is not None and sup.id == user.id
-
 
 def _release_hold_booking(hold_booking):
     """Release a HOLD booking: free its slots (AVAILABLE) and set booking status to CANCELLED. No refund (no debit was made)."""
@@ -8711,7 +8523,6 @@ def _release_hold_booking(hold_booking):
     except Exception as e:
         logger.warning("Failed to notify waitlist after releasing hold for equipment %s: %s", hold_booking.equipment.code, e)
 
-
 def expire_urgent_hold_requests():
     """Find PENDING urgent requests past the effective expiry (validity_days or slot window - 15 min); release hold and set status to EXPIRED."""
     from django.utils import timezone
@@ -8738,7 +8549,6 @@ def expire_urgent_hold_requests():
         urg.save(update_fields=["status"])
         count += 1
     return count
-
 
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
@@ -8778,7 +8588,6 @@ def urgent_hold_expiry_config(request):
         "urgent_booking_validity_days": validity_days if validity_days is not None and validity_days > 0 else 1,
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def wallet_approve_urgent_booking_request(request, request_id):
@@ -8789,7 +8598,6 @@ def wallet_approve_urgent_booking_request(request, request_id):
         {"error": "Supervisor approval is no longer required. Requests are reviewed directly by Admin/OIC."},
         status=status.HTTP_410_GONE,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -8802,7 +8610,6 @@ def list_urgent_requests_pending_wallet_approval(request):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_urgent_requests_wallet(request):
@@ -8813,7 +8620,6 @@ def list_urgent_requests_wallet(request):
         {"urgent_requests": [], "total_count": 0, "limit": 0, "offset": 0},
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -8866,7 +8672,6 @@ def get_urgent_request_evidence(request, request_id):
     response["Expires"] = "0"
     return response
 
-
 def check_operator_permission(user):
     """Check if user can manage departmental bookings (admin / staff with bookings.manage).
 
@@ -8886,10 +8691,8 @@ def check_operator_permission(user):
         return user_has_permission(user, "bookings.manage")
     return False
 
-
 def _user_is_accounts_finance_user(user) -> bool:
     return bool(user and getattr(user, "user_type", None) == UserType.FINANCE)
-
 
 def _booking_in_accounts_finance_list_scope(booking) -> bool:
     """External bookings only, status BOOKED or COMPLETED (Accounts In Charge my-bookings scope)."""
@@ -8900,13 +8703,11 @@ def _booking_in_accounts_finance_list_scope(booking) -> bool:
         return False
     return booking.status in (BookingStatus.BOOKED, BookingStatus.COMPLETED)
 
-
 def _finance_user_can_access_booking_for_workflow(user, booking) -> bool:
     """Finance may view/act on sample trace and return shipping for in-scope external bookings."""
     if not _user_is_accounts_finance_user(user) or not booking:
         return False
     return _booking_in_accounts_finance_list_scope(booking)
-
 
 def _get_equipment_ids_for_log_access(user):
     """
@@ -8959,7 +8760,6 @@ def _get_equipment_ids_for_log_access(user):
         return list((base_ids - covered_primary_ids) | acting_ids)
     return []
 
-
 def _get_input_field_key_to_label_map(equipment):
     """Return a dict mapping field_key -> field_label for the equipment's input fields."""
     from .models import DynamicInputField
@@ -8968,7 +8768,6 @@ def _get_input_field_key_to_label_map(equipment):
     return dict(
         DynamicInputField.objects.filter(equipment=equipment).values_list("field_key", "field_label")
     )
-
 
 def _get_additional_info_from_request(request, equipment=None):
     """Build additional_info dict from request.data for booking attempt log.
@@ -8995,7 +8794,6 @@ def _get_additional_info_from_request(request, equipment=None):
         info["selected_parameters"] = data.get("selected_parameters")
     return info if info else None
 
-
 def _student_booking_description_suffix(wallet_target, booking_user):
     """When the transaction is on a Supervisor's wallet but the booking was made by a student, return a suffix for the description so the Supervisor sees it in their account."""
     if not wallet_target or not booking_user:
@@ -9005,7 +8803,6 @@ def _student_booking_description_suffix(wallet_target, booking_user):
         return ""
     student_label = (booking_user.name or booking_user.email or "").strip() or f"User #{booking_user.id}"
     return f" - Student: {student_label}"
-
 
 def _get_slots_duration_minutes(slot_ids):
     """Return total duration in minutes for the given slot IDs (from DailySlot start/end). Used to know required duration when finding alternatives."""
@@ -9017,7 +8814,6 @@ def _get_slots_duration_minutes(slot_ids):
         if start and end:
             total_seconds += (end - start).total_seconds()
     return int(total_seconds / 60)
-
 
 def _get_reduce_key_for_single_slot(profile_type):
     """
@@ -9034,13 +8830,14 @@ def _get_reduce_key_for_single_slot(profile_type):
         return "A"
     return None
 
-
-def _try_reduce_to_single_slot(equipment, charge_profile_with_type, input_values, slot_duration_minutes):
+def _try_reduce_to_single_slot(equipment, charge_profile, input_values, slot_duration_minutes):
     """
     Try to reduce the requirement to one slot by setting the profile-specific key (A or B) to 1.
     Returns (reduced_input_values, single_slot_time_minutes) if new time <= slot_duration_minutes, else None.
     """
-    profile_type = getattr(equipment, "profile_type", None)
+    from .calculators import get_charge_profile_type
+
+    profile_type = get_charge_profile_type(charge_profile) or getattr(equipment, "profile_type", None)
     key = _get_reduce_key_for_single_slot(profile_type)
     if not key or slot_duration_minutes <= 0:
         return None
@@ -9048,7 +8845,7 @@ def _try_reduce_to_single_slot(equipment, charge_profile_with_type, input_values
     reduced[key] = 1
     try:
         new_time = TimeCalculationEngine.calculate_time(
-            charge_profile_with_type,
+            charge_profile,
             reduced,
             slot_duration_minutes=slot_duration_minutes,
         )
@@ -9057,7 +8854,6 @@ def _try_reduce_to_single_slot(equipment, charge_profile_with_type, input_values
     if new_time <= 0 or new_time > slot_duration_minutes:
         return None
     return (reduced, new_time)
-
 
 def _find_one_available_slot_in_window(
     equipment, user_type, is_admin, visible_week_start=None, visible_week_end=None, booking_user=None
@@ -9095,7 +8891,6 @@ def _find_one_available_slot_in_window(
                 continue
         return (slot.id, slot)
     return None
-
 
 def _find_alternative_available_slots(
     equipment, required_minutes, user_type, is_admin, visible_week_start=None, visible_week_end=None, booking_user=None
@@ -9153,7 +8948,6 @@ def _find_alternative_available_slots(
     slot_ids = [s.id for s in collected]
     return (slot_ids, DailySlot.objects.filter(id__in=slot_ids).order_by("start_datetime"))
 
-
 def _serialize_booked_daily_slots_for_booking_response(slots):
     """
     Minimal JSON for successful book-equipment responses. Avoids full DailySlotSerializer
@@ -9195,7 +8989,6 @@ def _serialize_booked_daily_slots_for_booking_response(slots):
         )
     return rows
 
-
 def _create_booking_attempt_log(
     request,
     equipment,
@@ -9222,7 +9015,6 @@ def _create_booking_attempt_log(
         )
     except Exception as e:
         logger.warning("Failed to create booking attempt log: %s", e)
-
 
 def _schedule_unsuccessful_booking_waitlist_email(
     booking_user, equipment, position: int, failure_reason: str = ""
@@ -9267,7 +9059,6 @@ def _schedule_unsuccessful_booking_waitlist_email(
         daemon=True,
         name=f"waitlist-booking-email-{uid}-{eid}",
     ).start()
-
 
 def _enrich_failed_booking_response(
     equipment,
@@ -9328,7 +9119,6 @@ def _enrich_failed_booking_response(
         logger.warning("Waitlist add/enrich failed: %s", e)
     return payload
 
-
 def _require_admin_panel(request):
     """Return True if request.user is admin-panel user (admin, manager, operator, finance) or staff."""
     if not request.user or not request.user.is_authenticated:
@@ -9336,7 +9126,6 @@ def _require_admin_panel(request):
     if getattr(request.user, "is_staff", False):
         return True
     return getattr(request.user, "user_type", None) in UserType.get_admin_panel_codes()
-
 
 def _supply_chain_role_permitted(user, role: str) -> bool:
     """When roles are assigned in DB, restrict step to those users (Admin always allowed)."""
@@ -9347,7 +9136,6 @@ def _supply_chain_role_permitted(user, role: str) -> bool:
     if not UserEquipmentSupplyChainRole.objects.filter(role=role).exists():
         return True
     return UserEquipmentSupplyChainRole.objects.filter(user=user, role=role).exists()
-
 
 def _user_can_view_equipment_lifecycle(request, equipment: Equipment) -> bool:
     if not _require_admin_panel(request):
@@ -9360,14 +9148,12 @@ def _user_can_view_equipment_lifecycle(request, equipment: Equipment) -> bool:
         return True
     return False
 
-
 def _user_can_edit_equipment_lifecycle(request, equipment: Equipment) -> bool:
     if not _require_admin_panel(request):
         return False
     if request.user.user_type == UserType.ADMIN:
         return True
     return InventoryRequest.is_user_authorized_for_equipment(request.user, equipment)
-
 
 def _user_can_record_equipment_expense(request, equipment: Equipment) -> bool:
     if not _require_admin_panel(request):
@@ -9382,7 +9168,6 @@ def _user_can_record_equipment_expense(request, equipment: Equipment) -> bool:
         return True
     return False
 
-
 def _user_can_initiate_write_off(request, equipment: Equipment) -> bool:
     if not _require_admin_panel(request):
         return False
@@ -9390,14 +9175,12 @@ def _user_can_initiate_write_off(request, equipment: Equipment) -> bool:
         return True
     return InventoryRequest.is_user_authorized_for_equipment(request.user, equipment)
 
-
 def _user_can_procurement_oic_act(request, equipment: Equipment) -> bool:
     if not _require_admin_panel(request):
         return False
     if request.user.user_type == UserType.ADMIN:
         return True
     return InventoryRequest.is_user_authorized_for_equipment(request.user, equipment)
-
 
 def _ensure_procurement_office_seen_expense(procurement: ProcurementRequest, created_by: User) -> None:
     """Create one PROCUREMENT_LINKED expense when procurement closes; no-op if already linked."""
@@ -9424,7 +9207,6 @@ def _ensure_procurement_office_seen_expense(procurement: ProcurementRequest, cre
         created_by=created_by,
     )
 
-
 def _lifecycle_accessible_equipment_ids(user) -> set[int]:
     if not user or not user.is_authenticated:
         return set()
@@ -9440,7 +9222,6 @@ def _lifecycle_accessible_equipment_ids(user) -> set[int]:
     ids.update(delegated_ids)
     ids.update(EquipmentOperator.objects.filter(operator=user).values_list("equipment_id", flat=True))
     return ids
-
 
 def _upsert_equipment_booking_requester_group_member(equipment: Equipment, booking_user) -> None:
     """
@@ -9477,7 +9258,6 @@ def _upsert_equipment_booking_requester_group_member(equipment: Equipment, booki
     )
     # If an old link exists but points to a different UserGroup, keep existing (do not rewrite).
     UserGroupMember.objects.get_or_create(user_group=user_group, user=booking_user)
-
 
 def _schedule_equipment_booking_requester_group_upsert(equipment_pk: int, user_pk: int) -> None:
     """Defer UserGroup membership work until after commit — keeps row-lock window shorter."""
@@ -9518,7 +9298,6 @@ def _schedule_equipment_booking_requester_group_upsert(equipment_pk: int, user_p
             )
 
     transaction.on_commit(_start)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -9568,7 +9347,6 @@ def bulk_email_recipients(request):
             "name": slot.booking.user.name or slot.booking.user.email or email,
         })
     return Response({"recipients": recipients}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -9641,7 +9419,6 @@ def send_bulk_email(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 def _send_completion_email_with_attachments(booking, result_files, context_extra=None):
     """
@@ -9742,7 +9519,6 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
                 logger.warning(f"Could not attach result file {bf.pk}: {e}")
     email.send(fail_silently=False)
 
-
 def _try_complete_booking_on_sample_analyzed(booking, acting_user) -> bool:
     """
     When staff sets Sample Lifecycle to Analyzed (COMPLETED trace), mirror Actions → Complete for PENDING/BOOKED:
@@ -9775,7 +9551,6 @@ def _try_complete_booking_on_sample_analyzed(booking, acting_user) -> bool:
             booking.booking_id,
         )
     return True
-
 
 def _build_sample_notice_context(booking):
     """Build common sample notice context for completion/results emails."""
@@ -9815,7 +9590,6 @@ def _build_sample_notice_context(booking):
         "sample_preserve_no_url": no_url,
     }
 
-
 def _append_sample_notice_plaintext(message, sample_notice_ctx):
     """Append sample collection notice and external-user action links to plain text email."""
     if not message:
@@ -9843,7 +9617,6 @@ def _append_sample_notice_plaintext(message, sample_notice_ctx):
         )
     return message + "\n" + "\n".join(lines)
 
-
 def _append_sample_notice_html(html_message, sample_notice_ctx):
     """Append sample collection notice and external-user action buttons to HTML email."""
     deadline = html.escape(sample_notice_ctx.get("sample_collection_deadline_display") or "")
@@ -9869,7 +9642,6 @@ def _append_sample_notice_html(html_message, sample_notice_ctx):
     if html_message:
         return html_message + notice_html
     return f"<html><body>{notice_html}</body></html>"
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -10006,7 +9778,6 @@ def complete_booking(request, booking_id):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def refund_booking(request, booking_id):
@@ -10076,7 +9847,6 @@ def refund_booking(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -10195,7 +9965,6 @@ def mark_booking_not_utilized(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 def refund_booking_internal(booking, refund_notes, performed_by):
     """
     Refund a booking (free slots, credit wallet, set REFUNDED, create event, send notifications).
@@ -10306,7 +10075,6 @@ def refund_booking_internal(booking, refund_notes, performed_by):
     except Exception as e:
         logger.warning("Failed to notify waitlist after refund for equipment %s: %s", booking.equipment.code, e)
 
-
 def _reverse_reward_points_for_booking(booking, actor, note_prefix):
     points_used = Decimal(str(getattr(booking, "reward_points_used", 0) or "0"))
     if points_used <= 0:
@@ -10330,7 +10098,6 @@ def _reverse_reward_points_for_booking(booking, actor, note_prefix):
         description=f"{note_prefix} {booking_display_id_for_email(booking)}",
         created_by=actor,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -10387,7 +10154,6 @@ def absent_booking(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -10541,7 +10307,6 @@ def extend_booking_operator_absent_hold(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def booking_maintenance_disruption(request, booking_id):
@@ -10601,7 +10366,6 @@ def booking_maintenance_disruption(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -10676,7 +10440,6 @@ def booking_other_disruption(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -10881,7 +10644,6 @@ def reschedule_booking(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def cancel_booking(request, booking_id):
@@ -10984,7 +10746,6 @@ def cancel_booking(request, booking_id):
 
     return Response(response_data, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def partial_cancel_preview(request, booking_id):
@@ -11051,7 +10812,6 @@ def partial_cancel_preview(request, booking_id):
     preview["equipment_profile_type"] = profile_type
 
     return Response(preview, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -11203,7 +10963,6 @@ def user_cancel_booking(request, booking_id):
 
     return Response(response_data, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def request_booking_cancellation(request, booking_id):
@@ -11333,7 +11092,6 @@ def request_booking_cancellation(request, booking_id):
             {"error": f"Error creating cancellation request: {str(e)}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -11631,10 +11389,8 @@ def user_reschedule_booking(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 # S3 prefix under which booking result folders live; search all subfolders for {virtual_booking_id}/
 S3_RESULTS_PREFIX = "Results"
-
 
 def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600):
     """List objects in S3 under Results/ (any folder/subfolder) where a path segment equals virtual_booking_id.
@@ -11687,7 +11443,6 @@ def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600):
         logger.warning("S3 list Results for %s failed: %s", virtual_booking_id, e)
         return None, []
 
-
 def _get_s3_client_and_results_keys(virtual_booking_id):
     """Return (client, bucket, list of (key, relative_name)) for streaming; (None, None, []) on error."""
     from django.conf import settings
@@ -11721,7 +11476,6 @@ def _get_s3_client_and_results_keys(virtual_booking_id):
         logger.warning("S3 list keys for %s failed: %s", virtual_booking_id, e)
         return None, None, []
 
-
 def _apply_results_available_event_and_completed_status(booking):
     """DB-only: audit that results are available. Caller must hold row lock and verified notified_at is unset."""
     detected_at = timezone.now()
@@ -11734,7 +11488,6 @@ def _apply_results_available_event_and_completed_status(booking):
         created_by=booking.user,
         send_notification=False,
     )
-
 
 def _send_results_available_push_and_email(booking):
     """Push + branded results-available email (same layout family as booking confirmation)."""
@@ -11826,7 +11579,6 @@ def _send_results_available_push_and_email(booking):
     except Exception as e:
         logger.warning("Results-available email failed for booking %s: %s", booking.booking_id, e)
 
-
 def _notify_user_results_available_by_id(booking_id: int):
     """Idempotent: notify once per booking (results_available_notified_at). Safe for concurrent tasks."""
     from django.utils import timezone as dj_tz
@@ -11861,7 +11613,6 @@ def _notify_user_results_available_by_id(booking_id: int):
     fresh = Booking.objects.select_related("user", "equipment").get(booking_id=booking_id)
     _send_results_available_push_and_email(fresh)
 
-
 def _schedule_notify_user_results_available(booking_id: int):
     """Queue notify after HTTP response; never block the client on SMTP/push."""
     try:
@@ -11890,7 +11641,6 @@ def _schedule_notify_user_results_available(booking_id: int):
                 close_old_connections()
 
         threading.Thread(target=_run, daemon=True).start()
-
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
@@ -11952,7 +11702,6 @@ def update_booking_istem_fbr(request, booking_id):
     )
     _notify_oic_istem_fbr_submitted(booking)
     return Response({"message": "FBR submitted. An Officer in Charge will verify it on I-STEM.", "booking": BookingSerializer(booking).data})
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -12035,7 +11784,6 @@ def review_booking_istem_fbr(request, booking_id):
         {"error": 'Invalid action. Use "execute" or "invalidate".'},
         status=status.HTTP_400_BAD_REQUEST,
     )
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -12140,7 +11888,6 @@ def booking_results_download(request, booking_id):
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def booking_results(request, booking_id):
@@ -12213,7 +11960,6 @@ def booking_results(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 def _booking_results_access_denied(request, booking):
     """Shared auth/gate checks for single-file result downloads. Returns Response or None."""
     if booking.user != request.user and not check_operator_permission(request.user):
@@ -12246,7 +11992,6 @@ def _booking_results_access_denied(request, booking):
                 status=status.HTTP_403_FORBIDDEN,
             )
     return None
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -12297,7 +12042,6 @@ def booking_result_attachment_download(request, booking_id, attachment_id):
     response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
     return response
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def booking_result_file_download(request, booking_id, file_id):
@@ -12324,7 +12068,6 @@ def booking_result_file_download(request, booking_id, file_id):
     response = FileResponse(brf.file.open("rb"), content_type=content_type)
     response["Content-Disposition"] = f'attachment; filename="{name}"'
     return response
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -12364,7 +12107,6 @@ def list_booking_events(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -12428,14 +12170,12 @@ def create_booking_event_comment(request, booking_id):
         status=status.HTTP_201_CREATED,
     )
 
-
 # User types that can set "Sample Sent" (student, faculty, all external) — not Admin/OIC/Lab/Finance
 def _can_set_sample_sent(user):
     """True if user is student, faculty, or external (can mark Sample Sent)."""
     # helper for sample sent role check
     ut = (getattr(user, 'user_type', None) or '').strip()
     return ut in UserType.get_internal_user_codes() or ut in UserType.get_external_user_codes()
-
 
 def _safe_results_path_component(value: str, fallback: str) -> str:
     """Sanitize a folder-name segment for cross-platform filesystem safety."""
@@ -12445,7 +12185,6 @@ def _safe_results_path_component(value: str, fallback: str) -> str:
     cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", raw)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
     return cleaned or fallback
-
 
 def _resolve_in_analysis_results_folder_spec(booking) -> dict:
     """
@@ -12533,14 +12272,12 @@ def _resolve_in_analysis_results_folder_spec(booking) -> dict:
         "virtual_booking_id": getattr(booking, "virtual_booking_id", "") or "",
     }
 
-
 def _build_in_analysis_results_folder(booking) -> str:
     """
     Backward-compatible helper: return the suggested local path string only.
     Does not create folders on the server.
     """
     return _resolve_in_analysis_results_folder_spec(booking)["suggested_full_path"]
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -12558,7 +12295,6 @@ def booking_sample_trace(request, booking_id):
         {"sample_trace": BookingSampleTraceSerializer(events, many=True, context={"request": request}).data},
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -12783,7 +12519,6 @@ def set_booking_sample_status(request, booking_id):
         )
     return Response(payload, status=status.HTTP_201_CREATED)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def ensure_booking_results_folder(request, booking_id):
@@ -12834,7 +12569,6 @@ def ensure_booking_results_folder(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -12955,7 +12689,6 @@ def set_booking_return_shipping_tracking(request, booking_id: int):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["PATCH", "PUT", "POST"])
 @permission_classes([IsAuthenticated])
 def set_sample_trace_reply(request, booking_id, event_id):
@@ -13000,7 +12733,6 @@ def set_sample_trace_reply(request, booking_id, event_id):
         status=status.HTTP_200_OK,
     )
 
-
 def _clean_single_input_value(value):
     """Convert a single submitted value to a type safe for JSON storage (int, float, bool, str)."""
     if value is None:
@@ -13028,7 +12760,6 @@ def _clean_single_input_value(value):
             return value
     return value
 
-
 def _recalculate_booking_charge_and_adjust_wallet(request, booking):
     """Recalculate charge for a BOOKED booking after input_values update. Saves old charge, updates
     booking with new charge and sets charge_recalculation_pending_amount (negative=refund, positive=extra to pay).
@@ -13042,30 +12773,17 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
     if not charge_profile or not equipment:
         return {}
 
-    class ChargeProfileWithType:
-        def __init__(self, cp, eq):
-            self.equipment = cp.equipment
-            self.user_type = cp.user_type
-            self.is_active = cp.is_active
-            self.primary_unit_charge = cp.primary_unit_charge
-            self.secondary_unit_charge = cp.secondary_unit_charge
-            self.breakpoint = cp.breakpoint
-            self.time_formula = cp.time_formula
-            self.pricing_profile = getattr(cp, "pricing_profile", ChargeProfilePricingProfile.STANDARD)
-            self.profile_type = getattr(eq, "profile_type", None)
-
     safe_input_values = build_safe_input_values_for_charge_calculation(booking.input_values, equipment=equipment)
     from .print_3d_views import apply_print_analysis_to_input_values
     safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
-    charge_profile_with_type = ChargeProfileWithType(charge_profile, equipment)
 
     calculated_time_minutes = TimeCalculationEngine.calculate_time(
-        charge_profile_with_type,
+        charge_profile,
         safe_input_values,
         slot_duration_minutes=equipment.slot_duration_minutes,
     )
     new_charge, charge_breakdown = ChargeCalculationEngine.calculate_charge(
-        charge_profile_with_type,
+        charge_profile,
         safe_input_values,
         calculated_time_minutes,
         selected_parameters=booking.selected_parameters,
@@ -13149,7 +12867,6 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
         "extra_amount": str(pending_amount) if pending_amount is not None and pending_amount > 0 else None,
     }
     return summary
-
 
 @api_view(["PATCH", "PUT"])
 @permission_classes([IsAuthenticated])
@@ -13307,7 +13024,6 @@ def update_booking_input_values(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["PATCH", "POST"])
 @permission_classes([IsAuthenticated])
 def update_booking_atmosphere_sensitive_sample(request, booking_id):
@@ -13438,7 +13154,6 @@ def update_booking_atmosphere_sensitive_sample(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -13592,7 +13307,6 @@ def rate_booking(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def remove_booking_rating(request, booking_id):
@@ -13640,7 +13354,6 @@ def remove_booking_rating(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -13696,7 +13409,6 @@ def process_charge_recalculation_refund(request, booking_id):
         {"message": "Refund processed. Amount credited to wallet.", "booking": BookingSerializer(booking).data},
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -13771,7 +13483,6 @@ def process_charge_recalculation_pay_now(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
-
 # ============== Repeat sample (redesign) ==============
 
 @api_view(["POST"])
@@ -13816,7 +13527,6 @@ def enable_repeat_sample(request, booking_id):
         "repeat_sample_enabled": True,
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_repeat_sample_eligibility(request, booking_id):
@@ -13843,7 +13553,6 @@ def get_repeat_sample_eligibility(request, booking_id):
             "reason": "A repeat booking has already been created for this booking.",
         }, status=status.HTTP_200_OK)
     return Response({"can_create_repeat": True, "reason": None}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14004,7 +13713,6 @@ def create_repeat_booking(request, booking_id):
         "virtual_booking_id": new_booking.virtual_booking_id,
     }, status=status.HTTP_201_CREATED)
 
-
 # ============== Repeat sample request (user + admin/OIC) – legacy ==============
 
 @api_view(["GET"])
@@ -14072,7 +13780,6 @@ def get_repeat_sample_info(request, booking_id):
         "reason": None,
     }, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def request_repeat_sample(request, booking_id):
@@ -14110,7 +13817,6 @@ def request_repeat_sample(request, booking_id):
         "repeat_sample_request": RepeatSampleRequestSerializer(repeat_request).data,
     }, status=status.HTTP_201_CREATED)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_repeat_sample_requests(request):
@@ -14126,7 +13832,6 @@ def list_repeat_sample_requests(request):
         qs = qs.filter(status=status_filter)
     serializer = RepeatSampleRequestSerializer(qs, many=True)
     return Response({"repeat_sample_requests": serializer.data}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14153,7 +13858,6 @@ def reject_repeat_sample_request(request, request_id):
         "message": "Repeat sample request rejected.",
         "repeat_sample_request": RepeatSampleRequestSerializer(repeat_req).data,
     }, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14262,7 +13966,6 @@ def approve_repeat_sample_request(request, request_id):
         "new_booking": BookingSerializer(new_booking).data,
     }, status=status.HTTP_200_OK)
 
-
 # ----- TA Reward Points (duty earn + booking redeem) -----
 
 def _is_admin_or_oic_or_operator(user):
@@ -14274,10 +13977,8 @@ def _is_admin_or_oic_or_operator(user):
         str(UserType.OPERATOR).lower(),
     }
 
-
 def _is_admin_user(user):
     return str(getattr(user, "user_type", "")).lower() == str(UserType.ADMIN).lower()
-
 
 def _can_manage_reward_config_for_equipment(user, equipment_id):
     if not _is_admin_or_oic_or_operator(user):
@@ -14286,7 +13987,6 @@ def _can_manage_reward_config_for_equipment(user, equipment_id):
         return True
     allowed_ids = set(get_equipment_ids_managed_by_oic(user.id))
     return int(equipment_id) in allowed_ids
-
 
 def _build_default_reward_config(equipment=None):
     return TARewardConfig(
@@ -14302,7 +14002,6 @@ def _build_default_reward_config(equipment=None):
         allow_stack_with_other_discounts=True,
     )
 
-
 def _get_reward_config(equipment=None):
     if equipment is not None:
         cfg = TARewardConfig.objects.filter(equipment=equipment).first()
@@ -14313,13 +14012,11 @@ def _get_reward_config(equipment=None):
         return fallback
     return _build_default_reward_config(equipment=equipment)
 
-
 def _get_points_balance(student):
     if not student:
         return Decimal("0.00")
     total = TARewardLedger.objects.filter(student=student).aggregate(v=Sum("points"))["v"] or Decimal("0.00")
     return Decimal(total).quantize(Decimal("0.01"))
-
 
 def _compute_reward_from_duty(duty_log, cfg):
     points = (
@@ -14327,7 +14024,6 @@ def _compute_reward_from_duty(duty_log, cfg):
         + Decimal(duty_log.samples_processed or 0) * Decimal(cfg.points_per_sample)
     )
     return points.quantize(Decimal("0.01"))
-
 
 def _create_earn_ledger_for_duty(duty_log, actor):
     cfg = _get_reward_config(duty_log.equipment)
@@ -14359,7 +14055,6 @@ def _create_earn_ledger_for_duty(duty_log, actor):
         created_by=actor,
     )
 
-
 def _calculate_reward_redemption(total_charge, requested_points, booking_user, equipment=None, lock_ledger=False):
     """
     Return (points_applied, discount_amount, error_message_or_none) for reward redemption.
@@ -14384,7 +14079,6 @@ def _calculate_reward_redemption(total_charge, requested_points, booking_user, e
     discount_amount = quantize_money(points_applied * Decimal(cfg.currency_per_point))
     discount_amount = min(discount_amount, quantize_money(total_charge))
     return points_applied, discount_amount, None
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -14417,7 +14111,6 @@ def my_reward_summary(request):
         },
     })
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def my_reward_ledger(request):
@@ -14430,7 +14123,6 @@ def my_reward_ledger(request):
         qs = qs.filter(source_type=source_type)
     serializer = TARewardLedgerSerializer(qs[:200], many=True)
     return Response({"count": qs.count(), "entries": serializer.data})
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14553,7 +14245,6 @@ def allocate_ta_assignment(request):
 
     return Response({"assignment": TAAssignmentSerializer(assignment).data}, status=status.HTTP_201_CREATED)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_ta_assignments(request):
@@ -14597,7 +14288,6 @@ def list_ta_assignments(request):
     qs = qs.order_by("-allocated_at")
     return Response({"count": qs.count(), "assignments": TAAssignmentSerializer(qs[:300], many=True).data})
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def respond_ta_assignment(request, assignment_id):
@@ -14626,7 +14316,6 @@ def respond_ta_assignment(request, assignment_id):
     else:
         assignment.save(update_fields=["status", "responded_at", "updated_at"])
     return Response({"assignment": TAAssignmentSerializer(assignment).data})
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14664,7 +14353,6 @@ def cancel_ta_assignment(request, assignment_id):
     assignment.status = TAAssignmentStatus.CANCELLED
     assignment.save(update_fields=["status", "updated_at"])
     return Response({"assignment": TAAssignmentSerializer(assignment).data})
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14721,7 +14409,6 @@ def create_ta_duty_log(request):
     )
     return Response({"duty_log": TADutyLogSerializer(duty_log).data}, status=status.HTTP_201_CREATED)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_ta_duty_logs(request):
@@ -14756,7 +14443,6 @@ def list_ta_duty_logs(request):
     serializer = TADutyLogSerializer(qs[:300], many=True)
     return Response({"count": qs.count(), "duty_logs": serializer.data})
 
-
 def _apply_pending_duty_log_amendments_from_request(request, duty_log):
     """
     Optional edits from verify request body (admin/OIC may correct TA-submitted values before approving).
@@ -14780,7 +14466,6 @@ def _apply_pending_duty_log_amendments_from_request(request, duty_log):
             pass
     if "remarks" in data:
         duty_log.remarks = (data.get("remarks") or "").strip() or None
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14820,7 +14505,6 @@ def verify_ta_duty_log(request, duty_log_id):
         "reward_summary": {"points_balance": str(_get_points_balance(duty_log.student))},
     })
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def reject_ta_duty_log(request, duty_log_id):
@@ -14842,7 +14526,6 @@ def reject_ta_duty_log(request, duty_log_id):
         duty_log.remarks = request.data.get("remarks")
     duty_log.save()
     return Response({"duty_log": TADutyLogSerializer(duty_log).data})
-
 
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
@@ -14898,13 +14581,11 @@ def reward_config_view(request):
     serializer.save(equipment=equipment)
     return Response({"config": serializer.data})
 
-
 def _oic_manageable_equipment_qs(user):
     if _is_admin_user(user):
         return Equipment.objects.all().order_by("code", "name")
     allowed_ids = get_equipment_ids_managed_by_oic(user.id)
     return Equipment.objects.filter(equipment_id__in=allowed_ids).order_by("code", "name")
-
 
 def _user_can_manage_oic_equipment(user, equipment_id: int) -> bool:
     if _is_admin_user(user):
@@ -14912,7 +14593,6 @@ def _user_can_manage_oic_equipment(user, equipment_id: int) -> bool:
     if getattr(user, "user_type", None) != UserType.MANAGER:
         return False
     return int(equipment_id) in set(get_equipment_ids_managed_by_oic(user.id))
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -14953,7 +14633,6 @@ def oic_equipment_accessories_list(request):
         )
     return Response({"equipments": equipment_rows})
 
-
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def oic_toggle_equipment_accessory(request, accessory_id):
@@ -14977,7 +14656,6 @@ def oic_toggle_equipment_accessory(request, accessory_id):
         accessory.is_enabled = not accessory.is_enabled
     accessory.save(update_fields=["is_enabled"])
     return Response({"accessory": EquipmentAccessorySerializer(accessory).data})
-
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
@@ -15003,14 +14681,11 @@ def oic_toggle_equipment_additional_accessory(request, accessory_id):
     accessory.save(update_fields=["is_enabled"])
     return Response({"additional_accessory": EquipmentAdditionalAccessorySerializer(accessory).data})
 
-
 def _oic_can_manage_print_materials(user) -> bool:
     return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
 
-
 def _oic_print_3d_equipment_qs(user):
     return _oic_manageable_equipment_qs(user).filter(profile_type=EquipmentProfileType.PRINT_3D)
-
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -15140,7 +14815,6 @@ def oic_print_materials(request):
     )
     return Response({"material": PrintMaterialSerializer(material).data}, status=status.HTTP_201_CREATED)
 
-
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def oic_print_material_detail(request, material_id):
@@ -15244,7 +14918,6 @@ def oic_print_material_detail(request, material_id):
         material.save(update_fields=update_fields)
     return Response({"material": PrintMaterialSerializer(material).data})
 
-
 @api_view(["GET", "PUT", "PATCH"])
 @permission_classes([IsAuthenticated])
 def oic_equipment_group_quotas(request, group_id=None):
@@ -15343,7 +15016,6 @@ def oic_equipment_group_quotas(request, group_id=None):
         }
     )
 
-
 def _serialize_mode_schedule(sched):
     return {
         "id": sched.id,
@@ -15365,7 +15037,6 @@ def _serialize_mode_schedule(sched):
         "updated_at": sched.updated_at.isoformat() if sched.updated_at else None,
     }
 
-
 def _parse_optional_time(raw):
     if raw is None or raw == "":
         return None
@@ -15383,7 +15054,6 @@ def _parse_optional_time(raw):
         return time_cls(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
     except (TypeError, ValueError, IndexError):
         return None
-
 
 def _apply_schedule_display_fields(sched, data):
     if "unavailable_label" in data:
@@ -15403,13 +15073,11 @@ def _apply_schedule_display_fields(sched, data):
     if "end_time" in data:
         sched.end_time = _parse_optional_time(data.get("end_time"))
 
-
 def _user_can_access_multimode_config(user) -> bool:
     """Admin and Officer In Charge (manager) can open Multi-Mode config."""
     if _is_admin_user(user):
         return True
     return getattr(user, "user_type", None) == UserType.MANAGER
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -15480,7 +15148,6 @@ def oic_multi_mode_list(request):
             ],
         }
     )
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -15596,7 +15263,6 @@ def oic_multi_mode_schedule_create(request):
 
     return Response({"schedule": _serialize_mode_schedule(sched)}, status=status.HTTP_201_CREATED)
 
-
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def oic_multi_mode_schedule_detail(request, schedule_id):
@@ -15668,7 +15334,6 @@ def oic_multi_mode_schedule_detail(request, schedule_id):
 
     return Response({"schedule": _serialize_mode_schedule(sched)})
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def admin_adjust_reward_points(request):
@@ -15710,7 +15375,6 @@ def admin_adjust_reward_points(request):
         status=status.HTTP_201_CREATED,
     )
 
-
 # ----- Student equipment operating nomination (semester-wise, supervisor nominates) -----
 
 @api_view(["GET"])
@@ -15735,7 +15399,6 @@ def list_semesters(request):
             for s in qs
         ],
     })
-
 
 def _nomination_to_dict(nom):
     """Build a dict for a StudentEquipmentNomination for API response."""
@@ -15782,7 +15445,6 @@ def _nomination_to_dict(nom):
         "resume_filename": resume_filename,
         "has_resume": bool(nom.resume),
     }
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -15901,7 +15563,6 @@ def create_equipment_nomination(request):
         logger.warning("Failed to send nomination intimation email to student %s: %s", student.email, e)
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_201_CREATED)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_my_nominations_as_supervisor(request):
@@ -15923,7 +15584,6 @@ def list_my_nominations_as_supervisor(request):
     qs = qs.order_by("-nominated_at")
     return Response({"nominations": [_nomination_to_dict(n) for n in qs]})
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_my_nominations_as_student(request):
@@ -15937,7 +15597,6 @@ def list_my_nominations_as_student(request):
         "student", "student__department", "supervisor", "equipment", "semester", "approved_by"
     ).order_by("-nominated_at")
     return Response({"nominations": [_nomination_to_dict(n) for n in qs]})
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -15977,7 +15636,6 @@ def submit_nomination_resume(request, nomination_id):
     nom.resume_submitted_at = tz.now()
     nom.save(update_fields=["resume", "resume_submitted_at"])
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -16027,7 +15685,6 @@ def get_nomination_resume(request, nomination_id):
     response["Expires"] = "0"
     return response
 
-
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated])
 def revoke_equipment_nomination(request, nomination_id):
@@ -16050,7 +15707,6 @@ def revoke_equipment_nomination(request, nomination_id):
         )
     nom.delete()
     return Response({"message": "Nomination revoked."}, status=status.HTTP_200_OK)
-
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -16093,7 +15749,6 @@ def list_equipment_nominations_admin(request):
             pass
     qs = qs.order_by("-nominated_at")
     return Response({"nominations": [_nomination_to_dict(n) for n in qs]})
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -16141,7 +15796,6 @@ def approve_equipment_nomination(request, nomination_id):
     except Exception as e:
         logger.warning("Failed to send nomination approved email to student %s: %s", nom.student.email, e)
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -16194,9 +15848,7 @@ def reject_equipment_nomination(request, nomination_id):
         logger.warning("Failed to send nomination rejected email to student %s: %s", nom.student.email, e)
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_200_OK)
 
-
 # ----- TA nomination call (OIC/Admin initiates; email to all Faculty) -----
-
 
 def _academic_year_label_from_semester(semester_obj):
     if semester_obj is None:
@@ -16213,7 +15865,6 @@ def _academic_year_label_from_semester(semester_obj):
     if m_year:
         return m_year.group(1)
     return getattr(semester_obj, "name", "") or getattr(semester_obj, "code", "") or ""
-
 
 def _ta_call_to_dict(call):
     """Build API response dict for an EquipmentOperatingTACall."""
@@ -16238,7 +15889,6 @@ def _ta_call_to_dict(call):
         "created_at": call.created_at.isoformat() if call.created_at else None,
         "email_sent_at": call.email_sent_at.isoformat() if call.email_sent_at else None,
     }
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -16373,7 +16023,6 @@ def create_ta_nomination_call(request):
         "emails_sent_count": sent_count,
     }, status=status.HTTP_201_CREATED)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_ta_nomination_calls(request):
@@ -16402,7 +16051,6 @@ def list_ta_nomination_calls(request):
     qs = qs.order_by("-created_at")
     return Response({"ta_calls": [_ta_call_to_dict(c) for c in qs]})
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_open_ta_calls_faculty(request):
@@ -16420,7 +16068,6 @@ def list_open_ta_calls_faculty(request):
     ).select_related("equipment", "semester").order_by("nomination_deadline")
     return Response({"ta_calls": [_ta_call_to_dict(c) for c in qs]})
 
-
 def _inventory_accessible_equipment_ids(user):
     if not user or not user.is_authenticated:
         return set()
@@ -16435,7 +16082,6 @@ def _inventory_accessible_equipment_ids(user):
     ).values_list("equipment_id", flat=True)
     ids.update(delegated_ids)
     return ids
-
 
 @extend_schema(
     methods=["GET"],
@@ -16483,7 +16129,6 @@ def inventory_items_list(request):
         qs = qs.filter(active=True)
     return Response({"items": InventoryItemSerializer(qs, many=True).data}, status=status.HTTP_200_OK)
 
-
 @extend_schema(
     tags=["Inventory"],
     summary="Get equipment inventory stock",
@@ -16526,7 +16171,6 @@ def equipment_inventory_stock(request, equipment_id):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @extend_schema(
     methods=["GET"],
@@ -16616,7 +16260,6 @@ def inventory_requests(request):
             )
     return Response(InventoryRequestSerializer(inv_req).data, status=status.HTTP_201_CREATED)
 
-
 @extend_schema(
     tags=["Inventory"],
     summary="Approve/reject inventory request",
@@ -16695,7 +16338,6 @@ def inventory_request_decide(request, request_id):
             inv_req.save(update_fields=["status", "updated_at"])
     return Response(InventoryRequestSerializer(inv_req).data, status=status.HTTP_200_OK)
 
-
 @extend_schema(
     tags=["Inventory"],
     summary="Add stock (receipt/opening)",
@@ -16741,7 +16383,6 @@ def inventory_stock_add(request):
         remarks=(request.data.get("remarks") or "").strip(),
     )
     return Response(InventoryTransactionSerializer(tx).data, status=status.HTTP_201_CREATED)
-
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -16806,7 +16447,6 @@ def procurement_requests(request):
         )
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_201_CREATED)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def procurement_request_oic_endorse(request, request_id):
@@ -16841,7 +16481,6 @@ def procurement_request_oic_endorse(request, request_id):
             comments=(request.data.get("comments") or "").strip(),
         )
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -16893,7 +16532,6 @@ def procurement_request_office_verify(request, request_id):
         ProcurementActionLog.objects.create(request=req, action=action, by_user=request.user, comments=(request.data.get("comments") or "").strip())
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def procurement_request_store_approve(request, request_id):
@@ -16931,7 +16569,6 @@ def procurement_request_store_approve(request, request_id):
         req.save()
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def procurement_request_head_approve(request, request_id):
@@ -16961,7 +16598,6 @@ def procurement_request_head_approve(request, request_id):
         req.save()
         ProcurementActionLog.objects.create(request=req, action=action, by_user=request.user, comments=(request.data.get("comments") or "").strip())
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_200_OK)
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -16995,7 +16631,6 @@ def procurement_request_mark_purchase_complete(request, request_id):
         ProcurementActionLog.objects.create(request=req, action=ProcurementActionType.PURCHASE_MARKED_COMPLETE, by_user=request.user, comments=(request.data.get("comments") or "").strip())
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def procurement_request_mark_office_seen(request, request_id):
@@ -17018,7 +16653,6 @@ def procurement_request_mark_office_seen(request, request_id):
         _ensure_procurement_office_seen_expense(req, request.user)
     return Response(ProcurementRequestSerializer(req).data, status=status.HTTP_200_OK)
 
-
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def equipment_lifecycle_equipment_choices(request):
@@ -17036,7 +16670,6 @@ def equipment_lifecycle_equipment_choices(request):
         },
         status=status.HTTP_200_OK,
     )
-
 
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
@@ -17073,7 +16706,6 @@ def equipment_lifecycle_detail(request, equipment_id):
     ser.save()
     return Response(ser.data, status=status.HTTP_200_OK)
 
-
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -17094,7 +16726,6 @@ def equipment_amc_contracts(request, equipment_id):
     ser.is_valid(raise_exception=True)
     obj = ser.save(created_by=request.user)
     return Response(EquipmentAMCContractSerializer(obj).data, status=status.HTTP_201_CREATED)
-
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -17118,7 +16749,6 @@ def equipment_expenses(request, equipment_id):
     ser.is_valid(raise_exception=True)
     obj = ser.save(created_by=request.user)
     return Response(EquipmentExpenseSerializer(obj).data, status=status.HTTP_201_CREATED)
-
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -17171,7 +16801,6 @@ def equipment_write_off_requests(request):
     )
     return Response(EquipmentWriteOffRequestSerializer(wo).data, status=status.HTTP_201_CREATED)
 
-
 def _write_off_office_action(request, wo_id, forward: bool):
     if not _require_admin_panel(request):
         return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
@@ -17198,7 +16827,6 @@ def _write_off_office_action(request, wo_id, forward: bool):
         wo.save()
         EquipmentWriteOffActionLog.objects.create(request=wo, action=act, by_user=request.user, comments=(request.data.get("comments") or "").strip())
     return Response(EquipmentWriteOffRequestSerializer(wo).data, status=status.HTTP_200_OK)
-
 
 def _write_off_store_action(request, wo_id, forward: bool):
     if not _require_admin_panel(request):
@@ -17227,7 +16855,6 @@ def _write_off_store_action(request, wo_id, forward: bool):
         EquipmentWriteOffActionLog.objects.create(request=wo, action=act, by_user=request.user, comments=(request.data.get("comments") or "").strip())
     return Response(EquipmentWriteOffRequestSerializer(wo).data, status=status.HTTP_200_OK)
 
-
 def _write_off_head_action(request, wo_id, approve: bool):
     if not _require_admin_panel(request):
         return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
@@ -17255,13 +16882,11 @@ def _write_off_head_action(request, wo_id, approve: bool):
         EquipmentWriteOffActionLog.objects.create(request=wo, action=act, by_user=request.user, comments=(request.data.get("comments") or "").strip())
     return Response(EquipmentWriteOffRequestSerializer(wo).data, status=status.HTTP_200_OK)
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def equipment_write_off_office_action(request, write_off_id):
     decision = (request.data.get("decision") or "FORWARD").upper()
     return _write_off_office_action(request, write_off_id, forward=decision != "REJECT")
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -17269,13 +16894,11 @@ def equipment_write_off_store_action(request, write_off_id):
     decision = (request.data.get("decision") or "FORWARD").upper()
     return _write_off_store_action(request, write_off_id, forward=decision != "REJECT")
 
-
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def equipment_write_off_head_action(request, write_off_id):
     decision = (request.data.get("decision") or "APPROVE").upper()
     return _write_off_head_action(request, write_off_id, approve=decision != "REJECT")
-
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -17305,7 +16928,6 @@ def equipment_write_off_execute(request, write_off_id):
             comments=(request.data.get("comments") or "").strip(),
         )
     return Response(EquipmentWriteOffRequestSerializer(wo).data, status=status.HTTP_200_OK)
-
 
 @extend_schema(
     tags=["Inventory"],
