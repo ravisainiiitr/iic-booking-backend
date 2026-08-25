@@ -1,7 +1,7 @@
 {
   "phase": "10M",
   "title": "Production code deploy — datetime contract + migration window UI/API",
-  "datetime_utc": "2026-08-25T09:20:00Z",
+  "datetime_utc": "2026-08-25T09:22:06Z",
   "authorization": "User explicit: push changes to production for datetime contract approve + migration window UI",
   "safety": {
     "migrate_run": false,
@@ -18,24 +18,55 @@
     "sha": "6cf24bf24fa2809c6e4287e2baca3b6e24dd5f1b"
   },
   "release_branch": "release/portal-migration-phase10d-10l-datetime-window",
+  "backend_sha": "5b2ffddfe586a43ce8f7e98a8d30c15d8208de69",
+  "frontend_sha": "a5db6765e2f1f66ae6d43ed51eafe6d22a2ae411",
+  "release_tag": "v2.5.3-portal-migration-datetime-window",
+  "push_executed": true,
+  "deploy_executed": true,
+  "deploy_runs": {
+    "backend": "https://github.com/ravisainiiitr/iic-booking-backend/actions/runs/32831398156",
+    "frontend": "https://github.com/ravisainiiitr/iic-booking-frontend/actions/runs/32831370346"
+  },
+  "deploy_log_excerpt": "PASS deployed v2.5.3-portal-migration-datetime-window at 5b2ffdd (no auto-migrate, no provisioning POST)",
+  "verification": {
+    "datetime_contract_endpoint": "401 https://equip.iitr.ac.in/api/portal-migration/admin/datetime-contract/ (exists; auth required)",
+    "admin_state_endpoint": "401 https://equip.iitr.ac.in/api/portal-migration/admin/state/",
+    "phase10l_go_no_go_endpoint": "401 https://equip.iitr.ac.in/api/portal-migration/admin/phase10l-go-no-go/",
+    "frontend_page": "200 https://equip.iitr.ac.in/admin/portal-migration",
+    "frontend_bundle": "/assets/index-QQrvoK3F.js contains Datetime contract, Approve datetime, Migration window, migration_window_end_at, GO / NO-GO",
+    "showmigrations_ro": {
+      "run": "https://github.com/ravisainiiitr/iic-booking-backend/actions/runs/32832194774",
+      "head": "5b2ffddfe586a43ce8f7e98a8d30c15d8208de69",
+      "tag": "v2.5.3-portal-migration-datetime-window",
+      "users_0100": "applied [X]",
+      "users_0101": "pending [ ]",
+      "users_0102": "pending [ ] (adds migration_start_at)",
+      "users_0103": "pending [ ]",
+      "users_0104": "pending (migrate --plan + readiness JSON false)",
+      "schema_error_observed": "column users_portalmigrationstate.migration_start_at does not exist",
+      "nightly_backup": "/home/ubuntu/backups/nightly/nightly-20260825/db/portal.sql.gz (35M)"
+    }
+  },
+  "schema_after_deploy": "OPERATOR_REQUIRED — 0101–0104 pending; migrate NOT run",
   "includes": [
     "users.0101–0104 migration files in image (0104 new; 0101–0103 already on master)",
     "datetime-contract GET/POST API",
     "admin state PATCH migration_start_at / migration_window_end_at",
     "phase readiness / GO-NO-GO endpoints",
-    "legacy equipment/booking mapping APIs"
+    "legacy equipment/booking mapping APIs",
+    "AdminPortalMigration datetime/window/GO-NO-GO UI"
   ],
   "excludes": [
     "RAA / Copilot / R12 / R14 unrelated noise",
     "auto-migrate",
     "Migrate Production workflow"
   ],
-  "deploy_mechanism": "Deploy Backend workflow_dispatch with release_tag (no auto-migrate)",
-  "schema_after_deploy": "OPERATOR_REQUIRED — showmigrations should still list 0101–0104 pending",
-  "frontend_companion": "iic-booking-frontend master push of AdminPortalMigration datetime/window/GO-NO-GO",
-  "push_executed": false,
-  "deploy_executed": false,
-  "release_tag": null,
-  "backend_sha": null,
-  "frontend_sha": null
+  "next_operator_steps": [
+    "Main Admin: open /admin/portal-migration → review Datetime contract → Approve (does not invent dates; enables discovery only)",
+    "Main Admin: set migration_start_at + migration_window_end_at via Migration window UI (operator-supplied ISO)",
+    "Separate auth: AWS backup verify",
+    "Separate auth: showmigrations + migrate --plan; then Migrate Production confirm_migrate=MIGRATE for 0101–0104",
+    "RO discovery only after datetime+window",
+    "Separate T0 authorization (not this deploy)"
+  ]
 }
