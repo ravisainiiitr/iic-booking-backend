@@ -57,8 +57,21 @@ def analyze_booking_conflicts(eligible_rows: list[dict]) -> dict[str, Any]:
             continue
 
         mapping = get_active_mapping_for_old_id(old_eq) if old_eq else None
-        new_eq = mapping.new_equipment if mapping else None
-        new_eq_id = getattr(new_eq, "equipment_id", None) if new_eq else row.get("new_equipment_id")
+        # Prefer discovery-resolved target (capacity-split remapped times already on the row).
+        new_eq_id = row.get("new_equipment_id")
+        new_eq = None
+        if new_eq_id:
+            try:
+                from iic_booking.equipment.models import Equipment
+
+                new_eq = Equipment.objects.filter(pk=int(new_eq_id)).first()
+            except (TypeError, ValueError):
+                new_eq = None
+        if new_eq is None and mapping is not None:
+            new_eq = mapping.new_equipment
+            new_eq_id = getattr(new_eq, "equipment_id", None) if new_eq else None
+        elif new_eq is not None:
+            new_eq_id = getattr(new_eq, "equipment_id", None)
 
         # Legacy vs legacy overlap on same new equipment
         for other_id, o_start, o_end, o_new_eq in seen_intervals:

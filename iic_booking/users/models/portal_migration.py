@@ -435,6 +435,81 @@ class LegacyEquipmentMapping(models.Model):
         return f"old:{self.old_equipment_id}→new:{getattr(self.new_equipment, 'equipment_id', None)} ({self.status})"
 
 
+class LegacyEquipmentCapacitySplitStatus(models.TextChoices):
+    DRAFT = "DRAFT", _("Draft")
+    ACTIVE = "ACTIVE", _("Active")
+    DISABLED = "DISABLED", _("Disabled")
+
+
+class LegacyEquipmentCapacitySplitPolicy(models.TextChoices):
+    """Deterministic booking assignment for 1 legacy calendar → N new machines."""
+
+    TIME_BAND_FOLD = "TIME_BAND_FOLD", _("Time-band fold (TG/DTA)")
+
+
+class LegacyEquipmentCapacitySplit(models.Model):
+    """
+    Capacity split: one legacy equipment calendar → two (or more) new machines.
+
+    TG/DTA policy (TIME_BAND_FOLD):
+      Old overnight slots 00:00/02:15/04:30/06:45 → target_b at 09:00/11:15/13:30/15:45
+      Old daytime slots 09:00/11:15/13:30/15:45 → target_a at same wall-clock
+    """
+
+    old_equipment_id = models.PositiveBigIntegerField(unique=True, db_index=True)
+    old_equipment_code = models.CharField(max_length=64, blank=True, default="")
+    old_equipment_name = models.CharField(max_length=255, blank=True, default="")
+    target_a = models.ForeignKey(
+        "equipment.Equipment",
+        on_delete=models.PROTECT,
+        related_name="legacy_capacity_splits_as_a",
+    )
+    target_b = models.ForeignKey(
+        "equipment.Equipment",
+        on_delete=models.PROTECT,
+        related_name="legacy_capacity_splits_as_b",
+    )
+    policy = models.CharField(
+        max_length=32,
+        choices=LegacyEquipmentCapacitySplitPolicy.choices,
+        default=LegacyEquipmentCapacitySplitPolicy.TIME_BAND_FOLD,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=LegacyEquipmentCapacitySplitStatus.choices,
+        default=LegacyEquipmentCapacitySplitStatus.DRAFT,
+        db_index=True,
+    )
+    notes = models.TextField(blank=True, default="")
+    created_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="legacy_capacity_splits_created",
+    )
+    updated_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="legacy_capacity_splits_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Legacy equipment capacity split")
+        verbose_name_plural = _("Legacy equipment capacity splits")
+
+    def __str__(self) -> str:
+        return (
+            f"split old:{self.old_equipment_id} → "
+            f"A={getattr(self.target_a, 'equipment_id', None)} "
+            f"B={getattr(self.target_b, 'equipment_id', None)} ({self.status})"
+        )
+
+
 class LegacyBookingMigrationBatchStatus(models.TextChoices):
     DRAFT = "DRAFT", _("Draft")
     VALIDATED = "VALIDATED", _("Validated")

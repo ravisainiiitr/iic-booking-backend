@@ -125,29 +125,30 @@ def portal_legacy_equipment_mappings(request):
         table = build_equipment_mapping_table(booking_counts=booking_counts)
         eligible_equipment_ids = {int(k) for k, v in booking_counts.items() if v > 0}
         mapped_in_window = sum(
-            1 for r in table if r.get("mapping_status") == LegacyEquipmentMappingStatus.ACTIVE and int(r.get("legacy_booking_count") or 0) > 0
+            1
+            for r in table
+            if r.get("mapping_status") in (LegacyEquipmentMappingStatus.ACTIVE, "CAPACITY_SPLIT")
+            and int(r.get("legacy_booking_count") or 0) > 0
         )
         not_required_statuses = {
             LegacyEquipmentMappingStatus.DISABLED,
             LegacyEquipmentMappingStatus.RETIRED,
         }
+        mapped_statuses = {LegacyEquipmentMappingStatus.ACTIVE, "CAPACITY_SPLIT"} | not_required_statuses
         unmapped_in_window = sum(
             1
             for r in table
-            if r.get("mapping_status") not in (
-                {LegacyEquipmentMappingStatus.ACTIVE} | not_required_statuses
-            )
+            if r.get("mapping_status") not in mapped_statuses
             and int(r.get("legacy_booking_count") or 0) > 0
         )
         if mapped_filter == "mapped":
-            table = [r for r in table if r.get("mapping_status") == LegacyEquipmentMappingStatus.ACTIVE]
-        elif mapped_filter == "unmapped":
             table = [
                 r
                 for r in table
-                if r.get("mapping_status")
-                not in ({LegacyEquipmentMappingStatus.ACTIVE} | not_required_statuses)
+                if r.get("mapping_status") in (LegacyEquipmentMappingStatus.ACTIVE, "CAPACITY_SPLIT")
             ]
+        elif mapped_filter == "unmapped":
+            table = [r for r in table if r.get("mapping_status") not in mapped_statuses]
         elif mapped_filter in ("not_required", "retired", "disabled"):
             table = [r for r in table if r.get("mapping_status") in not_required_statuses]
         min_bookings = request.GET.get("min_booking_count")
@@ -170,11 +171,21 @@ def portal_legacy_equipment_mappings(request):
             oic_eq = set(get_equipment_ids_managed_by_oic(request.user.id))
             table = [r for r in table if r.get("new_equipment_id") in oic_eq]
         new_equipment = fetch_new_portal_equipment_inventory().get("equipment") or []
+        from iic_booking.users.legacy_ledger.capacity_split import capacity_split_row
+        from iic_booking.users.models.portal_migration import LegacyEquipmentCapacitySplit
+
+        split_rows = [
+            capacity_split_row(s)
+            for s in LegacyEquipmentCapacitySplit.objects.select_related("target_a", "target_b").order_by(
+                "old_equipment_id"
+            )
+        ]
         return Response(
             {
                 "count": qs.count(),
                 "results": rows,
                 "table": table,
+                "capacity_splits": split_rows,
                 "new_equipment_options": new_equipment,
                 "validation_counts": report["counts"],
                 "discovery_counts": discovery.get("counts"),
@@ -327,6 +338,191 @@ def portal_legacy_equipment_mapping_validate(request):
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
     return Response(validate_legacy_equipment_mappings(), status=status.HTTP_200_OK)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def portal_legacy_equipment_capacity_splits(request):
+    """List / create capacity-split mappings (1 legacy → 2 new machines)."""
+    if not _is_main_admin(request.user):
+        return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
+    if not bridge_schema_ready_for_orm():
+        return schema_pending_response(endpoint="equipment-capacity-splits")
+
+    from iic_booking.users.legacy_ledger.capacity_split import (
+        POLICY_SCHEME_LABEL,
+        capacity_split_row,
+        supersede_one_to_one_mapping,
+    )
+    from iic_booking.users.models.portal_migration import (
+        LegacyEquipmentCapacitySplit,
+        LegacyEquipmentCapacitySplitPolicy,
+        LegacyEquipmentCapacitySplitStatus,
+    )
+
+    if request.method == "GET":
+        rows = [
+            capacity_split_row(s)
+            for s in LegacyEquipmentCapacitySplit.objects.select_related("target_a", "target_b").order_by(
+                "old_equipment_id"
+            )
+        ]
+        return Response(
+            {
+                "count": len(rows),
+                "results": rows,
+                "policies": [
+                    {"id": p.value, "label": POLICY_SCHEME_LABEL.get(p.value, p.label)}
+                    for p in LegacyEquipmentCapacitySplitPolicy
+                ],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    data = request.data or {}
+    old_id = data.get("old_equipment_id")
+    target_a_id = data.get("target_a_id") or data.get("target_a")
+    target_b_id = data.get("target_b_id") or data.get("target_b")
+    if old_id is None or target_a_id is None or target_b_id is None:
+        return Response(
+            {"error": "old_equipment_id, target_a_id, and target_b_id are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if int(target_a_id) == int(target_b_id):
+        return Response({"error": "target_a and target_b must be different equipment."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        target_a = Equipment.objects.get(pk=int(target_a_id))
+        target_b = Equipment.objects.get(pk=int(target_b_id))
+    except (ValueError, Equipment.DoesNotExist):
+        return Response({"error": "invalid target_a_id or target_b_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+    policy = str(data.get("policy") or LegacyEquipmentCapacitySplitPolicy.TIME_BAND_FOLD).upper()
+    if policy not in LegacyEquipmentCapacitySplitPolicy.values:
+        return Response({"error": "invalid policy"}, status=status.HTTP_400_BAD_REQUEST)
+    st = str(data.get("status") or LegacyEquipmentCapacitySplitStatus.ACTIVE).upper()
+    if st not in LegacyEquipmentCapacitySplitStatus.values:
+        return Response({"error": "invalid status"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if LegacyEquipmentCapacitySplit.objects.filter(old_equipment_id=int(old_id)).exists():
+        return Response(
+            {"error": "capacity_split_already_exists", "detail": "PATCH the existing split instead."},
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    split = LegacyEquipmentCapacitySplit.objects.create(
+        old_equipment_id=int(old_id),
+        old_equipment_code=str(data.get("old_equipment_code") or ""),
+        old_equipment_name=str(data.get("old_equipment_name") or ""),
+        target_a=target_a,
+        target_b=target_b,
+        policy=policy,
+        status=st,
+        notes=str(data.get("notes") or ""),
+        created_by=request.user,
+        updated_by=request.user,
+    )
+    superseded = 0
+    if st == LegacyEquipmentCapacitySplitStatus.ACTIVE:
+        superseded = supersede_one_to_one_mapping(int(old_id), actor=request.user)
+    payload = capacity_split_row(split)
+    payload["superseded_one_to_one_mappings"] = superseded
+    return Response(payload, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+def portal_legacy_equipment_capacity_split_detail(request, split_id: int):
+    if not _is_main_admin(request.user):
+        return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
+    if not bridge_schema_ready_for_orm():
+        return schema_pending_response(endpoint="equipment-capacity-splits")
+
+    from iic_booking.users.legacy_ledger.capacity_split import (
+        capacity_split_row,
+        supersede_one_to_one_mapping,
+    )
+    from iic_booking.users.models.portal_migration import (
+        LegacyEquipmentCapacitySplit,
+        LegacyEquipmentCapacitySplitPolicy,
+        LegacyEquipmentCapacitySplitStatus,
+    )
+
+    try:
+        split = LegacyEquipmentCapacitySplit.objects.select_related("target_a", "target_b").get(pk=split_id)
+    except LegacyEquipmentCapacitySplit.DoesNotExist:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "GET":
+        return Response(capacity_split_row(split), status=status.HTTP_200_OK)
+
+    if request.method == "DELETE":
+        oid = split.old_equipment_id
+        split.delete()
+        return Response({"ok": True, "deleted": True, "old_equipment_id": oid}, status=status.HTTP_200_OK)
+
+    data = request.data or {}
+    if "target_a_id" in data or "target_a" in data:
+        raw = data.get("target_a_id", data.get("target_a"))
+        try:
+            split.target_a = Equipment.objects.get(pk=int(raw))
+        except (TypeError, ValueError, Equipment.DoesNotExist):
+            return Response({"error": "invalid target_a_id"}, status=status.HTTP_400_BAD_REQUEST)
+    if "target_b_id" in data or "target_b" in data:
+        raw = data.get("target_b_id", data.get("target_b"))
+        try:
+            split.target_b = Equipment.objects.get(pk=int(raw))
+        except (TypeError, ValueError, Equipment.DoesNotExist):
+            return Response({"error": "invalid target_b_id"}, status=status.HTTP_400_BAD_REQUEST)
+    if split.target_a_id == split.target_b_id:
+        return Response({"error": "target_a and target_b must be different equipment."}, status=status.HTTP_400_BAD_REQUEST)
+    if "policy" in data:
+        policy = str(data.get("policy") or "").upper()
+        if policy not in LegacyEquipmentCapacitySplitPolicy.values:
+            return Response({"error": "invalid policy"}, status=status.HTTP_400_BAD_REQUEST)
+        split.policy = policy
+    if "status" in data:
+        st = str(data.get("status") or "").upper()
+        if st not in LegacyEquipmentCapacitySplitStatus.values:
+            return Response({"error": "invalid status"}, status=status.HTTP_400_BAD_REQUEST)
+        split.status = st
+    for field in ("old_equipment_code", "old_equipment_name", "notes"):
+        if field in data:
+            setattr(split, field, str(data.get(field) or ""))
+    split.updated_by = request.user
+    split.save()
+    superseded = 0
+    if split.status == LegacyEquipmentCapacitySplitStatus.ACTIVE:
+        superseded = supersede_one_to_one_mapping(split.old_equipment_id, actor=request.user)
+    payload = capacity_split_row(split)
+    payload["superseded_one_to_one_mappings"] = superseded
+    return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def portal_legacy_equipment_capacity_split_preview(request, split_id: int):
+    """Preview TIME_BAND_FOLD assignment for provided legacy rows (or discovery)."""
+    if not _is_main_admin(request.user):
+        return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
+    if not bridge_schema_ready_for_orm():
+        return schema_pending_response(endpoint="equipment-capacity-splits-preview")
+
+    from iic_booking.users.legacy_ledger.capacity_split import preview_capacity_split_assignments
+    from iic_booking.users.models.portal_migration import LegacyEquipmentCapacitySplit
+
+    try:
+        split = LegacyEquipmentCapacitySplit.objects.select_related("target_a", "target_b").get(pk=split_id)
+    except LegacyEquipmentCapacitySplit.DoesNotExist:
+        return Response({"error": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data or {}
+    rows = data.get("rows") or data.get("legacy_rows") or []
+    if not rows:
+        discovery = run_legacy_booking_discovery([])
+        from iic_booking.users.legacy_ledger.legacy_booking_admin import discovery_rows_flat
+
+        rows = discovery_rows_flat(discovery)
+    return Response(preview_capacity_split_assignments(split, list(rows)), status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])

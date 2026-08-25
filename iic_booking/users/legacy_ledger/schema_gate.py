@@ -1,4 +1,4 @@
-"""Portal-migration schema readiness helpers (pre-0101–0104 safe).
+"""Portal-migration schema readiness helpers (pre-0101–0105 safe).
 
 Production may run application code that references users.0102 fields/tables
 before Migrate Production is authorized. Introspect schema without ORM SELECT
@@ -29,6 +29,7 @@ _0102_TABLES = (
 )
 _0101_TABLES = ("users_migrationbookingsettlement",)
 _0103_TABLES = ("users_migrationnotificationbatch",)
+_0105_TABLES = ("users_legacyequipmentcapacitysplit",)
 
 
 def _pg_columns(table: str) -> set[str]:
@@ -68,6 +69,8 @@ def portal_bridge_schema_status_cached() -> tuple[Any, ...]:
         block_cols = _pg_columns("users_legacybookingblock")
         if "legacy_user_id" not in block_cols:
             pending.append("0104")
+    if any(t not in tables for t in _0105_TABLES):
+        pending.append("0105")
     ready = not pending and not missing_cols and not missing_tables
     return (
         ready,
@@ -102,7 +105,7 @@ def portal_bridge_schema_status() -> dict[str, Any]:
             "Portal migration bridge schema applied."
             if ready
             else (
-                "users.0101–0104 not fully applied on this database. "
+                "users.0101–0105 not fully applied on this database. "
                 "Application code is deployed; Migrate Production is still OPERATOR_REQUIRED. "
                 "Do not invent migration_start_at or run manual ALTER."
             )
@@ -117,17 +120,25 @@ def schema_pending_payload(**extra: Any) -> dict[str, Any]:
     payload = {
         "ok": False,
         "code": "SCHEMA_PENDING",
-        "approval_status": "OPERATOR_REQUIRED",
+        # Not the datetime-contract gate — schema migrate authorization only.
+        "approval_status": "SCHEMA_PENDING",
         "gate": "OPERATOR_REQUIRED",
+        "gate_kind": "SCHEMA_MIGRATE",
         "schema": base,
         "results": [],
         "table": [],
         "count": 0,
         "t0_executed": False,
+        "message": (
+            "Equipment mapping and legacy booking discovery require users.0101–0105. "
+            "Datetime contract approval is separate and does not unlock these pages."
+        ),
         "operator_next_actions": [
-            "Authorize and run Migrate Production for users.0101–0104 (confirm_migrate=MIGRATE)",
+            "Authorize and run Migrate Production for users.0101–0105 (confirm_migrate=MIGRATE)",
             "Then configure migration_start_at / migration_window_end_at (operator-supplied ISO)",
-            "Datetime contract approve is file-based and does not require 0102",
+            "Approve datetime contract on /admin/portal-migration (file-based; does not require 0102)",
+            "Create ACTIVE capacity split for TG/DTA (1→A+B TIME_BAND_FOLD) when needed",
+            "Only then run read-only discovery / use equipment + legacy booking pages",
         ],
     }
     payload.update(extra)

@@ -82,8 +82,9 @@ def classify_discovery_row(norm: dict[str, Any], window_start, window_end) -> st
         return "invalid"
     if not norm["old_equipment_id"]:
         return "unmapped"
-    mapping = get_active_mapping_for_old_id(norm["old_equipment_id"])
-    if not mapping:
+    from iic_booking.users.legacy_ledger.capacity_split import legacy_equipment_is_mapped
+
+    if not legacy_equipment_is_mapped(norm["old_equipment_id"]):
         return "unmapped"
     return "eligible"
 
@@ -118,6 +119,15 @@ def discover_legacy_bookings(
             bucket = classify_discovery_row(norm, window_start, window_end)
         else:
             bucket = "invalid"
+        from iic_booking.users.legacy_ledger.capacity_split import resolve_legacy_booking_target
+
+        resolved = None
+        if norm.get("old_equipment_id") and norm.get("start_at"):
+            resolved = resolve_legacy_booking_target(
+                old_equipment_id=norm["old_equipment_id"],
+                start_at=norm["start_at"],
+                end_at=norm.get("end_at"),
+            )
         mapping = (
             get_active_mapping_for_old_id(norm["old_equipment_id"])
             if norm.get("old_equipment_id")
@@ -127,33 +137,71 @@ def discover_legacy_bookings(
             legacy_employee_id=norm.get("employee_id"),
             legacy_user_id=int(norm["legacy_user_id"]) if norm.get("legacy_user_id") is not None else None,
         )
+        if resolved and resolved.get("ok"):
+            new_eq_id = resolved.get("new_equipment_id")
+            start_iso = resolved.get("start_at")
+            end_iso = resolved.get("end_at")
+            mapping_status = (
+                "CAPACITY_SPLIT"
+                if resolved.get("policy") and resolved.get("policy") != "ONE_TO_ONE"
+                else (mapping.status if mapping else "ACTIVE")
+            )
+        else:
+            new_eq_id = getattr(mapping.new_equipment, "equipment_id", None) if mapping else None
+            start_iso = (
+                norm["start_at"].isoformat() if hasattr(norm["start_at"], "isoformat") else norm["start_at"]
+            )
+            end_iso = norm["end_at"].isoformat() if hasattr(norm["end_at"], "isoformat") else norm["end_at"]
+            mapping_status = mapping.status if mapping else "UNMAPPED"
+            if resolved and resolved.get("needs_review") and bucket == "eligible":
+                bucket = "unmapped"
         entry = {
             "legacy_booking_id": norm["legacy_booking_id"],
             "old_equipment_id": norm["old_equipment_id"],
-            "new_equipment_id": getattr(mapping.new_equipment, "equipment_id", None) if mapping else None,
-            "start_at": norm["start_at"].isoformat() if hasattr(norm["start_at"], "isoformat") else norm["start_at"],
-            "end_at": norm["end_at"].isoformat() if hasattr(norm["end_at"], "isoformat") else norm["end_at"],
+            "new_equipment_id": new_eq_id,
+            "start_at": start_iso,
+            "end_at": end_iso,
             "duration_minutes": norm.get("duration_minutes"),
             "status": norm["status"],
             "amount": str(norm["amount"]),
-            "mapping_status": mapping.status if mapping else "UNMAPPED",
+            "mapping_status": mapping_status,
             "eligibility": bucket,
             "legacy_user_id": norm.get("legacy_user_id"),
             "legacy_employee_id": user_map.get("legacy_employee_id") or "",
             "user_mapping_status": user_map.get("user_mapping_status"),
             "user_mapping_source": user_map.get("user_mapping_source"),
             "resolved_user_id": user_map.get("resolved_user_id"),
+            "capacity_split": (
+                {
+                    "split_id": resolved.get("split_id"),
+                    "band": resolved.get("band"),
+                    "policy": resolved.get("policy"),
+                    "legacy_start_local": resolved.get("legacy_start_local"),
+                    "new_start_local": resolved.get("new_start_local"),
+                    "remapped": resolved.get("remapped"),
+                    "needs_review": resolved.get("needs_review"),
+                    "reason": resolved.get("reason") or "",
+                }
+                if resolved
+                else None
+            ),
         }
-        if bucket == "eligible" and mapping:
-            # soft conflict preview: overlapping ACTIVE blocks on same equipment
-            start = norm["start_at"]
-            end = norm["end_at"]
+        if bucket == "eligible" and new_eq_id:
+            # soft conflict preview: overlapping ACTIVE blocks on assigned equipment
+            from django.utils.dateparse import parse_datetime as _parse_dt
+
+            start = resolved.get("start_at") if resolved and resolved.get("ok") else norm["start_at"]
+            end = resolved.get("end_at") if resolved and resolved.get("ok") else norm["end_at"]
+            if isinstance(start, str):
+                start = _parse_dt(start.replace("Z", "+00:00"))
+            if isinstance(end, str):
+                end = _parse_dt(end.replace("Z", "+00:00"))
             if timezone.is_naive(start):
                 start = timezone.make_aware(start, timezone.get_current_timezone())
             if timezone.is_naive(end):
                 end = timezone.make_aware(end, timezone.get_current_timezone())
             overlaps = LegacyBookingBlock.objects.filter(
-                new_equipment=mapping.new_equipment,
+                new_equipment_id=new_eq_id,
                 status=LegacyBookingBlockStatus.ACTIVE,
                 start_at__lt=end,
                 end_at__gt=start,

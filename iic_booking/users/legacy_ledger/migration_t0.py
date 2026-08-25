@@ -9,6 +9,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.equipment.models import Equipment
 from iic_booking.users.legacy_ledger.booking_bridge import (
     arm_legacy_block,
     discover_legacy_bookings,
@@ -99,19 +100,29 @@ def run_staging_t0(
         armed = 0
         conflicts = 0
         for entry in discovery.get("eligible") or []:
-            mapping_obj = get_active_mapping_for_old_id(entry["old_equipment_id"])
-            if not mapping_obj or not mapping_obj.new_equipment_id:
+            new_eq_id = entry.get("new_equipment_id")
+            equipment = None
+            if new_eq_id:
+                try:
+                    equipment = Equipment.objects.get(pk=int(new_eq_id))
+                except (TypeError, ValueError, Equipment.DoesNotExist):
+                    equipment = None
+            if equipment is None:
+                mapping_obj = get_active_mapping_for_old_id(entry["old_equipment_id"])
+                if mapping_obj and mapping_obj.new_equipment_id:
+                    equipment = mapping_obj.new_equipment
+            if equipment is None:
                 conflicts += 1
                 continue
             start = parse_datetime(str(entry["start_at"])) if isinstance(entry["start_at"], str) else entry["start_at"]
             end = parse_datetime(str(entry["end_at"])) if isinstance(entry["end_at"], str) else entry["end_at"]
             block = arm_legacy_block(
                 legacy_booking_id=int(entry["legacy_booking_id"]),
-                equipment=mapping_obj.new_equipment,
+                equipment=equipment,
                 start_at=start,
                 end_at=end,
                 batch=batch,
-                payload={"staging": True},
+                payload={"staging": True, "capacity_split": entry.get("capacity_split")},
             )
             if block.status == LegacyBookingBlockStatus.ACTIVE:
                 armed += 1

@@ -88,6 +88,7 @@ def discover_upcoming_legacy_week(
             legacy_employee_id=row.get("legacy_employee_id") or row.get("employee_id"),
             legacy_user_id=row.get("legacy_user_id"),
         )
+        # Discovery already applies capacity-split remaps onto start_at / new_equipment_id.
         enriched = {
             "legacy_booking_id": row.get("legacy_booking_id"),
             "legacy_user_id": row.get("legacy_user_id"),
@@ -98,8 +99,11 @@ def discover_upcoming_legacy_week(
             "legacy_status": row.get("status"),
             "charge": row.get("amount"),
             "duration_minutes": row.get("duration_minutes"),
-            "new_equipment_id": getattr(mapping.new_equipment, "equipment_id", None) if mapping else row.get("new_equipment_id"),
-            "equipment_mapping_status": mapping.status if mapping else "UNMAPPED",
+            "new_equipment_id": row.get("new_equipment_id")
+            or (getattr(mapping.new_equipment, "equipment_id", None) if mapping else None),
+            "equipment_mapping_status": row.get("mapping_status")
+            or (mapping.status if mapping else "UNMAPPED"),
+            "capacity_split": row.get("capacity_split"),
             "user_mapping_status": user_map.get("user_mapping_status"),
             "eligibility": row.get("eligibility"),
             "conflict_status": "NONE",

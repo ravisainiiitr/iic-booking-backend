@@ -214,27 +214,72 @@ def build_equipment_mapping_table(
         m.old_equipment_id: m
         for m in LegacyEquipmentMapping.objects.select_related("new_equipment", "updated_by").all()
     }
-    all_ids = sorted(set(legacy_by_id.keys()) | set(mappings.keys()))
+    splits = {}
+    try:
+        from iic_booking.users.models.portal_migration import (
+            LegacyEquipmentCapacitySplit,
+            LegacyEquipmentCapacitySplitStatus,
+        )
+        from iic_booking.users.legacy_ledger.capacity_split import capacity_split_row
+
+        splits = {
+            s.old_equipment_id: s
+            for s in LegacyEquipmentCapacitySplit.objects.select_related("target_a", "target_b").all()
+        }
+    except Exception:
+        splits = {}
+    all_ids = sorted(set(legacy_by_id.keys()) | set(mappings.keys()) | set(splits.keys()))
     rows: list[dict] = []
     for old_id in all_ids:
         m = mappings.get(old_id)
+        split = splits.get(old_id)
         leg = legacy_by_id.get(old_id, {})
         conflict_count = 0
         if m and m.status == LegacyEquipmentMappingStatus.CONFLICT:
             conflict_count = 1
+        if split and split.status == LegacyEquipmentCapacitySplitStatus.ACTIVE:
+            mapping_status = "CAPACITY_SPLIT"
+            new_equipment_id = None
+            new_equipment_code = f"{getattr(split.target_a, 'code', '')}+{getattr(split.target_b, 'code', '')}"
+            new_equipment_name = (
+                f"Split: {getattr(split.target_a, 'name', '')} | {getattr(split.target_b, 'name', '')}"
+            )
+            mapping_id = None
+            split_payload = capacity_split_row(split)
+        else:
+            mapping_status = m.status if m else LegacyEquipmentMappingStatus.UNMAPPED
+            new_equipment_id = getattr(m.new_equipment, "equipment_id", None) if m and m.new_equipment else None
+            new_equipment_code = getattr(m.new_equipment, "code", "") if m and m.new_equipment else ""
+            new_equipment_name = getattr(m.new_equipment, "name", "") if m and m.new_equipment else ""
+            mapping_id = m.id if m else None
+            split_payload = capacity_split_row(split) if split else None
         rows.append(
             {
                 "old_equipment_id": old_id,
-                "old_equipment_name": (m.old_equipment_name if m else leg.get("legacy_equipment_name")) or "",
-                "old_equipment_code": (m.old_equipment_code if m else leg.get("legacy_equipment_code")) or "",
+                "old_equipment_name": (
+                    (m.old_equipment_name if m else None)
+                    or (split.old_equipment_name if split else None)
+                    or leg.get("legacy_equipment_name")
+                    or ""
+                ),
+                "old_equipment_code": (
+                    (m.old_equipment_code if m else None)
+                    or (split.old_equipment_code if split else None)
+                    or leg.get("legacy_equipment_code")
+                    or ""
+                ),
                 "legacy_booking_count": booking_counts.get(old_id, 0),
-                "mapping_id": m.id if m else None,
-                "new_equipment_id": getattr(m.new_equipment, "equipment_id", None) if m and m.new_equipment else None,
-                "new_equipment_code": getattr(m.new_equipment, "code", "") if m and m.new_equipment else "",
-                "new_equipment_name": getattr(m.new_equipment, "name", "") if m and m.new_equipment else "",
-                "mapping_status": m.status if m else LegacyEquipmentMappingStatus.UNMAPPED,
+                "mapping_id": mapping_id,
+                "new_equipment_id": new_equipment_id,
+                "new_equipment_code": new_equipment_code,
+                "new_equipment_name": new_equipment_name,
+                "mapping_status": mapping_status,
+                "capacity_split": split_payload,
                 "conflict_count": conflict_count,
-                "last_updated": m.updated_at.isoformat() if m and m.updated_at else None,
+                "last_updated": (
+                    (split.updated_at.isoformat() if split and split.updated_at else None)
+                    or (m.updated_at.isoformat() if m and m.updated_at else None)
+                ),
             }
         )
     return rows
