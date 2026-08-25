@@ -104,13 +104,15 @@ jobs:
           docker exec "${{ steps.find.outputs.container }}" \
             python manage.py showmigrations users device_provisioning equipment communication remote_analysis sync | tail -n 160
 
-      - name: Ensure Django is up after migrate
+      - name: Restart Django to clear in-process schema cache
         if: steps.find.outputs.mode == 'exec'
         run: |
           set -euo pipefail
           CID="${{ steps.find.outputs.container }}"
           if [ -n "$CID" ]; then
-            docker start "$CID" || true
-            sleep 3
+            # portal_bridge_schema_status uses lru_cache; restart so SCHEMA_PENDING clears.
+            echo "Restarting $CID after migrate..."
+            docker restart "$CID"
+            sleep 8
             docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -i django || true
           fi
