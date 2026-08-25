@@ -1,0 +1,57 @@
+name: Probe Portal Migration Schema Gate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: In-container schema gate + view smoke
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo none)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from rest_framework.test import APIRequestFactory, force_authenticate
+          from iic_booking.users.legacy_ledger.schema_gate import (
+              clear_portal_bridge_schema_cache,
+              portal_bridge_schema_status,
+          )
+          from iic_booking.users.api import portal_legacy_bridge_views as v
+          from iic_booking.users.api import portal_migration_views as pv
+          from iic_booking.users.models.user_type import UserType
+
+          clear_portal_bridge_schema_cache()
+          st = portal_bridge_schema_status()
+          print("SCHEMA", st["code"], "pending=", st["pending_migrations"], "has_start=", st["has_migration_start_at"])
+
+          User = get_user_model()
+          admin = User.objects.filter(user_type=UserType.ADMIN).order_by("id").first()
+          if admin is None:
+              admin = User.objects.filter(is_superuser=True).order_by("id").first()
+          assert admin is not None, "no admin user"
+          factory = APIRequestFactory()
+
+          def hit(view, path, method="get"):
+              req = getattr(factory, method)(path)
+              force_authenticate(req, user=admin)
+              resp = view(req)
+              print(path, resp.status_code, getattr(resp, "data", {}) and (resp.data.get("code") or resp.data.get("approval_status") or resp.data.get("schema", {}).get("code") or list(resp.data.keys())[:4]))
+              assert resp.status_code != 500, (path, resp.status_code, getattr(resp, "data", None))
+              return resp
+
+          hit(v.portal_datetime_contract, "/api/portal-migration/admin/datetime-contract/")
+          hit(v.portal_legacy_equipment_mappings, "/api/portal-migration/admin/equipment-mappings/")
+          hit(v.portal_legacy_bookings, "/api/portal-migration/admin/legacy-bookings/")
+          hit(v.portal_phase10m_go_no_go, "/api/portal-migration/admin/phase10m-go-no-go/")
+          hit(v.portal_phase10l_go_no_go, "/api/portal-migration/admin/phase10l-go-no-go/")
+          hit(pv.portal_migration_dashboard, "/api/portal-migration/admin/dashboard/")
+          print("PROBE_OK")
+          PY
