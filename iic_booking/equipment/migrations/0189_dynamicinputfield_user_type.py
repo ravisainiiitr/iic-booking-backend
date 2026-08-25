@@ -60,6 +60,9 @@ def noop_reverse(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    # PostgreSQL: AddField(default=...) leaves deferred trigger events; AlterUniqueTogether
+    # then fails with "cannot CREATE INDEX ... pending trigger events" inside one transaction.
+    atomic = False
 
     dependencies = [
         ("equipment", "0188_chargeprofile_profile_type"),
@@ -91,6 +94,8 @@ class Migration(migrations.Migration):
                 null=True,
             ),
         ),
+        # Expand shared rows before tightening uniqueness to (equipment, user_type, field_key).
+        migrations.RunPython(expand_input_fields_per_user_type, noop_reverse),
         migrations.AlterUniqueTogether(
             name="dynamicinputfield",
             unique_together={("equipment", "user_type", "field_key")},
@@ -103,5 +108,4 @@ class Migration(migrations.Migration):
                 "verbose_name_plural": "Dynamic Input Fields",
             },
         ),
-        migrations.RunPython(expand_input_fields_per_user_type, noop_reverse),
     ]
