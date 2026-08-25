@@ -36,35 +36,25 @@ def swap_unique_to_include_user_type(apps, schema_editor):
     """
     Drop legacy UNIQUE(equipment_id, field_key) and ensure
     UNIQUE(equipment_id, user_type, field_key) so expand can insert per user type.
+    Never touch the primary key.
     """
     table = "equipment_dynamicinputfield"
     with schema_editor.connection.cursor() as cursor:
+        # Only UNIQUE constraints (contype='u'), never PRIMARY KEY ('p').
         cursor.execute(
             """
-            SELECT constraint_name
-            FROM information_schema.table_constraints
-            WHERE table_schema = current_schema()
-              AND table_name = %s
-              AND constraint_type = 'UNIQUE'
+            SELECT c.conname
+            FROM pg_constraint c
+            JOIN pg_class t ON c.conrelid = t.oid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = current_schema()
+              AND t.relname = %s
+              AND c.contype = 'u'
             """,
             [table],
         )
         for (name,) in cursor.fetchall():
             cursor.execute(f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS "{name}"')
-
-        # Also drop unique indexes that are not constraints (defensive).
-        cursor.execute(
-            """
-            SELECT indexname
-            FROM pg_indexes
-            WHERE schemaname = current_schema()
-              AND tablename = %s
-              AND indexdef ILIKE '%%UNIQUE%%'
-            """,
-            [table],
-        )
-        for (name,) in cursor.fetchall():
-            cursor.execute(f'DROP INDEX IF EXISTS "{name}"')
 
         cursor.execute(
             f'CREATE UNIQUE INDEX IF NOT EXISTS '
