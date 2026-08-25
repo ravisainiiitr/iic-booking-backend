@@ -8,6 +8,11 @@ from rest_framework.response import Response
 
 from iic_booking.users.legacy_ledger.booking_lock import booking_status_payload
 from iic_booking.users.legacy_ledger.reconcile import run_full_reconciliation
+from iic_booking.users.legacy_ledger.schema_gate import (
+    portal_bridge_schema_status,
+    safe_portal_migration_state,
+    schema_pending_payload,
+)
 from iic_booking.users.legacy_ledger.state_machine import (
     IllegalPhaseTransition,
     PHASE_OPERATOR_HINTS,
@@ -44,7 +49,7 @@ def _is_migration_admin(user) -> bool:
 
 
 def _dashboard_payload() -> dict:
-    state = PortalMigrationState.get_solo()
+    state, schema = safe_portal_migration_state()
     recon = run_full_reconciliation()
     exception_qs = LegacyWalletAccountMapping.objects.exclude(
         mapping_status__in=[
@@ -63,6 +68,9 @@ def _dashboard_payload() -> dict:
         health = "DEGRADED"
     mysql_configured = bool((getattr(settings, "OLD_MYSQL_HOST", "") or "").strip())
     fixture_mysql = bool(getattr(settings, "LEGACY_MYSQL_STAGING_FIXTURE_MODE", False))
+    start = getattr(state, "migration_start_at", None)
+    end = getattr(state, "migration_window_end_at", None)
+    last_sync = getattr(state, "last_sync_at", None)
     return {
         "health": health,
         "environment": getattr(settings, "DEPLOYMENT_ENVIRONMENT", "UNKNOWN"),
@@ -78,7 +86,9 @@ def _dashboard_payload() -> dict:
         "old_mysql_connection_status": (
             "STAGING_FIXTURE" if fixture_mysql else ("CONFIGURED" if mysql_configured else "NOT_CONFIGURED")
         ),
-        "last_successful_sync": state.last_sync_at.isoformat() if state.last_sync_at else None,
+        "schema": schema,
+        "schema_gate": schema.get("gate"),
+        "last_successful_sync": last_sync.isoformat() if last_sync else None,
         "last_sync_error": state.last_sync_error,
         "last_sync_batch": state.last_sync_batch,
         "sync_duration_ms": state.last_sync_duration_ms,
@@ -102,15 +112,13 @@ def _dashboard_payload() -> dict:
             "legacy_reconciliation_failures_total": recon["counts"].get("FAIL", 0),
             "sync_duration": state.last_sync_duration_ms,
             "current_watermark": state.last_wallet_txn_watermark,
-            "last_successful_sync": state.last_sync_at.isoformat() if state.last_sync_at else None,
+            "last_successful_sync": last_sync.isoformat() if last_sync else None,
         },
         "next_operator_hint": PHASE_OPERATOR_HINTS.get(state.phase, ""),
-        "booking_migration_mode": state.booking_migration_mode,
-        "migration_start_at": state.migration_start_at.isoformat() if state.migration_start_at else None,
-        "migration_window_end_at": (
-            state.migration_window_end_at.isoformat() if state.migration_window_end_at else None
-        ),
-        "new_portal_url": state.new_portal_url,
+        "booking_migration_mode": getattr(state, "booking_migration_mode", None) or "NORMAL",
+        "migration_start_at": start.isoformat() if start else None,
+        "migration_window_end_at": end.isoformat() if end else None,
+        "new_portal_url": getattr(state, "new_portal_url", "") or "",
         "recent_transitions": list(
             PortalMigrationPhaseTransition.objects.values("from_phase", "to_phase", "actor_email", "created_at")[:10]
         ),
@@ -128,14 +136,56 @@ def portal_booking_status(request):
 def portal_migration_admin_state(request):
     if not _is_migration_admin(request.user):
         return Response({"error": "Admin only."}, status=status.HTTP_403_FORBIDDEN)
-    state = PortalMigrationState.get_solo()
+    schema = portal_bridge_schema_status()
     if request.method == "PATCH":
         data = request.data or {}
+        window_keys = {
+            "migration_start_at",
+            "migration_window_end_at",
+            "booking_migration_mode",
+            "new_portal_url",
+        }
+        if window_keys.intersection(data.keys()) and not schema.get("has_migration_start_at"):
+            return Response(
+                schema_pending_payload(
+                    endpoint="admin/state",
+                    error="SCHEMA_PENDING",
+                    detail=(
+                        "Cannot persist migration window fields until users.0102 is applied "
+                        "(Migrate Production). Do not invent dates or ALTER manually."
+                    ),
+                ),
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         if "phase" in data:
             return Response(
                 {"error": "Use POST /portal-migration/admin/transition/ for explicit phase changes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if not schema.get("has_migration_start_at"):
+            # Pre-0102: update only base columns via QuerySet.update (no ORM SELECT of missing cols).
+            updates = {}
+            if "end_user_booking_enabled" in data:
+                updates["end_user_booking_enabled"] = bool(data.get("end_user_booking_enabled"))
+            if "legacy_ledger_frozen" in data:
+                updates["legacy_ledger_frozen"] = bool(data.get("legacy_ledger_frozen"))
+            if "incremental_sync_enabled" in data:
+                updates["incremental_sync_enabled"] = bool(data.get("incremental_sync_enabled"))
+            if "booking_lock_message" in data:
+                updates["booking_lock_message"] = str(data.get("booking_lock_message") or "")
+            if "booking_opens_at" in data:
+                from django.utils.dateparse import parse_datetime
+
+                raw = data.get("booking_opens_at")
+                updates["booking_opens_at"] = parse_datetime(str(raw)) if raw else None
+            if updates:
+                PortalMigrationState.objects.filter(singleton_key="default").update(**updates)
+            return Response(
+                {**booking_status_payload(request.user), **_dashboard_payload()},
+                status=status.HTTP_200_OK,
+            )
+
+        state = PortalMigrationState.get_solo()
         if "end_user_booking_enabled" in data:
             state.end_user_booking_enabled = bool(data.get("end_user_booking_enabled"))
         if "legacy_ledger_frozen" in data:

@@ -12,12 +12,12 @@ from iic_booking.users.legacy_ledger.datetime_contract import (
     datetime_contract_ui_payload,
     load_datetime_contract,
 )
+from iic_booking.users.legacy_ledger.schema_gate import safe_portal_migration_state
 from iic_booking.users.legacy_ledger.reader import (
     OldMySQLConnectionError,
     OldMySQLNotConfigured,
     OldMySQLReader,
 )
-from iic_booking.users.models.portal_migration import PortalMigrationState
 
 # Flag durations above this for operator review (not auto-reject).
 SUSPICIOUS_DURATION_MINUTES = 24 * 60  # 24h
@@ -29,7 +29,7 @@ def validate_legacy_datetime_readonly() -> dict[str, Any]:
     contract = load_datetime_contract()
     ui = datetime_contract_ui_payload(contract)
     try:
-        state = PortalMigrationState.get_solo()
+        state, _ = safe_portal_migration_state()
         window_start = getattr(state, "migration_start_at", None)
         window_end = getattr(state, "migration_window_end_at", None)
     except Exception:  # noqa: BLE001 — pre-migration schema may lack window columns

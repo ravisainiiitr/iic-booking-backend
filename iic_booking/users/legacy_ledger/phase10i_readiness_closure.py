@@ -201,10 +201,28 @@ def build_datetime_review(
 
 
 def migration_window_status() -> dict[str, Any]:
-    try:
-        from iic_booking.users.models.portal_migration import PortalMigrationState
+    from iic_booking.users.legacy_ledger.schema_gate import (
+        portal_bridge_schema_status,
+        safe_portal_migration_state,
+    )
 
-        state = PortalMigrationState.get_solo()
+    schema = portal_bridge_schema_status()
+    if not schema.get("has_migration_start_at"):
+        return {
+            "configured": False,
+            "start": None,
+            "end": None,
+            "schema": schema,
+            "code": "SCHEMA_PENDING",
+            "operator_action": (
+                "Apply users.0102 via Migrate Production, then set migration_start_at / "
+                "migration_window_end_at (operator-supplied ISO; do not invent dates)"
+            ),
+            "dates_invented": False,
+            "does_not_activate_t0": True,
+        }
+    try:
+        state, _ = safe_portal_migration_state()
         start = getattr(state, "migration_start_at", None)
         end = getattr(state, "migration_window_end_at", None)
         configured = bool(start and end)

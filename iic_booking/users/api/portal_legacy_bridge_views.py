@@ -32,6 +32,13 @@ from iic_booking.users.legacy_ledger.datetime_contract import (
     datetime_contract_ui_payload,
     load_datetime_contract,
 )
+from iic_booking.users.legacy_ledger.schema_gate import (
+    bridge_schema_ready_for_orm,
+    portal_bridge_schema_status,
+    safe_portal_migration_state,
+    schema_pending_payload,
+    schema_pending_response,
+)
 from iic_booking.users.legacy_ledger.legacy_equipment_mapping_import import (
     default_mapping_file_path,
     preview_equipment_mapping_import,
@@ -84,6 +91,22 @@ def portal_legacy_equipment_mappings(request):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
     if request.method == "GET" and not is_oic_or_admin(request.user):
         return Response({"error": "Administrator or OIC access required."}, status=status.HTTP_403_FORBIDDEN)
+
+    if not bridge_schema_ready_for_orm():
+        # Expected until users.0102 — do not 500 on missing LegacyEquipmentMapping table.
+        return schema_pending_response(
+            endpoint="equipment-mappings",
+            datetime_contract=datetime_contract_ui_payload(load_datetime_contract()),
+            new_equipment_options=[],
+            validation_counts={},
+            discovery_counts={},
+            equipment_window_stats={
+                "total_legacy_equipment": 0,
+                "used_in_migration_window": 0,
+                "mapped_in_window": 0,
+                "unmapped_in_window": 0,
+            },
+        )
 
     if request.method == "GET":
         qs = LegacyEquipmentMapping.objects.select_related("new_equipment", "department").all()
@@ -321,7 +344,25 @@ def portal_legacy_migration_overview(request):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
     from iic_booking.users.models import Department
 
-    state = PortalMigrationState.get_solo()
+    state, schema = safe_portal_migration_state()
+    if not bridge_schema_ready_for_orm():
+        return Response(
+            {
+                **schema_pending_payload(endpoint="legacy-overview"),
+                "booking_migration_mode": getattr(state, "booking_migration_mode", "NORMAL") or "NORMAL",
+                "migration_start_at": None,
+                "migration_window_end_at": None,
+                "new_portal_url": getattr(state, "new_portal_url", "") or "",
+                "departments": list(Department.objects.order_by("code").values("id", "code", "name")[:500]),
+                "equipment": [],
+                "mapping_counts": {},
+                "block_counts": {},
+                "batches": [],
+                "reconciliation": {"ok": False, "schema": schema},
+                "note": "SCHEMA_PENDING — mapping/block tables require users.0102.",
+            },
+            status=status.HTTP_200_OK,
+        )
     mapping_counts = validate_legacy_equipment_mappings()["counts"]
     block_counts = {
         st: LegacyBookingBlock.objects.filter(status=st).count()
@@ -480,6 +521,17 @@ def portal_legacy_bookings(request):
     if not is_oic_or_admin(request.user):
         return Response({"error": "Administrator or OIC access required."}, status=status.HTTP_403_FORBIDDEN)
 
+    if not bridge_schema_ready_for_orm():
+        return schema_pending_response(
+            endpoint="legacy-bookings",
+            discovery_counts={},
+            summary={},
+            schema_note="SCHEMA_PENDING — discovery/mapping require users.0102 window columns + tables",
+            conflict_report={"conflict_count": 0, "by_type": {}},
+            read_only=True,
+            scope="global" if _is_main_admin(request.user) else "oic_equipment",
+        )
+
     legacy_rows = []
     if request.method == "POST":
         legacy_rows = (request.data or {}).get("legacy_rows") or []
@@ -540,6 +592,8 @@ def portal_migration_summary_dashboard(request):
     """Phase 10D summary metrics for Main Administrator migration dashboard."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
+    if not bridge_schema_ready_for_orm():
+        return schema_pending_response(endpoint="migration-summary")
     legacy_rows_param = request.GET.get("include_discovery")
     discovery = run_legacy_booking_discovery([]) if legacy_rows_param else {"counts": {}}
     payload = build_migration_summary_dashboard(discovery)
@@ -595,10 +649,13 @@ def portal_datetime_contract(request):
     if not is_oic_or_admin(request.user):
         return Response({"error": "Administrator or OIC access required."}, status=status.HTTP_403_FORBIDDEN)
 
+    schema = portal_bridge_schema_status()
+
     if request.method == "POST":
         if not _is_main_admin(request.user):
             return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
         body = request.data if isinstance(request.data, dict) else {}
+        # File-based approval — does not require users.0102 window columns.
         result = approve_datetime_contract(
             approved_by=str(body.get("approved_by") or request.user.email or request.user.pk),
             approval_reason=str(body.get("approval_reason") or "").strip(),
@@ -607,23 +664,30 @@ def portal_datetime_contract(request):
             actor_user_id=request.user.pk,
             actor_email=getattr(request.user, "email", "") or "",
         )
+        result["schema"] = schema
         if not result.get("ok"):
             return Response(result, status=status.HTTP_400_BAD_REQUEST)
         return Response(result, status=status.HTTP_200_OK)
 
     contract = load_datetime_contract()
     validation_report = None
-    if _is_main_admin(request.user):
+    # Skip MySQL/ORM validation when 0102 columns missing — ProgrammingError poisons ATOMIC_REQUESTS.
+    if _is_main_admin(request.user) and schema.get("has_migration_start_at"):
         try:
             from iic_booking.users.legacy_ledger.legacy_datetime_validation import validate_legacy_datetime_readonly
 
             validation_report = validate_legacy_datetime_readonly()
         except Exception:  # noqa: BLE001 — embed validation when possible; never fail GET
             validation_report = None
-    return Response(
-        datetime_contract_ui_payload(contract, validation_report=validation_report),
-        status=status.HTTP_200_OK,
-    )
+    payload = datetime_contract_ui_payload(contract, validation_report=validation_report)
+    payload["schema"] = schema
+    if not schema.get("ready"):
+        payload["schema_gate"] = "OPERATOR_REQUIRED"
+        payload["schema_note"] = (
+            "Datetime contract is file-based and usable before Migrate Production. "
+            "Migration window persist requires users.0102 (migration_start_at)."
+        )
+    return Response(payload, status=status.HTTP_200_OK)
 
 
 @api_view(["GET", "POST"])
@@ -693,33 +757,44 @@ def portal_phase10g_go_no_go(request):
     """Phase 10G GO/NO-GO dashboard — READ-ONLY. Never activates T0."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.users.legacy_ledger.phase10g_readiness_closure import build_phase10g_final_readiness
+    try:
+        from iic_booking.users.legacy_ledger.phase10g_readiness_closure import build_phase10g_final_readiness
 
-    report = build_phase10g_final_readiness(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        conflicts_resolved_or_excluded=request.GET.get("conflicts_resolved") in ("1", "true", "yes"),
-        explicit_t0_authorization=False,
-    )
-    # Compact dashboard payload — no green for unverified gates
-    matrix = report.get("gate_matrix") or {}
-    return Response(
-        {
-            "phase": "10G",
-            "environment": report.get("release_audit", {}).get("hard_off_runtime", {}).get("DEPLOYMENT_ENVIRONMENT"),
-            "verdict": report.get("verdict"),
-            "t0_executed": False,
-            "production_baseline_sha": report.get("production_baseline_sha"),
-            "backend_local_sha": report.get("backend_local_sha"),
-            "gate_matrix": matrix,
-            "blockers": report.get("blockers"),
-            "datetime_contract": report.get("datetime_contract_review"),
-            "schema": report.get("schema_readiness", {}).get("classification"),
-            "production_safety": report.get("production_safety"),
-            "operator_next_actions": report.get("operator_next_actions"),
-            "audit_mode": "READ_ONLY",
-        },
-        status=status.HTTP_200_OK,
-    )
+        report = build_phase10g_final_readiness(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            conflicts_resolved_or_excluded=request.GET.get("conflicts_resolved") in ("1", "true", "yes"),
+            explicit_t0_authorization=False,
+        )
+        # Compact dashboard payload — no green for unverified gates
+        matrix = report.get("gate_matrix") or {}
+        return Response(
+            {
+                "phase": "10G",
+                "environment": report.get("release_audit", {}).get("hard_off_runtime", {}).get("DEPLOYMENT_ENVIRONMENT"),
+                "verdict": report.get("verdict"),
+                "t0_executed": False,
+                "production_baseline_sha": report.get("production_baseline_sha"),
+                "backend_local_sha": report.get("backend_local_sha"),
+                "gate_matrix": matrix,
+                "blockers": report.get("blockers"),
+                "datetime_contract": report.get("datetime_contract_review"),
+                "schema": report.get("schema_readiness", {}).get("classification") or portal_bridge_schema_status(),
+                "production_safety": report.get("production_safety"),
+                "operator_next_actions": report.get("operator_next_actions"),
+                "audit_mode": "READ_ONLY",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:  # noqa: BLE001 — never 500 GO/NO-GO for schema gaps
+        return Response(
+            schema_pending_payload(
+                endpoint="phase10g-go-no-go",
+                phase="10G",
+                verdict="NOT READY — SCHEMA_PENDING",
+                error=str(exc)[:300],
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
@@ -728,37 +803,49 @@ def portal_phase10i_go_no_go(request):
     """Phase 10I GO/NO-GO dashboard — READ-ONLY. Never activates T0 or approves datetime."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.users.legacy_ledger.phase10i_readiness_closure import (
-        build_datetime_review,
-        build_phase10i_final_readiness,
-    )
+    try:
+        from iic_booking.users.legacy_ledger.phase10i_readiness_closure import (
+            build_datetime_review,
+            build_phase10i_final_readiness,
+        )
 
-    report = build_phase10i_final_readiness(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        datetime_review=build_datetime_review(),
-        release_plan={"reviewed_released": False},
-        explicit_evidence={"explicit_mappings": 0},
-    )
-    return Response(
-        {
-            "phase": "10I",
-            "verdict": report.get("verdict"),
-            "t0_executed": False,
-            "production_baseline_sha": report.get("production_baseline_sha"),
-            "backend_local_sha": report.get("backend_local_sha"),
-            "frontend_local_sha": report.get("frontend_local_sha"),
-            "gate_matrix": report.get("gate_matrix"),
-            "blockers": report.get("blockers"),
-            "hard_refuse_reasons": report.get("hard_refuse_reasons"),
-            "datetime_contract_status": report.get("datetime_contract_status"),
-            "migration_window": report.get("migration_window"),
-            "discovery_status": report.get("discovery_status"),
-            "production_safety": report.get("production_safety"),
-            "operator_next_actions": report.get("operator_next_actions"),
-            "audit_mode": "READ_ONLY",
-        },
-        status=status.HTTP_200_OK,
-    )
+        report = build_phase10i_final_readiness(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            datetime_review=build_datetime_review(),
+            release_plan={"reviewed_released": False},
+            explicit_evidence={"explicit_mappings": 0},
+        )
+        return Response(
+            {
+                "phase": "10I",
+                "verdict": report.get("verdict"),
+                "t0_executed": False,
+                "production_baseline_sha": report.get("production_baseline_sha"),
+                "backend_local_sha": report.get("backend_local_sha"),
+                "frontend_local_sha": report.get("frontend_local_sha"),
+                "gate_matrix": report.get("gate_matrix"),
+                "blockers": report.get("blockers"),
+                "hard_refuse_reasons": report.get("hard_refuse_reasons"),
+                "datetime_contract_status": report.get("datetime_contract_status"),
+                "migration_window": report.get("migration_window"),
+                "discovery_status": report.get("discovery_status"),
+                "production_safety": report.get("production_safety"),
+                "operator_next_actions": report.get("operator_next_actions"),
+                "schema": portal_bridge_schema_status(),
+                "audit_mode": "READ_ONLY",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            schema_pending_payload(
+                endpoint="phase10i-go-no-go",
+                phase="10I",
+                verdict="NOT READY — SCHEMA_PENDING",
+                error=str(exc)[:300],
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
@@ -767,44 +854,56 @@ def portal_phase10j_go_no_go(request):
     """Phase 10J GO/NO-GO — READ-ONLY. Never activates T0, approves datetime, or invents dates."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
-    from iic_booking.users.legacy_ledger.phase10j_readiness_closure import (
-        build_phase10j_final_readiness,
-    )
+    try:
+        from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
+        from iic_booking.users.legacy_ledger.phase10j_readiness_closure import (
+            build_phase10j_final_readiness,
+        )
 
-    report = build_phase10j_final_readiness(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
-        datetime_review=build_datetime_review(),
-        release_plan={"reviewed_released": False},
-        explicit_evidence={"explicit_mappings": 0},
-        schema_migrate_authorized=False,
-        equipment_mapping_authorized=False,
-        discovery_result=None,
-    )
-    return Response(
-        {
-            "phase": "10J",
-            "verdict": report.get("verdict"),
-            "t0_executed": False,
-            "production_baseline_sha": report.get("production_baseline_sha"),
-            "backend_local_sha": report.get("backend_local_sha"),
-            "frontend_local_sha": report.get("frontend_local_sha"),
-            "gate_matrix": report.get("gate_matrix"),
-            "blockers": report.get("blockers"),
-            "hard_refuse_reasons": report.get("hard_refuse_reasons"),
-            "operator_gate_inspection": report.get("operator_gate_inspection"),
-            "datetime_contract_status": report.get("datetime_contract_status"),
-            "migration_window": report.get("migration_window"),
-            "discovery_status": report.get("discovery_status"),
-            "discovery_executed": report.get("discovery_executed"),
-            "production_safety": report.get("production_safety"),
-            "operator_next_actions": report.get("operator_next_actions"),
-            "work_blocked_operator_required": report.get("work_blocked_operator_required"),
-            "audit_mode": "READ_ONLY",
-        },
-        status=status.HTTP_200_OK,
-    )
+        report = build_phase10j_final_readiness(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
+            datetime_review=build_datetime_review(),
+            release_plan={"reviewed_released": False},
+            explicit_evidence={"explicit_mappings": 0},
+            schema_migrate_authorized=False,
+            equipment_mapping_authorized=False,
+            discovery_result=None,
+        )
+        return Response(
+            {
+                "phase": "10J",
+                "verdict": report.get("verdict"),
+                "t0_executed": False,
+                "production_baseline_sha": report.get("production_baseline_sha"),
+                "backend_local_sha": report.get("backend_local_sha"),
+                "frontend_local_sha": report.get("frontend_local_sha"),
+                "gate_matrix": report.get("gate_matrix"),
+                "blockers": report.get("blockers"),
+                "hard_refuse_reasons": report.get("hard_refuse_reasons"),
+                "operator_gate_inspection": report.get("operator_gate_inspection"),
+                "datetime_contract_status": report.get("datetime_contract_status"),
+                "migration_window": report.get("migration_window"),
+                "discovery_status": report.get("discovery_status"),
+                "discovery_executed": report.get("discovery_executed"),
+                "production_safety": report.get("production_safety"),
+                "operator_next_actions": report.get("operator_next_actions"),
+                "work_blocked_operator_required": report.get("work_blocked_operator_required"),
+                "schema": portal_bridge_schema_status(),
+                "audit_mode": "READ_ONLY",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            schema_pending_payload(
+                endpoint="phase10j-go-no-go",
+                phase="10J",
+                verdict="NOT READY — SCHEMA_PENDING",
+                error=str(exc)[:300],
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
@@ -813,46 +912,58 @@ def portal_phase10k_go_no_go(request):
     """Phase 10K GO/NO-GO — READ-ONLY. Never activates T0, approves datetime, invents dates, or migrates."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
-    from iic_booking.users.legacy_ledger.phase10k_readiness_closure import (
-        build_phase10k_final_readiness,
-    )
+    try:
+        from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
+        from iic_booking.users.legacy_ledger.phase10k_readiness_closure import (
+            build_phase10k_final_readiness,
+        )
 
-    report = build_phase10k_final_readiness(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
-        datetime_review=build_datetime_review(),
-        release_plan={"reviewed_released": False},
-        explicit_evidence={"explicit_mappings": 0},
-        schema_migrate_authorized=False,
-        equipment_mapping_authorized=False,
-        discovery_result=None,
-    )
-    return Response(
-        {
-            "phase": "10K",
-            "verdict": report.get("verdict"),
-            "t0_executed": False,
-            "production_baseline_sha": report.get("production_baseline_sha"),
-            "backend_local_sha": report.get("backend_local_sha"),
-            "frontend_local_sha": report.get("frontend_local_sha"),
-            "gate_matrix": report.get("gate_matrix"),
-            "blockers": report.get("blockers"),
-            "hard_refuse_reasons": report.get("hard_refuse_reasons"),
-            "operator_gate_inspection": report.get("operator_gate_inspection"),
-            "datetime_contract_status": report.get("datetime_contract_status"),
-            "migration_window": report.get("migration_window"),
-            "discovery_status": report.get("discovery_status"),
-            "discovery_executed": report.get("discovery_executed"),
-            "users_0102_migration_start_at": report.get("users_0102_migration_start_at"),
-            "raa_booking_regression": report.get("raa_booking_regression"),
-            "production_safety": report.get("production_safety"),
-            "operator_next_actions": report.get("operator_next_actions"),
-            "work_blocked_operator_required": report.get("work_blocked_operator_required"),
-            "audit_mode": "READ_ONLY",
-        },
-        status=status.HTTP_200_OK,
-    )
+        report = build_phase10k_final_readiness(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
+            datetime_review=build_datetime_review(),
+            release_plan={"reviewed_released": False},
+            explicit_evidence={"explicit_mappings": 0},
+            schema_migrate_authorized=False,
+            equipment_mapping_authorized=False,
+            discovery_result=None,
+        )
+        return Response(
+            {
+                "phase": "10K",
+                "verdict": report.get("verdict"),
+                "t0_executed": False,
+                "production_baseline_sha": report.get("production_baseline_sha"),
+                "backend_local_sha": report.get("backend_local_sha"),
+                "frontend_local_sha": report.get("frontend_local_sha"),
+                "gate_matrix": report.get("gate_matrix"),
+                "blockers": report.get("blockers"),
+                "hard_refuse_reasons": report.get("hard_refuse_reasons"),
+                "operator_gate_inspection": report.get("operator_gate_inspection"),
+                "datetime_contract_status": report.get("datetime_contract_status"),
+                "migration_window": report.get("migration_window"),
+                "discovery_status": report.get("discovery_status"),
+                "discovery_executed": report.get("discovery_executed"),
+                "users_0102_migration_start_at": report.get("users_0102_migration_start_at"),
+                "raa_booking_regression": report.get("raa_booking_regression"),
+                "production_safety": report.get("production_safety"),
+                "operator_next_actions": report.get("operator_next_actions"),
+                "work_blocked_operator_required": report.get("work_blocked_operator_required"),
+                "schema": portal_bridge_schema_status(),
+                "audit_mode": "READ_ONLY",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            schema_pending_payload(
+                endpoint="phase10k-go-no-go",
+                phase="10K",
+                verdict="NOT READY — SCHEMA_PENDING",
+                error=str(exc)[:300],
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
@@ -861,49 +972,61 @@ def portal_phase10l_go_no_go(request):
     """Phase 10L GO/NO-GO — READ-ONLY consolidation. Continues independent RO/prep; never T0."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
-    from iic_booking.users.legacy_ledger.phase10l_readiness_closure import (
-        build_phase10l_final_readiness,
-    )
+    try:
+        from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
+        from iic_booking.users.legacy_ledger.phase10l_readiness_closure import (
+            build_phase10l_final_readiness,
+        )
 
-    report = build_phase10l_final_readiness(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
-        datetime_review=build_datetime_review(),
-        release_plan={"reviewed_released": False},
-        explicit_evidence={"explicit_mappings": 0},
-        schema_migrate_authorized=False,
-        equipment_mapping_authorized=False,
-        discovery_result=None,
-    )
-    return Response(
-        {
-            "phase": "10L",
-            "verdict": report.get("verdict"),
-            "t0_executed": False,
-            "production_baseline_sha": report.get("production_baseline_sha"),
-            "backend_local_sha": report.get("backend_local_sha"),
-            "frontend_local_sha": report.get("frontend_local_sha"),
-            "gate_matrix": report.get("gate_matrix"),
-            "blockers": report.get("blockers"),
-            "hard_refuse_reasons": report.get("hard_refuse_reasons"),
-            "operator_gate_inspection": report.get("operator_gate_inspection"),
-            "stage_machine": report.get("stage_machine"),
-            "datetime_contract_status": report.get("datetime_contract_status"),
-            "migration_window": report.get("migration_window"),
-            "discovery_status": report.get("discovery_status"),
-            "discovery_executed": report.get("discovery_executed"),
-            "users_0102_migration_start_at": report.get("users_0102_migration_start_at"),
-            "raa_booking_regression": report.get("raa_booking_regression"),
-            "migration_manifest_status": (report.get("migration_manifest") or {}).get("status"),
-            "production_safety": report.get("production_safety"),
-            "operator_next_actions": report.get("operator_next_actions"),
-            "work_completed_this_phase": report.get("work_completed_this_phase"),
-            "work_blocked_operator_required": report.get("work_blocked_operator_required"),
-            "audit_mode": "READ_ONLY",
-        },
-        status=status.HTTP_200_OK,
-    )
+        report = build_phase10l_final_readiness(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
+            datetime_review=build_datetime_review(),
+            release_plan={"reviewed_released": False},
+            explicit_evidence={"explicit_mappings": 0},
+            schema_migrate_authorized=False,
+            equipment_mapping_authorized=False,
+            discovery_result=None,
+        )
+        return Response(
+            {
+                "phase": "10L",
+                "verdict": report.get("verdict"),
+                "t0_executed": False,
+                "production_baseline_sha": report.get("production_baseline_sha"),
+                "backend_local_sha": report.get("backend_local_sha"),
+                "frontend_local_sha": report.get("frontend_local_sha"),
+                "gate_matrix": report.get("gate_matrix"),
+                "blockers": report.get("blockers"),
+                "hard_refuse_reasons": report.get("hard_refuse_reasons"),
+                "operator_gate_inspection": report.get("operator_gate_inspection"),
+                "stage_machine": report.get("stage_machine"),
+                "datetime_contract_status": report.get("datetime_contract_status"),
+                "migration_window": report.get("migration_window"),
+                "discovery_status": report.get("discovery_status"),
+                "discovery_executed": report.get("discovery_executed"),
+                "users_0102_migration_start_at": report.get("users_0102_migration_start_at"),
+                "raa_booking_regression": report.get("raa_booking_regression"),
+                "migration_manifest_status": (report.get("migration_manifest") or {}).get("status"),
+                "production_safety": report.get("production_safety"),
+                "operator_next_actions": report.get("operator_next_actions"),
+                "work_completed_this_phase": report.get("work_completed_this_phase"),
+                "work_blocked_operator_required": report.get("work_blocked_operator_required"),
+                "schema": portal_bridge_schema_status(),
+                "audit_mode": "READ_ONLY",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            schema_pending_payload(
+                endpoint="phase10l-go-no-go",
+                phase="10L",
+                verdict="NOT READY — SCHEMA_PENDING",
+                error=str(exc)[:300],
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 @api_view(["GET"])
@@ -912,50 +1035,61 @@ def portal_phase10m_go_no_go(request):
     """Phase 10M GO/NO-GO — gate clearance checkpoint. Never T0 / auto-approve / invent dates."""
     if not _is_main_admin(request.user):
         return Response({"error": "Main Administrator only."}, status=status.HTTP_403_FORBIDDEN)
-    from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
-    from iic_booking.users.legacy_ledger.phase10m_readiness_closure import (
-        build_phase10m_final_readiness,
-        maybe_run_production_discovery,
-    )
-    from iic_booking.users.legacy_ledger.phase10j_readiness_closure import inspect_operator_gates
+    try:
+        from iic_booking.users.legacy_ledger.phase10i_readiness_closure import build_datetime_review
+        from iic_booking.users.legacy_ledger.phase10m_readiness_closure import (
+            build_phase10m_final_readiness,
+            maybe_run_production_discovery,
+        )
+        from iic_booking.users.legacy_ledger.phase10j_readiness_closure import inspect_operator_gates
 
-    gates = inspect_operator_gates(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
-    )
-    # API path: only auto-run discovery when gates already cleared (never invent)
-    auto = maybe_run_production_discovery(discovery_allowed=bool(gates.get("discovery_allowed")))
-    report = build_phase10m_final_readiness(
-        backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
-        finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
-        datetime_review=build_datetime_review(),
-        release_plan={"reviewed_released": False},
-        explicit_evidence={"explicit_mappings": 0},
-        schema_migrate_authorized=False,
-        equipment_mapping_authorized=False,
-        discovery_result=None,
-        auto_discovery_result=auto,
-    )
-    return Response(
-        {
-            "phase": "10M",
-            "verdict": report.get("verdict"),
-            "t0_executed": False,
-            "checkpoint": "OPERATOR_GATE_CLEARANCE",
-            "gates_cleared": report.get("gates_cleared"),
-            "gates_not_cleared": report.get("gates_not_cleared"),
-            "gate_clearance": report.get("gate_clearance"),
-            "gate_matrix": report.get("gate_matrix"),
-            "blockers": report.get("blockers"),
-            "hard_refuse_reasons": report.get("hard_refuse_reasons"),
-            "datetime_contract_status": report.get("datetime_contract_status"),
-            "migration_window": report.get("migration_window"),
-            "discovery_status": report.get("discovery_status"),
-            "discovery_executed": report.get("discovery_executed"),
-            "remaining_operator_actions": report.get("remaining_operator_actions"),
-            "production_safety": report.get("production_safety"),
-            "operator_next_actions": report.get("operator_next_actions"),
-            "audit_mode": "READ_ONLY",
-        },
-        status=status.HTTP_200_OK,
-    )
+        gates = inspect_operator_gates(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
+        )
+        auto = maybe_run_production_discovery(discovery_allowed=bool(gates.get("discovery_allowed")))
+        report = build_phase10m_final_readiness(
+            backup_verified=request.GET.get("backup_verified") in ("1", "true", "yes"),
+            finance_reviewed=request.GET.get("finance_reviewed") in ("1", "true", "yes"),
+            datetime_review=build_datetime_review(),
+            release_plan={"reviewed_released": False},
+            explicit_evidence={"explicit_mappings": 0},
+            schema_migrate_authorized=False,
+            equipment_mapping_authorized=False,
+            discovery_result=None,
+            auto_discovery_result=auto,
+        )
+        return Response(
+            {
+                "phase": "10M",
+                "verdict": report.get("verdict"),
+                "t0_executed": False,
+                "checkpoint": "OPERATOR_GATE_CLEARANCE",
+                "gates_cleared": report.get("gates_cleared"),
+                "gates_not_cleared": report.get("gates_not_cleared"),
+                "gate_clearance": report.get("gate_clearance"),
+                "gate_matrix": report.get("gate_matrix"),
+                "blockers": report.get("blockers"),
+                "hard_refuse_reasons": report.get("hard_refuse_reasons"),
+                "datetime_contract_status": report.get("datetime_contract_status"),
+                "migration_window": report.get("migration_window"),
+                "discovery_status": report.get("discovery_status"),
+                "discovery_executed": report.get("discovery_executed"),
+                "remaining_operator_actions": report.get("remaining_operator_actions"),
+                "production_safety": report.get("production_safety"),
+                "operator_next_actions": report.get("operator_next_actions"),
+                "schema": portal_bridge_schema_status(),
+                "audit_mode": "READ_ONLY",
+            },
+            status=status.HTTP_200_OK,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            schema_pending_payload(
+                endpoint="phase10m-go-no-go",
+                phase="10M",
+                verdict="NOT READY — SCHEMA_PENDING",
+                error=str(exc)[:300],
+            ),
+            status=status.HTTP_200_OK,
+        )

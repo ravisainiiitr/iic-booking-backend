@@ -5,12 +5,14 @@ from __future__ import annotations
 from django.conf import settings
 from django.utils import timezone
 
+from iic_booking.users.legacy_ledger.schema_gate import safe_portal_migration_state
 from iic_booking.users.models import UserType
 from iic_booking.users.models.portal_migration import PortalMigrationState
 
 
 def format_booking_lock_message(state: PortalMigrationState | None = None) -> str:
-    state = state or PortalMigrationState.get_solo()
+    if state is None:
+        state, _ = safe_portal_migration_state()
     opens = state.booking_opens_at
     if opens:
         local = timezone.localtime(opens) if timezone.is_aware(opens) else opens
@@ -37,7 +39,7 @@ def end_user_booking_is_locked(user) -> tuple[bool, str]:
     ut = getattr(user, "user_type", None)
     if not (UserType.is_end_user_booking_type(ut) or ut == UserType.OTHER):
         return False, ""
-    state = PortalMigrationState.get_solo()
+    state, _ = safe_portal_migration_state()
     enabled = state.end_user_booking_enabled
     if enabled:
         return False, ""
@@ -61,8 +63,8 @@ def legacy_portal_mutating_booking_blocked() -> tuple[bool, str, str]:
     OLD portal (external) create/reschedule/waitlist/sample gate.
     Returns (blocked, code, message).
     """
-    state = PortalMigrationState.get_solo()
-    mode = (state.booking_migration_mode or "NORMAL").upper()
+    state, _ = safe_portal_migration_state()
+    mode = (getattr(state, "booking_migration_mode", None) or "NORMAL").upper()
     if mode in LEGACY_PORTAL_BOOKING_DISABLED_MODES:
         return (
             True,
@@ -74,7 +76,7 @@ def legacy_portal_mutating_booking_blocked() -> tuple[bool, str, str]:
 
 
 def booking_status_payload(user=None) -> dict:
-    state = PortalMigrationState.get_solo()
+    state, schema = safe_portal_migration_state()
     locked = False
     message = ""
     if user is not None:
@@ -82,8 +84,10 @@ def booking_status_payload(user=None) -> dict:
     else:
         locked = not state.end_user_booking_enabled
         message = format_booking_lock_message(state) if locked else ""
-    mode = (state.booking_migration_mode or "NORMAL").upper()
+    mode = (getattr(state, "booking_migration_mode", None) or "NORMAL").upper()
     old_portal_disabled = mode in LEGACY_PORTAL_BOOKING_DISABLED_MODES
+    start = getattr(state, "migration_start_at", None)
+    end = getattr(state, "migration_window_end_at", None)
     return {
         "end_user_booking_enabled": state.end_user_booking_enabled,
         "locked_for_this_user": locked,
@@ -96,11 +100,10 @@ def booking_status_payload(user=None) -> dict:
         "environment": getattr(settings, "DEPLOYMENT_ENVIRONMENT", "UNKNOWN"),
         # Phase 8B — central migration mode (do not scatter independent booleans)
         "booking_migration_mode": mode,
-        "migration_start_at": state.migration_start_at.isoformat() if state.migration_start_at else None,
-        "migration_window_end_at": (
-            state.migration_window_end_at.isoformat() if state.migration_window_end_at else None
-        ),
-        "new_portal_url": state.new_portal_url or "",
+        "migration_start_at": start.isoformat() if start else None,
+        "migration_window_end_at": end.isoformat() if end else None,
+        "new_portal_url": getattr(state, "new_portal_url", "") or "",
+        "schema_gate": schema.get("gate"),
         # Signal for OLD portal / bridge consumers (this Django app is the NEW portal).
         "legacy_portal_new_booking_disabled": old_portal_disabled,
         "legacy_portal_booking_disabled_code": (
