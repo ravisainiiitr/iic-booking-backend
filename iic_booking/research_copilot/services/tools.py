@@ -499,12 +499,26 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     from iic_booking.equipment.print_3d_views import get_charge_estimate_guest_user
     from iic_booking.users.models.user_type import UserType
 
+    def _eq_pk(equipment) -> int | None:
+        # Support ORM models and lightweight test doubles (id or pk).
+        raw = getattr(equipment, "pk", None)
+        if raw is None:
+            raw = getattr(equipment, "id", None)
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
     equipment_id = arguments.get("equipment_id")
     if not equipment_id:
         return _err("missing_equipment_id", "equipment_id is required")
     try:
         eq = Equipment.objects.get(pk=int(equipment_id))
     except Exception:
+        return _err("equipment_not_found", f"Equipment {equipment_id} not found")
+
+    eq_pk = _eq_pk(eq)
+    if eq_pk is None:
         return _err("equipment_not_found", f"Equipment {equipment_id} not found")
 
     public_mode = bool(arguments.get("public") or arguments.get("anonymous"))
@@ -535,7 +549,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     if not cp:
         return _ok(
             {
-                "equipment_id": eq.pk,
+                "equipment_id": eq_pk,
                 "equipment_name": eq.name,
                 "estimate": None,
                 "note": "No active charge profile found. Open the booking flow for an authoritative estimate.",
@@ -545,7 +559,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                 {
                     "id": "open_book_equipment",
                     "label": f"Review charges — {eq.name}",
-                    "href": f"/book-equipment?equipment={eq.pk}",
+                    "href": f"/book-equipment?equipment={eq_pk}",
                     "enabled": True,
                     "requires_confirmation": not public_mode,
                 }
@@ -602,7 +616,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
         {
             "id": "open_book_equipment",
             "label": f"Review charges — {eq.name}",
-            "href": f"/book-equipment?equipment={eq.pk}",
+            "href": f"/book-equipment?equipment={eq_pk}",
             "enabled": True,
             "requires_confirmation": not public_mode,
             "hint": "Portal calculate is the source of truth for cost.",
@@ -620,7 +634,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
 
     return _ok(
         {
-            "equipment_id": eq.pk,
+            "equipment_id": eq_pk,
             "equipment_name": eq.name,
             "user_type": user_type,
             "profile_type": cp.profile_type,
