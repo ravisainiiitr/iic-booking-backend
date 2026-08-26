@@ -1,4 +1,4 @@
-"""Deterministic intent classification for Copilot V2 Phase A."""
+"""Deterministic intent classification for Copilot V2 Phase A/B."""
 
 from __future__ import annotations
 
@@ -20,6 +20,37 @@ def resolve_intent(text: str) -> ResolvedIntent:
     if len(lower) < 2:
         return ResolvedIntent(intent="empty", deterministic=False)
 
+    # Explicit confirmation of a prepared proposal
+    if lower in {"confirm", "confirm booking", "yes, book it", "yes book it", "proceed", "book this", "confirm cancellation", "confirm cancel", "confirm reschedule"} or (
+        lower.startswith("confirm ") and len(lower) < 40
+    ):
+        return ResolvedIntent("confirm_proposal", True, needs_auth=True)
+
+    # Cancel / reschedule (before generic booking reads)
+    if any(x in lower for x in ("cancel my booking", "cancel booking", "cancel my next", "cancel the booking")):
+        return ResolvedIntent("prepare_cancel", True, needs_auth=True)
+    if any(x in lower for x in ("reschedule", "move my booking", "move my next", "change my booking slot", "find another slot for my booking")):
+        return ResolvedIntent("prepare_reschedule", True, needs_auth=True)
+
+    # Prepare booking (does not execute)
+    if any(
+        x in lower
+        for x in (
+            "book it",
+            "book this",
+            "book the",
+            "book earliest",
+            "book the earliest",
+            "book fesem",
+            "book pxrd",
+            "book xrd",
+            "prepare booking",
+            "i want to book",
+            "make a booking",
+        )
+    ):
+        return ResolvedIntent("prepare_booking", True, needs_auth=True, needs_equipment=True)
+
     # Pending actions
     if any(
         x in lower
@@ -35,7 +66,7 @@ def resolve_intent(text: str) -> ResolvedIntent:
     ):
         return ResolvedIntent("pending_actions", True, needs_auth=True)
 
-    # Wallet
+    # Wallet (read only)
     if any(x in lower for x in ("wallet balance", "my balance", "how much balance", "what is my balance", "what's my balance")):
         return ResolvedIntent("wallet_balance", True, needs_auth=True)
     if any(x in lower for x in ("wallet transaction", "my transaction", "wallet statement", "show my transaction")):
@@ -83,7 +114,22 @@ def resolve_intent(text: str) -> ResolvedIntent:
         return ResolvedIntent("estimate_cost", True, needs_equipment=True)
 
     # Equipment discovery / capabilities
-    if any(x in lower for x in ("what xrd", "what fesem", "what sem", "equipment is available", "facilities", "which equipment", "supports eds", "elemental", "nanoparticle")):
+    if any(
+        x in lower
+        for x in (
+            "what xrd",
+            "what fesem",
+            "what sem",
+            "equipment is available",
+            "facilities",
+            "which equipment",
+            "supports eds",
+            "elemental",
+            "nanoparticle",
+            "i need fesem",
+            "i need xrd",
+        )
+    ):
         return ResolvedIntent("search_equipment", True, needs_equipment=False)
 
     if any(x in lower for x in ("what can", "capability", "capabilities", "sop", "sample prep", "manual", "documentation", "how do i prepare", "hold mean")):

@@ -152,12 +152,16 @@ class DeterministicWithoutLlmTests(SimpleTestCase):
 
     def test_mutation_flags_off(self):
         self.assertFalse(mutations_enabled())
-        prep = booking_mut.prepare_booking_create(user=None, payload={"equipment_id": 1})
-        self.assertFalse(prep["executable"])
+        prep = booking_mut.prepare_booking_create(user=None, equipment_id=1)
+        self.assertFalse(prep.get("ok", True) and prep.get("executable", False))
         blocked = booking_mut.execute_booking_create(
-            user=None, confirmation_token="x", idempotency_key="y", payload={}
+            user=SimpleNamespace(is_authenticated=True, pk=1),
+            proposal_id="x",
+            confirmation_token="y",
+            idempotency_key="z",
         )
         self.assertFalse(blocked["ok"])
+        self.assertIn("DISABLED", str(blocked.get("error") or ""))
 
 
 @override_settings(

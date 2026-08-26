@@ -16,7 +16,11 @@ from iic_booking.research_copilot.services import audit as audit_svc
 from iic_booking.research_copilot.services import conversation as conv_svc
 from iic_booking.research_copilot.services.context_builder import build_context
 from iic_booking.research_copilot.constants import SUGGESTED_PROMPTS
-from iic_booking.research_copilot.throttles import ResearchCopilotToolThrottle, ResearchCopilotUserThrottle
+from iic_booking.research_copilot.throttles import (
+    ResearchCopilotMutationThrottle,
+    ResearchCopilotToolThrottle,
+    ResearchCopilotUserThrottle,
+)
 
 
 def _feature_gate(*, user=None, audit: bool = True):
@@ -200,6 +204,79 @@ def execute_tool(request):
     result = tools_svc.execute_tool(name=name, arguments=arguments, user=request.user)
     code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
     return Response(result, status=code)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotMutationThrottle])
+def confirm_mutation(request):
+    """
+    Explicit confirmation endpoint for Phase B booking mutations.
+
+    Body:
+      proposal_id, confirmation_token, action?, idempotency_key?
+    Flags must be ON for execute; otherwise returns disabled error.
+    """
+    gated = _feature_gate(user=request.user)
+    if gated:
+        return gated
+
+    from iic_booking.research_copilot.services.v2.mutations import booking as booking_mut
+    from iic_booking.research_copilot.services.v2.mutations import proposals as prop_store
+    from iic_booking.research_copilot.services.v2.orchestrator import _exec_to_response
+
+    proposal_id = (request.data.get("proposal_id") or "").strip()
+    confirmation_token = (request.data.get("confirmation_token") or "").strip()
+    action = (request.data.get("action") or "").strip().upper()
+    idempotency_key = (request.data.get("idempotency_key") or "").strip()
+
+    if not proposal_id or not confirmation_token:
+        return Response(
+            {"ok": False, "error": "CONFIRMATION_REQUIRED", "message": "proposal_id and confirmation_token are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    prop = prop_store.get_proposal(proposal_id)
+    if not prop:
+        return Response(
+            {"ok": False, "error": "PROPOSAL_NOT_FOUND", "message": "Proposal not found or expired."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if int(prop.get("user_id") or 0) != int(request.user.pk):
+        return Response(
+            {"ok": False, "error": "PROPOSAL_FORBIDDEN", "message": "You cannot confirm this proposal."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    pending = action or prop.get("action") or "CREATE_BOOKING"
+    if pending == "CANCEL_BOOKING":
+        result = booking_mut.execute_booking_cancel(
+            user=request.user,
+            proposal_id=proposal_id,
+            confirmation_token=confirmation_token,
+            idempotency_key=idempotency_key,
+        )
+    elif pending == "RESCHEDULE_BOOKING":
+        result = booking_mut.execute_booking_reschedule(
+            user=request.user,
+            proposal_id=proposal_id,
+            confirmation_token=confirmation_token,
+            idempotency_key=idempotency_key,
+        )
+    else:
+        result = booking_mut.execute_booking_create(
+            user=request.user,
+            proposal_id=proposal_id,
+            confirmation_token=confirmation_token,
+            idempotency_key=idempotency_key,
+        )
+
+    envelope = _exec_to_response(result)
+    http = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
+    # Disabled flags are not a client error — 403 communicates enablement gate
+    if str(result.get("error") or "").endswith("_DISABLED"):
+        http = status.HTTP_403_FORBIDDEN
+    return Response({**result, "response": envelope}, status=http)
 
 
 @api_view(["GET"])

@@ -2,31 +2,24 @@
 
 | Area | Status |
 |------|--------|
-| Phase A docs | DONE |
-| Feature flags + split throttles | DONE |
-| Intent / equipment / datetime resolvers | DONE |
-| Deterministic read tools | DONE |
-| Conversation orchestration (deterministic-first) | DONE |
-| FE cards + quick-action prompt fix + rate-limit UX | DONE |
-| Phase A acceptance tests | DONE (unit suite green) |
-| Phase B/C mutation scaffolds | DONE — FLAGS OFF |
-| Production mutation enablement | DISABLED |
+| Phase A deterministic reads | READY (prod `v2.5.42.2-copilot-v2-phase-a`) |
+| Phase B booking prepare/confirm/execute code | IMPLEMENTED |
+| Phase B mutation flags | **OFF** |
+| Phase C wallet mutations | OFF (scaffold only) |
 
-## Final gate
+## Final gate (this pass)
 
-**PHASE A READY — MUTATIONS REMAIN DISABLED**
+**PHASE A = READY**  
+**PHASE B = IMPLEMENTED**  
+**PHASE B MUTATIONS = OFF**  
+**PHASE C WALLET MUTATIONS = OFF**
 
-Criteria met:
-- Deterministic FESEM/slots/wallet/bookings path does not require LLM
-- LLM quota is separate from chat ingress; deterministic turns skip LLM bucket
-- Ambiguous equipment returns clarification (no silent wrong pick)
-- Auth-scoped reads reject foreign `user_id`
-- Mutation flags default False; execute returns disabled / NotImplemented
+### Enablement
+Do **not** set `COPILOT_BOOKING_CREATE|CANCEL|RESCHEDULE=true` until controlled E2E on a test account passes
+(see `COPILOT-V2-BOOKING-E2E.md`). Then report:
 
-## Deploy notes
+`READY FOR CONTROLLED PRODUCTION ENABLEMENT`
 
-- Production tag: **`v2.5.42.2-copilot-v2-phase-a`** (hotfix over `.1` Equipment.pk + FESEM token aliases)
-- No schema migration required for Phase A (conversation context uses cache)
-- Backend tag deployed on EC2; FE master includes cards/quick-action fix
-- Do **not** set `COPILOT_BOOKING_*` or `COPILOT_WALLET_*` in production
-- GitHub Actions “Deploy Backend” token was unavailable locally; deploy performed via EC2 SSH checkout of the release tag (same compose path)
+Until then, report:
+
+`PHASE B STATUS: NOT READY` (for enablement) — code shipped with flags OFF is expected.

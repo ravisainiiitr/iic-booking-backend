@@ -606,6 +606,8 @@ def serialize_conversation(c: Conversation, *, include_messages: bool = False) -
 
 
 def bootstrap_payload(*, user) -> dict:
+    from django.conf import settings
+
     from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
 
     ctx = build_context(user)
@@ -619,19 +621,25 @@ def bootstrap_payload(*, user) -> dict:
         "capabilities": ctx.capabilities,
         "llm_provider": configured_provider_name(),
         "command_actions": [
-            {"id": "next_booking", "label": "My next booking", "prompt": "What is my next booking?"},
-            {"id": "my_bookings", "label": "My bookings", "href": "/my-bookings", "prompt": "List my recent bookings."},
-            {"id": "booking_status", "label": "Check booking status", "prompt": "What is the status of my latest booking?"},
-            {"id": "sample_status", "label": "Check sample status", "prompt": "What is the sample status of my latest booking?"},
-            {"id": "results", "label": "Check results", "prompt": "Are results available for my latest completed booking?"},
-            {"id": "find_equipment", "label": "Find equipment", "href": "/equipments", "prompt": "Help me find suitable equipment for my sample."},
-            {"id": "search_slots", "label": "Search available slots", "prompt": "Search available slots for FESEM this week."},
-            {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
-            {"id": "wallet", "label": "Wallet / recharge", "href": "/wallet", "prompt": "What is my wallet balance?"},
+            {"id": "find_equipment", "label": "Find equipment", "prompt": "Help me find suitable equipment for my sample."},
+            {"id": "search_slots", "label": "Find available slots", "prompt": "Search available slots for FESEM this week."},
+            {"id": "estimate_cost", "label": "Estimate cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
+            {"id": "my_bookings", "label": "My bookings", "prompt": "List my recent bookings."},
+            {"id": "next_booking", "label": "Next booking", "prompt": "What is my next booking?"},
+            {"id": "reschedule", "label": "Reschedule booking", "prompt": "Reschedule my next booking."},
+            {"id": "cancel_booking", "label": "Cancel booking", "prompt": "Cancel my next booking."},
+            {"id": "wallet", "label": "Wallet balance", "prompt": "What is my wallet balance?"},
+            {"id": "ra_status", "label": "Remote Analysis", "prompt": "What is my Remote Analysis status?"},
             {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
-            {"id": "software", "label": "Find Analysis Software", "href": "/remote-analysis/software-catalog"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
+        "mutation_flags": {
+            "booking_create": bool(getattr(settings, "COPILOT_BOOKING_CREATE", False)),
+            "booking_cancel": bool(getattr(settings, "COPILOT_BOOKING_CANCEL", False)),
+            "booking_reschedule": bool(getattr(settings, "COPILOT_BOOKING_RESCHEDULE", False)),
+            "wallet_recharge": False,
+            "wallet_credit": False,
+        },
     }
 
 
