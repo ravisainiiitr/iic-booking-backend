@@ -47,6 +47,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
   gettext \
   # entrypoint
   wait-for-it \
+  # Drop privileges after fixing media volume ownership (named volumes are often root-owned)
+  gosu \
   # IST timezone data (defense in depth with Django TIME_ZONE)
   tzdata \
   # cleaning up unused files
@@ -88,10 +90,12 @@ RUN chown django:django ${APP_HOME}
 # Place executables in the environment at the front of the path
 ENV PATH="/app/.venv/bin:$PATH"
 
-USER django
+# Stay root for ENTRYPOINT so named volume production_media can be chown'd, then
+# gosu drops to django before gunicorn/celery (see compose/production/django/entrypoint).
+USER root
 
 RUN DATABASE_URL="" \
   DJANGO_SETTINGS_MODULE="config.settings.test" \
-  python manage.py compilemessages
+  gosu django python manage.py compilemessages
 
 ENTRYPOINT ["/entrypoint"]

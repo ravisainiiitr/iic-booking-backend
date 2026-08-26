@@ -61,7 +61,14 @@ class StorageManager:
         else:
             media = Path(getattr(django_settings, "MEDIA_ROOT", ".") or ".")
             path = media / "remote_analysis" / "workspaces"
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise StorageError(
+                f"Cannot create workspace storage at {path} ({exc}). "
+                "On Docker, ensure the media volume is writable by the django user "
+                "(entrypoint should chown /app/iic_booking/media)."
+            ) from exc
         return path
 
     def archive_root(self) -> Path:
@@ -71,7 +78,13 @@ class StorageManager:
         else:
             media = Path(getattr(django_settings, "MEDIA_ROOT", ".") or ".")
             path = media / "remote_analysis" / "archives"
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise StorageError(
+                f"Cannot create archive storage at {path} ({exc}). "
+                "On Docker, ensure the media volume is writable by the django user."
+            ) from exc
         return path
 
     def absolute_path(self, workspace: AnalysisWorkspace, *parts: str) -> Path:

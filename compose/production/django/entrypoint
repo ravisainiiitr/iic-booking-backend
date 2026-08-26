@@ -4,8 +4,10 @@ set -o errexit
 set -o pipefail
 set -o nounset
 
-# Named volume production_media is often root-owned; ensure the django user can
-# write sync_uploads / remote_analysis workspaces used by DSA + RAA prepare.
+# Named volume production_media is often root-owned after first create / backup restore.
+# Entrypoint must run as root, fix ownership, then drop to django via gosu.
+# Without this, Analysis prepare fails at "Synchronizing input data" with:
+#   [Errno 13] Permission denied: '/app/iic_booking/media/remote_analysis'
 MEDIA_DIR="${APP_HOME:-/app}/iic_booking/media"
 if [ "$(id -u)" = "0" ]; then
   mkdir -p \
@@ -14,6 +16,8 @@ if [ "$(id -u)" = "0" ]; then
     "${MEDIA_DIR}/remote_analysis/uploads" \
     "${MEDIA_DIR}/remote_analysis/archives"
   chown -R django:django "${MEDIA_DIR}" || true
+  chmod -R u+rwX,g+rwX "${MEDIA_DIR}" || true
+  exec gosu django "$@"
 fi
 
 exec "$@"
