@@ -65,6 +65,18 @@ def build_rdp_parameters(
     enable_audio = session.audio_enabled and settings_obj.audio_enabled
     disable_clipboard = not (session.clipboard_enabled and settings_obj.clipboard_enabled)
 
+    # Prefer a moderate default resolution. Do NOT use resize-method=display-update
+    # for portal iframe embeds: when Guacamole's display element briefly reports a
+    # near-zero height, Windows RDP is resized to a few pixels (black screen with a
+    # thin wallpaper strip). Leave resize-method empty so the client scales the
+    # fixed desktop into the viewport instead.
+    width = int(session.display_width or settings_obj.default_display_width or 1280)
+    height = int(session.display_height or settings_obj.default_display_height or 720)
+    if width < 1024:
+        width = 1280
+    if height < 600:
+        height = 720
+
     params: dict[str, Any] = {
         "hostname": hostname,
         "port": port,
@@ -73,8 +85,8 @@ def build_rdp_parameters(
         "domain": domain,
         "security": security,
         "ignore-cert": "true",
-        "width": str(session.display_width or settings_obj.default_display_width),
-        "height": str(session.display_height or settings_obj.default_display_height),
+        "width": str(width),
+        "height": str(height),
         "color-depth": str(session.color_depth or settings_obj.default_color_depth),
         "enable-drive": "true" if enable_drive else "false",
         "enable-audio": "true" if enable_audio else "false",
@@ -83,7 +95,8 @@ def build_rdp_parameters(
         "disable-paste": "true" if disable_clipboard else "",
         "enable-printing": "false",
         "disable-print": "true",
-        "resize-method": "display-update",
+        # intentional empty — see comment above
+        "resize-method": "",
     }
     if session.file_transfer_policy == "UPLOAD_ONLY":
         params["disable-download"] = "true"

@@ -688,6 +688,25 @@ class SessionOrchestrator:
             # Resolve live dataSource as admin before minting the ephemeral user token.
             client.authenticate()
             data_source = client._data_source or self.settings.guacamole_data_source or "postgresql"
+            # Re-apply RDP parameters so older connections pick up resize-method fixes.
+            try:
+                from iic_booking.remote_analysis.tunnel_models import TunnelSession
+                from iic_booking.remote_analysis.guacamole.connection import build_rdp_parameters
+
+                tunnel = (
+                    TunnelSession.objects.filter(desktop_session=session)
+                    .order_by("-created_at")
+                    .first()
+                )
+                params = build_rdp_parameters(session, self.settings, tunnel=tunnel)
+                ConnectionManager(self.settings).client.update_connection_parameters(
+                    str(conn.guacamole_connection_id),
+                    parameters=params,
+                    name=(conn.metadata or {}).get("connection_name") or f"ra-session-{session.id.hex[:12]}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Guacamole parameter refresh skipped session=%s", session.id)
+
             temp_password = ConnectionManager(self.settings).ephemeral_password(conn)
             if not temp_password:
                 raise SessionError("Ephemeral Guacamole credentials missing — recreate session", code="guac_creds")
