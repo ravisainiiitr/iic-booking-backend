@@ -1,0 +1,17 @@
+{
+  "phase": "D.1",
+  "corpus_count": 118,
+  "corpus_smoke": {
+    "path": "/app/docs/research-copilot/COPILOT-V2-QUERY-REGRESSION-CORPUS.json",
+    "total": 111,
+    "deterministic_hits": 84,
+    "rate": 0.757
+  },
+  "unit_tests": "66 OK (A+B+C+D) on production container after D.1 sync",
+  "journey_verdict": "READY_FOR_CONTROLLED_PRODUCTION_PILOT",
+  "notes": [
+    "Compare vs available XRD misroute fixed (capability/compare before slot search)",
+    "Journey phrase intents hardened (cancel it / move it / XRD analysis / current balance / analysis ready)",
+    "GI-XRD selected via ordinal; mutation used EPR fallback due to no far available slots on GI-XRD"
+  ]
+}

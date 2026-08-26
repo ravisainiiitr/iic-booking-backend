@@ -26,10 +26,32 @@ def resolve_intent(text: str) -> ResolvedIntent:
     ):
         return ResolvedIntent("confirm_proposal", True, needs_auth=True)
 
-    # Cancel / reschedule (before generic booking reads)
-    if any(x in lower for x in ("cancel my booking", "cancel booking", "cancel my next", "cancel the booking")):
+    # Cancel / reschedule (before generic booking reads) — include short anaphora
+    if any(
+        x in lower
+        for x in (
+            "cancel my booking",
+            "cancel booking",
+            "cancel my next",
+            "cancel the booking",
+            "cancel it",
+            "cancel this booking",
+            "cancel this",
+        )
+    ) or lower in {"cancel", "cancel."}:
         return ResolvedIntent("prepare_cancel", True, needs_auth=True)
-    if any(x in lower for x in ("reschedule", "move my booking", "move my next", "change my booking slot", "find another slot for my booking")):
+    if any(
+        x in lower
+        for x in (
+            "reschedule",
+            "move my booking",
+            "move my next",
+            "change my booking slot",
+            "find another slot for my booking",
+            "move it to",
+            "move it ",
+        )
+    ) or lower in {"reschedule it", "move it", "move it."}:
         return ResolvedIntent("prepare_reschedule", True, needs_auth=True)
 
     # Prepare booking (does not execute)
@@ -45,11 +67,26 @@ def resolve_intent(text: str) -> ResolvedIntent:
             "book pxrd",
             "book xrd",
             "prepare booking",
+            "prepare the booking",
             "i want to book",
             "make a booking",
         )
     ):
         return ResolvedIntent("prepare_booking", True, needs_auth=True, needs_equipment=True)
+
+    # Daily dashboard (before generic pending)
+    if any(
+        x in lower
+        for x in (
+            "what do i need to do today",
+            "what should i do today",
+            "my day",
+            "daily summary",
+            "research dashboard",
+            "what is pending for me",
+        )
+    ):
+        return ResolvedIntent("daily_dashboard", True, needs_auth=True)
 
     # Pending actions
     if any(
@@ -75,8 +112,15 @@ def resolve_intent(text: str) -> ResolvedIntent:
             "how much balance",
             "what is my balance",
             "what's my balance",
+            "my current balance",
+            "current balance",
             "how much money",
             "how much do i have",
+            "do i have enough",
+            "enough balance",
+            "enough money",
+            "sufficient balance",
+            "can i afford",
         )
     ):
         return ResolvedIntent("wallet_balance", True, needs_auth=True)
@@ -138,7 +182,17 @@ def resolve_intent(text: str) -> ResolvedIntent:
         return ResolvedIntent("prepare_credit", True, needs_auth=True)
 
     # Bookings
-    if any(x in lower for x in ("my next booking", "next booking", "upcoming booking")):
+    if any(
+        x in lower
+        for x in (
+            "my next booking",
+            "next booking",
+            "upcoming booking",
+            "what did i just book",
+            "what did i book",
+            "what have i booked",
+        )
+    ):
         return ResolvedIntent("next_booking", True, needs_auth=True)
     if any(x in lower for x in ("my booking", "show my booking", "list my booking", "what are my booking")):
         return ResolvedIntent("my_bookings", True, needs_auth=True)
@@ -146,12 +200,82 @@ def resolve_intent(text: str) -> ResolvedIntent:
     # Sample / results / RA / faculty
     if any(x in lower for x in ("sample status", "sample accepted", "sample received", "has my sample")):
         return ResolvedIntent("sample_status", True, needs_auth=True)
-    if any(x in lower for x in ("result ready", "my result", "results available", "has my result", "report arrived")):
+    if any(
+        x in lower
+        for x in (
+            "result ready",
+            "my result",
+            "results available",
+            "has my result",
+            "report arrived",
+            "analysis ready",
+            "is my analysis",
+            "my analysis ready",
+        )
+    ):
         return ResolvedIntent("results", True, needs_auth=True)
     if any(x in lower for x in ("remote analysis", "raa status", "analysis workspace", "analysis pc")):
         return ResolvedIntent("ra_status", True, needs_auth=True)
     if any(x in lower for x in ("my faculty", "who is my faculty", "my affiliation", "my supervisor")):
         return ResolvedIntent("affiliations", True, needs_auth=True)
+
+    if any(
+        x in lower
+        for x in (
+            "what department am i",
+            "my department",
+            "my employee id",
+            "my emp id",
+            "my student status",
+            "my profile",
+            "who am i",
+            "my user type",
+        )
+    ):
+        return ResolvedIntent("user_profile", True, needs_auth=True)
+
+    # Capability / comparison BEFORE slot search ("available XRD" must not steal compare)
+    if any(
+        x in lower
+        for x in (
+            "compare",
+            "comparison",
+            "which is better",
+            "difference between",
+            "vs ",
+            " versus ",
+        )
+    ) and any(x in lower for x in ("xrd", "pxrd", "sem", "fesem", "equipment", "instrument", "nmr", "xps")):
+        return ResolvedIntent("compare_equipment", True, needs_equipment=False)
+
+    if any(
+        x in lower
+        for x in (
+            "crystal structure",
+            "phase identification",
+            "elemental composition",
+            "elemental analysis",
+            "surface morphology",
+            "particle size",
+            "molecular structure",
+            "thermal analysis",
+            "measure thickness",
+            "i need to identify",
+            "i need elemental",
+            "i need surface",
+            "i need thermal",
+            "xrd analysis",
+            "perform xrd",
+            "need to perform xrd",
+            "sem analysis",
+            "fesem analysis",
+        )
+    ):
+        return ResolvedIntent("capability_search", True)
+
+    # Support ticket (soft — deep-link / prepare only)
+    if any(x in lower for x in ("create a support", "create ticket", "raise a ticket", "open a ticket", "support request")):
+        return ResolvedIntent("support_ticket", True, needs_auth=True)
 
     # Availability
     slot_words = ("slot", "slots", "availability", "available", "free slot", "earliest", "this week", "tomorrow")
@@ -193,6 +317,13 @@ def resolve_intent(text: str) -> ResolvedIntent:
             "nanoparticle",
             "i need fesem",
             "i need xrd",
+            "show me all xrd",
+            "all xrd equipment",
+            "what sems",
+            "xrd machines",
+            "show xrd",
+            "show me xrd",
+            "xrd equipment",
         )
     ):
         return ResolvedIntent("search_equipment", True, needs_equipment=False)

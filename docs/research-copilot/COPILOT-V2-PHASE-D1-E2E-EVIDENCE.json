@@ -1,0 +1,1128 @@
+{
+  "phase": "D.1",
+  "verdict": "READY_FOR_CONTROLLED_PRODUCTION_PILOT",
+  "started_at": "2026-08-26T12:21:57.642314+00:00",
+  "steps": [
+    {
+      "name": "negative_soft_confirm_intent",
+      "ok": true,
+      "detail": null,
+      "critical": true
+    },
+    {
+      "name": "clarification_book_xrd_is_prepare_not_execute",
+      "ok": true,
+      "detail": "prepare_booking",
+      "critical": true
+    },
+    {
+      "name": "step1_equipment_discovery",
+      "ok": true,
+      "detail": {
+        "intent": "capability_search",
+        "choice_count": 6,
+        "choices": [
+          {
+            "id": 37,
+            "name": "Electron Backscatter Diffraction (EBSD)"
+          },
+          {
+            "id": 40,
+            "name": "Grazing Incidence X-Ray Diffractometer (GI-XRD)"
+          },
+          {
+            "id": 51,
+            "name": "Macromolecular Crystallography Unit (MCU)"
+          },
+          {
+            "id": 1,
+            "name": "Powder X-Ray Diffractometer (PXRD) [A]"
+          },
+          {
+            "id": 66,
+            "name": "Powder X-Ray Diffractometer (PXRD) [B]"
+          }
+        ],
+        "llm_used": false
+      },
+      "critical": true,
+      "latency_ms": 30.38
+    },
+    {
+      "name": "step2_ordinal_memory",
+      "ok": true,
+      "detail": {
+        "selected_id": 40,
+        "expected_second": 40,
+        "ctx_keys": [
+          "equipment_choices",
+          "last_equipment_id",
+          "equipment_id",
+          "equipment_name"
+        ]
+      },
+      "critical": true,
+      "latency_ms": 1.73
+    },
+    {
+      "name": "security_ordinal_no_cross_conversation_leak",
+      "ok": true,
+      "detail": {},
+      "critical": true
+    },
+    {
+      "name": "step3_slot_search_deterministic",
+      "ok": true,
+      "detail": {
+        "intent": "search_slots",
+        "equipment_id": 40,
+        "slot_id": null,
+        "slot_count": 0,
+        "kind": "LIVE_DATA",
+        "content_preview": "**Grazing Incidence X-Ray Diffractometer (GI-XRD)** \u2014 no AVAILABLE slots found for **tomorrow** in portal data.\n\nOpen the equipment calendar for the authoritative view (generation/window rules may apply)."
+      },
+      "critical": false,
+      "latency_ms": 32.57
+    },
+    {
+      "name": "step4_cost_estimate",
+      "ok": true,
+      "detail": {
+        "estimate": 50.0,
+        "wallet": "103616.99",
+        "sufficient": null,
+        "intent": "estimate_cost"
+      },
+      "critical": true,
+      "latency_ms": 38.12
+    },
+    {
+      "name": "step5_wallet_read",
+      "ok": true,
+      "detail": {
+        "portal_balance": "103616.99",
+        "response_kind": "LIVE_DATA"
+      },
+      "critical": true,
+      "latency_ms": 5.01
+    },
+    {
+      "name": "mutation_path_fallback_equipment",
+      "ok": true,
+      "detail": {
+        "reason": "selected equipment lacked \u22652 far available slots outside threshold",
+        "selected_equipment_id": 40,
+        "fallback_equipment_id": 43
+      },
+      "critical": false
+    },
+    {
+      "name": "step6_booking_proposal_not_executed",
+      "ok": true,
+      "detail": {
+        "proposal_id": "a43d51ee-68cd-4233-a403-f124cde78f36",
+        "token_present": true,
+        "confirm_required": true,
+        "intent": "prepare_booking",
+        "kind": "ACTION_PREPARATION"
+      },
+      "critical": true,
+      "latency_ms": 50.38
+    },
+    {
+      "name": "security_prompt_injection_no_user_switch",
+      "ok": true,
+      "detail": {
+        "note": "Domain always uses authenticated user; NL cannot switch identity",
+        "kind": "ACTION_PREPARATION"
+      },
+      "critical": false
+    },
+    {
+      "name": "security_foreign_execute_rejected",
+      "ok": true,
+      "detail": "COPILOT_BOOKING_CREATE_DISABLED",
+      "critical": true
+    },
+    {
+      "name": "security_wrong_token_rejected",
+      "ok": true,
+      "detail": "CONFIRMATION_INVALID",
+      "critical": true
+    },
+    {
+      "name": "step7_confirm_create",
+      "ok": true,
+      "detail": {
+        "http_status": 200,
+        "error": null,
+        "data": {
+          "booking_id": "IICEPR202600006",
+          "virtual_booking_id": "IICEPR202600006",
+          "real_booking_id": 458,
+          "equipment_id": 43,
+          "user": 78,
+          "start_time": "2026-08-31T04:00:00+00:00",
+          "end_time": "2026-08-31T04:30:00+00:00",
+          "total_time_minutes": 30,
+          "total_charge": "0",
+          "charge_breakdown": [],
+          "status": "booked",
+          "daily_slots": [
+            {
+              "id": 26037,
+              "slot_master": 262,
+              "slot_number": 1,
+              "slot_name": "Slot 1",
+              "equipment_code": "EPR",
+              "date": "2026-08-31",
+              "slot_open_time": "09:30:00",
+              "start_datetime": "2026-08-31T04:00:00+00:00",
+              "end_datetime": "2026-08-31T04:30:00+00:00",
+              "status": "BOOKED",
+              "status_display": "Booked",
+              "blocked_label": null,
+              "reserved_for_external": false,
+              "booking": 458,
+              "booking_id": "IICEPR202600006",
+              "real_booking_id": 458,
+              "booking_status": "BOOKED",
+              "booking_status_display": "Booked",
+              "available_for_external": false,
+              "created_at": "2026-07-20T06:51:25.498586+00:00",
+              "updated_at": "2026-07-20T06:51:25.498594+00:00"
+            }
+          ],
+          "created_at": "2026-08-26T12:21:58.042642+00:00",
+          "updated_at": "2026-08-26T12:21:58.042655+00:00",
+          "reward": {
+            "points_used": "0.00",
+            "discount_amount": "0.00"
+          },
+          "wallet_amount_applied": "0",
+          "amount_due": "0",
+          "payment_required": false,
+          "settlement_department_id": 33,
+          "require_istem_fbr": false,
+          "istem_portal_url": "https://www.istem.gov.in/",
+          "istem_fbr_status": null
+        }
+      },
+      "critical": true,
+      "latency_ms": 182.8
+    },
+    {
+      "name": "step7_idempotent_create_replay",
+      "ok": true,
+      "detail": {
+        "idempotent_replay": true,
+        "rows": 1
+      },
+      "critical": true
+    },
+    {
+      "name": "step7_portal_booking_verified",
+      "ok": true,
+      "detail": {
+        "status": "BOOKED",
+        "equipment_id": 43
+      },
+      "critical": true
+    },
+    {
+      "name": "step8_booking_lookup",
+      "ok": true,
+      "detail": {
+        "intent": "next_booking",
+        "preview": "**Next booking** #458 \u2014 Electron Paramagnetic Resonance (EPR) (BOOKED)\nStart: 2026-08-31T04:00:00+00:00"
+      },
+      "critical": true,
+      "latency_ms": 25.99
+    },
+    {
+      "name": "step9_prepare_reschedule",
+      "ok": true,
+      "detail": {
+        "error": null,
+        "proposal_id": "61c2d81d-6a3a-43bf-85c7-eb7977965154"
+      },
+      "critical": true
+    },
+    {
+      "name": "step9_execute_reschedule",
+      "ok": true,
+      "detail": {
+        "error": null,
+        "data": {
+          "message": "Booking rescheduled successfully.",
+          "booking": {
+            "booking_id": "IICEPR202600006",
+            "real_booking_id": 458,
+            "virtual_booking_id": "IICEPR202600006",
+            "user": 78,
+            "user_email": "test.faculty@iic-booking.test",
+            "user_name": "Prof. Test IITR Faculty",
+            "user_phone": null,
+            "user_department": "Rethink ! The Tinkering Lab",
+            "user_profile_picture": null,
+            "equipment": 43,
+            "equipment_code": "EPR",
+            "equipment_name": "Electron Paramagnetic Resonance (EPR)",
+            "equipment_reschedule_hours_threshold": 48,
+            "equipment_repeat_sample_request_days": 5,
+            "equipment_repeat_sample_disclaimer": "",
+            "equipment_enable_charge_recalculation": false,
+            "equipment_user_rating_enabled": false,
+            "equipment_booking_not_utilize_window_hours": 24,
+            "equipment_operator_unavailable_after_booking_end_hours": 24,
+            "equipment_profile_type": "MULTI_PARAM",
+            "equipment_profile_type_display": "Multi-parameter",
+            "charge_profile": 58,
+            "user_type_snapshot": "faculty",
+            "total_time_minutes": 30,
+            "total_hours": 0.5,
+            "total_charge": "0.00",
+            "wallet_amount_applied": "0.00",
+            "amount_due": "0.00",
+            "payment_settled_at": null,
+            "settlement_department": 33,
+            "settlement_department_name": "Institute Instrumentation Centre",
+            "input_values": {
+              "A": 1
+            },
+            "input_fields": [
+              {
+                "field_key": "A",
+                "field_label": "No. of Samples",
+                "field_type": "NUMERIC",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null
+              },
+              {
+                "field_key": "B",
+                "field_label": "Type of Measurement",
+                "field_type": "RADIO",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null,
+                "options": [
+                  "Room Temperature",
+                  "Low Temperature",
+                  "Variable Temperature"
+                ]
+              },
+              {
+                "field_key": "comments",
+                "field_label": "Any Other Requirements:",
+                "field_type": "TEXT",
+                "is_required": false,
+                "editing_required": true,
+                "default_value": "",
+                "options": [],
+                "help_text": "Additional notes from user.",
+                "source_element_field_key": null
+              }
+            ],
+            "editable_input_fields": [
+              {
+                "field_key": "comments",
+                "field_label": "Any Other Requirements:",
+                "field_type": "TEXT",
+                "is_required": false,
+                "editing_required": true,
+                "default_value": "",
+                "options": [],
+                "help_text": "Additional notes from user.",
+                "source_element_field_key": null
+              }
+            ],
+            "all_input_fields": [
+              {
+                "field_key": "A",
+                "field_label": "No. of Samples",
+                "field_type": "NUMERIC",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null
+              },
+              {
+                "field_key": "B",
+                "field_label": "Type of Measurement",
+                "field_type": "RADIO",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null,
+                "options": [
+                  "Room Temperature",
+                  "Low Temperature",
+                  "Variable Temperature"
+                ]
+              },
+              {
+                "field_key": "comments",
+                "field_label": "Any Other Requirements:",
+                "field_type": "TEXT",
+                "is_required": false,
+                "editing_required": true,
+                "default_value": "",
+                "options": [],
+                "help_text": "Additional notes from user.",
+                "source_element_field_key": null
+              }
+            ],
+            "selected_parameters": null,
+            "charge_breakdown": [],
+            "status": "BOOKED",
+            "status_display": "Booked",
+            "notes": "",
+            "operator_absent_hold_until": null,
+            "atmosphere_sensitive_sample": false,
+            "equipment_atmosphere_sensitive_sample_enabled": false,
+            "lifecycle_countdown": {
+              "enabled": true,
+              "phase": "submit_sample",
+              "title": "Time remaining to submit sample",
+              "started_at": "2026-08-26T12:21:58.042642+00:00",
+              "deadline_at": "2026-08-27T10:00:00+05:30",
+              "remaining_seconds": 58081,
+              "is_overdue": false,
+              "atmosphere_sensitive": false,
+              "slot_start_at": "2026-08-31T04:30:00+00:00",
+              "lead_hours": 24
+            },
+            "completion_countdown": {
+              "enabled": true,
+              "phase": "submit_sample",
+              "title": "Time remaining to submit sample",
+              "started_at": "2026-08-26T12:21:58.042642+00:00",
+              "deadline_at": "2026-08-27T10:00:00+05:30",
+              "remaining_seconds": 58081,
+              "is_overdue": false,
+              "atmosphere_sensitive": false,
+              "slot_start_at": "2026-08-31T04:30:00+00:00",
+              "lead_hours": 24
+            },
+            "sample_collection_deadline_at": null,
+            "sample_collection_deadline_hours": null,
+            "sample_return_after_analysis": false,
+            "return_shipping_fee_amount": "0.00",
+            "return_shipping_company": "",
+            "return_shipping_tracking_id": "",
+            "return_shipping_tracking_updated_at": null,
+            "start_time": "2026-08-31 04:30:00+00:00",
+            "end_time": "2026-08-31 05:00:00+00:00",
+            "daily_slots": [
+              {
+                "id": 26038,
+                "slot_master": 263,
+                "slot_number": 2,
+                "slot_name": "Slot 2",
+                "equipment_code": "EPR",
+                "date": "2026-08-31",
+                "slot_open_time": "10:00:00",
+                "start_datetime": "2026-08-31T10:00:00+05:30",
+                "end_datetime": "2026-08-31T10:30:00+05:30",
+                "status": "BOOKED",
+                "status_display": "Booked",
+                "blocked_label": null,
+                "reserved_for_external": false,
+                "home_department_only": false,
+                "booking": 458,
+                "booking_id": "IICEPR202600006",
+                "real_booking_id": 458,
+                "booking_status": "BOOKED",
+                "booking_status_display": "Booked",
+                "booking_user_name": "Test IITR Faculty",
+                "booking_user_department_code": "TL",
+                "booking_user_department_name": "Rethink ! The Tinkering Lab",
+                "booking_user_email": null,
+                "booking_user_phone": null,
+                "booking_user_type": "faculty",
+                "booking_is_external": false,
+                "booking_sample_status_display": null,
+                "available_for_external": false,
+                "created_at": "2026-07-20T12:21:25.498636+05:30",
+                "updated_at": "2026-07-20T12:21:25.498644+05:30"
+              }
+            ],
+            "equipment_weekly_view_display": "TIME",
+            "user_type_snapshot_display": "IITR Faculty",
+            "wallet_owner_name": null,
+            "created_by_name": "Test IITR Faculty",
+            "sample_trace": [],
+            "repeat_sample_request_status": null,
+            "charge_recalculation_pending_amount": null,
+            "created_at": "2026-08-26T17:51:58.042642+05:30",
+            "updated_at": "2026-08-26T17:51:58.247545+05:30",
+            "completed_at": null,
+            "analysis_available": false,
+            "analysis_available_from": null,
+            "analysis_expiry": null,
+            "analysis_session_count": 0,
+            "analysis_last_session": null,
+            "equipment_enable_remote_analysis": false,
+            "rating_on_time_operator_availability": null,
+            "rating_laboratory_cleanliness_organization": null,
+            "rating_sample_handling_care": null,
+            "rating_operator_behaviour_professionalism": null,
+            "rating_compliance_booking_request_parameters": null,
+            "rating": null,
+            "rating_feedback": null,
+            "rated_at": null,
+            "repeat_sample_enabled": false,
+            "source_booking_id": null,
+            "repeat_booking_already_created": false,
+            "accounts_in_charge": {
+              "user_id": 75,
+              "name": "Test Accounts In Charge",
+              "email": "test.finance@iic-booking.test",
+              "phone": null,
+              "user_type": "finance"
+            },
+            "lab_in_charge": {
+              "user_id": 123,
+              "name": "Nitika Thapa",
+              "email": "epr.iic@iitr.ac.in",
+              "phone": "9548700656",
+              "user_type": "operator"
+            },
+            "oic_contacts": [
+              {
+                "user_id": 85,
+                "name": "Dr. Jay Singh Meena",
+                "email": "jsmeena.mic2018@iitr.ac.in",
+                "phone": "9456338280",
+                "user_type": "manager"
+              }
+            ],
+            "istem_fbr_number": "",
+            "istem_fbr_status": null,
+            "istem_fbr_status_display": null,
+            "istem_fbr_invalid_reason": null,
+            "istem_fbr_executed_at": null,
+            "istem_portal_url": "https://www.istem.gov.in/",
+            "istem_fbr_status_url": "",
+            "require_istem_fbr": false,
+            "print_analysis": null,
+            "print_analysis_batch": null,
+            "print_analyses": []
+          }
+        }
+      },
+      "critical": true
+    },
+    {
+      "name": "step9_portal_reschedule_verified",
+      "ok": true,
+      "detail": [
+        26038
+      ],
+      "critical": true
+    },
+    {
+      "name": "step10_cancel_proposal",
+      "ok": true,
+      "detail": {
+        "conversational_intent": "prepare_cancel",
+        "proposal_id": "95ee1b5c-130c-4506-8d12-70235ae42649",
+        "error": null
+      },
+      "critical": true
+    },
+    {
+      "name": "step10_cancel_without_confirm_no_change",
+      "ok": true,
+      "detail": "BOOKED",
+      "critical": true
+    },
+    {
+      "name": "step10_execute_cancel",
+      "ok": true,
+      "detail": {
+        "error": null,
+        "data": {
+          "message": "Booking cancelled successfully.",
+          "booking": {
+            "booking_id": "IICEPR202600006",
+            "real_booking_id": 458,
+            "virtual_booking_id": "IICEPR202600006",
+            "user": 78,
+            "user_email": "test.faculty@iic-booking.test",
+            "user_name": "Prof. Test IITR Faculty",
+            "user_phone": null,
+            "user_department": "Rethink ! The Tinkering Lab",
+            "user_profile_picture": null,
+            "equipment": 43,
+            "equipment_code": "EPR",
+            "equipment_name": "Electron Paramagnetic Resonance (EPR)",
+            "equipment_reschedule_hours_threshold": 48,
+            "equipment_repeat_sample_request_days": 5,
+            "equipment_repeat_sample_disclaimer": "",
+            "equipment_enable_charge_recalculation": false,
+            "equipment_user_rating_enabled": false,
+            "equipment_booking_not_utilize_window_hours": 24,
+            "equipment_operator_unavailable_after_booking_end_hours": 24,
+            "equipment_profile_type": "MULTI_PARAM",
+            "equipment_profile_type_display": "Multi-parameter",
+            "charge_profile": 58,
+            "user_type_snapshot": "faculty",
+            "total_time_minutes": 30,
+            "total_hours": 0.5,
+            "total_charge": "0.00",
+            "wallet_amount_applied": "0.00",
+            "amount_due": "0.00",
+            "payment_settled_at": null,
+            "settlement_department": 33,
+            "settlement_department_name": "Institute Instrumentation Centre",
+            "input_values": {
+              "A": 1
+            },
+            "input_fields": [
+              {
+                "field_key": "A",
+                "field_label": "No. of Samples",
+                "field_type": "NUMERIC",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null
+              },
+              {
+                "field_key": "B",
+                "field_label": "Type of Measurement",
+                "field_type": "RADIO",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null,
+                "options": [
+                  "Room Temperature",
+                  "Low Temperature",
+                  "Variable Temperature"
+                ]
+              },
+              {
+                "field_key": "comments",
+                "field_label": "Any Other Requirements:",
+                "field_type": "TEXT",
+                "is_required": false,
+                "editing_required": true,
+                "default_value": "",
+                "options": [],
+                "help_text": "Additional notes from user.",
+                "source_element_field_key": null
+              }
+            ],
+            "editable_input_fields": [
+              {
+                "field_key": "comments",
+                "field_label": "Any Other Requirements:",
+                "field_type": "TEXT",
+                "is_required": false,
+                "editing_required": true,
+                "default_value": "",
+                "options": [],
+                "help_text": "Additional notes from user.",
+                "source_element_field_key": null
+              }
+            ],
+            "all_input_fields": [
+              {
+                "field_key": "A",
+                "field_label": "No. of Samples",
+                "field_type": "NUMERIC",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null
+              },
+              {
+                "field_key": "B",
+                "field_label": "Type of Measurement",
+                "field_type": "RADIO",
+                "is_required": true,
+                "editing_required": false,
+                "help_text": null,
+                "source_element_field_key": null,
+                "options": [
+                  "Room Temperature",
+                  "Low Temperature",
+                  "Variable Temperature"
+                ]
+              },
+              {
+                "field_key": "comments",
+                "field_label": "Any Other Requirements:",
+                "field_type": "TEXT",
+                "is_required": false,
+                "editing_required": true,
+                "default_value": "",
+                "options": [],
+                "help_text": "Additional notes from user.",
+                "source_element_field_key": null
+              }
+            ],
+            "selected_parameters": null,
+            "charge_breakdown": [],
+            "status": "REFUNDED",
+            "status_display": "Refunded",
+            "notes": "[User Cancellation Notes]: Cancelled via Research Copilot",
+            "operator_absent_hold_until": null,
+            "atmosphere_sensitive_sample": false,
+            "equipment_atmosphere_sensitive_sample_enabled": false,
+            "lifecycle_countdown": null,
+            "completion_countdown": null,
+            "sample_collection_deadline_at": null,
+            "sample_collection_deadline_hours": null,
+            "sample_return_after_analysis": false,
+            "return_shipping_fee_amount": "0.00",
+            "return_shipping_company": "",
+            "return_shipping_tracking_id": "",
+            "return_shipping_tracking_updated_at": null,
+            "start_time": null,
+            "end_time": null,
+            "daily_slots": [],
+            "equipment_weekly_view_display": "TIME",
+            "user_type_snapshot_display": "IITR Faculty",
+            "wallet_owner_name": null,
+            "created_by_name": "Test IITR Faculty",
+            "sample_trace": [],
+            "repeat_sample_request_status": null,
+            "charge_recalculation_pending_amount": null,
+            "created_at": "2026-08-26T17:51:58.042642+05:30",
+            "updated_at": "2026-08-26T17:51:58.408900+05:30",
+            "completed_at": null,
+            "analysis_available": false,
+            "analysis_available_from": null,
+            "analysis_expiry": null,
+            "analysis_session_count": 0,
+            "analysis_last_session": null,
+            "equipment_enable_remote_analysis": false,
+            "rating_on_time_operator_availability": null,
+            "rating_laboratory_cleanliness_organization": null,
+            "rating_sample_handling_care": null,
+            "rating_operator_behaviour_professionalism": null,
+            "rating_compliance_booking_request_parameters": null,
+            "rating": null,
+            "rating_feedback": null,
+            "rated_at": null,
+            "repeat_sample_enabled": false,
+            "source_booking_id": null,
+            "repeat_booking_already_created": false,
+            "accounts_in_charge": {
+              "user_id": 75,
+              "name": "Test Accounts In Charge",
+              "email": "test.finance@iic-booking.test",
+              "phone": null,
+              "user_type": "finance"
+            },
+            "lab_in_charge": {
+              "user_id": 123,
+              "name": "Nitika Thapa",
+              "email": "epr.iic@iitr.ac.in",
+              "phone": "9548700656",
+              "user_type": "operator"
+            },
+            "oic_contacts": [
+              {
+                "user_id": 85,
+                "name": "Dr. Jay Singh Meena",
+                "email": "jsmeena.mic2018@iitr.ac.in",
+                "phone": "9456338280",
+                "user_type": "manager"
+              }
+            ],
+            "istem_fbr_number": "",
+            "istem_fbr_status": null,
+            "istem_fbr_status_display": null,
+            "istem_fbr_invalid_reason": null,
+            "istem_fbr_executed_at": null,
+            "istem_portal_url": "https://www.istem.gov.in/",
+            "istem_fbr_status_url": "",
+            "require_istem_fbr": false,
+            "print_analysis": null,
+            "print_analysis_batch": null,
+            "print_analyses": []
+          },
+          "partial_cancellation": false
+        }
+      },
+      "critical": true
+    },
+    {
+      "name": "step10_idempotent_cancel_replay",
+      "ok": true,
+      "detail": {
+        "idempotent_replay": true
+      },
+      "critical": true
+    },
+    {
+      "name": "step10_portal_cancel_verified",
+      "ok": true,
+      "detail": "REFUNDED",
+      "critical": true
+    },
+    {
+      "name": "step11_financial_cost_query",
+      "ok": true,
+      "detail": "estimate_cost",
+      "critical": false,
+      "latency_ms": 41.99
+    },
+    {
+      "name": "step11_wallet_transactions",
+      "ok": true,
+      "detail": "wallet_transactions",
+      "critical": true,
+      "latency_ms": 6.08
+    },
+    {
+      "name": "step11_wallet_balance_matches_portal",
+      "ok": true,
+      "detail": {
+        "portal": "103616.99",
+        "intent": "wallet_balance"
+      },
+      "critical": true,
+      "latency_ms": 7.06
+    },
+    {
+      "name": "step12_analysis_status",
+      "ok": false,
+      "detail": {
+        "intent": null,
+        "preview": ""
+      },
+      "critical": false,
+      "latency_ms": 0.46
+    },
+    {
+      "name": "step13_raa_status",
+      "ok": true,
+      "detail": {
+        "intent": "ra_status",
+        "preview": "**Remote Analysis** for booking #458:\n\n- Eligible: False\n- Detail: Remote Analysis is not enabled for this equipment"
+      },
+      "critical": false,
+      "latency_ms": 7.78
+    },
+    {
+      "name": "multi_intent_no_auto_execute",
+      "ok": true,
+      "detail": {
+        "intent": "wallet_balance",
+        "multi": null,
+        "preview": "**Wallet balance:** \u20b9103616.99\n\n_Authoritative wallet actions remain on the Wallet page._"
+      },
+      "critical": false,
+      "latency_ms": 5.65
+    },
+    {
+      "name": "multi_intent_did_not_create_extra_booking",
+      "ok": true,
+      "detail": 0,
+      "critical": true
+    },
+    {
+      "name": "corpus_deterministic_hit_rate",
+      "ok": true,
+      "detail": {
+        "path": "/app/docs/research-copilot/COPILOT-V2-QUERY-REGRESSION-CORPUS.json",
+        "total": 111,
+        "deterministic_hits": 84,
+        "rate": 0.757
+      },
+      "critical": false
+    },
+    {
+      "name": "audit_records_present",
+      "ok": true,
+      "detail": 16,
+      "critical": false
+    }
+  ],
+  "errors": [],
+  "latencies_ms": {
+    "step1_equipment_discovery": 30.38,
+    "step2_ordinal_memory": 1.73,
+    "step3_slot_search_deterministic": 32.57,
+    "step4_cost_estimate": 38.12,
+    "step5_wallet_read": 5.01,
+    "step6_booking_proposal_not_executed": 50.38,
+    "step7_confirm_create": 182.8,
+    "step8_booking_lookup": 25.99,
+    "step11_financial_cost_query": 41.99,
+    "step11_wallet_transactions": 6.08,
+    "step11_wallet_balance_matches_portal": 7.06,
+    "step12_analysis_status": 0.46,
+    "step13_raa_status": 7.78,
+    "multi_intent_no_auto_execute": 5.65
+  },
+  "flags": {
+    "COPILOT_BOOKING_CREATE": false,
+    "COPILOT_BOOKING_CANCEL": false,
+    "COPILOT_BOOKING_RESCHEDULE": false,
+    "COPILOT_BOOKING_E2E_TEST_MODE": true,
+    "COPILOT_BOOKING_TEST_USER_IDS": "78",
+    "COPILOT_WALLET_RECHARGE": false,
+    "COPILOT_WALLET_CREDIT": false,
+    "COPILOT_ANALYSIS_ACTIONS": false,
+    "COPILOT_TICKET_CREATE": false,
+    "COPILOT_MULTI_INTENT": true
+  },
+  "test_account": {
+    "id": 78,
+    "email": "test.faculty@iic-booking.test",
+    "user_type": "faculty",
+    "department": "Rethink ! The Tinkering Lab",
+    "is_test_account": true,
+    "wallet_balance": "103616.99",
+    "existing_bookings": [
+      {
+        "booking_id": 457,
+        "status": "REFUNDED",
+        "equipment_id": 43,
+        "virtual_booking_id": "IICEPR202600005"
+      },
+      {
+        "booking_id": 456,
+        "status": "REFUNDED",
+        "equipment_id": 43,
+        "virtual_booking_id": "IICEPR202600004"
+      },
+      {
+        "booking_id": 455,
+        "status": "REFUNDED",
+        "equipment_id": 67,
+        "virtual_booking_id": "IICPXRD [C]202600001"
+      },
+      {
+        "booking_id": 448,
+        "status": "BOOKED",
+        "equipment_id": 78,
+        "virtual_booking_id": "TLVMC1202600001"
+      },
+      {
+        "booking_id": 447,
+        "status": "BOOKING_NOT_UTILIZED",
+        "equipment_id": 59,
+        "virtual_booking_id": "TLP2202600001"
+      },
+      {
+        "booking_id": 446,
+        "status": "BOOKING_NOT_UTILIZED",
+        "equipment_id": 65,
+        "virtual_booking_id": "TLP7202600002"
+      },
+      {
+        "booking_id": 445,
+        "status": "BOOKING_NOT_UTILIZED",
+        "equipment_id": 65,
+        "virtual_booking_id": "TLP7202600001"
+      },
+      {
+        "booking_id": 444,
+        "status": "BOOKING_NOT_UTILIZED",
+        "equipment_id": 95,
+        "virtual_booking_id": "TLMLC1202600001"
+      },
+      {
+        "booking_id": 443,
+        "status": "BOOKING_NOT_UTILIZED",
+        "equipment_id": 73,
+        "virtual_booking_id": "TLP16202600001"
+      },
+      {
+        "booking_id": 442,
+        "status": "BOOKING_NOT_UTILIZED",
+        "equipment_id": 79,
+        "virtual_booking_id": "TLHPW1202600001"
+      }
+    ],
+    "credit_status": {
+      "feature_enabled": false,
+      "policy": {
+        "max_credit_amount": "50000.00",
+        "min_request_amount": "100.00",
+        "max_outstanding_amount": "50000.00",
+        "max_credit_duration_days": 30
+      },
+      "current_wallet_balance": "103616.99",
+      "existing_outstanding_credit": "0.00",
+      "active_facility_reference": null,
+      "eligibility": {
+        "allowed": false,
+        "code": "FEATURE_DISABLED",
+        "message": "Feature disabled."
+      },
+      "notice": "Credit is subject to Main Administrator approval."
+    }
+  },
+  "conversation_id": "99cdb21d-4d65-4270-8753-23c8d8eaf912",
+  "conversation_persisted": false,
+  "discovery_choices": [
+    {
+      "id": 37,
+      "name": "Electron Backscatter Diffraction (EBSD)",
+      "technique": "X-ray diffraction (XRD)",
+      "department": "Institute Instrumentation Centre",
+      "location": "Ground Floor, Block-A, IIC",
+      "href": "/equipments/37"
+    },
+    {
+      "id": 40,
+      "name": "Grazing Incidence X-Ray Diffractometer (GI-XRD)",
+      "technique": "X-ray diffraction (XRD)",
+      "department": "Institute Instrumentation Centre",
+      "location": "Ground Floor, Block-A, IIC",
+      "href": "/equipments/40"
+    },
+    {
+      "id": 51,
+      "name": "Macromolecular Crystallography Unit (MCU)",
+      "technique": "X-ray diffraction (XRD)",
+      "department": "Institute Instrumentation Centre",
+      "location": "Ground Floor, Block-C, IIC",
+      "href": "/equipments/51"
+    },
+    {
+      "id": 1,
+      "name": "Powder X-Ray Diffractometer (PXRD) [A]",
+      "technique": "X-ray diffraction (XRD)",
+      "department": "Institute Instrumentation Centre",
+      "location": "Ground Floor, Block B, IIC",
+      "href": "/equipments/1"
+    },
+    {
+      "id": 66,
+      "name": "Powder X-Ray Diffractometer (PXRD) [B]",
+      "technique": "X-ray diffraction (XRD)",
+      "department": "Institute Instrumentation Centre",
+      "location": "Ground Floor, Block B, IIC",
+      "href": "/equipments/66"
+    }
+  ],
+  "selected_equipment_id": 40,
+  "wallet_before": "103616.99",
+  "mutation_fallback": {
+    "reason": "selected equipment lacked \u22652 far available slots outside threshold",
+    "selected_equipment_id": 40,
+    "fallback_equipment_id": 43
+  },
+  "mutation_equipment": {
+    "id": 43,
+    "name": "Electron Paramagnetic Resonance (EPR)",
+    "slot_a": 26037,
+    "slot_b": 26038,
+    "slot_a_start": "2026-08-31T04:00:00+00:00",
+    "slot_b_start": "2026-08-31T04:30:00+00:00"
+  },
+  "booking_id": 458,
+  "virtual_booking_id": "IICEPR202600006",
+  "wallet_after_create": "103616.99",
+  "rescheduled_slot_ids": [
+    26038
+  ],
+  "final_booking_status": "REFUNDED",
+  "wallet_after": "103616.99",
+  "raa": {
+    "analysis_kind": null,
+    "ra_kind": "LIVE_DATA",
+    "note": "Authoritative tools only; no RAA code changes in D.1"
+  },
+  "corpus": {
+    "path": "/app/docs/research-copilot/COPILOT-V2-QUERY-REGRESSION-CORPUS.json",
+    "total": 111,
+    "deterministic_hits": 84,
+    "rate": 0.757
+  },
+  "audit_sample": [
+    {
+      "action": "tool_executed",
+      "message": "execute_booking_cancel",
+      "created_at": "2026-08-26T12:21:58.483098+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_cancellation",
+      "created_at": "2026-08-26T12:21:58.372752+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "execute_booking_reschedule",
+      "created_at": "2026-08-26T12:21:58.354687+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_reschedule",
+      "created_at": "2026-08-26T12:21:58.161895+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "create_booking",
+      "created_at": "2026-08-26T12:21:58.096503+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_booking_create",
+      "created_at": "2026-08-26T12:21:57.919600+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_booking_create",
+      "created_at": "2026-08-26T12:21:57.883082+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_booking_create",
+      "created_at": "2026-08-26T12:20:43.250088+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "execute_booking_cancel",
+      "created_at": "2026-08-26T09:39:19.838383+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_cancellation",
+      "created_at": "2026-08-26T09:39:19.724889+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "execute_booking_reschedule",
+      "created_at": "2026-08-26T09:39:19.709287+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_reschedule",
+      "created_at": "2026-08-26T09:39:19.503670+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "create_booking",
+      "created_at": "2026-08-26T09:39:19.459561+00:00"
+    },
+    {
+      "action": "tool_executed",
+      "message": "prepare_booking_create",
+      "created_at": "2026-08-26T09:39:19.261063+00:00"
+    },
+    {
+      "action": "feature_disabled",
+      "message": "Research Copilot feature flag disabled",
+      "created_at": "2026-08-14T20:01:28.216389+00:00"
+    },
+    {
+      "action": "feature_disabled",
+      "message": "Research Copilot feature flag disabled",
+      "created_at": "2026-08-14T19:57:33.952009+00:00"
+    }
+  ],
+  "finished_at": "2026-08-26T12:21:58.573882+00:00"
+}

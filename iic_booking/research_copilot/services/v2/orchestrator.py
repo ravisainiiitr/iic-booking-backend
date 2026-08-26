@@ -1,11 +1,12 @@
-"""Phase A/B deterministic-first orchestrator."""
+"""Phase A/B/C/D deterministic-first orchestrator."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from iic_booking.research_copilot.services.v2 import flag, v2_enabled
-from iic_booking.research_copilot.services.v2.intent_resolver import resolve_intent
+from iic_booking.research_copilot.services.v2.intent_resolver import ResolvedIntent, resolve_intent
 from iic_booking.research_copilot.services.v2 import read_tools
 from iic_booking.research_copilot.services.v2.response_builder import build_response
 
@@ -34,6 +35,7 @@ def _store_context(conversation, metadata: dict[str, Any]) -> None:
         "confirmation_token",
         "pending_action",
         "booking_id",
+        "equipment_choices",
     ):
         if metadata.get(k) is not None:
             if k == "equipment_id":
@@ -41,7 +43,53 @@ def _store_context(conversation, metadata: dict[str, Any]) -> None:
             meta[k] = metadata[k]
     if metadata.get("equipment_id"):
         meta["last_equipment_id"] = metadata["equipment_id"]
+    # Persist ranked choices from list/compare cards for ordinal follow-ups
+    choices = metadata.get("equipment_choices")
+    if not choices:
+        for card in metadata.get("_cards_for_ctx") or []:
+            if card.get("type") in {"equipment_list", "equipment_compare", "equipment_choice"} and card.get("items"):
+                choices = card["items"]
+                break
+    if choices:
+        meta["equipment_choices"] = choices
     cache.set(f"copilot_ctx:{conversation.id}", meta, 3600 * 6)
+
+
+_ORDINAL_WORDS = {
+    "first": 0,
+    "1st": 0,
+    "second": 1,
+    "2nd": 1,
+    "third": 2,
+    "3rd": 2,
+    "fourth": 3,
+    "4th": 3,
+}
+
+
+def _resolve_ordinal_equipment(text: str, conversation) -> int | None:
+    """Map 'the second one' → equipment id from last list in conversation context."""
+    lower = (text or "").lower().strip()
+    choices = _ctx(conversation).get("equipment_choices") or []
+    if not choices:
+        return None
+    idx = None
+    m = re.search(r"\b(?:the\s+)?(first|second|third|fourth|1st|2nd|3rd|4th)\b", lower)
+    if m:
+        idx = _ORDINAL_WORDS.get(m.group(1))
+    elif re.search(r"\b(?:number\s*)?([1-4])\b", lower) and any(
+        x in lower for x in ("one", "that", "this", "equipment", "instrument", "machine", "option")
+    ):
+        m2 = re.search(r"\b([1-4])\b", lower)
+        if m2:
+            idx = int(m2.group(1)) - 1
+    if idx is None or idx < 0 or idx >= len(choices):
+        return None
+    item = choices[idx]
+    try:
+        return int(item.get("id"))
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _context_equipment_id(conversation) -> int | None:
@@ -285,33 +333,20 @@ def _exec_to_response(result: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def try_deterministic_turn(*, user, text: str, conversation=None, public: bool = False) -> dict[str, Any] | None:
-    """
-    If this turn can be answered without the LLM, return a response envelope.
-    Otherwise return None so the caller continues with RAG/LLM.
-    """
-    if not v2_enabled() or not flag("COPILOT_DETERMINISTIC_READS", True):
-        return None
-
-    intent = resolve_intent(text)
-    if not intent.deterministic:
-        return None
-
-    if intent.needs_auth and (user is None or not getattr(user, "is_authenticated", False)):
-        return build_response(
-            kind="ACTION_REQUIRED",
-            content="Sign in to use personal Copilot tools (bookings, wallet, results).",
-            actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}],
-            metadata={"intent": intent.intent, "deterministic": True},
-        )
-
-    ctx = _ctx(conversation)
-    ctx_eq = _context_equipment_id(conversation)
+def _dispatch_intent(
+    *,
+    intent: ResolvedIntent,
+    user,
+    text: str,
+    conversation,
+    ctx: dict[str, Any],
+    ctx_eq: int | None,
+) -> dict[str, Any] | None:
+    """Run one deterministic intent; return response envelope or None."""
     result: dict[str, Any] | None = None
 
     if intent.intent == "search_slots":
         result = read_tools.search_available_slots(user=user, text=text, context_equipment_id=ctx_eq)
-        # Remember earliest slot for “book it”
         try:
             cards = (result or {}).get("cards") or []
             for card in cards:
@@ -327,6 +362,10 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
             pass
     elif intent.intent == "search_equipment":
         result = read_tools.search_equipment_catalog(user=user, text=text)
+    elif intent.intent == "capability_search":
+        result = read_tools.capability_search(user=user, text=text)
+    elif intent.intent == "compare_equipment":
+        result = read_tools.compare_equipment(user=user, text=text)
     elif intent.intent == "estimate_cost":
         result = read_tools.estimate_cost(user=user, text=text, context_equipment_id=ctx_eq)
     elif intent.intent == "my_bookings":
@@ -361,6 +400,12 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
         result = read_tools.affiliations(user=user)
     elif intent.intent == "pending_actions":
         result = read_tools.pending_actions(user=user)
+    elif intent.intent == "daily_dashboard":
+        result = read_tools.daily_dashboard(user=user)
+    elif intent.intent == "user_profile":
+        result = read_tools.user_profile(user=user)
+    elif intent.intent == "support_ticket":
+        result = read_tools.support_ticket_assist(user=user, text=text)
     elif intent.intent == "docs_rag":
         result = read_tools.docs_rag(user=user, text=text)
     elif intent.intent == "prepare_booking":
@@ -428,16 +473,131 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
                     user=user, proposal_id=proposal_id, confirmation_token=token
                 )
             result = _exec_to_response(exec_result)
-    else:
+    return result
+
+
+def try_deterministic_turn(*, user, text: str, conversation=None, public: bool = False) -> dict[str, Any] | None:
+    """
+    If this turn can be answered without the LLM, return a response envelope.
+    Otherwise return None so the caller continues with RAG/LLM.
+    """
+    if not v2_enabled() or not flag("COPILOT_DETERMINISTIC_READS", True):
         return None
 
+    # Ordinal follow-up: "the second one" → pin equipment then continue
+    ordinal_eq = _resolve_ordinal_equipment(text, conversation)
+    if ordinal_eq is not None:
+        lower = (text or "").lower()
+        # Pure selection → acknowledge and set context
+        if re.search(r"^(the\s+)?(first|second|third|fourth|1st|2nd|3rd|4th)(\s+one)?\.?$", lower.strip()):
+            name = None
+            for c in _ctx(conversation).get("equipment_choices") or []:
+                if int(c.get("id") or 0) == ordinal_eq:
+                    name = c.get("name")
+                    break
+            result = build_response(
+                kind="LIVE_DATA",
+                content=f"Selected **{name or f'equipment #{ordinal_eq}'}**. What next — find slots, estimate cost, or book?",
+                actions=[
+                    {"id": "slots", "label": "Find slots", "prompt": "Find available slots this week", "enabled": True},
+                    {"id": "cost", "label": "Estimate cost", "prompt": "Estimate the cost", "enabled": True},
+                    {"id": "book", "label": "Prepare booking", "prompt": "Book the earliest slot", "enabled": True},
+                ],
+                metadata={
+                    "deterministic": True,
+                    "equipment_id": ordinal_eq,
+                    "equipment_name": name,
+                    "intent": "select_equipment_ordinal",
+                    "llm_used": False,
+                    "v2": True,
+                },
+            )
+            _store_context(conversation, result["metadata"])
+            return result
+
+    from iic_booking.research_copilot.services.v2.multi_intent import plan_intents
+
+    if flag("COPILOT_MULTI_INTENT", True):
+        plan = plan_intents(text)
+    else:
+        from iic_booking.research_copilot.services.v2.multi_intent import MultiIntentPlan
+
+        primary_only = resolve_intent(text)
+        plan = MultiIntentPlan(intents=[primary_only], is_multi=False)
+    intents = plan.intents
+    primary = intents[0] if intents else resolve_intent(text)
+
+    if not primary.deterministic:
+        return None
+
+    if primary.needs_auth and (user is None or not getattr(user, "is_authenticated", False)):
+        return build_response(
+            kind="ACTION_REQUIRED",
+            content="Sign in to use personal Copilot tools (bookings, wallet, results).",
+            actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}],
+            metadata={"intent": primary.intent, "deterministic": True},
+        )
+
+    ctx = _ctx(conversation)
+    ctx_eq = ordinal_eq or _context_equipment_id(conversation)
+
+    if plan.is_multi and len(intents) > 1:
+        sections: list[str] = []
+        all_cards: list = []
+        all_actions: list = []
+        last_meta: dict[str, Any] = {}
+        for ri in intents[:3]:
+            if ri.needs_auth and (user is None or not getattr(user, "is_authenticated", False)):
+                sections.append(f"**{ri.intent}:** sign in required.")
+                continue
+            part = _dispatch_intent(
+                intent=ri, user=user, text=text, conversation=conversation, ctx=ctx, ctx_eq=ctx_eq
+            )
+            if part is None:
+                sections.append(f"**{ri.intent}:** could not run this step.")
+                continue
+            sections.append(f"### {ri.intent.replace('_', ' ').title()}\n\n{part.get('content') or ''}")
+            all_cards.extend(part.get("cards") or [])
+            all_actions.extend(part.get("suggested_actions") or part.get("actions") or [])
+            last_meta = dict(part.get("metadata") or {})
+            # Refresh equipment context between steps
+            if last_meta.get("equipment_id"):
+                ctx_eq = int(last_meta["equipment_id"])
+                ctx = {**ctx, "equipment_id": ctx_eq, "last_equipment_id": ctx_eq}
+        result = build_response(
+            kind="LIVE_DATA",
+            content="\n\n".join(sections),
+            cards=all_cards[:6],
+            actions=all_actions[:10],
+            metadata={
+                **last_meta,
+                "deterministic": True,
+                "multi_intent": True,
+                "intents": [i.intent for i in intents],
+                "llm_used": False,
+                "v2": True,
+                "_cards_for_ctx": all_cards,
+            },
+        )
+        meta = dict(result.get("metadata") or {})
+        meta["intent"] = "multi:" + "+".join(i.intent for i in intents)
+        result["metadata"] = meta
+        _store_context(conversation, {**meta, "_cards_for_ctx": all_cards})
+        return result
+
+    result = _dispatch_intent(
+        intent=primary, user=user, text=text, conversation=conversation, ctx=ctx, ctx_eq=ctx_eq
+    )
     if result is None:
         return None
 
     meta = dict(result.get("metadata") or {})
-    meta["intent"] = intent.intent
+    meta["intent"] = primary.intent
     meta["v2"] = True
     meta["llm_used"] = False
+    if ordinal_eq is not None and not meta.get("equipment_id"):
+        meta["equipment_id"] = ordinal_eq
+    meta["_cards_for_ctx"] = result.get("cards") or []
     result["metadata"] = meta
     _store_context(conversation, meta)
     return result

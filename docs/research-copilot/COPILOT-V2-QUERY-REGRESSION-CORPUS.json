@@ -1,0 +1,951 @@
+{
+  "version": "phase-d-v1",
+  "description": "Copilot V2 Phase D regression / coverage corpus (>=100 realistic queries)",
+  "count": 118,
+  "queries": [
+    {
+      "id": "Q001",
+      "query": "What XRD machines do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q002",
+      "query": "Show me all XRD equipment.",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q003",
+      "query": "What SEMs are available?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q004",
+      "query": "Which XRD is available?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q005",
+      "query": "Find FESEM equipment",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q006",
+      "query": "What XPS instruments exist?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q007",
+      "query": "List NMR equipment",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q008",
+      "query": "Show XRF machines",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q009",
+      "query": "Which equipment supports EDS?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q010",
+      "query": "I need FESEM",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q011",
+      "query": "I need to identify crystal structure.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q012",
+      "query": "I need elemental composition.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q013",
+      "query": "I need surface morphology.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q014",
+      "query": "I need molecular structure.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q015",
+      "query": "I need thermal analysis.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q016",
+      "query": "I need to measure thickness.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q017",
+      "query": "I need phase identification.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q018",
+      "query": "I need elemental analysis.",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q019",
+      "query": "Which equipment can measure particle size?",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q020",
+      "query": "I need surface chemistry XPS",
+      "expected_intent_family": "CAPABILITY_SEARCH",
+      "expected_intent": "capability_search",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q021",
+      "query": "Compare the available XRD machines.",
+      "expected_intent_family": "EQUIPMENT_COMPARISON",
+      "expected_intent": "compare_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q022",
+      "query": "Compare FESEM and SEM",
+      "expected_intent_family": "EQUIPMENT_COMPARISON",
+      "expected_intent": "compare_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q023",
+      "query": "Which is better for phase identification XRD",
+      "expected_intent_family": "EQUIPMENT_COMPARISON",
+      "expected_intent": "compare_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q024",
+      "query": "Difference between XRD machines",
+      "expected_intent_family": "EQUIPMENT_COMPARISON",
+      "expected_intent": "compare_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q025",
+      "query": "Find XRD slots.",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q026",
+      "query": "Next available SEM.",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q027",
+      "query": "Show me slots this week.",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q028",
+      "query": "Find Saturday slots for FESEM.",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q029",
+      "query": "Find earliest slot after 5 September for FESEM.",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q030",
+      "query": "Find slots for 3 hours on FESEM.",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q031",
+      "query": "Search available slots for FESEM this week",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q032",
+      "query": "Find the cheapest available slot for PXRD",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q033",
+      "query": "Find earliest FESEM slot",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q034",
+      "query": "Find two consecutive slots for XRD",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q035",
+      "query": "How much will XRD analysis of 10 samples cost?",
+      "expected_intent_family": "COST_ESTIMATE",
+      "expected_intent": "estimate_cost",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q036",
+      "query": "Estimate my total cost including booking.",
+      "expected_intent_family": "COST_ESTIMATE",
+      "expected_intent": "estimate_cost",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q037",
+      "query": "How much will this experiment cost for FESEM?",
+      "expected_intent_family": "COST_ESTIMATE",
+      "expected_intent": "estimate_cost",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q038",
+      "query": "Estimate the cost of booking FESEM for 2 hours.",
+      "expected_intent_family": "COST_ESTIMATE",
+      "expected_intent": "estimate_cost",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q039",
+      "query": "What is the price of PXRD?",
+      "expected_intent_family": "COST_ESTIMATE",
+      "expected_intent": "estimate_cost",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q040",
+      "query": "Book the earliest XRD slot.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q041",
+      "query": "Book the cheapest available slot.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q042",
+      "query": "Book tomorrow afternoon FESEM.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q043",
+      "query": "Book 2 hours on SEM.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q044",
+      "query": "I want to book FESEM",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q045",
+      "query": "Cancel my booking.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_cancel",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q046",
+      "query": "Cancel tomorrow XRD booking.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_cancel",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q047",
+      "query": "Move my SEM booking to next week.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_reschedule",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q048",
+      "query": "Can I move tomorrow booking?",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_reschedule",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q049",
+      "query": "Find another slot for this booking.",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_reschedule",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q050",
+      "query": "confirm",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "confirm_proposal",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q051",
+      "query": "Show my bookings.",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "my_bookings",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q052",
+      "query": "What do I have booked tomorrow?",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "my_bookings",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q053",
+      "query": "What is my next booking?",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "next_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q054",
+      "query": "List my recent bookings.",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "my_bookings",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q055",
+      "query": "How much do I have?",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "wallet_balance",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q056",
+      "query": "What is my wallet balance?",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "wallet_balance",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q057",
+      "query": "Show my recent wallet transactions.",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "wallet_transactions",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q058",
+      "query": "Why was my wallet reduced?",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "wallet_transactions",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q059",
+      "query": "How much have I spent this month?",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "wallet_spend_month",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q060",
+      "query": "Recharge 5000.",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "prepare_recharge",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q061",
+      "query": "Recharge my wallet.",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "prepare_recharge",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q062",
+      "query": "Request credit of 20000.",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "prepare_credit",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q063",
+      "query": "What is my outstanding credit?",
+      "expected_intent_family": "WALLET",
+      "expected_intent": "credit_status",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q064",
+      "query": "Is my remote analysis ready?",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "ra_status",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q065",
+      "query": "What is my Remote Analysis status?",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "ra_status",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q066",
+      "query": "Show my analysis workspace.",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "ra_status",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q067",
+      "query": "Is my result ready?",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "results",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q068",
+      "query": "Has my result arrived?",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "results",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q069",
+      "query": "Sample status for my booking",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "sample_status",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q070",
+      "query": "What department am I in?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "user_profile",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q071",
+      "query": "What is my employee ID?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "user_profile",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q072",
+      "query": "Who am I?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "user_profile",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q073",
+      "query": "My student status",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "user_profile",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q074",
+      "query": "Who is my faculty?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "affiliations",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q075",
+      "query": "Show my affiliations",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "affiliations",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q076",
+      "query": "What do I need to do today?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "daily_dashboard",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q077",
+      "query": "What should I do today?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "daily_dashboard",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q078",
+      "query": "Research dashboard",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "daily_dashboard",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q079",
+      "query": "What are my pending actions?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "pending_actions",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q080",
+      "query": "Create a support request.",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "support_ticket",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q081",
+      "query": "Raise a ticket",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "support_ticket",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q082",
+      "query": "How do I prepare a sample for FESEM?",
+      "expected_intent_family": "INFORMATION",
+      "expected_intent": "docs_rag",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q083",
+      "query": "What does HOLD mean on a booking?",
+      "expected_intent_family": "INFORMATION",
+      "expected_intent": "docs_rag",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q084",
+      "query": "FESEM SOP",
+      "expected_intent_family": "INFORMATION",
+      "expected_intent": "docs_rag",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q085",
+      "query": "Sample prep documentation",
+      "expected_intent_family": "INFORMATION",
+      "expected_intent": "docs_rag",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q086",
+      "query": "The second one.",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "context",
+      "notes": "ordinal_followup",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q087",
+      "query": "Tomorrow morning.",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "context",
+      "notes": "datetime_followup",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q088",
+      "query": "Book it.",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "context",
+      "notes": "context_booking",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q089",
+      "query": "Find the earliest SEM slot tomorrow, estimate the cost, check my wallet, and book it.",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "multi",
+      "notes": "multi_intent",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q090",
+      "query": "Show my pending results and tell me whether I have enough balance for my next booking.",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "multi",
+      "notes": "multi_intent",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q091",
+      "query": "Find XRD equipment, compare them, and tell me which one is best for phase identification.",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "multi",
+      "notes": "multi_intent",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q092",
+      "query": "Something about quantum flux capacitors at IIC",
+      "expected_intent_family": "CONVERSATIONAL",
+      "expected_intent": "general",
+      "notes": "unanswered_candidate",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q093",
+      "query": "What TGA equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q094",
+      "query": "What DSC equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q095",
+      "query": "What FTIR equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q096",
+      "query": "What UV-Vis equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q097",
+      "query": "What AFM equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q098",
+      "query": "What TEM equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q099",
+      "query": "What ICP equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q100",
+      "query": "What EPR equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q101",
+      "query": "What VSM equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q102",
+      "query": "What ellipsometry equipment do you have?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q103",
+      "query": "Find slots for AFM this week",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q104",
+      "query": "Estimate AFM cost",
+      "expected_intent_family": "COST_ESTIMATE",
+      "expected_intent": "estimate_cost",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q105",
+      "query": "Book earliest AFM",
+      "expected_intent_family": "BOOKING",
+      "expected_intent": "prepare_booking",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q106",
+      "query": "Is analysis software available?",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "results",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q107",
+      "query": "Download my result",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "results",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q108",
+      "query": "Send result to my email",
+      "expected_intent_family": "ANALYSIS",
+      "expected_intent": "results",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q109",
+      "query": "Which faculty can I join?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "affiliations",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q110",
+      "query": "Show pending affiliation requests",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "affiliations",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q111",
+      "query": "When does my student account expire?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "user_profile",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q112",
+      "query": "Which wallet owner am I linked to?",
+      "expected_intent_family": "USER_OPS",
+      "expected_intent": "user_profile",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q113",
+      "query": "Show cancelled bookings",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "my_bookings",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q114",
+      "query": "Which bookings are pending?",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "my_bookings",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q115",
+      "query": "What bookings need sample submission?",
+      "expected_intent_family": "BOOKING_VIEW",
+      "expected_intent": "my_bookings",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q116",
+      "query": "Find cheapest SEM Saturday",
+      "expected_intent_family": "SLOT_SEARCH",
+      "expected_intent": "search_slots",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q117",
+      "query": "I need nanoparticle imaging",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    },
+    {
+      "id": "Q118",
+      "query": "Supports EDS?",
+      "expected_intent_family": "EQUIPMENT_SEARCH",
+      "expected_intent": "search_equipment",
+      "notes": "",
+      "source": "phase_d_corpus"
+    }
+  ]
+}

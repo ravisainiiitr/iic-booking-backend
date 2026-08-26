@@ -141,14 +141,25 @@ def search_equipment_catalog(*, user, text: str) -> dict:
     if not flag("COPILOT_EQUIPMENT_SEARCH", True):
         return build_response(kind="ERROR", content="Equipment search is disabled.")
     from iic_booking.research_copilot.services.structured_search import search_equipment
+    from iic_booking.research_copilot.services.v2.capability_map import match_capability
 
     hits = search_equipment(query=text[:120], limit=8)
-    # Capability keywords
     lower = (text or "").lower()
-    if not hits and any(x in lower for x in ("eds", "edx", "elemental", "morphology", "nanoparticle", "xrd", "sem")):
-        hits = search_equipment(query="EDS" if "eds" in lower or "elemental" in lower else text[:80], limit=8)
-        if not hits:
-            hits = search_equipment(query="SEM" if "morphology" in lower or "sem" in lower else "XRD", limit=8)
+    if not hits:
+        caps = match_capability(text)
+        for cap in caps:
+            for needle in cap["needles"]:
+                hits = search_equipment(query=needle, limit=8)
+                if hits:
+                    break
+            if hits:
+                break
+    if not hits and any(x in lower for x in ("eds", "edx", "elemental", "morphology", "nanoparticle", "xrd", "sem", "fesem")):
+        for q in ("EDS", "FESEM", "XRD", "SEM"):
+            if q.lower() in lower or (q == "EDS" and "elemental" in lower):
+                hits = search_equipment(query=q, limit=8)
+                if hits:
+                    break
 
     rows = [
         {
@@ -162,12 +173,17 @@ def search_equipment_catalog(*, user, text: str) -> dict:
     ]
     actions = [{"id": f"eq_{r['id']}", "label": r["name"], "href": r["href"], "enabled": True} for r in rows if r.get("id")]
     cards = [{"type": "equipment_list", "title": "IIC equipment", "items": rows}]
+    if not rows:
+        from iic_booking.research_copilot.services.v2.unanswered import log_unanswered, unanswered_response
+
+        log_unanswered(user=user, query=text, intent="search_equipment", reason="EQUIPMENT_NOT_FOUND")
+        return unanswered_response(query=text)
     return build_response(
         kind="LIVE_DATA",
-        content=equipment_markdown(rows),
+        content=equipment_markdown(rows) + "\n\n_Source: Live portal equipment catalog_",
         cards=cards,
         actions=actions[:6],
-        metadata={"deterministic": True, "count": len(rows)},
+        metadata={"deterministic": True, "count": len(rows), "equipment_choices": rows, "confidence": "HIGH_CONFIDENCE"},
     )
 
 
@@ -532,16 +548,15 @@ def docs_rag(*, user, text: str) -> dict:
     )
     cites = rag_svc.citations_as_dicts(retrieval.citations)
     if not cites and not (retrieval.context_block or "").strip():
-        return build_response(
-            kind="ANSWER",
-            content="I could not find published IIC documentation for that. Try a more specific equipment name, or open **Tickets**.",
-            escalate=True,
-            metadata={"deterministic": True, "rag": True},
-        )
+        from iic_booking.research_copilot.services.v2.unanswered import log_unanswered, unanswered_response
+
+        log_unanswered(user=user, query=text, intent="docs_rag", reason="RAG_EMPTY")
+        return unanswered_response(query=text)
     # Prefer citation snippets over LLM
-    lines = ["**From IIC knowledge documents**", ""]
+    lines = ["**From IIC knowledge documents** (portal RAG)", ""]
     for c in cites[:5]:
         lines.append(f"- **{c.get('title')}**: {(c.get('snippet') or '')[:220]}")
+        lines.append(f"  _Source: {c.get('title')} — Live knowledge base_")
     actions = []
     for c in cites[:3]:
         if c.get("url"):
@@ -550,5 +565,230 @@ def docs_rag(*, user, text: str) -> dict:
         kind="ANSWER",
         content="\n".join(lines),
         actions=actions,
-        metadata={"deterministic": True, "rag": True, "citations": cites},
+        metadata={"deterministic": True, "rag": True, "citations": cites, "confidence": "HIGH_CONFIDENCE" if cites else "MEDIUM_CONFIDENCE"},
+    )
+
+
+def capability_search(*, user, text: str) -> dict:
+    """Map research goal → technique → live equipment catalog hits."""
+    from django.db.models import Q
+
+    from iic_booking.research_copilot.services.v2.capability_map import match_capability
+
+    hits = match_capability(text)
+    if not hits:
+        from iic_booking.research_copilot.services.v2.unanswered import log_unanswered, unanswered_response
+
+        log_unanswered(user=user, query=text, intent="capability_search", reason="NO_CAPABILITY_MATCH")
+        return unanswered_response(query=text)
+
+    lines = ["**Capability → technique → IIC equipment** (live catalog)", ""]
+    cards_items = []
+    actions = []
+    for hit in hits[:3]:
+        lines.append(f"### {hit['technique']}")
+        lines.append(f"_Matched:_ {', '.join(hit['matched_phrases'][:3])}")
+        q = Q()
+        for n in hit["needles"]:
+            q |= Q(name__icontains=n) | Q(description__icontains=n) | Q(code__icontains=n)
+        eqs = list(Equipment.objects.filter(q, status="ACTIVE").order_by("name")[:6])
+        if not eqs:
+            lines.append("- No matching active equipment found in the portal catalog for these needles.")
+        for eq in eqs:
+            dept = getattr(getattr(eq, "internal_department", None), "name", None) or ""
+            loc = getattr(eq, "location", None) or ""
+            lines.append(f"- **{eq.name}** — {dept} {('· ' + loc) if loc else ''}")
+            lines.append(f"  _Why:_ matches technique **{hit['technique']}** via catalog keywords.")
+            cards_items.append(
+                {
+                    "id": eq.pk,
+                    "name": eq.name,
+                    "technique": hit["technique"],
+                    "department": dept,
+                    "location": loc,
+                    "href": f"/equipments/{eq.pk}",
+                }
+            )
+            actions.append({"id": f"eq_{eq.pk}", "label": eq.name, "href": f"/equipments/{eq.pk}", "prompt": f"Find available slots for {eq.name}", "enabled": True})
+        lines.append("")
+    return build_response(
+        kind="LIVE_DATA",
+        content="\n".join(lines),
+        cards=[{"type": "equipment_list", "title": "Suggested instruments", "items": cards_items}],
+        actions=actions[:8],
+        metadata={"deterministic": True, "capability": True, "confidence": "HIGH_CONFIDENCE", "equipment_choices": cards_items},
+    )
+
+
+def compare_equipment(*, user, text: str, context_equipment_ids: list[int] | None = None) -> dict:
+    """Side-by-side comparison from portal Equipment fields only."""
+    from django.db.models import Q
+
+    ids: list[int] = list(context_equipment_ids or [])
+    # Prefer XRD family comparison when mentioned
+    lower = (text or "").lower()
+    needle = "xrd"
+    for n in ("fesem", "sem", "nmr", "xps", "xrf", "pxrd", "xrd"):
+        if n in lower:
+            needle = "xrd" if n in ("xrd", "pxrd") else n
+            break
+    if len(ids) < 2:
+        eqs = list(
+            Equipment.objects.filter(Q(name__icontains=needle) | Q(code__icontains=needle), status="ACTIVE").order_by("name")[:4]
+        )
+    else:
+        eqs = list(Equipment.objects.filter(pk__in=ids[:4], status="ACTIVE"))
+    if len(eqs) < 2:
+        return build_response(
+            kind="CLARIFICATION",
+            content=f"I need at least two portal instruments to compare (searched for “{needle}”). Try “Compare XRD machines”.",
+            actions=[{"id": "search", "label": "Find equipment", "prompt": "Show me all XRD equipment", "enabled": True}],
+            metadata={"deterministic": True},
+        )
+
+    lines = ["**Equipment comparison** (live portal data)", ""]
+    rows = []
+    for eq in eqs:
+        dept = getattr(getattr(eq, "internal_department", None), "name", None) or "—"
+        loc = getattr(eq, "location", None) or "—"
+        mode = getattr(eq, "profile_type", None) or "—"
+        make = getattr(eq, "make", None) or "—"
+        model = getattr(eq, "model_information", None) or "—"
+        lines.append(f"### {eq.name}")
+        lines.append(f"- Department: {dept}")
+        lines.append(f"- Location: {loc}")
+        lines.append(f"- Mode/profile: {mode}")
+        lines.append(f"- Make / model: {make} / {model}")
+        lines.append("- Pricing / availability: use Estimate / Find slots (not invented here)")
+        lines.append("")
+        rows.append(
+            {
+                "id": eq.pk,
+                "name": eq.name,
+                "department": dept,
+                "location": loc,
+                "mode": mode,
+                "make": make,
+                "model": model,
+                "href": f"/equipments/{eq.pk}",
+            }
+        )
+    actions = [
+        {"id": f"eq_{r['id']}", "label": f"Slots — {r['name']}", "prompt": f"Search available slots for {r['name']} this week", "enabled": True}
+        for r in rows
+    ]
+    return build_response(
+        kind="LIVE_DATA",
+        content="\n".join(lines),
+        cards=[{"type": "equipment_compare", "title": "Comparison", "items": rows}],
+        actions=actions,
+        metadata={"deterministic": True, "compare": True, "equipment_choices": rows, "confidence": "HIGH_CONFIDENCE"},
+    )
+
+
+def user_profile(*, user) -> dict:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return build_response(kind="ACTION_REQUIRED", content="Sign in to view your profile.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+    dept = getattr(getattr(user, "department", None), "name", None) or "—"
+    lines = [
+        "**Your profile** (live portal data)",
+        "",
+        f"- Name: {getattr(user, 'name', None) or '—'}",
+        f"- Email: {getattr(user, 'email', None) or '—'}",
+        f"- User type: {getattr(user, 'user_type', None) or '—'}",
+        f"- Department: {dept}",
+        f"- Employee / ID: {getattr(user, 'emp_id', None) or getattr(user, 'employee_id', None) or '—'}",
+        "",
+        "Protected identity fields cannot be changed via Copilot. Use Profile / Channel-I flows.",
+    ]
+    return build_response(
+        kind="LIVE_DATA",
+        content="\n".join(lines),
+        cards=[{"type": "user_profile", "department": dept, "user_type": getattr(user, "user_type", None)}],
+        actions=[{"id": "profile", "label": "Open Profile", "href": "/profile", "enabled": True}],
+        metadata={"deterministic": True, "confidence": "HIGH_CONFIDENCE"},
+    )
+
+
+def daily_dashboard(*, user) -> dict:
+    """Compose authoritative portal snippets into a personal research assistant digest."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return build_response(kind="ACTION_REQUIRED", content="Sign in for your daily research dashboard.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+
+    sections = ["**Your research dashboard** (live portal data)", ""]
+    actions = []
+    # Next booking
+    try:
+        from iic_booking.research_copilot.services import tools as tools_svc
+
+        nb = tools_svc._get_wallet(arguments={}, user=user)
+        bal = ((nb or {}).get("data") or {}).get("balance")
+        sections.append(f"**Wallet:** ₹{bal if bal is not None else '—'}")
+        actions.append({"id": "wallet", "label": "Wallet", "prompt": "What is my wallet balance?", "enabled": True})
+
+        nxt = tools_svc._get_next_booking(arguments={}, user=user)
+        data = (nxt or {}).get("data") or {}
+        if data.get("booking_id"):
+            sections.append(
+                f"**Next booking:** #{data.get('booking_id')} — {data.get('equipment')} ({data.get('status')}) · {data.get('start')}"
+            )
+            actions.append({"id": "next", "label": "Next booking", "prompt": "What is my next booking?", "enabled": True})
+        else:
+            sections.append("**Next booking:** none upcoming")
+    except Exception:  # noqa: BLE001
+        sections.append("**Wallet / bookings:** open portal pages if this summary is incomplete.")
+
+    # Credit outstanding (best-effort)
+    try:
+        from iic_booking.research_copilot.services.v2.mutations import domain_bridge
+
+        code, summary = domain_bridge.call_wallet_credit_summary(user=user)
+        if code < 400 and isinstance(summary, dict):
+            outstanding = summary.get("outstanding_amount") or summary.get("outstanding")
+            sections.append(f"**Outstanding credit:** {outstanding if outstanding is not None else '—'}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    sections.append("")
+    sections.append("**Suggested next steps**")
+    sections.append("- Find equipment / slots if you need a new booking")
+    sections.append("- Check Remote Analysis if a result or workspace is due")
+    sections.append("- Open Support Tickets only if something is stuck")
+    actions.extend(
+        [
+            {"id": "slots", "label": "Find slots", "prompt": "Search available slots for FESEM this week", "enabled": True},
+            {"id": "ra", "label": "Remote Analysis", "prompt": "What is my Remote Analysis status?", "enabled": True},
+            {"id": "tickets", "label": "Tickets", "href": "/tickets", "enabled": True},
+        ]
+    )
+    return build_response(
+        kind="LIVE_DATA",
+        content="\n".join(sections),
+        cards=[{"type": "daily_dashboard"}],
+        actions=actions[:8],
+        metadata={"deterministic": True, "dashboard": True, "confidence": "HIGH_CONFIDENCE"},
+    )
+
+
+def support_ticket_assist(*, user, text: str) -> dict:
+    """Diagnose lightly then deep-link; never auto-create tickets (flag COPILOT_TICKET_CREATE)."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return build_response(kind="ACTION_REQUIRED", content="Sign in to create support requests.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+    create_enabled = flag("COPILOT_TICKET_CREATE", False)
+    content = (
+        "**Support assist**\n\n"
+        "I can help you check booking / wallet / Remote Analysis status first. "
+        "Ticket creation via Copilot stays confirmation-gated"
+        + (" and is currently **enabled**." if create_enabled else " and is currently **disabled** (open Tickets in the portal).")
+        + "\n\nDescribe the issue, or open **Tickets** to file manually."
+    )
+    return build_response(
+        kind="ACTION_REQUIRED",
+        content=content,
+        actions=[
+            {"id": "tickets", "label": "Open Tickets", "href": "/tickets", "enabled": True, "requires_confirmation": True},
+            {"id": "bookings", "label": "My bookings", "prompt": "List my recent bookings.", "enabled": True},
+            {"id": "ra", "label": "RA status", "prompt": "What is my Remote Analysis status?", "enabled": True},
+        ],
+        metadata={"deterministic": True, "ticket_create_enabled": create_enabled},
     )
