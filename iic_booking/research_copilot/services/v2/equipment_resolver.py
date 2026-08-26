@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any
 
 from django.db.models import Q
 
@@ -25,6 +25,16 @@ class EquipmentResolution:
     equipment_name: str | None = None
     candidates: list[EquipmentCandidate] = field(default_factory=list)
     query: str = ""
+
+
+def _token_in_text(token: str, text: str) -> bool:
+    """Word-ish match so 'sem' does not match inside 'fesem'."""
+    t = (token or "").strip().lower()
+    if not t:
+        return False
+    if " " in t or "-" in t:
+        return t in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", text) is not None
 
 
 def _qs_visible(user=None):
@@ -60,24 +70,56 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
             query=raw,
         )
 
-    # Alias hits
+    # Alias hits — token-aware so FESEM does not activate bare SEM.
     needles: list[str] = []
+    matched_aliases: list[str] = []
     for alias, alias_needles in EQUIPMENT_ALIASES.items():
-        if alias in lower or any(n in lower for n in alias_needles):
+        if _token_in_text(alias, lower) or any(_token_in_text(n, lower) for n in alias_needles):
+            matched_aliases.append(alias)
             needles.extend([alias, *alias_needles])
-    # Also treat free tokens as needles
-    for tok in ("fesem", "sem", "tem", "xrd", "pxrd", "afm", "xps", "icp", "eds"):
-        if tok in lower and tok not in needles:
-            needles.append(tok)
+
+    # If FESEM matched, drop bare SEM needles (too broad vs FE-SEM catalog).
+    if "fesem" in matched_aliases:
+        needles = [n for n in needles if n not in {"sem", "scanning electron"}]
+        matched_aliases = [a for a in matched_aliases if a != "sem"]
+
+    # Deduplicate needles preserving order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for n in needles:
+        if n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    needles = uniq
 
     hits: dict[int, EquipmentCandidate] = {}
     if needles:
+        # Prefer name/code matches over description to avoid noisy substring hits
         filt = Q()
         for n in needles:
-            filt |= Q(name__icontains=n) | Q(code__icontains=n) | Q(description__icontains=n)
-        for eq in qs.filter(filt).order_by("name")[:8]:
+            filt |= Q(name__icontains=n) | Q(code__icontains=n)
+        for eq in qs.filter(filt).order_by("name")[:12]:
             eid = int(eq.pk)
             hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
+        if not hits:
+            filt = Q()
+            for n in needles:
+                filt |= Q(description__icontains=n)
+            for eq in qs.filter(filt).order_by("name")[:8]:
+                eid = int(eq.pk)
+                hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
+
+    # FESEM queries: keep Field Emission / FE-SEM instruments only when possible
+    if len(hits) > 1 and ("fesem" in matched_aliases or "fesem" in lower or "fe-sem" in lower):
+        narrowed = {
+            k: v
+            for k, v in hits.items()
+            if "fesem" in v.name.lower().replace("-", "").replace(" ", "")
+            or "fe-sem" in v.name.lower()
+            or "field emission scanning" in v.name.lower()
+        }
+        if narrowed:
+            hits = narrowed
 
     # Substring name search on remaining words
     if not hits:

@@ -21,6 +21,13 @@ class IntentResolverTests(SimpleTestCase):
         self.assertEqual(intent.intent, "search_slots")
         self.assertTrue(intent.deterministic)
 
+    def test_fesem_does_not_activate_bare_sem_token(self):
+        from iic_booking.research_copilot.services.v2.equipment_resolver import _token_in_text
+
+        self.assertTrue(_token_in_text("fesem", "search available slots for fesem this week"))
+        self.assertFalse(_token_in_text("sem", "search available slots for fesem this week"))
+        self.assertTrue(_token_in_text("sem", "search available slots for sem this week"))
+
     def test_wallet_balance(self):
         intent = resolve_intent("What is my wallet balance?")
         self.assertEqual(intent.intent, "wallet_balance")
