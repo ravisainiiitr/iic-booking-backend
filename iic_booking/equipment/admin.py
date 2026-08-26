@@ -430,7 +430,13 @@ class DynamicInputFieldForm(forms.ModelForm):
         return instance
 
 class DynamicInputFieldInline(admin.TabularInline):
-    """Inline admin for Dynamic Input Fields."""
+    """
+    Dynamic input fields (kept as a flat formset for Django POST).
+
+    The standalone section is visually nested under each Charge Profile row by
+    ``js/charge_profile_dynamic_fields.js``; user_type is assumed from that profile
+    (hidden column — no need to pick user type again).
+    """
     form = DynamicInputFieldForm
     model = DynamicInputField
     extra = 0
@@ -447,7 +453,18 @@ class DynamicInputFieldInline(admin.TabularInline):
         'help_text',
         'source_element_field_key',
     ]
-    classes = ['collapse']
+    # Keep in DOM for POST; JS hides the outer shell and moves rows under charge profiles.
+    classes = ['collapse', 'js-dynamic-input-fields-inline']
+    verbose_name = _('Dynamic input field')
+    verbose_name_plural = _('Dynamic input fields (managed under Charge Profiles)')
+
+    def get_formset(self, request, obj=None, **kwargs):
+        formset = super().get_formset(request, obj, **kwargs)
+        # Hide user_type in the table; JS / charge-profile nesting sets it.
+        if 'user_type' in formset.form.base_fields:
+            formset.form.base_fields['user_type'].widget = forms.HiddenInput()
+            formset.form.base_fields['user_type'].required = False
+        return formset
 
 
 class PrintMaterialInline(admin.TabularInline):
@@ -573,8 +590,50 @@ class SlotMasterInline(admin.TabularInline):
     ordering = ['slot_number']
     classes = ['collapse']
 
+# Synthetic charge-profile user_type choice: UI alias for faculty + pricing_profile=PI.
+PI_IIT_FACULTY_ALIAS = "__pi__:faculty"
+PI_USER_TYPE_PREFIX = "__pi__:"
+
+
+def _charge_profile_user_type_choices(extra_pi_user_types: list[str] | None = None):
+    """Standard booking user types + PI IIT Faculty alias (+ any other existing PI types)."""
+    choices = [
+        (UserType.STUDENT, _("IITR Student")),
+        (UserType.FACULTY, _("IITR Faculty")),
+        (PI_IIT_FACULTY_ALIAS, _("PI IIT Faculty")),
+        (UserType.EXTERNAL, _("Educational Institute")),
+        (UserType.RND, _("Govt R&D Organizations")),
+        (UserType.INSTITUTE, _("Industry")),
+        (UserType.STARTUP_INCUBATED_IITR, _("Startup Incubated at IIT Roorkee")),
+        (UserType.EXTERNAL_STARTUP_MSME, _("External Startup/MSME")),
+    ]
+    known = {c[0] for c in choices}
+    for ut in extra_pi_user_types or []:
+        alias = f"{PI_USER_TYPE_PREFIX}{ut}"
+        if alias in known or ut == UserType.FACULTY:
+            continue
+        label = dict(UserType.get_choices()).get(ut, ut)
+        choices.append((alias, _("PI — %(label)s") % {"label": label}))
+        known.add(alias)
+    return choices
+
+
+def _decode_charge_profile_user_type_choice(raw: str) -> tuple[str, str]:
+    """Return (user_type, pricing_profile) from a form select value."""
+    value = (raw or "").strip()
+    if value.startswith(PI_USER_TYPE_PREFIX):
+        return value[len(PI_USER_TYPE_PREFIX) :], ChargeProfilePricingProfile.PI
+    return value, ChargeProfilePricingProfile.STANDARD
+
+
+def _encode_charge_profile_user_type_choice(user_type: str, pricing_profile: str) -> str:
+    if pricing_profile == ChargeProfilePricingProfile.PI:
+        return f"{PI_USER_TYPE_PREFIX}{user_type}"
+    return user_type
+
+
 class ChargeProfileInlineFormSet(forms.models.BaseInlineFormSet):
-    """Pass parent equipment to each form so MULTI_PARAM can make charge fields optional."""
+    """STANDARD + PI rows in one formset; DISCOUNTED stays out of admin UI."""
 
     def _construct_form(self, i, **kwargs):
         # Pass parent before form __init__ so ChargeProfileForm can set required=False for MULTI_PARAM
@@ -585,52 +644,54 @@ class ChargeProfileInlineFormSet(forms.models.BaseInlineFormSet):
         super().clean()
         if any(form.errors for form in self.forms):
             return
-        seen_user_types: list[str] = []
+        seen: list[tuple[str, str]] = []
         for form in self.forms:
             if not hasattr(form, "cleaned_data") or not form.cleaned_data:
                 continue
             if form.cleaned_data.get("DELETE"):
                 continue
             ut = form.cleaned_data.get("user_type")
+            pp = form.cleaned_data.get("pricing_profile") or ChargeProfilePricingProfile.STANDARD
             if not ut:
                 continue
-            if ut in seen_user_types:
+            key = (ut, pp)
+            if key in seen:
                 raise forms.ValidationError(
                     _(
-                        "Duplicate user type in charge profiles: each user type may only appear once "
-                        "in standard pricing for this equipment."
+                        "Duplicate charge profile: each combination of user type and pricing "
+                        "(standard / PI) may only appear once for this equipment."
                     )
                 )
-            seen_user_types.append(ut)
+            seen.append(key)
 
     def save_new(self, form, commit=True):
-        """Avoid IntegrityError when a standard row already exists (double row, missing id, stale POST)."""
+        """Avoid IntegrityError when a row already exists (double row, missing id, stale POST)."""
         obj = form.save(commit=False)
         setattr(obj, self.fk.get_attname(), self.instance.pk)
         if not commit:
             return obj
         pp = obj.pricing_profile or ChargeProfilePricingProfile.STANDARD
-        if pp == ChargeProfilePricingProfile.STANDARD:
-            defaults = {
-                "is_active": obj.is_active,
-                "primary_unit_charge": obj.primary_unit_charge,
-                "secondary_unit_charge": obj.secondary_unit_charge,
-                "breakpoint": obj.breakpoint,
-                "time_formula": obj.time_formula,
-            }
-            cp, _created = ChargeProfile.objects.update_or_create(
-                equipment=self.instance,
-                user_type=obj.user_type,
-                pricing_profile=ChargeProfilePricingProfile.STANDARD,
-                defaults=defaults,
-            )
-            return cp
-        obj.save()
-        return obj
+        defaults = {
+            "profile_type": obj.profile_type,
+            "is_active": obj.is_active,
+            "require_istem_fbr": getattr(obj, "require_istem_fbr", False),
+            "show_charge_breakdown": getattr(obj, "show_charge_breakdown", True),
+            "primary_unit_charge": obj.primary_unit_charge,
+            "secondary_unit_charge": obj.secondary_unit_charge,
+            "breakpoint": obj.breakpoint,
+            "time_formula": obj.time_formula,
+        }
+        cp, _created = ChargeProfile.objects.update_or_create(
+            equipment=self.instance,
+            user_type=obj.user_type,
+            pricing_profile=pp,
+            defaults=defaults,
+        )
+        return cp
 
 
 class ChargeProfileForm(forms.ModelForm):
-    """Custom form for ChargeProfile with user_type dropdown."""
+    """Charge profile form: user_type dropdown includes PI IIT Faculty alias."""
 
     class Meta:
         model = ChargeProfile
@@ -643,20 +704,39 @@ class ChargeProfileForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         self._parent_equipment = kwargs.pop("_parent_equipment", None)
         super().__init__(*args, **kwargs)
-        if not getattr(self.instance, "pk", None):
+
+        extra_pi: list[str] = []
+        equipment = self._parent_equipment or (
+            self.instance.equipment if self.instance and getattr(self.instance, "pk", None) else None
+        )
+        if equipment and getattr(equipment, "pk", None):
+            extra_pi = list(
+                ChargeProfile.objects.filter(
+                    equipment=equipment,
+                    pricing_profile=ChargeProfilePricingProfile.PI,
+                )
+                .exclude(user_type=UserType.FACULTY)
+                .values_list("user_type", flat=True)
+                .distinct()
+            )
+
+        choices = _charge_profile_user_type_choices(extra_pi)
+        self.fields["user_type"].choices = choices
+        self.fields["user_type"].widget = forms.Select(choices=choices)
+        self.fields["user_type"].help_text = _(
+            "Select the user type this profile applies to. "
+            "Use “PI IIT Faculty” for PI facility rates (applied when the wallet owner is an equipment PI)."
+        )
+
+        # Show alias in the select for existing PI rows.
+        if getattr(self.instance, "pk", None) and self.instance.pricing_profile == ChargeProfilePricingProfile.PI:
+            self.initial["user_type"] = _encode_charge_profile_user_type_choice(
+                self.instance.user_type, ChargeProfilePricingProfile.PI
+            )
+            self.initial["pricing_profile"] = ChargeProfilePricingProfile.PI
+        elif not getattr(self.instance, "pk", None):
             self.initial.setdefault("pricing_profile", ChargeProfilePricingProfile.STANDARD)
-        # Restrict user_type choices to only: student, faculty, rnd center, institute, external
-        allowed_user_types = [
-            (UserType.STUDENT, _("IITR Student")),
-            (UserType.FACULTY, _("IITR Faculty")),
-            (UserType.EXTERNAL, _("Educational Institute")),
-            (UserType.RND, _("Govt R&D Organizations")),
-            (UserType.INSTITUTE, _("Industry")),
-            (UserType.STARTUP_INCUBATED_IITR, _("Startup Incubated at IIT Roorkee")),
-            (UserType.EXTERNAL_STARTUP_MSME, _("External Startup/MSME")),
-        ]
-        self.fields["user_type"].widget = forms.Select(choices=allowed_user_types)
-        self.fields["user_type"].help_text = _("Select the user type this profile applies to")
+
         if "require_istem_fbr" in self.fields:
             self.fields["require_istem_fbr"].help_text = _(
                 "When enabled, users booking with this charge profile must submit an I-STEM FBR number "
@@ -664,9 +744,6 @@ class ChargeProfileForm(forms.ModelForm):
             )
 
         # For MULTI_PARAM profiles, charge fields are hidden in UI and filled from slot options
-        equipment = self._parent_equipment or (
-            self.instance.equipment if self.instance and self.instance.pk else None
-        )
         row_type = getattr(self.instance, "profile_type", None) or (
             getattr(equipment, "profile_type", None) if equipment else None
         )
@@ -679,6 +756,13 @@ class ChargeProfileForm(forms.ModelForm):
 
     def clean(self):
         cleaned_data = super().clean()
+        raw_ut = cleaned_data.get("user_type")
+        if raw_ut:
+            ut, pp = _decode_charge_profile_user_type_choice(str(raw_ut))
+            cleaned_data["user_type"] = ut
+            cleaned_data["pricing_profile"] = pp
+            self.instance.pricing_profile = pp
+
         equipment = getattr(self, "_parent_equipment", None) or (
             self.instance.equipment if self.instance and self.instance.pk else None
         )
@@ -696,7 +780,7 @@ class ChargeProfileForm(forms.ModelForm):
 
 
 class ChargeProfileInline(admin.StackedInline):
-    """Inline admin for Charge Profiles."""
+    """Inline admin for Charge Profiles (standard + PI via PI IIT Faculty alias)."""
     form = ChargeProfileForm
     formset = ChargeProfileInlineFormSet
     model = ChargeProfile
@@ -715,120 +799,25 @@ class ChargeProfileInline(admin.StackedInline):
         'time_formula',
     ]
     readonly_fields = ['created_at', 'updated_at']
-    ordering = ['user_type']
+    ordering = ['pricing_profile', 'user_type']
     classes = ['collapse']
 
     def get_queryset(self, request):
-        # Only allow admins to edit STANDARD charge profiles. Discounted variants are
-        # auto-seeded (zero charges) and managed via user flag in /admin/section/users.
+        # STANDARD + PI editable here. Discounted variants stay seeded / user-flag driven.
         qs = super().get_queryset(request)
-        return qs.filter(pricing_profile=ChargeProfilePricingProfile.STANDARD)
-    
+        return qs.filter(
+            pricing_profile__in=[
+                ChargeProfilePricingProfile.STANDARD,
+                ChargeProfilePricingProfile.PI,
+            ]
+        )
+
     class Media:
         js = (
             'admin/js/jquery.init.js',
             'js/dynamic_input_field.js',
             'js/charge_profile_admin.js',
-        )
-
-
-class PIChargeProfileForm(ChargeProfileForm):
-    """Charge profile form forced to PI pricing_profile."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.initial["pricing_profile"] = ChargeProfilePricingProfile.PI
-        if getattr(self.instance, "pk", None) is None:
-            self.instance.pricing_profile = ChargeProfilePricingProfile.PI
-        else:
-            self.instance.pricing_profile = ChargeProfilePricingProfile.PI
-
-    def clean(self):
-        cleaned = super().clean()
-        cleaned["pricing_profile"] = ChargeProfilePricingProfile.PI
-        return cleaned
-
-
-class PIChargeProfileInlineFormSet(forms.models.BaseInlineFormSet):
-    """Ensure new/updated rows persist as PI pricing profiles."""
-
-    def _construct_form(self, i, **kwargs):
-        kwargs["_parent_equipment"] = getattr(self, "instance", None)
-        return super()._construct_form(i, **kwargs)
-
-    def clean(self):
-        super().clean()
-        if any(form.errors for form in self.forms):
-            return
-        seen_user_types: list[str] = []
-        for form in self.forms:
-            if not hasattr(form, "cleaned_data") or not form.cleaned_data:
-                continue
-            if form.cleaned_data.get("DELETE"):
-                continue
-            ut = form.cleaned_data.get("user_type")
-            if not ut:
-                continue
-            if ut in seen_user_types:
-                raise forms.ValidationError(
-                    _(
-                        "Duplicate user type in PI charge profiles: each user type may only appear once "
-                        "in PI pricing for this equipment."
-                    )
-                )
-            seen_user_types.append(ut)
-
-    def save_new(self, form, commit=True):
-        obj = form.save(commit=False)
-        obj.pricing_profile = ChargeProfilePricingProfile.PI
-        setattr(obj, self.fk.get_attname(), self.instance.pk)
-        if commit:
-            obj.save()
-        return obj
-
-    def save_existing(self, form, instance, commit=True):
-        obj = form.save(commit=False)
-        obj.pricing_profile = ChargeProfilePricingProfile.PI
-        if commit:
-            obj.save()
-        return obj
-
-
-class PIChargeProfileInline(admin.StackedInline):
-    """Inline admin for PI Charge Profiles (independent of STANDARD rates)."""
-
-    form = PIChargeProfileForm
-    formset = PIChargeProfileInlineFormSet
-    model = ChargeProfile
-    extra = 0
-    fk_name = "equipment"
-    verbose_name = _("PI Charge Profile")
-    verbose_name_plural = _("PI Charge Profiles")
-    fields = [
-        "user_type",
-        "profile_type",
-        "pricing_profile",
-        "is_active",
-        "require_istem_fbr",
-        "show_charge_breakdown",
-        "primary_unit_charge",
-        "secondary_unit_charge",
-        "breakpoint",
-        "time_formula",
-    ]
-    readonly_fields = ["created_at", "updated_at"]
-    ordering = ["user_type"]
-    classes = ["collapse"]
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        return qs.filter(pricing_profile=ChargeProfilePricingProfile.PI)
-
-    class Media:
-        js = (
-            "admin/js/jquery.init.js",
-            "js/dynamic_input_field.js",
-            "js/charge_profile_admin.js",
+            'js/charge_profile_dynamic_fields.js',
         )
 
 
@@ -1104,13 +1093,12 @@ class EquipmentAdmin(admin.ModelAdmin):
     inlines = [
         EquipmentManagerInline,
         EquipmentPIInline,
-        PIChargeProfileInline,
         EquipmentOperatorInline,
         EquipmentSpecificationInline,
         EquipmentAccessoryInline,
         EquipmentAdditionalAccessoryInline,
-        DynamicInputFieldInline,
         ChargeProfileInline,
+        DynamicInputFieldInline,
         SlotMasterInline,
     ]
     
