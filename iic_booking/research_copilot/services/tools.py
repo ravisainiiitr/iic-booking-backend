@@ -131,7 +131,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
     if not slots:
         return _ok(
             {
-                "equipment_id": eq.id,
+                "equipment_id": eq.pk,
                 "equipment_name": eq.name,
                 "date": day.isoformat(),
                 "slots": [],
@@ -141,7 +141,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
                 {
                     "id": "open_equipment_slots",
                     "label": f"View availability — {eq.name}",
-                    "href": f"/equipments/{eq.id}",
+                    "href": f"/equipments/{eq.pk}",
                     "enabled": True,
                 }
             ],
@@ -152,7 +152,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
         {
             "id": "open_equipment_slots",
             "label": f"View availability — {eq.name}",
-            "href": f"/equipments/{eq.id}",
+            "href": f"/equipments/{eq.pk}",
             "enabled": True,
         }
     ]
@@ -161,7 +161,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
             {
                 "id": f"book_slot_{i}",
                 "label": f"Review & book {s.get('start') or 'slot'}",
-                "href": f"/book-equipment?equipment={eq.id}&date={day.isoformat()}",
+                "href": f"/book-equipment?equipment={eq.pk}&date={day.isoformat()}",
                 "enabled": True,
                 "requires_confirmation": True,
                 "hint": "Opens portal booking; confirmation uses normal booking APIs.",
@@ -181,7 +181,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
 
     return _ok(
         {
-            "equipment_id": eq.id,
+            "equipment_id": eq.pk,
             "equipment_name": eq.name,
             "date": day.isoformat(),
             "slots": slots,
@@ -509,7 +509,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     if not cp:
         return _ok(
             {
-                "equipment_id": eq.id,
+                "equipment_id": eq.pk,
                 "equipment_name": eq.name,
                 "estimate": None,
                 "note": "No active charge profile found. Open the booking flow for an authoritative estimate.",
@@ -519,7 +519,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                 {
                     "id": "open_book_equipment",
                     "label": f"Review charges — {eq.name}",
-                    "href": f"/book-equipment?equipment={eq.id}",
+                    "href": f"/book-equipment?equipment={eq.pk}",
                     "enabled": True,
                     "requires_confirmation": not public_mode,
                 }
@@ -576,7 +576,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
         {
             "id": "open_book_equipment",
             "label": f"Review charges — {eq.name}",
-            "href": f"/book-equipment?equipment={eq.id}",
+            "href": f"/book-equipment?equipment={eq.pk}",
             "enabled": True,
             "requires_confirmation": not public_mode,
             "hint": "Portal calculate is the source of truth for cost.",
@@ -594,7 +594,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
 
     return _ok(
         {
-            "equipment_id": eq.id,
+            "equipment_id": eq.pk,
             "equipment_name": eq.name,
             "user_type": user_type,
             "profile_type": cp.profile_type,

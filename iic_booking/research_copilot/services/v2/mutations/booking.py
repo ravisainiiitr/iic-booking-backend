@@ -64,7 +64,10 @@ def _wallet_balance(user) -> Any:
 def _estimate_for_equipment(*, user, equipment_id: int) -> tuple[Any, str | None]:
     from iic_booking.research_copilot.services import tools as tools_svc
 
-    result = tools_svc._estimate_booking_cost(arguments={"equipment_id": equipment_id}, user=user)
+    try:
+        result = tools_svc._estimate_booking_cost(arguments={"equipment_id": equipment_id}, user=user)
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
     if not result.get("ok"):
         return None, (result.get("message") or "estimate_failed")
     data = result.get("data") or {}
