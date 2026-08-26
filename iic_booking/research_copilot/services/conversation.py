@@ -116,12 +116,16 @@ def _estimate_confidence(*, escalate: bool, provider: str, text: str, retrieval_
 
 
 def create_conversation(*, user, title: str = "") -> Conversation:
+    from iic_booking.research_copilot.models import ConversationAccessMode
+
     ctx = build_context(user)
     conv = Conversation.objects.create(
         user=user,
         title=(title or "New conversation")[:255],
         user_role_snapshot=ctx.user_type[:64],
         department_id_snapshot=ctx.department_id,
+        access_mode=ConversationAccessMode.AUTHENTICATED,
+        anonymous_session_key="",
     )
     audit_svc.audit_conversation_created(user=user, conversation=conv)
     return conv

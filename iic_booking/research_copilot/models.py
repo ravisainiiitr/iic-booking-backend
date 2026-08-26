@@ -9,16 +9,30 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 
+class ConversationAccessMode(models.TextChoices):
+    PUBLIC = "public", _("Public")
+    AUTHENTICATED = "authenticated", _("Authenticated")
+
+
 class Conversation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="research_copilot_conversations",
+        null=True,
+        blank=True,
     )
     title = models.CharField(max_length=255, blank=True, default="")
     user_role_snapshot = models.CharField(max_length=64, blank=True, default="")
     department_id_snapshot = models.IntegerField(null=True, blank=True)
+    # Present on production DB (NOT NULL). Model alignment so creates do not omit columns.
+    access_mode = models.CharField(
+        max_length=32,
+        choices=ConversationAccessMode.choices,
+        default=ConversationAccessMode.AUTHENTICATED,
+    )
+    anonymous_session_key = models.CharField(max_length=64, blank=True, default="")
     is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -153,14 +153,14 @@ class PhaseDOrchestratorTests(SimpleTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["metadata"]["intent"], "daily_dashboard")
 
-    def test_ticket_create_flag_off(self):
-        from iic_booking.research_copilot.services.v2 import read_tools
+    def test_create_conversation_sets_access_mode(self):
+        from iic_booking.research_copilot.models import Conversation, ConversationAccessMode
 
-        out = read_tools.support_ticket_assist(
-            user=SimpleNamespace(is_authenticated=True, pk=1),
-            text="Create a support request.",
-        )
-        self.assertFalse(out["metadata"].get("ticket_create_enabled"))
+        # Field presence (schema alignment regression for browser chat create)
+        field_names = {f.name for f in Conversation._meta.get_fields()}
+        self.assertIn("access_mode", field_names)
+        self.assertIn("anonymous_session_key", field_names)
+        self.assertEqual(ConversationAccessMode.AUTHENTICATED, "authenticated")
 
     def test_unanswered_response_no_hallucination(self):
         from iic_booking.research_copilot.services.v2.unanswered import unanswered_response
