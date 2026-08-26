@@ -2,9 +2,10 @@
 
 | Area | Status |
 |------|--------|
-| Phase A deterministic reads | READY (prod `v2.5.42.2-copilot-v2-phase-a`) |
+| Phase A deterministic reads | READY (prod includes Phase B hotfix lineage) |
 | Phase B booking prepare/confirm/execute code | IMPLEMENTED |
-| Phase B mutation flags | **OFF** |
+| Phase B controlled live E2E | **PASSED** (see `COPILOT-V2-PHASE-B-E2E-REPORT.md`) |
+| Phase B mutation flags | **OFF** (awaiting Main Administrator enablement) |
 | Phase C wallet mutations | OFF (scaffold only) |
 
 ## Final gate (this pass)
@@ -15,11 +16,19 @@
 **PHASE C WALLET MUTATIONS = OFF**
 
 ### Enablement
-Do **not** set `COPILOT_BOOKING_CREATE|CANCEL|RESCHEDULE=true` until controlled E2E on a test account passes
-(see `COPILOT-V2-BOOKING-E2E.md`). Then report:
+Controlled E2E on dedicated test account **passed** (`COPILOT-V2-PHASE-B-E2E-REPORT.md`).
+
+Status for Main Administrator:
 
 `READY FOR CONTROLLED PRODUCTION ENABLEMENT`
 
-Until then, report:
+Global flags still **must not** be flipped automatically. Enable only after operator approval:
 
-`PHASE B STATUS: NOT READY` (for enablement) — code shipped with flags OFF is expected.
+- `COPILOT_BOOKING_CREATE=true`
+- `COPILOT_BOOKING_CANCEL=true`
+- `COPILOT_BOOKING_RESCHEDULE=true`
+
+Keep `COPILOT_WALLET_RECHARGE` / `COPILOT_WALLET_CREDIT` **false** (Phase C).
+
+Production tag used for qualification: `v2.5.43.4-copilot-v2-phase-b-e2e`  
+E2E test mode (`COPILOT_BOOKING_E2E_TEST_MODE`) restored to **false** after the run.
