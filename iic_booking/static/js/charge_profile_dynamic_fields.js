@@ -9,6 +9,7 @@
   "use strict";
 
   var PI_PREFIX = "__pi__:";
+  var regroupTimer = null;
 
   function decodeUserType(raw) {
     var v = (raw || "").toString();
@@ -21,54 +22,109 @@
   function findDynamicGroup() {
     var $byId = $("#input_fields-group");
     if ($byId.length) return $byId;
-    return $(".inline-group.js-dynamic-input-fields-inline, .inline-group").filter(function () {
-      var t = ($(this).find("> h2, .inline-heading").first().text() || "").toLowerCase();
-      return t.indexOf("dynamic input") >= 0;
-    }).first();
+    return $(".inline-group.js-dynamic-input-fields-inline, .inline-group")
+      .filter(function () {
+        var t = ($(this).find("> h2, .inline-heading").first().text() || "").toLowerCase();
+        return t.indexOf("dynamic input") >= 0;
+      })
+      .first();
   }
 
   function findChargeGroup() {
     var $byId = $("#charge_profiles-group");
     if ($byId.length) return $byId;
-    return $(".inline-group").filter(function () {
-      var t = ($(this).find("> h2, .inline-heading").first().text() || "").toLowerCase();
-      return t.indexOf("charge profile") >= 0 && t.indexOf("pi charge") < 0;
-    }).first();
+    return $(".inline-group")
+      .filter(function () {
+        var t = ($(this).find("> h2, .inline-heading").first().text() || "").toLowerCase();
+        return t.indexOf("charge profile") >= 0 && t.indexOf("pi charge") < 0;
+      })
+      .first();
   }
 
+  function fieldsetOf($related) {
+    var $fs = $related.children("fieldset").first();
+    if ($fs.length) return $fs;
+    return $related.find("fieldset").first();
+  }
+
+  /**
+   * One nest per charge-profile card, always AFTER User type / Profile type / charge fields.
+   * Never insert near the h3 .delete control (that caused duplicate sections).
+   */
   function ensureNest($related) {
-    var $nest = $related.find("> .cp-dynamic-fields-nest");
-    if ($nest.length) return $nest;
-    $nest = $(
-      '<div class="cp-dynamic-fields-nest" style="margin:12px 0;padding:12px;border:1px solid #ccd0d4;background:#f8f9fa;border-radius:4px;">' +
+    var $existing = $related.find(".cp-dynamic-fields-nest");
+    if ($existing.length > 1) {
+      $existing.slice(1).remove();
+      $existing = $related.find(".cp-dynamic-fields-nest").first();
+    }
+    if ($existing.length) {
+      placeNestAtEnd($related, $existing);
+      return $existing;
+    }
+
+    var $nest = $(
+      '<div class="cp-dynamic-fields-nest" style="margin:12px 0;padding:12px;border:1px solid #ccd0d4;background:#f8f9fa;border-radius:4px;clear:both;">' +
         '<div class="cp-dynamic-fields-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">' +
           "<div>" +
-            '<strong>Dynamic input fields</strong>' +
+            "<strong>Dynamic input fields</strong>" +
             '<p class="help" style="margin:4px 0 0;">Fields A–Z for this user type (used in formulas and booking). User type is assumed from this charge profile.</p>' +
           "</div>" +
           '<button type="button" class="button cp-add-dynamic-field">Add dynamic field</button>' +
         "</div>" +
         '<div class="cp-dynamic-fields-pi-note" style="display:none;margin-bottom:8px;font-size:12px;color:#666;"></div>' +
-        '<div class="cp-dynamic-fields-rows"></div>' +
+        '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table></div>' +
       "</div>"
     );
-    // Insert before Delete checkbox row when present, else append.
-    var $deleteRow = $related.find(".form-row.field-DELETE, .delete").last();
-    if ($deleteRow.length) {
-      $nest.insertBefore($deleteRow.closest(".form-row").length ? $deleteRow.closest(".form-row") : $deleteRow);
-    } else {
-      $related.append($nest);
-    }
+    placeNestAtEnd($related, $nest);
     return $nest;
   }
 
+  function placeNestAtEnd($related, $nest) {
+    var $fs = fieldsetOf($related);
+    var $host = $fs.length ? $fs : $related;
+    // Prefer after the last real form-row (user_type, profile_type, charges, …),
+    // never before the stacked-inline title / delete control.
+    var $rows = $host.children(".form-row").filter(function () {
+      return !$(this).hasClass("field-DELETE") && !$(this).find("> .delete").length;
+    });
+    if ($rows.length) {
+      $nest.insertAfter($rows.last());
+      return;
+    }
+    $host.append($nest);
+  }
+
+  function ensureProfileFieldsVisible($related) {
+    $related.find(".form-row.field-user_type, .form-row.field-profile_type").show();
+    $related.find(".field-user_type, .field-profile_type").closest(".form-row").show();
+    // Keep selects usable (not covered / not display:none from other admin JS)
+    $related.find('select[name$="-user_type"], select[name$="-profile_type"]').each(function () {
+      var $row = $(this).closest(".form-row");
+      if ($row.length) $row.show();
+      $(this).show();
+    });
+  }
+
+  function sourceTbody($dynGroup) {
+    return $dynGroup.find("table tbody").first();
+  }
+
+  function isTemplateOrAddRow($tr) {
+    if ($tr.hasClass("empty-form") || $tr.hasClass("add-row")) return true;
+    var id = ($tr.attr("id") || "") + " " + ($tr.attr("class") || "");
+    return id.indexOf("empty") >= 0;
+  }
+
   function dynamicRows($dynGroup) {
-    // TabularInline: tbody > tr.form-row (or tr.has_original / tr.empty-form)
-    return $dynGroup.find("table tbody tr").filter(function () {
+    // Include rows currently parked under charge-profile nests.
+    var $all = $().add($dynGroup.find("table tbody tr"));
+    $(".cp-dynamic-fields-rows table tbody tr, .cp-dynamic-fields-orphan table tbody tr").each(function () {
+      $all = $all.add(this);
+    });
+    return $all.filter(function () {
       var $tr = $(this);
-      if ($tr.hasClass("empty-form") || $tr.hasClass("add-row")) return false;
-      // Skip header-like rows without inputs
-      return $tr.find('input, select, textarea').length > 0;
+      if (isTemplateOrAddRow($tr)) return false;
+      return $tr.find("input, select, textarea").length > 0;
     });
   }
 
@@ -79,7 +135,43 @@
 
   function setRowUserType($row, userType) {
     var $ut = $row.find('input[name$="-user_type"], select[name$="-user_type"]').first();
-    if ($ut.length) $ut.val(userType).trigger("change");
+    if ($ut.length) {
+      $ut.val(userType);
+      if ($ut.is("select") && !$ut.find('option[value="' + userType + '"]').length) {
+        $ut.append($("<option>").attr("value", userType).text(userType));
+        $ut.val(userType);
+      }
+    }
+  }
+
+  function nestRowsContainer($nest) {
+    var $wrap = $nest.find(".cp-dynamic-fields-rows").first();
+    var $tbody = $wrap.find("table tbody").first();
+    if (!$tbody.length) {
+      $wrap.empty().append(
+        '<table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table>'
+      );
+      $tbody = $wrap.find("table tbody").first();
+    }
+    return $tbody;
+  }
+
+  function returnRowsToSource($charges, $dyn) {
+    var $tbody = sourceTbody($dyn);
+    if (!$tbody.length) return;
+    $charges.find(".cp-dynamic-fields-rows tr, .cp-dynamic-fields-orphan tr").each(function () {
+      if (!isTemplateOrAddRow($(this))) {
+        $tbody.append(this);
+      }
+    });
+  }
+
+  function scheduleRegroup(delay) {
+    if (regroupTimer) window.clearTimeout(regroupTimer);
+    regroupTimer = window.setTimeout(function () {
+      regroupTimer = null;
+      regroup();
+    }, delay || 40);
   }
 
   function regroup() {
@@ -90,18 +182,21 @@
     // Soft-hide standalone dynamic section (keep management form / empty-form in DOM).
     $dyn.addClass("cp-dynamic-fields-source");
     $dyn.find("> h2, .inline-heading").first().hide();
+    // Keep it in-flow but invisible so Django formset add still works reliably.
     $dyn.css({
-      border: "none",
-      margin: 0,
-      padding: 0,
-      height: 0,
-      overflow: "hidden",
-      opacity: 0,
       position: "absolute",
-      left: "-9999px",
+      left: "-10000px",
+      top: "0",
+      width: "1px",
+      height: "1px",
+      overflow: "hidden",
+      opacity: "0",
+      pointerEvents: "none",
+      margin: "0",
+      padding: "0",
+      border: "none",
     });
 
-    // Hide user_type column header if still visible.
     $dyn.find("thead th").each(function () {
       var t = ($(this).text() || "").toLowerCase();
       if (t.indexOf("user type") >= 0 || t.indexOf("user_type") >= 0) {
@@ -109,35 +204,33 @@
       }
     });
 
+    // Move nested rows back before rebuilding (avoids losing rows / duplicating nests).
+    returnRowsToSource($charges, $dyn);
+
     var $relateds = $charges.find(".inline-related").not(".empty-form");
     $relateds.each(function () {
-      ensureNest($(this));
+      var $rel = $(this);
+      ensureProfileFieldsVisible($rel);
+      ensureNest($rel);
     });
 
-    // Clear previous placements (move rows back to source tbody first).
-    var $tbody = $dyn.find("table tbody").first();
-    $charges.find(".cp-dynamic-fields-rows tr").each(function () {
-      $tbody.append(this);
-    });
-
-    // Build map userType -> nest rows container (STANDARD only).
     var nestByUserType = {};
     $relateds.each(function () {
       var $rel = $(this);
       var $sel = $rel.find('select[name$="-user_type"]').first();
       var decoded = decodeUserType($sel.val());
       var $nest = ensureNest($rel);
-      var $rows = $nest.find(".cp-dynamic-fields-rows");
+      var $tbody = nestRowsContainer($nest);
       var $note = $nest.find(".cp-dynamic-fields-pi-note");
       var $add = $nest.find(".cp-add-dynamic-field");
       var $headerHelp = $nest.find(".cp-dynamic-fields-header .help");
 
+      ensureProfileFieldsVisible($rel);
+
       if (decoded.isPi) {
         var hasStandard = false;
         $relateds.each(function () {
-          var other = decodeUserType(
-            $(this).find('select[name$="-user_type"]').first().val()
-          );
+          var other = decodeUserType($(this).find('select[name$="-user_type"]').first().val());
           if (!other.isPi && other.userType === decoded.userType) hasStandard = true;
         });
         if (hasStandard) {
@@ -149,7 +242,7 @@
                 "). Edit them on the standard charge profile row for that user type."
             );
           $add.hide();
-          $rows.hide();
+          $nest.find(".cp-dynamic-fields-rows").hide();
           if ($headerHelp.length) {
             $headerHelp.text(
               "PI IIT Faculty uses the same dynamic fields as IITR Faculty (no separate field set)."
@@ -157,7 +250,6 @@
           }
           return;
         }
-        // No standard row yet — allow editing fields here (still keyed by real user_type).
         $note
           .show()
           .text(
@@ -166,89 +258,88 @@
               "” (shared if you later add a standard row)."
           );
         $add.show();
-        $rows.show();
-        if (decoded.userType) {
-          nestByUserType[decoded.userType] = $rows;
-        }
+        $nest.find(".cp-dynamic-fields-rows").show();
+        if (decoded.userType) nestByUserType[decoded.userType] = $tbody;
         return;
       }
 
       $note.hide().text("");
       $add.show();
-      $rows.show();
+      $nest.find(".cp-dynamic-fields-rows").show();
       if ($headerHelp.length) {
         $headerHelp.text(
           "Fields A–Z for this user type (used in formulas and booking). User type is assumed from this charge profile."
         );
       }
-      if (decoded.userType) {
-        nestByUserType[decoded.userType] = $rows;
-      }
+      if (decoded.userType) nestByUserType[decoded.userType] = $tbody;
     });
 
-    // Place each dynamic row under matching user type; orphan rows stay in a fallback.
-    var $fallback = $charges.find(".cp-dynamic-fields-orphan");
+    var $fallback = $charges.children(".cp-dynamic-fields-orphan").first();
     if (!$fallback.length) {
       $fallback = $(
-        '<div class="cp-dynamic-fields-orphan" style="margin:12px 0;padding:12px;border:1px dashed #ba2121;background:#fff5f5;">' +
+        '<div class="cp-dynamic-fields-orphan" style="display:none;margin:12px 0;padding:12px;border:1px dashed #ba2121;background:#fff5f5;">' +
           "<strong>Unassigned dynamic fields</strong>" +
-          '<p class="help">These rows have no matching charge profile user type yet. Add a charge profile for that user type, or set user_type.</p>' +
-          '<div class="cp-dynamic-fields-rows"></div>' +
+          '<p class="help">These rows have no matching charge profile user type yet. Add a charge profile for that user type.</p>' +
+          '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table></div>' +
         "</div>"
       );
       $charges.append($fallback);
     }
-    var $fallbackRows = $fallback.find(".cp-dynamic-fields-rows");
-    $fallbackRows.empty();
+    var $fallbackBody = nestRowsContainer($fallback);
 
     dynamicRows($dyn).each(function () {
       var $row = $(this);
-      // Skip if this is still the template empty-form
-      if (($row.attr("id") || "").indexOf("empty") >= 0) return;
+      if (isTemplateOrAddRow($row)) return;
       var ut = rowUserType($row);
-      // Hide user_type cell
       $row.find(".field-user_type, td.field-user_type").hide();
-      var $target = (ut && nestByUserType[ut]) || $fallbackRows;
-      // Wrap tabular row in a table if needed
-      if ($target.is(".cp-dynamic-fields-rows") && !$target.is("table") && $target.children("table").length === 0) {
-        var $tbl = $('<table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table>');
-        $target.append($tbl);
-      }
-      var $body = $target.is("table") ? $target.find("tbody") : $target.find("table tbody").first();
-      if (!$body.length) {
-        $target.append($row);
-      } else {
-        $body.append($row);
-      }
+      var $target = (ut && nestByUserType[ut]) || $fallbackBody;
+      $target.append($row);
     });
 
-    if ($fallbackRows.find("tr").length === 0) {
+    if ($fallbackBody.children("tr").length === 0) {
       $fallback.hide();
     } else {
       $fallback.show();
     }
   }
 
+  function newestDynamicRow($dyn) {
+    var $rows = dynamicRows($dyn);
+    return $rows.last();
+  }
+
   function addFieldForUserType(userType) {
     var $dyn = findDynamicGroup();
-    if (!$dyn.length) return;
-    var $add = $dyn.find(".add-row a, .add-row button, a.add-related").first();
+    if (!$dyn.length || !userType) return;
+
+    var beforeCount = dynamicRows($dyn).length;
+    var $add = $dyn.find(".add-row a").first();
     if (!$add.length) {
-      // Django tabular add link
-      $add = $dyn.find(".tabular .add-row a").first();
+      $add = $dyn.find("tr.add-row a, .tabular .add-row a").first();
     }
-    if ($add.length) {
-      $add.get(0).click();
+    if (!$add.length) {
+      window.alert("Could not find Django “add another” control for dynamic fields.");
+      return;
     }
-    // After Django adds empty form, set user_type and regroup.
-    window.setTimeout(function () {
+
+    // Temporarily allow interaction with the off-screen formset add link.
+    $dyn.css({ pointerEvents: "auto" });
+    $add.get(0).click();
+
+    var tries = 0;
+    function afterAdd() {
+      tries += 1;
       var $rows = dynamicRows($dyn);
-      var $last = $rows.last();
-      if ($last.length && userType) {
-        setRowUserType($last, userType);
+      if ($rows.length <= beforeCount && tries < 20) {
+        window.setTimeout(afterAdd, 25);
+        return;
       }
+      var $last = newestDynamicRow($dyn);
+      if ($last.length) setRowUserType($last, userType);
+      $dyn.css({ pointerEvents: "none" });
       regroup();
-    }, 50);
+    }
+    window.setTimeout(afterAdd, 30);
   }
 
   $(document).ready(function () {
@@ -257,27 +348,39 @@
 
     regroup();
 
-    $(document).on("change", '#charge_profiles-group select[name$="-user_type"]', function () {
-      regroup();
+    $(document).on("change", '#charge_profiles-group select[name$="-user_type"], #charge_profiles-group select[name$="-profile_type"]', function () {
+      scheduleRegroup(50);
     });
 
     $(document).on("click", ".cp-add-dynamic-field", function (e) {
       e.preventDefault();
+      e.stopPropagation();
       var $rel = $(this).closest(".inline-related");
-      var raw = $rel.find('select[name$="-user_type"]').val();
+      var raw = $rel.find('select[name$="-user_type"]').first().val();
       var decoded = decodeUserType(raw);
-      if (decoded.isPi || !decoded.userType) return;
+      if (!decoded.userType) return;
+      if (decoded.isPi) {
+        // Only block when a standard row already owns the fields.
+        var hasStandard = false;
+        findChargeGroup()
+          .find(".inline-related")
+          .not(".empty-form")
+          .each(function () {
+            var other = decodeUserType($(this).find('select[name$="-user_type"]').first().val());
+            if (!other.isPi && other.userType === decoded.userType) hasStandard = true;
+          });
+        if (hasStandard) return;
+      }
       addFieldForUserType(decoded.userType);
     });
 
-    // When Django formset adds charge profile rows
-    $(document).on("formset:added", function () {
-      window.setTimeout(regroup, 30);
+    $(document).on("formset:added", function (event, $row) {
+      // If a charge-profile row was added, build its nest; if a dynamic row, regroup.
+      scheduleRegroup(60);
     });
 
-    // Periodic light refresh after inline add links
     $(document).on("click", "#charge_profiles-group .add-row a", function () {
-      window.setTimeout(regroup, 80);
+      scheduleRegroup(100);
     });
   });
 })(django.jQuery);

@@ -8,10 +8,17 @@
 
     $(document).ready(function() {
         // Get profile_type from Equipment form (for inline) or ChargeProfile form
-        function getProfileType() {
+        function getProfileType($scope) {
+            // Prefer the per-charge-profile row's profile_type (ChargeProfile.profile_type).
+            if ($scope && $scope.length) {
+                var $rowType = $scope.find('select[name$="-profile_type"]').first();
+                if ($rowType.length && $rowType.val()) {
+                    return $rowType.val();
+                }
+            }
             // First try to get from Equipment's profile_type field (for inline)
             var $equipmentProfileType = $('#id_profile_type');
-            if ($equipmentProfileType.length) {
+            if ($equipmentProfileType.length && $equipmentProfileType.val()) {
                 return $equipmentProfileType.val();
             }
             
@@ -387,21 +394,30 @@
         }
 
         function updateAllChargeProfiles() {
-            var profileType = getProfileType();
-            
             // Update standalone ChargeProfile admin (if exists)
+            var fallbackType = getProfileType(null);
             if ($('#chargeprofile_form').length || $('form').has('.field-primary_unit_charge').not('.inline-group').length) {
-                updateStandaloneFields(profileType);
+                updateStandaloneFields(fallbackType);
             }
             
-            // Update all inline ChargeProfile formsets
-            $('.inline-group').each(function() {
-                var $inline = $(this);
-                // Check if this is a ChargeProfile inline (has breakpoint field)
-                if ($inline.find('.field-breakpoint').length) {
-                    updateInlineFields($inline, profileType);
+            // Update each ChargeProfile stacked inline using THAT row's profile_type
+            $('#charge_profiles-group .inline-related').not('.empty-form').each(function() {
+                var $related = $(this);
+                var rowType = getProfileType($related) || fallbackType;
+                if ($related.find('.field-breakpoint').length) {
+                    updateInlineFields($related, rowType);
                 }
             });
+
+            // Legacy fallback: whole inline-group (older markup)
+            if (!$('#charge_profiles-group').length) {
+                $('.inline-group').each(function() {
+                    var $inline = $(this);
+                    if ($inline.find('.field-breakpoint').length) {
+                        updateInlineFields($inline, getProfileType($inline) || fallbackType);
+                    }
+                });
+            }
         }
 
         // Initialize on page load
@@ -444,9 +460,20 @@
         $(document).on('formset:added', function(event, $row) {
             if ($row == null) return;
             var $el = $row.jquery ? $row : $($row);
+            var $related = $el.closest('.inline-related');
             var $inline = $el.closest('.inline-group');
-            if ($inline.length && $inline.find('.field-breakpoint').length) {
-                updateInlineFields($inline, getProfileType());
+            if ($related.length && $related.find('.field-breakpoint').length) {
+                updateInlineFields($related, getProfileType($related));
+            } else if ($inline.length && $inline.find('.field-breakpoint').length) {
+                updateInlineFields($inline, getProfileType($inline));
+            }
+        });
+
+        // Per-row profile_type changes on charge profiles
+        $(document).on('change', '#charge_profiles-group select[name$="-profile_type"]', function() {
+            var $related = $(this).closest('.inline-related');
+            if ($related.length) {
+                updateInlineFields($related, getProfileType($related));
             }
         });
     });
