@@ -72,7 +72,7 @@
           '<button type="button" class="button cp-add-dynamic-field">Add dynamic field</button>' +
         "</div>" +
         '<div class="cp-dynamic-fields-pi-note" style="display:none;margin-bottom:8px;font-size:12px;color:#666;"></div>' +
-        '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table></div>' +
+        '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><thead></thead><tbody></tbody></table></div>' +
       "</div>"
     );
     placeNestAfterProfileControls($related, $nest);
@@ -171,14 +171,53 @@
     }
   }
 
-  function nestRowsContainer($nest) {
+  function nestHeaderHtml($dyn) {
+    // Clone source tabular thead so labels stay in sync (Field key, Field label, …).
+    var $srcThead = $dyn && $dyn.length ? $dyn.find("table thead").first() : $();
+    if ($srcThead.length) {
+      var $clone = $srcThead.clone(false);
+      $clone.find("th").each(function () {
+        var t = (($(this).text() || "") + " " + ($(this).find(".help").text() || "")).toLowerCase();
+        // Keep column for alignment with hidden user_type cells, but do not show the label.
+        if (t.indexOf("user type") >= 0 || t.indexOf("user_type") >= 0) {
+          $(this).css({ display: "none", width: 0, padding: 0, border: 0 }).html("");
+        }
+      });
+      return $("<div>").append($clone).html();
+    }
+    // Fallback labels if source thead is missing (user_type column kept empty/hidden)
+    return (
+      "<thead><tr>" +
+      '<th style="display:none"></th>' +
+      "<th>Field key</th>" +
+      "<th>Field label</th>" +
+      "<th>Field type</th>" +
+      "<th>Is required</th>" +
+      "<th>Editing required</th>" +
+      "<th>Default value</th>" +
+      "<th>Options</th>" +
+      "<th>Help text</th>" +
+      "<th>Source element field key</th>" +
+      "<th>Delete?</th>" +
+      "</tr></thead>"
+    );
+  }
+
+  function nestRowsContainer($nest, $dyn) {
     var $wrap = $nest.find(".cp-dynamic-fields-rows").first();
-    var $tbody = $wrap.find("table tbody").first();
+    var $table = $wrap.children("table.cp-nested-dyn-table").first();
+    if (!$table.length) {
+      $wrap.empty();
+      $table = $('<table class="tabular cp-nested-dyn-table" style="width:100%;"></table>');
+      $wrap.append($table);
+    }
+    // Always refresh header from source so labels stay visible after regroup.
+    $table.children("thead").remove();
+    $table.prepend(nestHeaderHtml($dyn));
+    var $tbody = $table.children("tbody").first();
     if (!$tbody.length) {
-      $wrap.empty().append(
-        '<table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table>'
-      );
-      $tbody = $wrap.find("table tbody").first();
+      $tbody = $("<tbody></tbody>");
+      $table.append($tbody);
     }
     return $tbody;
   }
@@ -247,7 +286,7 @@
       var $sel = $rel.find('select[name$="-user_type"]').first();
       var decoded = decodeUserType($sel.val());
       var $nest = ensureNest($rel);
-      var $tbody = nestRowsContainer($nest);
+      var $tbody = nestRowsContainer($nest, $dyn);
       var $note = $nest.find(".cp-dynamic-fields-pi-note");
       var $add = $nest.find(".cp-add-dynamic-field");
       var $headerHelp = $nest.find(".cp-dynamic-fields-header .help");
@@ -307,12 +346,12 @@
         '<div class="cp-dynamic-fields-orphan" style="display:none;margin:12px 0;padding:12px;border:1px dashed #ba2121;background:#fff5f5;">' +
           "<strong>Unassigned dynamic fields</strong>" +
           '<p class="help">These rows have no matching charge profile user type yet. Add a charge profile for that user type.</p>' +
-          '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table></div>' +
+          '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><thead></thead><tbody></tbody></table></div>' +
         "</div>"
       );
       $charges.append($fallback);
     }
-    var $fallbackBody = nestRowsContainer($fallback);
+    var $fallbackBody = nestRowsContainer($fallback, $dyn);
 
     dynamicRows($dyn).each(function () {
       var $row = $(this);
