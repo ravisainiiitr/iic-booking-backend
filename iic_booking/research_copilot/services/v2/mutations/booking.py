@@ -18,12 +18,16 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
 from iic_booking.research_copilot.services.v2.mutations import domain_bridge
 from iic_booking.research_copilot.services.v2.mutations import idempotency as idem
 from iic_booking.research_copilot.services.v2.mutations import proposals as prop_store
 
 
-def _flag(name: str) -> bool:
+def _flag(name: str, user=None) -> bool:
+    """Booking flags honor global OR controlled E2E test-account allowlist."""
+    if name.startswith("COPILOT_BOOKING_"):
+        return booking_mutation_allowed(user, name)
     return bool(getattr(settings, name, False))
 
 
@@ -207,7 +211,7 @@ def prepare_booking_create(
             payload["approx_balance_after"] = None
 
     record = prop_store.create_proposal(user=user, action="CREATE_BOOKING", payload=payload)
-    executable = _flag("COPILOT_BOOKING_CREATE")
+    executable = _flag("COPILOT_BOOKING_CREATE", user=user)
 
     _audit(
         user=user,
@@ -251,7 +255,7 @@ def execute_booking_create(
     confirmation_token: str,
     idempotency_key: str = "",
 ) -> dict[str, Any]:
-    if not _flag("COPILOT_BOOKING_CREATE"):
+    if not _flag("COPILOT_BOOKING_CREATE", user=user):
         return _safe_error(
             "COPILOT_BOOKING_CREATE_DISABLED",
             "Booking create via Copilot is disabled. Use the portal Book flow, or ask an administrator to enable COPILOT_BOOKING_CREATE after controlled E2E.",
@@ -360,7 +364,7 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
         ),
     }
     record = prop_store.create_proposal(user=user, action="CANCEL_BOOKING", payload=payload)
-    executable = _flag("COPILOT_BOOKING_CANCEL")
+    executable = _flag("COPILOT_BOOKING_CANCEL", user=user)
     _audit(user=user, action="prepare_cancellation", detail={"proposal_id": record["proposal_id"], "booking_id": bid, "ok": True})
     return {
         "ok": True,
@@ -385,7 +389,7 @@ def execute_booking_cancel(
     confirmation_token: str,
     idempotency_key: str = "",
 ) -> dict[str, Any]:
-    if not _flag("COPILOT_BOOKING_CANCEL"):
+    if not _flag("COPILOT_BOOKING_CANCEL", user=user):
         return _safe_error(
             "COPILOT_BOOKING_CANCEL_DISABLED",
             "Booking cancel via Copilot is disabled. Use My Bookings to cancel, or enable COPILOT_BOOKING_CANCEL after E2E.",
@@ -498,7 +502,7 @@ def prepare_reschedule(
         "slot_id": int(slot_id) if slot_id else None,
     }
     record = prop_store.create_proposal(user=user, action="RESCHEDULE_BOOKING", payload=payload)
-    executable = _flag("COPILOT_BOOKING_RESCHEDULE")
+    executable = _flag("COPILOT_BOOKING_RESCHEDULE", user=user)
     _audit(user=user, action="prepare_reschedule", detail={"proposal_id": record["proposal_id"], "booking_id": bid, "ok": True})
     return {
         "ok": True,
@@ -523,7 +527,7 @@ def execute_booking_reschedule(
     confirmation_token: str,
     idempotency_key: str = "",
 ) -> dict[str, Any]:
-    if not _flag("COPILOT_BOOKING_RESCHEDULE"):
+    if not _flag("COPILOT_BOOKING_RESCHEDULE", user=user):
         return _safe_error(
             "COPILOT_BOOKING_RESCHEDULE_DISABLED",
             "Reschedule via Copilot is disabled. Use My Bookings, or enable COPILOT_BOOKING_RESCHEDULE after E2E.",

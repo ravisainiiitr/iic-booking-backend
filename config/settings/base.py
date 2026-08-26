@@ -677,6 +677,11 @@ COPILOT_BOOKING_CREATE = env.bool("COPILOT_BOOKING_CREATE", default=False)
 COPILOT_BOOKING_CANCEL = env.bool("COPILOT_BOOKING_CANCEL", default=False)
 COPILOT_BOOKING_RESCHEDULE = env.bool("COPILOT_BOOKING_RESCHEDULE", default=False)
 COPILOT_BOOKING_MODIFY = env.bool("COPILOT_BOOKING_MODIFY", default=False)
+# Controlled E2E qualification — allows booking mutations ONLY for allowlisted
+# is_test_account users while global COPILOT_BOOKING_* flags remain False.
+# Never use this to enable mutations for real production users.
+COPILOT_BOOKING_E2E_TEST_MODE = env.bool("COPILOT_BOOKING_E2E_TEST_MODE", default=False)
+COPILOT_BOOKING_TEST_USER_IDS = env("COPILOT_BOOKING_TEST_USER_IDS", default="")
 # Phase C — financial (OFF)
 COPILOT_WALLET_RECHARGE = env.bool("COPILOT_WALLET_RECHARGE", default=False)
 COPILOT_WALLET_CREDIT = env.bool("COPILOT_WALLET_CREDIT", default=False)

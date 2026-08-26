@@ -634,13 +634,20 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
         "mutation_flags": {
-            "booking_create": bool(getattr(settings, "COPILOT_BOOKING_CREATE", False)),
-            "booking_cancel": bool(getattr(settings, "COPILOT_BOOKING_CANCEL", False)),
-            "booking_reschedule": bool(getattr(settings, "COPILOT_BOOKING_RESCHEDULE", False)),
+            "booking_create": _booking_flag_for_user(user, "COPILOT_BOOKING_CREATE"),
+            "booking_cancel": _booking_flag_for_user(user, "COPILOT_BOOKING_CANCEL"),
+            "booking_reschedule": _booking_flag_for_user(user, "COPILOT_BOOKING_RESCHEDULE"),
             "wallet_recharge": False,
             "wallet_credit": False,
+            "e2e_test_mode": bool(getattr(settings, "COPILOT_BOOKING_E2E_TEST_MODE", False)),
         },
     }
+
+
+def _booking_flag_for_user(user, flag_name: str) -> bool:
+    from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+    return booking_mutation_allowed(user, flag_name)
 
 
 def public_bootstrap_payload() -> dict:

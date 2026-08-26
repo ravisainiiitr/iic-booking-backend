@@ -182,6 +182,48 @@ class PhaseBCancelAuthzTests(SimpleTestCase):
         self.assertEqual(out["error"], "BOOKING_FORBIDDEN")
 
 
+@override_settings(
+    COPILOT_BOOKING_CREATE=False,
+    COPILOT_BOOKING_CANCEL=False,
+    COPILOT_BOOKING_RESCHEDULE=False,
+    COPILOT_BOOKING_E2E_TEST_MODE=True,
+    COPILOT_BOOKING_TEST_USER_IDS="42",
+)
+class PhaseBE2EAllowlistTests(SimpleTestCase):
+    def test_allowlisted_test_user_can_execute_path(self):
+        from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+        u = SimpleNamespace(is_authenticated=True, pk=42, is_test_account=True)
+        self.assertTrue(booking_mutation_allowed(u, "COPILOT_BOOKING_CREATE"))
+        self.assertTrue(booking_mutation_allowed(u, "COPILOT_BOOKING_CANCEL"))
+        self.assertTrue(booking_mutation_allowed(u, "COPILOT_BOOKING_RESCHEDULE"))
+
+    def test_real_user_blocked_even_if_id_listed(self):
+        from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+        u = SimpleNamespace(is_authenticated=True, pk=42, is_test_account=False)
+        self.assertFalse(booking_mutation_allowed(u, "COPILOT_BOOKING_CREATE"))
+
+    def test_other_test_user_not_on_allowlist_blocked(self):
+        from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+        u = SimpleNamespace(is_authenticated=True, pk=99, is_test_account=True)
+        self.assertFalse(booking_mutation_allowed(u, "COPILOT_BOOKING_CREATE"))
+
+    def test_e2e_mode_without_allowlist_fail_closed(self):
+        from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+        with override_settings(COPILOT_BOOKING_TEST_USER_IDS=""):
+            u = SimpleNamespace(is_authenticated=True, pk=42, is_test_account=True)
+            self.assertFalse(booking_mutation_allowed(u, "COPILOT_BOOKING_CREATE"))
+
+    def test_wallet_flags_never_via_e2e(self):
+        from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+        u = SimpleNamespace(is_authenticated=True, pk=42, is_test_account=True)
+        self.assertFalse(booking_mutation_allowed(u, "COPILOT_WALLET_RECHARGE"))
+
+
 class PhaseARegressionIntentTests(SimpleTestCase):
     def test_fesem_slots_still_deterministic(self):
         i = resolve_intent("Search available slots for FESEM this week")
