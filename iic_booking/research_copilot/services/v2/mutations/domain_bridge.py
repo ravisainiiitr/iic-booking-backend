@@ -22,11 +22,21 @@ def _as_data(response) -> tuple[int, dict[str, Any]]:
     return status_code, {"error": str(data) if data is not None else "unknown_error"}
 
 
-def _authenticated_json_request(*, user, path: str, body: dict[str, Any]) -> Request:
+def _django_json_post(*, user, path: str, body: dict[str, Any]):
+    """Authenticated Django HttpRequest (for @api_view entrypoints)."""
     factory = APIRequestFactory()
-    django_request = factory.post(path, body, format="json")
-    force_authenticate(django_request, user=user)
-    # Explicit parsers required: bare Request() rejects application/json.
+    request = factory.post(path, body, format="json")
+    force_authenticate(request, user=user)
+    return request
+
+
+def _drf_json_post(*, user, path: str, body: dict[str, Any]) -> Request:
+    """
+    Authenticated DRF Request with JSONParser.
+
+    Used for internal helpers like `_book_equipment_impl` that expect `.data`.
+    """
+    django_request = _django_json_post(user=user, path=path, body=body)
     drf_request = Request(django_request, parsers=[JSONParser()])
     drf_request.user = user
     return drf_request
@@ -41,7 +51,7 @@ def call_book_equipment(*, user, equipment_id: int, body: dict[str, Any]) -> tup
     for banned in ("user_id", "user", "email", "owner", "owner_id", "target_user", "wallet_owner_id"):
         safe_body.pop(banned, None)
 
-    drf_request = _authenticated_json_request(
+    drf_request = _drf_json_post(
         user=user,
         path=f"/api/equipments/{equipment_id}/book/",
         body=safe_body,
@@ -53,12 +63,13 @@ def call_book_equipment(*, user, equipment_id: int, body: dict[str, Any]) -> tup
 def call_user_cancel_booking(*, user, booking_id: int, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     from iic_booking.equipment.api_views import user_cancel_booking
 
-    drf_request = _authenticated_json_request(
+    # @api_view must receive Django HttpRequest (not an already-wrapped DRF Request).
+    django_request = _django_json_post(
         user=user,
         path=f"/api/bookings/{booking_id}/user-cancel/",
         body=body or {"refund": True, "notes": "Cancelled via Research Copilot"},
     )
-    response = user_cancel_booking(drf_request, booking_id)
+    response = user_cancel_booking(django_request, booking_id)
     return _as_data(response)
 
 
@@ -67,10 +78,10 @@ def call_user_reschedule_booking(
 ) -> tuple[int, dict[str, Any]]:
     from iic_booking.equipment.api_views import user_reschedule_booking
 
-    drf_request = _authenticated_json_request(
+    django_request = _django_json_post(
         user=user,
         path=f"/api/bookings/{booking_id}/user-reschedule/",
         body={"start_time": start_time, "end_time": end_time},
     )
-    response = user_reschedule_booking(drf_request, booking_id)
+    response = user_reschedule_booking(django_request, booking_id)
     return _as_data(response)

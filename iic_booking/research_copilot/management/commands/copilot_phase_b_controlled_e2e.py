@@ -121,46 +121,60 @@ class Command(BaseCommand):
         return Decimal(str(tot or 0))
 
     def _pick_equipment_and_slots(self, *, user, equipment_id: int | None):
-        from django.db.models import Q
-
+        """
+        Choose equipment with ≥2 AVAILABLE future slots outside the user
+        cancel/reschedule threshold window (default 48h + buffer).
+        Prefer EPR / TGA / low-contention instruments over heavily waitlisted PXRD/XPS.
+        """
         from iic_booking.equipment.models import DailySlot, SlotStatus
 
         now = timezone.now()
-        qs = (
+        # Outside typical 48h threshold with buffer so cancel+reschedule remain allowed.
+        min_start = now + timezone.timedelta(hours=60)
+
+        base = (
             DailySlot.objects.filter(
                 status=SlotStatus.AVAILABLE,
                 booking__isnull=True,
-                start_datetime__gt=now,
+                start_datetime__gt=min_start,
                 slot_master__equipment__status="ACTIVE",
             )
             .select_related("slot_master__equipment")
             .order_by("start_datetime")
         )
         if equipment_id:
-            qs = qs.filter(slot_master__equipment_id=equipment_id)
+            candidates = [equipment_id]
         else:
-            # Prefer IIC PXRD for low-cost controlled qualification
-            qs = qs.filter(
-                Q(slot_master__equipment__name__icontains="PXRD")
-                | Q(slot_master__equipment__name__icontains="Powder X-Ray")
+            # Prefer instruments known to accept faculty bookings without waitlist in prod probes.
+            preferred = [43, 47, 44, 60, 7, 67, 1, 66, 4]
+            # Then any other equipment that has ≥2 far slots
+            others = list(
+                base.exclude(slot_master__equipment_id__in=preferred)
+                .values_list("slot_master__equipment_id", flat=True)
+                .distinct()[:20]
             )
-            if user.department_id:
-                qs = qs.filter(slot_master__equipment__internal_department_id=user.department_id)
+            candidates = preferred + others
 
-        first = qs.first()
-        if not first:
-            raise CommandError("No suitable future available slot found for controlled equipment.")
-        eq = first.slot_master.equipment
-        # Second available slot on same equipment for reschedule
-        second = (
-            qs.filter(slot_master__equipment_id=eq.equipment_id)
-            .exclude(pk=first.pk)
-            .order_by("start_datetime")
-            .first()
+        for eid in candidates:
+            slots = list(base.filter(slot_master__equipment_id=eid)[:3])
+            if len(slots) < 2:
+                continue
+            eq = slots[0].slot_master.equipment
+            threshold = int(getattr(eq, "reschedule_hours_threshold", None) or 48)
+            # Ensure both slots still clear this equipment's threshold
+            need = now + timezone.timedelta(hours=threshold + 12)
+            if slots[0].start_datetime < need or slots[1].start_datetime < need:
+                # try later pair on same equipment
+                far = list(base.filter(slot_master__equipment_id=eid, start_datetime__gte=need)[:2])
+                if len(far) < 2:
+                    continue
+                return eq, far[0], far[1]
+            return eq, slots[0], slots[1]
+
+        raise CommandError(
+            "No suitable future available slots outside cancel/reschedule threshold. "
+            "Cannot run controlled E2E without risking irreversible bookings."
         )
-        if not second:
-            raise CommandError("Need at least two future available slots on the same equipment for reschedule.")
-        return eq, first, second
 
     def _step(self, report: dict, name: str, ok: bool, detail: Any = None):
         report["steps"].append({"name": name, "ok": ok, "detail": detail})
@@ -267,14 +281,27 @@ class Command(BaseCommand):
         )
         self._step(report, "wrong_token_rejected", not bad_tok.get("ok"), bad_tok.get("error"))
 
+        # Explicit confirm via the same HTTP endpoint the frontend Confirm button uses
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from iic_booking.research_copilot.api_views import confirm_mutation
+
         idem_key = f"copilot-e2e-create-{user.pk}-{prep['proposal_id']}"
-        created = booking_mut.execute_booking_create(
-            user=user,
-            proposal_id=prep["proposal_id"],
-            confirmation_token=prep["confirmation_token"],
-            idempotency_key=idem_key,
+        factory = APIRequestFactory()
+        http_req = factory.post(
+            "/api/v1/research-copilot/mutations/confirm/",
+            {
+                "proposal_id": prep["proposal_id"],
+                "confirmation_token": prep["confirmation_token"],
+                "action": "CREATE_BOOKING",
+                "idempotency_key": idem_key,
+            },
+            format="json",
         )
+        force_authenticate(http_req, user=user)
+        http_resp = confirm_mutation(http_req)
+        created = getattr(http_resp, "data", None) or {}
         self._step(report, "execute_create", bool(created.get("ok")), {
+            "http_status": getattr(http_resp, "status_code", None),
             "error": created.get("error"),
             "message": created.get("message"),
             "data": created.get("data"),
@@ -285,7 +312,14 @@ class Command(BaseCommand):
 
         data = created.get("data") or {}
         booking_id = data.get("real_booking_id") or data.get("booking_id")
+        # Display ids like IICEPR... are not ints — resolve real pk
+        if booking_id is not None and not str(booking_id).isdigit():
+            booking_id = data.get("real_booking_id") or Booking.objects.filter(
+                user=user, virtual_booking_id=str(booking_id)
+            ).values_list("booking_id", flat=True).first()
         report["booking_id"] = booking_id
+        report["virtual_booking_id"] = data.get("virtual_booking_id") or data.get("booking_id")
+
 
         # Idempotent replay
         replay = booking_mut.execute_booking_create(
@@ -427,7 +461,11 @@ class Command(BaseCommand):
 
         booking.refresh_from_db()
         report["final_booking_status"] = booking.status
-        cancelled = str(booking.status).upper() in {"CANCELLED", "CANCELED"} or "CANCEL" in str(booking.status).upper()
+        cancelled = str(booking.status).upper() in {
+            "CANCELLED",
+            "CANCELED",
+            "REFUNDED",
+        } or "CANCEL" in str(booking.status).upper() or "REFUND" in str(booking.status).upper()
         self._step(report, "portal_cancel_verified", cancelled, booking.status)
 
         bal_final = self._wallet_total(user)
