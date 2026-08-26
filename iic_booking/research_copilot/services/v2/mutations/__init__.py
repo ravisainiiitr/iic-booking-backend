@@ -79,7 +79,11 @@ def booking_mutation_allowed(user: Any, flag_name: str) -> bool:
 
 
 def mutations_enabled() -> bool:
-    """True if any booking/wallet mutation flag is on (should stay False until controlled enablement)."""
+    """True if any *global* booking/wallet mutation flag is on.
+
+    COPILOT_BOOKING_E2E_TEST_MODE is intentionally excluded: it only admits
+    allowlisted is_test_account users and must not look like production-wide enablement.
+    """
     return bool(
         getattr(settings, "COPILOT_BOOKING_CREATE", False)
         or getattr(settings, "COPILOT_BOOKING_CANCEL", False)
@@ -87,14 +91,13 @@ def mutations_enabled() -> bool:
         or getattr(settings, "COPILOT_BOOKING_MODIFY", False)
         or getattr(settings, "COPILOT_WALLET_RECHARGE", False)
         or getattr(settings, "COPILOT_WALLET_CREDIT", False)
-        or getattr(settings, "COPILOT_BOOKING_E2E_TEST_MODE", False)
     )
 
 
 def booking_mutations_enabled() -> bool:
+    """True if any global booking mutation flag is on (excludes E2E allowlist mode)."""
     return bool(
         getattr(settings, "COPILOT_BOOKING_CREATE", False)
         or getattr(settings, "COPILOT_BOOKING_CANCEL", False)
         or getattr(settings, "COPILOT_BOOKING_RESCHEDULE", False)
-        or getattr(settings, "COPILOT_BOOKING_E2E_TEST_MODE", False)
     )

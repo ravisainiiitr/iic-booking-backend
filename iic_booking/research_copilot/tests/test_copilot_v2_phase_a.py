@@ -54,6 +54,7 @@ class IntentResolverTests(SimpleTestCase):
     COPILOT_AVAILABILITY=True,
     COPILOT_BOOKING_CREATE=False,
     COPILOT_WALLET_RECHARGE=False,
+    COPILOT_BOOKING_E2E_TEST_MODE=False,
 )
 class DeterministicWithoutLlmTests(SimpleTestCase):
     @patch("iic_booking.research_copilot.services.v2.read_tools.search_available_slots")

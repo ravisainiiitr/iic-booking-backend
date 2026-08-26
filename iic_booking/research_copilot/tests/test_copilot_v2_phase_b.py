@@ -41,6 +41,7 @@ class PhaseBIntentTests(SimpleTestCase):
     COPILOT_BOOKING_CANCEL=False,
     COPILOT_BOOKING_RESCHEDULE=False,
     COPILOT_WALLET_RECHARGE=False,
+    COPILOT_BOOKING_E2E_TEST_MODE=False,
 )
 class PhaseBFlagsOffTests(SimpleTestCase):
     def test_mutations_disabled_master(self):
