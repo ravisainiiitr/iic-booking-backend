@@ -46,6 +46,7 @@ def resolve_intent(text: str) -> ResolvedIntent:
             "reschedule",
             "move my booking",
             "move my next",
+            "move booking",
             "change my booking slot",
             "find another slot for my booking",
             "move it to",

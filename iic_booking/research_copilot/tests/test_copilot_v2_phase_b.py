@@ -34,7 +34,10 @@ class PhaseBIntentTests(SimpleTestCase):
     def test_cancel_reschedule_intents(self):
         self.assertEqual(resolve_intent("Cancel my next booking").intent, "prepare_cancel")
         self.assertEqual(resolve_intent("Reschedule my next booking").intent, "prepare_reschedule")
-
+        self.assertEqual(
+            resolve_intent("Move booking 460 to the next available slot.").intent,
+            "prepare_reschedule",
+        )
 
 @override_settings(
     COPILOT_BOOKING_CREATE=False,
