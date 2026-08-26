@@ -257,11 +257,28 @@ def _get_wallet(*, arguments: dict, user) -> dict:
             wallet = Wallet.objects.filter(user=user).first()
         if not wallet:
             return _ok({"balance": None, "note": "No accessible wallet found for this user.", "source": "PORTAL_DATA"})
-        balance = getattr(wallet, "balance", None)
+        # Authoritative consolidated balance (Wallet has no .balance attribute).
+        try:
+            balance = wallet.total_balance
+        except Exception:  # noqa: BLE001
+            balance = None
+        sub_wallets = []
+        try:
+            for sw in wallet.sub_wallets.select_related("department").all()[:20]:
+                sub_wallets.append(
+                    {
+                        "department_id": getattr(sw.department, "pk", None),
+                        "department": getattr(sw.department, "name", None),
+                        "balance": str(sw.balance),
+                    }
+                )
+        except Exception:  # noqa: BLE001
+            pass
         return _ok(
             {
                 "balance": str(balance) if balance is not None else None,
-                "currency": getattr(wallet, "currency", "INR"),
+                "currency": "INR",
+                "sub_wallets": sub_wallets,
                 "source": "PORTAL_DATA",
                 "note": "Authoritative wallet actions (recharge/transfer) remain in the Wallet portal page.",
             },
@@ -270,10 +287,19 @@ def _get_wallet(*, arguments: dict, user) -> dict:
                 {
                     "id": "wallet_recharge",
                     "label": "Recharge wallet",
-                    "href": "/wallet",
+                    "prompt": "I want to recharge my wallet.",
                     "enabled": True,
                     "requires_confirmation": True,
-                    "hint": "Opens Wallet so you can review and confirm a recharge in the portal.",
+                    "hint": "Prepares a recharge proposal; payment still uses the portal/Razorpay flow.",
+                },
+                {
+                    "id": "wallet_credit",
+                    "label": "Request wallet credit",
+                    "prompt": "Request wallet credit.",
+                    "href": "/wallet/credit-facility",
+                    "enabled": True,
+                    "requires_confirmation": True,
+                    "hint": "Credit requests need Main Administrator approval.",
                 },
             ],
         )

@@ -682,9 +682,13 @@ COPILOT_BOOKING_MODIFY = env.bool("COPILOT_BOOKING_MODIFY", default=False)
 # Never use this to enable mutations for real production users.
 COPILOT_BOOKING_E2E_TEST_MODE = env.bool("COPILOT_BOOKING_E2E_TEST_MODE", default=False)
 COPILOT_BOOKING_TEST_USER_IDS = env("COPILOT_BOOKING_TEST_USER_IDS", default="")
-# Phase C — financial (OFF)
+# Phase C — financial (mutations OFF by default)
+COPILOT_WALLET_READ = env.bool("COPILOT_WALLET_READ", default=True)
+COPILOT_INVOICE_READ = env.bool("COPILOT_INVOICE_READ", default=True)
+COPILOT_FINANCIAL_PROPOSALS = env.bool("COPILOT_FINANCIAL_PROPOSALS", default=False)
 COPILOT_WALLET_RECHARGE = env.bool("COPILOT_WALLET_RECHARGE", default=False)
 COPILOT_WALLET_CREDIT = env.bool("COPILOT_WALLET_CREDIT", default=False)
+COPILOT_FINANCIAL_ADMIN = env.bool("COPILOT_FINANCIAL_ADMIN", default=False)
 COPILOT_AVAILABILITY_CACHE_TTL_SECONDS = env.int("COPILOT_AVAILABILITY_CACHE_TTL_SECONDS", default=45)
 # LLM provider (AI.17/AI.18). Default ollama — does NOT require OPENAI_API_KEY.
 # Preferred: COPILOT_PROVIDER. Legacy alias: COPILOT_LLM_PROVIDER.

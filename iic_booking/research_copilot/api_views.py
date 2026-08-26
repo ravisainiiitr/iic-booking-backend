@@ -263,6 +263,24 @@ def confirm_mutation(request):
             confirmation_token=confirmation_token,
             idempotency_key=idempotency_key,
         )
+    elif pending == "WALLET_RECHARGE":
+        from iic_booking.research_copilot.services.v2.mutations import wallet as wallet_mut
+
+        result = wallet_mut.execute_wallet_recharge(
+            user=request.user,
+            proposal_id=proposal_id,
+            confirmation_token=confirmation_token,
+            idempotency_key=idempotency_key,
+        )
+    elif pending == "WALLET_CREDIT":
+        from iic_booking.research_copilot.services.v2.mutations import wallet as wallet_mut
+
+        result = wallet_mut.execute_wallet_credit_request(
+            user=request.user,
+            proposal_id=proposal_id,
+            confirmation_token=confirmation_token,
+            idempotency_key=idempotency_key,
+        )
     else:
         result = booking_mut.execute_booking_create(
             user=request.user,

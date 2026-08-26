@@ -66,11 +66,76 @@ def resolve_intent(text: str) -> ResolvedIntent:
     ):
         return ResolvedIntent("pending_actions", True, needs_auth=True)
 
-    # Wallet (read only)
-    if any(x in lower for x in ("wallet balance", "my balance", "how much balance", "what is my balance", "what's my balance")):
+    # Wallet / financial (read + prepare; execute gated elsewhere)
+    if any(
+        x in lower
+        for x in (
+            "wallet balance",
+            "my balance",
+            "how much balance",
+            "what is my balance",
+            "what's my balance",
+            "how much money",
+            "how much do i have",
+        )
+    ):
         return ResolvedIntent("wallet_balance", True, needs_auth=True)
-    if any(x in lower for x in ("wallet transaction", "my transaction", "wallet statement", "show my transaction")):
+    if any(
+        x in lower
+        for x in (
+            "wallet transaction",
+            "my transaction",
+            "wallet statement",
+            "show my transaction",
+            "why was my wallet",
+            "wallet reduced",
+            "recent wallet",
+        )
+    ):
         return ResolvedIntent("wallet_transactions", True, needs_auth=True)
+    if any(x in lower for x in ("spent this month", "how much have i spent", "monthly spend", "spending this month")):
+        return ResolvedIntent("wallet_spend_month", True, needs_auth=True)
+    if any(
+        x in lower
+        for x in (
+            "outstanding credit",
+            "credit status",
+            "how much credit",
+            "credit history",
+            "credit i owe",
+            "why can't i request",
+            "cannot request credit",
+            "can't request credit",
+        )
+    ):
+        return ResolvedIntent("credit_status", True, needs_auth=True)
+    if any(
+        x in lower
+        for x in (
+            "recharge my wallet",
+            "recharge wallet",
+            "wallet recharge",
+            "i want to recharge",
+            "need more money",
+            "how do i recharge",
+            "recharge ₹",
+            "recharge rs",
+        )
+    ) or (lower.startswith("recharge ") and any(ch.isdigit() for ch in lower)):
+        return ResolvedIntent("prepare_recharge", True, needs_auth=True)
+    if any(
+        x in lower
+        for x in (
+            "wallet credit",
+            "request credit",
+            "request ₹",
+            "temporary credit",
+            "need credit",
+            "credit of ₹",
+            "credit of rs",
+        )
+    ):
+        return ResolvedIntent("prepare_credit", True, needs_auth=True)
 
     # Bookings
     if any(x in lower for x in ("my next booking", "next booking", "upcoming booking")):

@@ -186,6 +186,20 @@ def estimate_cost(*, user, text: str, context_equipment_id: int | None = None) -
     data = (result or {}).get("data") or {}
     est = data.get("estimate")
     name = data.get("equipment_name") or resolved.equipment_name
+
+    wallet_bal = None
+    sufficient = None
+    if user is not None and getattr(user, "is_authenticated", False):
+        w = tools_svc._get_wallet(arguments={}, user=user)
+        wallet_bal = ((w or {}).get("data") or {}).get("balance")
+        try:
+            if est is not None and wallet_bal is not None:
+                from decimal import Decimal
+
+                sufficient = Decimal(str(wallet_bal)) >= Decimal(str(est))
+        except Exception:  # noqa: BLE001
+            sufficient = None
+
     if est is None:
         content = f"No active charge profile found for **{name}**. Open booking to calculate the authoritative total."
     else:
@@ -193,13 +207,37 @@ def estimate_cost(*, user, text: str, context_equipment_id: int | None = None) -
             f"**Estimated cost** for **{name}**: ₹{est:,.2f} (INR).\n\n"
             f"{data.get('note') or 'This is an ESTIMATE — portal calculate remains the final charge.'}"
         )
+        if wallet_bal is not None:
+            content += f"\n\n**Current wallet:** ₹{wallet_bal}"
+            if sufficient is True:
+                content += "\nYour balance appears sufficient for this estimate."
+            elif sufficient is False:
+                content += "\n**Warning:** balance may be insufficient for this estimate."
+
     actions = list((result or {}).get("actions") or [])
+    if sufficient is False:
+        actions.extend(
+            [
+                {"id": "recharge", "label": "Recharge wallet", "prompt": "I want to recharge my wallet.", "enabled": True, "requires_confirmation": True},
+                {"id": "credit", "label": "Request wallet credit", "prompt": "Request wallet credit.", "href": "/wallet/credit-facility", "enabled": True, "requires_confirmation": True},
+            ]
+        )
     return build_response(
         kind="LIVE_DATA",
         content=content,
-        cards=[{"type": "estimate", "equipment_id": resolved.equipment_id, "estimate": est, "currency": "INR"}],
+        cards=[
+            {
+                "type": "estimate",
+                "equipment_id": resolved.equipment_id,
+                "estimate": est,
+                "currency": "INR",
+                "wallet_balance": wallet_bal,
+                "sufficient": sufficient,
+                "is_estimate": True,
+            }
+        ],
         actions=actions,
-        metadata={"equipment_id": resolved.equipment_id, "deterministic": True, "estimate": est},
+        metadata={"equipment_id": resolved.equipment_id, "deterministic": True, "estimate": est, "wallet_balance": wallet_bal},
     )
 
 
@@ -254,6 +292,8 @@ def next_booking(*, user) -> dict:
 def wallet_balance(*, user) -> dict:
     if user is None or not getattr(user, "is_authenticated", False):
         return build_response(kind="ACTION_REQUIRED", content="Sign in to view wallet balance.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+    if not flag("COPILOT_WALLET_READ", True):
+        return build_response(kind="ERROR", content="Wallet read tools are disabled.")
     from iic_booking.research_copilot.services import tools as tools_svc
 
     result = tools_svc._get_wallet(arguments={}, user=user)
@@ -272,6 +312,8 @@ def wallet_balance(*, user) -> dict:
 def wallet_transactions(*, user) -> dict:
     if user is None or not getattr(user, "is_authenticated", False):
         return build_response(kind="ACTION_REQUIRED", content="Sign in to view transactions.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+    if not flag("COPILOT_WALLET_READ", True):
+        return build_response(kind="ERROR", content="Wallet read tools are disabled.")
     wallet = None
     if hasattr(user, "get_accessible_wallet"):
         wallet = user.get_accessible_wallet()
@@ -291,15 +333,93 @@ def wallet_transactions(*, user) -> dict:
             actions=[{"id": "open_wallet", "label": "Open Wallet", "href": "/wallet", "enabled": True}],
         )
     lines = ["**Recent wallet transactions**", ""]
+    items = []
     for t in txs:
         amt = getattr(t, "amount", None)
-        desc = getattr(t, "description", None) or getattr(t, "transaction_type", "") or ""
-        lines.append(f"- {amt} — {desc}")
+        ttype = getattr(t, "transaction_type", None) or ""
+        desc = getattr(t, "description", None) or ttype or ""
+        created = getattr(t, "created_at", None)
+        lines.append(f"- {ttype} {amt} — {desc}")
+        items.append(
+            {
+                "amount": str(amt) if amt is not None else None,
+                "type": ttype,
+                "description": desc,
+                "created_at": created.isoformat() if created else None,
+            }
+        )
     if len(lines) == 2:
         lines.append("No transactions found.")
     return build_response(
         kind="LIVE_DATA",
         content="\n".join(lines),
+        cards=[{"type": "transactions", "items": items}],
+        actions=[{"id": "open_wallet", "label": "Open Wallet", "href": "/wallet", "enabled": True}],
+        metadata={"deterministic": True},
+    )
+
+
+def credit_status(*, user) -> dict:
+    if user is None or not getattr(user, "is_authenticated", False):
+        return build_response(kind="ACTION_REQUIRED", content="Sign in to view credit status.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+    if not flag("COPILOT_WALLET_READ", True):
+        return build_response(kind="ERROR", content="Wallet read tools are disabled.")
+    from iic_booking.research_copilot.services.v2.mutations import domain_bridge
+
+    code, data = domain_bridge.call_wallet_credit_summary(user=user)
+    if code >= 400:
+        msg = (data or {}).get("error") or (data or {}).get("message") or "Credit facility summary unavailable."
+        return build_response(
+            kind="LIVE_DATA",
+            content=f"{msg}\n\nOpen **Wallet → Credit Facility** for authoritative status.",
+            actions=[{"id": "credit", "label": "Credit Facility", "href": "/wallet/credit-facility", "enabled": True}],
+            metadata={"deterministic": True},
+        )
+    outstanding = data.get("outstanding_amount") or data.get("outstanding")
+    eligibility = data.get("eligibility")
+    content = (
+        "**Wallet credit status** (portal data)\n\n"
+        f"- Outstanding: {outstanding if outstanding is not None else '—'}\n"
+        f"- Eligibility: {eligibility if eligibility is not None else '—'}\n\n"
+        "New credit cannot be requested while a previous credit remains outstanding under portal rules. "
+        "Main Administrator approves all credit."
+    )
+    return build_response(
+        kind="LIVE_DATA",
+        content=content,
+        cards=[{"type": "credit_status", "outstanding": outstanding, "eligibility": eligibility, "summary": data}],
+        actions=[
+            {"id": "credit", "label": "Credit Facility", "href": "/wallet/credit-facility", "enabled": True},
+            {"id": "request_credit", "label": "Request credit", "prompt": "Request wallet credit.", "enabled": True, "requires_confirmation": True},
+        ],
+        metadata={"deterministic": True},
+    )
+
+
+def wallet_spend_month(*, user) -> dict:
+    """Rough month debit total from SubWalletTransaction — labeled as portal-derived, not LLM."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return build_response(kind="ACTION_REQUIRED", content="Sign in required.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
+    from django.db.models import Sum
+    from django.utils import timezone
+
+    from iic_booking.users.models import SubWallet, SubWalletTransaction
+
+    wallet = user.get_accessible_wallet() if hasattr(user, "get_accessible_wallet") else None
+    if not wallet:
+        return build_response(kind="LIVE_DATA", content="No accessible wallet found.")
+    start = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    sub_ids = list(SubWallet.objects.filter(wallet=wallet).values_list("pk", flat=True))
+    total = (
+        SubWalletTransaction.objects.filter(sub_wallet_id__in=sub_ids, transaction_type="debit", created_at__gte=start).aggregate(
+            s=Sum("amount")
+        )["s"]
+        or 0
+    )
+    return build_response(
+        kind="LIVE_DATA",
+        content=f"**Wallet debits this month** (portal ledger): ₹{total}\n\nOpen Wallet for the full statement.",
+        cards=[{"type": "spend_summary", "period": "month", "debit_total": str(total)}],
         actions=[{"id": "open_wallet", "label": "Open Wallet", "href": "/wallet", "enabled": True}],
         metadata={"deterministic": True},
     )

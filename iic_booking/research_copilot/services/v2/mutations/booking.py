@@ -222,6 +222,19 @@ def prepare_booking_create(
         detail={"proposal_id": record["proposal_id"], "equipment_id": eid, "slot_ids": payload["slot_ids"], "ok": True},
     )
 
+    msg = (
+        "Review the booking summary and confirm. "
+        + ("Copilot booking execute is enabled." if executable else "Execute is currently disabled (flag OFF) — Confirm will not create a booking until enablement.")
+    )
+    try:
+        if payload.get("approx_balance_after") is not None and Decimal(str(payload["approx_balance_after"])) < 0:
+            msg += (
+                f" Estimated charge ₹{payload.get('estimated_amount')} may exceed wallet ₹{balance}. "
+                "Consider recharging or requesting wallet credit before confirming."
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
     return {
         "ok": True,
         "action": "CREATE_BOOKING",
@@ -243,10 +256,7 @@ def prepare_booking_create(
         "estimated_amount": payload["estimated_amount"],
         "wallet_balance": balance,
         "approx_balance_after": payload.get("approx_balance_after"),
-        "message": (
-            "Review the booking summary and confirm. "
-            + ("Copilot booking execute is enabled." if executable else "Execute is currently disabled (flag OFF) — Confirm will not create a booking until enablement.")
-        ),
+        "message": msg,
         "portal_href": f"/book-equipment?equipment={eid}",
     }
 

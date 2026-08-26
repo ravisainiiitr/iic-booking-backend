@@ -59,6 +59,8 @@ def _proposal_card(prep: dict[str, Any]) -> dict[str, Any]:
         "CREATE_BOOKING": "booking_proposal",
         "CANCEL_BOOKING": "cancellation_proposal",
         "RESCHEDULE_BOOKING": "reschedule_proposal",
+        "WALLET_RECHARGE": "recharge_proposal",
+        "WALLET_CREDIT": "credit_proposal",
     }.get(action, "booking_proposal")
     return {
         "type": card_type,
@@ -66,6 +68,8 @@ def _proposal_card(prep: dict[str, Any]) -> dict[str, Any]:
             "CREATE_BOOKING": "Booking confirmation",
             "CANCEL_BOOKING": "Cancel booking?",
             "RESCHEDULE_BOOKING": "Reschedule confirmation",
+            "WALLET_RECHARGE": "Wallet recharge",
+            "WALLET_CREDIT": "Wallet credit request",
         }.get(action, "Confirmation"),
         "action": action,
         "proposal_id": prep.get("proposal_id"),
@@ -82,6 +86,11 @@ def _proposal_card(prep: dict[str, Any]) -> dict[str, Any]:
         "estimated_amount": prep.get("estimated_amount"),
         "wallet_balance": prep.get("wallet_balance"),
         "approx_balance_after": prep.get("approx_balance_after"),
+        "expected_balance_after": prep.get("expected_balance_after"),
+        "amount": prep.get("amount") or prep.get("requested_amount"),
+        "requested_amount": prep.get("requested_amount"),
+        "outstanding_credit": prep.get("outstanding_credit"),
+        "purpose": prep.get("purpose"),
         "cancellation_policy_note": prep.get("cancellation_policy_note"),
         "portal_href": prep.get("portal_href"),
     }
@@ -134,12 +143,27 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
             metadata={"deterministic": True, "equipment_id": prep.get("equipment_id")},
         )
 
+    if prep.get("status") == "NEEDS_AMOUNT":
+        return build_response(
+            kind="CLARIFICATION",
+            content=prep.get("message") or "Specify an amount.",
+            actions=list(prep.get("suggested_actions") or [])
+            or [{"id": "portal", "label": "Open Wallet", "href": prep.get("portal_href") or "/wallet", "enabled": True}],
+            metadata={"deterministic": True, "pending_action": prep.get("action")},
+        )
+
     card = _proposal_card(prep)
     confirm_label = {
         "CREATE_BOOKING": "Confirm Booking",
         "CANCEL_BOOKING": "Confirm Cancellation",
         "RESCHEDULE_BOOKING": "Confirm Reschedule",
+        "WALLET_RECHARGE": "Proceed to Payment",
+        "WALLET_CREDIT": "Confirm Credit Request",
     }.get(prep.get("action") or "", "Confirm")
+    change_prompt = {
+        "WALLET_RECHARGE": "Recharge ₹5000",
+        "WALLET_CREDIT": "Request ₹10000 wallet credit",
+    }.get(prep.get("action") or "", "Search available slots this week")
     actions = [
         {
             "id": "confirm_proposal",
@@ -155,7 +179,7 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
         {
             "id": "change",
             "label": "Change",
-            "prompt": "Search available slots this week",
+            "prompt": change_prompt,
             "enabled": True,
         },
     ]
@@ -187,17 +211,27 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
         lines.append(f"- Samples: {prep['sample_count']}")
     if prep.get("estimated_amount") is not None:
         lines.append(f"- Estimated charge: ₹{prep['estimated_amount']}")
+    if prep.get("amount") is not None:
+        lines.append(f"- Amount: ₹{prep['amount']}")
+    if prep.get("requested_amount") is not None:
+        lines.append(f"- Requested credit: ₹{prep['requested_amount']}")
+    if prep.get("purpose"):
+        lines.append(f"- Purpose: {prep['purpose']}")
     if prep.get("wallet_balance") is not None:
         lines.append(f"- Wallet balance: ₹{prep['wallet_balance']}")
     if prep.get("approx_balance_after") is not None:
         lines.append(f"- After booking (approx): ₹{prep['approx_balance_after']}")
+    if prep.get("expected_balance_after") is not None:
+        lines.append(f"- Expected after recharge (approx): ₹{prep['expected_balance_after']}")
+    if prep.get("outstanding_credit") is not None:
+        lines.append(f"- Outstanding credit: ₹{prep['outstanding_credit']}")
     if prep.get("cancellation_policy_note"):
         lines.append(f"- Policy: {prep['cancellation_policy_note']}")
     lines.append("")
     lines.append(prep.get("message") or "Confirm to proceed.")
     if not prep.get("executable"):
         lines.append("")
-        lines.append("_Mutation execute flag is OFF — Confirm will not change bookings until enablement._")
+        lines.append("_Mutation execute flag is OFF — Confirm will not move money until financial enablement._")
 
     return build_response(
         kind="ACTION_PREPARATION",
@@ -303,6 +337,20 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
         result = read_tools.wallet_balance(user=user)
     elif intent.intent == "wallet_transactions":
         result = read_tools.wallet_transactions(user=user)
+    elif intent.intent == "wallet_spend_month":
+        result = read_tools.wallet_spend_month(user=user)
+    elif intent.intent == "credit_status":
+        result = read_tools.credit_status(user=user)
+    elif intent.intent == "prepare_recharge":
+        from iic_booking.research_copilot.services.v2.mutations import wallet as wallet_mut
+
+        prep = wallet_mut.prepare_wallet_recharge(user=user, text=text)
+        result = _prep_to_response(prep)
+    elif intent.intent == "prepare_credit":
+        from iic_booking.research_copilot.services.v2.mutations import wallet as wallet_mut
+
+        prep = wallet_mut.prepare_wallet_credit(user=user, text=text)
+        result = _prep_to_response(prep)
     elif intent.intent == "sample_status":
         result = read_tools.sample_or_results(user=user, text=text, which="sample")
     elif intent.intent == "results":
@@ -333,13 +381,19 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
     elif intent.intent == "confirm_proposal":
         from iic_booking.research_copilot.services.v2.mutations import booking as booking_mut
         from iic_booking.research_copilot.services.v2.mutations import proposals as prop_store
+        from iic_booking.research_copilot.services.v2.mutations import wallet as wallet_mut
 
         pending = ctx.get("pending_action")
         proposal_id = ctx.get("proposal_id")
         token = ctx.get("confirmation_token")
         if not proposal_id or not token:
-            # Try latest create proposal
-            for action in ("CREATE_BOOKING", "CANCEL_BOOKING", "RESCHEDULE_BOOKING"):
+            for action in (
+                "CREATE_BOOKING",
+                "CANCEL_BOOKING",
+                "RESCHEDULE_BOOKING",
+                "WALLET_RECHARGE",
+                "WALLET_CREDIT",
+            ):
                 latest = prop_store.get_latest_proposal(user=user, action=action)
                 if latest:
                     proposal_id = latest["proposal_id"]
@@ -349,7 +403,7 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
         if not proposal_id or not token:
             result = build_response(
                 kind="CLARIFICATION",
-                content="There is no pending booking action to confirm. Prepare a booking, cancel, or reschedule first.",
+                content="There is no pending action to confirm. Prepare a booking or financial proposal first.",
                 metadata={"deterministic": True},
             )
         else:
@@ -359,6 +413,14 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
                 )
             elif pending == "RESCHEDULE_BOOKING":
                 exec_result = booking_mut.execute_booking_reschedule(
+                    user=user, proposal_id=proposal_id, confirmation_token=token
+                )
+            elif pending == "WALLET_RECHARGE":
+                exec_result = wallet_mut.execute_wallet_recharge(
+                    user=user, proposal_id=proposal_id, confirmation_token=token
+                )
+            elif pending == "WALLET_CREDIT":
+                exec_result = wallet_mut.execute_wallet_credit_request(
                     user=user, proposal_id=proposal_id, confirmation_token=token
                 )
             else:

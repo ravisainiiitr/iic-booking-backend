@@ -85,3 +85,66 @@ def call_user_reschedule_booking(
     )
     response = user_reschedule_booking(django_request, booking_id)
     return _as_data(response)
+
+
+def _django_get(*, user, path: str):
+    factory = APIRequestFactory()
+    request = factory.get(path)
+    force_authenticate(request, user=user)
+    return request
+
+
+def _strip_identity(body: dict[str, Any] | None) -> dict[str, Any]:
+    safe = dict(body or {})
+    for banned in ("user_id", "user", "email", "owner", "owner_id", "target_user", "wallet_owner_id", "faculty_id"):
+        safe.pop(banned, None)
+    return safe
+
+
+def call_get_wallet(*, user) -> tuple[int, dict[str, Any]]:
+    from iic_booking.users.api.wallet_views import get_wallet
+
+    response = get_wallet(_django_get(user=user, path="/api/wallet/"))
+    return _as_data(response)
+
+
+def call_get_wallet_transactions(*, user) -> tuple[int, dict[str, Any]]:
+    from iic_booking.users.api.wallet_views import get_wallet_transactions
+
+    response = get_wallet_transactions(_django_get(user=user, path="/api/wallet/transactions/"))
+    return _as_data(response)
+
+
+def call_wallet_credit_summary(*, user) -> tuple[int, dict[str, Any]]:
+    from iic_booking.users.api.wallet_credit_facility_v2_views import wallet_credit_v2_summary
+
+    response = wallet_credit_v2_summary(_django_get(user=user, path="/api/wallet/credit-requests/summary/"))
+    return _as_data(response)
+
+
+def call_wallet_credit_create(*, user, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    from iic_booking.users.api.wallet_credit_facility_v2_views import wallet_credit_v2_list_or_create
+
+    django_request = _django_json_post(
+        user=user,
+        path="/api/wallet/credit-requests/",
+        body=_strip_identity(body),
+    )
+    response = wallet_credit_v2_list_or_create(django_request)
+    return _as_data(response)
+
+
+def call_razorpay_wallet_recharge_create_order(*, user, amount: str, department_id: int | None = None) -> tuple[int, dict[str, Any]]:
+    """Initiate online wallet recharge via existing payments module (does not settle payment)."""
+    from iic_booking.payments.views import razorpay_create_order
+
+    body: dict[str, Any] = {"purpose": "WALLET_RECHARGE", "amount": str(amount)}
+    if department_id is not None:
+        body["department_id"] = int(department_id)
+    django_request = _django_json_post(
+        user=user,
+        path="/api/payments/razorpay/create-order/",
+        body=_strip_identity(body),
+    )
+    response = razorpay_create_order(django_request)
+    return _as_data(response)
