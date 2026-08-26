@@ -25,6 +25,8 @@ Criteria met:
 
 ## Deploy notes
 
+- Production tag: **`v2.5.42.2-copilot-v2-phase-a`** (hotfix over `.1` Equipment.pk + FESEM token aliases)
 - No schema migration required for Phase A (conversation context uses cache)
-- Backend tag + Deploy Backend; FE master auto-deploy
+- Backend tag deployed on EC2; FE master includes cards/quick-action fix
 - Do **not** set `COPILOT_BOOKING_*` or `COPILOT_WALLET_*` in production
+- GitHub Actions “Deploy Backend” token was unavailable locally; deploy performed via EC2 SSH checkout of the release tag (same compose path)
