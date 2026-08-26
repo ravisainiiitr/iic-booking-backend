@@ -38,6 +38,7 @@ from iic_booking.remote_analysis.services.audit import record_event
 from iic_booking.remote_analysis.services.commands import CommandService
 from iic_booking.remote_analysis.session_models import (
     ConnectionHistory,
+    GuacamoleConnection,
     RemoteAnalysisSettings,
     RemoteDesktopSession,
     SessionLaunch,
@@ -413,16 +414,93 @@ class SessionOrchestrator:
         return True
 
     def _provision_guacamole(self, session: RemoteDesktopSession) -> None:
-        ConnectionManager(self.settings).create_ephemeral(session)
-        self.transition(session, SessionStatus.TOKEN_GENERATED, reason="Ephemeral Guacamole connection created")
-        audit_session(session, "GuacamoleProvisioned", details="ephemeral connection")
-        record_event(
-            category=AuditCategory.GUACAMOLE,
-            action="ConnectionCreated",
-            details=str(session.id),
-            workstation=session.workstation,
-            correlation_id=str(session.id),
-        )
+        # Serialize concurrent prepare/launch workers for the same session.
+        with transaction.atomic():
+            locked = (
+                RemoteDesktopSession.objects.select_for_update()
+                .select_related("workstation", "booking", "reservation", "user")
+                .get(pk=session.pk)
+            )
+            existing = (
+                GuacamoleConnection.objects.filter(session=locked, is_active=True)
+                .exclude(destroyed_at__isnull=False)
+                .first()
+            )
+            if existing and (existing.guacamole_connection_id or "").strip():
+                if locked.status in {
+                    SessionStatus.READY,
+                    SessionStatus.PREPARING,
+                }:
+                    self.transition(
+                        locked,
+                        SessionStatus.TOKEN_GENERATED,
+                        reason="Reuse existing Guacamole connection",
+                    )
+                return
+            ConnectionManager(self.settings).create_ephemeral(locked)
+            self.transition(
+                locked,
+                SessionStatus.TOKEN_GENERATED,
+                reason="Ephemeral Guacamole connection created",
+            )
+            audit_session(locked, "GuacamoleProvisioned", details="ephemeral connection")
+            record_event(
+                category=AuditCategory.GUACAMOLE,
+                action="ConnectionCreated",
+                details=str(locked.id),
+                workstation=locked.workstation,
+                correlation_id=str(locked.id),
+            )
+
+    def _tunnel_ready_for_session(self, session: RemoteDesktopSession) -> tuple[bool, str]:
+        """
+        Guacamole RDP must not open until the reverse-tunnel agent has joined.
+        Otherwise the browser gets Guacamole's 'connection/tunnel does not exist'.
+        """
+        if self.settings.mock_guacamole:
+            return True, "mock"
+        try:
+            from iic_booking.remote_analysis.constants import TunnelSessionStatus
+            from iic_booking.remote_analysis.tunnel_models import TunnelSession
+
+            tunnel = (
+                TunnelSession.objects.filter(desktop_session=session)
+                .exclude(status__in={TunnelSessionStatus.CLOSED, TunnelSessionStatus.EXPIRED})
+                .order_by("-created_at")
+                .first()
+            )
+            if tunnel is None:
+                return False, "Secure link to Analysis PC is still being prepared."
+            if tunnel.status == TunnelSessionStatus.FAILED:
+                return False, "Secure link to Analysis PC failed — retry Open Analysis Environment."
+            if tunnel.status == TunnelSessionStatus.ACTIVE and tunnel.agent_joined_at:
+                return True, "active"
+            return False, "Waiting for Analysis PC (RAA) to join the secure link…"
+        except Exception:  # noqa: BLE001
+            logger.exception("tunnel ready check failed session=%s", session.id)
+            return False, "Waiting for Analysis PC secure link…"
+
+    def wait_for_tunnel_ready(
+        self,
+        session: RemoteDesktopSession,
+        *,
+        timeout_seconds: float = 20.0,
+        poll_seconds: float = 0.75,
+    ) -> tuple[bool, str]:
+        import time
+
+        deadline = time.monotonic() + max(0.5, float(timeout_seconds))
+        last_msg = ""
+        while True:
+            ok, msg = self._tunnel_ready_for_session(session)
+            last_msg = msg
+            if ok:
+                return True, msg
+            if "failed" in (msg or "").lower():
+                return False, msg
+            if time.monotonic() >= deadline:
+                return False, last_msg or "Analysis PC secure link is not ready yet."
+            time.sleep(max(0.2, float(poll_seconds)))
 
     def issue_launch_token(self, session: RemoteDesktopSession, *, user, client_ip: str | None = None) -> tuple[SessionToken, str]:
         if not can_launch_session(user, session):
@@ -556,6 +634,18 @@ class SessionOrchestrator:
         Guacamole credentials are exchanged server-side; browser receives only a
         short-lived client auth token + connection id when not in mock mode.
         """
+        # Wait for reverse-tunnel join BEFORE consuming the one-time launch token.
+        # Otherwise a premature Guacamole open burns the token and shows
+        # "connection does not exist" / "tunnel destination does not exist".
+        if not self.settings.mock_guacamole:
+            ready, tunnel_msg = self.wait_for_tunnel_ready(session, timeout_seconds=25.0)
+            if not ready:
+                raise SessionError(
+                    tunnel_msg
+                    or "Analysis PC secure link is not ready yet. Keep this page open — it will retry automatically.",
+                    code="tunnel_not_ready",
+                )
+
         with transaction.atomic():
             token_row = self.consume_token(session, plaintext, user=user, client_ip=client_ip)
             acting_user = user if (user is not None and getattr(user, "is_authenticated", False)) else token_row.bound_user
@@ -589,18 +679,25 @@ class SessionOrchestrator:
         # Live Guacamole: mint user token server-side for the ephemeral user
         try:
             conn = session.guacamole_connection
+            if not conn or not conn.is_active or conn.destroyed_at:
+                raise SessionError(
+                    "Analysis connection expired — reopen Analysis Environment from your booking.",
+                    code="guac_connection_gone",
+                )
             from iic_booking.remote_analysis.guacamole.client import GuacamoleClient, encode_client_identifier
 
             client = GuacamoleClient(self.settings)
+            # Resolve live dataSource as admin before minting the ephemeral user token.
+            client.authenticate()
+            data_source = client._data_source or self.settings.guacamole_data_source or "postgresql"
             temp_password = ConnectionManager(self.settings).ephemeral_password(conn)
             if not temp_password:
                 raise SessionError("Ephemeral Guacamole credentials missing — recreate session", code="guac_creds")
             user_token = client.create_user_token(conn.guacamole_username, temp_password)
-            # Public base URL only (no admin credentials). Client uses Guacamole redirect.
             public_base = (self.settings.guacamole_base_url or "").rstrip("/")
             client_id = encode_client_identifier(
                 str(conn.guacamole_connection_id),
-                data_source=self.settings.guacamole_data_source or "postgresql",
+                data_source=data_source,
             )
             result["client"] = {
                 "guacamole_token": user_token,
@@ -609,7 +706,6 @@ class SessionOrchestrator:
             }
             self.mark_connected(session)
             result["status"] = session.status
-            # Do not include guacamole_base_url separately if empty; never include API URL
             result["redirect_url"] = result["client"].get("client_url") or ""
             meta = getattr(conn, "metadata", None) or {}
             logger.info(
@@ -620,6 +716,8 @@ class SessionOrchestrator:
                 bool(result["redirect_url"]),
                 getattr(acting_user, "pk", None),
             )
+        except SessionError:
+            raise
         except Exception as exc:
             logger.exception("connect_with_token Guacamole error")
             raise SessionError(str(exc), code="guac_connect_failed") from exc

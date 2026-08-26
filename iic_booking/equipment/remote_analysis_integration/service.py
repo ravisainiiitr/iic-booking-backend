@@ -780,6 +780,14 @@ class BookingRemoteAnalysisService:
                     }
                     return payload
                 if request_absolute_uri_builder:
+                    # Do not burn a one-time launch token until the reverse tunnel is up.
+                    orch_ready = SessionOrchestrator()
+                    tunnel_ok, tunnel_msg = orch_ready._tunnel_ready_for_session(session)
+                    if not tunnel_ok and not orch_ready.settings.mock_guacamole:
+                        payload["launch_pending"] = True
+                        payload["detail"] = tunnel_msg
+                        payload["status"] = session.status
+                        return payload
                     launch = GuacamoleIntegrationService().launch(
                         session,
                         user,

@@ -279,9 +279,20 @@ class GuacamoleClient:
         try:
             self._request("POST", url, json=body, allow_statuses=(200, 201, 204))
             return {"username": username}
-        except GuacamoleClientError:
-            logger.exception("Guacamole create_user failed")
-            raise
+        except GuacamoleClientError as exc:
+            # Concurrent provision can race on the same ephemeral username (HTTP 400).
+            # Delete + recreate so password matches what we store encrypted.
+            if "400" not in str(exc):
+                logger.exception("Guacamole create_user failed")
+                raise
+            logger.warning("Guacamole create_user 400 for %s — recreating ephemeral user", username)
+            try:
+                self.delete_user(username)
+                self._request("POST", url, json=body, allow_statuses=(200, 201, 204))
+                return {"username": username}
+            except GuacamoleClientError:
+                logger.exception("Guacamole create_user recreate failed")
+                raise
 
     def grant_connection(self, username: str, connection_id: str) -> None:
         if self.mock:
