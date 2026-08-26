@@ -102,6 +102,81 @@ def _booking_owned(*, user, booking_id: int):
         return None, "BOOKING_NOT_FOUND"
 
 
+def _extract_booking_id_from_text(text: str) -> int | None:
+    """Parse booking references from natural language.
+
+    Accepts:
+    - \"booking 460\" / \"booking id 460\" / \"Booking ID: 460\"
+    - long bare numeric ids (6+ digits; avoids capturing years/times)
+    - virtual booking ids (IIC…) resolved to booking_id when unique
+    """
+    raw = text or ""
+    m = re.search(r"\bbooking(?:\s*id)?\s*[#:=]?\s*(\d+)\b", raw, flags=re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except (TypeError, ValueError):
+            return None
+    m = re.search(r"\b(\d{6,})\b", raw)
+    if m:
+        try:
+            return int(m.group(1))
+        except (TypeError, ValueError):
+            return None
+    vm = re.search(r"\b(IIC[A-Z0-9]{6,})\b", raw, flags=re.IGNORECASE)
+    if vm:
+        from iic_booking.equipment.models import Booking
+
+        vb = (
+            Booking.objects.filter(virtual_booking_id__iexact=vm.group(1))
+            .values_list("booking_id", flat=True)
+            .first()
+        )
+        if vb is not None:
+            return int(vb)
+    return None
+
+
+def _next_available_slot_after_booking(booking) -> Any | None:
+    """Pick the earliest AVAILABLE portal slot after this booking on the same equipment."""
+    from iic_booking.equipment.models import DailySlot, SlotStatus
+
+    slots = list(booking.daily_slots.all().order_by("start_datetime"))
+    after = slots[-1].end_datetime if slots else timezone.now()
+    if after is None:
+        after = timezone.now()
+    return (
+        DailySlot.objects.filter(
+            slot_master__equipment_id=booking.equipment_id,
+            status=SlotStatus.AVAILABLE,
+            booking_id__isnull=True,
+            start_datetime__gte=after,
+        )
+        .order_by("start_datetime")
+        .first()
+    )
+
+
+def _parse_window_from_text(text: str) -> tuple[str | None, str | None]:
+    """Best-effort parse of an ISO-like start datetime from text (end = +30m if omitted)."""
+    from datetime import timedelta
+
+    raw = text or ""
+    m = re.search(
+        r"\b(20\d{2}-\d{2}-\d{2})[ T](\d{1,2}:\d{2})(?::\d{2})?\b",
+        raw,
+    )
+    if not m:
+        return None, None
+    start = parse_datetime(f"{m.group(1)}T{m.group(2)}:00")
+    if start is None:
+        return None, None
+    if timezone.is_naive(start):
+        start = timezone.make_aware(start, timezone.get_current_timezone())
+    end = start + timedelta(minutes=30)
+    return start.isoformat(), end.isoformat()
+
+
 def prepare_booking_create(
     *,
     user,
@@ -341,12 +416,8 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to cancel a booking.")
 
-    bid = booking_id
-    if not bid:
-        m = re.search(r"\b(\d{6,})\b", text or "")
-        if m:
-            bid = int(m.group(1))
-    if not bid and ("next" in (text or "").lower()):
+    bid = booking_id or _extract_booking_id_from_text(text)
+    if not bid and ("next" in (text or "").lower() or "this" in (text or "").lower() or re.search(r"\bit\b", (text or "").lower())):
         from iic_booking.research_copilot.services import tools as tools_svc
 
         nb = tools_svc._get_next_booking(arguments={}, user=user)
@@ -466,17 +537,17 @@ def prepare_reschedule(
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to reschedule a booking.")
 
-    bid = booking_id
-    if not bid and ("next" in (text or "").lower()):
+    bid = booking_id or _extract_booking_id_from_text(text)
+    if not bid and (
+        "next" in (text or "").lower()
+        or "this" in (text or "").lower()
+        or re.search(r"\bit\b", (text or "").lower())
+    ):
         from iic_booking.research_copilot.services import tools as tools_svc
 
         nb = tools_svc._get_next_booking(arguments={}, user=user)
         data = (nb or {}).get("data") or {}
         bid = data.get("booking_id")
-    if not bid:
-        m = re.search(r"\b(\d{6,})\b", text or "")
-        if m:
-            bid = int(m.group(1))
     if not bid:
         return _safe_error("BOOKING_REQUIRED", "Specify which booking to reschedule.")
 
@@ -486,6 +557,10 @@ def prepare_reschedule(
 
     start = start_time
     end = end_time
+    if (not start or not end) and not slot_id:
+        parsed_start, parsed_end = _parse_window_from_text(text)
+        start = start or parsed_start
+        end = end or parsed_end
     if slot_id and (not start or not end):
         slot, serr = _load_slot(slot_id=int(slot_id), equipment_id=int(booking.equipment_id))
         if serr:
@@ -493,6 +568,19 @@ def prepare_reschedule(
             return _safe_error(serr, "Target slot is not available.")
         start = slot.start_datetime.isoformat() if slot.start_datetime else None
         end = slot.end_datetime.isoformat() if slot.end_datetime else None
+        slot_id = int(slot.pk)
+
+    # "next available slot" → pick earliest AVAILABLE slot after current booking.
+    if (not start or not end) and not slot_id and "next available" in (text or "").lower():
+        nxt = _next_available_slot_after_booking(booking)
+        if nxt is None:
+            return _safe_error(
+                "NO_AVAILABLE_SLOT",
+                "No later available slot found for this equipment in the portal calendar.",
+            )
+        slot_id = int(nxt.pk)
+        start = nxt.start_datetime.isoformat() if nxt.start_datetime else None
+        end = nxt.end_datetime.isoformat() if nxt.end_datetime else None
 
     if not start or not end:
         return {

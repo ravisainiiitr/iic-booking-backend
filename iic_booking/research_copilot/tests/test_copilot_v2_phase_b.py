@@ -233,3 +233,20 @@ class PhaseARegressionIntentTests(SimpleTestCase):
 
     def test_wallet_still_read(self):
         self.assertEqual(resolve_intent("What is my wallet balance?").intent, "wallet_balance")
+
+
+class PhaseD2BookingIdParseTests(SimpleTestCase):
+    def test_short_booking_id_from_phrase(self):
+        self.assertEqual(booking_mut._extract_booking_id_from_text("Cancel booking 460."), 460)
+        self.assertEqual(booking_mut._extract_booking_id_from_text("Reschedule booking ID: 12"), 12)
+
+    def test_bare_year_not_treated_as_booking_id(self):
+        # Years are 4 digits; bare numeric extraction requires 6+.
+        self.assertIsNone(booking_mut._extract_booking_id_from_text("Move it on 2026-08-27"))
+
+    def test_parse_window_from_text(self):
+        start, end = booking_mut._parse_window_from_text("Reschedule booking 460 to 2026-08-27 04:30.")
+        self.assertIsNotNone(start)
+        self.assertIsNotNone(end)
+        self.assertIn("2026-08-27", start)
+        self.assertIn("04:30", start)
