@@ -227,11 +227,48 @@ def prepare_booking_create(
         eid = resolved.equipment_id
 
     eid = int(eid)
-    from iic_booking.equipment.models import Equipment
+    from iic_booking.equipment.models import DailySlot, Equipment, SlotStatus
 
     eq = Equipment.objects.filter(pk=eid).first()
     if not eq:
         return _safe_error("EQUIPMENT_NOT_FOUND", "Equipment not found.")
+
+    # Prefer slots still inside cancel/reschedule policy window when possible.
+    # Near-term "earliest" slots often book successfully but cannot be cancelled/rescheduled.
+    threshold_h = int(getattr(eq, "reschedule_hours_threshold", None) or 48)
+    mutable_after = timezone.now() + timezone.timedelta(hours=threshold_h + 12)
+    slot_note = ""
+
+    def _first_mutable_slot():
+        return (
+            DailySlot.objects.filter(
+                slot_master__equipment_id=eid,
+                status=SlotStatus.AVAILABLE,
+                booking_id__isnull=True,
+                start_datetime__gte=mutable_after,
+            )
+            .order_by("start_datetime")
+            .first()
+        )
+
+    if ids:
+        probe, _ = _load_slot(slot_id=int(ids[0]), equipment_id=eid)
+        if probe and probe.start_datetime and probe.start_datetime < mutable_after:
+            far = _first_mutable_slot()
+            if far is not None:
+                ids = [int(far.pk)]
+                slot_note = (
+                    f" Selected a later slot ({far.start_datetime}) so cancel/reschedule "
+                    f"policy windows remain open (threshold ≈{threshold_h}h)."
+                )
+    elif not ids:
+        # No slot in context: pick earliest mutable slot when available.
+        far = _first_mutable_slot()
+        if far is not None:
+            ids = [int(far.pk)]
+            slot_note = (
+                f" Using earliest cancel/reschedule-safe slot starting {far.start_datetime}."
+            )
 
     if not ids:
         return {
@@ -301,6 +338,8 @@ def prepare_booking_create(
         "Review the booking summary and confirm. "
         + ("Copilot booking execute is enabled." if executable else "Execute is currently disabled (flag OFF) — Confirm will not create a booking until enablement.")
     )
+    if slot_note:
+        msg += slot_note
     try:
         if payload.get("approx_balance_after") is not None and Decimal(str(payload["approx_balance_after"])) < 0:
             msg += (

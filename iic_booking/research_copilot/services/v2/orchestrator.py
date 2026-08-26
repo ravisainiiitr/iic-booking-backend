@@ -323,8 +323,15 @@ def _exec_to_response(result: dict[str, Any]) -> dict[str, Any]:
         )
     return build_response(
         kind="ERROR",
-        content=result.get("message") or "Action failed.",
-        cards=[{"type": "booking_error", "error": result.get("error"), "action": result.get("action")}],
+        content=result.get("message") or result.get("error") or "Action failed.",
+        cards=[
+            {
+                "type": "booking_error",
+                "error": result.get("error"),
+                "message": result.get("message") or result.get("error"),
+                "action": result.get("action"),
+            }
+        ],
         actions=[
             {"id": "my_bookings", "label": "My bookings", "href": "/my-bookings", "enabled": True},
             {"id": "find_slots", "label": "Find slots", "prompt": "Search available slots this week", "enabled": True},
