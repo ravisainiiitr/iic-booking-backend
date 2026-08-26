@@ -51,11 +51,12 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
     # Exact name/code
     exact = qs.filter(Q(name__iexact=raw) | Q(code__iexact=raw)).first()
     if exact:
+        eid = int(exact.pk)
         return EquipmentResolution(
             confidence="EXACT",
-            equipment_id=exact.id,
+            equipment_id=eid,
             equipment_name=exact.name,
-            candidates=[EquipmentCandidate(exact.id, exact.name, getattr(exact, "code", "") or "", f"/equipments/{exact.id}")],
+            candidates=[EquipmentCandidate(eid, exact.name, getattr(exact, "code", "") or "", f"/equipments/{eid}")],
             query=raw,
         )
 
@@ -75,7 +76,8 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
         for n in needles:
             filt |= Q(name__icontains=n) | Q(code__icontains=n) | Q(description__icontains=n)
         for eq in qs.filter(filt).order_by("name")[:8]:
-            hits[eq.id] = EquipmentCandidate(eq.id, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eq.id}")
+            eid = int(eq.pk)
+            hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
 
     # Substring name search on remaining words
     if not hits:
@@ -85,7 +87,8 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
             for w in words[:4]:
                 filt |= Q(name__icontains=w) | Q(code__icontains=w)
             for eq in qs.filter(filt).order_by("name")[:8]:
-                hits[eq.id] = EquipmentCandidate(eq.id, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eq.id}")
+                eid = int(eq.pk)
+                hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
 
     cands = list(hits.values())
     if len(cands) == 1:
@@ -103,11 +106,12 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
     if context_equipment_id:
         eq = qs.filter(pk=context_equipment_id).first()
         if eq:
+            eid = int(eq.pk)
             return EquipmentResolution(
                 confidence="CONTEXTUAL",
-                equipment_id=eq.id,
+                equipment_id=eid,
                 equipment_name=eq.name,
-                candidates=[EquipmentCandidate(eq.id, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eq.id}")],
+                candidates=[EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")],
                 query=raw,
             )
 

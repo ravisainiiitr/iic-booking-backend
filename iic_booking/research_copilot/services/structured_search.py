@@ -48,11 +48,11 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
             snippet_parts.append("Accessories: " + ", ".join(accessories))
         hits.append(
             StructuredHit(
-                source_id=f"equipment:{eq.id}",
+                source_id=f"equipment:{eq.pk}",
                 title=eq.name,
                 snippet=" | ".join(p for p in snippet_parts if p),
                 score=0.72,
-                url=f"/equipments/{eq.id}",
+                url=f"/equipments/{eq.pk}",
                 category="equipment",
             )
         )
