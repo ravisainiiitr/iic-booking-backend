@@ -181,11 +181,11 @@ def _static_actions(*, escalate: bool) -> list[dict]:
 
 def send_message(*, user, conversation: Conversation, content: str) -> dict:
     """
-    Persist user message, run portal grounding + RAG, then call LLM.
+    Persist user message, prefer deterministic V2 reads, else portal grounding + RAG + LLM.
 
     Critical path isolation (AI.17):
     - No long-lived DB transaction around Ollama/OpenAI.
-    - Concurrency gate rejects overload with a friendly busy message.
+    - Deterministic operational queries do not require the LLM.
     - Failures stay inside Copilot; booking/DSA/RAA are untouched.
     """
     text = (content or "").strip()
@@ -207,6 +207,56 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             content=text,
         )
 
+    # --- Phase A: deterministic-first (no LLM) ---
+    from iic_booking.research_copilot.services.v2.orchestrator import try_deterministic_turn
+
+    det = try_deterministic_turn(user=user, text=text, conversation=conversation, public=False)
+    if det is not None:
+        reply = det.get("content") or ""
+        actions = list(det.get("suggested_actions") or [])
+        cards = list(det.get("cards") or [])
+        escalate = bool(det.get("escalate_hint"))
+        confidence = float(det.get("confidence") or 0.88)
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=reply,
+                confidence=confidence,
+                citations=[],
+                suggested_actions=tools_svc.enrich_actions_from_message(
+                    user=user,
+                    text=text,
+                    base_actions=actions,
+                ),
+                escalate_hint=escalate,
+                metadata={
+                    **(det.get("metadata") or {}),
+                    "cards": cards,
+                    "response_kind": det.get("response_kind") or "LIVE_DATA",
+                    "llm_used": False,
+                    "v2": True,
+                },
+            )
+            if not conversation.title or conversation.title == "New conversation":
+                conversation.title = text[:80]
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["title", "updated_at"])
+        audit_svc.audit_message_replied(
+            user=user,
+            conversation=conversation,
+            confidence=confidence,
+            escalate=escalate,
+        )
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+            "cards": cards,
+            "response_kind": det.get("response_kind"),
+        }
+
     history = [
         {"role": m.role, "content": m.content}
         for m in conversation.messages.order_by("created_at")
@@ -222,6 +272,33 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         acquire_generation_slot,
     )
     from iic_booking.research_copilot.models import AuditAction
+    from iic_booking.research_copilot.throttles import consume_llm_quota
+
+    llm_ok, llm_msg = consume_llm_quota(user=user)
+    if not llm_ok:
+        with transaction.atomic():
+            assistant = Message.objects.create(
+                conversation=conversation,
+                role=MessageRole.ASSISTANT,
+                content=llm_msg,
+                confidence=0.5,
+                citations=[],
+                suggested_actions=_static_actions(escalate=False)
+                + [
+                    {"id": "my_bookings", "label": "My bookings", "href": "/my-bookings", "enabled": True},
+                    {"id": "equipments", "label": "Find equipment", "href": "/equipments", "enabled": True},
+                ],
+                escalate_hint=False,
+                metadata={"llm_used": False, "llm_quota_blocked": True, "v2": True},
+            )
+            conversation.updated_at = timezone.now()
+            conversation.save(update_fields=["updated_at"])
+        return {
+            "conversation_id": str(conversation.id),
+            "message": serialize_message(assistant),
+            "suggested_prompts": _suggested_for(ctx),
+            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        }
 
     grounding = run_portal_grounding(user=user, text=text)
 
@@ -310,6 +387,8 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
                 "portal_tools": grounding.get("tool_results") or [],
                 "response_modes": grounding.get("modes") or [],
                 "busy": busy,
+                "llm_used": True,
+                "v2": True,
             },
         )
 
@@ -549,6 +628,7 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "search_slots", "label": "Search available slots", "prompt": "Search available slots for FESEM this week."},
             {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
             {"id": "wallet", "label": "Wallet / recharge", "href": "/wallet", "prompt": "What is my wallet balance?"},
+            {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
             {"id": "software", "label": "Find Analysis Software", "href": "/remote-analysis/software-catalog"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
@@ -599,7 +679,7 @@ def public_ask(*, text: str) -> dict:
     """
     One-shot anonymous ask (no conversation persistence / no schema change).
 
-    Uses public-only portal tools + RAG + LLM (with fallback).
+    Deterministic public reads first; else RAG + LLM (with fallback).
     """
     from iic_booking.equipment.print_3d_views import get_charge_estimate_guest_user
     from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
@@ -609,6 +689,7 @@ def public_ask(*, text: str) -> dict:
         CopilotBusyError,
         acquire_generation_slot,
     )
+    from iic_booking.research_copilot.services.v2.orchestrator import try_deterministic_turn
 
     text = (text or "").strip()
     if len(text) < 2:
@@ -622,6 +703,31 @@ def public_ask(*, text: str) -> dict:
             "ok": False,
             "error": "message_too_long",
             "message": "Message is too long.",
+        }
+
+    # Phase A: deterministic public reads (slots / equipment / estimate / docs) without LLM
+    det = try_deterministic_turn(user=None, text=text, conversation=None, public=True)
+    if det is not None:
+        cards = list(det.get("cards") or [])
+        return {
+            "ok": True,
+            "enabled": True,
+            "cards": cards,
+            "response_kind": det.get("response_kind"),
+            "message": {
+                "role": "assistant",
+                "content": det.get("content") or "",
+                "citations": [],
+                "suggested_actions": list(det.get("suggested_actions") or []),
+                "escalate_hint": bool(det.get("escalate_hint")),
+                "metadata": {
+                    **(det.get("metadata") or {}),
+                    "cards": cards,
+                    "public": True,
+                    "llm_used": False,
+                    "v2": True,
+                },
+            },
         }
 
     guest = get_charge_estimate_guest_user()

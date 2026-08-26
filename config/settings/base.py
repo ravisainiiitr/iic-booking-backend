@@ -553,11 +553,14 @@ REST_FRAMEWORK = {
         "sync_enroll": env("DSA_SYNC_ENROLL_THROTTLE_RATE", default="10/hour"),
         "provisioning_session": env("PROVISIONING_SESSION_THROTTLE_RATE", default="30/hour"),
         # Research Copilot only (portal-wide traffic is not throttled by these)
-        "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="60/hour"),
-        "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="30/hour"),
-        "research_copilot_anon": env("RESEARCH_COPILOT_ANON_THROTTLE", default="20/hour"),
-    },
-}
+        "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="300/hour"),
+        "research_copilot_read": env("RESEARCH_COPILOT_READ_THROTTLE", default="300/hour"),
+        "research_copilot_llm": env("RESEARCH_COPILOT_LLM_THROTTLE", default="60/hour"),
+        "research_copilot_mutation": env("RESEARCH_COPILOT_MUTATION_THROTTLE", default="20/hour"),
+        "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="120/hour"),
+        "research_copilot_anon": env("RESEARCH_COPILOT_ANON_THROTTLE", default="60/hour"),
+      },
+    }
 
 # Inactivity logout disabled: tokens do not expire due to inactivity.
 # AUTH_INACTIVITY_TIMEOUT_SECONDS is kept for backwards compatibility but not used.
@@ -660,6 +663,24 @@ RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", d
 RESEARCH_COPILOT_MAX_CONCURRENT = env.int("RESEARCH_COPILOT_MAX_CONCURRENT", default=2)
 # Optional comma-separated emails for controlled pilot when RESEARCH_COPILOT_ENABLED=true.
 RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
+
+# --- Copilot V2 feature flags (mutations OFF by default) ---
+COPILOT_V2_ENABLED = env.bool("COPILOT_V2_ENABLED", default=True)
+COPILOT_DETERMINISTIC_READS = env.bool("COPILOT_DETERMINISTIC_READS", default=True)
+COPILOT_EQUIPMENT_SEARCH = env.bool("COPILOT_EQUIPMENT_SEARCH", default=True)
+COPILOT_AVAILABILITY = env.bool("COPILOT_AVAILABILITY", default=True)
+COPILOT_PRICING = env.bool("COPILOT_PRICING", default=True)
+COPILOT_USER_CONTEXT = env.bool("COPILOT_USER_CONTEXT", default=True)
+COPILOT_RAG = env.bool("COPILOT_RAG", default=True)
+# Phase B — booking mutations (OFF)
+COPILOT_BOOKING_CREATE = env.bool("COPILOT_BOOKING_CREATE", default=False)
+COPILOT_BOOKING_CANCEL = env.bool("COPILOT_BOOKING_CANCEL", default=False)
+COPILOT_BOOKING_RESCHEDULE = env.bool("COPILOT_BOOKING_RESCHEDULE", default=False)
+COPILOT_BOOKING_MODIFY = env.bool("COPILOT_BOOKING_MODIFY", default=False)
+# Phase C — financial (OFF)
+COPILOT_WALLET_RECHARGE = env.bool("COPILOT_WALLET_RECHARGE", default=False)
+COPILOT_WALLET_CREDIT = env.bool("COPILOT_WALLET_CREDIT", default=False)
+COPILOT_AVAILABILITY_CACHE_TTL_SECONDS = env.int("COPILOT_AVAILABILITY_CACHE_TTL_SECONDS", default=45)
 # LLM provider (AI.17/AI.18). Default ollama — does NOT require OPENAI_API_KEY.
 # Preferred: COPILOT_PROVIDER. Legacy alias: COPILOT_LLM_PROVIDER.
 COPILOT_PROVIDER = env("COPILOT_PROVIDER", default="") or env("COPILOT_LLM_PROVIDER", default="ollama")
