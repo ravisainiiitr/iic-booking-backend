@@ -415,12 +415,10 @@ class SessionOrchestrator:
 
     def _provision_guacamole(self, session: RemoteDesktopSession) -> None:
         # Serialize concurrent prepare/launch workers for the same session.
+        # of=("self",): Postgres rejects FOR UPDATE on nullable outer-join sides
+        # (booking/user/etc. are nullable FKs — never select_related under FOR UPDATE).
         with transaction.atomic():
-            locked = (
-                RemoteDesktopSession.objects.select_for_update()
-                .select_related("workstation", "booking", "reservation", "user")
-                .get(pk=session.pk)
-            )
+            locked = RemoteDesktopSession.objects.select_for_update(of=("self",)).get(pk=session.pk)
             existing = (
                 GuacamoleConnection.objects.filter(session=locked, is_active=True)
                 .exclude(destroyed_at__isnull=False)
