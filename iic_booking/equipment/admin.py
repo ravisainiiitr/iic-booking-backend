@@ -789,8 +789,8 @@ class ChargeProfileInline(admin.StackedInline):
     fields = [
         'user_type',
         'profile_type',
-        'pricing_profile',
         'is_active',
+        'pricing_profile',
         'require_istem_fbr',
         'show_charge_breakdown',
         'primary_unit_charge',

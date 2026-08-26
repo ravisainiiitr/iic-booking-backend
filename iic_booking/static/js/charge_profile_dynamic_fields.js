@@ -48,7 +48,7 @@
   }
 
   /**
-   * One nest per charge-profile card, always AFTER User type / Profile type / charge fields.
+   * One nest per charge-profile card, immediately AFTER User type / Profile type / Is active.
    * Never insert near the h3 .delete control (that caused duplicate sections).
    */
   function ensureNest($related) {
@@ -58,7 +58,7 @@
       $existing = $related.find(".cp-dynamic-fields-nest").first();
     }
     if ($existing.length) {
-      placeNestAtEnd($related, $existing);
+      placeNestAfterProfileControls($related, $existing);
       return $existing;
     }
 
@@ -75,34 +75,61 @@
         '<div class="cp-dynamic-fields-rows"><table class="tabular cp-nested-dyn-table" style="width:100%;"><tbody></tbody></table></div>' +
       "</div>"
     );
-    placeNestAtEnd($related, $nest);
+    placeNestAfterProfileControls($related, $nest);
     return $nest;
   }
 
-  function placeNestAtEnd($related, $nest) {
+  function findFormRow($related, fieldName) {
+    var $row = $related.find(".form-row.field-" + fieldName).first();
+    if ($row.length) return $row;
+    return $related
+      .find(".field-" + fieldName)
+      .closest(".form-row")
+      .first();
+  }
+
+  function placeNestAfterProfileControls($related, $nest) {
     var $fs = fieldsetOf($related);
     var $host = $fs.length ? $fs : $related;
-    // Prefer after the last real form-row (user_type, profile_type, charges, …),
-    // never before the stacked-inline title / delete control.
+
+    // Desired order: User type → Profile type → Is active → Dynamic fields → rest
+    var $anchor =
+      findFormRow($related, "is_active") ||
+      findFormRow($related, "profile_type") ||
+      findFormRow($related, "user_type");
+
+    if ($anchor && $anchor.length) {
+      $nest.insertAfter($anchor);
+      return;
+    }
+
     var $rows = $host.children(".form-row").filter(function () {
       return !$(this).hasClass("field-DELETE") && !$(this).find("> .delete").length;
     });
     if ($rows.length) {
-      $nest.insertAfter($rows.last());
+      $nest.insertAfter($rows.first());
       return;
     }
     $host.append($nest);
   }
 
   function ensureProfileFieldsVisible($related) {
-    $related.find(".form-row.field-user_type, .form-row.field-profile_type").show();
-    $related.find(".field-user_type, .field-profile_type").closest(".form-row").show();
-    // Keep selects usable (not covered / not display:none from other admin JS)
+    ["user_type", "profile_type", "is_active"].forEach(function (name) {
+      var $row = findFormRow($related, name);
+      if ($row && $row.length) $row.show();
+    });
     $related.find('select[name$="-user_type"], select[name$="-profile_type"]').each(function () {
       var $row = $(this).closest(".form-row");
       if ($row.length) $row.show();
       $(this).show();
     });
+    // Keep canonical order: user_type → profile_type → is_active → (nest) …
+    var $ut = findFormRow($related, "user_type");
+    var $pt = findFormRow($related, "profile_type");
+    var $ia = findFormRow($related, "is_active");
+    if ($ut.length && $pt.length) $pt.insertAfter($ut);
+    if ($pt.length && $ia.length) $ia.insertAfter($pt);
+    else if ($ut.length && $ia.length) $ia.insertAfter($ut);
   }
 
   function sourceTbody($dynGroup) {
