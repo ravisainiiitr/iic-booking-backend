@@ -451,7 +451,7 @@ def get_gateway() -> LLMGateway:
     provider = configured_provider_name()
     timeout = llm_timeout_seconds()
     api_key = (getattr(settings, "OPENAI_API_KEY", None) or "").strip()
-    ollama_base = (getattr(settings, "OLLAMA_BASE_URL", None) or "http://127.0.0.1:11434").strip()
+    ollama_base = (getattr(settings, "OLLAMA_BASE_URL", None) or "http://ollama:11434").strip()
 
     if provider == "fallback":
         return FallbackGateway()

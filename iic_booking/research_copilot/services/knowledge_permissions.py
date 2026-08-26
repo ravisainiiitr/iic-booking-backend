@@ -15,6 +15,8 @@ SECURITY_RANK = {
 
 def role_bucket_rank(role_bucket: str) -> int:
     b = (role_bucket or "default").lower()
+    if b in {"public", "anonymous", "guest"}:
+        return SECURITY_RANK[SecurityLevel.PUBLIC]
     if b == "admin":
         return SECURITY_RANK[SecurityLevel.ADMIN]
     if b == "dept_admin":

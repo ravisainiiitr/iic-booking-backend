@@ -26,7 +26,7 @@ TOOL_REGISTRY: list[ToolSpec] = [
     ToolSpec("get_sample_status", "Sample/trace status for caller's booking", False, ("*",)),
     ToolSpec("get_booking_results", "Result availability for caller's booking", False, ("*",)),
     ToolSpec("get_sample_deadline", "Sample submission deadline for caller's booking", False, ("*",)),
-    ToolSpec("estimate_booking_cost", "Cost guidance — portal calculate is authoritative", False, ("student", "faculty", "external", "admin")),
+    ToolSpec("estimate_booking_cost", "Cost estimate via ChargeCalculationEngine (portal calculate still authoritative)", False, ("*",)),
     ToolSpec("create_booking", "Prepare booking options (requires confirmation)", True, ("student", "faculty", "external", "admin")),
     ToolSpec("cancel_booking", "Prepare cancel action (requires confirmation)", True, ("student", "faculty", "external", "admin")),
     ToolSpec("create_support_ticket", "Create support ticket", True, ("*",)),
@@ -147,15 +147,17 @@ def _search_slots(*, arguments: dict, user) -> dict:
             ],
         )
 
-    return _ok(
+    public_mode = bool(arguments.get("public") or arguments.get("anonymous"))
+    actions: list[dict] = [
         {
-            "equipment_id": eq.id,
-            "equipment_name": eq.name,
-            "date": day.isoformat(),
-            "slots": slots,
-            "source": "PORTAL_DATA",
-        },
-        actions=[
+            "id": "open_equipment_slots",
+            "label": f"View availability — {eq.name}",
+            "href": f"/equipments/{eq.id}",
+            "enabled": True,
+        }
+    ]
+    if not public_mode:
+        actions = [
             {
                 "id": f"book_slot_{i}",
                 "label": f"Review & book {s.get('start') or 'slot'}",
@@ -165,7 +167,28 @@ def _search_slots(*, arguments: dict, user) -> dict:
                 "hint": "Opens portal booking; confirmation uses normal booking APIs.",
             }
             for i, s in enumerate(slots[:5])
-        ],
+        ] + actions
+    else:
+        actions.append(
+            {
+                "id": "sign_in_to_book",
+                "label": "Sign in to book",
+                "href": "/auth",
+                "enabled": True,
+                "hint": "Booking requires a signed-in portal account.",
+            }
+        )
+
+    return _ok(
+        {
+            "equipment_id": eq.id,
+            "equipment_name": eq.name,
+            "date": day.isoformat(),
+            "slots": slots,
+            "source": "PORTAL_DATA",
+            "public": public_mode,
+        },
+        actions=actions,
     )
 
 
@@ -242,7 +265,17 @@ def _get_wallet(*, arguments: dict, user) -> dict:
                 "source": "PORTAL_DATA",
                 "note": "Authoritative wallet actions (recharge/transfer) remain in the Wallet portal page.",
             },
-            actions=[{"id": "open_wallet", "label": "Open Wallet", "href": "/wallet", "enabled": True}],
+            actions=[
+                {"id": "open_wallet", "label": "Open Wallet", "href": "/wallet", "enabled": True},
+                {
+                    "id": "wallet_recharge",
+                    "label": "Recharge wallet",
+                    "href": "/wallet",
+                    "enabled": True,
+                    "requires_confirmation": True,
+                    "hint": "Opens Wallet so you can review and confirm a recharge in the portal.",
+                },
+            ],
         )
     except Exception as exc:
         return _err("wallet_unavailable", f"Wallet lookup failed: {exc}")
@@ -432,7 +465,13 @@ def _get_sample_deadline(*, arguments: dict, user) -> dict:
 
 
 def _estimate_booking_cost(*, arguments: dict, user) -> dict:
-    from iic_booking.equipment.models import Equipment
+    """Live rough estimate via ChargeCalculationEngine (portal calculate remains authoritative)."""
+    from decimal import Decimal
+
+    from iic_booking.equipment.calculators import ChargeCalculationEngine, TimeCalculationEngine
+    from iic_booking.equipment.models import ChargeProfile, ChargeProfilePricingProfile, Equipment
+    from iic_booking.equipment.print_3d_views import get_charge_estimate_guest_user
+    from iic_booking.users.models.user_type import UserType
 
     equipment_id = arguments.get("equipment_id")
     if not equipment_id:
@@ -441,26 +480,136 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
         eq = Equipment.objects.get(pk=int(equipment_id))
     except Exception:
         return _err("equipment_not_found", f"Equipment {equipment_id} not found")
-    # Do not invent prices — point to portal calculate which applies full rules.
+
+    public_mode = bool(arguments.get("public") or arguments.get("anonymous"))
+    actor = user
+    if public_mode or actor is None or not getattr(actor, "is_authenticated", False):
+        actor = get_charge_estimate_guest_user()
+        user_type = str(arguments.get("user_type") or UserType.EXTERNAL)
+    else:
+        user_type = str(
+            arguments.get("user_type")
+            or getattr(actor, "user_type", None)
+            or UserType.STUDENT
+        )
+
+    cp = (
+        ChargeProfile.objects.filter(
+            equipment=eq,
+            user_type=user_type,
+            pricing_profile=ChargeProfilePricingProfile.STANDARD,
+            is_active=True,
+        ).first()
+        or ChargeProfile.objects.filter(
+            equipment=eq,
+            pricing_profile=ChargeProfilePricingProfile.STANDARD,
+            is_active=True,
+        ).first()
+    )
+    if not cp:
+        return _ok(
+            {
+                "equipment_id": eq.id,
+                "equipment_name": eq.name,
+                "estimate": None,
+                "note": "No active charge profile found. Open the booking flow for an authoritative estimate.",
+                "source": "PORTAL_DATA",
+            },
+            actions=[
+                {
+                    "id": "open_book_equipment",
+                    "label": f"Review charges — {eq.name}",
+                    "href": f"/book-equipment?equipment={eq.id}",
+                    "enabled": True,
+                    "requires_confirmation": not public_mode,
+                }
+            ],
+        )
+
+    # Prefer defaults from dynamic input fields; fall back to A=1.
+    input_values: dict = {}
+    try:
+        from iic_booking.equipment.models import DynamicInputField
+
+        for f in DynamicInputField.objects.filter(equipment=eq, user_type=user_type):
+            if f.default_value not in (None, ""):
+                try:
+                    input_values[f.field_key] = float(f.default_value)
+                except (TypeError, ValueError):
+                    input_values[f.field_key] = f.default_value
+    except Exception:  # noqa: BLE001
+        pass
+    if "A" not in input_values:
+        input_values["A"] = 1.0
+    # Allow explicit overrides from tool args (A–G)
+    for key in list("ABCDEFG"):
+        if key in arguments and arguments[key] is not None:
+            try:
+                input_values[key] = float(arguments[key])
+            except (TypeError, ValueError):
+                input_values[key] = arguments[key]
+
+    try:
+        total_time_minutes = TimeCalculationEngine.calculate_time(
+            cp,
+            input_values,
+            slot_duration_minutes=eq.slot_duration_minutes,
+        )
+        total_charge, breakdown = ChargeCalculationEngine.calculate_charge(
+            cp,
+            input_values,
+            total_time_minutes,
+            selected_parameters=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err("estimate_failed", f"Could not estimate charge: {exc}")
+
+    note = (
+        "Rough estimate using default/sample inputs and the standard charge profile "
+        f"for user type “{user_type}”. Portal booking/calculate remains authoritative "
+        "(accessories, PI rates, GST, and live inputs may change the total)."
+    )
+    if public_mode:
+        note += " Sign in for a personalized estimate and to book."
+
+    actions = [
+        {
+            "id": "open_book_equipment",
+            "label": f"Review charges — {eq.name}",
+            "href": f"/book-equipment?equipment={eq.id}",
+            "enabled": True,
+            "requires_confirmation": not public_mode,
+            "hint": "Portal calculate is the source of truth for cost.",
+        }
+    ]
+    if public_mode:
+        actions.append(
+            {
+                "id": "sign_in_for_estimate",
+                "label": "Sign in for personalized estimate",
+                "href": "/auth",
+                "enabled": True,
+            }
+        )
+
     return _ok(
         {
             "equipment_id": eq.id,
             "equipment_name": eq.name,
-            "estimate": None,
-            "note": "Authoritative charges are computed by the portal booking/calculate APIs (user type, profile, slots, accessories). Open the equipment booking flow for a live estimate.",
+            "user_type": user_type,
+            "profile_type": cp.profile_type,
+            "input_values": input_values,
+            "total_time_minutes": float(total_time_minutes) if total_time_minutes is not None else None,
+            "estimate": float(Decimal(str(total_charge))),
+            "currency": "INR",
+            "breakdown": breakdown,
+            "note": note,
             "source": "PORTAL_DATA",
+            "public": public_mode,
         },
-        actions=[
-            {
-                "id": "open_book_equipment",
-                "label": f"Review charges — {eq.name}",
-                "href": f"/book-equipment?equipment={eq.id}",
-                "enabled": True,
-                "requires_confirmation": True,
-                "hint": "Portal calculate is the source of truth for cost.",
-            }
-        ],
+        actions=actions,
     )
+
 
 def _search_documentation(*, arguments: dict, user) -> dict:
     from iic_booking.research_copilot.services import rag as rag_svc

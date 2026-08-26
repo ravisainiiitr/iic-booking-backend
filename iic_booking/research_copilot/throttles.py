@@ -25,3 +25,16 @@ class ResearchCopilotToolThrottle(SimpleRateThrottle):
         if not request.user or not request.user.is_authenticated:
             return None
         return self.cache_format % {"scope": self.scope, "ident": request.user.pk}
+
+
+class ResearchCopilotAnonThrottle(SimpleRateThrottle):
+    """IP-based throttle for anonymous Copilot public endpoints."""
+
+    scope = "research_copilot_anon"
+
+    def get_cache_key(self, request, view):
+        ident = self.get_ident(request)
+        if not ident:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": ident}
+

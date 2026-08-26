@@ -35,28 +35,43 @@ def feature_enabled(*, user=None) -> bool:
     Global enable via RESEARCH_COPILOT_ENABLED.
 
     Optional pilot allowlist: RESEARCH_COPILOT_PILOT_EMAILS (comma-separated).
-    When the allowlist is non-empty, only those emails may use Copilot while the
-    global flag is true. Empty allowlist = all authenticated users (global).
+    When the allowlist is non-empty, only those emails may use authenticated Copilot
+    while the global flag is true. Empty allowlist = all authenticated users (global).
+
+    Anonymous/public mode is allowed whenever the global flag is true (pilot list
+    does not block public FAQ / slots / rough estimates).
     """
     if not bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)):
         return False
+    if user is None:
+        return True
     raw = (getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", None) or "").strip()
     if not raw:
         return True
     allowed = {e.strip().lower() for e in raw.split(",") if e.strip()}
     if not allowed:
         return True
-    if user is None:
-        return False
     email = (getattr(user, "email", None) or "").strip().lower()
     return email in allowed
 
 
-def _reply_from_llm_result(result) -> str:
+def _reply_from_llm_result(result, *, user_text: str = "") -> str:
     """Map gateway result to user-visible text without exposing stack traces."""
     text = (result.text if result else "") or ""
     if text.strip():
         return text
+    # Prefer deterministic fallback guidance over a hard failure when Ollama is down.
+    try:
+        from iic_booking.research_copilot.services.llm_gateway import FallbackGateway
+
+        fb = FallbackGateway().complete(
+            [{"role": "user", "content": (user_text or "help")[:2000]}],
+            max_tokens=400,
+        )
+        if fb and (fb.text or "").strip():
+            return fb.text
+    except Exception:  # noqa: BLE001
+        pass
     category = getattr(result, "error_category", "") if result else ""
     if category:
         return (
@@ -245,7 +260,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
         )
         result = type("R", (), {"text": BUSY_USER_MESSAGE + "\n" + ESCALATE_MARKER, "provider": "none", "model": "", "error_category": "busy", "latency_ms": 0, "prompt_tokens": None, "completion_tokens": None})()
 
-    raw = _reply_from_llm_result(result)
+    raw = _reply_from_llm_result(result, user_text=text)
     reply, escalate = _strip_escalate(raw)
     if not busy:
         reply = _append_sources_footer(reply, citations)
@@ -533,7 +548,160 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "find_equipment", "label": "Find equipment", "href": "/equipments", "prompt": "Help me find suitable equipment for my sample."},
             {"id": "search_slots", "label": "Search available slots", "prompt": "Search available slots for FESEM this week."},
             {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
+            {"id": "wallet", "label": "Wallet / recharge", "href": "/wallet", "prompt": "What is my wallet balance?"},
             {"id": "software", "label": "Find Analysis Software", "href": "/remote-analysis/software-catalog"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
+    }
+
+
+def public_bootstrap_payload() -> dict:
+    """Anonymous bootstrap — no personal tools."""
+    from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
+
+    enabled = feature_enabled(user=None)
+    return {
+        "enabled": enabled,
+        "assistant_name": "IIC Research Copilot",
+        "role_bucket": "public",
+        "suggested_prompts": [
+            "What does HOLD mean on a booking?",
+            "Search available slots for FESEM",
+            "Estimate the cost of booking PXRD for educational institute users",
+            "How do I accept a sample?",
+            "Remote Analysis won't connect — troubleshoot.",
+            "Where are operator manuals?",
+        ],
+        "tools_available": [
+            {"name": n, "description": d, "mutating": False, "available": True}
+            for n, d in (
+                ("search_documentation", "Public FAQ / documentation"),
+                ("search_equipment", "Search instruments"),
+                ("search_slots", "Browse free slots (no booking)"),
+                ("estimate_booking_cost", "Rough public charge estimate"),
+            )
+        ],
+        "capabilities": ["ask_docs", "public_slots", "public_estimate", "equipment_advisor"],
+        "llm_provider": configured_provider_name(),
+        "auth_required_for": ["book", "wallet", "my_bookings", "recharge", "cancel"],
+        "command_actions": [
+            {"id": "hold_meaning", "label": "What is HOLD?", "prompt": "What does HOLD mean on a booking?"},
+            {"id": "find_equipment", "label": "Find equipment", "href": "/equipments", "prompt": "Help me find suitable equipment for my sample."},
+            {"id": "search_slots", "label": "Search available slots", "prompt": "Search available slots for FESEM this week."},
+            {"id": "estimate_cost", "label": "Estimate booking cost", "prompt": "Estimate the cost of booking FESEM."},
+            {"id": "sign_in", "label": "Sign in to book", "href": "/auth"},
+            {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
+        ],
+    }
+
+
+def public_ask(*, text: str) -> dict:
+    """
+    One-shot anonymous ask (no conversation persistence / no schema change).
+
+    Uses public-only portal tools + RAG + LLM (with fallback).
+    """
+    from iic_booking.equipment.print_3d_views import get_charge_estimate_guest_user
+    from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
+    from iic_booking.research_copilot.services.prompt_builder import append_portal_context
+    from iic_booking.research_copilot.services.inference_concurrency import (
+        BUSY_USER_MESSAGE,
+        CopilotBusyError,
+        acquire_generation_slot,
+    )
+
+    text = (text or "").strip()
+    if len(text) < 2:
+        return {
+            "ok": False,
+            "error": "empty_message",
+            "message": "Please enter a question.",
+        }
+    if len(text) > int(getattr(settings, "RESEARCH_COPILOT_MAX_INPUT_CHARS", 4000) or 4000):
+        return {
+            "ok": False,
+            "error": "message_too_long",
+            "message": "Message is too long.",
+        }
+
+    guest = get_charge_estimate_guest_user()
+    ctx = build_context(None)
+    grounding = run_portal_grounding(user=guest, text=text, public=True)
+    retrieval = rag_svc.retrieve(
+        query=text,
+        role_bucket="public",
+        department_id=None,
+        user=None,
+        conversation=None,
+    )
+    citations = retrieval.citations
+    system = build_system_prompt(ctx)
+    system = append_portal_context(system, portal_block=grounding.get("block") or "")
+    system = append_retrieval_context(
+        system,
+        context_block=retrieval.context_block,
+        citations=citations,
+    )
+    system += (
+        "\n\nYou are answering an anonymous visitor. "
+        "You may discuss equipment, free slots, rough charge estimates, and documentation. "
+        "If they ask to book, recharge wallet, or view personal bookings, tell them to Sign in."
+    )
+
+    llm_messages = build_messages_for_llm(system_prompt=system, history=[], user_message=text)
+    gateway = get_gateway()
+    result = None
+    busy = False
+    try:
+        with acquire_generation_slot(wait=False):
+            result = gateway.generate(llm_messages, max_tokens=default_max_tokens())
+    except CopilotBusyError:
+        busy = True
+        result = type(
+            "R",
+            (),
+            {
+                "text": BUSY_USER_MESSAGE + "\n" + ESCALATE_MARKER,
+                "provider": "none",
+                "model": "",
+                "error_category": "busy",
+                "latency_ms": 0,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+            },
+        )()
+
+    raw = _reply_from_llm_result(result, user_text=text)
+    reply, escalate = _strip_escalate(raw)
+    if not busy:
+        reply = _append_sources_footer(reply, citations)
+
+    base_actions = list(grounding.get("actions") or [])
+    # Always offer sign-in for privileged follow-ups
+    if all(a.get("id") != "sign_in_cta" for a in base_actions):
+        base_actions.append(
+            {
+                "id": "sign_in_cta",
+                "label": "Sign in for booking & wallet",
+                "href": "/auth",
+                "enabled": True,
+            }
+        )
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "message": {
+            "role": "assistant",
+            "content": reply,
+            "citations": rag_svc.citations_as_dicts(citations) if not busy else [],
+            "suggested_actions": base_actions,
+            "escalate_hint": bool(escalate),
+            "metadata": {
+                "provider": getattr(result, "provider", "") if result else "",
+                "public": True,
+                "portal_tools": grounding.get("tool_results") or [],
+                "busy": busy,
+            },
+        },
     }

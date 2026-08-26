@@ -555,6 +555,7 @@ REST_FRAMEWORK = {
         # Research Copilot only (portal-wide traffic is not throttled by these)
         "research_copilot_user": env("RESEARCH_COPILOT_USER_THROTTLE", default="60/hour"),
         "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="30/hour"),
+        "research_copilot_anon": env("RESEARCH_COPILOT_ANON_THROTTLE", default="20/hour"),
     },
 }
 
@@ -663,7 +664,7 @@ RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
 # Preferred: COPILOT_PROVIDER. Legacy alias: COPILOT_LLM_PROVIDER.
 COPILOT_PROVIDER = env("COPILOT_PROVIDER", default="") or env("COPILOT_LLM_PROVIDER", default="ollama")
 COPILOT_LLM_PROVIDER = env("COPILOT_LLM_PROVIDER", default=COPILOT_PROVIDER or "ollama")
-OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://127.0.0.1:11434")
+OLLAMA_BASE_URL = env("OLLAMA_BASE_URL", default="http://ollama:11434")
 OLLAMA_MODEL = env("OLLAMA_MODEL", default="llama3.2:3b")
 COMPATIBLE_FRONTEND_MIN = env("COMPATIBLE_FRONTEND_MIN", default="2.5.2-r2")
 # Administrator-approved Wallet Credit Facility (request → approve → ledger credit).

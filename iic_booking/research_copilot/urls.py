@@ -2,12 +2,14 @@
 
 from django.urls import path
 
-from iic_booking.research_copilot import api_views, knowledge_views
+from iic_booking.research_copilot import api_views, knowledge_views, public_views
 
 app_name = "research_copilot"
 
 urlpatterns = [
     path("bootstrap/", api_views.bootstrap, name="bootstrap"),
+    path("public/bootstrap/", public_views.public_bootstrap, name="public-bootstrap"),
+    path("public/ask/", public_views.public_ask, name="public-ask"),
     path("conversations/", api_views.conversations_collection, name="conversations"),
     path("conversations/<uuid:conversation_id>/", api_views.conversation_detail, name="conversation-detail"),
     path(
