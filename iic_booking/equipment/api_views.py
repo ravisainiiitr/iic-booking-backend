@@ -1007,12 +1007,31 @@ def _ensure_booking_result_file_table():
 def user_can_see_equipment(user, equipment):
     """
     Return True if the user is allowed to see this equipment.
+    - Department.equipment_visibility_enabled must allow the user (main admin / dept admin / OIC exempt when off).
     - Equipment without visibility_group is public (everyone can see).
     - Equipment with visibility_group is visible only to group members.
-    - Admins and operators can see all equipment.
+    - Admins and operators can see all equipment (subject to department visibility).
     - Managers (OIC) can see only equipment for which they are OIC (primary or temporary until resume_at).
     - Multi-mode catalog rules hide inactive child modes / exclusive-hidden parents for non-staff.
     """
+    from iic_booking.users.legacy_ledger.booking_lock import (
+        department_equipment_visibility_allowed,
+    )
+
+    allowed, _ = department_equipment_visibility_allowed(user, equipment)
+    if not allowed:
+        return False
+
+    # Department Administrator: all equipment in their assigned internal department
+    if user and user.is_authenticated and user.user_type == UserType.DEPT_ADMIN:
+        dept_id = getattr(user, "department_id", None)
+        if dept_id and getattr(equipment, "internal_department_id", None) == dept_id:
+            from .mode_utils import is_equipment_visible_on_date, is_staff_bypass_user
+            if is_staff_bypass_user(user):
+                return True
+            return is_equipment_visible_on_date(equipment, timezone.localdate())
+        return False
+
     if user and user.is_authenticated and user.user_type == UserType.MANAGER:
         allowed_ids = get_equipment_ids_managed_by_oic(user.id)
         return equipment.equipment_id in allowed_ids
@@ -1096,6 +1115,10 @@ def get_visible_equipment_queryset(user):
             Q(visibility_group__isnull=True) |
             Q(visibility_group__members__user=user)
         ).distinct()
+
+    from iic_booking.users.legacy_ledger.booking_lock import apply_department_catalog_visibility
+
+    queryset = apply_department_catalog_visibility(queryset, user)
 
     from .mode_utils import filter_queryset_for_mode_catalog
     return filter_queryset_for_mode_catalog(queryset, user)

@@ -125,6 +125,68 @@ def department_equipment_booking_blocked(equipment) -> tuple[bool, str]:
     return False, ""
 
 
+def department_equipment_visibility_allowed(user, equipment) -> tuple[bool, str]:
+    """
+    Catalog visibility for equipment based on Department.equipment_visibility_enabled.
+
+    When the department flag is False (default), only the main administrator, the
+    Department Administrator of that department, and the Officer-in-Charge of the
+    equipment may see it. Independent of equipment_booking_enabled.
+    """
+    dept = getattr(equipment, "internal_department", None)
+    if dept is not None and bool(getattr(dept, "equipment_visibility_enabled", False)):
+        return True, ""
+
+    ut = getattr(user, "user_type", None) if user is not None else None
+    authenticated = bool(user and getattr(user, "is_authenticated", False))
+
+    if authenticated and ut == UserType.ADMIN:
+        return True, ""
+
+    if dept is None:
+        return (
+            False,
+            "This equipment is not linked to a department with catalog visibility enabled.",
+        )
+
+    if authenticated and ut == UserType.DEPT_ADMIN:
+        if getattr(user, "department_id", None) == getattr(dept, "id", None):
+            return True, ""
+
+    if authenticated and ut == UserType.MANAGER:
+        try:
+            from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
+
+            eq_id = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
+            if eq_id is not None and eq_id in get_equipment_ids_managed_by_oic(user.id):
+                return True, ""
+        except Exception:
+            pass
+
+    name = getattr(dept, "name", None) or "this department"
+    return (
+        False,
+        f"Equipment from {name} is not visible on the portal. "
+        "The main administrator must enable equipment visibility for this department.",
+    )
+
+
+def apply_department_catalog_visibility(queryset, user):
+    """
+    Restrict an Equipment queryset by department catalog visibility.
+
+    Main admin, Department Administrators (already scoped to their dept), and
+    Managers/OICs (already scoped to managed equipment) are not further filtered.
+    All other callers only see equipment whose department has
+    equipment_visibility_enabled=True.
+    """
+    ut = getattr(user, "user_type", None) if user is not None else None
+    authenticated = bool(user and getattr(user, "is_authenticated", False))
+    if authenticated and ut in {UserType.ADMIN, UserType.DEPT_ADMIN, UserType.MANAGER}:
+        return queryset
+    return queryset.filter(internal_department__equipment_visibility_enabled=True)
+
+
 OLD_PORTAL_MIGRATION_BANNER = (
     "IIC Booking has migrated to the new portal. "
     "New bookings are now available only through the new IIC Booking Portal. "

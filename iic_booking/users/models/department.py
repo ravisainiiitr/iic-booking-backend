@@ -254,6 +254,16 @@ class Department(Model):
             "department cannot be booked on the portal. Defaults to disabled."
         ),
     )
+    equipment_visibility_enabled = BooleanField(
+        _("Equipment visibility enabled"),
+        default=False,
+        help_text=_(
+            "Main-administrator master switch: when disabled, equipment belonging to this "
+            "department is hidden from the portal catalog for all users except the main "
+            "administrator, this department's Department Administrator, and Officers-in-Charge "
+            "of that equipment. Defaults to disabled (hidden)."
+        ),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
 

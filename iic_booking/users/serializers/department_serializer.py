@@ -21,6 +21,7 @@ class DepartmentSerializer(serializers.ModelSerializer[Department]):
             "internal_grant_code",
             "access_enabled",
             "equipment_booking_enabled",
+            "equipment_visibility_enabled",
             "department_type",
             "department_type_display",
             "external_subcategory",
@@ -58,6 +59,7 @@ class DepartmentListSerializer(serializers.ModelSerializer[Department]):
             "department_type_display",
             "access_enabled",
             "equipment_booking_enabled",
+            "equipment_visibility_enabled",
         ]
         read_only_fields = ["id"]
 

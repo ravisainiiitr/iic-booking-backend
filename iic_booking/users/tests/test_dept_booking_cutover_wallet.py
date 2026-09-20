@@ -83,6 +83,80 @@ class TestDepartmentEquipmentBookingGate(TestCase):
             department_type=DepartmentType.INTERNAL,
         )
         self.assertFalse(dept.equipment_booking_enabled)
+        self.assertFalse(dept.equipment_visibility_enabled)
+
+
+@pytest.mark.django_db
+class TestDepartmentEquipmentVisibilityGate(TestCase):
+    def test_new_department_defaults_visibility_off(self):
+        dept = Department.objects.create(
+            name="VisDefault",
+            department_type=DepartmentType.INTERNAL,
+        )
+        self.assertFalse(dept.equipment_visibility_enabled)
+
+    def test_hidden_department_blocks_faculty(self):
+        from iic_booking.users.legacy_ledger.booking_lock import (
+            department_equipment_visibility_allowed,
+        )
+
+        dept = Department.objects.create(
+            name="HiddenDept",
+            department_type=DepartmentType.INTERNAL,
+            equipment_visibility_enabled=False,
+        )
+        faculty = UserFactory(email="fac-vis@iitr.ac.in", user_type=UserType.FACULTY)
+
+        class Eq:
+            equipment_id = 1
+            internal_department = dept
+
+        allowed, msg = department_equipment_visibility_allowed(faculty, Eq())
+        self.assertFalse(allowed)
+        self.assertIn("HiddenDept", msg)
+
+    def test_hidden_department_allows_admin_and_dept_admin(self):
+        from iic_booking.users.legacy_ledger.booking_lock import (
+            department_equipment_visibility_allowed,
+        )
+
+        dept = Department.objects.create(
+            name="StaffSee",
+            department_type=DepartmentType.INTERNAL,
+            equipment_visibility_enabled=False,
+        )
+        admin = UserFactory(email="admin-vis@iitr.ac.in", user_type=UserType.ADMIN)
+        da = UserFactory(
+            email="da-vis@iitr.ac.in",
+            user_type=UserType.DEPT_ADMIN,
+            department=dept,
+        )
+
+        class Eq:
+            equipment_id = 2
+            internal_department = dept
+            internal_department_id = dept.id
+
+        self.assertTrue(department_equipment_visibility_allowed(admin, Eq())[0])
+        self.assertTrue(department_equipment_visibility_allowed(da, Eq())[0])
+
+    def test_visible_department_allows_faculty(self):
+        from iic_booking.users.legacy_ledger.booking_lock import (
+            department_equipment_visibility_allowed,
+        )
+
+        dept = Department.objects.create(
+            name="ShownDept",
+            department_type=DepartmentType.INTERNAL,
+            equipment_visibility_enabled=True,
+        )
+        faculty = UserFactory(email="fac-shown@iitr.ac.in", user_type=UserType.FACULTY)
+
+        class Eq:
+            equipment_id = 3
+            internal_department = dept
+
+        self.assertTrue(department_equipment_visibility_allowed(faculty, Eq())[0])
 
 
 @pytest.mark.django_db
