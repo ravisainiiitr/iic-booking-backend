@@ -4,20 +4,27 @@ on:
   workflow_dispatch:
     inputs:
       prefix:
-        description: 'Email prefix (case-insensitive), e.g. n1.sat'
+        description: 'Email prefix (case-insensitive), e.g. sat or n1.sat'
         required: true
         type: string
-        default: 'n1.sat'
+        default: 'sat'
       confirm:
-        description: 'Type PURGE_USERS_BY_EMAIL_PREFIX to confirm irreversible delete'
-        required: true
+        description: 'Type PURGE_USERS_BY_EMAIL_PREFIX to confirm irreversible delete (ignored when dry_run_only)'
+        required: false
         type: string
+        default: ''
+      dry_run_only:
+        description: 'If true, only print counts — do not delete'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   purge:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Verify confirmation token
+        if: ${{ inputs.dry_run_only != true && inputs.dry_run_only != 'true' }}
         run: |
           if [ "${{ github.event.inputs.confirm }}" != "PURGE_USERS_BY_EMAIL_PREFIX" ]; then
             echo "Confirmation token mismatch — aborting."
@@ -46,6 +53,7 @@ jobs:
             python manage.py purge_users_by_email_prefix --prefix "${{ github.event.inputs.prefix }}"
 
       - name: Purge matching users on production
+        if: ${{ inputs.dry_run_only != true && inputs.dry_run_only != 'true' }}
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
             python manage.py purge_users_by_email_prefix \
