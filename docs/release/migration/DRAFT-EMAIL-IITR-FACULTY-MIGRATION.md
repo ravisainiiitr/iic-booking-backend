@@ -27,7 +27,7 @@ The Institute Instrumentation Centre (IIC), IIT Roorkee is launching the new IIC
 
 1. Until the new booking window opens on **Wednesday, 30 September 2026 at 9:00 PM**, continue creating new equipment bookings on the **existing IIC Booking Portal** (for earlier weeks only, as applicable).
 2. Sign in to the **new portal** with **Channel-i** so your faculty wallet can sync (balance and legacy credit/debit history).
-3. After login, confirm your department sub-wallet balance; recharge or transfer funds in the new portal if needed.
+3. After login, check your **wallet balance**. Several departments and centres will use this new portal to offer online booking for equipment hosted with them. For this reason, your wallet is organised **department-wise** (one balance per department/centre). Please check the balance for the department whose equipment you (or your students) will book, and recharge or move funds in the new portal if needed.
 4. Ensure research scholars / students who book under you have linked (or re-linked) to your faculty wallet in the new portal, and approve pending link requests.
 5. From **Wednesday, 30 September 2026 at 9:00 PM**, book slots for the week commencing **05 October 2026** (and onwards) only on the **new portal**.
 6. Existing bookings and historical records on the old portal remain available during the transition window.

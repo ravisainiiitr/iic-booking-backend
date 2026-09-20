@@ -206,7 +206,7 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
                     "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM.",
                     "Until that window opens, continue creating new equipment bookings on the existing IIC Booking Portal (for earlier weeks only, as applicable).",
                     "Sign in to the new portal with Channel-i so your faculty wallet can sync (balance and legacy credit/debit history).",
-                    "Confirm your department sub-wallet balance after login; recharge or transfer funds in the new portal if needed.",
+                    "After login, check your wallet balance. Several departments and centres will use this new portal to offer online booking for equipment hosted with them. For this reason, your wallet is organised department-wise (one balance per department/centre). Please check the balance for the department whose equipment you or your students will book, and recharge or move funds in the new portal if needed.",
                     "Ensure research scholars / students who book under you have linked (or re-linked) to your faculty wallet in the new portal.",
                     "From Wednesday, 30 September 2026 at 9:00 PM, book slots for the week commencing 05 October 2026 (and onwards) only on the new portal.",
                     "Existing bookings and historical records on the old portal remain available during the transition window.",
