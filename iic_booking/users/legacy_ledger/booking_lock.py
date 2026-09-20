@@ -27,14 +27,9 @@ def format_booking_lock_message(state: PortalMigrationState | None = None) -> st
         date_s = "[CONFIGURED DATE]"
         time_s = "[CONFIGURED TIME]"
     template = state.booking_lock_message or (
-        "New IIC Equipment Booking Portal\n\n"
-        "The new portal is currently being prepared for launch.\n\n"
-        "Online equipment booking will be available from:\n\n"
-        "    {date}\n"
-        "    {time}\n\n"
-        "Until then, please continue using the existing IIC Booking Portal.\n\n"
-        "Your wallet migration is being synchronized and your wallet "
-        "balance and transaction history will remain available."
+        "Online equipment booking on this portal opens on {date} at {time}. "
+        "Until then, please continue using the existing IIC Booking Portal. "
+        "Your wallet balance and full transaction history remain available here."
     )
     return template.replace("{date}", date_s).replace("{time}", time_s)
 

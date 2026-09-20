@@ -324,6 +324,8 @@ def get_wallet_balance(request):
     
     from iic_booking.users.models.portal_migration import LegacyWalletAccountMapping
 
+    # Source of truth after faculty login sync: SubWallet totals already include the
+    # legacy opening credit. Do not add mapping closing balance again (was double-counting).
     active = wallet.total_balance or Decimal("0.00")
     legacy_closing = Decimal("0.00")
     emp = (getattr(wallet.user, "emp_id", None) or "").strip()
@@ -332,12 +334,12 @@ def get_wallet_balance(request):
         if mapping:
             legacy_closing = (mapping.imported_credits or Decimal("0")) - (mapping.imported_debits or Decimal("0"))
     serializer = WalletBalanceSerializer({
-        "balance": active + legacy_closing
+        "balance": active
     })
     data = serializer.data
     data["active_ledger_balance"] = str(active)
     data["legacy_ledger_balance"] = str(legacy_closing)
-    data["unified_balance"] = str(active + legacy_closing)
+    data["unified_balance"] = str(active)
     return Response(data, status=status.HTTP_200_OK)
 
 
@@ -426,6 +428,9 @@ def get_wallet_transactions(request):
     For students: Returns transactions from the faculty wallet they're joined to.
     For other eligible users: Returns their own wallet transactions.
     
+    Merges new-portal SubWallet transactions with immutable Legacy Portal ledger rows
+    (credits/debits from the old database) so the Wallet UI can show full history.
+    
     Query Parameters:
         - limit: Maximum number of transactions to return (default: 50)
         - offset: Number of transactions to skip (default: 0)
@@ -450,33 +455,99 @@ def get_wallet_transactions(request):
     offset = int(request.GET.get("offset", 0))
     from iic_booking.users.models.portal_migration import LegacyWalletLedgerEntry
 
+    # Best-effort: if faculty has no imported legacy rows yet, sync from old MySQL now
+    # (login sync may have credited opening balance without persisting full history).
+    emp_preview = (getattr(wallet.user, "emp_id", None) or "").strip()
+    if (
+        emp_preview
+        and getattr(request.user, "user_type", None) == UserType.FACULTY
+        and wallet.user_id == request.user.id
+        and not LegacyWalletLedgerEntry.objects.filter(employee_id=emp_preview).exists()
+    ):
+        try:
+            from iic_booking.users.legacy_ledger.faculty_login_wallet_sync import (
+                sync_faculty_wallet_from_legacy,
+            )
+
+            sync_faculty_wallet_from_legacy(request.user)
+        except Exception:
+            pass
+
+    # Faculty wallet owner sees all; student on shared wallet sees their debits + all credits
+    is_shared_wallet_student = wallet.user_id != request.user.id
+
     active_rows = []
-    for sw in SubWallet.objects.filter(wallet=wallet):
-        for txn in SubWalletTransaction.objects.filter(sub_wallet=sw).order_by("-created_at")[:1000]:
+    for sw in SubWallet.objects.filter(wallet=wallet).select_related("department"):
+        base_qs = (
+            SubWalletTransaction.objects.filter(sub_wallet=sw)
+            .select_related("sub_wallet", "sub_wallet__department", "related_user")
+            .order_by("-created_at")
+        )
+        if is_shared_wallet_student:
+            txn_qs = base_qs.filter(
+                Q(related_user_id=request.user.id)
+                | Q(transaction_type=SubWalletTransaction.TransactionType.CREDIT)
+            )
+        else:
+            txn_qs = base_qs
+        transactions = list(txn_qs[:5000])
+        # balance_after for newest-first list
+        running = Decimal(str(sw.balance or 0)).quantize(Decimal("0.01"))
+        balance_after_map = {}
+        for txn in transactions:
+            balance_after_map[txn.id] = running
+            if txn.transaction_type == SubWalletTransaction.TransactionType.CREDIT:
+                running = (running - Decimal(str(txn.amount))).quantize(Decimal("0.01"))
+            else:
+                running = (running + Decimal(str(txn.amount))).quantize(Decimal("0.01"))
+        serialized = SubWalletTransactionSerializer(
+            transactions,
+            many=True,
+            context={"balance_after_map": balance_after_map},
+        ).data
+        for row in serialized:
             active_rows.append({
-                "id": f"active-{txn.id}",
+                **row,
+                "id": f"active-{row['id']}",
                 "provenance": "New Portal",
                 "source_system": "NEW_PORTAL",
                 "immutable": False,
-                "transaction_type": txn.transaction_type,
-                "amount": str(txn.amount),
-                "description": txn.description,
-                "created_at": txn.created_at.isoformat() if txn.created_at else None,
-                "department_id": sw.department_id,
             })
+
     emp = (getattr(wallet.user, "emp_id", None) or "").strip()
     legacy_rows = []
     if emp:
         for entry in LegacyWalletLedgerEntry.objects.filter(employee_id=emp).order_by("-occurred_at")[:5000]:
+            direction = (entry.direction or "").lower()
+            if direction not in ("credit", "debit"):
+                direction = "credit" if direction in ("cr", "c") else "debit"
+            desc = (entry.description or "").strip()
+            if entry.reference:
+                desc = f"{desc} | Ref: {entry.reference}".strip(" |")
+            if entry.utr:
+                desc = f"{desc} | UTR: {entry.utr}".strip(" |")
+            bal_after = (
+                str(entry.running_balance_source)
+                if entry.running_balance_source is not None
+                else None
+            )
             legacy_rows.append({
                 "id": f"legacy-{entry.source_transaction_id}",
                 "provenance": "Legacy Portal",
                 "source_system": entry.source_system,
                 "immutable": True,
-                "transaction_type": entry.direction.lower(),
+                "transaction_type": direction,
                 "amount": str(entry.amount),
-                "description": entry.description,
+                "description": desc or "Legacy wallet transaction",
+                "description_display": desc or "Legacy wallet transaction",
                 "created_at": entry.occurred_at.isoformat() if entry.occurred_at else None,
+                "balance_after": bal_after,
+                "equipment_name": None,
+                "department_name": "Legacy Portal",
+                "department_code": None,
+                "related_user_name": None,
+                "related_user_email": None,
+                "virtual_booking_id": entry.reference or None,
                 "reference": entry.reference,
                 "utr": entry.utr,
             })
@@ -488,6 +559,7 @@ def get_wallet_transactions(request):
     return Response({
         "transactions": merged[offset:offset + limit],
         "count": len(merged),
+        "total_count": len(merged),
         "limit": limit,
         "offset": offset,
     }, status=status.HTTP_200_OK)
