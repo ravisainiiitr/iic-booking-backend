@@ -38,11 +38,11 @@ class MigrationEmailContent:
 
 SUBJECTS = {
     MigrationNotificationTemplate.FACULTY_MIGRATION: (
-        "New IIC Equipment Booking Portal — Opening 04 October 2026 | "
+        "New IIC Equipment Booking Portal — Booking opens Wed 30 Sep 2026, 9:00 PM | "
         "Action required for IITR Faculty"
     ),
     MigrationNotificationTemplate.STUDENT_MIGRATION: (
-        "New IIC Equipment Booking Portal — Opening 04 October 2026 | "
+        "New IIC Equipment Booking Portal — Booking opens Wed 30 Sep 2026, 9:00 PM | "
         "Information for IITR Students"
     ),
     MigrationNotificationTemplate.OIC_MIGRATION: (
@@ -161,8 +161,8 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
     c = _ctx(**kwargs)
     subject = SUBJECTS.get(template, "IIC Booking Portal Migration")
     preheader = (
-        f"New IIC Equipment Booking Portal opens {c['migration_datetime']}. "
-        f"Please read important migration instructions."
+        "Booking for week commencing 05 October 2026 uses the new portal. "
+        "Booking opens as usual Wednesday, 30 September 2026 at 9:00 PM."
     )
     hero = (
         f"<p style='margin:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:{COLOR_TEXT};'>"
@@ -170,8 +170,8 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         f"<p style='margin:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:{COLOR_TEXT};'>"
         f"The Institute Instrumentation Centre (IIC), IIT Roorkee is launching the new "
         f"<strong>{escape(c['portal_name'])}</strong>. "
-        f"Online equipment booking on the new portal will be available from "
-        f"<strong>{escape(c['migration_datetime'])}</strong>."
+        f"Booking for the week commencing from <strong>05 October 2026</strong> will be accepted using the new booking portal. "
+        f"Booking will be opened as usual on <strong>Wednesday, 30 September 2026 at 9:00 PM</strong>."
         f"</p>"
     )
     common_cards = _feature_cards(
@@ -202,11 +202,13 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             + _instructions_block(
                 "Important for IITR Faculty",
                 [
-                    "Until booking opens on the new portal, continue creating new equipment bookings on the existing IIC Booking Portal.",
+                    "Booking for the week commencing from 05 October 2026 will be accepted using the new booking portal.",
+                    "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM.",
+                    "Until that window opens, continue creating new equipment bookings on the existing IIC Booking Portal (for earlier weeks only, as applicable).",
                     "Sign in to the new portal with Channel-i so your faculty wallet can sync (balance and legacy credit/debit history).",
                     "Confirm your department sub-wallet balance after login; recharge or transfer funds in the new portal if needed.",
                     "Ensure research scholars / students who book under you have linked (or re-linked) to your faculty wallet in the new portal.",
-                    "From the opening date/time stated above, all NEW bookings must be made only on the new portal.",
+                    "From Wednesday, 30 September 2026 at 9:00 PM, book slots for the week commencing 05 October 2026 (and onwards) only on the new portal.",
                     "Existing bookings and historical records on the old portal remain available during the transition window.",
                 ],
             )
@@ -215,11 +217,14 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         )
         text = (
             f"Dear {c['user_name']},\n\n"
-            f"IITR Faculty — New IIC Equipment Booking Portal opens: {c['migration_datetime']}.\n\n"
-            "Until then, continue booking on the existing IIC Booking Portal.\n"
+            "IITR Faculty — New IIC Equipment Booking Portal.\n\n"
+            "Booking for the week commencing from 05 October 2026 will be accepted using the new booking portal.\n"
+            "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM.\n\n"
+            "Until that window opens, continue booking on the existing IIC Booking Portal (for earlier weeks only, as applicable).\n"
             "Please sign in to the new portal with Channel-i to sync your wallet balance and history, "
             "and ensure students are linked to your faculty wallet.\n"
-            "From the opening date, all NEW bookings must use the new portal.\n\n"
+            "From Wednesday, 30 September 2026 at 9:00 PM, book the week commencing 05 October 2026 "
+            "(and onwards) only on the new portal.\n\n"
             f"New portal: {c['new_portal_url']}\n"
             f"Support: {c['support_email']}\n"
         )
@@ -234,11 +239,13 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             + _instructions_block(
                 "Important for IITR Students",
                 [
-                    "Until booking opens on the new portal, continue creating new equipment bookings on the existing IIC Booking Portal.",
+                    "Booking for the week commencing from 05 October 2026 will be accepted using the new booking portal.",
+                    "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM.",
+                    "Until that window opens, continue creating new equipment bookings on the existing IIC Booking Portal (for earlier weeks only, as applicable).",
                     "Sign in to the new portal with Channel-i and complete your profile if prompted.",
                     "Request to link your account to your Supervisor / Faculty wallet in the new portal (required for most student bookings).",
                     "Ask your faculty supervisor to approve the wallet link request if it is pending.",
-                    "From the opening date/time stated above, all NEW bookings must be made only on the new portal.",
+                    "From Wednesday, 30 September 2026 at 9:00 PM, book slots for the week commencing 05 October 2026 (and onwards) only on the new portal.",
                     "You can still view previous bookings and account information on the old portal during the transition window.",
                 ],
             )
@@ -247,11 +254,14 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         )
         text = (
             f"Dear {c['user_name']},\n\n"
-            f"IITR Students — New IIC Equipment Booking Portal opens: {c['migration_datetime']}.\n\n"
-            "Until then, continue booking on the existing IIC Booking Portal.\n"
+            "IITR Students — New IIC Equipment Booking Portal.\n\n"
+            "Booking for the week commencing from 05 October 2026 will be accepted using the new booking portal.\n"
+            "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM.\n\n"
+            "Until that window opens, continue booking on the existing IIC Booking Portal (for earlier weeks only, as applicable).\n"
             "Please sign in to the new portal with Channel-i and link your account to your "
             "Supervisor / Faculty wallet (get the link approved by your faculty).\n"
-            "From the opening date, all NEW bookings must use the new portal.\n\n"
+            "From Wednesday, 30 September 2026 at 9:00 PM, book the week commencing 05 October 2026 "
+            "(and onwards) only on the new portal.\n\n"
             f"New portal: {c['new_portal_url']}\n"
             f"Support: {c['support_email']}\n"
         )
@@ -342,7 +352,7 @@ def preview_sample_context(template: str) -> dict[str, Any]:
     return {
         "user_name": samples.get(template, "Preview User"),
         "new_portal_url": "https://equip.iitr.ac.in",
-        "migration_datetime": "04 October 2026, 00:00 IST",
+        "migration_datetime": "30 September 2026, 21:00 IST",
         "support_email": "iic@iitr.ac.in",
         "support_phone": "",
         "portal_name": "IIC Equipment Booking Portal",
