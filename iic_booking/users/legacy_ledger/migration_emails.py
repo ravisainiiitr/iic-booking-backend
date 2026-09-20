@@ -38,12 +38,12 @@ class MigrationEmailContent:
 
 SUBJECTS = {
     MigrationNotificationTemplate.FACULTY_MIGRATION: (
-        "IIC Booking Portal has moved to a new platform — "
-        "Please use the new portal for future bookings"
+        "New IIC Equipment Booking Portal — Opening 04 October 2026 | "
+        "Action required for IITR Faculty"
     ),
     MigrationNotificationTemplate.STUDENT_MIGRATION: (
-        "New IIC Booking Portal is now live — "
-        "Use the new portal for all future bookings"
+        "New IIC Equipment Booking Portal — Opening 04 October 2026 | "
+        "Information for IITR Students"
     ),
     MigrationNotificationTemplate.OIC_MIGRATION: (
         "IIC Booking Portal Migration — Action Required for Officers-in-Charge"
@@ -161,15 +161,17 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
     c = _ctx(**kwargs)
     subject = SUBJECTS.get(template, "IIC Booking Portal Migration")
     preheader = (
-        f"Migration effective {c['migration_datetime']}. "
-        f"Use the new portal for future bookings."
+        f"New IIC Equipment Booking Portal opens {c['migration_datetime']}. "
+        f"Please read important migration instructions."
     )
     hero = (
         f"<p style='margin:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:16px;color:{COLOR_TEXT};'>"
         f"Dear {escape(c['user_name'])},</p>"
         f"<p style='margin:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:{COLOR_TEXT};'>"
-        f"The <strong>{escape(c['portal_name'])}</strong> has migrated to a new platform. "
-        f"Migration effective: <strong>{escape(c['migration_datetime'])}</strong>."
+        f"The Institute Instrumentation Centre (IIC), IIT Roorkee is launching the new "
+        f"<strong>{escape(c['portal_name'])}</strong>. "
+        f"Online equipment booking on the new portal will be available from "
+        f"<strong>{escape(c['migration_datetime'])}</strong>."
         f"</p>"
     )
     common_cards = _feature_cards(
@@ -180,7 +182,7 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             ("History & wallet", "Continue to view booking history and account/wallet information."),
         ]
     )
-    cta = _cta(c["new_portal_url"], "Access New IIC Booking Portal")
+    cta = _cta(c["new_portal_url"], "Open New IIC Booking Portal")
     support = (
         f"<div style='margin-top:20px;padding-top:14px;border-top:1px solid {COLOR_BORDER};'>"
         f"<div style='font-family:Arial,Helvetica,sans-serif;font-size:13px;color:{COLOR_MUTED};'>"
@@ -194,16 +196,18 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             hero
             + "<p style='font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:"
             + COLOR_TEXT
-            + ";'>The new portal improves equipment discovery, availability visibility, booking management, "
-            "booking history, and wallet/account information, with Channel-I authentication and a foundation "
-            "for future IIC platform enhancements.</p>"
+            + ";'>This message is for <strong>IITR Faculty</strong>. Please review the steps below so your "
+            "wallet balance, transaction history, and student linking are ready when booking opens.</p>"
             + common_cards
             + _instructions_block(
-                "Important for Faculty",
+                "Important for IITR Faculty",
                 [
-                    "All NEW bookings must be made through the NEW portal.",
-                    "The old portal remains available during transition for existing bookings, history, and account information.",
-                    "Sign in with Channel-I on the new portal.",
+                    "Until booking opens on the new portal, continue creating new equipment bookings on the existing IIC Booking Portal.",
+                    "Sign in to the new portal with Channel-i so your faculty wallet can sync (balance and legacy credit/debit history).",
+                    "Confirm your department sub-wallet balance after login; recharge or transfer funds in the new portal if needed.",
+                    "Ensure research scholars / students who book under you have linked (or re-linked) to your faculty wallet in the new portal.",
+                    "From the opening date/time stated above, all NEW bookings must be made only on the new portal.",
+                    "Existing bookings and historical records on the old portal remain available during the transition window.",
                 ],
             )
             + cta
@@ -211,8 +215,11 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         )
         text = (
             f"Dear {c['user_name']},\n\n"
-            f"{c['portal_name']} has moved. Effective: {c['migration_datetime']}.\n"
-            "All NEW bookings must use the NEW portal.\n"
+            f"IITR Faculty — New IIC Equipment Booking Portal opens: {c['migration_datetime']}.\n\n"
+            "Until then, continue booking on the existing IIC Booking Portal.\n"
+            "Please sign in to the new portal with Channel-i to sync your wallet balance and history, "
+            "and ensure students are linked to your faculty wallet.\n"
+            "From the opening date, all NEW bookings must use the new portal.\n\n"
             f"New portal: {c['new_portal_url']}\n"
             f"Support: {c['support_email']}\n"
         )
@@ -221,15 +228,18 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             hero
             + "<p style='font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:"
             + COLOR_TEXT
-            + ";'>Use the new portal for equipment discovery, availability, booking, booking tracking, "
-            "and account/wallet information with Channel-I login.</p>"
+            + ";'>This message is for <strong>IITR Students / Research Scholars</strong>. "
+            "Please follow the steps below so you can book equipment when the new portal opens.</p>"
             + common_cards
             + _instructions_block(
-                "Important for Students",
+                "Important for IITR Students",
                 [
-                    "New bookings cannot be created through the old portal.",
-                    "Use the new IIC Booking Portal for all future bookings.",
-                    "You can still view previous bookings and account information on the old portal during transition.",
+                    "Until booking opens on the new portal, continue creating new equipment bookings on the existing IIC Booking Portal.",
+                    "Sign in to the new portal with Channel-i and complete your profile if prompted.",
+                    "Request to link your account to your Supervisor / Faculty wallet in the new portal (required for most student bookings).",
+                    "Ask your faculty supervisor to approve the wallet link request if it is pending.",
+                    "From the opening date/time stated above, all NEW bookings must be made only on the new portal.",
+                    "You can still view previous bookings and account information on the old portal during the transition window.",
                 ],
             )
             + cta
@@ -237,9 +247,13 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         )
         text = (
             f"Dear {c['user_name']},\n\n"
-            f"New IIC Booking Portal is live. Effective: {c['migration_datetime']}.\n"
-            "New bookings cannot be created on the old portal.\n"
+            f"IITR Students — New IIC Equipment Booking Portal opens: {c['migration_datetime']}.\n\n"
+            "Until then, continue booking on the existing IIC Booking Portal.\n"
+            "Please sign in to the new portal with Channel-i and link your account to your "
+            "Supervisor / Faculty wallet (get the link approved by your faculty).\n"
+            "From the opening date, all NEW bookings must use the new portal.\n\n"
             f"New portal: {c['new_portal_url']}\n"
+            f"Support: {c['support_email']}\n"
         )
     elif template == MigrationNotificationTemplate.OIC_MIGRATION:
         body = (
@@ -247,7 +261,7 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             + "<p style='font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:"
             + COLOR_TEXT
             + ";'>As Officer-in-Charge, please review legacy bookings, continue operational status management, "
-            "and use the new portal for all new bookings. Legacy booking slots are protected in the new portal "
+            "and use the new portal for all new bookings after opening. Legacy booking slots are protected in the new portal "
             "to prevent duplicate booking during migration.</p>"
             + common_cards
             + _instructions_block(
@@ -255,8 +269,8 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
                 [
                     "You may continue operational handling of eligible legacy bookings.",
                     "You may issue eligible one-time migration refunds (settlement).",
-                    "You cannot create new bookings on the old portal.",
-                    "All new bookings must be created on the new portal.",
+                    "You cannot create new bookings on the old portal after freeze rules apply.",
+                    "All new bookings must be created on the new portal after opening.",
                     "Protected legacy slots will show as unavailable in the new portal during migration.",
                 ],
             )
@@ -265,8 +279,8 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         )
         text = (
             f"Dear {c['user_name']},\n\n"
-            f"OIC migration briefing. Effective: {c['migration_datetime']}.\n"
-            "Operational legacy handling YES; migration refund YES; old-portal new booking NO.\n"
+            f"OIC migration briefing. Opens: {c['migration_datetime']}.\n"
+            "Operational legacy handling YES; migration refund YES; old-portal new booking NO after freeze.\n"
             f"New portal: {c['new_portal_url']}\n"
         )
     else:  # ADMIN_MIGRATION
@@ -275,7 +289,7 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
             + "<p style='font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:"
             + COLOR_TEXT
             + ";'>As Main Administrator you retain global visibility across departments and equipment, "
-            "mapping control, migration control, and migration refund authority. New bookings must use the new portal; "
+            "mapping control, migration control, and migration refund authority. New bookings must use the new portal after opening; "
             "legacy slots remain protected until released.</p>"
             + common_cards
             + _instructions_block(
@@ -284,7 +298,7 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
                     "Global department/equipment/mapping/block visibility remains available.",
                     "Old-portal new booking is disabled during freeze.",
                     "Migration refund authority remains available for eligible bookings.",
-                    "Do not activate production T0 from this staging communication.",
+                    "Coordinate faculty wallet sync and student–faculty wallet linking before opening.",
                 ],
             )
             + cta
@@ -292,13 +306,13 @@ def build_migration_email(template: str, **kwargs) -> MigrationEmailContent:
         )
         text = (
             f"Dear {c['user_name']},\n\n"
-            f"Main Administrator migration briefing. Effective: {c['migration_datetime']}.\n"
+            f"Main Administrator migration briefing. Opens: {c['migration_datetime']}.\n"
             f"New portal: {c['new_portal_url']}\n"
         )
 
     html = wrap_email_html(
         title=c["portal_name"] + " — Migration",
-        subtitle="Please use the new portal for future bookings",
+        subtitle="New portal opening — please read migration instructions",
         body_inner_html=body,
         preheader=preheader,
     )
@@ -327,9 +341,9 @@ def preview_sample_context(template: str) -> dict[str, Any]:
     }
     return {
         "user_name": samples.get(template, "Preview User"),
-        "new_portal_url": "https://staging.example.invalid/new-portal",
-        "migration_datetime": "01 September 2026, 09:00 IST",
-        "support_email": "staging-support@example.invalid",
-        "support_phone": "+91-0000-000000",
-        "portal_name": "IIC Booking Portal",
+        "new_portal_url": "https://equip.iitr.ac.in",
+        "migration_datetime": "04 October 2026, 00:00 IST",
+        "support_email": "iic@iitr.ac.in",
+        "support_phone": "",
+        "portal_name": "IIC Equipment Booking Portal",
     }
