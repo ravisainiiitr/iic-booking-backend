@@ -80,6 +80,8 @@ def _dashboard_payload() -> dict:
         "legacy_mysql_mode": "STAGING_FIXTURE" if fixture_mysql else ("CONFIGURED" if mysql_configured else "NOT_CONFIGURED"),
         "phase": state.phase,
         "end_user_booking_enabled": state.end_user_booking_enabled,
+        "booking_opens_at": state.booking_opens_at.isoformat() if state.booking_opens_at else None,
+        "booking_lock_message": state.booking_lock_message or "",
         "incremental_sync_enabled": state.incremental_sync_enabled,
         "legacy_ledger_frozen": state.legacy_ledger_frozen,
         "old_mysql_configured": mysql_configured or fixture_mysql,

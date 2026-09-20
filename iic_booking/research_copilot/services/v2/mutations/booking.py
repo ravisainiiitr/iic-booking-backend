@@ -117,9 +117,9 @@ def prepare_booking_create(
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to prepare a booking.")
 
-    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+    from iic_booking.users.legacy_ledger.booking_lock import booking_is_locked
 
-    locked, lock_message = end_user_booking_is_locked(user)
+    locked, lock_message = booking_is_locked(user)
     if locked:
         return _safe_error("BOOKING_LOCKED", lock_message or "Booking is temporarily locked.")
 

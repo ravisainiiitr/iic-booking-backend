@@ -327,6 +327,28 @@ class OldMySQLReader:
             (user_id,),
         )
 
+    def user_by_employee_id(self, emp_id: str) -> dict | None:
+        emp = (emp_id or "").strip()
+        if not emp:
+            return None
+        return self.fetchone(
+            "SELECT id, emp_id, name, email FROM users WHERE TRIM(emp_id) = %s LIMIT 1",
+            (emp,),
+        )
+
+    def iter_wallet_transactions_for_user(self, user_id: int, batch_size: int = 500):
+        last = 0
+        while True:
+            rows = self.fetchall(
+                "SELECT * FROM wallet_transactions WHERE user_id = %s AND id > %s "
+                "ORDER BY id ASC LIMIT %s",
+                (int(user_id), last, batch_size),
+            )
+            if not rows:
+                return
+            yield from rows
+            last = int(rows[-1]["id"])
+
     def wallets_by_user_id(self) -> dict[int, dict]:
         rows = self.fetchall("SELECT id, user_id, balance FROM user_wallet")
         return {int(r["user_id"]): r for r in rows}

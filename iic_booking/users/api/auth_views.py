@@ -1089,6 +1089,19 @@ def omniport_callback(request):
                 getattr(user, "id", None),
             )
 
+
+    try:
+        from iic_booking.users.legacy_ledger.faculty_login_wallet_sync import (
+            maybe_sync_faculty_wallet_on_login,
+        )
+
+        maybe_sync_faculty_wallet_on_login(user)
+    except Exception:
+        logger.exception(
+            "Faculty wallet sync hook failed for user_id=%s (login continues)",
+            getattr(user, "id", None),
+        )
+
     # Prepare response data
     response_data = {
         "token": token.key,
@@ -1313,6 +1326,19 @@ def login(request):
         except Exception:
             logger.exception("Failed to send first-login welcome email to %s", user.email)
 
+
+    try:
+        from iic_booking.users.legacy_ledger.faculty_login_wallet_sync import (
+            maybe_sync_faculty_wallet_on_login,
+        )
+
+        maybe_sync_faculty_wallet_on_login(user)
+    except Exception:
+        logger.exception(
+            "Faculty wallet sync hook failed for user_id=%s (login continues)",
+            getattr(user, "id", None),
+        )
+
     # Serialize full user data using UserSerializer
     from ..serializers import UserSerializer
     user_serializer = UserSerializer(user, context={"request": request})
@@ -1474,6 +1500,19 @@ def verify_login_otp(request):
             )
         except Exception:
             logger.exception("Failed to send first-login welcome email to %s", user.email)
+
+
+    try:
+        from iic_booking.users.legacy_ledger.faculty_login_wallet_sync import (
+            maybe_sync_faculty_wallet_on_login,
+        )
+
+        maybe_sync_faculty_wallet_on_login(user)
+    except Exception:
+        logger.exception(
+            "Faculty wallet sync hook failed for user_id=%s (login continues)",
+            getattr(user, "id", None),
+        )
 
     from ..serializers import UserSerializer
     user_serializer = UserSerializer(user, context={"request": request})

@@ -2830,12 +2830,22 @@ def _book_equipment_impl(request, pk):
     if not user_can_see_equipment(request.user, equipment):
         return equipment_visibility_denied_response(request.user)
 
-    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+    from iic_booking.users.legacy_ledger.booking_lock import (
+        booking_is_locked,
+        department_equipment_booking_blocked,
+    )
 
-    locked, lock_message = end_user_booking_is_locked(request.user)
+    locked, lock_message = booking_is_locked(request.user)
     if locked:
         return Response(
             {"error": lock_message, "code": "PORTAL_BOOKING_LOCKED", "message": lock_message},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    if dept_blocked:
+        return Response(
+            {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -7312,6 +7322,18 @@ def create_urgent_booking_request(request):
             {"error": "Only internal users (students/faculty) can request urgent booking."},
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    from iic_booking.users.legacy_ledger.booking_lock import (
+        booking_is_locked,
+        department_equipment_booking_blocked,
+    )
+    locked, lock_message = booking_is_locked(request.user)
+    if locked:
+        return Response(
+            {"error": lock_message, "code": "MIGRATION_BOOKING_NOT_ACTIVE"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     equipment_id = request.data.get("equipment_id")
     if not equipment_id:
         return Response(
@@ -7340,6 +7362,12 @@ def create_urgent_booking_request(request):
         )
     try:
         equip = Equipment.objects.get(pk=int(equipment_id))
+        dept_blocked, dept_message = department_equipment_booking_blocked(equip)
+        if dept_blocked:
+            return Response(
+                {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
     except (ValueError, Equipment.DoesNotExist):
         return Response(
             {"error": "Invalid equipment_id."},
@@ -13572,6 +13600,24 @@ def create_repeat_booking(request, booking_id):
         return Response({"error": "A repeat booking has already been created for this booking."}, status=status.HTTP_400_BAD_REQUEST)
 
     equipment = orig_booking.equipment
+
+    from iic_booking.users.legacy_ledger.booking_lock import (
+        booking_is_locked,
+        department_equipment_booking_blocked,
+    )
+    locked, lock_message = booking_is_locked(request.user)
+    if locked:
+        return Response(
+            {"error": lock_message, "code": "MIGRATION_BOOKING_NOT_ACTIVE"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    if dept_blocked:
+        return Response(
+            {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     total_time_minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
 
     slot_ids = None

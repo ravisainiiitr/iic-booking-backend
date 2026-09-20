@@ -756,9 +756,9 @@ def _recommend_software(*, arguments: dict, user) -> dict:
 
 
 def _prepare_create_booking(*, arguments: dict, user) -> dict:
-    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+    from iic_booking.users.legacy_ledger.booking_lock import booking_is_locked
 
-    locked, lock_message = end_user_booking_is_locked(user)
+    locked, lock_message = booking_is_locked(user)
     equipment_id = arguments.get("equipment_id")
     day = arguments.get("date") or ""
     href = "/book-equipment"

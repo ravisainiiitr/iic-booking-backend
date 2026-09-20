@@ -48,6 +48,25 @@ class FakeOldMySQLReader:
     def wallet_for_user(self, user_id: int) -> dict | None:
         return self.wallets.get(int(user_id))
 
+    def user_by_employee_id(self, emp_id: str) -> dict | None:
+        emp = str(emp_id or "").strip()
+        if not emp:
+            return None
+        for u in self.users:
+            if str(u.get("emp_id") or "").strip() == emp:
+                return u
+        return None
+
+    def iter_wallet_transactions_for_user(self, user_id: int, batch_size: int = 500):
+        n = 0
+        for t in self.transactions:
+            if int(t["user_id"]) != int(user_id):
+                continue
+            yield t
+            n += 1
+            if n >= batch_size:
+                n = 0
+
     def user_ledger_totals(self, user_id: int) -> tuple[Decimal, Decimal]:
         credits = Decimal("0")
         debits = Decimal("0")

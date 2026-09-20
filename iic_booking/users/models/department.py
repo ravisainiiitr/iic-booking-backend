@@ -246,6 +246,14 @@ class Department(Model):
         default=True,
         help_text=_("When disabled, departmental admin-panel access is blocked for this internal department."),
     )
+    equipment_booking_enabled = BooleanField(
+        _("Equipment booking enabled"),
+        default=False,
+        help_text=_(
+            "Main-administrator master switch: when disabled, equipment belonging to this "
+            "department cannot be booked on the portal. Defaults to disabled."
+        ),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
 
