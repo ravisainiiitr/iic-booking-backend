@@ -517,11 +517,23 @@ def get_wallet_transactions(request):
     emp = (getattr(wallet.user, "emp_id", None) or "").strip()
     legacy_rows = []
     if emp:
-        for entry in LegacyWalletLedgerEntry.objects.filter(employee_id=emp).order_by("-occurred_at")[:5000]:
+        from iic_booking.users.legacy_ledger.legacy_txn_enrichment import (
+            lookup_legacy_created_by,
+            parse_legacy_equipment_name,
+        )
+
+        legacy_entries = list(
+            LegacyWalletLedgerEntry.objects.filter(employee_id=emp).order_by("-occurred_at")[:5000]
+        )
+        created_by_map = lookup_legacy_created_by(
+            [e.source_transaction_id for e in legacy_entries]
+        )
+        for entry in legacy_entries:
             direction = (entry.direction or "").lower()
             if direction not in ("credit", "debit"):
                 direction = "credit" if direction in ("cr", "c") else "debit"
-            desc = (entry.description or "").strip()
+            raw_desc = (entry.description or "").strip()
+            desc = raw_desc
             if entry.reference:
                 desc = f"{desc} | Ref: {entry.reference}".strip(" |")
             if entry.utr:
@@ -531,6 +543,7 @@ def get_wallet_transactions(request):
                 if entry.running_balance_source is not None
                 else None
             )
+            booked = created_by_map.get(int(entry.source_transaction_id)) or {}
             legacy_rows.append({
                 "id": f"legacy-{entry.source_transaction_id}",
                 "provenance": "Legacy Portal",
@@ -542,11 +555,11 @@ def get_wallet_transactions(request):
                 "description_display": desc or "Legacy wallet transaction",
                 "created_at": entry.occurred_at.isoformat() if entry.occurred_at else None,
                 "balance_after": bal_after,
-                "equipment_name": None,
+                "equipment_name": parse_legacy_equipment_name(raw_desc),
                 "department_name": "Legacy Portal",
                 "department_code": None,
-                "related_user_name": None,
-                "related_user_email": None,
+                "related_user_name": booked.get("name"),
+                "related_user_email": booked.get("email"),
                 "virtual_booking_id": entry.reference or None,
                 "reference": entry.reference,
                 "utr": entry.utr,

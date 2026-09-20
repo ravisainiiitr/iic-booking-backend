@@ -14,6 +14,26 @@ FACULTY_WALLET_SYNC_CUTOFF = timezone.datetime(
     2026, 10, 4, 0, 0, 0, tzinfo=timezone.get_fixed_timezone(330)
 )
 
+# Compact Important-notice copy (2–3 lines). Prefer this over verbose stored templates.
+DEFAULT_BOOKING_LOCK_MESSAGE = (
+    "Online equipment booking opens on {date} at {time}. "
+    "Until then, continue using the existing IIC Booking Portal. "
+    "Wallet balance and transaction history remain available here."
+)
+
+
+def _is_verbose_lock_message(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    if "New IIC Equipment Booking Portal" in t:
+        return True
+    if t.count("\n") >= 2:
+        return True
+    if len(t) > 280:
+        return True
+    return False
+
 
 def format_booking_lock_message(state: PortalMigrationState | None = None) -> str:
     if state is None:
@@ -26,10 +46,11 @@ def format_booking_lock_message(state: PortalMigrationState | None = None) -> st
     else:
         date_s = "[CONFIGURED DATE]"
         time_s = "[CONFIGURED TIME]"
-    template = state.booking_lock_message or (
-        "Online equipment booking on this portal opens on {date} at {time}. "
-        "Until then, please continue using the existing IIC Booking Portal. "
-        "Your wallet balance and full transaction history remain available here."
+    raw = (state.booking_lock_message or "").strip()
+    template = (
+        DEFAULT_BOOKING_LOCK_MESSAGE
+        if (not raw or _is_verbose_lock_message(raw))
+        else raw
     )
     return template.replace("{date}", date_s).replace("{time}", time_s)
 
