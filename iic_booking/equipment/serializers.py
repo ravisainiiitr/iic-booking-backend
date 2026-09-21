@@ -301,6 +301,9 @@ def _equipment_image_url(obj, request=None, *, verify_storage=False):
     By default we return the proxy whenever a DB path exists. Strict verify_storage used to hide
     images when S3 open() failed due to a media/ prefix mismatch even though the object existed —
     that looked like "images disappear after some time". The proxy still 404s if truly missing.
+
+    Appends ?v=<hash> from the storage path so browsers refetch after image replacements
+    (proxy URLs are otherwise identical forever and were cached for 24h).
     """
     if not get_equipment_image_storage_path(obj):
         return None
@@ -312,6 +315,15 @@ def _equipment_image_url(obj, request=None, *, verify_storage=False):
         except NoReverseMatch:
             # When URL patterns are namespaced under `app_name="api"`, reverse needs the namespace.
             path = reverse("api:equipment-image-proxy", kwargs={"pk": obj.equipment_id})
+        # Cache-bust when the underlying object key changes (new upload → new filename).
+        try:
+            import hashlib
+
+            raw = (get_equipment_image_storage_path(obj) or "").encode("utf-8", errors="ignore")
+            if raw:
+                path = f"{path}?v={hashlib.sha1(raw).hexdigest()[:12]}"
+        except Exception:
+            pass
         if request:
             try:
                 return request.build_absolute_uri(path)

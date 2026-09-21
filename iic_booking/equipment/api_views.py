@@ -1995,8 +1995,20 @@ def equipment_image_proxy(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    import hashlib
+
+    etag = '"' + hashlib.sha1((resolved_path or stored_path or "").encode("utf-8")).hexdigest()[:16] + '"'
+    if_none_match = (request.META.get("HTTP_IF_NONE_MATCH") or "").strip()
+    if if_none_match and if_none_match == etag:
+        resp = HttpResponse(status=304)
+        resp["ETag"] = etag
+        resp["Cache-Control"] = "public, max-age=300, must-revalidate"
+        return resp
+
     response = HttpResponse(content, content_type=content_type or "image/jpeg")
-    response["Cache-Control"] = "public, max-age=86400"
+    # Short max-age + ETag so replaced catalog photos propagate without a 24h wait.
+    response["Cache-Control"] = "public, max-age=300, must-revalidate"
+    response["ETag"] = etag
     response["Content-Length"] = len(content)
     return response
 
