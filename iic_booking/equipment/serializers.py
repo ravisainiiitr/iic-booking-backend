@@ -16,6 +16,7 @@ from .models import (
     EquipmentGroup,
     EquipmentGroupQuota,
     EquipmentSpecification,
+    EquipmentPublication,
     EquipmentAccessory,
     EquipmentAdditionalAccessory,
     DynamicInputField,
@@ -609,6 +610,23 @@ class EquipmentSpecificationSerializer(serializers.ModelSerializer):
         model = EquipmentSpecification
         fields = ['equipment_specification_id', 'spec_key', 'spec_value', 'created_at']
         read_only_fields = ['equipment_specification_id', 'created_at']
+
+
+class EquipmentPublicationSerializer(serializers.ModelSerializer):
+    """Serializer for EquipmentPublication model."""
+
+    class Meta:
+        model = EquipmentPublication
+        fields = [
+            'equipment_publication_id',
+            'title',
+            'citation',
+            'url',
+            'year',
+            'display_order',
+            'created_at',
+        ]
+        read_only_fields = ['equipment_publication_id', 'created_at']
 
 
 class EquipmentAccessorySerializer(serializers.ModelSerializer):
@@ -1339,6 +1357,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     equipment_group_code = serializers.CharField(source='equipment_group.code', read_only=True, allow_null=True)
     visibility_group_name = serializers.CharField(source='visibility_group.name', read_only=True, allow_null=True)
     specifications = EquipmentSpecificationSerializer(many=True, read_only=True, source='equipment_specifications')
+    publications = EquipmentPublicationSerializer(many=True, read_only=True, source='equipment_publications')
+    publication_count = serializers.SerializerMethodField()
     accessories = serializers.SerializerMethodField()
     additional_accessories = serializers.SerializerMethodField()
     input_fields = serializers.SerializerMethodField()
@@ -1401,6 +1421,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'reschedule_hours_threshold',
             'results_base_location',
             'specifications',
+            'publications',
+            'publication_count',
             'accessories',
             'charge_profiles',
             'equipment_pis',
@@ -1468,6 +1490,13 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             request=self.context.get("request"),
             verify_storage=False,
         )
+
+    def get_publication_count(self, obj):
+        """Number of publications that reference this instrument."""
+        prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("equipment_publications")
+        if prefetched is not None:
+            return len(prefetched)
+        return obj.equipment_publications.count()
 
     def get_operators(self, obj):
         """
@@ -1686,6 +1715,14 @@ class EquipmentSpecificationWriteSerializer(serializers.Serializer):
     spec_value = serializers.CharField(allow_blank=True, required=False, default='')
 
 
+class EquipmentPublicationWriteSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=500)
+    citation = serializers.CharField(allow_blank=True, required=False, default='')
+    url = serializers.CharField(max_length=500, allow_blank=True, required=False, default='')
+    year = serializers.IntegerField(required=False, allow_null=True, min_value=1800, max_value=2100)
+    display_order = serializers.IntegerField(required=False, default=0, min_value=0)
+
+
 class EquipmentAccessoryWriteSerializer(serializers.Serializer):
     accessory_name = serializers.CharField(max_length=255)
     is_optional = serializers.BooleanField(default=False)
@@ -1757,6 +1794,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     equipment_pis = EquipmentPIWriteSerializer(many=True, required=False, default=list)
     equipment_operators = EquipmentOperatorWriteSerializer(many=True, required=False, default=list)
     equipment_specifications = EquipmentSpecificationWriteSerializer(many=True, required=False, default=list)
+    equipment_publications = EquipmentPublicationWriteSerializer(many=True, required=False, default=list)
     equipment_accessories = EquipmentAccessoryWriteSerializer(many=True, required=False, default=list)
     equipment_additional_accessories = EquipmentAdditionalAccessoryWriteSerializer(many=True, required=False, default=list)
     input_fields = DynamicInputFieldWriteSerializer(many=True, required=False, default=list)
@@ -1810,7 +1848,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'analysis_requires_sample_acceptance', 'analysis_requires_experiment_completion',
             'analysis_notes',
             'equipment_managers', 'equipment_pis', 'equipment_operators',
-            'equipment_specifications', 'equipment_accessories',
+            'equipment_specifications', 'equipment_publications', 'equipment_accessories',
             'equipment_additional_accessories', 'input_fields',
             'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
             'param_definitions', 'slot_options',
@@ -1904,6 +1942,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         actor = getattr(request, "user", None) if request else None
         inlines = {k: validated_data.pop(k, []) for k in [
             'equipment_managers', 'equipment_pis', 'equipment_operators', 'equipment_specifications',
+            'equipment_publications',
             'equipment_accessories', 'equipment_additional_accessories',
             'input_fields', 'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
             'param_definitions', 'slot_options',
@@ -1923,6 +1962,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         actor = getattr(request, "user", None) if request else None
         inlines = {k: validated_data.pop(k, None) for k in [
             'equipment_managers', 'equipment_pis', 'equipment_operators', 'equipment_specifications',
+            'equipment_publications',
             'equipment_accessories', 'equipment_additional_accessories',
             'input_fields', 'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
             'param_definitions', 'slot_options',
@@ -1940,7 +1980,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
 
 def _create_related(equipment, inlines, actor=None):
     from .models import (
-        EquipmentManager, EquipmentOperator, EquipmentSpecification,
+        EquipmentManager, EquipmentOperator, EquipmentSpecification, EquipmentPublication,
         EquipmentAccessory, EquipmentAdditionalAccessory, DynamicInputField,
         ChargeProfile, SlotMaster, PrintMaterial, MultiParamDefinition,
         EquipmentPI, EquipmentPIAuditLog,
@@ -1969,6 +2009,18 @@ def _create_related(equipment, inlines, actor=None):
         )
     for item in inlines.get('equipment_specifications', []):
         EquipmentSpecification.objects.create(equipment=equipment, spec_key=item['spec_key'], spec_value=item.get('spec_value', ''))
+    for item in inlines.get('equipment_publications', []):
+        title = (item.get('title') or '').strip()
+        if not title:
+            continue
+        EquipmentPublication.objects.create(
+            equipment=equipment,
+            title=title,
+            citation=(item.get('citation') or '').strip(),
+            url=(item.get('url') or '').strip(),
+            year=item.get('year'),
+            display_order=item.get('display_order') or 0,
+        )
     for item in inlines.get('equipment_accessories', []):
         EquipmentAccessory.objects.create(
             equipment=equipment,
@@ -2086,7 +2138,7 @@ def _create_related(equipment, inlines, actor=None):
 
 def _sync_related(equipment, inlines, actor=None):
     from .models import (
-        EquipmentManager, EquipmentOperator, EquipmentSpecification,
+        EquipmentManager, EquipmentOperator, EquipmentSpecification, EquipmentPublication,
         EquipmentAccessory, EquipmentAdditionalAccessory, DynamicInputField,
         ChargeProfile, SlotMaster, PrintMaterial, MultiParamDefinition,
         EquipmentPI, EquipmentPIAuditLog,
@@ -2159,6 +2211,20 @@ def _sync_related(equipment, inlines, actor=None):
         EquipmentSpecification.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_specifications']:
             EquipmentSpecification.objects.create(equipment=equipment, spec_key=item['spec_key'], spec_value=item.get('spec_value', ''))
+    if inlines.get('equipment_publications') is not None:
+        EquipmentPublication.objects.filter(equipment=equipment).delete()
+        for item in inlines['equipment_publications']:
+            title = (item.get('title') or '').strip()
+            if not title:
+                continue
+            EquipmentPublication.objects.create(
+                equipment=equipment,
+                title=title,
+                citation=(item.get('citation') or '').strip(),
+                url=(item.get('url') or '').strip(),
+                year=item.get('year'),
+                display_order=item.get('display_order') or 0,
+            )
     if inlines.get('equipment_accessories') is not None:
         prev_enabled = {
             a.accessory_name: a.is_enabled

@@ -26,6 +26,7 @@ from .models import (
     EquipmentOperator,
     ICPMSStandardSample,
     EquipmentSpecification,
+    EquipmentPublication,
     EquipmentAccessory,
     EquipmentAdditionalAccessory,
     ChargeProfile, ChargeProfilePricingProfile, DynamicInputField, DynamicInputFieldType, MultiParamDefinition,
@@ -258,6 +259,18 @@ class EquipmentSpecificationInline(admin.TabularInline):
     fields = ['spec_key', 'spec_value']
     readonly_fields = ['created_at']
     classes = ['collapse']
+
+
+class EquipmentPublicationInline(admin.TabularInline):
+    """Inline admin for publications that reference this instrument."""
+    model = EquipmentPublication
+    extra = 0
+    fields = ['title', 'citation', 'url', 'year', 'display_order']
+    readonly_fields = ['created_at']
+    ordering = ['display_order', '-year', 'title']
+    classes = ['collapse']
+    verbose_name = _('Publication')
+    verbose_name_plural = _('Publications (instrument references)')
 
 class EquipmentAccessoryInline(admin.TabularInline):
     """Inline admin for Equipment Accessories."""
@@ -1095,6 +1108,7 @@ class EquipmentAdmin(admin.ModelAdmin):
         EquipmentPIInline,
         EquipmentOperatorInline,
         EquipmentSpecificationInline,
+        EquipmentPublicationInline,
         EquipmentAccessoryInline,
         EquipmentAdditionalAccessoryInline,
         ChargeProfileInline,

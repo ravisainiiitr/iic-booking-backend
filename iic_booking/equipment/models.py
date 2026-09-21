@@ -1295,7 +1295,58 @@ class EquipmentSpecification(models.Model):
 
     def __str__(self):
         return f"{self.equipment.code} - {self.spec_key}"
-    
+
+
+class EquipmentPublication(models.Model):
+    """Publication that references this instrument. Editable by Admin and OIC."""
+
+    equipment_publication_id = models.AutoField(primary_key=True)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name='equipment_publications',
+    )
+    title = models.CharField(
+        max_length=500,
+        verbose_name=_('Title'),
+        help_text=_('Publication title or short label.'),
+    )
+    citation = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Citation'),
+        help_text=_('Full citation text (authors, journal, year, DOI, etc.).'),
+    )
+    url = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        verbose_name=_('URL'),
+        help_text=_('Optional link to the publication (DOI, journal page, PDF).'),
+    )
+    year = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_('Year'),
+        help_text=_('Publication year, if known.'),
+    )
+    display_order = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_('Display order'),
+        help_text=_('Lower numbers appear first on the equipment page.'),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Equipment publication')
+        verbose_name_plural = _('Equipment publications')
+        ordering = ['display_order', '-year', 'title', 'equipment_publication_id']
+
+    def __str__(self):
+        return f"{self.equipment.code} - {self.title}"
+
+
+
 class EquipmentAccessory(models.Model):
     equipment_accessory_id = models.AutoField(primary_key=True)
     equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name='equipment_accessories')
