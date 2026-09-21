@@ -1081,7 +1081,7 @@ def user_can_see_equipment_image(user, equipment):
     """
     return True
 
-def get_visible_equipment_queryset(user):
+def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
     """
     Return Equipment queryset filtered by visibility for the given user.
     - Anonymous: only equipment with visibility_group=None (public).
@@ -1094,10 +1094,18 @@ def get_visible_equipment_queryset(user):
     if not user or not user.is_authenticated:
         queryset = queryset.filter(visibility_group__isnull=True)
     elif user.user_type == UserType.MANAGER:
-        allowed_ids = get_equipment_ids_managed_by_oic(user.id)
-        if not allowed_ids:
-            return queryset.none()
-        queryset = queryset.filter(equipment_id__in=allowed_ids)
+        scope = (catalog_scope or "").strip().lower()
+        if scope == "all":
+            # OIC browsing full catalog (not management scope): same rules as end users.
+            queryset = queryset.filter(
+                Q(visibility_group__isnull=True) |
+                Q(visibility_group__members__user=user)
+            ).distinct()
+        else:
+            allowed_ids = get_equipment_ids_managed_by_oic(user.id)
+            if not allowed_ids:
+                return queryset.none()
+            queryset = queryset.filter(equipment_id__in=allowed_ids)
     elif user.user_type == UserType.OPERATOR:
         allowed_ids = _get_equipment_ids_for_log_access(user) or []
         if not allowed_ids:
@@ -1529,7 +1537,10 @@ def equipment_list(request):
     """
     from django.db.models import Avg, Count
 
-    queryset = get_visible_equipment_queryset(request.user).select_related(
+    catalog_scope = (request.query_params.get("catalog_scope") or "").strip().lower() or None
+    queryset = get_visible_equipment_queryset(
+        request.user, catalog_scope=catalog_scope
+    ).select_related(
         "category", "internal_department"
     )
 
@@ -12992,12 +13003,23 @@ def update_booking_input_values(request, booking_id):
     equipment = booking.equipment
     enable_recalc = getattr(equipment, "enable_charge_recalculation", False) and booking.status == BookingStatus.BOOKED
 
-    editable_keys = set(
-        DynamicInputField.objects.filter(
-            equipment_id=booking.equipment_id,
-            editing_required=True,
-        ).values_list("field_key", flat=True)
-    )
+    ut = str(getattr(request.user, "user_type", None) or "").strip().lower()
+    is_admin_or_oic = ut in (UserType.ADMIN, UserType.MANAGER)
+
+    # Admin / OIC may edit all input fields until COMPLETED; others only editing_required.
+    if is_admin_or_oic:
+        editable_keys = set(
+            DynamicInputField.objects.filter(
+                equipment_id=booking.equipment_id,
+            ).values_list("field_key", flat=True)
+        )
+    else:
+        editable_keys = set(
+            DynamicInputField.objects.filter(
+                equipment_id=booking.equipment_id,
+                editing_required=True,
+            ).values_list("field_key", flat=True)
+        )
 
     # Allow field_key and field_key_elements (e.g. for PERIODIC_TABLE)
     allowed_keys = set(editable_keys)

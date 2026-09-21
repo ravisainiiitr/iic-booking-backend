@@ -1246,6 +1246,8 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'show_make_on_card',
             'model_information',
             'show_model_on_card',
+            'parent_equipment',
+            'enable_multi_mode',
         ]
         read_only_fields = ['equipment_id', 'created_at', 'updated_at']
 
@@ -1320,6 +1322,8 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
             'show_make_on_card',
             'model_information',
             'show_model_on_card',
+            'parent_equipment',
+            'enable_multi_mode',
             'created_at',
             'updated_at',
         ]
@@ -3009,11 +3013,23 @@ class BookingSerializer(serializers.ModelSerializer):
         return self.get_input_fields(obj)
 
     def get_editable_input_fields(self, obj):
-        """Return only editable input fields for Edit User Inputs popup."""
+        """Return editable input fields for Edit User Inputs popup.
+
+        End users: only fields marked editing_required (plus comments).
+        Admin / OIC (manager): all equipment input fields until booking is COMPLETED
+        (completion is enforced by the update endpoint).
+        """
         if not obj.equipment_id:
             return [_comments_input_field_schema()]
         all_fields = self.get_input_fields(obj)[:-1]
-        result = [f for f in all_fields if f.get("editing_required")]
+        request = self.context.get("request") if hasattr(self, "context") else None
+        user = getattr(request, "user", None) if request else None
+        ut = str(getattr(user, "user_type", None) or "").strip().lower()
+        is_admin_or_oic = ut in (UserType.ADMIN, UserType.MANAGER)
+        if is_admin_or_oic:
+            result = list(all_fields)
+        else:
+            result = [f for f in all_fields if f.get("editing_required")]
         result.append(_comments_input_field_schema())
         return result
 
