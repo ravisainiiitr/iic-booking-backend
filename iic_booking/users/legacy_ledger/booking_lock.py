@@ -16,9 +16,9 @@ FACULTY_WALLET_SYNC_CUTOFF = timezone.datetime(
 
 # Compact Important-notice copy (2–3 lines). Prefer this over verbose stored templates.
 DEFAULT_BOOKING_LOCK_MESSAGE = (
-    "Online equipment booking opens on {date} at {time}. "
-    "Until then, continue using the existing IIC Booking Portal. "
-    "Wallet balance and transaction history remain available here."
+    "Booking for the week commencing from 05 October 2026 will be accepted "
+    "using the new booking portal.\n"
+    "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM."
 )
 
 
@@ -27,6 +27,13 @@ def _is_verbose_lock_message(text: str) -> bool:
     if not t:
         return False
     if "New IIC Equipment Booking Portal" in t:
+        return True
+    # Retired cutover blurbs — always prefer DEFAULT_BOOKING_LOCK_MESSAGE.
+    if "Online equipment booking opens on" in t:
+        return True
+    if "continue using the existing IIC Booking Portal" in t:
+        return True
+    if "Wallet balance and transaction history remain available" in t:
         return True
     if t.count("\n") >= 2:
         return True
