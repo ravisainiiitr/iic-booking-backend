@@ -622,6 +622,7 @@ class EquipmentPublicationSerializer(serializers.ModelSerializer):
             'title',
             'citation',
             'url',
+            'doi',
             'year',
             'display_order',
             'created_at',

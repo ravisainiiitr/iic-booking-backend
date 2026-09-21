@@ -391,6 +391,14 @@ from iic_booking.equipment.equipment_addition_requests import (
     equipment_addition_request_approve,
     equipment_addition_request_reject,
 )
+from iic_booking.equipment.publication_claim_views import (
+    my_publication_claims,
+    publication_claim_approve,
+    publication_claim_reject,
+    publication_claims_pending_count,
+    publication_claims_review_queue,
+    publication_doi_lookup,
+)
 from iic_booking.communication.api_views import (
     get_notifications,
     mark_notification_as_read,
@@ -1078,6 +1086,36 @@ urlpatterns = router.urls + [
         "admin/equipment-addition-requests/<int:pk>/reject/",
         equipment_addition_request_reject,
         name="admin-equipment-addition-request-reject",
+    ),
+    path(
+        "publication-claims/doi-lookup/",
+        publication_doi_lookup,
+        name="publication-doi-lookup",
+    ),
+    path(
+        "publication-claims/my/",
+        my_publication_claims,
+        name="my-publication-claims",
+    ),
+    path(
+        "publication-claims/review/",
+        publication_claims_review_queue,
+        name="publication-claims-review",
+    ),
+    path(
+        "publication-claims/pending-count/",
+        publication_claims_pending_count,
+        name="publication-claims-pending-count",
+    ),
+    path(
+        "publication-claims/<int:claim_id>/approve/",
+        publication_claim_approve,
+        name="publication-claim-approve",
+    ),
+    path(
+        "publication-claims/<int:claim_id>/reject/",
+        publication_claim_reject,
+        name="publication-claim-reject",
     ),
     path("equipment-categories/", equipment_category_list, name="equipment-category-list"),
     path("equipments/<int:pk>/image/", equipment_image_proxy, name="equipment-image-proxy"),

@@ -1298,7 +1298,7 @@ class EquipmentSpecification(models.Model):
 
 
 class EquipmentPublication(models.Model):
-    """Publication that references this instrument. Editable by Admin and OIC."""
+    """Publication that references this instrument. Editable by Admin and OIC; also created from approved claims."""
 
     equipment_publication_id = models.AutoField(primary_key=True)
     equipment = models.ForeignKey(
@@ -1324,6 +1324,14 @@ class EquipmentPublication(models.Model):
         verbose_name=_('URL'),
         help_text=_('Optional link to the publication (DOI, journal page, PDF).'),
     )
+    doi = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        db_index=True,
+        verbose_name=_('DOI'),
+        help_text=_('Normalized DOI when known (used for deduplication).'),
+    )
     year = models.PositiveIntegerField(
         null=True,
         blank=True,
@@ -1335,6 +1343,22 @@ class EquipmentPublication(models.Model):
         verbose_name=_('Display order'),
         help_text=_('Lower numbers appear first on the equipment page.'),
     )
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='equipment_publications_submitted',
+        verbose_name=_('Submitted by'),
+    )
+    source_claim = models.ForeignKey(
+        'EquipmentPublicationClaim',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_publications',
+        verbose_name=_('Source claim'),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1345,6 +1369,97 @@ class EquipmentPublication(models.Model):
     def __str__(self):
         return f"{self.equipment.code} - {self.title}"
 
+
+class EquipmentPublicationClaimStatus:
+    PENDING = 'pending'
+    APPROVED = 'approved'
+    REJECTED = 'rejected'
+
+    CHOICES = (
+        (PENDING, _('Pending')),
+        (APPROVED, _('Approved')),
+        (REJECTED, _('Rejected')),
+    )
+
+
+class EquipmentPublicationClaim(models.Model):
+    """User-submitted facility acknowledgment; OIC/Admin approve before display."""
+
+    claim_id = models.AutoField(primary_key=True)
+    submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='equipment_publication_claims',
+        verbose_name=_('Submitted by'),
+    )
+    title = models.CharField(max_length=500, verbose_name=_('Title'))
+    authors = models.CharField(max_length=1000, blank=True, default='', verbose_name=_('Authors'))
+    journal = models.CharField(max_length=500, blank=True, default='', verbose_name=_('Journal'))
+    year = models.PositiveIntegerField(null=True, blank=True, verbose_name=_('Year'))
+    volume_pages = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        verbose_name=_('Volume / pages'),
+    )
+    doi = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        db_index=True,
+        verbose_name=_('DOI'),
+    )
+    url = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+        verbose_name=_('URL'),
+        help_text=_('Journal page, PDF, or other link.'),
+    )
+    facility_note = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Facility use note'),
+        help_text=_('Brief note on how the instrument(s) were used.'),
+    )
+    citation = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Citation'),
+        help_text=_('Assembled or user-provided citation text.'),
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=EquipmentPublicationClaimStatus.CHOICES,
+        default=EquipmentPublicationClaimStatus.PENDING,
+        db_index=True,
+        verbose_name=_('Status'),
+    )
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='equipment_publication_claims_reviewed',
+        verbose_name=_('Reviewed by'),
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True, verbose_name=_('Reviewed at'))
+    rejection_reason = models.TextField(blank=True, default='', verbose_name=_('Rejection reason'))
+    equipments = models.ManyToManyField(
+        Equipment,
+        related_name='publication_claims',
+        verbose_name=_('Equipment'),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Equipment publication claim')
+        verbose_name_plural = _('Equipment publication claims')
+        ordering = ['-created_at', 'claim_id']
+
+    def __str__(self):
+        return f"Claim #{self.claim_id}: {self.title[:60]}"
 
 
 class EquipmentAccessory(models.Model):
