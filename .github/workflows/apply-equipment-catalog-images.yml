@@ -1,0 +1,74 @@
+# One-shot: apply ops/equipment_bg_fix/{id}.jpg onto production Equipment.image (S3).
+name: Apply Equipment Catalog Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type APPLY to upload catalog images from ops/equipment_bg_fix
+        required: true
+        type: string
+      release_tag:
+        description: Git tag that contains ops/equipment_bg_fix (must already be on EC2 checkout)
+        required: true
+        type: string
+        default: v2.5.46.10-equipment-bg-logo
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ "${CONFIRM}" != "APPLY" ]]; then
+            echo "Refusing: confirm must be APPLY"
+            exit 2
+          fi
+
+      - name: Locate Django container and repo checkout
+        id: find
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          if [ -z "$CID" ]; then
+            echo "No running Django container"
+            exit 1
+          fi
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+          echo "Using container: $CID"
+
+          REPO=""
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+            if [ -d "$d/.git" ] || [ -f "$d/manage.py" ] || [ -d "$d/ops/equipment_bg_fix" ]; then
+              REPO="$d"
+              break
+            fi
+          done
+          if [ -z "$REPO" ]; then
+            echo "Could not find backend checkout with ops/equipment_bg_fix"
+            ls -la /home/ubuntu || true
+            exit 1
+          fi
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "Using repo: $REPO"
+          cd "$REPO"
+          git fetch --tags origin || true
+          git checkout --force "refs/tags/${TAG}" || git checkout --force "$TAG" || true
+          test -d ops/equipment_bg_fix
+          ls -la ops/equipment_bg_fix | head
+
+      - name: Copy images into container and apply
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          REPO="${{ steps.find.outputs.repo }}"
+          docker exec "$CID" mkdir -p /tmp/equipment_bg_fix
+          docker cp "$REPO/ops/equipment_bg_fix/." "$CID:/tmp/equipment_bg_fix/"
+          docker exec "$CID" ls -la /tmp/equipment_bg_fix | head
+          docker exec "$CID" python manage.py apply_equipment_catalog_images --dir /tmp/equipment_bg_fix --dry-run
+          docker exec "$CID" python manage.py apply_equipment_catalog_images --dir /tmp/equipment_bg_fix --confirm APPLY
