@@ -138,65 +138,34 @@ def delete_notification(request, notification_id):
 def notice_list(request):
     """
     Get list of active public notices (GET) or create a new notice (POST).
-    
-    GET: Public access, no authentication required
-    POST: Requires authentication and admin privileges
-    
-    Query Parameters (GET):
-        - limit: Maximum number of notices to return (default: all)
-        - notice_type: Filter by notice type (info, warning, urgent)
-        - is_active: Filter by active status (default: true)
-    
-    Request Body (POST):
-        {
-            "title": "Notice title",
-            "description": "Short description",
-            "content": "Full content (optional)",
-            "notice_type": "info|warning|urgent",
-            "is_active": true,
-            "priority": 0
-        }
-    
-    Returns:
-        GET: List of active notices
-        POST: Created notice
+
+    GET: Public access — APPROVED + active + not expired
+    POST: Requires authentication and admin privileges (publishes as APPROVED)
     """
     if request.method == "GET":
-        # Public access for GET - start with all notices
-        queryset = Notice.objects.all()
-        
-        # Filter by is_active if provided, otherwise default to active only
-        is_active_param = request.query_params.get('is_active')
+        from .notice_board_service import public_notices_queryset
+
+        queryset = public_notices_queryset()
+
+        # Optional override for admin tooling: ?is_active=... still only APPROVED public board
+        is_active_param = request.query_params.get("is_active")
         if is_active_param is not None:
-            # Convert string to boolean
-            is_active = is_active_param.lower() in ('true', '1', 'yes')
-            queryset = queryset.filter(is_active=is_active)
-        else:
-            # Default to active notices only
-            queryset = queryset.filter(is_active=True)
-        
-        # Filter out expired notices (where expiry_date is in the past)
-        queryset = queryset.filter(
-            Q(expiry_date__isnull=True) | Q(expiry_date__gt=timezone.now())
-        )
-        
-        # Filter by notice type if provided
-        notice_type = request.query_params.get('notice_type')
+            is_active = is_active_param.lower() in ("true", "1", "yes")
+            queryset = queryset.filter(is_active=is_active) if is_active else Notice.objects.none()
+
+        notice_type = request.query_params.get("notice_type")
         if notice_type:
             queryset = queryset.filter(notice_type=notice_type)
-        
-        # Order by priority and date
-        queryset = queryset.order_by('-priority', '-created_at')
-        
-        # Limit results if provided
-        limit = request.query_params.get('limit')
+
+        queryset = queryset.order_by("-priority", "-created_at")
+
+        limit = request.query_params.get("limit")
         if limit:
             try:
-                limit = int(limit)
-                queryset = queryset[:limit]
+                queryset = queryset[: int(limit)]
             except ValueError:
                 pass
-        
+
         serializer = NoticeSerializer(queryset, many=True)
         return Response(
             {
@@ -205,25 +174,32 @@ def notice_list(request):
             },
             status=status.HTTP_200_OK,
         )
-    
+
     elif request.method == "POST":
-        # Require authentication for POST
         if not request.user.is_authenticated:
             return Response(
                 {"error": "Authentication required."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-        
-        # Check if user is admin/staff
-        if not request.user.is_staff:
+
+        from .notice_board_service import is_main_admin
+
+        if not is_main_admin(request.user) and not request.user.is_staff:
             return Response(
                 {"error": "Only admins can create notices."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        
+
         serializer = NoticeSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save(created_by=request.user)
+            serializer.save(
+                created_by=request.user,
+                requested_by=request.user,
+                approval_status=Notice.ApprovalStatus.APPROVED,
+                is_active=request.data.get("is_active", True),
+                source=Notice.Source.MANUAL,
+                needs_oic_expiry=False,
+            )
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -233,45 +209,56 @@ def notice_list(request):
 def notice_detail(request, notice_id):
     """
     Get, update, or delete a notice.
-    
-    GET: Public access (no authentication required)
+
+    GET: Public access for APPROVED notices (others require auth + permission)
     PATCH/PUT/DELETE: Requires authentication and admin privileges
     """
     try:
-        notice = Notice.objects.get(notice_id=notice_id)
+        notice = Notice.objects.select_related(
+            "created_by", "requested_by", "reviewed_by", "equipment"
+        ).get(notice_id=notice_id)
     except Notice.DoesNotExist:
         return Response(
             {"error": "Notice not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    
+
     if request.method == "GET":
-        # Public access for GET
+        from .notice_board_service import is_main_admin, user_can_manage_notice_request
+
+        if notice.approval_status != Notice.ApprovalStatus.APPROVED or not notice.is_active:
+            if not request.user.is_authenticated or (
+                not is_main_admin(request.user)
+                and not user_can_manage_notice_request(request.user, notice)
+            ):
+                return Response(
+                    {"error": "Notice not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
         serializer = NoticeSerializer(notice)
         return Response(serializer.data)
-    
-    # For update/delete, require authentication
+
     if not request.user.is_authenticated:
         return Response(
             {"error": "Authentication required."},
             status=status.HTTP_401_UNAUTHORIZED,
         )
-    
-    # For update/delete, require admin
-    if not request.user.is_staff:
+
+    from .notice_board_service import is_main_admin
+
+    if not is_main_admin(request.user) and not request.user.is_staff:
         return Response(
             {"error": "Only admins can update or delete notices."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    
+
     if request.method == "DELETE":
         notice.delete()
         return Response(
             {"message": "Notice deleted successfully."},
             status=status.HTTP_200_OK,
         )
-    
-    # PATCH or PUT
+
     serializer = NoticeSerializer(notice, data=request.data, partial=(request.method == "PATCH"))
     if serializer.is_valid():
         serializer.save()
@@ -279,14 +266,271 @@ def notice_detail(request, notice_id):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in ("1", "true", "yes", "y")
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def notice_requests_mine(request):
+    """
+    OIC: list my notice requests / equipment drafts I can complete.
+    POST: create a generic notice request (PENDING approval).
+    """
+    from .notice_board_service import is_main_admin, is_oic
+
+    if not (is_oic(request.user) or is_main_admin(request.user)):
+        return Response(
+            {"error": "Only Officer In Charge can manage notice board requests."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if request.method == "POST":
+        title = (request.data.get("title") or "").strip()
+        description = (request.data.get("description") or "").strip()
+        if not title or not description:
+            return Response(
+                {"error": "title and description are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        notice_type = (request.data.get("notice_type") or Notice.NoticeType.INFO).strip()
+        if notice_type not in dict(Notice.NoticeType.choices):
+            notice_type = Notice.NoticeType.INFO
+        try:
+            priority = int(request.data.get("priority") or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        unlimited = _parse_bool(request.data.get("expiry_unlimited"))
+        expiry_raw = request.data.get("expiry_date")
+        expiry_date = None
+        if not unlimited and expiry_raw:
+            from django.utils.dateparse import parse_datetime
+
+            expiry_date = parse_datetime(str(expiry_raw))
+            if expiry_date is None:
+                return Response(
+                    {"error": "Invalid expiry_date. Use ISO datetime."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if timezone.is_naive(expiry_date):
+                expiry_date = timezone.make_aware(expiry_date, timezone.get_current_timezone())
+
+        notice = Notice.objects.create(
+            title=title,
+            description=description,
+            content=(request.data.get("content") or "").strip() or None,
+            notice_type=notice_type,
+            is_active=False,
+            priority=priority,
+            created_by=request.user,
+            requested_by=request.user,
+            expiry_date=None if unlimited else expiry_date,
+            expiry_unlimited=unlimited,
+            needs_oic_expiry=False,
+            approval_status=Notice.ApprovalStatus.PENDING,
+            source=Notice.Source.MANUAL,
+        )
+        return Response(NoticeSerializer(notice).data, status=status.HTTP_201_CREATED)
+
+    # GET
+    from iic_booking.equipment.models import EquipmentTemporaryOIC
+    from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
+
+    managed_ids = set(get_equipment_ids_managed_by_oic(request.user.id))
+    temp_ids = set(
+        EquipmentTemporaryOIC.objects.filter(
+            temporary_oic=request.user,
+            resume_at__gt=timezone.now(),
+        ).values_list("equipment_id", flat=True)
+    )
+    equipment_ids = managed_ids | temp_ids
+
+    qs = (
+        Notice.objects.filter(
+            Q(requested_by=request.user)
+            | Q(created_by=request.user)
+            | Q(
+                equipment_id__in=equipment_ids,
+                source=Notice.Source.EQUIPMENT_UNAVAILABLE,
+                approval_status__in=[
+                    Notice.ApprovalStatus.DRAFT,
+                    Notice.ApprovalStatus.PENDING,
+                    Notice.ApprovalStatus.APPROVED,
+                    Notice.ApprovalStatus.REJECTED,
+                ],
+            )
+        )
+        .select_related("equipment", "requested_by", "reviewed_by", "created_by")
+        .distinct()
+        .order_by("-updated_at")
+    )
+    needs_expiry = qs.filter(
+        needs_oic_expiry=True,
+        approval_status=Notice.ApprovalStatus.DRAFT,
+        source=Notice.Source.EQUIPMENT_UNAVAILABLE,
+    )
+    serializer = NoticeSerializer(qs[:200], many=True)
+    needs_ser = NoticeSerializer(needs_expiry[:50], many=True)
+    return Response(
+        {
+            "requests": serializer.data,
+            "needs_expiry": needs_ser.data,
+            "count": len(serializer.data),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def notice_request_complete_expiry(request, notice_id):
+    """OIC sets expiry (or unlimited) on an equipment DRAFT and submits for approval."""
+    from .notice_board_service import is_oic, user_can_manage_notice_request
+
+    if not is_oic(request.user):
+        from .notice_board_service import is_main_admin
+
+        if not is_main_admin(request.user):
+            return Response(
+                {"error": "Only Officer In Charge can complete notice expiry."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+    try:
+        notice = Notice.objects.select_related("equipment").get(notice_id=notice_id)
+    except Notice.DoesNotExist:
+        return Response({"error": "Notice request not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not user_can_manage_notice_request(request.user, notice):
+        return Response({"error": "Not allowed for this notice."}, status=status.HTTP_403_FORBIDDEN)
+
+    if notice.approval_status != Notice.ApprovalStatus.DRAFT and not notice.needs_oic_expiry:
+        return Response(
+            {"error": "This notice does not need expiry completion."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    unlimited = _parse_bool(request.data.get("expiry_unlimited"))
+    expiry_date = None
+    if not unlimited:
+        expiry_raw = request.data.get("expiry_date")
+        if not expiry_raw:
+            return Response(
+                {"error": "Provide expiry_date or set expiry_unlimited=true."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        from django.utils.dateparse import parse_datetime
+
+        expiry_date = parse_datetime(str(expiry_raw))
+        if expiry_date is None:
+            return Response(
+                {"error": "Invalid expiry_date. Use ISO datetime."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if timezone.is_naive(expiry_date):
+            expiry_date = timezone.make_aware(expiry_date, timezone.get_current_timezone())
+
+    notice.expiry_unlimited = unlimited
+    notice.expiry_date = None if unlimited else expiry_date
+    notice.needs_oic_expiry = False
+    notice.approval_status = Notice.ApprovalStatus.PENDING
+    notice.is_active = False
+    if not notice.requested_by_id:
+        notice.requested_by = request.user
+    notice.save()
+    return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def notice_requests_pending(request):
+    """Main Admin: list PENDING notice requests awaiting approval."""
+    from .notice_board_service import is_main_admin
+
+    if not is_main_admin(request.user):
+        return Response(
+            {"error": "Only Main Admin can view pending notice approvals."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    qs = (
+        Notice.objects.filter(approval_status=Notice.ApprovalStatus.PENDING)
+        .select_related("equipment", "requested_by", "created_by")
+        .order_by("-created_at")
+    )
+    return Response(
+        {"requests": NoticeSerializer(qs, many=True).data, "count": qs.count()},
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def notice_request_approve(request, notice_id):
+    from .notice_board_service import is_main_admin
+
+    if not is_main_admin(request.user):
+        return Response(
+            {"error": "Only Main Admin can approve notice requests."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        notice = Notice.objects.get(notice_id=notice_id)
+    except Notice.DoesNotExist:
+        return Response({"error": "Notice request not found."}, status=status.HTTP_404_NOT_FOUND)
+    if notice.approval_status != Notice.ApprovalStatus.PENDING:
+        return Response(
+            {"error": f"Notice is {notice.approval_status}, not PENDING."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if notice.needs_oic_expiry:
+        return Response(
+            {"error": "OIC must set expiry before this notice can be approved."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    notice.approval_status = Notice.ApprovalStatus.APPROVED
+    notice.is_active = True
+    notice.reviewed_by = request.user
+    notice.reviewed_at = timezone.now()
+    notice.review_comment = (request.data.get("review_comment") or "").strip()
+    notice.save()
+    return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def notice_request_reject(request, notice_id):
+    from .notice_board_service import is_main_admin
+
+    if not is_main_admin(request.user):
+        return Response(
+            {"error": "Only Main Admin can reject notice requests."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        notice = Notice.objects.get(notice_id=notice_id)
+    except Notice.DoesNotExist:
+        return Response({"error": "Notice request not found."}, status=status.HTTP_404_NOT_FOUND)
+    if notice.approval_status != Notice.ApprovalStatus.PENDING:
+        return Response(
+            {"error": f"Notice is {notice.approval_status}, not PENDING."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    notice.approval_status = Notice.ApprovalStatus.REJECTED
+    notice.is_active = False
+    notice.reviewed_by = request.user
+    notice.reviewed_at = timezone.now()
+    notice.review_comment = (request.data.get("review_comment") or "").strip()
+    notice.needs_oic_expiry = False
+    notice.save()
+    return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_inbox_folders(request):
-    """
-    List IMAP folders with message counts (Main Admin / staff only).
-    """
-    if not request.user.is_authenticated:
-        return Response({"error": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
+
     from iic_booking.users.models.user_type import UserType
 
     if not (

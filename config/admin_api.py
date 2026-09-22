@@ -3861,20 +3861,44 @@ def admin_api_router():
         created_by_name = serializers.CharField(source="created_by.name", read_only=True, allow_null=True)
         created_by_email = serializers.EmailField(source="created_by.email", read_only=True, allow_null=True)
         notice_type_display = serializers.CharField(source="get_notice_type_display", read_only=True)
+        approval_status_display = serializers.CharField(
+            source="get_approval_status_display", read_only=True
+        )
+        source_display = serializers.CharField(source="get_source_display", read_only=True)
+        requested_by_name = serializers.CharField(
+            source="requested_by.name", read_only=True, allow_null=True
+        )
+        requested_by_email = serializers.EmailField(
+            source="requested_by.email", read_only=True, allow_null=True
+        )
+        equipment_code = serializers.CharField(source="equipment.code", read_only=True, allow_null=True)
+        equipment_name = serializers.CharField(source="equipment.name", read_only=True, allow_null=True)
 
         class Meta:
             model = Notice
             fields = [
                 "notice_id", "title", "description", "content", "notice_type", "notice_type_display",
-                "is_active", "priority", "expiry_date", "created_by", "created_by_name", "created_by_email",
+                "is_active", "priority", "expiry_date", "expiry_unlimited", "needs_oic_expiry",
+                "approval_status", "approval_status_display", "source", "source_display",
+                "equipment", "equipment_code", "equipment_name",
+                "requested_by", "requested_by_name", "requested_by_email",
+                "reviewed_by", "reviewed_at", "review_comment",
+                "created_by", "created_by_name", "created_by_email",
                 "created_at", "updated_at",
             ]
-            read_only_fields = ["notice_id", "created_at", "updated_at", "created_by_name", "created_by_email", "notice_type_display"]
+            read_only_fields = [
+                "notice_id", "created_at", "updated_at", "created_by_name", "created_by_email",
+                "notice_type_display", "approval_status_display", "source_display",
+                "requested_by_name", "requested_by_email", "equipment_code", "equipment_name",
+                "reviewed_by", "reviewed_at",
+            ]
 
     class NoticeViewSet(ModelViewSet):
         permission_classes = [IsAdminOrDeptCommunicationAdmin]
         serializer_class = NoticeAdminSerializer
-        queryset = Notice.objects.all().select_related("created_by").order_by("-priority", "-created_at")
+        queryset = Notice.objects.all().select_related(
+            "created_by", "requested_by", "reviewed_by", "equipment"
+        ).order_by("-priority", "-created_at")
 
         def get_queryset(self):
             qs = super().get_queryset()
@@ -3894,10 +3918,19 @@ def admin_api_router():
                     qs = qs.filter(is_active=True)
                 elif str(is_active).lower() in ("false", "0", "no"):
                     qs = qs.filter(is_active=False)
+            approval_status = self.request.query_params.get("approval_status", "").strip()
+            if approval_status:
+                qs = qs.filter(approval_status=approval_status)
             return qs
 
         def perform_create(self, serializer):
-            serializer.save(created_by=self.request.user)
+            serializer.save(
+                created_by=self.request.user,
+                requested_by=self.request.user,
+                approval_status=Notice.ApprovalStatus.APPROVED,
+                needs_oic_expiry=False,
+                source=Notice.Source.MANUAL,
+            )
 
     router = DefaultRouter()
     router.register(r"departments", DepartmentViewSet, basename="admin-department")

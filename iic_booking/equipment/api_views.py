@@ -1945,13 +1945,55 @@ def equipment_detail(request, pk):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+        previous_status = (equipment.status or "").strip()
         allowed = {"name", "description", "status", "location"}
         for key in allowed:
             if key in request.data:
                 setattr(equipment, key, request.data[key])
         equipment.save()
+
+        notice_side_effect = {}
+        if "status" in request.data:
+            from iic_booking.communication.notice_board_service import (
+                NON_OPERATIONAL_STATUSES,
+                create_or_reuse_equipment_unavailable_draft,
+                expire_equipment_linked_notices,
+            )
+
+            new_status = (equipment.status or "").strip()
+            if (
+                new_status in NON_OPERATIONAL_STATUSES
+                and previous_status == EquipmentStatus.ACTIVE
+            ) or (
+                new_status in NON_OPERATIONAL_STATUSES
+                and previous_status not in NON_OPERATIONAL_STATUSES
+            ):
+                draft = create_or_reuse_equipment_unavailable_draft(
+                    equipment=equipment, actor=request.user
+                )
+                actor_is_oic = (
+                    request.user.user_type == UserType.MANAGER
+                    and _user_can_act_as_oic_for_equipment(request.user, equipment)
+                )
+                notice_side_effect = {
+                    "notice_request_id": draft.notice_id,
+                    "needs_notice_expiry": bool(draft.needs_oic_expiry),
+                    "notice_prompt_for_actor": bool(actor_is_oic and draft.needs_oic_expiry),
+                }
+            elif new_status == EquipmentStatus.ACTIVE and previous_status != EquipmentStatus.ACTIVE:
+                closed = expire_equipment_linked_notices(
+                    equipment=equipment, actor=request.user
+                )
+                notice_side_effect = {
+                    "notices_closed": closed,
+                    "notice_closed_on_operational": closed > 0,
+                }
+
         serializer = EquipmentDetailSerializer(equipment, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        payload = dict(serializer.data)
+        if notice_side_effect:
+            payload["notice_board"] = notice_side_effect
+        return Response(payload, status=status.HTTP_200_OK)
 
     serializer = EquipmentDetailSerializer(equipment, context={'request': request})
     return Response(serializer.data, status=status.HTTP_200_OK)

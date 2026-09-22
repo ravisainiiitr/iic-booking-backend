@@ -404,16 +404,21 @@ class NoticeAdmin(admin.ModelAdmin):
     list_display = [
         "title",
         "notice_type",
+        "approval_status",
+        "source",
         "is_active",
         "priority",
         "expiry_date",
+        "equipment",
+        "requested_by",
         "created_by",
         "created_at",
-        "updated_at",
     ]
     list_filter = [
         NoticeTypeFilter,
         IsActiveFilter,
+        "approval_status",
+        "source",
         "expiry_date",
         "created_at",
         "updated_at",
@@ -427,6 +432,8 @@ class NoticeAdmin(admin.ModelAdmin):
         "created_at",
         "updated_at",
         "created_by",
+        "reviewed_by",
+        "reviewed_at",
     ]
     fieldsets = (
         (
@@ -447,6 +454,22 @@ class NoticeAdmin(admin.ModelAdmin):
                     "is_active",
                     "priority",
                     "expiry_date",
+                    "expiry_unlimited",
+                    "needs_oic_expiry",
+                ),
+            },
+        ),
+        (
+            _("Workflow"),
+            {
+                "fields": (
+                    "approval_status",
+                    "source",
+                    "equipment",
+                    "requested_by",
+                    "reviewed_by",
+                    "reviewed_at",
+                    "review_comment",
                 ),
             },
         ),
@@ -462,12 +485,14 @@ class NoticeAdmin(admin.ModelAdmin):
         ),
     )
     ordering = ["-priority", "-created_at"]
-    raw_id_fields = ["created_by"]
+    raw_id_fields = ["created_by", "requested_by", "reviewed_by", "equipment"]
 
     def save_model(self, request, obj, form, change):
         """Set created_by for new notices."""
         if not change:  # New object
             obj.created_by = request.user
+            if not obj.approval_status:
+                obj.approval_status = Notice.ApprovalStatus.APPROVED
         super().save_model(request, obj, form, change)
 
 

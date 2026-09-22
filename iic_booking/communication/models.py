@@ -464,17 +464,31 @@ class CommunicationWebhookEventLog(models.Model):
 class Notice(models.Model):
     """
     Public notice board model for displaying announcements and updates.
-    
+
     Notices are displayed on the home page and can be of different types:
     - info: General information
     - warning: Important warnings
     - urgent: Urgent announcements
+
+    OIC-submitted notices require Main Admin approval before they are public.
+    Equipment unavailability can auto-create a DRAFT that the OIC completes
+    (expiry only) and then submits for approval.
     """
-    
+
     class NoticeType(models.TextChoices):
         INFO = "info", _("Info")
         WARNING = "warning", _("Warning")
         URGENT = "urgent", _("Urgent")
+
+    class ApprovalStatus(models.TextChoices):
+        DRAFT = "DRAFT", _("Draft")
+        PENDING = "PENDING", _("Pending approval")
+        APPROVED = "APPROVED", _("Approved")
+        REJECTED = "REJECTED", _("Rejected")
+
+    class Source(models.TextChoices):
+        MANUAL = "MANUAL", _("Manual")
+        EQUIPMENT_UNAVAILABLE = "EQUIPMENT_UNAVAILABLE", _("Equipment unavailable")
 
     notice_id = models.AutoField(primary_key=True)
     title = CharField(
@@ -527,6 +541,59 @@ class Notice(models.Model):
         help_text=_("Date and time when the notice expires (optional)"),
         db_index=True,
     )
+    approval_status = CharField(
+        _("Approval Status"),
+        max_length=20,
+        choices=ApprovalStatus.choices,
+        default=ApprovalStatus.APPROVED,
+        db_index=True,
+        help_text=_("Workflow status; only APPROVED notices appear on the public board"),
+    )
+    source = CharField(
+        _("Source"),
+        max_length=40,
+        choices=Source.choices,
+        default=Source.MANUAL,
+        db_index=True,
+    )
+    equipment = ForeignKey(
+        "equipment.Equipment",
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notices",
+        verbose_name=_("Equipment"),
+        help_text=_("Linked equipment for auto unavailability notices"),
+    )
+    requested_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notices_requested",
+        verbose_name=_("Requested By"),
+    )
+    reviewed_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notices_reviewed",
+        verbose_name=_("Reviewed By"),
+    )
+    reviewed_at = DateTimeField(_("Reviewed at"), null=True, blank=True)
+    review_comment = TextField(_("Review comment"), blank=True, default="")
+    needs_oic_expiry = BooleanField(
+        _("Needs OIC expiry"),
+        default=False,
+        db_index=True,
+        help_text=_("True until OIC sets an expiry date or chooses unlimited"),
+    )
+    expiry_unlimited = BooleanField(
+        _("Expiry unlimited"),
+        default=False,
+        help_text=_("OIC chose unlimited expiry; expiry_date stays null until equipment is restored"),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
 
@@ -537,6 +604,8 @@ class Notice(models.Model):
         indexes = [
             models.Index(fields=["is_active", "created_at"]),
             models.Index(fields=["notice_type", "is_active"]),
+            models.Index(fields=["approval_status", "is_active"]),
+            models.Index(fields=["equipment", "approval_status", "source"]),
         ]
 
     @property
