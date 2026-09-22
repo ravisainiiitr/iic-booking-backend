@@ -6,20 +6,20 @@ on:
       equipment_id:
         description: Equipment primary key to load in admin form context
         required: true
-        default: "11"
+        default: "37"
 
 jobs:
   probe:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Load equipment admin formset
+      - name: Render equipment admin change view
         env:
           EQUIPMENT_ID: ${{ inputs.equipment_id }}
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID equipment_id=$EQUIPMENT_ID"
-          docker exec -i -e EQUIPMENT_ID="$EQUIPMENT_ID" "$CID" python manage.py shell <<'PY'
+          docker exec -e EQUIPMENT_ID="$EQUIPMENT_ID" "$CID" python manage.py shell -c "
           import os, traceback
           from django.contrib.auth import get_user_model
           from django.test import RequestFactory
@@ -27,34 +27,37 @@ jobs:
           from iic_booking.equipment.models import Equipment
           from iic_booking.equipment.admin import EquipmentAdmin
 
-          eid = int(os.environ["EQUIPMENT_ID"])
+          eid = int(os.environ['EQUIPMENT_ID'])
           eq = Equipment.objects.get(pk=eid)
-          print("equipment", eq.pk, eq.code, "profile_type=", eq.profile_type)
-          print(
-              "charge_profiles",
-              list(eq.charge_profiles.values_list("user_type", "profile_type", "pricing_profile")),
-          )
+          print('equipment', eq.pk, eq.code, 'profile_type=', repr(eq.profile_type))
+          print('cp_count', eq.charge_profiles.count())
+          print('pubs', eq.publications.count() if hasattr(eq, 'publications') else 'n/a')
           User = get_user_model()
-          admin_user = (
-              User.objects.filter(is_superuser=True).first()
-              or User.objects.filter(is_staff=True).first()
-          )
-          print("admin_user", getattr(admin_user, "email", None))
+          admin_user = User.objects.filter(is_superuser=True).first() or User.objects.filter(is_staff=True).first()
+          print('admin_user', getattr(admin_user, 'email', None))
           rf = RequestFactory()
-          req = rf.get(f"/admin/equipment/equipment/{eid}/change/")
+          req = rf.get('/x/equipment/equipment/%s/change/' % eid)
           req.user = admin_user
+          # Middleware bits some admin code expects
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          setattr(req, 'session', {})
+          setattr(req, '_messages', FallbackStorage(req))
           ma = EquipmentAdmin(Equipment, site)
           try:
-              fs = list(ma.get_formsets_with_inlines(req, eq))
-              print("formsets_ok", len(fs))
-              for formset, inline in fs:
-                  print(" inline", inline.__class__.__name__, "forms", len(formset.forms))
-              ModelForm = ma.get_form(req, eq)
-              form = ModelForm(instance=eq)
-              print("modelform_ok fields", len(form.fields))
-              print("SUCCESS")
+              resp = ma.change_view(req, str(eid))
+              print('status', getattr(resp, 'status_code', type(resp)))
+              content = getattr(resp, 'content', b'')
+              if getattr(resp, 'status_code', 200) >= 400:
+                  print(content[:2000].decode('utf-8', 'replace'))
+                  raise SystemExit(1)
+              print('SUCCESS bytes', len(content))
           except Exception as exc:
-              print("FAIL", type(exc).__name__, exc)
+              print('FAIL', type(exc).__name__, exc)
               traceback.print_exc()
               raise SystemExit(1)
-          PY
+          "
+      - name: Recent django errors
+        if: always()
+        run: |
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker logs --tail 400 "$CID" 2>&1 | grep -E 'ERROR|Traceback|Exception|FieldError|ProgrammingError|TypeError|AttributeError|equipment/.*/change' | tail -n 80 || true
