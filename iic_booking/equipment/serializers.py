@@ -636,6 +636,7 @@ class EquipmentPublicationSerializer(serializers.ModelSerializer):
             'url',
             'doi',
             'year',
+            'impact_factor',
             'display_order',
             'created_at',
         ]

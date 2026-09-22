@@ -1338,6 +1338,14 @@ class EquipmentPublication(models.Model):
         verbose_name=_('Year'),
         help_text=_('Publication year, if known.'),
     )
+    impact_factor = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        verbose_name=_('Impact factor'),
+        help_text=_('Optional journal impact factor as reported by the submitter.'),
+    )
     display_order = models.PositiveIntegerField(
         default=0,
         verbose_name=_('Display order'),
@@ -1422,6 +1430,14 @@ class EquipmentPublicationClaim(models.Model):
         verbose_name=_('Facility use note'),
         help_text=_('Brief note on how the instrument(s) were used.'),
     )
+    impact_factor = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        verbose_name=_('Impact factor'),
+        help_text=_('Optional journal impact factor.'),
+    )
     citation = models.TextField(
         blank=True,
         default='',
@@ -1434,6 +1450,15 @@ class EquipmentPublicationClaim(models.Model):
         default=EquipmentPublicationClaimStatus.PENDING,
         db_index=True,
         verbose_name=_('Status'),
+    )
+    assigned_reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='equipment_publication_claims_assigned',
+        verbose_name=_('Assigned reviewer'),
+        help_text=_('Faculty supervisor for student claims; blank for OIC/Admin external review.'),
     )
     reviewed_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

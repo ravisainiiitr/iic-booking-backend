@@ -1,7 +1,8 @@
-"""Publication claim APIs: user submit + OIC/Admin review → EquipmentPublication."""
+"""Publication claim APIs: user submit + faculty/OIC/Admin review → EquipmentPublication."""
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 import json
 import logging
 import re
@@ -92,6 +93,14 @@ def _is_submitter(user) -> bool:
     return _user_type(user) in SUBMITTER_USER_TYPES
 
 
+def _is_faculty(user) -> bool:
+    return _user_type(user) == UserType.FACULTY
+
+
+def _is_student(user) -> bool:
+    return _user_type(user) in {UserType.STUDENT, UserType.INDIVIDUAL_STUDENT}
+
+
 def _managed_equipment_ids(user) -> set[int]:
     if _is_admin(user):
         return set()
@@ -102,17 +111,76 @@ def _managed_equipment_ids(user) -> set[int]:
         return set()
 
 
+def _resolve_faculty_supervisor(user):
+    """Faculty wallet owner / join-request faculty for student publication review."""
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    if getattr(user, "supervisor_id", None):
+        return getattr(user, "supervisor", None)
+
+    jr = (
+        WalletJoinRequest.objects.filter(
+            student=user,
+            status=WalletJoinRequestStatus.APPROVED,
+        )
+        .select_related("faculty", "wallet", "wallet__user")
+        .order_by("-id")
+        .first()
+    )
+    if jr:
+        if jr.faculty_id and jr.faculty_id != user.id:
+            return jr.faculty
+        if jr.wallet and jr.wallet.user_id and jr.wallet.user_id != user.id:
+            return jr.wallet.user
+    get_wallet = getattr(user, "get_accessible_wallet", None)
+    wallet = get_wallet() if callable(get_wallet) else None
+    if wallet and wallet.user_id and wallet.user_id != user.id:
+        from iic_booking.users.models import User
+
+        return User.objects.filter(pk=wallet.user_id).first()
+    return None
+
+
+def _parse_impact_factor(raw):
+    if raw in (None, ""):
+        return None
+    try:
+        val = Decimal(str(raw).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return "invalid"
+    if val < 0:
+        return "invalid"
+    return val
+
+
 def _can_review_claim(user, claim: EquipmentPublicationClaim) -> bool:
+    """
+    Faculty: student claims assigned to them.
+    Admin/OIC: external-path claims only (no faculty-assigned student claims).
+    """
+    if claim.assigned_reviewer_id:
+        return _is_faculty(user) and claim.assigned_reviewer_id == user.id
+
     if _is_admin(user):
         return True
-    if _user_type(user) not in {UserType.MANAGER, UserType.OPERATOR}:
-        # Temporary OIC may still appear in get_equipment_ids_managed_by_oic
-        pass
     managed = _managed_equipment_ids(user)
     if not managed:
         return False
     claim_eq_ids = set(claim.equipments.values_list("equipment_id", flat=True))
     return bool(claim_eq_ids & managed)
+
+
+def _filter_review_queryset(user, qs):
+    """Scope review queue by role."""
+    if _is_faculty(user) and not _is_admin(user):
+        return qs.filter(assigned_reviewer=user)
+    qs = qs.filter(assigned_reviewer__isnull=True)
+    if _is_admin(user):
+        return qs
+    managed = _managed_equipment_ids(user)
+    if not managed:
+        return qs.none()
+    return qs.filter(equipments__equipment_id__in=managed).distinct()
 
 
 def _serialize_equipment(eq: Equipment) -> dict:
@@ -137,8 +205,10 @@ def serialize_claim(claim: EquipmentPublicationClaim) -> dict:
         "doi": claim.doi,
         "url": claim.url,
         "facility_note": claim.facility_note,
+        "impact_factor": str(claim.impact_factor) if claim.impact_factor is not None else None,
         "citation": claim.citation,
         "status": claim.status,
+        "assigned_reviewer_id": claim.assigned_reviewer_id,
         "rejection_reason": claim.rejection_reason,
         "created_at": claim.created_at.isoformat() if claim.created_at else None,
         "updated_at": claim.updated_at.isoformat() if claim.updated_at else None,
@@ -182,7 +252,6 @@ def _parse_equipment_ids(raw) -> list[int]:
             out.append(int(item))
         except (TypeError, ValueError):
             continue
-    # unique preserve order
     seen: set[int] = set()
     uniq: list[int] = []
     for i in out:
@@ -278,7 +347,7 @@ def my_publication_claims(request):
         qs = (
             EquipmentPublicationClaim.objects.filter(submitted_by=request.user)
             .prefetch_related("equipments")
-            .select_related("submitted_by", "reviewed_by")
+            .select_related("submitted_by", "reviewed_by", "assigned_reviewer")
             .order_by("-created_at")
         )
         return Response({"results": [serialize_claim(c) for c in qs]})
@@ -316,6 +385,13 @@ def my_publication_claims(request):
         except (TypeError, ValueError):
             return Response({"error": "Year must be a number."}, status=status.HTTP_400_BAD_REQUEST)
 
+    impact_factor = _parse_impact_factor(data.get("impact_factor"))
+    if impact_factor == "invalid":
+        return Response(
+            {"error": "Impact factor must be a non-negative number."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     citation = str(data.get("citation") or "").strip()
     if not citation:
         citation = build_citation(
@@ -329,6 +405,23 @@ def my_publication_claims(request):
     if doi and not url:
         url = f"https://doi.org/{doi}"
 
+    assigned_reviewer = None
+    auto_approve = False
+    approval_path = "external"
+    if _is_faculty(request.user):
+        auto_approve = True
+        approval_path = "faculty_auto"
+    elif _is_student(request.user):
+        assigned_reviewer = _resolve_faculty_supervisor(request.user)
+        if not assigned_reviewer:
+            return Response(
+                {
+                    "error": "No faculty supervisor found. Link your wallet to a faculty member before submitting publications."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        approval_path = "faculty"
+
     with transaction.atomic():
         claim = EquipmentPublicationClaim.objects.create(
             submitted_by=request.user,
@@ -340,73 +433,75 @@ def my_publication_claims(request):
             doi=doi[:200],
             url=url[:500],
             facility_note=facility_note,
+            impact_factor=impact_factor,
             citation=citation,
             status=EquipmentPublicationClaimStatus.PENDING,
+            assigned_reviewer=assigned_reviewer,
         )
         claim.equipments.set(eqs)
+        if auto_approve:
+            _approve_claim_to_publications(claim, request.user)
+            claim.status = EquipmentPublicationClaimStatus.APPROVED
+            claim.reviewed_by = request.user
+            claim.reviewed_at = timezone.now()
+            claim.save(update_fields=["status", "reviewed_by", "reviewed_at", "updated_at"])
 
     claim = (
         EquipmentPublicationClaim.objects.filter(pk=claim.pk)
         .prefetch_related("equipments")
-        .select_related("submitted_by", "reviewed_by")
+        .select_related("submitted_by", "reviewed_by", "assigned_reviewer")
         .get()
     )
-    return Response(serialize_claim(claim), status=status.HTTP_201_CREATED)
+    payload = serialize_claim(claim)
+    payload["approval_path"] = approval_path
+    return Response(payload, status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET"])
 @authentication_classes(_AUTH)
 @permission_classes([permissions.IsAuthenticated])
 def publication_claims_review_queue(request):
-    """Pending (default) or filtered claims for OIC/Admin."""
+    """Pending (default) or filtered claims for faculty / OIC / Admin."""
+    if not (
+        _is_admin(request.user)
+        or _is_faculty(request.user)
+        or _managed_equipment_ids(request.user)
+    ):
+        return Response({"results": [], "pending_count": 0})
+
     status_filter = str(request.query_params.get("status") or EquipmentPublicationClaimStatus.PENDING).lower()
     qs = EquipmentPublicationClaim.objects.prefetch_related("equipments").select_related(
-        "submitted_by", "reviewed_by", "submitted_by__department"
+        "submitted_by", "reviewed_by", "assigned_reviewer", "submitted_by__department"
     )
 
     if status_filter and status_filter != "all":
         qs = qs.filter(status=status_filter)
 
-    if not _is_admin(request.user):
-        managed = _managed_equipment_ids(request.user)
-        if not managed:
-            return Response({"results": [], "pending_count": 0})
-        qs = qs.filter(equipments__equipment_id__in=managed).distinct()
-
-    qs = qs.order_by("created_at")
+    qs = _filter_review_queryset(request.user, qs).order_by("created_at")
     results = [serialize_claim(c) for c in qs]
 
-    pending_qs = EquipmentPublicationClaim.objects.filter(status=EquipmentPublicationClaimStatus.PENDING)
-    if not _is_admin(request.user):
-        managed = _managed_equipment_ids(request.user)
-        pending_qs = pending_qs.filter(equipments__equipment_id__in=managed).distinct() if managed else pending_qs.none()
-    pending_count = pending_qs.count()
-
-    return Response({"results": results, "pending_count": pending_count})
+    pending_qs = _filter_review_queryset(
+        request.user,
+        EquipmentPublicationClaim.objects.filter(status=EquipmentPublicationClaimStatus.PENDING),
+    )
+    return Response({"results": results, "pending_count": pending_qs.count()})
 
 
 @api_view(["GET"])
 @authentication_classes(_AUTH)
 @permission_classes([permissions.IsAuthenticated])
 def publication_claims_pending_count(request):
-    if _is_admin(request.user):
-        count = EquipmentPublicationClaim.objects.filter(
-            status=EquipmentPublicationClaimStatus.PENDING
-        ).count()
-    else:
-        managed = _managed_equipment_ids(request.user)
-        if not managed:
-            count = 0
-        else:
-            count = (
-                EquipmentPublicationClaim.objects.filter(
-                    status=EquipmentPublicationClaimStatus.PENDING,
-                    equipments__equipment_id__in=managed,
-                )
-                .distinct()
-                .count()
-            )
-    return Response({"pending_count": count})
+    if not (
+        _is_admin(request.user)
+        or _is_faculty(request.user)
+        or _managed_equipment_ids(request.user)
+    ):
+        return Response({"pending_count": 0})
+    pending_qs = _filter_review_queryset(
+        request.user,
+        EquipmentPublicationClaim.objects.filter(status=EquipmentPublicationClaimStatus.PENDING),
+    )
+    return Response({"pending_count": pending_qs.count()})
 
 
 def _approve_claim_to_publications(claim: EquipmentPublicationClaim, reviewer) -> list[EquipmentPublication]:
@@ -436,6 +531,7 @@ def _approve_claim_to_publications(claim: EquipmentPublicationClaim, reviewer) -
             url=url[:500],
             doi=doi[:200],
             year=claim.year,
+            impact_factor=claim.impact_factor,
             display_order=0,
             submitted_by=claim.submitted_by,
             source_claim=claim,
@@ -451,7 +547,7 @@ def publication_claim_approve(request, claim_id: int):
     try:
         claim = (
             EquipmentPublicationClaim.objects.prefetch_related("equipments")
-            .select_related("submitted_by")
+            .select_related("submitted_by", "assigned_reviewer")
             .get(pk=claim_id)
         )
     except EquipmentPublicationClaim.DoesNotExist:
@@ -482,7 +578,7 @@ def publication_claim_approve(request, claim_id: int):
     claim = (
         EquipmentPublicationClaim.objects.filter(pk=claim.pk)
         .prefetch_related("equipments")
-        .select_related("submitted_by", "reviewed_by")
+        .select_related("submitted_by", "reviewed_by", "assigned_reviewer")
         .get()
     )
     return Response(serialize_claim(claim))
@@ -495,7 +591,7 @@ def publication_claim_reject(request, claim_id: int):
     try:
         claim = (
             EquipmentPublicationClaim.objects.prefetch_related("equipments")
-            .select_related("submitted_by")
+            .select_related("submitted_by", "assigned_reviewer")
             .get(pk=claim_id)
         )
     except EquipmentPublicationClaim.DoesNotExist:
@@ -520,7 +616,7 @@ def publication_claim_reject(request, claim_id: int):
     claim = (
         EquipmentPublicationClaim.objects.filter(pk=claim.pk)
         .prefetch_related("equipments")
-        .select_related("submitted_by", "reviewed_by")
+        .select_related("submitted_by", "reviewed_by", "assigned_reviewer")
         .get()
     )
     return Response(serialize_claim(claim))
