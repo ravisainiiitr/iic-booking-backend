@@ -1,0 +1,38 @@
+name: Probe Charge Formula Column
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Check DB columns and migration record
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec "$CID" python manage.py shell -c "
+          from django.db import connection
+          with connection.cursor() as c:
+              c.execute(\"\"\"
+              SELECT column_name FROM information_schema.columns
+              WHERE table_name='equipment_chargeprofile'
+                AND column_name IN ('charge_formula','display_text','time_formula')
+              ORDER BY 1
+              \"\"\")
+              print('chargeprofile_cols', [r[0] for r in c.fetchall()])
+              c.execute(\"\"\"
+              SELECT column_name FROM information_schema.columns
+              WHERE table_name='equipment_multiparamdefinition'
+                AND column_name='display_text'
+              \"\"\")
+              print('multiparam_display_text', [r[0] for r in c.fetchall()])
+              c.execute(\"\"\"
+              SELECT name, applied FROM django_migrations
+              WHERE app='equipment' AND name LIKE '0193%'
+              \"\"\")
+              print('django_migrations_0193', c.fetchall())
+          "
+          echo '--- showmigrations tip ---'
+          docker exec "$CID" python manage.py showmigrations equipment | tail -n 15
