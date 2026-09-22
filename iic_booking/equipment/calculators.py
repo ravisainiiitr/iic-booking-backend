@@ -6,11 +6,40 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Dict, List, Any, Optional, Tuple
 from django.core.exceptions import ValidationError
 from .models import ChargeProfile, ChargeProfilePricingProfile, ChargeProfileType, MultiParamDefinition
+from .formula_eval import FormulaError, evaluate_formula, run_formula_script
 
 # Final booking charges are stored/displayed as whole rupees (nearest ₹).
 MONEY_QUANTIZE = Decimal("1")
 ICPMS_STANDARDS_RUNS_PER_STANDARD = Decimal("3")
 ICPMS_BLANK_SAMPLE_UNITS = Decimal("1")
+
+
+def get_charge_profile_type(charge_profile) -> Optional[str]:
+    """Resolve calculation mode: ChargeProfile.profile_type, else equipment legacy."""
+    pt = getattr(charge_profile, "profile_type", None)
+    if pt:
+        return pt
+    if hasattr(charge_profile, "effective_profile_type"):
+        return charge_profile.effective_profile_type
+    eq = getattr(charge_profile, "equipment", None)
+    return getattr(eq, "profile_type", None) if eq else None
+
+
+def hour_uses_legacy_b_slots(charge_profile) -> bool:
+    """
+    Legacy HOUR: time = B × slot_duration (and charge uses B + optional C toggle).
+
+    Compatibility: blank formula, or formula that is effectively just "B"
+    (operators historically wrote B in Time formula for slot count).
+    Any other non-empty formula uses the generic SAMPLE-style formula engine.
+    """
+    formula = (getattr(charge_profile, "time_formula", None) or "").strip()
+    if not formula:
+        return True
+    normalized = "".join(formula.split()).upper()
+    if normalized in ("B", "B*SLOT_DURATION", "SLOT_DURATION*B", "B*SLOTDURATION", "SLOTDURATION*B"):
+        return True
+    return False
 
 
 def quantize_money(value: Any) -> Decimal:
@@ -40,6 +69,39 @@ def finalize_charge_result(
         except Exception:
             finalized.append(line)
     return total, finalized
+
+
+URGENT_BOOKING_SURCHARGE_FACTOR = Decimal("1.5")
+URGENT_BOOKING_SURCHARGE_LABEL = "Urgent booking surcharge (50%)"
+
+
+def apply_urgent_booking_surcharge(
+    total_charge: Decimal,
+    charge_breakdown: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Decimal, List[Dict[str, Any]], Decimal]:
+    """
+    Urgent bookings cost 50% more than the normal charge for the user's category.
+
+    Apply after category base (+ optional return shipping) and before GST / rewards.
+    Returns (new_total, new_breakdown, surcharge_amount).
+    """
+    breakdown: List[Dict[str, Any]] = list(charge_breakdown or [])
+    base = quantize_money(total_charge)
+    if base <= 0:
+        return base, breakdown, Decimal("0.00")
+    # Idempotent if already applied
+    for line in breakdown:
+        if not isinstance(line, dict):
+            continue
+        desc = str(line.get("description") or "").lower()
+        if "urgent booking surcharge" in desc:
+            return base, breakdown, Decimal("0.00")
+    with_surcharge = quantize_money(base * URGENT_BOOKING_SURCHARGE_FACTOR)
+    surcharge = quantize_money(with_surcharge - base)
+    breakdown.append(
+        {"description": URGENT_BOOKING_SURCHARGE_LABEL, "amount": float(surcharge)}
+    )
+    return with_surcharge, breakdown, surcharge
 
 
 def equipment_has_icpms_standard_coverage(equipment) -> bool:
@@ -312,25 +374,30 @@ class TimeCalculationEngine:
         """
         import logging
         logger = logging.getLogger(__name__)
-        logger.info(f"Calculating time for charge profile: {charge_profile.profile_type}")
+        profile_type = get_charge_profile_type(charge_profile)
+        logger.info(f"Calculating time for charge profile: {profile_type}")
         logger.info(f"Input values: {input_values}")
         logger.info(f"Slot duration minutes: {slot_duration_minutes}")
-        if charge_profile.profile_type in [ChargeProfileType.SAMPLE, ChargeProfileType.SAMPLE_ELEMENT]:
+        if profile_type in [ChargeProfileType.SAMPLE, ChargeProfileType.SAMPLE_ELEMENT]:
             return TimeCalculationEngine._calculate_formula_time(
                 charge_profile, input_values, slot_duration_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.HOUR:
-            return TimeCalculationEngine._calculate_hour_time(
-                input_values, slot_duration_minutes
+        elif profile_type == ChargeProfileType.GENERIC:
+            return TimeCalculationEngine._calculate_generic_time(
+                charge_profile, input_values, slot_duration_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.MULTI_PARAM:
+        elif profile_type == ChargeProfileType.HOUR:
+            return TimeCalculationEngine._calculate_hour_time(
+                charge_profile, input_values, slot_duration_minutes
+            )
+        elif profile_type == ChargeProfileType.MULTI_PARAM:
             return TimeCalculationEngine._calculate_multi_param_time(
                 charge_profile, input_values
             )
-        elif charge_profile.profile_type == ChargeProfileType.PRINT_3D:
+        elif profile_type == ChargeProfileType.PRINT_3D:
             return TimeCalculationEngine._calculate_print_3d_time(input_values)
         else:
-            raise ValidationError(f"Unsupported profile type: {charge_profile.profile_type}")
+            raise ValidationError(f"Unsupported profile type: {profile_type}")
     
     @staticmethod
     def _calculate_multi_param_time(
@@ -401,18 +468,22 @@ class TimeCalculationEngine:
     
     @staticmethod
     def _calculate_hour_time(
+        charge_profile: ChargeProfile,
         input_values: Dict[str, Any],
-        slot_duration_minutes: int,
+        slot_duration_minutes: Optional[int],
     ) -> int:
         """Calculate time for HOUR profile type.
-        
-        Time = input B value * slot_duration_minutes
+
+        Legacy (blank / \"B\" formula): B × slot_duration_minutes.
+        New: evaluate charge_profile.time_formula like SAMPLE (generic A–G).
         """
-        # Get input B value (number of slots)
-        b_value = input_values.get('B', 0)
-        num_slots = safe_float(b_value, 0.0)
-        
-        return int(num_slots * slot_duration_minutes)
+        if hour_uses_legacy_b_slots(charge_profile):
+            b_value = input_values.get("B", 0)
+            num_slots = safe_float(b_value, 0.0)
+            return int(num_slots * (slot_duration_minutes or 0))
+        return TimeCalculationEngine._calculate_formula_time(
+            charge_profile, input_values, slot_duration_minutes
+        )
     
     
     @staticmethod
@@ -474,6 +545,49 @@ class TimeCalculationEngine:
         except Exception as e:
             raise ValidationError(f"Error evaluating time formula '{charge_profile.time_formula}': {str(e)}")
 
+    @staticmethod
+    def _build_formula_env(
+        input_values: Dict[str, Any],
+        *,
+        slot_duration_minutes: Optional[int] = None,
+        total_time_minutes: Optional[int] = None,
+        charge_profile: Optional[ChargeProfile] = None,
+    ) -> Dict[str, Any]:
+        """Build A–Z (+ helpers) env for restricted GENERIC formulas."""
+        env: Dict[str, Any] = {}
+        for code in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            env[code] = safe_float(input_values.get(code, 0), 0.0)
+        env["SLOT_DURATION_MINUTES"] = float(slot_duration_minutes or 0)
+        if total_time_minutes is not None:
+            env["TIME"] = float(total_time_minutes)
+        if charge_profile is not None:
+            env["pc"] = float(safe_decimal(charge_profile.primary_unit_charge or 0))
+            env["sc"] = float(safe_decimal(charge_profile.secondary_unit_charge or 0))
+        return env
+
+    @staticmethod
+    def _calculate_generic_time(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        slot_duration_minutes: Optional[int],
+    ) -> int:
+        """GENERIC: evaluate time_formula script; result is minutes via ``time``."""
+        formula = (charge_profile.time_formula or "").strip()
+        if not formula:
+            return slot_duration_minutes or 0
+        env = TimeCalculationEngine._build_formula_env(
+            input_values,
+            slot_duration_minutes=slot_duration_minutes,
+            charge_profile=charge_profile,
+        )
+        try:
+            minutes = run_formula_script(formula, env, result_var="time")
+            return max(0, int(minutes))
+        except FormulaError as exc:
+            raise ValidationError(
+                f"Error evaluating GENERIC time formula '{charge_profile.time_formula}': {exc}"
+            ) from exc
+
 
 class ChargeCalculationEngine:
     """Engine for calculating booking charges based on charge profiles."""
@@ -506,23 +620,28 @@ class ChargeCalculationEngine:
                 [{"description": "Discounted Charge Profile", "amount": 0.0}],
             )
 
-        if charge_profile.profile_type == ChargeProfileType.SAMPLE:
+        profile_type = get_charge_profile_type(charge_profile)
+        if profile_type == ChargeProfileType.SAMPLE:
             total, breakdown = ChargeCalculationEngine._calculate_sample_charge(
                 charge_profile, input_values, total_time_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.HOUR:
+        elif profile_type == ChargeProfileType.HOUR:
             total, breakdown = ChargeCalculationEngine._calculate_hour_charge(
                 charge_profile, input_values, total_time_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.SAMPLE_ELEMENT:
+        elif profile_type == ChargeProfileType.SAMPLE_ELEMENT:
             total, breakdown = ChargeCalculationEngine._calculate_sample_element_charge(
                 charge_profile, input_values
             )
-        elif charge_profile.profile_type == ChargeProfileType.MULTI_PARAM:
+        elif profile_type == ChargeProfileType.GENERIC:
+            total, breakdown = ChargeCalculationEngine._calculate_generic_charge(
+                charge_profile, input_values, total_time_minutes
+            )
+        elif profile_type == ChargeProfileType.MULTI_PARAM:
             total, breakdown = ChargeCalculationEngine._calculate_multi_param_charge(
                 charge_profile, input_values, total_time_minutes
             )
-        elif charge_profile.profile_type == ChargeProfileType.PRINT_3D:
+        elif profile_type == ChargeProfileType.PRINT_3D:
             total, breakdown = ChargeCalculationEngine._calculate_print_3d_charge(
                 charge_profile, input_values, total_time_minutes
             )
@@ -530,6 +649,38 @@ class ChargeCalculationEngine:
             raise ValidationError(f"Unsupported profile type: {charge_profile.profile_type}")
 
         return finalize_charge_result(total, breakdown)
+
+    @staticmethod
+    def _calculate_generic_charge(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        total_time_minutes: int,
+    ) -> Tuple[Decimal, List[Dict[str, Any]]]:
+        """GENERIC: evaluate charge_formula script; result is ₹ via ``charge``."""
+        formula = (getattr(charge_profile, "charge_formula", None) or "").strip()
+        if not formula:
+            raise ValidationError("GENERIC charge profile requires a charge formula.")
+        env = TimeCalculationEngine._build_formula_env(
+            input_values,
+            total_time_minutes=total_time_minutes,
+            charge_profile=charge_profile,
+        )
+        try:
+            amount = run_formula_script(formula, env, result_var="charge")
+        except FormulaError as exc:
+            raise ValidationError(
+                f"Error evaluating GENERIC charge formula '{formula}': {exc}"
+            ) from exc
+        if amount < 0:
+            raise ValidationError("GENERIC charge formula returned a negative amount.")
+        total = safe_decimal(amount)
+        breakdown = [
+            {
+                "description": "Charge",
+                "amount": float(total),
+            }
+        ]
+        return total, breakdown
     
     @staticmethod
     def _calculate_sample_charge(
@@ -580,47 +731,49 @@ class ChargeCalculationEngine:
         total_time_minutes: int
     ) -> Tuple[Decimal, List[Dict[str, Any]]]:
         """Calculate charge for HOUR profile type.
-        
-        Inputs:
-            A: Number of samples
-            B: Number of slots
-            C: Toggle (enabled/disabled)
-        
-        Charge Calculation:
-            Base: (Time per slot / 60) * primary_unit_charge
-            If toggle (C) enabled: Base + secondary_unit_charge
+
+        Legacy (blank / \"B\" formula):
+            Base: (slot_duration/60) * primary * B; + secondary if C toggle on.
+        Formula-based HOUR (no toggle):
+            (total_time_minutes / 60) * primary_unit_charge.
         """
         breakdown = []
         total_charge = Decimal('0.00')
-        
-        # Get slot duration from equipment
+
+        if not hour_uses_legacy_b_slots(charge_profile):
+            hours = safe_decimal(total_time_minutes) / Decimal("60")
+            if hours <= 0:
+                return Decimal("0.00"), breakdown
+            total_charge = hours * charge_profile.primary_unit_charge
+            breakdown.append({
+                "description": (
+                    f"{float(hours):.4g} hour(s) @ {charge_profile.primary_unit_charge} per hour "
+                    f"(formula time {total_time_minutes} min)"
+                ),
+                "amount": float(total_charge),
+            })
+            return total_charge, breakdown
+
+        # --- Legacy B × slot + optional C toggle ---
         slot_duration_minutes = charge_profile.equipment.slot_duration_minutes if charge_profile.equipment else 0
         
         if slot_duration_minutes <= 0:
             return Decimal('0.00'), breakdown
         
-        # Get toggle value (C) - check if enabled
         toggle_value = input_values.get('C', 0)
         try:
-            # Toggle is enabled if C is truthy (1, '1', True, 'true', etc.)
             toggle_enabled = bool(toggle_value) and str(toggle_value).lower() not in ['0', 'false', 'no', '']
         except (ValueError, TypeError):
             toggle_enabled = False
         
-        # Get number of slots (B)
         b_value = input_values.get('B', 0)
         num_slots = safe_decimal(b_value)
         
         if num_slots <= 0:
             return Decimal('0.00'), breakdown
         
-        # Calculate time per slot in hours
         time_per_slot_hours = safe_decimal(slot_duration_minutes) / Decimal('60')
-        
-        # Base charge per slot: (Time per slot / 60) * primary_unit_charge
         charge_per_slot = time_per_slot_hours * charge_profile.primary_unit_charge
-        
-        # Total base charge for all slots
         base_charge = charge_per_slot * num_slots
         breakdown.append({
             'description': f'{num_slots} slot(s) × {time_per_slot_hours:.2f} hours @ {charge_profile.primary_unit_charge} per hour',
@@ -628,7 +781,6 @@ class ChargeCalculationEngine:
         })
         total_charge = base_charge
         
-        # Add secondary unit charge if toggle is enabled
         if toggle_enabled and charge_profile.secondary_unit_charge:
             total_charge += charge_profile.secondary_unit_charge
             breakdown.append({

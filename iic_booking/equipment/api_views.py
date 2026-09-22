@@ -163,6 +163,7 @@ from .calculators import (
     ChargeCalculationEngine,
     build_safe_input_values_for_charge_calculation,
     quantize_money,
+    apply_urgent_booking_surcharge,
 )
 from .slot_utils import SlotGenerator, SlotAvailabilityChecker
 from .slot_department_access import (
@@ -1100,7 +1101,7 @@ def user_can_see_equipment_image(user, equipment):
     return True
 
 
-def get_visible_equipment_queryset(user):
+def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
     """
     Return Equipment queryset filtered by visibility for the given user.
     - Anonymous: only equipment with visibility_group=None (public).
@@ -1113,10 +1114,18 @@ def get_visible_equipment_queryset(user):
     if not user or not user.is_authenticated:
         queryset = queryset.filter(visibility_group__isnull=True)
     elif user.user_type == UserType.MANAGER:
-        allowed_ids = get_equipment_ids_managed_by_oic(user.id)
-        if not allowed_ids:
-            return queryset.none()
-        queryset = queryset.filter(equipment_id__in=allowed_ids)
+        scope = (catalog_scope or "").strip().lower()
+        if scope == "all":
+            # OIC browsing full catalog (not management scope): same rules as end users.
+            queryset = queryset.filter(
+                Q(visibility_group__isnull=True) |
+                Q(visibility_group__members__user=user)
+            ).distinct()
+        else:
+            allowed_ids = get_equipment_ids_managed_by_oic(user.id)
+            if not allowed_ids:
+                return queryset.none()
+            queryset = queryset.filter(equipment_id__in=allowed_ids)
     elif user.user_type == UserType.OPERATOR:
         allowed_ids = _get_equipment_ids_for_log_access(user) or []
         if not allowed_ids:
@@ -1554,7 +1563,10 @@ def equipment_list(request):
     """
     from django.db.models import Avg, Count
 
-    queryset = get_visible_equipment_queryset(request.user).select_related(
+    catalog_scope = (request.query_params.get("catalog_scope") or "").strip().lower() or None
+    queryset = get_visible_equipment_queryset(
+        request.user, catalog_scope=catalog_scope
+    ).select_related(
         "category", "internal_department"
     )
 
@@ -2017,7 +2029,9 @@ def equipment_image_proxy(request, pk):
         )
 
     response = HttpResponse(content, content_type=content_type or "image/jpeg")
-    response["Cache-Control"] = "public, max-age=86400"
+    # Short max-age + ETag so replaced catalog photos propagate without a 24h wait.
+    response["Cache-Control"] = "public, max-age=300, must-revalidate"
+    response["ETag"] = '"' + __import__("hashlib").sha1((resolved_path or stored_path or "").encode("utf-8")).hexdigest()[:16] + '"'
     response["Content-Length"] = len(content)
     return response
 
@@ -2213,6 +2227,13 @@ def equipment_calculate(request, pk):
     base_charge = total_charge
     gst_percent = Decimal("0")
     gst_amount = Decimal("0")
+    urgent_flag = str(request.query_params.get("urgent") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+    )
+    urgent_surcharge_amount = Decimal("0.00")
     if UserType.is_external_user(user_type):
         # External option: return samples after analysis => add return shipping fee BEFORE GST.
         sample_return_raw = request.query_params.get("sample_return_after_analysis")
@@ -2228,6 +2249,10 @@ def equipment_calculate(request, pk):
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": "Return shipping charges", "amount": float(return_shipping_fee)},
                 ]
+        if urgent_flag:
+            base_charge, charge_breakdown, urgent_surcharge_amount = apply_urgent_booking_surcharge(
+                base_charge, charge_breakdown
+            )
         gst_percent = get_external_gst_percent()
         if gst_percent > 0:
             gst_amount = quantize_money(base_charge * gst_percent / Decimal("100"))
@@ -2235,6 +2260,16 @@ def equipment_calculate(request, pk):
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
+        else:
+            total_charge = base_charge
+    else:
+        if urgent_flag:
+            base_charge, charge_breakdown, urgent_surcharge_amount = apply_urgent_booking_surcharge(
+                base_charge, charge_breakdown
+            )
+            total_charge = base_charge
+        else:
+            total_charge = base_charge
 
     reward_points_requested = request.query_params.get("reward_points_to_redeem")
     reward_points_applied = Decimal("0.00")
@@ -2329,6 +2364,8 @@ def equipment_calculate(request, pk):
         "gst_percent": float(gst_percent),
         "gst_amount": str(gst_amount),
         "total_charge": str(total_charge),
+        "urgent": bool(urgent_flag),
+        "urgent_surcharge_amount": str(urgent_surcharge_amount),
         "charge_breakdown": charge_breakdown if getattr(charge_profile, "show_charge_breakdown", True) else [],
         "show_charge_breakdown": bool(getattr(charge_profile, "show_charge_breakdown", True)),
         "reward": {
@@ -2906,7 +2943,7 @@ def _book_equipment_impl(request, pk):
     
     # Get equipment
     try:
-        equipment = Equipment.objects.select_related('equipment_group').get(pk=pk)
+        equipment = Equipment.objects.select_related('equipment_group', 'internal_department').get(pk=pk)
     except Equipment.DoesNotExist:
         return Response(
             {"error": "Equipment not found."},
@@ -2916,12 +2953,30 @@ def _book_equipment_impl(request, pk):
     if not user_can_see_equipment(request.user, equipment):
         return equipment_visibility_denied_response(request.user)
 
-    from iic_booking.users.legacy_ledger.booking_lock import end_user_booking_is_locked
+    from iic_booking.users.legacy_ledger.booking_lock import (
+        booking_is_locked,
+        department_equipment_booking_blocked,
+    )
 
-    locked, lock_message = end_user_booking_is_locked(request.user)
+    locked, lock_message = booking_is_locked(request.user)
     if locked:
         return Response(
             {"error": lock_message, "code": "PORTAL_BOOKING_LOCKED", "message": lock_message},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    if dept_blocked:
+        _create_booking_attempt_log(
+            request,
+            equipment,
+            BookingAttemptOutcome.FAILED,
+            failure_reason=dept_message,
+            number_of_samples=request.data.get("number_of_samples") or 1,
+            additional_info=_get_additional_info_from_request(request, equipment),
+        )
+        return Response(
+            {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED", "message": dept_message},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -3592,6 +3647,10 @@ def _book_equipment_impl(request, pk):
                     charge_breakdown = list(charge_breakdown) + [
                         {"description": "Return shipping charges", "amount": float(return_shipping_fee_amount)},
                     ]
+            if create_as_hold:
+                total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                    total_charge, charge_breakdown
+                )
             gst_percent = get_external_gst_percent()
             if gst_percent > 0:
                 gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
@@ -3599,6 +3658,10 @@ def _book_equipment_impl(request, pk):
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                 ]
+        elif create_as_hold:
+            total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                total_charge, charge_breakdown
+            )
         reward_points_requested = Decimal(str(request.data.get("reward_points_to_redeem") or "0"))
         reward_points_applied = Decimal("0.00")
         reward_discount_amount = Decimal("0.00")
@@ -3751,6 +3814,10 @@ def _book_equipment_impl(request, pk):
                                 charge_profile_with_type, safe_input_values, total_time_minutes, selected_parameters=None
                             )
                             total_charge = calculated_charge
+                            if create_as_hold:
+                                total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                                    total_charge, charge_breakdown
+                                )
                             if UserType.is_external_user(user_type):
                                 gst_percent = get_external_gst_percent()
                                 if gst_percent > 0:
@@ -3817,6 +3884,10 @@ def _book_equipment_impl(request, pk):
                                             charge_profile_with_type, reduced_input_values, single_slot_time, selected_parameters=None
                                         )
                                         total_charge = calculated_charge
+                                        if create_as_hold:
+                                            total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                                                total_charge, charge_breakdown
+                                            )
                                         if UserType.is_external_user(user_type):
                                             gst_percent = get_external_gst_percent()
                                             if gst_percent > 0:
@@ -4368,6 +4439,10 @@ def _book_equipment_impl(request, pk):
                 
         # Always use server-calculated charge and time for deduction and booking (Total Cost = Total Charge)
         total_charge = calculated_charge
+        if create_as_hold:
+            total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                total_charge, charge_breakdown
+            )
         if UserType.is_external_user(user_type):
             gst_percent = get_external_gst_percent()
             if gst_percent > 0:
@@ -7399,6 +7474,14 @@ def create_urgent_booking_request(request):
             {"error": "Only internal users (students/faculty) can request urgent booking."},
             status=status.HTTP_403_FORBIDDEN,
         )
+    from iic_booking.users.legacy_ledger.booking_lock import booking_is_locked
+
+    locked, lock_message = booking_is_locked(request.user)
+    if locked:
+        return Response(
+            {"error": lock_message, "code": "PORTAL_BOOKING_LOCKED", "message": lock_message},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     equipment_id = request.data.get("equipment_id")
     if not equipment_id:
         return Response(
@@ -7426,11 +7509,19 @@ def create_urgent_booking_request(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     try:
-        equip = Equipment.objects.get(pk=int(equipment_id))
+        equip = Equipment.objects.select_related("internal_department").get(pk=int(equipment_id))
     except (ValueError, Equipment.DoesNotExist):
         return Response(
             {"error": "Invalid equipment_id."},
             status=status.HTTP_400_BAD_REQUEST,
+        )
+    from iic_booking.users.legacy_ledger.booking_lock import department_equipment_booking_blocked
+
+    dept_blocked, dept_message = department_equipment_booking_blocked(equip)
+    if dept_blocked:
+        return Response(
+            {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED", "message": dept_message},
+            status=status.HTTP_403_FORBIDDEN,
         )
     # Block repeated urgent requests: same user + same equipment until previous is EXPIRED
     has_active = UrgentBookingRequest.objects.filter(
@@ -13069,10 +13160,12 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
 @api_view(["PATCH", "PUT"])
 @permission_classes([IsAuthenticated])
 def update_booking_input_values(request, booking_id):
-    """Update input_values for a booking. When equipment has 'enable_charge_recalculation' and booking
-    is BOOKED, only fields marked as 'editing_required' can be
-    updated (plus universal 'comments'). Only until the booking status is Complete. On save with charge recalculation enabled,
-    charges are recalculated and wallet is debited/credited for the difference; user is notified by email.
+    """Update input_values for a booking.
+
+    End users: when equipment has enable_charge_recalculation and booking is BOOKED, only fields
+    marked editing_required can be updated (plus universal comments). Admin / OIC (manager) may
+    edit all input fields until the booking is COMPLETED. On save with charge recalculation enabled,
+    charges are recalculated and wallet pending adjust + Pay Now/Refund apply as before.
     Request body: { "input_values": { "A": 1, "B": "text", ... } }
     """
     try:
@@ -13139,12 +13232,23 @@ def update_booking_input_values(request, booking_id):
     equipment = booking.equipment
     enable_recalc = getattr(equipment, "enable_charge_recalculation", False) and booking.status == BookingStatus.BOOKED
 
-    editable_keys = set(
-        DynamicInputField.objects.filter(
-            equipment_id=booking.equipment_id,
-            editing_required=True,
-        ).values_list("field_key", flat=True)
-    )
+    ut = str(getattr(request.user, "user_type", None) or "").strip().lower()
+    is_admin_or_oic = ut in (UserType.ADMIN, UserType.MANAGER)
+
+    # Admin / OIC may edit all input fields until COMPLETED; others only editing_required.
+    if is_admin_or_oic:
+        editable_keys = set(
+            DynamicInputField.objects.filter(
+                equipment_id=booking.equipment_id,
+            ).values_list("field_key", flat=True)
+        )
+    else:
+        editable_keys = set(
+            DynamicInputField.objects.filter(
+                equipment_id=booking.equipment_id,
+                editing_required=True,
+            ).values_list("field_key", flat=True)
+        )
 
     # Allow field_key and field_key_elements (e.g. for PERIODIC_TABLE)
     allowed_keys = set(editable_keys)
@@ -13764,8 +13868,19 @@ def get_repeat_sample_eligibility(request, booking_id):
 @permission_classes([IsAuthenticated])
 def create_repeat_booking(request, booking_id):
     """Create a replica booking (repeat sample). Only the booking user. Excluded from quota."""
+    from iic_booking.users.legacy_ledger.booking_lock import (
+        booking_is_locked,
+        department_equipment_booking_blocked,
+    )
+
+    locked, lock_message = booking_is_locked(request.user)
+    if locked:
+        return Response(
+            {"error": lock_message, "code": "PORTAL_BOOKING_LOCKED", "message": lock_message},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     try:
-        orig_booking = Booking.objects.select_related("user", "equipment", "charge_profile").get(booking_id=booking_id)
+        orig_booking = Booking.objects.select_related("user", "equipment", "equipment__internal_department", "charge_profile").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
     if orig_booking.user_id != request.user.id:
@@ -13778,6 +13893,12 @@ def create_repeat_booking(request, booking_id):
         return Response({"error": "A repeat booking has already been created for this booking."}, status=status.HTTP_400_BAD_REQUEST)
 
     equipment = orig_booking.equipment
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    if dept_blocked:
+        return Response(
+            {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED", "message": dept_message},
+            status=status.HTTP_403_FORBIDDEN,
+        )
     total_time_minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
 
     slot_ids = None
