@@ -71,6 +71,39 @@ def finalize_charge_result(
     return total, finalized
 
 
+URGENT_BOOKING_SURCHARGE_FACTOR = Decimal("1.5")
+URGENT_BOOKING_SURCHARGE_LABEL = "Urgent booking surcharge (50%)"
+
+
+def apply_urgent_booking_surcharge(
+    total_charge: Decimal,
+    charge_breakdown: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Decimal, List[Dict[str, Any]], Decimal]:
+    """
+    Urgent bookings cost 50% more than the normal charge for the user's category.
+
+    Apply after category base (+ optional return shipping) and before GST / rewards.
+    Returns (new_total, new_breakdown, surcharge_amount).
+    """
+    breakdown: List[Dict[str, Any]] = list(charge_breakdown or [])
+    base = quantize_money(total_charge)
+    if base <= 0:
+        return base, breakdown, Decimal("0.00")
+    # Idempotent if already applied
+    for line in breakdown:
+        if not isinstance(line, dict):
+            continue
+        desc = str(line.get("description") or "").lower()
+        if "urgent booking surcharge" in desc:
+            return base, breakdown, Decimal("0.00")
+    with_surcharge = quantize_money(base * URGENT_BOOKING_SURCHARGE_FACTOR)
+    surcharge = quantize_money(with_surcharge - base)
+    breakdown.append(
+        {"description": URGENT_BOOKING_SURCHARGE_LABEL, "amount": float(surcharge)}
+    )
+    return with_surcharge, breakdown, surcharge
+
+
 def equipment_has_icpms_standard_coverage(equipment) -> bool:
     if equipment is None:
         return False

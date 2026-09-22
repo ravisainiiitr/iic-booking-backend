@@ -163,6 +163,7 @@ from .calculators import (
     ChargeCalculationEngine,
     build_safe_input_values_for_charge_calculation,
     quantize_money,
+    apply_urgent_booking_surcharge,
 )
 from .slot_utils import SlotGenerator, SlotAvailabilityChecker
 from .slot_department_access import (
@@ -2183,6 +2184,13 @@ def equipment_calculate(request, pk):
     base_charge = total_charge
     gst_percent = Decimal("0")
     gst_amount = Decimal("0")
+    urgent_flag = str(request.query_params.get("urgent") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+    )
+    urgent_surcharge_amount = Decimal("0.00")
     if UserType.is_external_user(user_type):
         # External option: return samples after analysis => add return shipping fee BEFORE GST.
         sample_return_raw = request.query_params.get("sample_return_after_analysis")
@@ -2198,6 +2206,10 @@ def equipment_calculate(request, pk):
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": "Return shipping charges", "amount": float(return_shipping_fee)},
                 ]
+        if urgent_flag:
+            base_charge, charge_breakdown, urgent_surcharge_amount = apply_urgent_booking_surcharge(
+                base_charge, charge_breakdown
+            )
         gst_percent = get_external_gst_percent()
         if gst_percent > 0:
             gst_amount = quantize_money(base_charge * gst_percent / Decimal("100"))
@@ -2205,6 +2217,14 @@ def equipment_calculate(request, pk):
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
+        else:
+            total_charge = base_charge
+    else:
+        if urgent_flag:
+            base_charge, charge_breakdown, urgent_surcharge_amount = apply_urgent_booking_surcharge(
+                base_charge, charge_breakdown
+            )
+            total_charge = base_charge
 
     reward_points_requested = request.query_params.get("reward_points_to_redeem")
     reward_points_applied = Decimal("0.00")
@@ -2302,6 +2322,8 @@ def equipment_calculate(request, pk):
         "gst_percent": float(gst_percent),
         "gst_amount": str(gst_amount),
         "total_charge": str(total_charge),
+        "urgent": bool(urgent_flag),
+        "urgent_surcharge_amount": str(urgent_surcharge_amount),
         "charge_breakdown": charge_breakdown if getattr(charge_profile, "show_charge_breakdown", True) else [],
         "show_charge_breakdown": bool(getattr(charge_profile, "show_charge_breakdown", True)),
         "reward": {
@@ -3584,6 +3606,10 @@ def _book_equipment_impl(request, pk):
                     charge_breakdown = list(charge_breakdown) + [
                         {"description": "Return shipping charges", "amount": float(return_shipping_fee_amount)},
                     ]
+            if create_as_hold:
+                total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                    total_charge, charge_breakdown
+                )
             gst_percent = get_external_gst_percent()
             if gst_percent > 0:
                 gst_amount = quantize_money(total_charge * gst_percent / Decimal("100"))
@@ -3591,6 +3617,10 @@ def _book_equipment_impl(request, pk):
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                 ]
+        elif create_as_hold:
+            total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                total_charge, charge_breakdown
+            )
         reward_points_requested = Decimal(str(request.data.get("reward_points_to_redeem") or "0"))
         reward_points_applied = Decimal("0.00")
         reward_discount_amount = Decimal("0.00")
@@ -3743,6 +3773,10 @@ def _book_equipment_impl(request, pk):
                                 charge_profile, safe_input_values, total_time_minutes, selected_parameters=None
                             )
                             total_charge = calculated_charge
+                            if create_as_hold:
+                                total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                                    total_charge, charge_breakdown
+                                )
                             if UserType.is_external_user(user_type):
                                 gst_percent = get_external_gst_percent()
                                 if gst_percent > 0:
@@ -3809,6 +3843,10 @@ def _book_equipment_impl(request, pk):
                                             charge_profile, reduced_input_values, single_slot_time, selected_parameters=None
                                         )
                                         total_charge = calculated_charge
+                                        if create_as_hold:
+                                            total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                                                total_charge, charge_breakdown
+                                            )
                                         if UserType.is_external_user(user_type):
                                             gst_percent = get_external_gst_percent()
                                             if gst_percent > 0:
@@ -4388,6 +4426,10 @@ def _book_equipment_impl(request, pk):
                 
         # Always use server-calculated charge and time for deduction and booking (Total Cost = Total Charge)
         total_charge = calculated_charge
+        if create_as_hold:
+            total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
+                total_charge, charge_breakdown
+            )
         if UserType.is_external_user(user_type):
             gst_percent = get_external_gst_percent()
             if gst_percent > 0:
