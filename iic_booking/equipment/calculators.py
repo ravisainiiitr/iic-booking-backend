@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Dict, List, Any, Optional, Tuple
 from django.core.exceptions import ValidationError
 from .models import ChargeProfile, ChargeProfilePricingProfile, ChargeProfileType, MultiParamDefinition
+from .formula_eval import FormulaError, evaluate_formula
 
 # Final booking charges are stored/displayed as whole rupees (nearest ₹).
 MONEY_QUANTIZE = Decimal("1")
@@ -348,6 +349,10 @@ class TimeCalculationEngine:
             return TimeCalculationEngine._calculate_formula_time(
                 charge_profile, input_values, slot_duration_minutes
             )
+        elif profile_type == ChargeProfileType.GENERIC:
+            return TimeCalculationEngine._calculate_generic_time(
+                charge_profile, input_values, slot_duration_minutes
+            )
         elif profile_type == ChargeProfileType.HOUR:
             return TimeCalculationEngine._calculate_hour_time(
                 charge_profile, input_values, slot_duration_minutes
@@ -507,6 +512,48 @@ class TimeCalculationEngine:
         except Exception as e:
             raise ValidationError(f"Error evaluating time formula '{charge_profile.time_formula}': {str(e)}")
 
+    @staticmethod
+    def _build_formula_env(
+        input_values: Dict[str, Any],
+        *,
+        slot_duration_minutes: Optional[int] = None,
+        total_time_minutes: Optional[int] = None,
+        charge_profile: Optional[ChargeProfile] = None,
+    ) -> Dict[str, Any]:
+        """Build A–Z (+ helpers) env for restricted GENERIC formulas."""
+        env: Dict[str, Any] = {}
+        for code in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            env[code] = safe_float(input_values.get(code, 0), 0.0)
+        env["SLOT_DURATION_MINUTES"] = float(slot_duration_minutes or 0)
+        if total_time_minutes is not None:
+            env["TIME"] = float(total_time_minutes)
+        if charge_profile is not None:
+            env["pc"] = float(safe_decimal(charge_profile.primary_unit_charge or 0))
+            env["sc"] = float(safe_decimal(charge_profile.secondary_unit_charge or 0))
+        return env
+
+    @staticmethod
+    def _calculate_generic_time(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        slot_duration_minutes: Optional[int],
+    ) -> int:
+        """GENERIC: evaluate time_formula with the restricted sandbox."""
+        formula = (charge_profile.time_formula or "").strip()
+        if not formula:
+            return slot_duration_minutes or 0
+        env = TimeCalculationEngine._build_formula_env(
+            input_values,
+            slot_duration_minutes=slot_duration_minutes,
+            charge_profile=charge_profile,
+        )
+        try:
+            return max(0, int(evaluate_formula(formula, env)))
+        except FormulaError as exc:
+            raise ValidationError(
+                f"Error evaluating GENERIC time formula '{charge_profile.time_formula}': {exc}"
+            ) from exc
+
 
 class ChargeCalculationEngine:
     """Engine for calculating booking charges based on charge profiles."""
@@ -552,6 +599,10 @@ class ChargeCalculationEngine:
             total, breakdown = ChargeCalculationEngine._calculate_sample_element_charge(
                 charge_profile, input_values
             )
+        elif profile_type == ChargeProfileType.GENERIC:
+            total, breakdown = ChargeCalculationEngine._calculate_generic_charge(
+                charge_profile, input_values, total_time_minutes
+            )
         elif profile_type == ChargeProfileType.MULTI_PARAM:
             total, breakdown = ChargeCalculationEngine._calculate_multi_param_charge(
                 charge_profile, input_values, total_time_minutes
@@ -564,6 +615,38 @@ class ChargeCalculationEngine:
             raise ValidationError(f"Unsupported profile type: {charge_profile.profile_type}")
 
         return finalize_charge_result(total, breakdown)
+
+    @staticmethod
+    def _calculate_generic_charge(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        total_time_minutes: int,
+    ) -> Tuple[Decimal, List[Dict[str, Any]]]:
+        """Calculate charge for GENERIC profile using charge_formula (pc/sc + inputs)."""
+        formula = (getattr(charge_profile, "charge_formula", None) or "").strip()
+        if not formula:
+            raise ValidationError("GENERIC charge profile requires a charge formula.")
+        env = TimeCalculationEngine._build_formula_env(
+            input_values,
+            total_time_minutes=total_time_minutes,
+            charge_profile=charge_profile,
+        )
+        try:
+            amount = evaluate_formula(formula, env)
+        except FormulaError as exc:
+            raise ValidationError(
+                f"Error evaluating GENERIC charge formula '{formula}': {exc}"
+            ) from exc
+        if amount < 0:
+            raise ValidationError("GENERIC charge formula returned a negative amount.")
+        total = safe_decimal(amount)
+        breakdown = [
+            {
+                "description": "Generic charge formula",
+                "amount": float(total),
+            }
+        ]
+        return total, breakdown
     
     @staticmethod
     def _calculate_sample_charge(

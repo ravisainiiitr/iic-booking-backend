@@ -134,6 +134,7 @@ class EquipmentProfileType(models.TextChoices):
     SAMPLE = 'SAMPLE', _('Sample-based')
     HOUR = 'HOUR', _('Hour-based')
     SAMPLE_ELEMENT = 'SAMPLE_ELEMENT', _('Sample + Element')
+    GENERIC = 'GENERIC', _('Generic')
     MULTI_PARAM = 'MULTI_PARAM', _('Multi-parameter')
     PRINT_3D = 'PRINT_3D', _('3D Print')
 
@@ -1623,7 +1624,7 @@ class ChargeProfile(models.Model):
         help_text=_('Breakpoint value for tiered pricing')
     )
     
-    # Time calculation formula (SAMPLE / SAMPLE_ELEMENT / HOUR with generic formula)
+    # Time calculation formula (SAMPLE / SAMPLE_ELEMENT / HOUR / GENERIC)
     time_formula = models.CharField(
         max_length=500,
         blank=True,
@@ -1631,8 +1632,26 @@ class ChargeProfile(models.Model):
         help_text=_(
             'Formula for time calculation using fields A–G '
             '(e.g. "(A * C) + B" or "((((C-B)/D)*E)*A)/60"). '
-            'HOUR: leave blank or set to "B" for legacy B×slot-duration behavior.'
+            'HOUR: leave blank or set to "B" for legacy B×slot-duration behavior. '
+            'GENERIC: restricted expression using A–Z and SLOT_DURATION_MINUTES.'
         )
+    )
+    charge_formula = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Charge formula'),
+        help_text=_(
+            'GENERIC: restricted expression for total charge. '
+            'Variables: pc (primary unit charge), sc (secondary unit charge), '
+            'A–Z input fields, TIME (minutes after time formula), SLOT_DURATION_MINUTES. '
+            'Supports comparisons and if/else expressions.'
+        ),
+    )
+    display_text = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Display text'),
+        help_text=_('Shown on the Charges by user category table for this user type.'),
     )
     
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1862,6 +1881,12 @@ class MultiParamDefinition(models.Model):
         max_digits=10,
         decimal_places=2,
         help_text=_('Charge per sample for this slot option')
+    )
+    display_text = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Display text'),
+        help_text=_('Optional text shown for this option on the Charges by user category table.'),
     )
     is_active = models.BooleanField(
         default=True,

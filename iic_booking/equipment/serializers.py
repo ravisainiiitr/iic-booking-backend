@@ -613,6 +613,8 @@ class PIChargeProfileWriteSerializer(serializers.Serializer):
     time_formula = serializers.CharField(
         max_length=500, allow_blank=True, allow_null=True, required=False
     )
+    charge_formula = serializers.CharField(allow_blank=True, required=False, default='')
+    display_text = serializers.CharField(allow_blank=True, required=False, default='')
 
 
 class EquipmentSpecificationSerializer(serializers.ModelSerializer):
@@ -848,6 +850,8 @@ class ChargeProfileSerializer(serializers.ModelSerializer):
             'secondary_unit_charge',
             'breakpoint',
             'time_formula',
+            'charge_formula',
+            'display_text',
             'created_at',
             'updated_at'
         ]
@@ -874,6 +878,7 @@ class MultiParamDefinitionSerializer(serializers.ModelSerializer):
             'param_code',
             'unit_time_minutes',
             'unit_charge',
+            'display_text',
             'is_active',
             'created_at',
             'updated_at'
@@ -1784,6 +1789,8 @@ class ChargeProfileWriteSerializer(serializers.Serializer):
     secondary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=0)
     breakpoint = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True, required=False)
     time_formula = serializers.CharField(max_length=500, allow_blank=True, allow_null=True, required=False)
+    charge_formula = serializers.CharField(allow_blank=True, required=False, default='')
+    display_text = serializers.CharField(allow_blank=True, required=False, default='')
 
 
 class SlotMasterWriteSerializer(serializers.Serializer):
@@ -1804,6 +1811,7 @@ class MultiParamDefinitionWriteSerializer(serializers.Serializer):
     param_code = serializers.CharField(max_length=50)
     unit_time_minutes = serializers.IntegerField()
     unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2)
+    display_text = serializers.CharField(allow_blank=True, required=False, default='')
     is_active = serializers.BooleanField(default=True)
 
 
@@ -2084,6 +2092,8 @@ def _create_related(equipment, inlines, actor=None):
             show_charge_breakdown=show_bd,
             primary_unit_charge=item['primary_unit_charge'], secondary_unit_charge=item.get('secondary_unit_charge', 0),
             breakpoint=item.get('breakpoint'), time_formula=item.get('time_formula') or '',
+            charge_formula=item.get('charge_formula') or '',
+            display_text=item.get('display_text') or '',
         )
         # Create the discounted variant (always zero charges) for every equipment/user type.
         ChargeProfile.objects.create(
@@ -2098,6 +2108,8 @@ def _create_related(equipment, inlines, actor=None):
             secondary_unit_charge=0,
             breakpoint=item.get('breakpoint'),
             time_formula=item.get('time_formula') or '',
+            charge_formula=item.get('charge_formula') or '',
+            display_text=item.get('display_text') or '',
         )
     for item in inlines.get('pi_charge_profiles', []):
         show_bd = item.get('show_charge_breakdown', True)
@@ -2114,6 +2126,8 @@ def _create_related(equipment, inlines, actor=None):
             secondary_unit_charge=item.get('secondary_unit_charge', 0),
             breakpoint=item.get('breakpoint'),
             time_formula=item.get('time_formula') or '',
+            charge_formula=item.get('charge_formula') or '',
+            display_text=item.get('display_text') or '',
         )
         EquipmentPIAuditLog.objects.create(
             equipment=equipment,
@@ -2150,6 +2164,7 @@ def _create_related(equipment, inlines, actor=None):
             param_code=item['param_code'],
             unit_time_minutes=item['unit_time_minutes'],
             unit_charge=item['unit_charge'],
+            display_text=item.get('display_text') or '',
             is_active=item.get('is_active', True),
         )
 
@@ -2338,6 +2353,8 @@ def _sync_related(equipment, inlines, actor=None):
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
                     'breakpoint': item.get('breakpoint'),
                     'time_formula': item.get('time_formula') or '',
+                    'charge_formula': item.get('charge_formula') or '',
+                    'display_text': item.get('display_text') or '',
                 },
             )
             if not created:
@@ -2349,6 +2366,8 @@ def _sync_related(equipment, inlines, actor=None):
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
                 profile.breakpoint = item.get('breakpoint')
                 profile.time_formula = item.get('time_formula') or ''
+                profile.charge_formula = item.get('charge_formula') or ''
+                profile.display_text = item.get('display_text') or ''
                 profile.save()
 
             # DISCOUNTED (always zero charges; time formula/breakpoint synced from STANDARD)
@@ -2365,6 +2384,8 @@ def _sync_related(equipment, inlines, actor=None):
                     'secondary_unit_charge': 0,
                     'breakpoint': item.get('breakpoint'),
                     'time_formula': item.get('time_formula') or '',
+                    'charge_formula': item.get('charge_formula') or '',
+                    'display_text': item.get('display_text') or '',
                 },
             )
             if not discounted_created:
@@ -2376,6 +2397,8 @@ def _sync_related(equipment, inlines, actor=None):
                 discounted_profile.secondary_unit_charge = 0
                 discounted_profile.breakpoint = item.get('breakpoint')
                 discounted_profile.time_formula = item.get('time_formula') or ''
+                discounted_profile.charge_formula = item.get('charge_formula') or ''
+                discounted_profile.display_text = item.get('display_text') or ''
                 discounted_profile.save()
         for profile in existing:
             if profile.user_type not in payload_user_types and profile.booking_count == 0:
@@ -2420,6 +2443,8 @@ def _sync_related(equipment, inlines, actor=None):
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
                     'breakpoint': item.get('breakpoint'),
                     'time_formula': item.get('time_formula') or '',
+                    'charge_formula': item.get('charge_formula') or '',
+                    'display_text': item.get('display_text') or '',
                 },
             )
             if not created:
@@ -2431,6 +2456,8 @@ def _sync_related(equipment, inlines, actor=None):
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
                 profile.breakpoint = item.get('breakpoint')
                 profile.time_formula = item.get('time_formula') or ''
+                profile.charge_formula = item.get('charge_formula') or ''
+                profile.display_text = item.get('display_text') or ''
                 profile.save()
             EquipmentPIAuditLog.objects.create(
                 equipment=equipment,
@@ -2477,6 +2504,7 @@ def _sync_related(equipment, inlines, actor=None):
                 param_code=item['param_code'],
                 unit_time_minutes=item['unit_time_minutes'],
                 unit_charge=item['unit_charge'],
+                display_text=item.get('display_text') or '',
                 is_active=item.get('is_active', True),
             )
 
