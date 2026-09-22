@@ -14,11 +14,18 @@ FACULTY_WALLET_SYNC_CUTOFF = timezone.datetime(
     2026, 10, 4, 0, 0, 0, tzinfo=timezone.get_fixed_timezone(330)
 )
 
-# Compact Important-notice copy (2–3 lines). Prefer this over verbose stored templates.
+# Important-notice / booking-lock copy shown to users during portal cutover.
 DEFAULT_BOOKING_LOCK_MESSAGE = (
-    "Booking for the week commencing from 05 October 2026 will be accepted "
-    "using the new booking portal.\n"
-    "Booking will be opened as usual on Wednesday, 30 September 2026 at 9:00 PM."
+    "Notice – New Booking Portal\n"
+    "\n"
+    "This is to inform all users that online booking through the new Booking Portal "
+    "will commence from Wednesday, 30 September 2026, at 9:00 PM.\n"
+    "\n"
+    "All users are requested to use the new portal for equipment/facility bookings "
+    "from the above-mentioned date and time.\n"
+    "\n"
+    "Institute Instrumentation Centre (IIC)\n"
+    "IIT Roorkee"
 )
 
 
@@ -35,9 +42,13 @@ def _is_verbose_lock_message(text: str) -> bool:
         return True
     if "Wallet balance and transaction history remain available" in t:
         return True
-    if t.count("\n") >= 2:
+    if "week commencing from 05 October 2026" in t:
         return True
-    if len(t) > 280:
+    if "Booking will be opened as usual on Wednesday, 30 September 2026" in t:
+        return True
+    if t.count("\n") >= 2 and "Notice – New Booking Portal" not in t:
+        return True
+    if len(t) > 280 and "Notice – New Booking Portal" not in t:
         return True
     return False
 
