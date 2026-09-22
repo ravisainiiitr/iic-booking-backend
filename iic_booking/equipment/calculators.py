@@ -643,7 +643,7 @@ class ChargeCalculationEngine:
         total = safe_decimal(amount)
         breakdown = [
             {
-                "description": "Generic charge formula",
+                "description": "Charge",
                 "amount": float(total),
             }
         ]
