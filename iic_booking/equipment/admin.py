@@ -534,7 +534,12 @@ class MultiParamDefinitionForm(forms.ModelForm):
         
         self.fields['unit_charge'].label = _('Charge per Sample')
         self.fields['unit_charge'].help_text = _('Charge per sample for this slot option')
-    
+        if 'display_text' in self.fields:
+            self.fields['display_text'].label = _('Display text')
+            self.fields['display_text'].help_text = _(
+                'Optional text shown for this option on View Charges (rate card).'
+            )
+
     def clean(self):
         """Validate that user_type is provided and check for duplicates."""
         cleaned_data = super().clean()
@@ -585,7 +590,15 @@ class MultiParamDefinitionInline(admin.TabularInline):
     model = MultiParamDefinition
     extra = 0
     fk_name = 'equipment'
-    fields = ['user_type', 'param_name', 'param_code', 'unit_time_minutes', 'unit_charge', 'is_active']
+    fields = [
+        'user_type',
+        'param_name',
+        'param_code',
+        'unit_time_minutes',
+        'unit_charge',
+        'display_text',
+        'is_active',
+    ]
     classes = ['collapse']
 
     def get_queryset(self, request):
@@ -693,6 +706,8 @@ class ChargeProfileInlineFormSet(forms.models.BaseInlineFormSet):
             "secondary_unit_charge": obj.secondary_unit_charge,
             "breakpoint": obj.breakpoint,
             "time_formula": obj.time_formula,
+            "charge_formula": getattr(obj, "charge_formula", "") or "",
+            "display_text": getattr(obj, "display_text", "") or "",
         }
         cp, _created = ChargeProfile.objects.update_or_create(
             equipment=self.instance,
@@ -756,12 +771,27 @@ class ChargeProfileForm(forms.ModelForm):
                 "and have it verified by the Officer in Charge before results are released."
             )
 
+        if "charge_formula" in self.fields:
+            self.fields["charge_formula"].widget = forms.Textarea(attrs={"rows": 3, "cols": 80})
+            self.fields["charge_formula"].help_text = _(
+                "GENERIC only. Expression if/else examples: "
+                "pc * A if A <= 5 else pc * 5 + sc * (A - 5) · "
+                "(pc * A) if B == 1 else (pc * A * 2) · "
+                "100 if TIME <= 60 else 100 + sc * ceil((TIME - 60) / 30). "
+                "Not a multi-line if block — use value_if_true if condition else value_if_false."
+            )
+        if "display_text" in self.fields:
+            self.fields["display_text"].widget = forms.Textarea(attrs={"rows": 2, "cols": 80})
+            self.fields["display_text"].help_text = _(
+                "Shown on View Charges for this user category (preferred over auto-generated rate copy)."
+            )
+
         # For MULTI_PARAM profiles, charge fields are hidden in UI and filled from slot options
         row_type = getattr(self.instance, "profile_type", None) or (
             getattr(equipment, "profile_type", None) if equipment else None
         )
         if row_type == "MULTI_PARAM":
-            for fname in ("primary_unit_charge", "secondary_unit_charge", "breakpoint", "time_formula"):
+            for fname in ("primary_unit_charge", "secondary_unit_charge", "breakpoint", "time_formula", "charge_formula"):
                 if fname in self.fields:
                     self.fields[fname].required = False
                     if fname in ("primary_unit_charge", "secondary_unit_charge"):
@@ -810,6 +840,8 @@ class ChargeProfileInline(admin.StackedInline):
         'secondary_unit_charge',
         'breakpoint',
         'time_formula',
+        'charge_formula',
+        'display_text',
     ]
     readonly_fields = ['created_at', 'updated_at']
     ordering = ['pricing_profile', 'user_type']

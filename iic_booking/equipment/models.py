@@ -1642,9 +1642,11 @@ class ChargeProfile(models.Model):
         verbose_name=_('Charge formula'),
         help_text=_(
             'GENERIC: restricted expression for total charge. '
-            'Variables: pc (primary unit charge), sc (secondary unit charge), '
-            'A–Z input fields, TIME (minutes after time formula), SLOT_DURATION_MINUTES. '
-            'Supports comparisons and if/else expressions.'
+            'Variables: pc (primary), sc (secondary), A–Z inputs, TIME, SLOT_DURATION_MINUTES. '
+            'Use expression if/else (not a statement block), e.g. '
+            '"pc * A if A <= 5 else pc * 5 + sc * (A - 5)" or '
+            '"100 if TIME <= 60 else 100 + sc * ceil((TIME - 60) / 30)". '
+            'Helpers: min, max, abs, round, ceil, floor.'
         ),
     )
     display_text = models.TextField(
