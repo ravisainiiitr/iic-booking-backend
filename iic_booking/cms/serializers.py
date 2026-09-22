@@ -1,7 +1,7 @@
 """Serializers for CMS models."""
 
 from rest_framework import serializers
-from .models import MenuItem, HomePageContent, HeroSlide, CmsPage
+from .models import MenuItem, HomePageContent, HeroSlide, CmsPage, SiteDocument
 
 
 class CmsPageSerializer(serializers.ModelSerializer):
@@ -127,6 +127,25 @@ class HeroSlideSerializer(serializers.ModelSerializer):
         if not obj or not obj.image:
             return None
         url = obj.image.url
+        request = self.context.get("request")
+        if request and url.startswith("/"):
+            base = request.build_absolute_uri("/").rstrip("/")
+            return base + url
+        return url
+
+
+class SiteDocumentSerializer(serializers.ModelSerializer):
+    document_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SiteDocument
+        fields = ["id", "key", "title", "document", "document_url", "created_at", "updated_at"]
+        read_only_fields = ["id", "key", "created_at", "updated_at", "document_url"]
+
+    def get_document_url(self, obj):
+        if not obj or not obj.document:
+            return None
+        url = obj.document.url
         request = self.context.get("request")
         if request and url.startswith("/"):
             base = request.build_absolute_uri("/").rstrip("/")

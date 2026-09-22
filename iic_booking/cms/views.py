@@ -5,7 +5,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import MenuItem, HomePageContent, HeroSlide, CmsPage
+from .models import MenuItem, HomePageContent, HeroSlide, CmsPage, SiteDocument
 
 
 @api_view(["GET"])
@@ -83,6 +83,29 @@ def hero_slides(request):
                 "alt_text": slide.alt_text or "",
             })
     return Response(result)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def analysis_charges_document(request):
+    """Return the public Analysis Charges PDF URL, or 404 if not uploaded yet."""
+    from .serializers import SiteDocumentSerializer
+
+    try:
+        doc = SiteDocument.objects.get(key=SiteDocument.Key.ANALYSIS_CHARGES)
+    except SiteDocument.DoesNotExist:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not doc.document:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    serializer = SiteDocumentSerializer(doc, context={"request": request})
+    return Response(
+        {
+            "key": doc.key,
+            "title": doc.title or "Analysis Charges",
+            "document_url": serializer.data.get("document_url"),
+            "updated_at": serializer.data.get("updated_at"),
+        }
+    )
 
 
 @api_view(["GET"])

@@ -2,7 +2,7 @@
 
 from django.contrib import admin
 from django.utils.html import format_html
-from .models import MenuItem, HomePageContent, HeroSlide, CmsPage
+from .models import MenuItem, HomePageContent, HeroSlide, CmsPage, SiteDocument
 
 
 @admin.register(MenuItem)
@@ -68,3 +68,19 @@ class HeroSlideAdmin(admin.ModelAdmin):
         return "—"
 
     image_preview.short_description = "Preview"
+
+
+@admin.register(SiteDocument)
+class SiteDocumentAdmin(admin.ModelAdmin):
+    list_display = ["key", "title", "document_link", "updated_at"]
+    list_display_links = ["key", "title"]
+    search_fields = ["key", "title"]
+    ordering = ["key"]
+    readonly_fields = ["created_at", "updated_at"]
+
+    def document_link(self, obj):
+        if obj and obj.document:
+            return format_html('<a href="{}" target="_blank">Open PDF</a>', obj.document.url)
+        return "—"
+
+    document_link.short_description = "Document"

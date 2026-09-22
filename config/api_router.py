@@ -424,7 +424,7 @@ from iic_booking.support.portal_feedback_views import (
     portal_feedback_mine,
     portal_feedback_admin_list,
 )
-from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats
+from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats, analysis_charges_document
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 router.register("users", UserViewSet, basename="user")
@@ -1394,6 +1394,7 @@ urlpatterns = router.urls + [
     path("cms/home/", home_page_content, name="cms-home"),
     path("cms/site-stats/", site_stats, name="cms-site-stats"),
     path("cms/hero-slides/", hero_slides, name="cms-hero-slides"),
+    path("cms/documents/analysis-charges/", analysis_charges_document, name="cms-analysis-charges"),
     path("cms/pages/<slug:slug>/", page_by_slug, name="cms-page-by-slug"),
 
     # Admin-only CRUD API for frontend admin dashboard (no Django Admin login required)

@@ -262,13 +262,14 @@ def admin_api_router():
     )
     from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 
-    from iic_booking.cms.models import MenuItem, HomePageContent, HeroSlide, CmsPage
+    from iic_booking.cms.models import MenuItem, HomePageContent, HeroSlide, CmsPage, SiteDocument
     from iic_booking.cms.serializers import (
         MenuItemSerializer,
         MenuItemListSerializer,
         HomePageContentSerializer,
         HeroSlideSerializer,
         CmsPageSerializer,
+        SiteDocumentSerializer,
     )
 
     # Minimal serializers for models that don't have full CRUD serializers yet
@@ -3655,6 +3656,93 @@ def admin_api_router():
         serializer_class = HeroSlideSerializer
         parser_classes = [JSONParser, FormParser, MultiPartParser]
 
+    class SiteDocumentViewSet(ModelViewSet):
+        """Admin CRUD for named public site documents (Analysis Charges PDF, etc.)."""
+
+        permission_classes = [IsAdminPanelUser]
+        queryset = SiteDocument.objects.all().order_by("key")
+        serializer_class = SiteDocumentSerializer
+        parser_classes = [JSONParser, FormParser, MultiPartParser]
+        http_method_names = ["get", "post", "patch", "head", "options"]
+
+        def create(self, request, *args, **kwargs):
+            return Response(
+                {"error": "Use POST /admin/cms-site-documents/upload/<key>/ to upload."},
+                status=status.HTTP_405_METHOD_NOT_ALLOWED,
+            )
+
+        def partial_update(self, request, *args, **kwargs):
+            instance = self.get_object()
+            title = request.data.get("title")
+            if title is not None:
+                instance.title = str(title).strip()
+            file = request.FILES.get("document") or request.FILES.get("file")
+            if file:
+                name = (getattr(file, "name", "") or "").lower()
+                ctype = (getattr(file, "content_type", "") or "").lower()
+                if not (name.endswith(".pdf") or ctype == "application/pdf"):
+                    return Response(
+                        {"error": "Only PDF files are allowed."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if instance.document:
+                    try:
+                        instance.document.delete(save=False)
+                    except Exception:
+                        pass
+                instance.document = file
+            instance.save()
+            serializer = self.get_serializer(instance)
+            return Response(serializer.data)
+
+        @action(detail=False, methods=["get"], url_path="by-key/(?P<key>[^/.]+)")
+        def by_key(self, request, key=None):
+            try:
+                obj = SiteDocument.objects.get(key=key)
+            except SiteDocument.DoesNotExist:
+                return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(self.get_serializer(obj).data)
+
+        @action(detail=False, methods=["post"], url_path="upload/(?P<key>[^/.]+)")
+        def upload_by_key(self, request, key=None):
+            """Create-or-update a site document by key (multipart: document + optional title)."""
+            allowed_keys = {c.value for c in SiteDocument.Key}
+            if key not in allowed_keys:
+                return Response(
+                    {"error": f"Unknown document key. Allowed: {sorted(allowed_keys)}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            file = request.FILES.get("document") or request.FILES.get("file")
+            if not file:
+                return Response(
+                    {"error": "No file provided. Use form field 'document' or 'file'."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            name = (getattr(file, "name", "") or "").lower()
+            ctype = (getattr(file, "content_type", "") or "").lower()
+            if not (name.endswith(".pdf") or ctype == "application/pdf"):
+                return Response(
+                    {"error": "Only PDF files are allowed."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            obj, _created = SiteDocument.objects.get_or_create(
+                key=key,
+                defaults={"title": request.data.get("title") or dict(SiteDocument.Key.choices).get(key, key)},
+            )
+            title = request.data.get("title")
+            if title is not None and str(title).strip():
+                obj.title = str(title).strip()
+            elif not obj.title:
+                obj.title = dict(SiteDocument.Key.choices).get(key, key)
+            if obj.document:
+                try:
+                    obj.document.delete(save=False)
+                except Exception:
+                    pass
+            obj.document = file
+            obj.save()
+            return Response(self.get_serializer(obj).data)
+
     # Communication (admin-only: templates + logs)
     from iic_booking.communication.models import CommunicationTemplate, CommunicationLog
     from django.db.models import Q as DQ
@@ -3845,6 +3933,7 @@ def admin_api_router():
     router.register(r"cms-pages", CmsPageViewSet, basename="admin-cms-pages")
     router.register(r"cms-home", HomePageContentViewSet, basename="admin-cms-home")
     router.register(r"cms-hero-slides", HeroSlideViewSet, basename="admin-cms-hero-slides")
+    router.register(r"cms-site-documents", SiteDocumentViewSet, basename="admin-cms-site-documents")
     router.register(r"communication-templates", CommunicationTemplateViewSet, basename="admin-communication-template")
     router.register(r"communication-logs", CommunicationLogViewSet, basename="admin-communication-log")
     router.register(r"notices", NoticeViewSet, basename="admin-notice")

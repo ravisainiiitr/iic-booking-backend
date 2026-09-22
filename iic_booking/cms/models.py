@@ -160,3 +160,39 @@ class HeroSlide(models.Model):
 
     def __str__(self):
         return self.alt_text or f"Hero slide {self.order}"
+
+
+class SiteDocument(models.Model):
+    """
+    Named public documents (e.g. Analysis Charges PDF) linked from the home page.
+    One row per key; admins replace the file via the Content Management panel.
+    """
+
+    class Key(models.TextChoices):
+        ANALYSIS_CHARGES = "analysis_charges", _("Analysis Charges")
+
+    key = models.CharField(
+        _("Key"),
+        max_length=64,
+        unique=True,
+        choices=Key.choices,
+        db_index=True,
+    )
+    title = models.CharField(_("Title"), max_length=200, blank=True)
+    document = models.FileField(
+        _("Document"),
+        upload_to="cms/site_documents/%Y/%m/",
+        blank=True,
+        null=True,
+        help_text=_("PDF shown when visitors click the matching home-page button."),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["key"]
+        verbose_name = _("Site document")
+        verbose_name_plural = _("Site documents")
+
+    def __str__(self):
+        return self.title or self.get_key_display()
