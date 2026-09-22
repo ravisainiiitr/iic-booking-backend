@@ -6,7 +6,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Dict, List, Any, Optional, Tuple
 from django.core.exceptions import ValidationError
 from .models import ChargeProfile, ChargeProfilePricingProfile, ChargeProfileType, MultiParamDefinition
-from .formula_eval import FormulaError, evaluate_formula
+from .formula_eval import FormulaError, evaluate_formula, run_formula_script
 
 # Final booking charges are stored/displayed as whole rupees (nearest ₹).
 MONEY_QUANTIZE = Decimal("1")
@@ -538,7 +538,7 @@ class TimeCalculationEngine:
         input_values: Dict[str, Any],
         slot_duration_minutes: Optional[int],
     ) -> int:
-        """GENERIC: evaluate time_formula with the restricted sandbox."""
+        """GENERIC: evaluate time_formula script; result is minutes via ``time``."""
         formula = (charge_profile.time_formula or "").strip()
         if not formula:
             return slot_duration_minutes or 0
@@ -548,7 +548,8 @@ class TimeCalculationEngine:
             charge_profile=charge_profile,
         )
         try:
-            return max(0, int(evaluate_formula(formula, env)))
+            minutes = run_formula_script(formula, env, result_var="time")
+            return max(0, int(minutes))
         except FormulaError as exc:
             raise ValidationError(
                 f"Error evaluating GENERIC time formula '{charge_profile.time_formula}': {exc}"
@@ -622,7 +623,7 @@ class ChargeCalculationEngine:
         input_values: Dict[str, Any],
         total_time_minutes: int,
     ) -> Tuple[Decimal, List[Dict[str, Any]]]:
-        """Calculate charge for GENERIC profile using charge_formula (pc/sc + inputs)."""
+        """GENERIC: evaluate charge_formula script; result is ₹ via ``charge``."""
         formula = (getattr(charge_profile, "charge_formula", None) or "").strip()
         if not formula:
             raise ValidationError("GENERIC charge profile requires a charge formula.")
@@ -632,7 +633,7 @@ class ChargeCalculationEngine:
             charge_profile=charge_profile,
         )
         try:
-            amount = evaluate_formula(formula, env)
+            amount = run_formula_script(formula, env, result_var="charge")
         except FormulaError as exc:
             raise ValidationError(
                 f"Error evaluating GENERIC charge formula '{formula}': {exc}"

@@ -1625,28 +1625,27 @@ class ChargeProfile(models.Model):
     )
     
     # Time calculation formula (SAMPLE / SAMPLE_ELEMENT / HOUR / GENERIC)
-    time_formula = models.CharField(
-        max_length=500,
+    time_formula = models.TextField(
         blank=True,
         null=True,
         help_text=_(
-            'Formula for time calculation using fields A–G '
-            '(e.g. "(A * C) + B" or "((((C-B)/D)*E)*A)/60"). '
+            'Formula for time calculation. SAMPLE/HOUR may use a single expression '
+            '(e.g. "(A * C) + B"). GENERIC: restricted Python script — assign time '
+            '(minutes), e.g. "time = A * SLOT_DURATION_MINUTES" with if/else or for-loops. '
             'HOUR: leave blank or set to "B" for legacy B×slot-duration behavior. '
-            'GENERIC: restricted expression using A–Z and SLOT_DURATION_MINUTES.'
-        )
+            'A single expression is still accepted (legacy).'
+        ),
     )
     charge_formula = models.TextField(
         blank=True,
         default='',
         verbose_name=_('Charge formula'),
         help_text=_(
-            'GENERIC: restricted expression for total charge. '
-            'Variables: pc (primary), sc (secondary), A–Z inputs, TIME, SLOT_DURATION_MINUTES. '
-            'Use expression if/else (not a statement block), e.g. '
-            '"pc * A if A <= 5 else pc * 5 + sc * (A - 5)" or '
-            '"100 if TIME <= 60 else 100 + sc * ceil((TIME - 60) / 30)". '
-            'Helpers: min, max, abs, round, ceil, floor.'
+            'GENERIC: restricted Python script. Assign charge (₹), e.g. '
+            '"charge = pc * A" or multi-line if/else / for-loops. '
+            'Inputs: pc, sc, A–Z, TIME (minutes), SLOT_DURATION_MINUTES. '
+            'A single expression is still accepted (legacy). '
+            'Helpers: min, max, abs, round, ceil, floor, int, float, range.'
         ),
     )
     display_text = models.TextField(

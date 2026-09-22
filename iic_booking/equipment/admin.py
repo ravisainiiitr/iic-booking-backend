@@ -771,14 +771,25 @@ class ChargeProfileForm(forms.ModelForm):
                 "and have it verified by the Officer in Charge before results are released."
             )
 
+        if "time_formula" in self.fields:
+            self.fields["time_formula"].widget = forms.Textarea(attrs={"rows": 4, "cols": 80})
+            self.fields["time_formula"].help_text = _(
+                "GENERIC: assign time in minutes, e.g.\n"
+                "time = A * SLOT_DURATION_MINUTES\n"
+                "if B > 1:\n"
+                "    time = time + 15\n"
+                "Legacy single expressions still work. Inputs: A–Z, SLOT_DURATION_MINUTES, pc, sc."
+            )
         if "charge_formula" in self.fields:
-            self.fields["charge_formula"].widget = forms.Textarea(attrs={"rows": 3, "cols": 80})
+            self.fields["charge_formula"].widget = forms.Textarea(attrs={"rows": 6, "cols": 80})
             self.fields["charge_formula"].help_text = _(
-                "GENERIC only. Expression if/else examples: "
-                "pc * A if A <= 5 else pc * 5 + sc * (A - 5) · "
-                "(pc * A) if B == 1 else (pc * A * 2) · "
-                "100 if TIME <= 60 else 100 + sc * ceil((TIME - 60) / 30). "
-                "Not a multi-line if block — use value_if_true if condition else value_if_false."
+                "GENERIC: assign charge in ₹, e.g.\n"
+                "charge = pc * A\n"
+                "if B > 1:\n"
+                "    charge = charge + sc * (B - 1)\n"
+                "Or loops: charge = 0; for i in range(int(A)): charge = charge + pc\n"
+                "Inputs: pc, sc, A–Z, TIME, SLOT_DURATION_MINUTES. "
+                "Legacy single expressions still work."
             )
         if "display_text" in self.fields:
             self.fields["display_text"].widget = forms.Textarea(attrs={"rows": 2, "cols": 80})

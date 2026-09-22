@@ -611,7 +611,7 @@ class PIChargeProfileWriteSerializer(serializers.Serializer):
         max_digits=10, decimal_places=2, allow_null=True, required=False
     )
     time_formula = serializers.CharField(
-        max_length=500, allow_blank=True, allow_null=True, required=False
+        allow_blank=True, allow_null=True, required=False
     )
     charge_formula = serializers.CharField(allow_blank=True, required=False, default='')
     display_text = serializers.CharField(allow_blank=True, required=False, default='')
@@ -1788,7 +1788,7 @@ class ChargeProfileWriteSerializer(serializers.Serializer):
     primary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2)
     secondary_unit_charge = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=0)
     breakpoint = serializers.DecimalField(max_digits=10, decimal_places=2, allow_null=True, required=False)
-    time_formula = serializers.CharField(max_length=500, allow_blank=True, allow_null=True, required=False)
+    time_formula = serializers.CharField(allow_blank=True, allow_null=True, required=False)
     charge_formula = serializers.CharField(allow_blank=True, required=False, default='')
     display_text = serializers.CharField(allow_blank=True, required=False, default='')
 
