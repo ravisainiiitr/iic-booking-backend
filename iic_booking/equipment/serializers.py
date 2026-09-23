@@ -2004,6 +2004,13 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         return instance
 
 
+def _charge_profile_breakpoint(item, cp_type):
+    """Breakpoint applies to legacy SAMPLE/HOUR/etc. profiles only — not GENERIC."""
+    if str(cp_type or "").upper() == "GENERIC":
+        return None
+    return item.get("breakpoint")
+
+
 def _create_related(equipment, inlines, actor=None):
     from .models import (
         EquipmentManager, EquipmentOperator, EquipmentSpecification, EquipmentPublication,
@@ -2091,7 +2098,7 @@ def _create_related(equipment, inlines, actor=None):
             require_istem_fbr=item.get('require_istem_fbr', False),
             show_charge_breakdown=show_bd,
             primary_unit_charge=item['primary_unit_charge'], secondary_unit_charge=item.get('secondary_unit_charge', 0),
-            breakpoint=item.get('breakpoint'), time_formula=item.get('time_formula') or '',
+            breakpoint=_charge_profile_breakpoint(item, cp_type), time_formula=item.get('time_formula') or '',
             charge_formula=item.get('charge_formula') or '',
             display_text=item.get('display_text') or '',
         )
@@ -2106,7 +2113,7 @@ def _create_related(equipment, inlines, actor=None):
             show_charge_breakdown=show_bd,
             primary_unit_charge=0,
             secondary_unit_charge=0,
-            breakpoint=item.get('breakpoint'),
+            breakpoint=_charge_profile_breakpoint(item, cp_type),
             time_formula=item.get('time_formula') or '',
             charge_formula=item.get('charge_formula') or '',
             display_text=item.get('display_text') or '',
@@ -2124,7 +2131,7 @@ def _create_related(equipment, inlines, actor=None):
             show_charge_breakdown=show_bd,
             primary_unit_charge=item['primary_unit_charge'],
             secondary_unit_charge=item.get('secondary_unit_charge', 0),
-            breakpoint=item.get('breakpoint'),
+            breakpoint=_charge_profile_breakpoint(item, cp_type),
             time_formula=item.get('time_formula') or '',
             charge_formula=item.get('charge_formula') or '',
             display_text=item.get('display_text') or '',
@@ -2351,7 +2358,7 @@ def _sync_related(equipment, inlines, actor=None):
                     'profile_type': cp_type,
                     'primary_unit_charge': item['primary_unit_charge'],
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
-                    'breakpoint': item.get('breakpoint'),
+                    'breakpoint': _charge_profile_breakpoint(item, cp_type),
                     'time_formula': item.get('time_formula') or '',
                     'charge_formula': item.get('charge_formula') or '',
                     'display_text': item.get('display_text') or '',
@@ -2364,7 +2371,7 @@ def _sync_related(equipment, inlines, actor=None):
                 profile.profile_type = cp_type
                 profile.primary_unit_charge = item['primary_unit_charge']
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
-                profile.breakpoint = item.get('breakpoint')
+                profile.breakpoint = _charge_profile_breakpoint(item, cp_type)
                 profile.time_formula = item.get('time_formula') or ''
                 profile.charge_formula = item.get('charge_formula') or ''
                 profile.display_text = item.get('display_text') or ''
@@ -2382,7 +2389,7 @@ def _sync_related(equipment, inlines, actor=None):
                     'profile_type': cp_type,
                     'primary_unit_charge': 0,
                     'secondary_unit_charge': 0,
-                    'breakpoint': item.get('breakpoint'),
+                    'breakpoint': _charge_profile_breakpoint(item, cp_type),
                     'time_formula': item.get('time_formula') or '',
                     'charge_formula': item.get('charge_formula') or '',
                     'display_text': item.get('display_text') or '',
@@ -2395,7 +2402,7 @@ def _sync_related(equipment, inlines, actor=None):
                 discounted_profile.profile_type = cp_type
                 discounted_profile.primary_unit_charge = 0
                 discounted_profile.secondary_unit_charge = 0
-                discounted_profile.breakpoint = item.get('breakpoint')
+                discounted_profile.breakpoint = _charge_profile_breakpoint(item, cp_type)
                 discounted_profile.time_formula = item.get('time_formula') or ''
                 discounted_profile.charge_formula = item.get('charge_formula') or ''
                 discounted_profile.display_text = item.get('display_text') or ''
@@ -2441,7 +2448,7 @@ def _sync_related(equipment, inlines, actor=None):
                     'profile_type': cp_type,
                     'primary_unit_charge': item['primary_unit_charge'],
                     'secondary_unit_charge': item.get('secondary_unit_charge', 0),
-                    'breakpoint': item.get('breakpoint'),
+                    'breakpoint': _charge_profile_breakpoint(item, cp_type),
                     'time_formula': item.get('time_formula') or '',
                     'charge_formula': item.get('charge_formula') or '',
                     'display_text': item.get('display_text') or '',
@@ -2454,7 +2461,7 @@ def _sync_related(equipment, inlines, actor=None):
                 profile.profile_type = cp_type
                 profile.primary_unit_charge = item['primary_unit_charge']
                 profile.secondary_unit_charge = item.get('secondary_unit_charge', 0)
-                profile.breakpoint = item.get('breakpoint')
+                profile.breakpoint = _charge_profile_breakpoint(item, cp_type)
                 profile.time_formula = item.get('time_formula') or ''
                 profile.charge_formula = item.get('charge_formula') or ''
                 profile.display_text = item.get('display_text') or ''

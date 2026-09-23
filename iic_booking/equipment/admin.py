@@ -807,6 +807,10 @@ class ChargeProfileForm(forms.ModelForm):
                     self.fields[fname].required = False
                     if fname in ("primary_unit_charge", "secondary_unit_charge"):
                         self.fields[fname].widget = forms.HiddenInput()
+        # GENERIC uses time/charge formulas — breakpoint is unused.
+        if row_type == "GENERIC" and "breakpoint" in self.fields:
+            self.fields["breakpoint"].required = False
+            self.fields["breakpoint"].widget = forms.HiddenInput()
 
     def clean(self):
         cleaned_data = super().clean()
@@ -830,6 +834,8 @@ class ChargeProfileForm(forms.ModelForm):
                 cleaned_data["primary_unit_charge"] = Decimal("0.00")
             if cleaned_data.get("secondary_unit_charge") is None or cleaned_data.get("secondary_unit_charge") == "":
                 cleaned_data["secondary_unit_charge"] = Decimal("0.00")
+        if row_type == "GENERIC":
+            cleaned_data["breakpoint"] = None
         return cleaned_data
 
 

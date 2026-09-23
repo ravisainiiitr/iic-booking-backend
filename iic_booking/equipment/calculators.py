@@ -651,6 +651,211 @@ class ChargeCalculationEngine:
         return finalize_charge_result(total, breakdown)
 
     @staticmethod
+    def _generic_field_label_map(charge_profile: ChargeProfile) -> Dict[str, str]:
+        """Map A–Z field_key → field_label from equipment DynamicInputField definitions."""
+        from .models import DynamicInputField
+
+        equipment = getattr(charge_profile, "equipment", None)
+        if not equipment:
+            return {}
+        user_type = (getattr(charge_profile, "user_type", None) or "").strip()
+        rows = DynamicInputField.objects.filter(equipment=equipment).values_list(
+            "field_key", "field_label", "user_type"
+        )
+        labels: Dict[str, str] = {}
+        # Prefer exact user_type match; fall back to blank / other rows.
+        for field_key, field_label, row_user_type in rows:
+            key = str(field_key or "").strip().upper()
+            if not key or not field_label:
+                continue
+            row_ut = (row_user_type or "").strip()
+            if row_ut == user_type:
+                labels[key] = str(field_label).strip()
+            elif key not in labels and row_ut == "":
+                labels[key] = str(field_label).strip()
+            elif key not in labels:
+                labels[key] = str(field_label).strip()
+        return labels
+
+    @staticmethod
+    def _unit_words_from_field_label(label: str, fallback: str = "unit") -> Tuple[str, str]:
+        """
+        Derive (plural, singular) display words from a DynamicInputField label.
+        e.g. "Number of Samples" → ("samples", "sample"); "Number of Slots" → ("slots", "slot").
+        """
+        text = (label or "").strip()
+        lowered = text.lower()
+        for prefix in (
+            "number of ",
+            "no. of ",
+            "no of ",
+            "num. of ",
+            "num of ",
+            "# of ",
+            "count of ",
+        ):
+            if lowered.startswith(prefix):
+                text = text[len(prefix) :].strip()
+                break
+        if not text:
+            text = fallback
+        plural = text
+        low = plural.lower()
+        if low.endswith("ies") and len(plural) > 3:
+            singular = plural[:-3] + ("Y" if plural.isupper() else "y")
+        elif low.endswith("s") and not low.endswith("ss") and len(plural) > 1:
+            singular = plural[:-1]
+        else:
+            singular = plural
+        return plural.lower(), singular.lower()
+
+    @staticmethod
+    def _format_qty_at_rate_description(qty: Any, rate: Any, field_label: str) -> str:
+        """SAMPLE-style line: '1.0 samples @ 150.00 per sample' using field label words."""
+        plural, singular = ChargeCalculationEngine._unit_words_from_field_label(
+            field_label
+        )
+        qty_disp = f"{float(safe_decimal(qty)):.1f}"
+        rate_disp = f"{float(safe_decimal(rate)):.2f}"
+        return f"{qty_disp} {plural} @ {rate_disp} per {singular}"
+
+    @staticmethod
+    def _extract_simple_charge_expr(formula: str) -> Optional[str]:
+        """
+        If formula is a single assignment/expression (no control flow), return the RHS expr.
+        Multi-line if/else scripts return None (use fallback description).
+        """
+        lines = [
+            ln.strip()
+            for ln in (formula or "").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        if not lines:
+            return None
+        joined = "\n".join(lines)
+        if re.search(r"\b(if|elif|else|for|while)\b", joined):
+            return None
+        if len(lines) > 1:
+            return None
+        expr = lines[0]
+        m = re.match(r"^(?:charge\s*=\s*)?(.+)$", expr, re.I | re.S)
+        if not m:
+            return None
+        return m.group(1).strip()
+
+    @staticmethod
+    def _try_parse_pc_sc_product_terms(
+        expr: str,
+    ) -> Optional[List[Tuple[str, str]]]:
+        """
+        Parse expressions like ``pc * A``, ``A * pc + sc * B``, ``pc*A+sc*(B)``.
+        Returns list of (rate_key 'pc'|'sc', var_key 'A'..'Z') or None if not a simple sum of products.
+        """
+        compact = re.sub(r"\s+", "", expr or "")
+        if not compact:
+            return None
+        # Strip outer parens repeatedly
+        while compact.startswith("(") and compact.endswith(")"):
+            compact = compact[1:-1]
+        parts = re.split(r"\+", compact)
+        terms: List[Tuple[str, str]] = []
+        term_re = re.compile(
+            r"^(?:(pc|sc)\*([A-Z])|([A-Z])\*(pc|sc))$",
+            re.I,
+        )
+        for part in parts:
+            p = part
+            while p.startswith("(") and p.endswith(")"):
+                p = p[1:-1]
+            m = term_re.fullmatch(p)
+            if not m:
+                return None
+            if m.group(1):
+                terms.append((m.group(1).lower(), m.group(2).upper()))
+            else:
+                terms.append((m.group(4).lower(), m.group(3).upper()))
+        return terms or None
+
+    @staticmethod
+    def _build_generic_charge_breakdown(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        formula: str,
+        total: Decimal,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build SAMPLE-like descriptive lines from charge_formula + DynamicInputField labels.
+        Prefer structural parse of pc/sc × field products; otherwise describe used inputs.
+        """
+        labels = ChargeCalculationEngine._generic_field_label_map(charge_profile)
+        pc = safe_decimal(charge_profile.primary_unit_charge or 0)
+        sc = safe_decimal(charge_profile.secondary_unit_charge or 0)
+        rate_map = {"pc": pc, "sc": sc}
+
+        expr = ChargeCalculationEngine._extract_simple_charge_expr(formula)
+        if expr:
+            terms = ChargeCalculationEngine._try_parse_pc_sc_product_terms(expr)
+            if terms:
+                breakdown: List[Dict[str, Any]] = []
+                for rate_key, var_key in terms:
+                    qty = safe_decimal(input_values.get(var_key, 0))
+                    rate = rate_map[rate_key]
+                    amount = qty * rate
+                    label = labels.get(var_key) or var_key
+                    breakdown.append(
+                        {
+                            "description": ChargeCalculationEngine._format_qty_at_rate_description(
+                                qty, rate, label
+                            ),
+                            "amount": float(amount),
+                        }
+                    )
+                if breakdown:
+                    return breakdown
+
+            # Single letter variable × implied effective rate (covers pc*A*constant etc. poorly,
+            # but handles pc*A when parse missed and single-var formulas).
+            used_letters = sorted(set(re.findall(r"\b([A-Z])\b", expr.upper())))
+            # Ignore TIME helper if present as name — TIME is multi-letter so OK.
+            if len(used_letters) == 1:
+                var_key = used_letters[0]
+                qty = safe_decimal(input_values.get(var_key, 0))
+                if qty > 0 and total >= 0:
+                    rate = (total / qty) if qty else Decimal("0")
+                    label = labels.get(var_key) or var_key
+                    return [
+                        {
+                            "description": ChargeCalculationEngine._format_qty_at_rate_description(
+                                qty, rate, label
+                            ),
+                            "amount": float(total),
+                        }
+                    ]
+
+        # Fallback: list configured field labels + values that appear in the formula.
+        formula_upper = (formula or "").upper()
+        used: List[Tuple[str, Any]] = []
+        for code in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            if not re.search(rf"\b{code}\b", formula_upper):
+                continue
+            raw = input_values.get(code, 0)
+            try:
+                val = safe_decimal(raw)
+            except Exception:
+                val = raw
+            used.append((code, val))
+
+        parts: List[str] = []
+        for code, val in used:
+            label = labels.get(code) or code
+            if isinstance(val, Decimal):
+                parts.append(f"{label}: {float(val):.1f}")
+            else:
+                parts.append(f"{label}: {val}")
+        description = "; ".join(parts) if parts else "Charge"
+        return [{"description": description, "amount": float(total)}]
+
+    @staticmethod
     def _calculate_generic_charge(
         charge_profile: ChargeProfile,
         input_values: Dict[str, Any],
@@ -674,12 +879,9 @@ class ChargeCalculationEngine:
         if amount < 0:
             raise ValidationError("GENERIC charge formula returned a negative amount.")
         total = safe_decimal(amount)
-        breakdown = [
-            {
-                "description": "Charge",
-                "amount": float(total),
-            }
-        ]
+        breakdown = ChargeCalculationEngine._build_generic_charge_breakdown(
+            charge_profile, input_values, formula, total
+        )
         return total, breakdown
     
     @staticmethod
