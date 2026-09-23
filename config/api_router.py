@@ -220,7 +220,6 @@ from iic_booking.equipment.remote_analysis_integration import views as booking_r
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
-    equipment_analysis_charges,
     equipment_category_list,
     equipment_detail,
     equipment_image_proxy,
@@ -407,11 +406,6 @@ from iic_booking.communication.api_views import (
     delete_notification,
     notice_list,
     notice_detail,
-    notice_requests_mine,
-    notice_request_complete_expiry,
-    notice_requests_pending,
-    notice_request_approve,
-    notice_request_reject,
     list_inbox_folders,
     fetch_inbox_emails,
 )
@@ -430,7 +424,7 @@ from iic_booking.support.portal_feedback_views import (
     portal_feedback_mine,
     portal_feedback_admin_list,
 )
-from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats, analysis_charges_document
+from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats, analysis_charges_document, public_publications
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
 router.register("users", UserViewSet, basename="user")
@@ -1061,7 +1055,6 @@ urlpatterns = router.urls + [
     # Equipment endpoints
     path("equipments/", equipment_list, name="equipment-list"),
     path("equipments/catalog-departments/", equipment_catalog_departments, name="equipment-catalog-departments"),
-    path("equipments/analysis-charges/", equipment_analysis_charges, name="equipment-analysis-charges"),
 
     # Public equipment addition proposals (admin approves before create)
     path(
@@ -1382,23 +1375,6 @@ urlpatterns = router.urls + [
     # Notice Board endpoints
     path("notices/", notice_list, name="notice-list"),  # GET (public) and POST (admin)
     path("notices/<int:notice_id>/", notice_detail, name="notice-detail"),
-    path("notice-requests/mine/", notice_requests_mine, name="notice-requests-mine"),
-    path(
-        "notice-requests/<int:notice_id>/complete-expiry/",
-        notice_request_complete_expiry,
-        name="notice-request-complete-expiry",
-    ),
-    path("notice-requests/pending/", notice_requests_pending, name="notice-requests-pending"),
-    path(
-        "notice-requests/<int:notice_id>/approve/",
-        notice_request_approve,
-        name="notice-request-approve",
-    ),
-    path(
-        "notice-requests/<int:notice_id>/reject/",
-        notice_request_reject,
-        name="notice-request-reject",
-    ),
     
     # Support Ticket endpoints
     path("tickets/", ticket_list, name="ticket-list"),  # GET and POST (public can POST)
@@ -1417,6 +1393,7 @@ urlpatterns = router.urls + [
     path("cms/menu/", menu_list, name="cms-menu"),
     path("cms/home/", home_page_content, name="cms-home"),
     path("cms/site-stats/", site_stats, name="cms-site-stats"),
+    path("cms/publications/", public_publications, name="cms-publications"),
     path("cms/hero-slides/", hero_slides, name="cms-hero-slides"),
     path("cms/documents/analysis-charges/", analysis_charges_document, name="cms-analysis-charges"),
     path("cms/pages/<slug:slug>/", page_by_slug, name="cms-page-by-slug"),
