@@ -35,7 +35,7 @@ def _equipment_department_name(equipment) -> str:
 
 
 def _pdf_masthead_path() -> str | None:
-    """Prefer bundled crest masthead (logo + Hindi + English), else logo PNG."""
+    """Prefer bundled crest masthead (logo + English), else logo PNG."""
     import os
 
     base_dir = getattr(settings, "BASE_DIR", None)
@@ -56,7 +56,7 @@ def _pdf_masthead_path() -> str | None:
 def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "") -> list:
     """
     Standard IIT Roorkee letterhead (all centered):
-    crest masthead (logo + Hindi + English) → department (larger, brand color) → optional title.
+    crest masthead (logo + English) → department (larger, brand color) → optional title.
     """
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -70,8 +70,8 @@ def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "
     dept_style = ParagraphStyle(
         "dept_header",
         parent=styles["Normal"],
-        fontSize=14,
-        leading=17,
+        fontSize=15,
+        leading=18,
         alignment=TA_CENTER,
         spaceAfter=4,
         textColor=brand,
@@ -99,36 +99,24 @@ def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "
         from reportlab.lib.utils import ImageReader
         ir = ImageReader(masthead)
         iw, ih = ir.getSize()
-        draw_w = 10.5 * cm
+        draw_w = 6.2 * cm
         draw_h = draw_w * (float(ih) / float(iw))
         flowables.append(Image(masthead, width=draw_w, height=draw_h, hAlign="CENTER"))
-        flowables.append(Spacer(1, 0.25 * cm))
+        flowables.append(Spacer(1, 0.15 * cm))
     else:
         # Text-only fallback if image assets are missing on the host
-        org_hi = "भारतीय प्रौद्योगिकी संस्थान रुड़की"
         org_en = getattr(settings, "ORG_PARENT_NAME", "Indian Institute of Technology Roorkee")
         org_en = _safe_str(org_en).strip() or "Indian Institute of Technology Roorkee"
-        hi_style = ParagraphStyle(
-            "org_hi_header",
+        en_style = ParagraphStyle(
+            "org_en_header",
             parent=styles["Normal"],
             fontSize=12,
             leading=15,
             alignment=TA_CENTER,
-            spaceAfter=2,
-            textColor=brand,
-            fontName="Helvetica-Bold",
-        )
-        en_style = ParagraphStyle(
-            "org_en_header",
-            parent=styles["Normal"],
-            fontSize=11,
-            leading=13,
-            alignment=TA_CENTER,
             spaceAfter=6,
             textColor=ink,
-            fontName="Helvetica",
+            fontName="Helvetica-Bold",
         )
-        flowables.append(Paragraph(org_hi, hi_style))
         flowables.append(
             Paragraph(org_en.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), en_style)
         )

@@ -37,7 +37,7 @@ def build_credit_invoice_pdf(invoice: WalletCreditInvoice) -> bytes:
         from reportlab.lib.utils import ImageReader
         ir = ImageReader(masthead)
         iw, ih = ir.getSize()
-        img_w = 280
+        img_w = 190
         img_h = img_w * (float(ih) / float(iw))
         c.drawImage(
             masthead,
