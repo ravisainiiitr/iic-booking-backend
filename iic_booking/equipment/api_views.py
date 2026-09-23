@@ -13026,8 +13026,9 @@ def set_booking_sample_status(request, booking_id):
 @permission_classes([IsAuthenticated])
 def ensure_booking_results_folder(request, booking_id):
     """
-    Return the In Analysis results folder path recipe for local (lab PC) creation.
+    Return the Sample Accepted results folder path recipe for local (lab PC) creation.
     Staff only (admin / OIC / lab incharge). Creation is done in the browser, not on the server.
+    Requires Sample Accepted (or legacy Processing) on the booking.
     """
     if not check_operator_permission(request.user):
         return Response(
@@ -13038,6 +13039,15 @@ def ensure_booking_results_folder(request, booking_id):
         booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    accepted_or_processing = booking.sample_trace_events.filter(
+        status__in=(SampleTraceStatus.SAMPLE_ACCEPTED, SampleTraceStatus.PROCESSING)
+    ).exists()
+    if not accepted_or_processing:
+        return Response(
+            {"error": "Results folder is only available after Sample Accepted."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     try:
         folder_spec = _resolve_in_analysis_results_folder_spec(booking)
@@ -13050,7 +13060,10 @@ def ensure_booking_results_folder(request, booking_id):
 
     folder_path = folder_spec["suggested_full_path"]
     processing_event = (
-        BookingSampleTrace.objects.filter(booking=booking, status=SampleTraceStatus.PROCESSING)
+        BookingSampleTrace.objects.filter(
+            booking=booking,
+            status__in=(SampleTraceStatus.SAMPLE_ACCEPTED, SampleTraceStatus.PROCESSING),
+        )
         .order_by("-created_at")
         .first()
     )

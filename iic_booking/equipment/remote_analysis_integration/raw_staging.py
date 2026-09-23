@@ -37,7 +37,25 @@ class BookingRawStagingService:
         return merge_booking_result_files(booking=booking, s3_files=s3_files, request=request)
 
     def has_raw_files(self, booking: Booking, *, request=None) -> bool:
-        return bool(self.list_raw_entries(booking, request=request))
+        """True when real instrument/user data files exist (ignore control markers / empty stubs)."""
+        from pathlib import Path
+
+        from iic_booking.equipment.booking_results_service import CONTROL_RESULT_FILE_NAMES
+
+        for entry in self.list_raw_entries(booking, request=request):
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            leaf = Path(name).name.strip().lower()
+            if leaf in CONTROL_RESULT_FILE_NAMES:
+                continue
+            size = int(entry.get("size_bytes") or 0)
+            # S3 listings often omit size; treat named non-control objects as material.
+            if size > 0 or (entry.get("key") or entry.get("download_url")):
+                if size == 0 and leaf.startswith("."):
+                    continue
+                return True
+        return False
 
     def stage_into_workspace(
         self,

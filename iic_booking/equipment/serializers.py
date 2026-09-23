@@ -1960,6 +1960,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                             "Only Lab Incharge users belonging to an Internal department can be assigned."
                         )
                     })
+        # Portal-wide: Remote Analysis stays off for every equipment.
+        attrs["enable_remote_analysis"] = False
         return attrs
 
     def create(self, validated_data):

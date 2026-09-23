@@ -223,10 +223,16 @@ class BookingSyncService:
             workspace_path = ""
             events = list(booking.sample_trace_events.all())
             if events:
-                # Prefetched unordered — pick latest by id
+                # Prefetched unordered — pick latest by id for sample_status
                 latest = max(events, key=lambda e: e.id)
                 sample_status = latest.status
-                workspace_path = latest.results_folder_path or ""
+                # Folder path is set on Sample Accepted (legacy: Processing); do not take
+                # an empty path from a later COMPLETED/etc. event.
+                for ev in sorted(events, key=lambda e: e.id, reverse=True):
+                    path = (getattr(ev, "results_folder_path", None) or "").strip()
+                    if path:
+                        workspace_path = path
+                        break
 
             user = booking.user
             items.append(
