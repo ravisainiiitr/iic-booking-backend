@@ -34,8 +34,11 @@ def build_credit_invoice_pdf(invoice: WalletCreditInvoice) -> bytes:
 
     masthead = _masthead_path()
     if masthead:
-        img_w = 210
-        img_h = img_w * (319 / 568)
+        from reportlab.lib.utils import ImageReader
+        ir = ImageReader(masthead)
+        iw, ih = ir.getSize()
+        img_w = 280
+        img_h = img_w * (float(ih) / float(iw))
         c.drawImage(
             masthead,
             (width - img_w) / 2,
@@ -44,6 +47,7 @@ def build_credit_invoice_pdf(invoice: WalletCreditInvoice) -> bytes:
             height=img_h,
             mask="auto",
             preserveAspectRatio=True,
+            anchor="c",
         )
         y -= img_h + 14
     else:

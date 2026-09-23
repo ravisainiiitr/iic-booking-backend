@@ -96,8 +96,12 @@ def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "
     flowables: list = []
     masthead = _pdf_masthead_path()
     if masthead:
-        # ~568x319 intrinsic; keep ~7.5cm wide on A4
-        flowables.append(Image(masthead, width=7.5 * cm, height=7.5 * cm * (319 / 568), hAlign="CENTER"))
+        from reportlab.lib.utils import ImageReader
+        ir = ImageReader(masthead)
+        iw, ih = ir.getSize()
+        draw_w = 10.5 * cm
+        draw_h = draw_w * (float(ih) / float(iw))
+        flowables.append(Image(masthead, width=draw_w, height=draw_h, hAlign="CENTER"))
         flowables.append(Spacer(1, 0.25 * cm))
     else:
         # Text-only fallback if image assets are missing on the host
