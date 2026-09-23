@@ -3464,6 +3464,10 @@ class UrgentBookingRequest(models.Model):
         default=False,
         help_text=_('User confirmed disclaimer about genuine urgent requirement'),
     )
+    waive_urgent_surcharge = models.BooleanField(
+        default=False,
+        help_text=_('Rush relief (NO_SLOT with >=2 peak-window failed attempts): 50% urgent surcharge is not applied'),
+    )
     number_of_samples = models.PositiveIntegerField(default=1)
     slots_requested = models.PositiveIntegerField(default=1)
     duration_minutes = models.PositiveIntegerField(null=True, blank=True)

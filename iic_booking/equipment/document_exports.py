@@ -80,8 +80,8 @@ def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "
     title_style = ParagraphStyle(
         "doc_title_header",
         parent=styles["Normal"],
-        fontSize=12,
-        leading=15,
+        fontSize=13,
+        leading=16,
         alignment=TA_CENTER,
         spaceAfter=8,
         textColor=ink,
@@ -110,8 +110,8 @@ def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "
         en_style = ParagraphStyle(
             "org_en_header",
             parent=styles["Normal"],
-            fontSize=12,
-            leading=15,
+            fontSize=14,
+            leading=17,
             alignment=TA_CENTER,
             spaceAfter=6,
             textColor=ink,
@@ -378,7 +378,7 @@ def build_booking_invoice_pdf(*, booking, billing_profile) -> bytes:
     t.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -742,19 +742,13 @@ def build_proforma_invoice_pdf(*, data: Dict[str, Any], billing_profile) -> byte
     h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=16, spaceAfter=8)
     small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, leading=12)
 
-    org_name = getattr(settings, "ORG_LEGAL_NAME", "IIC Booking")
-    org_gstin = getattr(settings, "ORG_GSTIN", "")
-    org_address = getattr(settings, "ORG_ADDRESS", "")
-
     bill_name = (getattr(billing_profile, "billing_name", "") or "").strip() or getattr(getattr(billing_profile, "user", None), "name", "") or getattr(getattr(billing_profile, "user", None), "email", "") or "—"
     gstin = (getattr(billing_profile, "gstin", "") or "").strip()
 
     story = []
     dept_name = (data.get("department_name") or "").strip() or getattr(settings, "ORG_DEPARTMENT_NAME", "") or getattr(settings, "ORG_LEGAL_NAME", "")
     story.extend(_pdf_letterhead_story_lines(department_name=dept_name, document_title="Proforma Invoice"))
-    story.append(Paragraph(f"<b>From</b><br/>{_safe_str(org_name)}<br/>{_safe_str(org_address)}" + (f"<br/>GSTIN: {_safe_str(org_gstin)}" if org_gstin else ""), small))
-    story.append(Spacer(1, 0.3 * cm))
-    story.append(Paragraph(f"<b>To</b><br/>{_safe_str(bill_name)}" + (f"<br/>GSTIN: {_safe_str(gstin)}" if gstin else ""), small))
+    story.append(Paragraph(f"<b>Requested by</b><br/>{_safe_str(bill_name)}" + (f"<br/>GSTIN: {_safe_str(gstin)}" if gstin else ""), small))
     story.append(Spacer(1, 0.5 * cm))
 
     eq_name = _safe_str(data.get("equipment_name", "Equipment"))
@@ -779,7 +773,7 @@ def build_proforma_invoice_pdf(*, data: Dict[str, Any], billing_profile) -> byte
     t.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
                 ("ALIGN", (1, 1), (1, -1), "RIGHT"),
@@ -849,10 +843,6 @@ def build_proforma_invoice_multi_pdf(
     terms_style = ParagraphStyle("terms", parent=small, fontSize=9, alignment=TA_LEFT, spaceBefore=6, spaceAfter=4)
     disclaimer_style = ParagraphStyle("disclaimer", parent=small, fontSize=8, alignment=TA_CENTER, textColor=colors.grey, spaceBefore=8)
 
-    org_name = getattr(settings, "ORG_LEGAL_NAME", "IIC Booking, IIT Roorkee")
-    org_gstin = getattr(settings, "ORG_GSTIN", "")
-    org_address = getattr(settings, "ORG_ADDRESS", "Indian Institute of Technology Roorkee, Roorkee, Uttarakhand, India")
-
     # User requesting
     user_name = getattr(user, "name", "") or getattr(user, "get_full_name", lambda: "")() or "Guest"
     user_email = getattr(user, "email", "") or "—"
@@ -909,12 +899,6 @@ def build_proforma_invoice_multi_pdf(
     dept_name = dept_name or (getattr(settings, "ORG_DEPARTMENT_NAME", "") or getattr(settings, "ORG_LEGAL_NAME", ""))
     story.extend(_pdf_letterhead_story_lines(department_name=dept_name, document_title="Proforma Invoice"))
     story.append(Paragraph(
-        f"<b>From</b><br/>{_safe_str(org_name)}<br/>{_safe_str(org_address)}"
-        + (f"<br/>GSTIN: {_safe_str(org_gstin)}" if org_gstin else ""),
-        small,
-    ))
-    story.append(Spacer(1, 0.4 * cm))
-    story.append(Paragraph(
         f"<b>Requested by</b><br/>{_safe_str(user_name)}<br/>"
         f"Email: {_safe_str(user_email)}<br/>Department: {_safe_str(user_dept)}<br/>User type: {_safe_str(user_type)}",
         small,
@@ -969,7 +953,20 @@ def build_proforma_invoice_multi_pdf(
         )
         input_vals = row.get("input_labels_and_values") or row.get("input_values") or {}
         if isinstance(input_vals, dict):
-            input_parts = [f"{k}: {v}" for k, v in input_vals.items() if v not in (None, "", [])]
+            input_parts = []
+            for k, v in input_vals.items():
+                if v in (None, "", []):
+                    continue
+                vs = str(v).strip()
+                if not vs:
+                    continue
+                kl = str(k).lower()
+                if v is False or (
+                    vs.lower() in ("no", "false", "0", "n")
+                    and ("?" in str(k) or "want" in kl or "avail" in kl or "opt" in kl)
+                ):
+                    continue
+                input_parts.append(f"{k}: {v}")
         else:
             input_parts = []
         breakdown = row.get("charge_breakdown") or []
@@ -1006,7 +1003,7 @@ def build_proforma_invoice_multi_pdf(
     t.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
                 ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                 ("FONTNAME", (0, 0), (-1, 0), header_font),
                 ("FONTSIZE", (0, 0), (-1, 0), 9),

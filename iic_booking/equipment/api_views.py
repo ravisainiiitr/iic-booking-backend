@@ -164,6 +164,7 @@ from .calculators import (
     build_safe_input_values_for_charge_calculation,
     quantize_money,
     apply_urgent_booking_surcharge,
+    remove_urgent_booking_surcharge,
 )
 from .slot_utils import SlotGenerator, SlotAvailabilityChecker
 from .slot_department_access import (
@@ -948,6 +949,129 @@ def get_approved_urgent_requests_last_6_months(user_id, equipment_id):
         decided_at__gte=cutoff,
     ).order_by("-decided_at").values("id", "requested_at", "decided_at")
     return list(qs)
+
+RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS = 2
+RUSH_RELIEF_LOOKBACK_DAYS = 14
+
+
+def _peak_qualified_failed_attempts(user, equipment, days=RUSH_RELIEF_LOOKBACK_DAYS):
+    """
+    User's FAILED booking attempts for this equipment in the last `days` days, excluding quota failures.
+    When the equipment has a slot window reference and urgent_peak_window_minutes, only attempts within
+    [ref_time, ref_time + peak_minutes] on the reference weekday count.
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+
+    since = timezone.now() - timedelta(days=days)
+    qs = (
+        BookingAttemptLog.objects
+        .filter(
+            user=user,
+            equipment_id=equipment.equipment_id,
+            outcome=BookingAttemptOutcome.FAILED,
+            requested_at__gte=since,
+        )
+        .order_by("-requested_at")[:100]
+    )
+    ref_weekday, ref_time = get_equipment_slot_window_reference_config(equipment)
+    peak_minutes = getattr(equipment, "urgent_peak_window_minutes", None)
+    apply_time_window = (
+        ref_weekday is not None and ref_time is not None and peak_minutes is not None and peak_minutes > 0
+    )
+    start_minutes = None
+    if apply_time_window:
+        if hasattr(ref_time, "hour"):
+            start_minutes = ref_time.hour * 60 + ref_time.minute
+        else:
+            parts = str(ref_time).split(":")
+            start_minutes = int(parts[0]) * 60 + (int(parts[1]) if len(parts) > 1 else 0)
+
+    def is_quota_failure(reason):
+        r = (reason or "").strip().lower()
+        return bool(r) and ("quota check failed" in r or "weekly quota" in r or "monthly quota" in r)
+
+    def in_peak_window(requested_at):
+        if not apply_time_window or requested_at is None:
+            return True
+        local_dt = timezone.localtime(requested_at)
+        if local_dt.weekday() != ref_weekday:
+            return False
+        log_minutes = local_dt.hour * 60 + local_dt.minute
+        return start_minutes <= log_minutes <= start_minutes + peak_minutes
+
+    return [
+        log for log in qs
+        if not is_quota_failure(log.failure_reason) and in_peak_window(log.requested_at)
+    ]
+
+
+def _confirm_urgent_hold_booking(urg, actor):
+    """
+    Debit the wallet (if charged) and convert the urgent request's HOLD booking to BOOKED.
+    Returns (converted: bool, error: str | None). No-op (False, None) when there is no convertible hold.
+    """
+    hold_booking = urg.hold_booking if urg.hold_booking_id else None
+    if not hold_booking or hold_booking.status != BookingStatus.HOLD:
+        return False, None
+    if hold_booking.total_charge and hold_booking.total_charge > 0:
+        from iic_booking.users.repositories.wallet_repository import WalletRepository
+        from iic_booking.users.wallet_credit_facility import (
+            subwallet_booking_balance_ok,
+            subwallet_minimum_balance_after_debit,
+        )
+        booking_target, _ = WalletRepository.get_booking_wallet_target(
+            urg.user, getattr(urg.equipment, "internal_department", None)
+        )
+        if not booking_target:
+            return False, "User has no wallet for debiting. Cannot approve urgent request with hold booking."
+        booking_target.refresh_from_db()
+        ok_hold, hold_err = subwallet_booking_balance_ok(booking_target, hold_booking.total_charge, False)
+        if not ok_hold:
+            return False, hold_err or "Insufficient wallet balance to confirm hold."
+        try:
+            with transaction.atomic():
+                transaction_description = f"Urgent approval: Booking #{hold_booking.equipment.code} - {hold_booking.equipment.name} (Hold converted)"
+                _vid = (getattr(hold_booking, "virtual_booking_id", None) or "").strip()
+                if _vid:
+                    transaction_description += f" | Ref: {_vid}"
+                transaction_description += _student_booking_description_suffix(booking_target, hold_booking.user)
+                booking_target.debit(
+                    amount=hold_booking.total_charge,
+                    description=transaction_description,
+                    related_user=hold_booking.user,
+                    minimum_balance_after=subwallet_minimum_balance_after_debit(booking_target),
+                )
+                hold_booking.status = BookingStatus.BOOKED
+                hold_booking.save(update_fields=["status"])
+                create_booking_event(
+                    booking=hold_booking,
+                    event_type=BookingEventType.STATUS_CHANGED,
+                    created_by=actor,
+                    comment="Hold converted to Booked after urgent request approved.",
+                    previous_status=BookingStatus.HOLD,
+                    new_status=BookingStatus.BOOKED,
+                    metadata={"urgent_hold_converted": True},
+                    send_notification=True,
+                )
+        except ValueError as e:
+            return False, f"Wallet error: {str(e)}"
+        return True, None
+    with transaction.atomic():
+        hold_booking.status = BookingStatus.BOOKED
+        hold_booking.save(update_fields=["status"])
+        create_booking_event(
+            booking=hold_booking,
+            event_type=BookingEventType.STATUS_CHANGED,
+            created_by=actor,
+            comment="Hold converted to Booked after urgent request approved (no charge).",
+            previous_status=BookingStatus.HOLD,
+            new_status=BookingStatus.BOOKED,
+            metadata={"urgent_hold_converted": True},
+            send_notification=True,
+        )
+    return True, None
+
 
 def _format_approved_urgent_6m(rows):
     """Turn list of dicts with id, requested_at, decided_at into API-safe list with ISO dates."""
@@ -7643,14 +7767,18 @@ def log_booking_attempt(request):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def create_urgent_booking_request(request):
     """
-    Create an urgent booking request.
-    Two types: NO_SLOT (unable to get slot despite repeated trials), REVIEWER_URGENT (urgent comment from reviewer).
-    For REVIEWER_URGENT: documentary evidence file is required (multipart: evidence_file).
-    User must have at least one NoSlotAllocationLog (or failed attempt) in last 90 days for NO_SLOT.
+    Create an urgent booking request. Two types:
+      - NO_SLOT ("Type A" / rush relief): requires >= RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS failed attempts
+        in the peak window over the last RUSH_RELIEF_LOOKBACK_DAYS days for this equipment. The 50% urgent
+        surcharge is waived and the request is auto-approved (hold booking confirmed) with no OIC review.
+      - REVIEWER_URGENT ("Type B" / manual with surcharge): any internal user; reason/comment required,
+        evidence optional. The 50% urgent surcharge applies; auto-approved with no further review.
+    Auto-approval converts the linked hold booking (wallet debit); if that fails (e.g. low balance) the
+    request stays PENDING for Admin/OIC.
     Body: equipment_id, request_type (NO_SLOT | REVIEWER_URGENT), disclaimer_accepted (true),
-          number_of_samples, slots_requested, duration_minutes (optional).
-    For REVIEWER_URGENT also send: evidence_file (file upload), evidence_original_name (optional),
-    reviewer_comment (required text, 10–8000 characters).
+          number_of_samples, slots_requested, duration_minutes (optional), hold_booking_id (optional).
+    For REVIEWER_URGENT also send: reviewer_comment (required text, 10–8000 characters),
+    evidence_file (optional file upload), evidence_original_name (optional).
     """
     if not _is_internal_user(request.user):
         return Response(
@@ -7680,14 +7808,6 @@ def create_urgent_booking_request(request):
         return Response(
             {"error": "request_type must be NO_SLOT or REVIEWER_URGENT."},
             status=status.HTTP_400_BAD_REQUEST,
-        )
-    if (
-        request_type_val == UrgentBookingRequestType.REVIEWER_URGENT
-        and request.user.user_type != UserType.FACULTY
-    ):
-        return Response(
-            {"error": "Only faculty users can submit 'Urgent comment from reviewer' requests."},
-            status=status.HTTP_403_FORBIDDEN,
         )
     disclaimer_accepted = request.data.get("disclaimer_accepted")
     if disclaimer_accepted not in (True, "true", "True", "1"):
@@ -7784,31 +7904,25 @@ def create_urgent_booking_request(request):
     from django.utils import timezone
     from datetime import timedelta
     if request_type_val == UrgentBookingRequestType.NO_SLOT:
-        cutoff = timezone.now() - timedelta(days=90)
-        has_log = NoSlotAllocationLog.objects.filter(
-            user=request.user,
-            requested_at__gte=cutoff,
-        ).exists() or BookingAttemptLog.objects.filter(
-            user=request.user,
-            outcome=BookingAttemptOutcome.FAILED,
-            requested_at__gte=cutoff,
-        ).exists()
-        if not has_log:
+        peak_attempts = _peak_qualified_failed_attempts(request.user, equip)
+        if len(peak_attempts) < RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS:
             return Response(
-                {"error": "No record found for your booking request. Your request cannot be entertained. Please try to book slots first; if no slots are available, try again and then submit an urgent request."},
+                {
+                    "error": (
+                        f"Rush relief needs at least {RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS} unsuccessful booking attempts "
+                        f"for this equipment during the peak booking window in the last {RUSH_RELIEF_LOOKBACK_DAYS} days "
+                        f"(found {len(peak_attempts)}). You can instead submit an urgent request with a reason (50% surcharge applies)."
+                    ),
+                    "code": "RUSH_RELIEF_NOT_QUALIFIED",
+                    "peak_qualified_attempts": len(peak_attempts),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
     else:
-        evidence_file = request.FILES.get("evidence_file")
-        if not evidence_file:
-            return Response(
-                {"error": "Documentary evidence file is required for 'Urgent comment from reviewer'. Please upload a document."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         reviewer_comment = (request.data.get("reviewer_comment") or "").strip()
         if len(reviewer_comment) < 10:
             return Response(
-                {"error": "Reviewer comment is required (at least 10 characters). Summarize the reviewer feedback or urgency."},
+                {"error": "A reason is required (at least 10 characters). Explain why the booking is urgent."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if len(reviewer_comment) > 8000:
@@ -7830,6 +7944,7 @@ def create_urgent_booking_request(request):
         equipment=equip,
         request_type=request_type_val,
         disclaimer_accepted=True,
+        waive_urgent_surcharge=request_type_val == UrgentBookingRequestType.NO_SLOT,
         number_of_samples=max(1, number_of_samples),
         slots_requested=max(1, slots_requested),
         duration_minutes=duration_minutes,
@@ -7849,23 +7964,51 @@ def create_urgent_booking_request(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     if request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
-        req.evidence_file = request.FILES.get("evidence_file")
-        req.evidence_original_name = (request.data.get("evidence_original_name") or (req.evidence_file.name if req.evidence_file else ""))[:255]
+        evidence = request.FILES.get("evidence_file")
+        if evidence:
+            req.evidence_file = evidence
+            req.evidence_original_name = (request.data.get("evidence_original_name") or evidence.name or "")[:255]
         req.reviewer_comment = (request.data.get("reviewer_comment") or "").strip()[:8000]
+    hold = req.hold_booking if req.hold_booking_id else None
+    if req.waive_urgent_surcharge and hold is not None and hold.status == BookingStatus.HOLD:
+        new_total, new_breakdown, removed = remove_urgent_booking_surcharge(
+            hold.total_charge or Decimal("0.00"), hold.charge_breakdown or []
+        )
+        if removed > 0:
+            hold.total_charge = new_total
+            hold.charge_breakdown = new_breakdown
+            hold.save(update_fields=["total_charge", "charge_breakdown"])
     req.save()
+
+    auto_approved = False
+    auto_approve_error = None
+    if hold is not None:
+        with transaction.atomic():
+            converted, auto_approve_error = _confirm_urgent_hold_booking(req, None)
+            if converted:
+                req.status = UrgentBookingRequestStatus.APPROVED
+                req.decided_at = timezone.now()
+                req.admin_notes = (
+                    "Auto-approved: rush relief (surcharge waived)."
+                    if req.waive_urgent_surcharge
+                    else "Auto-approved: urgent request with reason (50% surcharge)."
+                )
+                req.save(update_fields=["status", "decided_at", "admin_notes"])
+                auto_approved = True
     # Acknowledgement to the requester (consistent subject/body with portal wording)
     try:
         user_link = get_frontend_absolute_url("/my-urgent-requests")
         if request_type_val == UrgentBookingRequestType.NO_SLOT:
-            rt_label = "No slot available despite repeated attempts"
-            next_steps = (
-                "An administrator will review your request. You can track its status using the link below."
-            )
+            rt_label = "Rush relief — no slot despite repeated peak-window attempts (surcharge waived)"
         else:
-            rt_label = "Urgent comment from reviewer (with documentary evidence)"
+            rt_label = "Urgent request with reason (50% urgent surcharge)"
+        if auto_approved:
+            next_steps = "Your held slots have been confirmed automatically. You can view the booking using the link below."
+        else:
             next_steps = (
-                "An administrator/Officer in charge will review your request. "
-                "You can track progress using the link below."
+                "Your request is recorded. Admin/Officer in charge will confirm it"
+                + (f" ({auto_approve_error})" if auto_approve_error else "")
+                + ". You can track its status using the link below."
             )
         CommunicationService.send_email(
             recipient=request.user,
@@ -7888,11 +8031,22 @@ def create_urgent_booking_request(request):
             e,
             exc_info=True,
         )
-    message = "Urgent booking request submitted. Admin/Officer in charge will review it."
+    if auto_approved:
+        message = (
+            "Urgent request approved automatically and your held slots are booked"
+            + (" (urgent surcharge waived)." if req.waive_urgent_surcharge else " (50% urgent surcharge applied).")
+        )
+    elif auto_approve_error:
+        message = f"Urgent request submitted, but slots could not be confirmed automatically: {auto_approve_error}"
+    else:
+        message = "Urgent booking request submitted."
     return Response(
         {
             "message": message,
             "id": req.id,
+            "status": req.status,
+            "auto_approved": auto_approved,
+            "waive_urgent_surcharge": req.waive_urgent_surcharge,
         },
         status=status.HTTP_201_CREATED,
     )
@@ -7970,6 +8124,7 @@ def list_my_urgent_booking_requests(request):
             "equipment_code": req.equipment.code,
             "equipment_name": req.equipment.name,
             "request_type": req.request_type,
+            "waive_urgent_surcharge": req.waive_urgent_surcharge,
             "status": req.status,
             "requested_at": req.requested_at.isoformat() if req.requested_at else None,
             "decided_at": req.decided_at.isoformat() if req.decided_at else None,
@@ -8079,6 +8234,7 @@ def list_urgent_booking_requests(request):
         results.append({
             "id": req.id,
             "request_type": req.request_type,
+            "waive_urgent_surcharge": req.waive_urgent_surcharge,
             "user_id": req.user_id,
             "user_name": req.user.name or req.user.email,
             "user_email": req.user.email,
@@ -8188,6 +8344,7 @@ def get_urgent_request_detail(request, request_id):
     result = {
         "id": urg.id,
         "request_type": urg.request_type,
+        "waive_urgent_surcharge": urg.waive_urgent_surcharge,
         "user_id": urg.user_id,
         "user_name": urg.user.name or urg.user.email,
         "user_email": urg.user.email,
@@ -8398,62 +8555,8 @@ def get_my_unsuccessful_booking_attempts(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    two_weeks_ago = timezone.now() - timedelta(days=14)
-    qs = (
-        BookingAttemptLog.objects
-        .filter(
-            user=request.user,
-            equipment_id=equipment_id,
-            outcome=BookingAttemptOutcome.FAILED,
-            requested_at__gte=two_weeks_ago,
-        )
-        .select_related("equipment")
-        .order_by("-requested_at")[:100]
-    )
-
-    # Effective slot window (internal users): per-equipment when set, else global
-    effective_ref_weekday, effective_ref_time = get_equipment_slot_window_reference_config(equipment)
-
-    peak_minutes = getattr(equipment, "urgent_peak_window_minutes", None)
-    apply_time_window = (
-        effective_ref_weekday is not None
-        and effective_ref_time is not None
-        and peak_minutes is not None
-        and peak_minutes > 0
-    )
-
-    def is_quota_failure(failure_reason):
-        if not failure_reason:
-            return False
-        r = failure_reason.strip().lower()
-        if "quota check failed" in r:
-            return True
-        if "weekly quota" in r or "monthly quota" in r:
-            return True
-        return False
-
-    def in_peak_window(requested_at):
-        if not apply_time_window or requested_at is None:
-            return True
-        local_dt = timezone.localtime(requested_at)
-        if local_dt.weekday() != effective_ref_weekday:
-            return False
-        ref_time = effective_ref_time
-        if hasattr(ref_time, "hour"):
-            start_minutes = ref_time.hour * 60 + ref_time.minute
-        else:
-            parts = str(ref_time).split(":")
-            start_minutes = int(parts[0]) * 60 + (int(parts[1]) if len(parts) > 1 else 0)
-        end_minutes = start_minutes + peak_minutes
-        log_minutes = local_dt.hour * 60 + local_dt.minute
-        return start_minutes <= log_minutes <= end_minutes
-
     results = []
-    for log in qs:
-        if is_quota_failure(log.failure_reason):
-            continue
-        if not in_peak_window(log.requested_at):
-            continue
+    for log in _peak_qualified_failed_attempts(request.user, equipment):
         results.append({
             "id": log.id,
             "requested_at": log.requested_at.isoformat() if log.requested_at else None,
@@ -8464,7 +8567,13 @@ def get_my_unsuccessful_booking_attempts(request):
             "duration_minutes": log.duration_minutes,
         })
     return Response(
-        {"entries": results, "equipment_id": equipment_id},
+        {
+            "entries": results,
+            "equipment_id": equipment_id,
+            "peak_qualified_attempts": len(results),
+            "rush_relief_min_attempts": RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS,
+            "rush_relief_qualified": len(results) >= RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS,
+        },
         status=status.HTTP_200_OK,
     )
 
@@ -8705,73 +8814,9 @@ def update_urgent_booking_request(request, request_id):
         urg.admin_notes = request.data.get("admin_notes") or ""
     # On APPROVED with a hold booking: debit wallet and convert HOLD -> BOOKED
     if new_status == UrgentBookingRequestStatus.APPROVED and urg.hold_booking_id:
-        hold_booking = urg.hold_booking
-        if hold_booking and hold_booking.status == BookingStatus.HOLD and hold_booking.total_charge and hold_booking.total_charge > 0:
-            from iic_booking.users.repositories.wallet_repository import WalletRepository
-            booking_target, _ = WalletRepository.get_booking_wallet_target(
-                urg.user, getattr(urg.equipment, "internal_department", None)
-            )
-            if not booking_target:
-                return Response(
-                    {"error": "User has no wallet for debiting. Cannot approve urgent request with hold booking."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            booking_target.refresh_from_db()
-            from iic_booking.users.wallet_credit_facility import subwallet_booking_balance_ok
-
-            ok_hold, hold_err = subwallet_booking_balance_ok(
-                booking_target, hold_booking.total_charge, False
-            )
-            if not ok_hold:
-                return Response(
-                    {"error": hold_err or "Insufficient wallet balance to confirm hold."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            try:
-                with transaction.atomic():
-                    from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit
-
-                    transaction_description = f"Urgent approval: Booking #{hold_booking.equipment.code} - {hold_booking.equipment.name} (Hold converted)"
-                    _vid = (getattr(hold_booking, "virtual_booking_id", None) or "").strip()
-                    if _vid:
-                        transaction_description += f" | Ref: {_vid}"
-                    transaction_description += _student_booking_description_suffix(booking_target, hold_booking.user)
-                    booking_target.debit(
-                        amount=hold_booking.total_charge,
-                        description=transaction_description,
-                        related_user=hold_booking.user,
-                        minimum_balance_after=subwallet_minimum_balance_after_debit(booking_target),
-                    )
-                    hold_booking.status = BookingStatus.BOOKED
-                    hold_booking.save(update_fields=["status"])
-                    create_booking_event(
-                        booking=hold_booking,
-                        event_type=BookingEventType.STATUS_CHANGED,
-                        created_by=request.user,
-                        comment="Hold converted to Booked after urgent request approved.",
-                        previous_status=BookingStatus.HOLD,
-                        new_status=BookingStatus.BOOKED,
-                        metadata={"urgent_hold_converted": True},
-                        send_notification=True,
-                    )
-                    hold_converted = True
-            except ValueError as e:
-                return Response({"error": f"Wallet error: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
-        elif hold_booking and hold_booking.status == BookingStatus.HOLD and (not hold_booking.total_charge or hold_booking.total_charge == 0):
-            with transaction.atomic():
-                hold_booking.status = BookingStatus.BOOKED
-                hold_booking.save(update_fields=["status"])
-                create_booking_event(
-                    booking=hold_booking,
-                    event_type=BookingEventType.STATUS_CHANGED,
-                    created_by=request.user,
-                    comment="Hold converted to Booked after urgent request approved (no charge).",
-                    previous_status=BookingStatus.HOLD,
-                    new_status=BookingStatus.BOOKED,
-                    metadata={"urgent_hold_converted": True},
-                    send_notification=True,
-                )
-                hold_converted = True
+        hold_converted, hold_err = _confirm_urgent_hold_booking(urg, request.user)
+        if hold_err:
+            return Response({"error": hold_err}, status=status.HTTP_400_BAD_REQUEST)
     urg.save()
     # Email requester when Admin/OIC approves/rejects without a separate hold email (no hold conversion / release).
     try:

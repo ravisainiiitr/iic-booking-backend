@@ -104,6 +104,30 @@ def apply_urgent_booking_surcharge(
     return with_surcharge, breakdown, surcharge
 
 
+def remove_urgent_booking_surcharge(
+    total_charge: Decimal,
+    charge_breakdown: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Decimal, List[Dict[str, Any]], Decimal]:
+    """
+    Inverse of apply_urgent_booking_surcharge for waived (rush relief) urgent requests.
+    Drops the surcharge line and subtracts its amount. Returns (new_total, new_breakdown, removed_amount).
+    """
+    total = quantize_money(total_charge)
+    kept: List[Dict[str, Any]] = []
+    removed = Decimal("0.00")
+    for line in charge_breakdown or []:
+        if isinstance(line, dict) and "urgent booking surcharge" in str(line.get("description") or "").lower():
+            try:
+                removed += quantize_money(line.get("amount") or 0)
+            except Exception:
+                pass
+            continue
+        kept.append(line)
+    if removed <= 0:
+        return total, kept, Decimal("0.00")
+    return quantize_money(max(Decimal("0.00"), total - removed)), kept, removed
+
+
 def equipment_has_icpms_standard_coverage(equipment) -> bool:
     if equipment is None:
         return False
