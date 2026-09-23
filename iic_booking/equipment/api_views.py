@@ -1672,7 +1672,7 @@ def equipment_analysis_charges(request):
         UserType.FACULTY,
         UserType.EXTERNAL,
         UserType.RND,
-        UserType.INDUSTRY,
+        UserType.INSTITUTE,  # stored as "Industry"
         UserType.STARTUP_INCUBATED_IITR,
         UserType.EXTERNAL_STARTUP_MSME,
         UserType.OTHER,
