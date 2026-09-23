@@ -34,13 +34,13 @@ def home_page_content(request):
 def site_stats(request):
     """
     Public counts for the home hero: operational equipment visible on the public catalog,
-    active user accounts (is_active=True), and total bookings placed on the portal.
+    active user accounts (is_active=True), total bookings, and equipment publications.
     """
     from django.contrib.auth import get_user_model
     from django.contrib.auth.models import AnonymousUser
 
     from iic_booking.equipment.api_views import get_visible_equipment_queryset
-    from iic_booking.equipment.models import Booking, EquipmentStatus
+    from iic_booking.equipment.models import Booking, EquipmentPublication, EquipmentStatus
 
     User = get_user_model()
     vis_user = (
@@ -55,13 +55,47 @@ def site_stats(request):
     )
     active_users_count = User.objects.filter(is_active=True).count()
     total_bookings_count = Booking.objects.count()
+    publication_count = EquipmentPublication.objects.count()
     return Response(
         {
             "equipment_count": equipment_count,
             "active_users_count": active_users_count,
             "total_bookings_count": total_bookings_count,
+            "publication_count": publication_count,
         }
     )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def public_publications(request):
+    """Public list of equipment-linked publications for the home hero link."""
+    from iic_booking.equipment.models import EquipmentPublication
+
+    qs = (
+        EquipmentPublication.objects.select_related("equipment")
+        .order_by("-year", "title", "equipment_publication_id")
+    )
+    results = []
+    for pub in qs[:500]:
+        eq = pub.equipment
+        href = (pub.url or "").strip()
+        if not href and pub.doi:
+            href = f"https://doi.org/{str(pub.doi).strip()}"
+        results.append(
+            {
+                "id": pub.equipment_publication_id,
+                "title": pub.title,
+                "citation": pub.citation or "",
+                "url": href,
+                "doi": pub.doi or "",
+                "year": pub.year,
+                "equipment_id": eq.equipment_id if eq else None,
+                "equipment_name": eq.name if eq else "",
+                "equipment_code": eq.code if eq else "",
+            }
+        )
+    return Response({"count": qs.count(), "results": results})
 
 
 @api_view(["GET"])
