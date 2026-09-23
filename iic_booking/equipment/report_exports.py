@@ -7,6 +7,7 @@ import tempfile
 from typing import Any, Optional
 
 from .reports import get_equipment_report_data
+from .document_exports import _pdf_letterhead_story_lines
 
 
 def _report_duration_caption(data: dict) -> str:
@@ -88,10 +89,13 @@ def build_report_pdf(
 
     hdr = data.get("report_header") or {}
     story = []
-    dept_name = str(hdr.get("department_name") or hdr.get("institute_name") or "—")
-    story.append(Paragraph(dept_name, title_style))
-    story.append(Paragraph("Indian Institute of Technology Roorkee", subtitle_style))
-    story.append(Paragraph(str(hdr.get("report_title", "Equipment Performance Report")), title_style))
+    dept_name = str(hdr.get("department_name") or hdr.get("institute_name") or "Institute Instrumentation Centre (IIC)")
+    story.extend(
+        _pdf_letterhead_story_lines(
+            department_name=dept_name,
+            document_title=str(hdr.get("report_title", "Equipment Performance Report")),
+        )
+    )
     story.append(Paragraph(_report_duration_caption(data), subtitle_style))
     story.append(Spacer(1, 0.4 * cm))
 

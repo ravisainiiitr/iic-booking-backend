@@ -34,41 +34,110 @@ def _equipment_department_name(equipment) -> str:
     return fallback or "—"
 
 
-def _pdf_letterhead_story_lines(*, department_name: str) -> list:
-    """Return ReportLab flowables for the standard letterhead block."""
+def _pdf_masthead_path() -> str | None:
+    """Prefer bundled crest masthead (logo + Hindi + English), else logo PNG."""
+    import os
+
+    base_dir = getattr(settings, "BASE_DIR", None)
+    candidates = []
+    if base_dir:
+        candidates.extend(
+            [
+                os.path.join(base_dir, "fonts", "iitr-pdf-masthead.png"),
+                os.path.join(base_dir, "fonts", "IITR_Logo.png"),
+            ]
+        )
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
+def _pdf_letterhead_story_lines(*, department_name: str, document_title: str = "") -> list:
+    """
+    Standard IIT Roorkee letterhead (all centered):
+    crest masthead (logo + Hindi + English) → department (larger, brand color) → optional title.
+    """
+    from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.enums import TA_CENTER
-    from reportlab.platypus import Paragraph, Spacer
+    from reportlab.platypus import Image, Paragraph, Spacer
     from reportlab.lib.units import cm
 
     styles = getSampleStyleSheet()
+    brand = colors.HexColor("#153f79")
+    ink = colors.HexColor("#1e293b")
     dept_style = ParagraphStyle(
         "dept_header",
         parent=styles["Normal"],
-        fontSize=12,
-        leading=14,
+        fontSize=14,
+        leading=17,
         alignment=TA_CENTER,
-        spaceAfter=2,
+        spaceAfter=4,
+        textColor=brand,
         fontName="Helvetica-Bold",
     )
-    org_style = ParagraphStyle(
-        "org_header",
+    title_style = ParagraphStyle(
+        "doc_title_header",
         parent=styles["Normal"],
-        fontSize=11,
-        leading=13,
+        fontSize=12,
+        leading=15,
         alignment=TA_CENTER,
-        spaceAfter=6,
+        spaceAfter=8,
+        textColor=ink,
         fontName="Helvetica-Bold",
     )
-    dept = _safe_str(department_name).strip() or "—"
-    org = getattr(settings, "ORG_PARENT_NAME", "Indian Institute of Technology Roorkee")
-    org = _safe_str(org).strip() or "Indian Institute of Technology Roorkee"
+    dept = _safe_str(department_name).strip() or getattr(
+        settings, "ORG_DEPARTMENT_NAME", "Institute Instrumentation Centre (IIC)"
+    )
+    dept = _safe_str(dept).strip() or "Institute Instrumentation Centre (IIC)"
+    title = _safe_str(document_title).strip()
 
-    return [
-        Paragraph(dept.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), dept_style),
-        Paragraph(org.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), org_style),
-        Spacer(1, 0.2 * cm),
-    ]
+    flowables: list = []
+    masthead = _pdf_masthead_path()
+    if masthead:
+        # ~568x319 intrinsic; keep ~7.5cm wide on A4
+        flowables.append(Image(masthead, width=7.5 * cm, height=7.5 * cm * (319 / 568), hAlign="CENTER"))
+        flowables.append(Spacer(1, 0.25 * cm))
+    else:
+        # Text-only fallback if image assets are missing on the host
+        org_hi = "भारतीय प्रौद्योगिकी संस्थान रुड़की"
+        org_en = getattr(settings, "ORG_PARENT_NAME", "Indian Institute of Technology Roorkee")
+        org_en = _safe_str(org_en).strip() or "Indian Institute of Technology Roorkee"
+        hi_style = ParagraphStyle(
+            "org_hi_header",
+            parent=styles["Normal"],
+            fontSize=12,
+            leading=15,
+            alignment=TA_CENTER,
+            spaceAfter=2,
+            textColor=brand,
+            fontName="Helvetica-Bold",
+        )
+        en_style = ParagraphStyle(
+            "org_en_header",
+            parent=styles["Normal"],
+            fontSize=11,
+            leading=13,
+            alignment=TA_CENTER,
+            spaceAfter=6,
+            textColor=ink,
+            fontName="Helvetica",
+        )
+        flowables.append(Paragraph(org_hi, hi_style))
+        flowables.append(
+            Paragraph(org_en.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), en_style)
+        )
+
+    flowables.append(
+        Paragraph(dept.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), dept_style)
+    )
+    if title:
+        flowables.append(
+            Paragraph(title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"), title_style)
+        )
+    flowables.append(Spacer(1, 0.25 * cm))
+    return flowables
 
 # Rupee symbol for PDF (Unicode U+20B9). Use with a font that supports it (e.g. DejaVu Sans).
 RUPEES_SYMBOL = "\u20B9"
@@ -277,8 +346,7 @@ def build_booking_invoice_pdf(*, booking, billing_profile) -> bytes:
     bill_addr = "<br/>".join([line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in addr_lines]) or "—"
 
     story = []
-    story.extend(_pdf_letterhead_story_lines(department_name=_equipment_department_name(getattr(booking, "equipment", None))))
-    story.append(Paragraph("INVOICE", h1))
+    story.extend(_pdf_letterhead_story_lines(department_name=_equipment_department_name(getattr(booking, "equipment", None)), document_title="Invoice"))
 
     header = Table(
         [
@@ -691,8 +759,7 @@ def build_proforma_invoice_pdf(*, data: Dict[str, Any], billing_profile) -> byte
 
     story = []
     dept_name = (data.get("department_name") or "").strip() or getattr(settings, "ORG_DEPARTMENT_NAME", "") or getattr(settings, "ORG_LEGAL_NAME", "")
-    story.extend(_pdf_letterhead_story_lines(department_name=dept_name))
-    story.append(Paragraph("PROFORMA INVOICE", h1))
+    story.extend(_pdf_letterhead_story_lines(department_name=dept_name, document_title="Proforma Invoice"))
     story.append(Paragraph(f"<b>From</b><br/>{_safe_str(org_name)}<br/>{_safe_str(org_address)}" + (f"<br/>GSTIN: {_safe_str(org_gstin)}" if org_gstin else ""), small))
     story.append(Spacer(1, 0.3 * cm))
     story.append(Paragraph(f"<b>To</b><br/>{_safe_str(bill_name)}" + (f"<br/>GSTIN: {_safe_str(gstin)}" if gstin else ""), small))
@@ -848,8 +915,7 @@ def build_proforma_invoice_multi_pdf(
     except Exception:
         dept_name = ""
     dept_name = dept_name or (getattr(settings, "ORG_DEPARTMENT_NAME", "") or getattr(settings, "ORG_LEGAL_NAME", ""))
-    story.extend(_pdf_letterhead_story_lines(department_name=dept_name))
-    story.append(Paragraph("PROFORMA INVOICE", h1))
+    story.extend(_pdf_letterhead_story_lines(department_name=dept_name, document_title="Proforma Invoice"))
     story.append(Paragraph(
         f"<b>From</b><br/>{_safe_str(org_name)}<br/>{_safe_str(org_address)}"
         + (f"<br/>GSTIN: {_safe_str(org_gstin)}" if org_gstin else ""),
