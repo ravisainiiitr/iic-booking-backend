@@ -163,6 +163,8 @@ def wallet_credit_v2_summary(request):
                 "min_request_amount": str(money(policy.min_request_amount)),
                 "max_outstanding_amount": str(money(policy.max_outstanding_amount)),
                 "max_credit_duration_days": policy.max_credit_duration_days,
+                "reminder_days_before_due": policy.reminder_days_before_due,
+                "overdue_reminder_interval_days": policy.overdue_reminder_interval_days,
             },
             "current_wallet_balance": wallet_balance,
             "existing_outstanding_credit": str(money(blocking.outstanding_amount)) if blocking else "0.00",

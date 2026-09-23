@@ -272,6 +272,11 @@ CHANNEL_I_STAGING_FIXTURE_MODE = False
 LEGACY_MYSQL_STAGING_FIXTURE_MODE = False
 LOCAL_STAGING_ACCEPTED = False
 
+# Wallet Credit Facility (admin-approved) — enabled for IIC production.
+# Env can still force OFF with WALLET_CREDIT_FACILITY_V2_ENABLED=false.
+WALLET_CREDIT_FACILITY_V2_ENABLED = env.bool("WALLET_CREDIT_FACILITY_V2_ENABLED", default=True)
+WALLET_CREDIT_ENABLED = env.bool("WALLET_CREDIT_ENABLED", default=True)
+
 if not (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY):
     logging.getLogger(__name__).warning(
         "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are empty. "
