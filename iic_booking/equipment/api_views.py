@@ -959,19 +959,38 @@ def _peak_qualified_failed_attempts(user, equipment, days=RUSH_RELIEF_LOOKBACK_D
     User's FAILED booking attempts for this equipment in the last `days` days, excluding quota failures.
     When the equipment has a slot window reference and urgent_peak_window_minutes, only attempts within
     [ref_time, ref_time + peak_minutes] on the reference weekday count.
+
+    After a Type A (NO_SLOT) rush-relief booking is approved, the attempt counter resets:
+    only attempts strictly after that approval count toward the next Type A qualification.
     """
     from datetime import timedelta
     from django.utils import timezone
 
     since = timezone.now() - timedelta(days=days)
+    last_type_a = (
+        UrgentBookingRequest.objects.filter(
+            user=user,
+            equipment=equipment,
+            request_type=UrgentBookingRequestType.NO_SLOT,
+            status=UrgentBookingRequestStatus.APPROVED,
+            decided_at__isnull=False,
+        )
+        .order_by("-decided_at")
+        .values_list("decided_at", flat=True)
+        .first()
+    )
+    qs_filter = {
+        "user": user,
+        "equipment_id": equipment.equipment_id,
+        "outcome": BookingAttemptOutcome.FAILED,
+    }
+    if last_type_a and last_type_a > since:
+        qs_filter["requested_at__gt"] = last_type_a
+    else:
+        qs_filter["requested_at__gte"] = since
     qs = (
         BookingAttemptLog.objects
-        .filter(
-            user=user,
-            equipment_id=equipment.equipment_id,
-            outcome=BookingAttemptOutcome.FAILED,
-            requested_at__gte=since,
-        )
+        .filter(**qs_filter)
         .order_by("-requested_at")[:100]
     )
     ref_weekday, ref_time = get_equipment_slot_window_reference_config(equipment)
@@ -1004,6 +1023,49 @@ def _peak_qualified_failed_attempts(user, equipment, days=RUSH_RELIEF_LOOKBACK_D
         log for log in qs
         if not is_quota_failure(log.failure_reason) and in_peak_window(log.requested_at)
     ]
+
+
+def _record_type_a_rush_relief_usage(*, user, equipment, booking=None):
+    """
+    Mark Type A rush relief as used so the peak-attempt counter resets.
+    Creates an APPROVED NO_SLOT UrgentBookingRequest when the user books the advance week
+    directly (rush_relief=true) without going through the hold/auto-approve path.
+    """
+    from django.utils import timezone
+    if not user or not equipment:
+        return None
+    if not _is_internal_user(user):
+        return None
+    peak = _peak_qualified_failed_attempts(user, equipment)
+    if len(peak) < RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS:
+        return None
+    # Avoid duplicate active/approved rows for the same booking
+    if booking is not None:
+        existing = UrgentBookingRequest.objects.filter(
+            user=user,
+            equipment=equipment,
+            request_type=UrgentBookingRequestType.NO_SLOT,
+            status=UrgentBookingRequestStatus.APPROVED,
+            hold_booking=booking,
+        ).first()
+        if existing:
+            return existing
+    req = UrgentBookingRequest(
+        user=user,
+        equipment=equipment,
+        request_type=UrgentBookingRequestType.NO_SLOT,
+        disclaimer_accepted=True,
+        waive_urgent_surcharge=True,
+        status=UrgentBookingRequestStatus.APPROVED,
+        decided_at=timezone.now(),
+        admin_notes="Type A rush relief used via advance-week booking (attempt window reset).",
+        number_of_samples=1,
+        slots_requested=1,
+    )
+    if booking is not None:
+        req.hold_booking = booking
+    req.save()
+    return req
 
 
 def _confirm_urgent_hold_booking(urg, actor):
@@ -2561,6 +2623,15 @@ def equipment_calculate(request, pk):
         "yes",
         "y",
     )
+    rush_relief_flag = str(request.query_params.get("rush_relief") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "y",
+    )
+    # Type A rush relief unlocks advance week at nominal rates (no 50% surcharge).
+    if rush_relief_flag:
+        urgent_flag = False
     urgent_surcharge_amount = Decimal("0.00")
     if UserType.is_external_user(user_type):
         # External option: return samples after analysis => add return shipping fee BEFORE GST.
@@ -3359,6 +3430,10 @@ def _book_equipment_impl(request, pk):
     booking_status = request.data.get('status', 'pending')
     notes = request.data.get('notes', '')
     create_as_hold = request.data.get('create_as_hold') in (True, 'true', 'True', '1')
+    rush_relief = request.data.get('rush_relief') in (True, 'true', 'True', '1')
+    # Type A advance-week booking: never treat as urgent hold with 50% surcharge
+    if rush_relief:
+        create_as_hold = False
     
     # Clean input_values: convert by type. Numeric strings must stay numeric (e.g. "1" -> 1, not True).
     input_values = {}
@@ -3977,7 +4052,7 @@ def _book_equipment_impl(request, pk):
                     charge_breakdown = list(charge_breakdown) + [
                         {"description": "Return shipping charges", "amount": float(return_shipping_fee_amount)},
                     ]
-            if create_as_hold:
+            if create_as_hold and not rush_relief:
                 total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
                     total_charge, charge_breakdown
                 )
@@ -3988,7 +4063,7 @@ def _book_equipment_impl(request, pk):
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
                 ]
-        elif create_as_hold:
+        elif create_as_hold and not rush_relief:
             total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
                 total_charge, charge_breakdown
             )
@@ -4144,7 +4219,7 @@ def _book_equipment_impl(request, pk):
                                 charge_profile, safe_input_values, total_time_minutes, selected_parameters=None
                             )
                             total_charge = calculated_charge
-                            if create_as_hold:
+                            if create_as_hold and not rush_relief:
                                 total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
                                     total_charge, charge_breakdown
                                 )
@@ -4214,7 +4289,7 @@ def _book_equipment_impl(request, pk):
                                             charge_profile, reduced_input_values, single_slot_time, selected_parameters=None
                                         )
                                         total_charge = calculated_charge
-                                        if create_as_hold:
+                                        if create_as_hold and not rush_relief:
                                             total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
                                                 total_charge, charge_breakdown
                                             )
@@ -4379,6 +4454,16 @@ def _book_equipment_impl(request, pk):
                     # HOLD / pending payment: do not send booking-confirmed notifications yet.
                     send_notification=not create_as_hold and amount_due <= 0,
                 )
+                if rush_relief and not create_as_hold:
+                    try:
+                        _record_type_a_rush_relief_usage(
+                            user=booking_user, equipment=equipment, booking=booking
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to record Type A rush relief usage for booking %s",
+                            getattr(booking, "booking_id", None),
+                        )
                 if atmosphere_sensitive_sample and not create_as_hold:
                     try:
                         from iic_booking.equipment.reports import get_equipment_staff_notify_users
@@ -4797,7 +4882,7 @@ def _book_equipment_impl(request, pk):
                 
         # Always use server-calculated charge and time for deduction and booking (Total Cost = Total Charge)
         total_charge = calculated_charge
-        if create_as_hold:
+        if create_as_hold and not rush_relief:
             total_charge, charge_breakdown, _ = apply_urgent_booking_surcharge(
                 total_charge, charge_breakdown
             )
@@ -7767,14 +7852,12 @@ def log_booking_attempt(request):
 @parser_classes([MultiPartParser, FormParser, JSONParser])
 def create_urgent_booking_request(request):
     """
-    Create an urgent booking request. Two types:
-      - NO_SLOT ("Type A" / rush relief): requires >= RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS failed attempts
-        in the peak window over the last RUSH_RELIEF_LOOKBACK_DAYS days for this equipment. The 50% urgent
-        surcharge is waived and the request is auto-approved (hold booking confirmed) with no OIC review.
-      - REVIEWER_URGENT ("Type B" / manual with surcharge): any internal user; reason/comment required,
-        evidence optional. The 50% urgent surcharge applies; auto-approved with no further review.
-    Auto-approval converts the linked hold booking (wallet debit); if that fails (e.g. low balance) the
-    request stays PENDING for Admin/OIC.
+    Create an urgent booking request. Two types (both require no slots in the current search window):
+      - NO_SLOT ("Type A" / rush relief): internal users only; requires >= RUSH_RELIEF_MIN_PEAK_FAILED_ATTEMPTS
+        peak-window failed attempts since the last Type A approval (or in the last RUSH_RELIEF_LOOKBACK_DAYS).
+        Surcharge waived; linked hold is auto-confirmed. Type A is not available to external users.
+      - REVIEWER_URGENT ("Type B" / 50% surcharge): reason required; held slots stay PENDING for OIC/Admin
+        review and possible reschedule (including weekends). Not auto-confirmed.
     Body: equipment_id, request_type (NO_SLOT | REVIEWER_URGENT), disclaimer_accepted (true),
           number_of_samples, slots_requested, duration_minutes (optional), hold_booking_id (optional).
     For REVIEWER_URGENT also send: reviewer_comment (required text, 10–8000 characters),
@@ -7809,6 +7892,14 @@ def create_urgent_booking_request(request):
             {"error": "request_type must be NO_SLOT or REVIEWER_URGENT."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if request_type_val == UrgentBookingRequestType.NO_SLOT and not _is_internal_user(request.user):
+        return Response(
+            {
+                "error": "Type A rush relief is available only to internal IIT Roorkee users.",
+                "code": "RUSH_RELIEF_INTERNAL_ONLY",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
     disclaimer_accepted = request.data.get("disclaimer_accepted")
     if disclaimer_accepted not in (True, "true", "True", "1"):
         return Response(
@@ -7838,8 +7929,8 @@ def create_urgent_booking_request(request):
             {"error": "You already have an active or decided request for this equipment. You can raise a new request only after the current one expires."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    # NO_SLOT only: block if regular slots exist — user should book normally. REVIEWER_URGENT is independent of slot availability.
-    if request_type_val == UrgentBookingRequestType.NO_SLOT:
+    # Both Type A and Type B: only when no slots are available in the current search window.
+    if True:
         from datetime import date, timedelta
         from django.conf import settings as django_settings
         from django.utils import timezone as tz
@@ -7982,17 +8073,14 @@ def create_urgent_booking_request(request):
 
     auto_approved = False
     auto_approve_error = None
-    if hold is not None:
+    # Type A only: auto-confirm held slots. Type B always stays PENDING for OIC/Admin review.
+    if hold is not None and request_type_val == UrgentBookingRequestType.NO_SLOT:
         with transaction.atomic():
             converted, auto_approve_error = _confirm_urgent_hold_booking(req, None)
             if converted:
                 req.status = UrgentBookingRequestStatus.APPROVED
                 req.decided_at = timezone.now()
-                req.admin_notes = (
-                    "Auto-approved: rush relief (surcharge waived)."
-                    if req.waive_urgent_surcharge
-                    else "Auto-approved: urgent request with reason (50% surcharge)."
-                )
+                req.admin_notes = "Auto-approved: Type A rush relief (surcharge waived)."
                 req.save(update_fields=["status", "decided_at", "admin_notes"])
                 auto_approved = True
     # Acknowledgement to the requester (consistent subject/body with portal wording)
@@ -8003,7 +8091,12 @@ def create_urgent_booking_request(request):
         else:
             rt_label = "Urgent request with reason (50% urgent surcharge)"
         if auto_approved:
-            next_steps = "Your held slots have been confirmed automatically. You can view the booking using the link below."
+            next_steps = "Your held slots have been confirmed automatically (Type A rush relief). The rush-relief attempt window resets from this booking."
+        elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
+            next_steps = (
+                "Your Type B request is pending OIC/Admin review. They may accept, reject, or reschedule "
+                "(including weekends) based on operator availability. Once approved, please submit your sample at the earliest."
+            )
         else:
             next_steps = (
                 "Your request is recorded. Admin/Officer in charge will confirm it"
@@ -8032,9 +8125,11 @@ def create_urgent_booking_request(request):
             exc_info=True,
         )
     if auto_approved:
+        message = "Type A rush relief approved — held slots booked at normal rates. The 14-day rush-relief attempt window now resets."
+    elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
         message = (
-            "Urgent request approved automatically and your held slots are booked"
-            + (" (urgent surcharge waived)." if req.waive_urgent_surcharge else " (50% urgent surcharge applied).")
+            "Type B urgent request submitted for OIC/Admin review (50% surcharge). "
+            "Slots are not confirmed until approved; the reviewer may reschedule as needed."
         )
     elif auto_approve_error:
         message = f"Urgent request submitted, but slots could not be confirmed automatically: {auto_approve_error}"
