@@ -3157,7 +3157,7 @@ def _book_equipment_impl(request, pk):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment, request.user)
     if dept_blocked:
         return Response(
             {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
@@ -7697,7 +7697,7 @@ def create_urgent_booking_request(request):
         )
     try:
         equip = Equipment.objects.get(pk=int(equipment_id))
-        dept_blocked, dept_message = department_equipment_booking_blocked(equip)
+        dept_blocked, dept_message = department_equipment_booking_blocked(equip, request.user)
         if dept_blocked:
             return Response(
                 {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
@@ -13958,7 +13958,7 @@ def create_repeat_booking(request, booking_id):
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment, request.user)
     if dept_blocked:
         return Response(
             {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},

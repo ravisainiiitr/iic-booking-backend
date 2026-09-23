@@ -9,6 +9,22 @@ from iic_booking.users.legacy_ledger.schema_gate import safe_portal_migration_st
 from iic_booking.users.models import UserType
 from iic_booking.users.models.portal_migration import PortalMigrationState
 
+# Allow this test account to complete bookings (e.g. user-guide screenshots)
+# while portal hard-freeze / end-user lock remains for everyone else.
+BOOKING_LOCK_BYPASS_EMAILS = frozenset(
+    {
+        "test.student@iic-booking.test",
+    }
+)
+
+
+def user_bypasses_booking_lock(user) -> bool:
+    if user is None:
+        return False
+    email = (getattr(user, "email", None) or "").strip().lower()
+    return email in BOOKING_LOCK_BYPASS_EMAILS
+
+
 # Faculty login wallet sync stops at the same cutover instant as booking opens.
 FACULTY_WALLET_SYNC_CUTOFF = timezone.datetime(
     2026, 10, 4, 0, 0, 0, tzinfo=timezone.get_fixed_timezone(330)
@@ -91,6 +107,8 @@ def end_user_booking_is_locked(user) -> tuple[bool, str]:
     End-user soft lock (students/faculty/external) when end_user_booking_enabled is off.
     Staff types are not locked by this helper alone — use booking_is_locked for all roles.
     """
+    if user_bypasses_booking_lock(user):
+        return False, ""
     ut = getattr(user, "user_type", None)
     if not (UserType.is_end_user_booking_type(ut) or ut == UserType.OTHER):
         return False, ""
@@ -110,7 +128,10 @@ def booking_is_locked(user=None) -> tuple[bool, str]:
     - Before booking_opens_at: everyone locked.
     - After opens: end users still locked when end_user_booking_enabled is False;
       staff may book (subject to department equipment_booking_enabled).
+    - Exception: BOOKING_LOCK_BYPASS_EMAILS (test accounts for guide screenshots).
     """
+    if user_bypasses_booking_lock(user):
+        return False, ""
     state, _ = safe_portal_migration_state()
     if portal_hard_freeze_active(state):
         return True, format_booking_lock_message(state)
@@ -121,11 +142,15 @@ def booking_is_locked(user=None) -> tuple[bool, str]:
     return end_user_booking_is_locked(user)
 
 
-def department_equipment_booking_blocked(equipment) -> tuple[bool, str]:
+def department_equipment_booking_blocked(equipment, user=None) -> tuple[bool, str]:
     """
     True when the equipment's internal department has equipment_booking_enabled=False
     or has no internal department assigned.
+
+    Optional user: BOOKING_LOCK_BYPASS_EMAILS may book even when the department master switch is off.
     """
+    if user_bypasses_booking_lock(user):
+        return False, ""
     dept = getattr(equipment, "internal_department", None)
     if dept is None:
         return (

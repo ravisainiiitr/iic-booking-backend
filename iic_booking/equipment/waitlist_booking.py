@@ -265,7 +265,7 @@ def create_booking_for_waitlist_user(
     if locked:
         return None, lock_message
 
-    dept_blocked, dept_message = department_equipment_booking_blocked(equipment)
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment, request.user)
     if dept_blocked:
         return None, dept_message
     if created_by is None:
