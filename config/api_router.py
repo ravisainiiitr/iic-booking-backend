@@ -220,6 +220,7 @@ from iic_booking.equipment.remote_analysis_integration import views as booking_r
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
+    equipment_analysis_charges,
     equipment_category_list,
     equipment_detail,
     equipment_image_proxy,
@@ -1060,6 +1061,7 @@ urlpatterns = router.urls + [
     # Equipment endpoints
     path("equipments/", equipment_list, name="equipment-list"),
     path("equipments/catalog-departments/", equipment_catalog_departments, name="equipment-catalog-departments"),
+    path("equipments/analysis-charges/", equipment_analysis_charges, name="equipment-analysis-charges"),
 
     # Public equipment addition proposals (admin approves before create)
     path(

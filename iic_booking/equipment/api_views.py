@@ -1518,6 +1518,211 @@ def equipment_catalog_departments(request):
         status=status.HTTP_200_OK,
     )
 
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def equipment_analysis_charges(request):
+    """
+    Public Analysis Charges catalog: equipment rate cards by user category.
+
+    Same STANDARD charge profiles / display_text used by equipment "View charges".
+
+    Query params:
+      internal_department_id: optional department filter (omit or 'all' for all)
+      equipment_ids: optional comma-separated equipment_id list
+    """
+    from .models import (
+        ChargeProfile,
+        ChargeProfilePricingProfile,
+        DynamicInputField,
+        EquipmentStatus,
+        MultiParamDefinition,
+    )
+
+    queryset = (
+        get_visible_equipment_queryset(request.user)
+        .exclude(status=EquipmentStatus.DISPOSED)
+        .select_related("internal_department", "category")
+        .prefetch_related(
+            Prefetch(
+                "charge_profiles",
+                queryset=ChargeProfile.objects.filter(
+                    pricing_profile=ChargeProfilePricingProfile.STANDARD,
+                    is_active=True,
+                ).order_by("user_type"),
+                to_attr="analysis_charge_profiles",
+            ),
+            Prefetch(
+                "input_fields",
+                queryset=DynamicInputField.objects.filter(field_key="B").order_by("user_type", "field_key"),
+                to_attr="analysis_input_fields_b",
+            ),
+            Prefetch(
+                "param_definitions",
+                queryset=MultiParamDefinition.objects.filter(is_active=True).order_by(
+                    "user_type", "param_code"
+                ),
+                to_attr="analysis_param_definitions",
+            ),
+        )
+        .order_by("internal_department__name", "name")
+    )
+
+    internal_department_id = (request.query_params.get("internal_department_id") or "").strip()
+    if internal_department_id and internal_department_id.lower() != "all":
+        try:
+            dept_id = int(internal_department_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Invalid internal_department_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = queryset.filter(internal_department_id=dept_id)
+
+    equipment_ids_raw = (request.query_params.get("equipment_ids") or "").strip()
+    if equipment_ids_raw:
+        try:
+            equipment_ids = [int(x.strip()) for x in equipment_ids_raw.split(",") if x.strip()]
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Invalid equipment_ids."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if equipment_ids:
+            queryset = queryset.filter(equipment_id__in=equipment_ids)
+
+    # Only include equipment that has at least one active STANDARD charge profile.
+    queryset = queryset.filter(
+        charge_profiles__pricing_profile=ChargeProfilePricingProfile.STANDARD,
+        charge_profiles__is_active=True,
+    ).distinct()
+
+    user_type_choices = dict(UserType.get_choices())
+    seen_user_types: set[str] = set()
+    equipments = []
+    for eq in queryset:
+        profiles = getattr(eq, "analysis_charge_profiles", None) or []
+        if not profiles:
+            continue
+        charge_profiles = []
+        for cp in profiles:
+            seen_user_types.add(cp.user_type)
+            charge_profiles.append(
+                {
+                    "user_type": cp.user_type,
+                    "profile_type": cp.effective_profile_type,
+                    "is_active": cp.is_active,
+                    "primary_unit_charge": str(cp.primary_unit_charge)
+                    if cp.primary_unit_charge is not None
+                    else None,
+                    "secondary_unit_charge": str(cp.secondary_unit_charge)
+                    if cp.secondary_unit_charge is not None
+                    else None,
+                    "breakpoint": str(cp.breakpoint) if cp.breakpoint is not None else None,
+                    "display_text": cp.display_text or "",
+                }
+            )
+        input_fields = []
+        for f in getattr(eq, "analysis_input_fields_b", None) or []:
+            input_fields.append(
+                {
+                    "field_key": f.field_key,
+                    "field_label": f.field_label,
+                    "options": f.options or [],
+                    "user_type": f.user_type or "",
+                }
+            )
+        slot_options = []
+        for p in getattr(eq, "analysis_param_definitions", None) or []:
+            slot_options.append(
+                {
+                    "user_type": p.user_type,
+                    "param_name": p.param_name,
+                    "param_code": p.param_code,
+                    "unit_charge": str(p.unit_charge) if p.unit_charge is not None else None,
+                    "unit_time_minutes": p.unit_time_minutes,
+                    "display_text": getattr(p, "display_text", None) or "",
+                    "is_active": p.is_active,
+                }
+            )
+        equipments.append(
+            {
+                "equipment_id": eq.equipment_id,
+                "code": eq.code,
+                "name": eq.name,
+                "profile_type": eq.profile_type,
+                "status": eq.status,
+                "internal_department": eq.internal_department_id,
+                "internal_department_name": (
+                    eq.internal_department.name if eq.internal_department_id else None
+                ),
+                "internal_department_code": (
+                    eq.internal_department.code if eq.internal_department_id else None
+                ),
+                "slot_duration_minutes": eq.slot_duration_minutes,
+                "charge_profiles": charge_profiles,
+                "input_fields": input_fields,
+                "slot_options": slot_options,
+            }
+        )
+
+    # Preferred order for user-type filter (matches View Charges / charge estimate options).
+    preferred_order = [
+        UserType.STUDENT,
+        UserType.FACULTY,
+        UserType.EXTERNAL,
+        UserType.RND,
+        UserType.INDUSTRY,
+        UserType.STARTUP_INCUBATED_IITR,
+        UserType.EXTERNAL_STARTUP_MSME,
+        UserType.OTHER,
+    ]
+    ordered_codes = []
+    for code in preferred_order:
+        code_s = str(code)
+        if code_s in seen_user_types:
+            ordered_codes.append(code_s)
+    for code in sorted(seen_user_types):
+        if code not in ordered_codes:
+            ordered_codes.append(code)
+
+    user_types = [
+        {
+            "code": code,
+            "label": str(user_type_choices.get(code, code)),
+        }
+        for code in ordered_codes
+    ]
+
+    dept_rows = (
+        get_visible_equipment_queryset(request.user)
+        .exclude(status=EquipmentStatus.DISPOSED)
+        .filter(internal_department__isnull=False)
+        .values("internal_department_id", "internal_department__name", "internal_department__code")
+        .annotate(equipment_count=Count("equipment_id"))
+        .order_by("internal_department__name")
+    )
+    departments = [
+        {
+            "id": row["internal_department_id"],
+            "name": row["internal_department__name"],
+            "code": row["internal_department__code"] or "",
+            "equipment_count": row["equipment_count"],
+        }
+        for row in dept_rows
+    ]
+
+    return Response(
+        {
+            "departments": departments,
+            "user_types": user_types,
+            "equipments": equipments,
+            "count": len(equipments),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_list(request):
