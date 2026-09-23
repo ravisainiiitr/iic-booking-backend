@@ -21,9 +21,11 @@ from iic_booking.users.wallet_credit_facility_v2 import (
     WalletCreditError,
     approve_facility,
     assert_user_may_request_credit,
+    build_admin_review_context,
     build_profile_snapshot,
     create_and_submit_request,
     feature_enabled,
+    list_eligible_credit_departments,
     mark_under_review,
     money,
     post_credit,
@@ -78,6 +80,7 @@ def _serialize_facility(facility: WalletCreditFacility, *, include_profile: bool
     }
     if include_profile:
         data["channel_i_profile"] = facility.profile_snapshot or build_profile_snapshot(facility.user)
+        data["review_context"] = build_admin_review_context(facility)
         data["audit_events"] = [
             {
                 "action": e.action,
@@ -166,6 +169,7 @@ def wallet_credit_v2_summary(request):
                 "reminder_days_before_due": policy.reminder_days_before_due,
                 "overdue_reminder_interval_days": policy.overdue_reminder_interval_days,
             },
+            "eligible_departments": list_eligible_credit_departments(request.user) if enabled else [],
             "current_wallet_balance": wallet_balance,
             "existing_outstanding_credit": str(money(blocking.outstanding_amount)) if blocking else "0.00",
             "active_facility_reference": blocking.public_reference if blocking else None,

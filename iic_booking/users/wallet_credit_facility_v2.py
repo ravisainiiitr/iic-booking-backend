@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 TWO = Decimal("0.01")
 
 STUDENT_TYPES = frozenset({UserType.STUDENT, UserType.INDIVIDUAL_STUDENT})
-# Eligible for requesting credit: non-student users with their own wallet / internal faculty-staff.
+# Eligible for requesting credit: non-student, non-external internal faculty/staff.
+# Authoritative gate is UserEligibilityService.can_request_wallet_credit (classifications).
 ELIGIBLE_CREDIT_REQUEST_TYPES = frozenset(
     {
         UserType.FACULTY,
@@ -42,12 +43,6 @@ ELIGIBLE_CREDIT_REQUEST_TYPES = frozenset(
         UserType.FINANCE,
         UserType.EXTERNAL_RELATIONS,
         UserType.ORG_ADMIN,
-        UserType.EXTERNAL,
-        UserType.RND,
-        UserType.INSTITUTE,
-        UserType.STARTUP_INCUBATED_IITR,
-        UserType.EXTERNAL_STARTUP_MSME,
-        UserType.OTHER,
     }
 )
 
@@ -243,25 +238,197 @@ def recompute_outstanding(facility: WalletCreditFacility) -> Decimal:
     return outstanding
 
 
+def list_eligible_credit_departments(user) -> list[dict[str, Any]]:
+    """Departments the user may request credit for (admin-enabled + user wallet link)."""
+    from iic_booking.users.models.department import Department, DepartmentType
+
+    wallet, _ = Wallet.objects.get_or_create(user=user)
+    enabled = {
+        d.id: d
+        for d in Department.objects.filter(
+            enable_wallet_credit=True,
+            department_type=DepartmentType.INTERNAL,
+        )
+    }
+    if not enabled:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for sw in (
+        SubWallet.objects.filter(wallet=wallet, department_id__in=enabled.keys())
+        .select_related("department")
+        .order_by("department__name")
+    ):
+        dept = sw.department
+        if not dept or dept.id in seen:
+            continue
+        seen.add(dept.id)
+        rows.append(
+            {
+                "id": dept.id,
+                "name": dept.name,
+                "code": dept.code or "",
+                "balance": str(money(sw.balance)),
+            }
+        )
+
+    home_id = getattr(user, "department_id", None)
+    if home_id and home_id in enabled and home_id not in seen:
+        dept = enabled[home_id]
+        rows.append(
+            {
+                "id": dept.id,
+                "name": dept.name,
+                "code": dept.code or "",
+                "balance": "0.00",
+            }
+        )
+        seen.add(home_id)
+
+    rows.sort(key=lambda r: (r["name"] or "").lower())
+    return rows
+
+
 def resolve_subwallet_for_user(user, department_id: int | None = None) -> SubWallet:
+    from iic_booking.users.models.department import Department, DepartmentType
+
     wallet, _ = Wallet.objects.get_or_create(user=user)
     qs = SubWallet.objects.filter(wallet=wallet).select_related("department")
-    if department_id:
-        sub = qs.filter(department_id=department_id).first()
-        if not sub:
-            raise WalletCreditError("SUBWALLET_NOT_FOUND", "No sub-wallet found for the selected department.")
-        return sub
-    if user.department_id:
-        sub = qs.filter(department_id=user.department_id).first()
-        if sub:
-            return sub
-    sub = qs.order_by("id").first()
-    if not sub:
+    if not department_id:
         raise WalletCreditError(
-            "SUBWALLET_NOT_FOUND",
-            "No department wallet is available for credit. Contact administrator.",
+            "DEPARTMENT_REQUIRED",
+            "Select the department for which you want to raise the credit request.",
         )
-    return sub
+
+    dept = (
+        Department.objects.filter(
+            pk=department_id,
+            department_type=DepartmentType.INTERNAL,
+        )
+        .first()
+    )
+    if not dept:
+        raise WalletCreditError("DEPARTMENT_NOT_FOUND", "Selected department was not found.")
+    if not bool(getattr(dept, "enable_wallet_credit", False)):
+        raise WalletCreditError(
+            "CREDIT_NOT_ENABLED_FOR_DEPARTMENT",
+            "Wallet Credit Facility is not enabled for the selected department. Contact the Main Administrator.",
+            status=403,
+        )
+
+    sub = qs.filter(department_id=department_id).first()
+    if sub:
+        return sub
+    return SubWallet.objects.create(wallet=wallet, department=dept, balance=Decimal("0.00"))
+
+
+def build_admin_review_context(facility: WalletCreditFacility) -> dict[str, Any]:
+    """Decision-support payload for Main Admin review."""
+    user = facility.user
+    wallet = Wallet.objects.filter(user=user).first()
+    total_balance = money(wallet.total_balance) if wallet else Decimal("0.00")
+    sub_rows = []
+    if wallet:
+        for sw in SubWallet.objects.filter(wallet=wallet).select_related("department").order_by("department__name"):
+            sub_rows.append(
+                {
+                    "department_id": sw.department_id,
+                    "department_name": sw.department.name if sw.department_id else "",
+                    "balance": str(money(sw.balance)),
+                }
+            )
+    past = (
+        WalletCreditFacility.objects.filter(user=user)
+        .exclude(pk=facility.pk)
+        .order_by("-created_at")[:25]
+    )
+    past_credits = [
+        {
+            "id": f.id,
+            "public_reference": f.public_reference,
+            "status": f.status,
+            "requested_amount": str(money(f.requested_amount)),
+            "approved_amount": str(money(f.approved_amount)) if f.approved_amount is not None else None,
+            "outstanding_amount": str(money(f.outstanding_amount)),
+            "department_name": f.department.name if f.department_id else "",
+            "due_date": f.due_date.isoformat() if f.due_date else None,
+            "credited_at": f.credited_at.isoformat() if f.credited_at else None,
+            "cleared_at": f.cleared_at.isoformat() if f.cleared_at else None,
+            "requested_at": f.requested_at.isoformat() if f.requested_at else None,
+        }
+        for f in past
+    ]
+    total_credited = (
+        WalletCreditLedgerEntry.objects.filter(
+            facility__user=user,
+            kind=WalletCreditLedgerKind.WALLET_CREDIT,
+        ).aggregate(s=Sum("amount"))["s"]
+        or 0
+    )
+    return {
+        "current_wallet_balance": str(total_balance),
+        "sub_wallets": sub_rows,
+        "request_department": facility.department.name if facility.department_id else "",
+        "request_subwallet_balance": str(money(facility.sub_wallet.balance))
+        if facility.sub_wallet_id
+        else "0.00",
+        "past_credit_facilities": past_credits,
+        "lifetime_credit_posted": str(money(total_credited)),
+        "date_of_joining": _na(getattr(user, "joining_date", None)),
+        "employee_id": _na(getattr(user, "emp_id", None)),
+        "designation": _na(getattr(user, "designation", None)),
+        "user_type": _na(getattr(user, "user_type", None)),
+        "user_email": _na(getattr(user, "email", None)),
+        "user_name": _na(getattr(user, "name", None)),
+        "mobile": _na(getattr(user, "phone_number", None)),
+    }
+
+
+def notify_user_credit_approved(facility: WalletCreditFacility) -> None:
+    """Email + best-effort push when Main Admin approves a credit request."""
+    try:
+        from iic_booking.communication.service import CommunicationService
+        from iic_booking.communication.utils import get_frontend_absolute_url
+
+        user = facility.user
+        dept_name = facility.department.name if facility.department_id else ""
+        ctx = {
+            "user_name": getattr(user, "name", None) or getattr(user, "email", "") or "User",
+            "user_email": getattr(user, "email", "") or "",
+            "public_reference": facility.public_reference,
+            "requested_amount": str(money(facility.requested_amount)),
+            "approved_amount": str(money(facility.approved_amount or 0)),
+            "due_date": facility.due_date.isoformat() if facility.due_date else "",
+            "department_name": dept_name,
+            "purpose": facility.purpose or "",
+            "link": get_frontend_absolute_url("/wallet/credit-facility"),
+        }
+        CommunicationService.send_email(
+            recipient=user,
+            template="wallet_credit_facility_approved_email",
+            template_context=ctx,
+            created_by=facility.approved_by,
+            metadata={
+                "wallet_credit_facility_id": facility.pk,
+                "public_reference": facility.public_reference,
+            },
+        )
+        try:
+            CommunicationService.send_push_notification(
+                recipient=user,
+                template="wallet_credit_facility_approved_push",
+                template_context=ctx,
+                created_by=facility.approved_by,
+                metadata={"wallet_credit_facility_id": facility.pk},
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Push notification for credit approval skipped", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Failed to notify user of wallet credit approval for %s",
+            getattr(facility, "public_reference", facility.pk),
+        )
 
 
 @transaction.atomic
@@ -276,6 +443,14 @@ def create_and_submit_request(
     if not feature_enabled():
         raise WalletCreditError("FEATURE_DISABLED", "Wallet Credit Facility is not enabled.", status=403)
     assert_user_may_request_credit(user)
+    if not department_id:
+        raise WalletCreditError(
+            "DEPARTMENT_REQUIRED",
+            "Select the department for which you want to raise the credit request.",
+        )
+    purpose_clean = (purpose or "").strip()
+    if not purpose_clean:
+        raise WalletCreditError("PURPOSE_REQUIRED", "Purpose / reason is required.")
     policy = WalletCreditPolicy.get_solo()
     amount = money(requested_amount)
     if amount < money(policy.min_request_amount):
@@ -291,15 +466,15 @@ def create_and_submit_request(
             f"({blocking.public_reference}). A new credit request can be submitted after the existing credit is fully settled.",
             status=409,
         )
-    sub = resolve_subwallet_for_user(locked_user, department_id)
+    sub = resolve_subwallet_for_user(locked_user, int(department_id))
     facility = WalletCreditFacility.objects.create(
         public_reference=next_public_reference(),
         user=locked_user,
         department=sub.department,
         sub_wallet=sub,
         requested_amount=amount,
-        purpose=(purpose or "").strip(),
-        remarks=(remarks or "").strip(),
+        purpose=purpose_clean,
+        remarks="",
         status=WalletCreditFacilityStatus.SUBMITTED,
         submitted_at=timezone.now(),
         profile_snapshot=build_profile_snapshot(locked_user),
@@ -309,7 +484,7 @@ def create_and_submit_request(
         actor=locked_user,
         action="SUBMITTED",
         new=str(amount),
-        reason=purpose,
+        reason=purpose_clean,
     )
     return facility
 
@@ -391,6 +566,18 @@ def approve_facility(
         new=f"{facility.status}/{approved}",
         reason=reason,
     )
+    facility_id = facility.pk
+
+    def _notify():
+        try:
+            fresh = WalletCreditFacility.objects.select_related(
+                "user", "department", "approved_by"
+            ).get(pk=facility_id)
+            notify_user_credit_approved(fresh)
+        except Exception:  # noqa: BLE001
+            logger.exception("Credit approval notification failed for facility %s", facility_id)
+
+    transaction.on_commit(_notify)
     return facility
 
 

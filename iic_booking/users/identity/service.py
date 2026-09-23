@@ -274,6 +274,12 @@ class UserEligibilityService:
                 "Wallet Credit Facility is available only to eligible faculty/staff/internal users. "
                 "Student accounts are not eligible.",
             )
+        if UserType.is_external_user(getattr(user, "user_type", None) or ""):
+            return (
+                False,
+                "CREDIT_NOT_ALLOWED_FOR_USER_TYPE",
+                "External users are not entitled to the Wallet Credit Facility.",
+            )
         if view.classification == PortalUserClassification.UNKNOWN:
             return (
                 False,

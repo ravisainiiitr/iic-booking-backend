@@ -69,7 +69,7 @@ class WalletCreditPolicy(models.Model):
     max_credit_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("50000.00"))
     max_outstanding_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("50000.00"))
     min_request_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("100.00"))
-    max_credit_duration_days = models.PositiveIntegerField(default=30)
+    max_credit_duration_days = models.PositiveIntegerField(default=180)
     reminder_days_before_due = models.PositiveIntegerField(default=3)
     overdue_reminder_interval_days = models.PositiveIntegerField(default=7)
     updated_at = models.DateTimeField(auto_now=True)

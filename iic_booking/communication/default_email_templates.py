@@ -64,6 +64,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "wallet_recharge_request_email",
     "wallet_recharge_sric_office_email",
     "wallet_credit_facility_expired_email",
+    "wallet_credit_facility_approved_email",
     "wallet_recharge_credit_facility_activated_email",
     "wallet_join_request_submitted_email",
     "wallet_join_request_approved_email",
@@ -1030,6 +1031,23 @@ def _wallet_templates() -> list[dict[str, Any]]:
                 "{{ user_email }}, {{ amount }}, {{ request_id }}, {{ request_date }}, {{ request_date_display }}, "
                 "{{ department_name }}, {{ department_code }}, {{ project_name }}, {{ project_code }}, "
                 "{{ project_agency }}, {{ approve_url }}, {{ reject_url }}"
+            ),
+        ),
+        _wallet_email(
+            code="wallet_credit_facility_approved_email",
+            title="Wallet Credit Approved",
+            subject="Wallet Credit Request Approved — {{ public_reference }}",
+            intro=(
+                "Your Wallet Credit Facility request {{ public_reference }} has been approved by the "
+                "Main Administrator. Approved amount: ₹{{ approved_amount }}. "
+                "{% if due_date %}Repayment is due by {{ due_date }}.{% endif %}"
+            ),
+            description="Sent when Main Administrator approves a Wallet Credit Facility request.",
+            include_booking=False,
+            cta_label="Open Credit Facility",
+            variable_help=(
+                "{{ user_name }}, {{ user_email }}, {{ public_reference }}, {{ requested_amount }}, "
+                "{{ approved_amount }}, {{ due_date }}, {{ department_name }}, {{ purpose }}, {{ link }}"
             ),
         ),
         _wallet_email(

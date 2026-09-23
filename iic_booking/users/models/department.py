@@ -264,6 +264,14 @@ class Department(Model):
             "of that equipment. Defaults to disabled (hidden)."
         ),
     )
+    enable_wallet_credit = BooleanField(
+        _("Wallet credit facility enabled"),
+        default=False,
+        help_text=_(
+            "Main-administrator switch: when enabled, eligible faculty/staff may request "
+            "Wallet Credit Facility for this department. External users remain ineligible."
+        ),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
 
