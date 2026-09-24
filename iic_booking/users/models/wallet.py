@@ -954,6 +954,57 @@ class WalletRechargeImportRecord(Model):
         return f"Receipt {self.receipt_no} FY{self.financial_year_start} → {self.user.email} ₹{self.amount}"
 
 
+
+class WalletRechargeParseEntry(Model):
+    """
+    Stored parsed wallet recharge cash-book row (shared across devices/users).
+    Key: (date, receipt_no, emp_no). Processed status is derived from WalletRechargeImportRecord when listing.
+    """
+    dated = DateField(_("Date"), null=True, blank=True)
+    receipt_no = CharField(_("Receipt No."), max_length=50, db_index=True)
+    name = CharField(_("Name"), max_length=255, blank=True)
+    emp_no = CharField(_("Emp No."), max_length=50, db_index=True)
+    department = CharField(_("Department"), max_length=255, blank=True)
+    amount = CharField(_("Amount (display)"), max_length=50)
+    payment = TextField(_("Payment Details"), blank=True)
+    credited_to_project_no = CharField(
+        _("Credited to Project No."),
+        max_length=100,
+        blank=True,
+        db_index=True,
+        help_text=_("Cash-book column: Credited to Project No. (e.g. IIC-000-002). Matched to department_grant_code."),
+    )
+    created_at = DateTimeField(_("Created at"), auto_now_add=True)
+    source_imap_uid = CharField(
+        _("Source IMAP message UID"),
+        max_length=32,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text=_("Mailbox UID of the email this row was imported from (optional)."),
+    )
+
+    class Meta:
+        verbose_name = _("Wallet Recharge Parse Entry")
+        verbose_name_plural = _("Wallet Recharge Parse Entries")
+        ordering = ["-created_at"]
+        constraints = [
+            UniqueConstraint(
+                fields=["receipt_no", "dated", "emp_no"],
+                name="unique_parse_entry_dated",
+                condition=Q(dated__isnull=False),
+            ),
+            UniqueConstraint(
+                fields=["receipt_no", "emp_no"],
+                name="unique_parse_entry_no_date",
+                condition=Q(dated__isnull=True),
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.receipt_no} {self.dated} {self.emp_no}"
+
+
 class ExternalUserBankDetails(Model):
     """Bank details for external users for wallet withdrawals/transfers."""
 

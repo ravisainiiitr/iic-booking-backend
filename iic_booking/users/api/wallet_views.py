@@ -2468,8 +2468,37 @@ def get_wallet_recharge_pipeline_requests(request):
     )
     rows = list(qs)
     if flt in ("pending", "unmatched_no_parse"):
-        # unmatched_no_parse kept as alias of pending (parse feature removed).
         rows = [r for r in rows if r.status == WalletRechargeRequestStatus.PENDING]
+        if flt == "unmatched_no_parse":
+            from iic_booking.users.models import WalletRechargeParseEntry
+            from iic_booking.users.wallet_recharge_import import _normalize_grant_code
+
+            parse_keys = set()
+            for e in WalletRechargeParseEntry.objects.all().only(
+                "emp_no", "amount", "credited_to_project_no"
+            ):
+                emp = (e.emp_no or "").strip()
+                amt = (e.amount or "").replace(",", "").strip()
+                grant = _normalize_grant_code(getattr(e, "credited_to_project_no", "") or "")
+                parse_keys.add((emp, amt, grant))
+
+            def _unmatched(r):
+                emp = (r.employee_number or (r.user.emp_id if r.user_id else "") or "").strip()
+                amt = f"{r.amount:.2f}".replace(",", "")
+                # also try without trailing zeros variants
+                amt_alts = {amt, str(r.amount), f"{r.amount:g}"}
+                grant = _normalize_grant_code(r.department_grant_code or "")
+                for a in amt_alts:
+                    a_norm = a.replace(",", "").strip()
+                    if (emp, a_norm, grant) in parse_keys:
+                        return False
+                    # amount display in parse may be "15,000.00"
+                    for pe, pa, pg in parse_keys:
+                        if pe == emp and pg == grant and pa.replace(",", "") == a_norm:
+                            return False
+                return True
+
+            rows = [r for r in rows if _unmatched(r)]
 
     out = []
     for r in rows:
