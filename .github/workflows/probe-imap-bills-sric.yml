@@ -1,0 +1,131 @@
+# Read-only: list INBOX mail FROM bills@sric.iitr.ac.in via production IMAP settings.
+name: Probe IMAP bills@sric
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: IMAP list FROM bills@sric.iitr.ac.in
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -w /app "$CID" python - <<'PY'
+          import os
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          import imaplib, email, socket
+          from email.header import decode_header
+
+          def dec(h):
+              if not h:
+                  return ""
+              parts = decode_header(h)
+              out = []
+              for p, cs in parts:
+                  if isinstance(p, bytes):
+                      out.append(p.decode(cs or "utf-8", errors="replace"))
+                  else:
+                      out.append(str(p))
+              return " ".join(out).strip()
+
+          host = getattr(settings, "IMAP_HOST", "") or ""
+          port = int(getattr(settings, "IMAP_PORT", 993) or 993)
+          use_ssl = bool(getattr(settings, "IMAP_USE_SSL", True))
+          user = getattr(settings, "IMAP_USER", "") or ""
+          password = getattr(settings, "IMAP_PASSWORD", "") or ""
+          if len(password) >= 2 and password[0] == password[-1] == '"':
+              password = password[1:-1]
+          folder = getattr(settings, "IMAP_MAILBOX", "INBOX") or "INBOX"
+
+          print("IMAP_HOST=", host)
+          print("IMAP_PORT=", port)
+          print("IMAP_USE_SSL=", use_ssl)
+          print("IMAP_USER=", user)
+          print("IMAP_MAILBOX=", folder)
+          print("PASSWORD_SET=", bool(password), "LEN=", len(password))
+
+          # TCP probe
+          try:
+              s = socket.create_connection((host, port), timeout=15)
+              s.close()
+              print("TCP_CONNECT=OK")
+          except Exception as e:
+              print("TCP_CONNECT=FAIL", type(e).__name__, e)
+              raise SystemExit(2)
+
+          socket.setdefaulttimeout(30)
+          conn = imaplib.IMAP4_SSL(host, port) if use_ssl else imaplib.IMAP4(host, port)
+          conn.login(user, password)
+          typ, data = conn.select(folder, readonly=True)
+          print("SELECT=", typ, "EXISTS=", data[0].decode() if data and data[0] else data)
+          typ, data = conn.uid("search", None, 'FROM "bills@sric.iitr.ac.in"')
+          print("SEARCH_STATUS=", typ)
+          ids = (data[0].split() if data and data[0] else [])
+          print("MATCH_COUNT=", len(ids))
+          for uid in ids[-10:][::-1]:
+              typ, msg_data = conn.uid("fetch", uid, "(RFC822.HEADER BODYSTRUCTURE)")
+              if typ != "OK" or not msg_data:
+                  continue
+              raw = None
+              for part in msg_data:
+                  if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
+                      raw = part[1]
+                      break
+              if not raw:
+                  print("uid=", uid.decode(), "HEADER_MISSING")
+                  continue
+              msg = email.message_from_bytes(raw)
+              print("---")
+              print("uid=", uid.decode() if isinstance(uid, bytes) else uid)
+              print("from=", dec(msg.get("From")))
+              print("subject=", dec(msg.get("Subject")))
+              print("date=", dec(msg.get("Date")))
+              # list attachment filenames from walk of full message would need RFC822; keep headers-only here
+          # Fetch newest match fully and list attachments + parse txt if present
+          if ids:
+              uid = ids[-1]
+              typ, msg_data = conn.uid("fetch", uid, "(RFC822)")
+              if typ == "OK" and msg_data:
+                  raw = None
+                  for part in msg_data:
+                      if isinstance(part, tuple) and len(part) >= 2:
+                          raw = part[1]
+                          break
+                  if raw:
+                      msg = email.message_from_bytes(raw)
+                      atts = []
+                      for part in msg.walk():
+                          if part.get_content_disposition() == "attachment":
+                              fn = dec(part.get_filename()) or "(unnamed)"
+                              atts.append(fn)
+                      print("NEWEST_ATTACHMENTS=", atts)
+                      for part in msg.walk():
+                          if part.get_content_disposition() != "attachment":
+                              continue
+                          fn = (dec(part.get_filename()) or "").lower()
+                          if not fn.endswith((".txt", ".csv", ".tsv")):
+                              continue
+                          payload = part.get_payload(decode=True) or b""
+                          text = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+                          print("PARSED_FILE=", dec(part.get_filename()), "BYTES=", len(payload))
+                          try:
+                              from iic_booking.users.wallet_recharge_parser import parse_wallet_recharge_file
+                              rows = parse_wallet_recharge_file(text)
+                              print("PARSE_ROWS=", len(rows))
+                              for r in rows[:5]:
+                                  print("ROW", r.get("receipt_no"), r.get("credited_to_project_no"), r.get("amount"), r.get("emp_no"))
+                          except Exception as e:
+                              print("PARSE_IMPORT_OR_FAIL=", type(e).__name__, e)
+                              # fallback: show first lines
+                              print("PREVIEW=", text[:300].replace("\n", " | "))
+                          break
+          conn.logout()
+          print("DONE_OK")
+          PY
