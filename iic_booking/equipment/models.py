@@ -1643,7 +1643,8 @@ class ChargeProfile(models.Model):
         help_text=_(
             'GENERIC: restricted Python script. Assign charge (₹), e.g. '
             '"charge = pc * A" or multi-line if/else / for-loops. '
-            'Inputs: pc, sc, A–Z, TIME (minutes), SLOT_DURATION_MINUTES. '
+            'Inputs: pc, sc, A–Z, TIME or time (minutes after time formula), '
+            'SLOT_DURATION_MINUTES. '
             'A single expression is still accepted (legacy). '
             'Helpers: min, max, abs, round, ceil, floor, int, float, range.'
         ),

@@ -649,6 +649,11 @@ def get_departments_for_recharge(request):
     if not wallet and request.user.can_have_wallet():
         wallet, _ = WalletRepository.get_or_create(request.user)
     departments = get_departments_for_wallet_recharge(wallet)
+    from iic_booking.users.student_wallet_recharge import is_iitr_student
+
+    # IITR Students only see departments explicitly enabled by main administrator.
+    if is_iitr_student(request.user):
+        departments = departments.filter(enable_student_wallet_recharge=True)
     from ..serializers import DepartmentListSerializer
     return Response({
         "departments": DepartmentListSerializer(departments, many=True).data,
@@ -1494,6 +1499,11 @@ def create_razorpay_order(request):
             {"error": "Invalid department. Choose a department from the recharge list or one that already has a sub-wallet."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
+
+    forbidden = assert_iitr_student_may_recharge(request.user, department=department)
+    if forbidden:
+        return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
     razorpay_key_id = getattr(settings, 'RAZORPAY_KEY_ID', None)
     razorpay_key_secret = getattr(settings, 'RAZORPAY_KEY_SECRET', None)
     if not razorpay_key_id or not razorpay_key_secret:
@@ -1664,6 +1674,7 @@ def send_user_otp_for_recharge(request):
     """
     from iic_booking.users.models.wallet import WalletRechargeMode
     from iic_booking.users.student_wallet_recharge import (
+        assert_iitr_student_may_recharge,
         is_iitr_student,
         student_otp_offline_forbidden_message,
     )
@@ -1697,6 +1708,12 @@ def send_user_otp_for_recharge(request):
             {"error": student_otp_offline_forbidden_message()},
             status=status.HTTP_403_FORBIDDEN,
         )
+
+    student_forbidden = assert_iitr_student_may_recharge(
+        request.user, department_id=int(department_id)
+    )
+    if student_forbidden:
+        return Response({"error": student_forbidden}, status=status.HTTP_403_FORBIDDEN)
 
     if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not request.user.is_faculty():
         return Response(
@@ -2496,6 +2513,153 @@ def send_sric_wallet_recharge_notification(request, request_id):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+def attach_receipt_to_approved_recharge_request(request, request_id):
+    """
+    IITR Student (request owner): optionally add/update receipt number and/or upload
+    a payment receipt file on an APPROVED wallet recharge request.
+    """
+    import uuid
+
+    from iic_booking.users.models.payment import (
+        DepartmentPaymentReceipt,
+        DepartmentPaymentReceiptPurpose,
+    )
+    from iic_booking.users.student_wallet_recharge import is_iitr_student
+    from iic_booking.users.wallet_recharge_workflow import append_audit_log
+
+    try:
+        recharge_request = WalletRechargeRequest.objects.select_related(
+            "department", "user"
+        ).get(pk=request_id, user=request.user)
+    except WalletRechargeRequest.DoesNotExist:
+        return Response(
+            {"error": "Wallet recharge request not found."},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if recharge_request.status != WalletRechargeRequestStatus.APPROVED:
+        return Response(
+            {"error": "Receipt can only be updated on an approved recharge request."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not is_iitr_student(request.user):
+        return Response(
+            {"error": "Only IITR Students can attach a receipt to an approved recharge request."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    utr = (
+        request.data.get("utr_reference")
+        or request.data.get("receipt_number")
+        or request.data.get("receipt_no")
+        or ""
+    )
+    utr = str(utr).strip()
+    upload = request.FILES.get("receipt_file") or request.FILES.get("file")
+
+    if not utr and not upload:
+        return Response(
+            {"error": "Provide a receipt number and/or upload a receipt file (both are optional individually, but at least one is required)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if utr:
+        recharge_request.utr_reference = utr[:255]
+        recharge_request.save(update_fields=["utr_reference", "updated_at"])
+
+    receipt = (
+        DepartmentPaymentReceipt.objects.filter(wallet_recharge_request=recharge_request)
+        .order_by("-created_at")
+        .first()
+    )
+
+    department = recharge_request.department
+    if department is None:
+        return Response(
+            {"error": "Recharge request has no department; cannot attach receipt."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if receipt is None:
+        # New linked receipt row (does not re-credit — request already approved).
+        ref = (utr or f"FILE-{request.user.id}-{uuid.uuid4().hex[:12]}")[:64]
+        if DepartmentPaymentReceipt.objects.filter(
+            utr_reference=ref, department=department
+        ).exclude(wallet_recharge_request=recharge_request).exists():
+            return Response(
+                {"error": "This receipt / UTR number is already registered for the department."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        receipt = DepartmentPaymentReceipt(
+            utr_reference=ref,
+            department=department,
+            user=request.user,
+            amount=recharge_request.amount,
+            purpose=DepartmentPaymentReceiptPurpose.WALLET_RECHARGE,
+            wallet_recharge_request=recharge_request,
+        )
+    else:
+        if utr and utr != receipt.utr_reference:
+            new_ref = utr[:64]
+            if (
+                DepartmentPaymentReceipt.objects.filter(
+                    utr_reference=new_ref, department=department
+                )
+                .exclude(pk=receipt.pk)
+                .exists()
+            ):
+                return Response(
+                    {"error": "This receipt / UTR number is already registered for the department."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            receipt.utr_reference = new_ref
+
+    if upload:
+        receipt.receipt_file = upload
+
+    receipt.save()
+
+    try:
+        append_audit_log(
+            recharge_request,
+            action="receipt_attached",
+            from_status=recharge_request.status,
+            to_status=recharge_request.status,
+            actor=request.user,
+            actor_email=getattr(request.user, "email", "") or "",
+            message=(
+                f"Receipt updated"
+                + (f" (no. {recharge_request.utr_reference})" if recharge_request.utr_reference else "")
+                + (" with file" if upload else "")
+            ),
+            metadata={
+                "utr_reference": recharge_request.utr_reference or "",
+                "has_file": bool(upload),
+                "payment_receipt_id": receipt.id,
+            },
+        )
+    except Exception:
+        pass
+
+    serializer = WalletRechargeRequestSerializer(
+        WalletRechargeRequest.objects.select_related(
+            "user", "user__department", "department", "project", "project__faculty"
+        )
+        .prefetch_related("audit_logs", "audit_logs__actor", "payment_receipts")
+        .get(pk=recharge_request.pk)
+    )
+    return Response(
+        {
+            "message": "Receipt details saved on the approved recharge request.",
+            "request": serializer.data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def cancel_wallet_recharge_request(request, request_id):
     """Cancel a pending wallet recharge request (user). Keeps audit history when OTP was verified."""
     from iic_booking.users.models.wallet import WalletRechargeCancellationSource
@@ -2637,18 +2801,24 @@ def faculty_wallet_expense_report(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def wallet_student_recharge_settings_view(request):
-    """Public (authenticated) read of IITR Student wallet recharge admin toggle."""
+    """Public (authenticated) read of IITR Student wallet recharge availability."""
     from iic_booking.users.student_wallet_recharge import (
         iitr_student_recharge_enabled,
         is_iitr_student,
+        student_has_any_recharge_department,
     )
 
-    enabled = iitr_student_recharge_enabled()
+    is_student = is_iitr_student(request.user)
+    # Department-wise flags are authoritative; legacy global flag still surfaced for admin UI.
+    global_enabled = iitr_student_recharge_enabled()
+    dept_enabled = student_has_any_recharge_department(request.user) if is_student else False
+    enabled = bool(dept_enabled) if is_student else bool(global_enabled)
     return Response(
         {
             "enabled": enabled,
-            "enable_iitr_student_wallet_recharge": enabled,
-            "applies_to_current_user": is_iitr_student(request.user),
+            "enable_iitr_student_wallet_recharge": global_enabled,
+            "department_recharge_available": bool(dept_enabled) if is_student else None,
+            "applies_to_current_user": is_student,
         }
     )
 

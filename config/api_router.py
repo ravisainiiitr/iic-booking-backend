@@ -77,6 +77,7 @@ from iic_booking.users.api.wallet_views import (
     get_my_recharge_requests,
     get_wallet_recharge_pipeline_requests,
     cancel_wallet_recharge_request,
+    attach_receipt_to_approved_recharge_request,
     resend_wallet_recharge_notification,
     send_sric_wallet_recharge_notification,
     wallet_recharge_action_detail,
@@ -1007,6 +1008,11 @@ urlpatterns = router.urls + [
     path("wallet/recharge-requests/<int:request_id>/approve/", approve_wallet_recharge_request, name="wallet-recharge-request-approve"),
     path("wallet/recharge-requests/<int:request_id>/reject/", reject_wallet_recharge_request, name="wallet-recharge-request-reject"),
     path("wallet/recharge-requests/<int:request_id>/cancel/", cancel_wallet_recharge_request, name="wallet-recharge-request-cancel"),
+    path(
+        "wallet/recharge-requests/<int:request_id>/attach-receipt/",
+        attach_receipt_to_approved_recharge_request,
+        name="wallet-recharge-request-attach-receipt",
+    ),
     path("wallet/recharge-requests/<int:request_id>/resend-notification/", resend_wallet_recharge_notification, name="wallet-recharge-request-resend-notification"),
     path(
         "wallet/recharge-requests/<int:request_id>/send-sric/",

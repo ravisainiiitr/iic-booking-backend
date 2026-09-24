@@ -162,6 +162,9 @@ def _require_wallet_manage(request):
     # Accounts In Charge always manage wallet recharge requests for their department.
     if getattr(user, "user_type", None) == UserType.FINANCE:
         return
+    # Department Administrators always see/manage recharge requests for their department.
+    if is_department_admin(user):
+        return
     if user_has_permission(user, "wallet.manage") or user_has_permission(user, "admin_settings.wallet"):
         return
     raise PermissionDenied("Wallet management permission is required.")
@@ -1856,11 +1859,12 @@ def admin_api_router():
                 "wallet",
                 "department",
                 "project",
+                "project__faculty",
                 "account_incharge",
                 "processed_by",
                 "fund_receipt_verified_by",
             )
-            .prefetch_related("audit_logs", "audit_logs__actor")
+            .prefetch_related("audit_logs", "audit_logs__actor", "payment_receipts")
             .order_by("-created_at")
         )
         serializer_class = WalletRechargeRequestSerializer
@@ -1942,6 +1946,16 @@ def admin_api_router():
                     Q(project_grant_code__icontains=project_grant)
                     | Q(project__project_code__icontains=project_grant)
                 )
+
+            fund_verified = (self.request.query_params.get("fund_receipt_verified") or "").strip().lower()
+            if fund_verified in {"1", "true", "yes", "verified"}:
+                qs = qs.filter(fund_receipt_verified=True)
+            elif fund_verified in {"0", "false", "no", "unverified", "not_verified"}:
+                qs = qs.filter(fund_receipt_verified=False)
+
+            recharge_mode = (self.request.query_params.get("recharge_mode") or "").strip().lower()
+            if recharge_mode in {"project_grant", "direct_cash_deposit"}:
+                qs = qs.filter(recharge_mode=recharge_mode)
 
             date_from = (self.request.query_params.get("date_from") or "").strip()
             if date_from:

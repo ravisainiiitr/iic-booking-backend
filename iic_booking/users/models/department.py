@@ -272,6 +272,15 @@ class Department(Model):
             "Wallet Credit Facility for this department. External users remain ineligible."
         ),
     )
+    enable_student_wallet_recharge = BooleanField(
+        _("IITR student wallet recharge enabled"),
+        default=False,
+        help_text=_(
+            "Main-administrator switch: when enabled, IITR Students may request a wallet "
+            "recharge for this department (amount + department → email Accept/Reject). "
+            "Disabled by default for every department."
+        ),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
 

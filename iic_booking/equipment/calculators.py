@@ -583,7 +583,11 @@ class TimeCalculationEngine:
             env[code] = safe_float(input_values.get(code, 0), 0.0)
         env["SLOT_DURATION_MINUTES"] = float(slot_duration_minutes or 0)
         if total_time_minutes is not None:
-            env["TIME"] = float(total_time_minutes)
+            # Charge formulas historically documented TIME (uppercase). Also accept `time`
+            # so authors writing lowercase after the time-formula result do not get Unknown variable.
+            minutes = float(total_time_minutes)
+            env["TIME"] = minutes
+            env["time"] = minutes
         if charge_profile is not None:
             env["pc"] = float(safe_decimal(charge_profile.primary_unit_charge or 0))
             env["sc"] = float(safe_decimal(charge_profile.secondary_unit_charge or 0))

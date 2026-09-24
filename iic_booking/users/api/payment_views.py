@@ -268,8 +268,12 @@ def submit_wallet_recharge_receipt(request):
     )
 
     # Individual students / others may also use this path when they have wallet access.
-    # IITR Students are gated by the admin flag.
-    forbidden = assert_iitr_student_may_recharge(request.user)
+    # IITR Students are gated by department.enable_student_wallet_recharge.
+    department_id_early = request.data.get("department_id")
+    forbidden = assert_iitr_student_may_recharge(
+        request.user,
+        department_id=int(department_id_early) if department_id_early not in (None, "") else None,
+    )
     if forbidden:
         return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
 

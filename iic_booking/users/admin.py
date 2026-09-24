@@ -1162,6 +1162,11 @@ class DepartmentAdmin(admin.ModelAdmin):
                     "state",
                     "head",
                     "description",
+                    "access_enabled",
+                    "equipment_booking_enabled",
+                    "equipment_visibility_enabled",
+                    "enable_wallet_credit",
+                    "enable_student_wallet_recharge",
                 )
             },
         ),

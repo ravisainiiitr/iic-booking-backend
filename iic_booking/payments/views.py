@@ -132,10 +132,6 @@ def razorpay_create_order(request):
         # WALLET_RECHARGE
         from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
 
-        forbidden = assert_iitr_student_may_recharge(request.user)
-        if forbidden:
-            return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
-
         try:
             amount = Decimal(str(request.data.get("amount") or "0")).quantize(Decimal("0.01"))
         except (InvalidOperation, TypeError):
@@ -144,6 +140,12 @@ def razorpay_create_order(request):
         department_id = request.data.get("department_id")
         if not department_id:
             return Response({"error": "department_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        forbidden = assert_iitr_student_may_recharge(
+            request.user, department_id=int(department_id)
+        )
+        if forbidden:
+            return Response({"error": forbidden}, status=status.HTTP_403_FORBIDDEN)
 
         wallet = request.user.get_accessible_wallet()
         if not wallet:

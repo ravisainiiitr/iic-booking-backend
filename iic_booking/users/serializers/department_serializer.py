@@ -23,6 +23,7 @@ class DepartmentSerializer(serializers.ModelSerializer[Department]):
             "equipment_booking_enabled",
             "equipment_visibility_enabled",
             "enable_wallet_credit",
+            "enable_student_wallet_recharge",
             "department_type",
             "department_type_display",
             "external_subcategory",
@@ -62,6 +63,7 @@ class DepartmentListSerializer(serializers.ModelSerializer[Department]):
             "equipment_booking_enabled",
             "equipment_visibility_enabled",
             "enable_wallet_credit",
+            "enable_student_wallet_recharge",
         ]
         read_only_fields = ["id"]
 

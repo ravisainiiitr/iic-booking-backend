@@ -540,10 +540,13 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_email = serializers.SerializerMethodField()
     user_emp_id = serializers.SerializerMethodField()
+    user_details = serializers.SerializerMethodField()
+    payment_receipts = serializers.SerializerMethodField()
     request_id = serializers.CharField(source="request_id_display", read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     department_id = serializers.SerializerMethodField()
     department_name = serializers.SerializerMethodField()
+    department_code = serializers.SerializerMethodField()
     project_id = serializers.SerializerMethodField()
     project_name = serializers.SerializerMethodField()
     project_code = serializers.SerializerMethodField()
@@ -564,10 +567,13 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'user_name',
             'user_email',
             'user_emp_id',
+            'user_details',
+            'payment_receipts',
             'wallet',
             'department',
             'department_id',
             'department_name',
+            'department_code',
             'amount',
             'project',
             'project_id',
@@ -605,6 +611,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'rejection_reason_code',
             'rejection_reason_text',
             'cancellation_source',
+            'utr_reference',
             'created_at',
             'updated_at',
             'responded_at',
@@ -614,6 +621,8 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'id',
             'request_id',
             'user',
+            'user_details',
+            'payment_receipts',
             'wallet',
             'status',
             'employee_number',
@@ -640,6 +649,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'rejection_reason_code',
             'rejection_reason_text',
             'cancellation_source',
+            'utr_reference',
             'created_at',
             'updated_at',
             'responded_at',
@@ -661,6 +671,85 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             return obj.employee_number
         return (obj.user.emp_id or "").strip() if obj.user_id else ""
 
+    def get_user_details(self, obj):
+        """Full requester profile for verification against physical receipt."""
+        u = getattr(obj, "user", None)
+        if not u:
+            return None
+        dept = getattr(u, "department", None)
+        try:
+            user_type_display = (
+                u.get_user_type_display_label()
+                if hasattr(u, "get_user_type_display_label")
+                else (u.user_type or "")
+            )
+        except Exception:
+            user_type_display = getattr(u, "user_type", "") or ""
+        return {
+            "id": u.id,
+            "name": (u.name or "").strip() or (u.email or ""),
+            "email": u.email or "",
+            "emp_id": (u.emp_id or "").strip(),
+            "phone_number": (u.phone_number or "").strip(),
+            "secondary_phone_number": (getattr(u, "secondary_phone_number", None) or "").strip(),
+            "designation": (getattr(u, "designation", None) or "").strip(),
+            "user_type": getattr(u, "user_type", "") or "",
+            "user_type_display": user_type_display,
+            "user_type_alias": (getattr(u, "user_type_alias", None) or "").strip(),
+            "department_id": getattr(u, "department_id", None),
+            "department_name": dept.name if dept else (obj.user_department_name or ""),
+            "department_code": (dept.code or "") if dept else "",
+            "is_active": bool(getattr(u, "is_active", True)),
+            "email_verified": bool(getattr(u, "email_verified", False)),
+            "date_joined": u.date_joined.isoformat() if getattr(u, "date_joined", None) else None,
+        }
+
+    def get_payment_receipts(self, obj):
+        """Linked offline payment receipts for physical verification."""
+        rows = []
+        try:
+            receipts = list(obj.payment_receipts.all())
+        except Exception:
+            receipts = []
+        if not receipts and obj.user_id and obj.department_id:
+            try:
+                from iic_booking.users.models.payment import (
+                    DepartmentPaymentReceipt,
+                    DepartmentPaymentReceiptPurpose,
+                )
+
+                receipts = list(
+                    DepartmentPaymentReceipt.objects.filter(
+                        user_id=obj.user_id,
+                        department_id=obj.department_id,
+                        purpose=DepartmentPaymentReceiptPurpose.WALLET_RECHARGE,
+                        amount=obj.amount,
+                    ).order_by("-created_at")[:5]
+                )
+            except Exception:
+                receipts = []
+        for r in receipts:
+            file_url = None
+            try:
+                if getattr(r, "receipt_file", None) and r.receipt_file:
+                    file_url = r.receipt_file.url
+            except Exception:
+                file_url = None
+            rows.append(
+                {
+                    "id": r.id,
+                    "utr_reference": r.utr_reference,
+                    "amount": str(r.amount),
+                    "status": r.status,
+                    "payment_date": r.payment_date.isoformat() if r.payment_date else None,
+                    "receipt_file_url": file_url,
+                    "has_receipt_file": bool(file_url),
+                    "finance_remarks": getattr(r, "finance_remarks", "") or "",
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
+        return rows
+
     def get_department_id(self, obj):
         return obj.department_id
 
@@ -669,6 +758,12 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             return obj.department.name if obj.department_id else None
         except Exception:
             return None
+
+    def get_department_code(self, obj):
+        try:
+            return (obj.department.code or "") if obj.department_id else ""
+        except Exception:
+            return ""
 
     def get_project_id(self, obj):
         return obj.project_id
