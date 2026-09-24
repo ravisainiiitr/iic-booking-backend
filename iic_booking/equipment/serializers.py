@@ -1209,6 +1209,9 @@ class EquipmentListSerializer(serializers.ModelSerializer):
     equipment_group_id = serializers.IntegerField(source='equipment_group.equipment_group_id', read_only=True, allow_null=True)
     equipment_group_name = serializers.CharField(source='equipment_group.name', read_only=True, allow_null=True)
     equipment_group_code = serializers.CharField(source='equipment_group.code', read_only=True, allow_null=True)
+    publication_count = serializers.IntegerField(read_only=True, allow_null=True)
+    featured_publication_title = serializers.CharField(read_only=True, allow_null=True)
+    featured_citation = serializers.CharField(read_only=True, allow_null=True)
 
     class Meta:
         model = Equipment
@@ -1240,6 +1243,9 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'equipment_group_id',
             'equipment_group_name',
             'equipment_group_code',
+            'publication_count',
+            'featured_publication_title',
+            'featured_citation',
             'created_at',
             'updated_at',
             'enable_charge_recalculation',
@@ -1316,6 +1322,9 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
     category_code = serializers.CharField(source='category.code', read_only=True, allow_null=True)
     internal_department_name = serializers.CharField(source='internal_department.name', read_only=True, allow_null=True)
     internal_department_code = serializers.CharField(source='internal_department.code', read_only=True, allow_null=True)
+    publication_count = serializers.IntegerField(read_only=True, allow_null=True)
+    featured_publication_title = serializers.CharField(read_only=True, allow_null=True)
+    featured_citation = serializers.CharField(read_only=True, allow_null=True)
 
     class Meta:
         model = Equipment
@@ -1343,6 +1352,9 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
             'show_model_on_card',
             'parent_equipment',
             'enable_multi_mode',
+            'publication_count',
+            'featured_publication_title',
+            'featured_citation',
             'created_at',
             'updated_at',
         ]

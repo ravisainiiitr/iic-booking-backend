@@ -212,6 +212,8 @@ def create_pending_transfer(
 
 
 def send_transfer_otp_email(transfer: WalletPeerTransfer, otp: str) -> None:
+    from iic_booking.users.test_accounts import redirect_email_for_user
+
     subject = f"OTP for Wallet Transfer {transfer.transaction_id} — ₹{transfer.amount}"
     body = f"""Your one-time password for wallet-to-wallet transfer:
 
@@ -225,11 +227,16 @@ Expires in 10 minutes.
 
 If you did not request this transfer, ignore this email.
 """.strip()
-    send_mail(
+    delivery_emails, delivery_subject = redirect_email_for_user(
+        transfer.sender,
+        original_email=transfer.sender.email,
         subject=subject,
+    )
+    send_mail(
+        subject=delivery_subject or subject,
         message=body,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[transfer.sender.email],
+        recipient_list=delivery_emails or [transfer.sender.email],
         fail_silently=False,
     )
 

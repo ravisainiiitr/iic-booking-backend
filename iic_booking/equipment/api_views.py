@@ -212,6 +212,14 @@ logger = logging.getLogger(__name__)
 # Cap "book any" alternative-slot scans — unbounded select_for_update iteration can take minutes.
 _BOOK_ANY_ALT_SLOT_SCAN_LIMIT = 4000
 
+
+def _is_admin_department_name_or_code(name: str | None, code: str | None = None) -> bool:
+    """Hide the internal ADMIN department from public department pickers."""
+    n = (name or "").strip().lower()
+    c = (code or "").strip().lower()
+    return n == "admin" or c == "admin"
+
+
 def _is_admin_panel_user(user) -> bool:
     """True for admin / OIC / operator / finance; matches user_type case-insensitively."""
     if not user or not getattr(user, "is_authenticated", False):
@@ -1693,6 +1701,10 @@ def equipment_catalog_departments(request):
             "equipment_count": row["equipment_count"],
         }
         for row in dept_rows
+        if not _is_admin_department_name_or_code(
+            row.get("internal_department__name"),
+            row.get("internal_department__code"),
+        )
     ]
     unassigned_count = queryset.filter(internal_department__isnull=True).count()
 
@@ -1896,6 +1908,10 @@ def equipment_analysis_charges(request):
             "equipment_count": row["equipment_count"],
         }
         for row in dept_rows
+        if not _is_admin_department_name_or_code(
+            row.get("internal_department__name"),
+            row.get("internal_department__code"),
+        )
     ]
 
     return Response(
@@ -1949,6 +1965,33 @@ def equipment_list(request):
             rating_4_count=Count("bookings", filter=rating_filter & Q(bookings__rating=4)),
             rating_5_count=Count("bookings", filter=rating_filter & Q(bookings__rating=5)),
         )
+
+    # Catalog cards: publication count + first citation (ordered like the equipment page).
+    # Use Subquery for count so it stays correct when rating Counts also annotate the queryset.
+    from django.db.models import IntegerField, CharField, TextField, Value
+    from django.db.models.functions import Coalesce
+    from .models import EquipmentPublication
+
+    first_pub = EquipmentPublication.objects.filter(equipment_id=OuterRef("pk")).order_by(
+        "display_order", "-year", "title", "equipment_publication_id"
+    )
+    pub_count_sq = (
+        EquipmentPublication.objects.filter(equipment_id=OuterRef("pk"))
+        .order_by()
+        .values("equipment_id")
+        .annotate(_c=Count("equipment_publication_id"))
+        .values("_c")[:1]
+    )
+    queryset = queryset.annotate(
+        publication_count=Coalesce(
+            Subquery(pub_count_sq, output_field=IntegerField()),
+            Value(0, output_field=IntegerField()),
+        ),
+        featured_publication_title=Subquery(
+            first_pub.values("title")[:1], output_field=CharField(max_length=500)
+        ),
+        featured_citation=Subquery(first_pub.values("citation")[:1], output_field=TextField()),
+    )
 
     # Filter by profile_type if provided
     profile_type = request.query_params.get('profile_type')

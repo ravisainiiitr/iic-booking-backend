@@ -663,6 +663,8 @@ def get_departments_for_recharge(request):
                 departments = departments.none()
         else:
             departments = departments.filter(enable_student_wallet_recharge=True)
+    # Hide internal ADMIN department from recharge picker.
+    departments = departments.exclude(name__iexact="ADMIN").exclude(code__iexact="ADMIN")
     from ..serializers import DepartmentListSerializer
     return Response({
         "departments": DepartmentListSerializer(departments, many=True).data,
@@ -1944,13 +1946,22 @@ This is an automated email from IIT Roorkee.
 Please do not reply to this email.
         """
         
-        # Send email to user
+        # Send email to user (test accounts / seeded QA emails redirect to configured inbox)
         try:
-            send_mail(
+            from iic_booking.users.test_accounts import redirect_email_for_user
+
+            delivery_emails, delivery_subject = redirect_email_for_user(
+                request.user,
+                original_email=request.user.email,
                 subject=subject,
+            )
+            if not delivery_emails:
+                raise ValueError("No delivery email address for OTP")
+            send_mail(
+                subject=delivery_subject or subject,
                 message=message,
                 from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[request.user.email],
+                recipient_list=delivery_emails,
                 html_message=html_message,
                 fail_silently=False,
             )

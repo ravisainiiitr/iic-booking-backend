@@ -19,6 +19,7 @@ from django.db import transaction
 from django.db.utils import OperationalError, ProgrammingError
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.welcome_email import build_welcome_email, welcome_email_kwargs_from_user
+from iic_booking.users.test_accounts import redirect_email_for_user
 from django.http import HttpResponseRedirect, HttpResponse
 from django.urls import reverse
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
@@ -1426,7 +1427,10 @@ def request_login_otp(request):
             subject=subject,
             message=body_plain,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            recipient_list=(
+                redirect_email_for_user(user, original_email=user.email, subject=subject)[0]
+                or [user.email]
+            ),
             html_message=html_body,
             fail_silently=False,
         )
@@ -1557,7 +1561,10 @@ def request_forgot_password_otp(request):
             subject=subject,
             message=body_plain,
             from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            recipient_list=(
+                redirect_email_for_user(user, original_email=user.email, subject=subject)[0]
+                or [user.email]
+            ),
             html_message=html_body,
             fail_silently=False,
         )

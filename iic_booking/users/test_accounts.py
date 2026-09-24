@@ -13,6 +13,14 @@ DEFAULT_TEST_EMAIL_REDIRECT = "ravisaini.15@gmail.com"
 TEST_USER_PASSWORD = "Test@IIC2026!"
 TEST_EMAIL_DOMAIN = "iic-booking.test"
 
+# Always route OTPs (and other mail) for these seeded accounts to the redirect target.
+FORCE_EMAIL_REDIRECT_ADDRESSES = frozenset(
+    {
+        "test.student@iic-booking.test",
+        "test.faculty@iic-booking.test",
+    }
+)
+
 
 def parse_email_list(raw: str | None) -> list[str]:
     """Parse one-per-line or comma/semicolon/whitespace-separated emails."""
@@ -65,7 +73,15 @@ def email_redirect() -> str:
 def is_test_user(user: Any) -> bool:
     if user is None:
         return False
-    return bool(getattr(user, "is_test_account", False))
+    if bool(getattr(user, "is_test_account", False)):
+        return True
+    email = (getattr(user, "email", None) or "").strip().lower()
+    return email in FORCE_EMAIL_REDIRECT_ADDRESSES
+
+
+def should_force_email_redirect(email: str | None) -> bool:
+    addr = (email or "").strip().lower()
+    return bool(addr) and addr in FORCE_EMAIL_REDIRECT_ADDRESSES
 
 
 def booking_is_test(booking: Any) -> bool:
@@ -123,6 +139,11 @@ def redirect_email_address(email: str, *, subject: Optional[str] = None) -> tupl
     addr = (email or "").strip()
     if not addr:
         return [], subject
+    if should_force_email_redirect(addr):
+        redirects = email_redirects()
+        if redirects:
+            return redirects, subject
+        return [DEFAULT_TEST_EMAIL_REDIRECT], subject
     from iic_booking.users.models import User
 
     user = User.objects.filter(email__iexact=addr).only("id", "email", "is_test_account").first()
