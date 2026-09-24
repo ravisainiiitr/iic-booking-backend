@@ -54,13 +54,16 @@ def already_processed_page(status: str, cancellation_source: str = "") -> dict[s
         return {
             "page_code": "already_approved",
             "title": "Already Approved",
-            "message": "This wallet recharge request has already been approved. No further action is required.",
+            "message": (
+                "This wallet recharge request has already been approved. "
+                "It cannot be approved again."
+            ),
         }
     if status == WalletRechargeRequestStatus.REJECTED:
         return {
             "page_code": "already_rejected",
-            "title": "Already Rejected",
-            "message": "This wallet recharge request has already been rejected. No further action is required.",
+            "title": "Already Declined",
+            "message": "This wallet recharge request has already been declined. No further action is required.",
         }
     if status == WalletRechargeRequestStatus.CANCELLED:
         if cancellation_source == WalletRechargeCancellationSource.DEPT_ADMIN:
@@ -217,6 +220,9 @@ def serialize_request_public(recharge_request: WalletRechargeRequest) -> dict[st
         page = already_processed_page(status, recharge_request.cancellation_source or "")
     return {
         "request_id": recharge_request.request_id_display,
+        "transaction_number": getattr(
+            recharge_request, "transaction_number", recharge_request.request_id_display
+        ),
         "id": recharge_request.id,
         "amount": str(recharge_request.amount),
         "user_name": recharge_request.user.name or recharge_request.user.email,
@@ -224,6 +230,8 @@ def serialize_request_public(recharge_request: WalletRechargeRequest) -> dict[st
         "employee_number": recharge_request.employee_number or (recharge_request.user.emp_id or ""),
         "user_department": recharge_request.user_department_name
         or (recharge_request.user.department.name if recharge_request.user.department_id else ""),
+        "user_phone": (getattr(recharge_request.user, "phone_number", None) or ""),
+        "user_type": getattr(recharge_request.user, "user_type", "") or "",
         "department_name": recharge_request.department.name if recharge_request.department_id else "",
         "department_grant_code": recharge_request.department_grant_code or "",
         "project_grant_code": recharge_request.project_grant_code or "",
@@ -434,7 +442,7 @@ def cancel_request(
 
 def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     """
-    Send approval-interface email (Approve / Reject buttons).
+    Send approval-interface email (Approve / Decline buttons).
     Project Grant → SRIC Office recipients.
     Direct Cash Deposit → SRIC Bill Section + requester + wallet owner.
     Returns number of primary (approval) recipients emailed.
@@ -458,13 +466,19 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     name = user.name or user.email
     emp = recharge_request.employee_number or (user.emp_id or "—")
     amount = recharge_request.amount
+    amount_str = f"{amount:,.2f}" if hasattr(amount, "__float__") else str(amount)
     user_dept = recharge_request.user_department_name or "—"
     credit_grant = recharge_request.department_grant_code or "—"
     debit_grant = recharge_request.project_grant_code or "—"
     approve_url, reject_url = build_action_urls(recharge_request)
     mode_label = "Direct Cash Deposit / Bank Transfer" if is_cash else "Recharge via Project Grant"
+    txn = getattr(recharge_request, "transaction_number", None) or recharge_request.request_id_display
+    phone = (getattr(user, "phone_number", None) or "—").strip() or "—"
+    email = (user.email or "—").strip()
+    user_type = getattr(user, "user_type", "") or "—"
+    dept_name = recharge_request.department.name if recharge_request.department_id else "—"
 
-    subject = f"Urgent Wallet Recharge Request from {name} - {emp}"
+    subject = f"[{txn}] Wallet Recharge ₹{amount_str} — {name}"
     if is_cash:
         grant_lines_text = f"Recharge Mode: {mode_label}"
         grant_rows_html = (
@@ -481,43 +495,57 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
             f'<div class="row"><span class="label">Project Grant Code for Debit:</span> {debit_grant}</div>'
         )
 
-    text_body = f"""Urgent Wallet Recharge Request
+    text_body = f"""Wallet Recharge Request — {txn}
 
-Amount of Recharge: ₹{amount}
-Name of the User: {name}
-Employee Number: {emp}
-User Department: {user_dept}
+INTERNAL TRANSACTION NUMBER: {txn}
+TOTAL AMOUNT: ₹{amount_str}
+
+Name: {name}
+Email: {email}
+Phone: {phone}
+Employee / ID: {emp}
+User type: {user_type}
+User department: {user_dept}
+Credit department: {dept_name}
 {grant_lines_text}
 
-Request ID: {recharge_request.request_id_display}
-
 Approve: {approve_url}
-Reject: {reject_url}
+Decline: {reject_url}
 
+If you Decline, you must provide a reason on the linked page.
 This email is an approval interface only. Please do not reply.
+Once approved, the request cannot be re-approved.
 """
     html_body = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><style>
 body{{font-family:Arial,sans-serif;line-height:1.6;color:#333}}
 .box{{max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px}}
 .row{{margin:8px 0}} .label{{font-weight:bold;color:#555}}
+.amount{{font-size:28px;font-weight:800;color:#0d47a1;margin:12px 0 20px;letter-spacing:0.02em}}
+.txn{{font-size:16px;font-weight:700;color:#111;background:#e3f2fd;padding:10px 14px;border-radius:6px;display:inline-block;margin-bottom:12px}}
 .btn{{display:inline-block;padding:12px 28px;margin:8px;border-radius:6px;color:#fff;text-decoration:none;font-weight:bold}}
 .ok{{background:#2e7d32}} .bad{{background:#c62828}}
 .note{{margin-top:16px;padding:12px;background:#fff8e1;border:1px solid #ffe082;font-size:13px}}
 </style></head><body><div class="box">
-<h2>Urgent Wallet Recharge Request</h2>
-<div class="row"><span class="label">Amount of Recharge:</span> ₹{amount}</div>
-<div class="row"><span class="label">Name of the User:</span> {name}</div>
-<div class="row"><span class="label">Employee Number:</span> {emp}</div>
-<div class="row"><span class="label">User Department:</span> {user_dept}</div>
+<h2>Wallet Recharge Request</h2>
+<div class="txn">Transaction ID: {txn}</div>
+<div class="amount">Total amount: ₹{amount_str}</div>
+<div class="row"><span class="label">Name:</span> {name}</div>
+<div class="row"><span class="label">Email:</span> {email}</div>
+<div class="row"><span class="label">Phone:</span> {phone}</div>
+<div class="row"><span class="label">Employee / ID:</span> {emp}</div>
+<div class="row"><span class="label">User type:</span> {user_type}</div>
+<div class="row"><span class="label">User department:</span> {user_dept}</div>
+<div class="row"><span class="label">Credit department:</span> {dept_name}</div>
 {grant_rows_html}
-<div class="row"><span class="label">Request ID:</span> {recharge_request.request_id_display}</div>
+<div class="row"><span class="label">Request ref:</span> {recharge_request.request_id_display}</div>
 <p style="text-align:center;margin:28px 0">
   <a class="btn ok" href="{approve_url}">Approve</a>
-  <a class="btn bad" href="{reject_url}">Reject</a>
+  <a class="btn bad" href="{reject_url}">Decline</a>
 </p>
-<div class="note">This email is a secure approval interface only. Do not reply to this message.
-If the request was already processed in the admin dashboard, these buttons will show the current status and will not change anything.</div>
+<div class="note">If you <strong>Decline</strong>, you must enter a reason on the next page.
+This is a secure approval interface — do not reply.
+Once the request is <strong>approved</strong>, it cannot be approved again.</div>
 </div></body></html>"""
 
     send_mail(
@@ -545,26 +573,36 @@ If the request was already processed in the admin dashboard, these buttons will 
         primary_lower = {e.lower() for e in recipients}
         info_recipients = [e for e in info_recipients if e.lower() not in primary_lower]
         if info_recipients:
-            info_subject = f"Wallet Recharge Request Submitted — {recharge_request.request_id_display}"
+            info_subject = f"[{txn}] Wallet Recharge Submitted — next steps"
             info_text = f"""Your wallet recharge request has been submitted.
 
-Request ID: {recharge_request.request_id_display}
-Amount: ₹{amount}
+Transaction ID: {txn}
+Amount: ₹{amount_str}
 Recharge Mode: {mode_label}
-Department: {recharge_request.department.name if recharge_request.department_id else "—"}
+Department: {dept_name}
 
-The SRIC Bill Section has been notified. You will receive a further email when the request is processed.
+Next steps:
+1. Visit the SRIC Bill Section to deposit cash (or complete the bank transfer).
+2. Share this Transaction ID ({txn}) as your reference.
+3. After approval, upload or update the payment receipt in your Wallet for final reconciliation.
+
+You will receive a further email when the request is processed.
 """
             info_html = f"""<!DOCTYPE html>
 <html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333">
 <div style="max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px">
 <h2>Wallet Recharge Request Submitted</h2>
-<p>Your wallet recharge request has been submitted for processing.</p>
-<div class="row"><strong>Request ID:</strong> {recharge_request.request_id_display}</div>
-<div class="row"><strong>Amount:</strong> ₹{amount}</div>
-<div class="row"><strong>Recharge Mode:</strong> {mode_label}</div>
-<div class="row"><strong>Department:</strong> {recharge_request.department.name if recharge_request.department_id else "—"}</div>
-<p style="margin-top:16px">The SRIC Bill Section has been notified. You will receive a further email when the request is processed.</p>
+<p style="font-size:18px;font-weight:700;background:#e3f2fd;padding:10px 14px;border-radius:6px;display:inline-block">Transaction ID: {txn}</p>
+<p style="font-size:24px;font-weight:800;color:#0d47a1">Total amount: ₹{amount_str}</p>
+<p><strong>Recharge Mode:</strong> {mode_label}<br/>
+<strong>Department:</strong> {dept_name}</p>
+<h3>Next steps</h3>
+<ol>
+<li>Visit the <strong>SRIC Bill Section</strong> to deposit cash (or complete the bank transfer).</li>
+<li>Share Transaction ID <strong>{txn}</strong> as your reference.</li>
+<li>After approval, upload or update the payment receipt in your Wallet for final reconciliation by Accounts.</li>
+</ol>
+<p>You will receive a further email when the request is processed.</p>
 </div></body></html>"""
             try:
                 send_mail(
@@ -588,7 +626,7 @@ The SRIC Bill Section has been notified. You will receive a further email when t
         from_status=WalletRechargeRequestStatus.PENDING,
         to_status=WalletRechargeRequestStatus.PENDING,
         message=f"Approval email sent to {', '.join(recipients)}",
-        metadata={"recipients": recipients, "recharge_mode": mode},
+        metadata={"recipients": recipients, "recharge_mode": mode, "transaction_number": txn},
     )
     return len(recipients)
 
@@ -705,24 +743,28 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
             return
 
         status_label = recharge_request.get_status_display()
+        txn = getattr(recharge_request, "transaction_number", None) or recharge_request.request_id_display
+        amount = recharge_request.amount
+        amount_str = f"{amount:,.2f}" if hasattr(amount, "__float__") else str(amount)
         subject = (
-            f"Wallet Recharge {status_label}: {recharge_request.request_id_display} "
-            f"— {getattr(recharge_request.user, 'name', None) or getattr(recharge_request.user, 'email', '')}"
+            f"[{txn}] Wallet Recharge {status_label} — "
+            f"{getattr(recharge_request.user, 'name', None) or getattr(recharge_request.user, 'email', '')}"
         )
         reason = ""
         if recharge_request.status == WalletRechargeRequestStatus.REJECTED:
-            reason = f"\nRejection reason: {recharge_request.response_message or '—'}"
+            reason = f"\nDecline reason: {recharge_request.response_message or '—'}"
         dept_name = "—"
         try:
             if recharge_request.department_id and recharge_request.department:
                 dept_name = recharge_request.department.name
         except Exception:
             dept_name = "—"
-        body = f"""Wallet recharge request {recharge_request.request_id_display} is now {status_label}.
+        body = f"""Wallet recharge request {txn} is now {status_label}.
 
+Transaction ID: {txn}
+TOTAL AMOUNT: ₹{amount_str}
 User: {getattr(recharge_request.user, 'name', None) or getattr(recharge_request.user, 'email', '')}
 Employee Number: {recharge_request.employee_number or '—'}
-Amount: ₹{recharge_request.amount}
 Department (credit): {dept_name}
 Department Grant Code: {recharge_request.department_grant_code or '—'}
 Project Grant Code: {recharge_request.project_grant_code or '—'}

@@ -543,6 +543,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     user_details = serializers.SerializerMethodField()
     payment_receipts = serializers.SerializerMethodField()
     request_id = serializers.CharField(source="request_id_display", read_only=True)
+    transaction_number = serializers.CharField(read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     department_id = serializers.SerializerMethodField()
     department_name = serializers.SerializerMethodField()
@@ -563,6 +564,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'request_id',
+            'transaction_number',
             'user',
             'user_name',
             'user_email',
@@ -620,6 +622,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id',
             'request_id',
+            'transaction_number',
             'user',
             'user_details',
             'payment_receipts',

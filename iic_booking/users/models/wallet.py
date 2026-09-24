@@ -756,6 +756,11 @@ class WalletRechargeRequest(Model):
     @property
     def request_id_display(self) -> str:
         return f"WRR-{self.pk}" if self.pk else "WRR-—"
+
+    @property
+    def transaction_number(self) -> str:
+        """Internal transaction id for tracking cash/bank and wallet recharge requests."""
+        return f"IIC-TXN-{self.pk:06d}" if self.pk else "IIC-TXN-—"
     
     def clean(self) -> None:
         """Validate that department is provided for new recharge requests."""

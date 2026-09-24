@@ -2096,12 +2096,22 @@ def create_wallet_recharge_request(request):
     _notify_accounts_team_and_faculty_after_recharge_request_user_verified(request, recharge_request)
 
     request_serializer = WalletRechargeRequestSerializer(recharge_request)
+    txn = getattr(recharge_request, "transaction_number", None) or recharge_request.request_id_display
+
+    if mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT:
+        msg = (
+            f"Request submitted ({txn}). Visit the SRIC Bill Section to deposit cash, "
+            f"share this transaction number for immediate recharge, and after approval "
+            f"upload the receipt for Accounts reconciliation."
+        )
+    else:
+        msg = (
+            f"Wallet recharge request submitted successfully ({txn}). "
+            "Approve / Decline links have been emailed where configured."
+        )
     return Response({
         "request": request_serializer.data,
-        "message": (
-            "Wallet recharge request submitted successfully. "
-            "The SRIC Office has been emailed Approve / Reject links for this request."
-        ),
+        "message": msg,
     }, status=status.HTTP_201_CREATED)
 
 
@@ -2524,8 +2534,8 @@ def send_sric_wallet_recharge_notification(request, request_id):
 @permission_classes([IsAuthenticated])
 def attach_receipt_to_approved_recharge_request(request, request_id):
     """
-    IITR Student (request owner): optionally add/update receipt number and/or upload
-    a payment receipt file on an APPROVED wallet recharge request.
+    Request owner: optionally add/update receipt number and/or upload a payment
+    receipt file on an APPROVED wallet recharge request (Accounts reconciliation).
     """
     import uuid
 
@@ -2533,7 +2543,6 @@ def attach_receipt_to_approved_recharge_request(request, request_id):
         DepartmentPaymentReceipt,
         DepartmentPaymentReceiptPurpose,
     )
-    from iic_booking.users.student_wallet_recharge import is_iitr_student
     from iic_booking.users.wallet_recharge_workflow import append_audit_log
 
     try:
@@ -2550,12 +2559,6 @@ def attach_receipt_to_approved_recharge_request(request, request_id):
         return Response(
             {"error": "Receipt can only be updated on an approved recharge request."},
             status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not is_iitr_student(request.user):
-        return Response(
-            {"error": "Only IITR Students can attach a receipt to an approved recharge request."},
-            status=status.HTTP_403_FORBIDDEN,
         )
 
     utr = (

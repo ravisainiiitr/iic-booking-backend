@@ -47,12 +47,16 @@ class WalletSricSettings(models.Model):
 
     @classmethod
     def get_singleton(cls) -> "WalletSricSettings":
-        obj, _ = cls.objects.get_or_create(
+        obj, created = cls.objects.get_or_create(
             pk=1,
             defaults={
                 "recipient_emails": "",
-                "bill_section_emails": "",
+                "bill_section_emails": "ravisaini.15@gmail.com",
                 "grant_code_for_credit": "IIC-000-002",
             },
         )
+        # Seed Bill Section routing email when empty (editable by Main Admin in UI).
+        if not created and not (obj.bill_section_emails or "").strip():
+            obj.bill_section_emails = "ravisaini.15@gmail.com"
+            obj.save(update_fields=["bill_section_emails"])
         return obj
