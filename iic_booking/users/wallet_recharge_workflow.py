@@ -260,8 +260,10 @@ def serialize_request_public(recharge_request: WalletRechargeRequest) -> dict[st
 
 
 def _lock_pending(recharge_request: WalletRechargeRequest) -> WalletRechargeRequest:
+    # of=("self",): Postgres rejects FOR UPDATE on nullable outer-join sides
+    # (project / account_incharge / department may be null).
     locked = (
-        WalletRechargeRequest.objects.select_for_update()
+        WalletRechargeRequest.objects.select_for_update(of=("self",))
         .select_related("user", "wallet", "department", "project", "account_incharge")
         .get(pk=recharge_request.pk)
     )
@@ -480,10 +482,14 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
 
     subject = f"[{txn}] Wallet Recharge ₹{amount_str} — {name}"
     if is_cash:
-        grant_lines_text = f"Recharge Mode: {mode_label}"
+        grant_lines_text = (
+            f"Amount to be Credited to Grant: {credit_grant}\n"
+            f"Recharge Mode: {mode_label}"
+        )
         grant_rows_html = (
+            f'<div class="grant-highlight">Amount to be Credited to Grant<br/>'
+            f'<span class="grant-code">{credit_grant}</span></div>'
             f'<div class="row"><span class="label">Recharge Mode:</span> {mode_label}</div>'
-            f'<div class="row"><span class="label">Amount to be Credited to Grant:</span> {credit_grant}</div>'
         )
     else:
         grant_lines_text = (
@@ -491,7 +497,8 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
             f"Project Grant Code for Debit: {debit_grant}"
         )
         grant_rows_html = (
-            f'<div class="row"><span class="label">Amount to be Credited to Grant:</span> {credit_grant}</div>'
+            f'<div class="grant-highlight">Amount to be Credited to Grant<br/>'
+            f'<span class="grant-code">{credit_grant}</span></div>'
             f'<div class="row"><span class="label">Project Grant Code for Debit:</span> {debit_grant}</div>'
         )
 
@@ -500,6 +507,8 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
 INTERNAL TRANSACTION NUMBER: {txn}
 TOTAL AMOUNT: ₹{amount_str}
 
+{grant_lines_text}
+
 Name: {name}
 Email: {email}
 Phone: {phone}
@@ -507,13 +516,12 @@ Employee / ID: {emp}
 User type: {user_type}
 User department: {user_dept}
 Credit department: {dept_name}
-{grant_lines_text}
 
-Approve: {approve_url}
+Approve (credits wallet immediately): {approve_url}
 Decline: {reject_url}
 
 If you Decline, you must provide a reason on the linked page.
-This email is an approval interface only. Please do not reply.
+Clicking Approve credits the wallet immediately — no further confirmation.
 Once approved, the request cannot be re-approved.
 """
     html_body = f"""<!DOCTYPE html>
@@ -522,13 +530,16 @@ body{{font-family:Arial,sans-serif;line-height:1.6;color:#333}}
 .box{{max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px}}
 .row{{margin:8px 0}} .label{{font-weight:bold;color:#555}}
 .amount{{font-size:28px;font-weight:800;color:#0d47a1;margin:12px 0 20px;letter-spacing:0.02em}}
+.grant-highlight{{margin:8px 0 18px;padding:14px 16px;background:#e8f5e9;border:2px solid #2e7d32;border-radius:8px;font-size:15px;font-weight:700;color:#1b5e20;line-height:1.35}}
+.grant-code{{display:block;margin-top:6px;font-size:26px;font-weight:800;letter-spacing:0.03em;color:#0d47a1}}
 .txn{{font-size:16px;font-weight:700;color:#111;background:#e3f2fd;padding:10px 14px;border-radius:6px;display:inline-block;margin-bottom:12px}}
-.btn{{display:inline-block;padding:12px 28px;margin:8px;border-radius:6px;color:#fff;text-decoration:none;font-weight:bold}}
+.btn{{display:inline-block;padding:12px 28px;margin:8px;border-radius:6px;color:#fff !important;text-decoration:none;font-weight:bold}}
 .ok{{background:#2e7d32}} .bad{{background:#c62828}}
 .note{{margin-top:16px;padding:12px;background:#fff8e1;border:1px solid #ffe082;font-size:13px}}
 </style></head><body><div class="box">
 <h2>Wallet Recharge Request</h2>
 <div class="txn">Transaction ID: {txn}</div>
+{grant_rows_html}
 <div class="amount">Total amount: ₹{amount_str}</div>
 <div class="row"><span class="label">Name:</span> {name}</div>
 <div class="row"><span class="label">Email:</span> {email}</div>
@@ -537,14 +548,13 @@ body{{font-family:Arial,sans-serif;line-height:1.6;color:#333}}
 <div class="row"><span class="label">User type:</span> {user_type}</div>
 <div class="row"><span class="label">User department:</span> {user_dept}</div>
 <div class="row"><span class="label">Credit department:</span> {dept_name}</div>
-{grant_rows_html}
 <div class="row"><span class="label">Request ref:</span> {recharge_request.request_id_display}</div>
 <p style="text-align:center;margin:28px 0">
   <a class="btn ok" href="{approve_url}">Approve</a>
   <a class="btn bad" href="{reject_url}">Decline</a>
 </p>
-<div class="note">If you <strong>Decline</strong>, you must enter a reason on the next page.
-This is a secure approval interface — do not reply.
+<div class="note"><strong>Approve</strong> credits the wallet immediately when you open the link.
+If you <strong>Decline</strong>, enter a reason on the next page.
 Once the request is <strong>approved</strong>, it cannot be approved again.</div>
 </div></body></html>"""
 
@@ -640,7 +650,7 @@ def verify_fund_receipt(
 ) -> WalletRechargeRequest:
     """Department Account In-charge final financial verification (audit confirmation)."""
     locked = (
-        WalletRechargeRequest.objects.select_for_update()
+        WalletRechargeRequest.objects.select_for_update(of=("self",))
         .select_related("user", "wallet", "department", "fund_receipt_verified_by")
         .get(pk=recharge_request.pk)
     )
