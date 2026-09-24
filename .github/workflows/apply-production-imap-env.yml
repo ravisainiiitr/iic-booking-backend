@@ -1,0 +1,102 @@
+# Apply IMAP_* from GitHub secrets into production .django env and restart django.
+# Does not echo secret values.
+name: Apply Production IMAP Env
+
+on:
+  workflow_dispatch:
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Upsert IMAP into .envs/.production/.django and restart
+        env:
+          IMAP_HOST: ${{ secrets.IMAP_HOST }}
+          IMAP_PORT: ${{ secrets.IMAP_PORT }}
+          IMAP_USE_SSL: ${{ secrets.IMAP_USE_SSL }}
+          IMAP_USER: ${{ secrets.IMAP_USER }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+          IMAP_MAILBOX: ${{ secrets.IMAP_MAILBOX }}
+        run: |
+          set -euo pipefail
+          test -n "${IMAP_USER:-}"
+          test -n "${IMAP_PASSWORD:-}"
+          DEPLOY=""
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              DEPLOY="$d"
+              break
+            fi
+          done
+          test -n "$DEPLOY"
+          echo "deploy_path=$DEPLOY"
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          env_file = Path(os.environ["ENV_FILE"])
+          keys = [
+              "IMAP_HOST",
+              "IMAP_PORT",
+              "IMAP_USE_SSL",
+              "IMAP_USER",
+              "IMAP_PASSWORD",
+              "IMAP_MAILBOX",
+          ]
+          defaults = {
+              "IMAP_HOST": "imap.iitr.ac.in",
+              "IMAP_PORT": "993",
+              "IMAP_USE_SSL": "True",
+              "IMAP_MAILBOX": "INBOX",
+          }
+          values = {}
+          for k in keys:
+              v = (os.environ.get(k) or "").strip()
+              if k == "IMAP_PASSWORD" and len(v) >= 2 and v[0] == v[-1] == '"':
+                  v = v[1:-1]
+              if not v:
+                  v = defaults.get(k, "")
+              if not v and k in ("IMAP_USER", "IMAP_PASSWORD"):
+                  raise SystemExit(f"missing {k}")
+              values[k] = v
+
+          values["IMAP_PASSWORD"] = '"' + values["IMAP_PASSWORD"].replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+          lines = env_file.read_text(encoding="utf-8", errors="replace").splitlines()
+          seen = set()
+          out = []
+          for line in lines:
+              stripped = line.strip()
+              replaced = False
+              for k in keys:
+                  if stripped.startswith(k + "=") or stripped.startswith(k + " ="):
+                      out.append(f"{k}={values[k]}")
+                      seen.add(k)
+                      replaced = True
+                      break
+              if not replaced:
+                  out.append(line)
+          for k in keys:
+              if k not in seen:
+                  out.append(f"{k}={values[k]}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("upserted_keys=", ",".join(keys))
+          print("IMAP_HOST_set=", bool(values["IMAP_HOST"]))
+          print("IMAP_USER_set=", bool((os.environ.get("IMAP_USER") or "").strip()))
+          print("IMAP_PASSWORD_set=", bool((os.environ.get("IMAP_PASSWORD") or "").strip()))
+          print("IMAP_MAILBOX=", values["IMAP_MAILBOX"])
+          PY
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django
+          sleep 8
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -w /app -e PYTHONPATH=/app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python -u -c "import os; os.environ.setdefault('DJANGO_SETTINGS_MODULE','config.settings.production'); import django; django.setup(); from django.conf import settings; print('RUNTIME_IMAP_HOST=', getattr(settings,'IMAP_HOST','')); print('RUNTIME_IMAP_PORT=', getattr(settings,'IMAP_PORT','')); print('RUNTIME_IMAP_USER_SET=', bool(getattr(settings,'IMAP_USER',''))); print('RUNTIME_IMAP_PASSWORD_SET=', bool(getattr(settings,'IMAP_PASSWORD',''))); print('RUNTIME_IMAP_MAILBOX=', getattr(settings,'IMAP_MAILBOX',''))"
