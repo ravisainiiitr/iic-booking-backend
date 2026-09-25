@@ -50,7 +50,8 @@ jobs:
 
               collector = Collector(using="default")
               try:
-                  collector.collect([eq, g])
+                  collector.collect([eq])
+                  collector.collect([g])
               except (ProtectedError, RestrictedError) as exc:
                   print("DELETE WOULD BE BLOCKED:", type(exc).__name__)
                   for o in list(getattr(exc, "protected_objects", None) or getattr(exc, "restricted_objects", None) or [])[:50]:
