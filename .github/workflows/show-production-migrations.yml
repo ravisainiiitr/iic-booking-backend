@@ -1,248 +1,185 @@
-# PROBE BRANCH ONLY (probe/egs-preflight-ro) — Equipment Group pre-deployment check (backup + preflight).
-# Strictly read-only: SELECT statements inside a READ ONLY transaction that is rolled back.
-# No migrate, no writes, no restarts, no env changes. Prints no secrets.
+# PROBE BRANCH ONLY (probe/egs-preflight-ro) — Phase 3: apply ONLY equipment.0197_equipment_group_alternatives.
+# Gated: backup fresh + complete, release tag/file identity, baseline state, plan == exactly 0197.
+# Runs in a one-off container of the CURRENT production image with the tagged 0197 file mounted read-only;
+# running services are not touched. 0197 is additive with db_default, so the running code stays compatible.
 name: Show Production Migrations
 
 on:
   workflow_dispatch:
 
+env:
+  RELEASE_TAG: v2.5.46.48-equipment-group-alternatives
+  RELEASE_SHA: 43974e358373d75f03b832cfde5a716c35f36c66
+  MIGRATION_BLOB: d52808be4a9021a30e3afe4694f54df342c96dc4
+  MIGRATION_REL: iic_booking/equipment/migrations/0197_equipment_group_alternatives.py
+  BASELINE_TAG: v2.5.46.47-recharge-cc-ebsd-keys
+  DEPLOY_DIR: /home/ubuntu/iic-booking-backend
+  COMPOSE_FILE: docker-compose.production.yml
+
 jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Locate production Django container
-        id: find
+      - name: Checkout release tag (read-only copy in runner workspace)
+        uses: actions/checkout@v4
+        with:
+          ref: v2.5.46.48-equipment-group-alternatives
+          path: release
+          fetch-depth: 1
+
+      - name: "Gate A: latest nightly backup fresh and complete"
         run: |
           set -euo pipefail
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
-          if [ -z "$CID" ]; then
-            echo "No running django container."
-            exit 1
-          fi
-          echo "Using container: $CID"
+          DUMP="$(readlink -f /home/ubuntu/backups/nightly/latest)/db/portal.sql.gz"
+          test -f "$DUMP" || { echo "GATE A FAIL: dump missing"; exit 1; }
+          AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$DUMP") ) / 3600 ))
+          stat -c 'dump=%n size_bytes=%s mtime=%y' "$DUMP"
+          echo "dump_age_hours=$AGE_H"
+          [ "$AGE_H" -le 36 ] || { echo "GATE A FAIL: backup older than 36h"; exit 1; }
+          gzip -t "$DUMP"
+          COMPLETE=$( (set +e +o pipefail; zcat "$DUMP" | tail -n 20 | grep -c 'PostgreSQL database dump complete') )
+          echo "dump_complete_marker=$COMPLETE"
+          [ "$COMPLETE" -ge 1 ] || { echo "GATE A FAIL: dump-complete marker missing"; exit 1; }
+          echo "GATE A PASS"
+
+      - name: "Gate B: release identity and production baseline"
+        id: base
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git -C release rev-parse HEAD)"
+          BLOB="$(git -C release rev-parse "HEAD:$MIGRATION_REL")"
+          echo "release_head=$HEAD_SHA migration_blob=$BLOB"
+          [ "$HEAD_SHA" = "$RELEASE_SHA" ] || { echo "GATE B FAIL: release sha mismatch"; exit 1; }
+          [ "$BLOB" = "$MIGRATION_BLOB" ] || { echo "GATE B FAIL: migration file mismatch"; exit 1; }
+          CUR_TAG="$(cat "$DEPLOY_DIR/.deploy-state/current_release_tag")"
+          echo "production_current_release_tag=$CUR_TAG"
+          [ "$CUR_TAG" = "$BASELINE_TAG" ] || { echo "GATE B FAIL: production not on baseline tag"; exit 1; }
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID" >> "$GITHUB_OUTPUT"
-          echo "host_deploy_head=$(git -C /home/ubuntu/iic-booking-backend rev-parse HEAD 2>/dev/null || echo unknown)"
-          docker exec "$CID" sh -c 'echo "container_GIT_SHA=${GIT_SHA:-} container_BACKEND_GIT_COMMIT=${BACKEND_GIT_COMMIT:-} PORTAL_VERSION=${PORTAL_VERSION:-}"'
+          echo "running_container=$CID"
+          echo "GATE B PASS"
 
-      - name: Deployed release pointer and services
+      - name: "Gate C: pre-migration state + data fingerprint (read-only)"
         run: |
           set -euo pipefail
-          cd /home/ubuntu/iic-booking-backend
-          echo "current_release_tag=$(cat .deploy-state/current_release_tag 2>/dev/null || echo unknown)"
-          echo "previous_release_tag=$(cat .deploy-state/previous_release_tag 2>/dev/null || echo unknown)"
-          git describe --tags --always || true
-          docker compose -f docker-compose.production.yml ps --format 'table {{.Name}}\t{{.Status}}' || true
-
-      - name: Production backup health (read-only)
-        run: |
-          set +e +o pipefail
-          echo "=== cron entry ==="
-          crontab -l 2>/dev/null | grep -i backup || echo "no backup entry in ubuntu crontab"
-          echo "=== nightly backup directories (newest 5) ==="
-          ls -1dt /home/ubuntu/backups/nightly/nightly-* 2>/dev/null | head -n 5
-          LATEST="$(readlink -f /home/ubuntu/backups/nightly/latest 2>/dev/null || true)"
-          echo "latest -> ${LATEST:-MISSING}"
-          DUMP="$LATEST/db/portal.sql.gz"
-          if [ -f "$DUMP" ]; then
-            stat -c 'dump=%n size_bytes=%s mtime=%y' "$DUMP"
-            if gzip -t "$DUMP"; then echo "PASS gzip integrity"; else echo "FAIL gzip integrity"; fi
-            echo "--- dump header ---"; (set +e +o pipefail; zcat "$DUMP" 2>/dev/null | head -n 3 | grep -v restrict)
-            echo "--- dump footer ---"; (set +e +o pipefail; zcat "$DUMP" 2>/dev/null | tail -n 4 | grep -v restrict)
-            echo "equipment_equipmentgroup_in_dump=$( (set +e +o pipefail; zcat "$DUMP" 2>/dev/null | grep -c 'CREATE TABLE public.equipment_equipmentgroup ') )"
-          else
-            echo "FAIL latest dump missing: $DUMP"
-          fi
-          echo "=== backup log tail ==="
-          tail -n 25 /var/log/iic-nightly-backup.log 2>/dev/null || echo "backup log not readable"
-          echo "=== RDS automated backups (read-only, if AWS CLI/role available) ==="
-          if command -v aws >/dev/null 2>&1; then
-            aws rds describe-db-instances --region ap-south-1 --db-instance-identifier iic-booking-rds \
-              --query 'DBInstances[0].{retention:BackupRetentionPeriod,latestRestorable:LatestRestorableTime,window:PreferredBackupWindow}' \
-              --output json 2>&1 | head -n 20 || true
-            aws rds describe-db-snapshots --region ap-south-1 --db-instance-identifier iic-booking-rds \
-              --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[:3].[DBSnapshotIdentifier,SnapshotType,Status,SnapshotCreateTime]' \
-              --output text 2>&1 | head -n 10 || true
-          else
-            echo "aws CLI not installed on runner"
-          fi
-
-      - name: Host env file — EQUIPMENT_GROUP_* keys only
-        run: |
-          set -euo pipefail
-          F=/home/ubuntu/iic-booking-backend/.envs/.production/.django
-          if [ -f "$F" ]; then
-            grep -E '^[[:space:]]*EQUIPMENT_GROUP_[A-Z_]+=' "$F" || echo "no EQUIPMENT_GROUP_* entries in production env file"
-          else
-            echo "production env file not readable at expected path"
-          fi
-
-      - name: Equipment Group read-only preflight
-        run: |
-          set -euo pipefail
-          CID="${{ steps.find.outputs.container }}"
-          SCRIPT="$(cat <<'PY'
-          import os
-          from django.conf import settings
+          CID="${{ steps.base.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py shell -c "
           from django.db import connection, transaction
-
-          db = settings.DATABASES["default"]
-          print("DB_VENDOR=", connection.vendor)
-          print("DB_ENGINE=", db.get("ENGINE"))
-          print("DB_HOST=", db.get("HOST"))
-          print("DB_NAME=", db.get("NAME"))
-
-          print("== environment flags (settings / process env) ==")
-          for k in ("EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED",
-                    "EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED",
-                    "EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED"):
-              s = getattr(settings, k, "NOT DEFINED")
-              e = os.environ[k] if k in os.environ else "NOT DEFINED"
-              print(f"{k}: settings={s!r} env={e!r}")
-
-          def run(title, sql):
-              if not connection.in_atomic_block:
-                  raise SystemExit("STOP: refusing to query outside the read-only transaction")
-              with connection.cursor() as c:
-                  c.execute(sql)
-                  cols = [d[0] for d in c.description]
-                  rows = c.fetchall()
-              print(f"== {title} == rows={len(rows)}")
-              print(" | ".join(cols))
-              for r in rows:
-                  print(" | ".join("NULL" if v is None else str(v) for v in r))
-
-          if connection.vendor != "postgresql":
-              raise SystemExit(f"STOP: database vendor is {connection.vendor}, not postgresql; SQL not run")
-
-          MULTI = """SELECT equipment_group_id FROM equipment_equipment
-                     WHERE equipment_group_id IS NOT NULL GROUP BY 1 HAVING COUNT(*) > 1"""
-
           with transaction.atomic():
-              with connection.cursor() as c:
-                  c.execute("SET TRANSACTION READ ONLY")
-                  c.execute("SHOW transaction_read_only")
-                  ro = c.fetchone()[0]
-              print("transaction_read_only=", ro)
-              if ro != "on":
-                  raise SystemExit("STOP: transaction is not read-only")
-
-              run("server version", "SELECT version()")
-              run("current database", "SELECT current_database()")
-
-              run("MIGRATIONS equipment >= 0194 (django_migrations)",
-                  "SELECT app, name, applied FROM django_migrations "
-                  "WHERE app = 'equipment' AND name >= '0194' ORDER BY name")
-
-              run("SWITCH COLUMNS present on equipment_equipmentgroup",
-                  "SELECT column_name FROM information_schema.columns "
-                  "WHERE table_schema = current_schema() AND table_name = 'equipment_equipmentgroup' "
-                  "AND column_name IN ('alternative_booking_enabled','alternative_search_other_slots',"
-                  "'auto_allocation_enabled','cross_rescheduling_enabled') ORDER BY 1")
-
-              run("GROUPS WITH ANY SWITCH ON (schema-tolerant)", """
-                  SELECT g.equipment_group_id, g.name,
-                         j->>'alternative_booking_enabled' AS alternative_booking,
-                         j->>'alternative_search_other_slots' AS search_other_slots,
-                         j->>'cross_rescheduling_enabled' AS cross_rescheduling,
-                         j->>'auto_allocation_enabled' AS auto_allocation
-                  FROM equipment_equipmentgroup g, LATERAL to_jsonb(g) AS j
-                  WHERE COALESCE((j->>'alternative_booking_enabled')::boolean, false)
-                     OR COALESCE((j->>'alternative_search_other_slots')::boolean, false)
-                     OR COALESCE((j->>'cross_rescheduling_enabled')::boolean, false)
-                     OR COALESCE((j->>'auto_allocation_enabled')::boolean, false)
-                  ORDER BY 1""")
-
-              run("MIXED-DEPARTMENT GROUPS (NULL department counts as its own value)", """
-                  SELECT g.equipment_group_id, g.name AS group_name,
-                         COUNT(e.equipment_id) AS equipment_count,
-                         COUNT(DISTINCT COALESCE(e.internal_department_id::text, 'NULL')) AS distinct_departments,
-                         string_agg(DISTINCT COALESCE(d.id::text || ':' || d.name, 'NULL'), ', ') AS departments,
-                         string_agg(e.equipment_id::text || ':' || e.code || ' [dept '
-                                    || COALESCE(e.internal_department_id::text, 'NULL') || ']',
-                                    ', ' ORDER BY e.equipment_id) AS equipment
-                  FROM equipment_equipmentgroup g
-                  JOIN equipment_equipment e ON e.equipment_group_id = g.equipment_group_id
-                  LEFT JOIN users_department d ON d.id = e.internal_department_id
-                  GROUP BY g.equipment_group_id, g.name
-                  HAVING COUNT(DISTINCT COALESCE(e.internal_department_id::text, 'NULL')) > 1
-                  ORDER BY 1""")
-
-              run("GROUPED EQUIPMENT WITHOUT DEPARTMENT", """
-                  SELECT e.equipment_group_id, g.name AS group_name, e.equipment_id, e.code, e.name
-                  FROM equipment_equipment e
-                  JOIN equipment_equipmentgroup g ON g.equipment_group_id = e.equipment_group_id
-                  WHERE e.internal_department_id IS NULL
-                  ORDER BY 1, 3""")
-
-              run("GROUP INVENTORY", """
-                  SELECT COUNT(*) AS total_groups,
-                         COALESCE(SUM(n), 0) AS equipment_in_groups,
-                         COUNT(*) FILTER (WHERE n = 0) AS groups_zero_members,
-                         COUNT(*) FILTER (WHERE n = 1) AS groups_one_member,
-                         COUNT(*) FILTER (WHERE n > 1) AS groups_multiple_members,
-                         COALESCE(MAX(n), 0) AS max_group_size
-                  FROM (SELECT g.equipment_group_id, COUNT(e.equipment_id) AS n
-                        FROM equipment_equipmentgroup g
-                        LEFT JOIN equipment_equipment e ON e.equipment_group_id = g.equipment_group_id
-                        GROUP BY g.equipment_group_id) s""")
-
-              run("MULTI-MEMBER GROUPS (detail)", """
-                  SELECT g.equipment_group_id, g.name AS group_name, COUNT(*) AS members,
-                         string_agg(e.equipment_id::text || ':' || e.code || ' [dept '
-                                    || COALESCE(e.internal_department_id::text, 'NULL') || ', ' || COALESCE(e.status, '-') || ']',
-                                    ', ' ORDER BY e.equipment_id) AS equipment
-                  FROM equipment_equipmentgroup g
-                  JOIN equipment_equipment e ON e.equipment_group_id = g.equipment_group_id
-                  GROUP BY g.equipment_group_id, g.name HAVING COUNT(*) > 1 ORDER BY 1""")
-
-              run("CHARGE-PROFILE SETTING DIFFERENCES (stored settings only)", f"""
-                  WITH cp AS (
-                      SELECT e.equipment_group_id, e.code, cj->>'user_type' AS user_type,
-                             COALESCE(cj->>'pricing_profile', '-') AS pricing_profile,
-                             (cj - 'id' - 'equipment_id' - 'user_type' - 'pricing_profile' - 'is_active'
-                                 - 'display_text' - 'created_at' - 'updated_at'
-                                 || jsonb_build_object('equipment_profile_type', to_jsonb(e)->'profile_type'))::text AS config
-                      FROM equipment_equipment e
-                      JOIN equipment_chargeprofile c ON c.equipment_id = e.equipment_id AND c.is_active
-                      CROSS JOIN LATERAL to_jsonb(c) AS cj
-                      WHERE e.equipment_group_id IN ({MULTI}))
-                  SELECT equipment_group_id, user_type, pricing_profile,
-                         COUNT(DISTINCT config) AS distinct_configs,
-                         string_agg(code || ' => ' || config, ' ;; ' ORDER BY code) AS configs
-                  FROM cp GROUP BY 1, 2, 3 HAVING COUNT(DISTINCT config) > 1 ORDER BY 1, 2, 3""")
-
-              run("MISSING ACTIVE CHARGE PROFILES (another member has one)", f"""
-                  WITH members AS (
-                      SELECT equipment_group_id, equipment_id, code FROM equipment_equipment
-                      WHERE equipment_group_id IN ({MULTI})),
-                  keys AS (
-                      SELECT DISTINCT m.equipment_group_id, to_jsonb(c)->>'user_type' AS user_type,
-                             COALESCE(to_jsonb(c)->>'pricing_profile', '-') AS pricing_profile
-                      FROM members m JOIN equipment_chargeprofile c ON c.equipment_id = m.equipment_id AND c.is_active)
-                  SELECT k.equipment_group_id, k.user_type, k.pricing_profile, m.equipment_id, m.code
-                  FROM keys k JOIN members m ON m.equipment_group_id = k.equipment_group_id
-                  WHERE NOT EXISTS (
-                      SELECT 1 FROM equipment_chargeprofile c
-                      WHERE c.equipment_id = m.equipment_id AND c.is_active
-                        AND to_jsonb(c)->>'user_type' = k.user_type
-                        AND COALESCE(to_jsonb(c)->>'pricing_profile', '-') = k.pricing_profile)
-                  ORDER BY 1, 2, 3, 4""")
-
-              run("DATA FINGERPRINT (compare before/after migration)", """
-                  SELECT (SELECT COUNT(*) FROM equipment_equipmentgroup) AS groups,
-                         (SELECT md5(string_agg(equipment_group_id::text || '|' || name || '|' || COALESCE(code, '')
-                                 || '|' || COALESCE(description, ''), ',' ORDER BY equipment_group_id))
-                          FROM equipment_equipmentgroup) AS groups_md5,
-                         (SELECT COUNT(*) FROM equipment_equipment) AS equipment,
-                         (SELECT md5(string_agg(equipment_id::text || '|' || COALESCE(equipment_group_id::text, '-')
-                                 || '|' || COALESCE(internal_department_id::text, '-') || '|' || code
-                                 || '|' || COALESCE(status, ''), ',' ORDER BY equipment_id))
-                          FROM equipment_equipment) AS equipment_md5,
-                         (SELECT COUNT(*) FROM equipment_equipmentgroupquota) AS group_quotas,
-                         (SELECT COUNT(*) FROM equipment_chargeprofile) AS charge_profiles""")
-
+              c = connection.cursor()
+              c.execute('SET TRANSACTION READ ONLY')
+              c.execute(\"SELECT name FROM django_migrations WHERE app='equipment' ORDER BY name DESC LIMIT 1\")
+              last = c.fetchone()[0]
+              c.execute(\"SELECT COUNT(*) FROM django_migrations WHERE app='equipment' AND name='0197_equipment_group_alternatives'\")
+              has0197 = c.fetchone()[0]
+              c.execute(\"SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=current_schema() AND ((table_name='equipment_equipmentgroup' AND column_name IN ('alternative_booking_enabled','alternative_search_other_slots','auto_allocation_enabled','cross_rescheduling_enabled')) OR (table_name='equipment_equipment' AND column_name='alternative_priority'))\")
+              cols = c.fetchone()[0]
+              print('pre_last_equipment_migration=', last)
+              print('pre_0197_recorded=', has0197, 'pre_new_columns=', cols)
+              assert last == '0196_disable_remote_analysis_all_equipment' and has0197 == 0 and cols == 0, 'GATE C FAIL: unexpected pre-state'
               transaction.set_rollback(True)
-          print("EGS_PREFLIGHT_RO_DONE=YES")
-          PY
-          )"
-          docker exec -w /app "$CID" python manage.py shell -c "$SCRIPT"
+          print('GATE C PASS')
+          "
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from django.db import connection
+          c = connection.cursor()
+          c.execute('''SELECT (SELECT COUNT(*) FROM equipment_equipmentgroup),
+            (SELECT md5(string_agg(equipment_group_id::text||'|'||name||'|'||COALESCE(code,'')||'|'||COALESCE(description,''), ',' ORDER BY equipment_group_id)) FROM equipment_equipmentgroup),
+            (SELECT COUNT(*) FROM equipment_equipment),
+            (SELECT md5(string_agg(equipment_id::text||'|'||COALESCE(equipment_group_id::text,'-')||'|'||COALESCE(internal_department_id::text,'-')||'|'||code||'|'||COALESCE(status,''), ',' ORDER BY equipment_id)) FROM equipment_equipment),
+            (SELECT COUNT(*) FROM equipment_equipmentgroupquota), (SELECT COUNT(*) FROM equipment_chargeprofile)''')
+          print('|'.join(str(v) for v in c.fetchone()))
+          " | tail -n 1 | tee "$RUNNER_TEMP/fp_before.txt"
+
+      - name: "Gate D: migrate --plan must be exactly equipment.0197"
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          MIG_SRC="$GITHUB_WORKSPACE/release/$MIGRATION_REL"
+          docker compose -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint "" --user django \
+            -v "$MIG_SRC:/app/$MIGRATION_REL:ro" \
+            django python manage.py migrate equipment 0197_equipment_group_alternatives --plan 2>&1 | tee "$RUNNER_TEMP/plan.txt"
+          PLANNED="$(grep -E '^[a-z_]+\.[0-9]{4}_' "$RUNNER_TEMP/plan.txt" || true)"
+          echo "planned_migrations=[$PLANNED]"
+          [ "$PLANNED" = "equipment.0197_equipment_group_alternatives" ] || { echo "GATE D FAIL: plan is not exactly 0197"; exit 1; }
+          echo "--- SQL (sqlmigrate) ---"
+          docker compose -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint "" --user django \
+            -v "$MIG_SRC:/app/$MIGRATION_REL:ro" \
+            django python manage.py sqlmigrate equipment 0197_equipment_group_alternatives 2>&1
+          echo "GATE D PASS"
+
+      - name: Apply ONLY equipment.0197_equipment_group_alternatives
+        run: |
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          MIG_SRC="$GITHUB_WORKSPACE/release/$MIGRATION_REL"
+          docker compose -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint "" --user django \
+            -v "$MIG_SRC:/app/$MIGRATION_REL:ro" \
+            django python manage.py migrate equipment 0197_equipment_group_alternatives --noinput 2>&1 | tee "$RUNNER_TEMP/migrate.txt"
+          grep -q 'Applying equipment.0197_equipment_group_alternatives... OK' "$RUNNER_TEMP/migrate.txt" \
+            || { echo "MIGRATION FAIL: 0197 not reported OK"; exit 1; }
+          APPLIED="$(grep -c '^  Applying ' "$RUNNER_TEMP/migrate.txt" || true)"
+          echo "applied_count=$APPLIED"
+          [ "$APPLIED" = "1" ] || { echo "MIGRATION FAIL: unexpected number of migrations applied"; exit 1; }
+          echo "MIGRATION 0197 APPLIED"
+
+      - name: Post-migration verification (read-only)
+        run: |
+          set -euo pipefail
+          CID="${{ steps.base.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from django.db import connection, transaction
+          with transaction.atomic():
+              c = connection.cursor()
+              c.execute('SET TRANSACTION READ ONLY')
+              c.execute(\"SELECT name, applied FROM django_migrations WHERE app='equipment' AND name >= '0196' ORDER BY name\")
+              for r in c.fetchall(): print('migration', r[0], r[1])
+              c.execute('''SELECT table_name, column_name, data_type, is_nullable, column_default
+                           FROM information_schema.columns WHERE table_schema=current_schema() AND (
+                             (table_name='equipment_equipmentgroup' AND column_name IN ('alternative_booking_enabled','alternative_search_other_slots','auto_allocation_enabled','cross_rescheduling_enabled'))
+                             OR (table_name='equipment_equipment' AND column_name='alternative_priority')) ORDER BY 1, 2''')
+              cols = c.fetchall()
+              for r in cols: print('column', ' | '.join(str(v) for v in r))
+              assert len(cols) == 5, 'expected 5 new columns'
+              for t, n, dt, nullable, dflt in cols:
+                  assert nullable == 'NO', f'{n} nullable'
+                  if n == 'alternative_priority':
+                      assert dt == 'smallint' and str(dflt).startswith('100'), f'bad default {dflt}'
+                  else:
+                      assert dt == 'boolean' and str(dflt) == 'false', f'bad default {dflt}'
+              c.execute('''SELECT COUNT(*) FILTER (WHERE alternative_booking_enabled), COUNT(*) FILTER (WHERE alternative_search_other_slots),
+                                  COUNT(*) FILTER (WHERE cross_rescheduling_enabled), COUNT(*) FILTER (WHERE auto_allocation_enabled), COUNT(*)
+                           FROM equipment_equipmentgroup''')
+              ab, so, cr, aa, total = c.fetchone()
+              print(f'groups_total={total} alternative_booking_on={ab} other_slots_on={so} cross_rescheduling_on={cr} auto_allocation_on={aa}')
+              c.execute('SELECT alternative_priority, COUNT(*) FROM equipment_equipment GROUP BY 1 ORDER BY 1')
+              print('alternative_priority_distribution', c.fetchall())
+              assert ab == so == cr == aa == 0, 'a group switch is ON'
+              transaction.set_rollback(True)
+          print('POST-MIGRATION SCHEMA/SWITCH CHECK PASS')
+          "
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from django.db import connection
+          c = connection.cursor()
+          c.execute('''SELECT (SELECT COUNT(*) FROM equipment_equipmentgroup),
+            (SELECT md5(string_agg(equipment_group_id::text||'|'||name||'|'||COALESCE(code,'')||'|'||COALESCE(description,''), ',' ORDER BY equipment_group_id)) FROM equipment_equipmentgroup),
+            (SELECT COUNT(*) FROM equipment_equipment),
+            (SELECT md5(string_agg(equipment_id::text||'|'||COALESCE(equipment_group_id::text,'-')||'|'||COALESCE(internal_department_id::text,'-')||'|'||code||'|'||COALESCE(status,''), ',' ORDER BY equipment_id)) FROM equipment_equipment),
+            (SELECT COUNT(*) FROM equipment_equipmentgroupquota), (SELECT COUNT(*) FROM equipment_chargeprofile)''')
+          print('|'.join(str(v) for v in c.fetchone()))
+          " | tail -n 1 | tee "$RUNNER_TEMP/fp_after.txt"
+          echo "fingerprint_before=$(cat "$RUNNER_TEMP/fp_before.txt")"
+          echo "fingerprint_after=$(cat "$RUNNER_TEMP/fp_after.txt")"
+          cmp -s "$RUNNER_TEMP/fp_before.txt" "$RUNNER_TEMP/fp_after.txt" || { echo "DATA FINGERPRINT CHANGED"; exit 1; }
+          echo "DATA FINGERPRINT UNCHANGED"
+
+      - name: Running application health after migration (old code, new columns)
+        run: |
+          set -euo pipefail
+          for u in http://127.0.0.1:8080/api/v1/analysis/health/ready/ http://127.0.0.1:8080/api/version/; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$u" || true)"
+            echo "$u -> $code"
+            [ "$code" = "200" ] || { echo "HEALTH FAIL"; exit 1; }
+          done
+          docker compose -f "$DEPLOY_DIR/$COMPOSE_FILE" ps --format 'table {{.Name}}\t{{.Status}}'
+          echo "PHASE3_DONE=YES"
