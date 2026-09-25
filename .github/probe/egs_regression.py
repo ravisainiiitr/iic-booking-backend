@@ -104,11 +104,17 @@ with transaction.atomic():
         Equipment.objects.filter(equipment_group_id__in=[16, 21]).values_list("equipment_id", flat=True)
     )
     print("multi_member_group_equipment=", sorted(grouped_ids))
+    from django.db.models import Count
+    print("booking_status_counts=", sorted(Booking.objects.values_list("status").annotate(n=Count("pk")).values_list("status", "n")))
     sample_booking = (
         Booking.objects.filter(equipment_id__in=grouped_ids, status="BOOKED").order_by("-booking_id").first()
         or Booking.objects.filter(status="BOOKED").order_by("-booking_id").first()
+        or Booking.objects.filter(equipment_id__in=grouped_ids).order_by("-booking_id").first()
+        or Booking.objects.order_by("-booking_id").first()
     )
-    owner = sample_booking.user if sample_booking else None
+    owner = sample_booking.user if sample_booking else (
+        User.objects.filter(is_active=True, is_superuser=False).exclude(last_login=None).order_by("-last_login").first()
+    )
     print("sample_booking=", getattr(sample_booking, "booking_id", None),
           "equipment=", getattr(sample_booking, "equipment_id", None),
           "owner_id=", getattr(owner, "pk", None), "superuser_id=", getattr(superuser, "pk", None))
@@ -141,8 +147,9 @@ with transaction.atomic():
             return (d.get("cross_rescheduling_enabled") is False and only_original,
                     f"cross_rescheduling_enabled={d.get('cross_rescheduling_enabled')} options={len(opts)} only_original={only_original}")
 
-        api_get(f"reschedule-options GET booking {sample_booking.booking_id} (expect disabled)",
-                f"/api/bookings/{sample_booking.booking_id}/reschedule-options/", user=owner, check=_resched)
+        if sample_booking:
+            api_get(f"reschedule-options GET booking {sample_booking.booking_id} status={sample_booking.status} (expect disabled)",
+                    f"/api/bookings/{sample_booking.booking_id}/reschedule-options/", user=owner, check=_resched)
 
     if superuser:
         api_get("admin bookings GET /api/bookings/", "/api/bookings/", user=superuser, params={"limit": 5},
