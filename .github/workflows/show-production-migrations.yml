@@ -1,6 +1,6 @@
-# PROBE BRANCH ONLY (probe/egs-preflight-ro) — Equipment Group production preflight.
-# Strictly read-only: SELECT statements inside a READ ONLY transaction that is rolled back.
-# No migrate, no writes, no restarts, no env changes. Prints no secrets.
+# PROBE BRANCH ONLY (probe/egs-preflight-ro) — DRY RUN for removing test group 30 "N1 Quota Group"
+# and its test equipment 99 "N1-QUOTA". Strictly read-only: uses Django's deletion Collector inside a
+# READ ONLY transaction to list what a delete WOULD remove. Deletes nothing.
 name: Show Production Migrations
 
 on:
@@ -10,70 +10,19 @@ jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Locate production Django container
-        id: find
+      - name: Dry run — N1 Quota Group removal impact (read-only)
         run: |
           set -euo pipefail
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
-          if [ -z "$CID" ]; then
-            echo "No running django container."
-            exit 1
-          fi
-          echo "Using container: $CID"
-          echo "container=$CID" >> "$GITHUB_OUTPUT"
-          echo "host_deploy_head=$(git -C /home/ubuntu/iic-booking-backend rev-parse HEAD 2>/dev/null || echo unknown)"
-          docker exec "$CID" sh -c 'echo "container_GIT_SHA=${GIT_SHA:-} container_BACKEND_GIT_COMMIT=${BACKEND_GIT_COMMIT:-} PORTAL_VERSION=${PORTAL_VERSION:-}"'
-
-      - name: Host env file — EQUIPMENT_GROUP_* keys only
-        run: |
-          set -euo pipefail
-          F=/home/ubuntu/iic-booking-backend/.envs/.production/.django
-          if [ -f "$F" ]; then
-            grep -E '^[[:space:]]*EQUIPMENT_GROUP_[A-Z_]+=' "$F" || echo "no EQUIPMENT_GROUP_* entries in production env file"
-          else
-            echo "production env file not readable at expected path"
-          fi
-
-      - name: Equipment Group read-only preflight
-        run: |
-          set -euo pipefail
-          CID="${{ steps.find.outputs.container }}"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID host_deploy_head=$(git -C /home/ubuntu/iic-booking-backend rev-parse HEAD 2>/dev/null || echo unknown)"
           SCRIPT="$(cat <<'PY'
-          import os
-          from django.conf import settings
+          from collections import Counter
           from django.db import connection, transaction
+          from django.db.models.deletion import Collector, ProtectedError, RestrictedError
+          from iic_booking.equipment.models import Equipment, EquipmentGroup
 
-          db = settings.DATABASES["default"]
-          print("DB_VENDOR=", connection.vendor)
-          print("DB_ENGINE=", db.get("ENGINE"))
-          print("DB_HOST=", db.get("HOST"))
-          print("DB_NAME=", db.get("NAME"))
-
-          print("== environment flags (settings / process env) ==")
-          for k in ("EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED",
-                    "EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED",
-                    "EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED"):
-              s = getattr(settings, k, "NOT DEFINED")
-              e = os.environ[k] if k in os.environ else "NOT DEFINED"
-              print(f"{k}: settings={s!r} env={e!r}")
-
-          def run(title, sql):
-              if not connection.in_atomic_block:
-                  raise SystemExit("STOP: refusing to query outside the read-only transaction")
-              with connection.cursor() as c:
-                  c.execute(sql)
-                  cols = [d[0] for d in c.description]
-                  rows = c.fetchall()
-              print(f"== {title} == rows={len(rows)}")
-              print(" | ".join(cols))
-              for r in rows:
-                  print(" | ".join("NULL" if v is None else str(v) for v in r))
-
-          if connection.vendor != "postgresql":
-              raise SystemExit(f"STOP: database vendor is {connection.vendor}, not postgresql; SQL not run")
-
-          MULTI = """SELECT equipment_group_id FROM equipment_equipment
-                     WHERE equipment_group_id IS NOT NULL GROUP BY 1 HAVING COUNT(*) > 1"""
+          GROUP_ID, GROUP_NAME = 30, "N1 Quota Group"
+          EQUIP_ID, EQUIP_CODE = 99, "N1-QUOTA"
 
           with transaction.atomic():
               with connection.cursor() as c:
@@ -84,110 +33,68 @@ jobs:
               if ro != "on":
                   raise SystemExit("STOP: transaction is not read-only")
 
-              run("server version", "SELECT version()")
-              run("current database", "SELECT current_database()")
+              g = EquipmentGroup.objects.get(pk=GROUP_ID)
+              print("group:", g.pk, repr(g.name), "code=", repr(getattr(g, "code", None)))
+              if g.name != GROUP_NAME:
+                  raise SystemExit("STOP: group name mismatch")
+              members = list(Equipment.objects.filter(equipment_group_id=GROUP_ID)
+                             .values_list("pk", "code", "name", "internal_department_id", "status"))
+              print("group members:", members)
+              eq = Equipment.objects.get(pk=EQUIP_ID)
+              print("equipment:", eq.pk, repr(eq.code), repr(eq.name), "dept=", eq.internal_department_id,
+                    "status=", getattr(eq, "status", None), "group=", eq.equipment_group_id)
+              if eq.code != EQUIP_CODE or eq.equipment_group_id != GROUP_ID:
+                  raise SystemExit("STOP: equipment identity mismatch")
+              if [m[0] for m in members] != [EQUIP_ID]:
+                  raise SystemExit("STOP: group has members other than equipment 99")
 
-              run("MIGRATIONS equipment >= 0194 (django_migrations)",
-                  "SELECT app, name, applied FROM django_migrations "
-                  "WHERE app = 'equipment' AND name >= '0194' ORDER BY name")
+              collector = Collector(using="default")
+              try:
+                  collector.collect([eq, g])
+              except (ProtectedError, RestrictedError) as exc:
+                  print("DELETE WOULD BE BLOCKED:", type(exc).__name__)
+                  for o in list(getattr(exc, "protected_objects", None) or getattr(exc, "restricted_objects", None) or [])[:50]:
+                      print("  blocker:", o._meta.label, o.pk, str(o)[:120])
+                  raise SystemExit(1)
 
-              run("SWITCH COLUMNS present on equipment_equipmentgroup",
-                  "SELECT column_name FROM information_schema.columns "
-                  "WHERE table_schema = current_schema() AND table_name = 'equipment_equipmentgroup' "
-                  "AND column_name IN ('alternative_booking_enabled','alternative_search_other_slots',"
-                  "'auto_allocation_enabled','cross_rescheduling_enabled') ORDER BY 1")
+              print("== rows that would be DELETED (cascade) ==")
+              for model, objs in sorted(collector.data.items(), key=lambda kv: kv[0]._meta.label):
+                  pks = sorted(o.pk for o in objs)
+                  print(f"  {model._meta.label}: {len(pks)} pks={pks[:40]}{' ...' if len(pks) > 40 else ''}")
+              print("== fast deletes (bulk, cascade) ==")
+              for qs in collector.fast_deletes:
+                  n = qs.count()
+                  if n:
+                      print(f"  {qs.model._meta.label}: {n} pks={list(qs.values_list('pk', flat=True)[:40])}")
+              print("== rows that would be UPDATED (SET_NULL / SET_DEFAULT) ==")
+              for (field, value), items in collector.field_updates.items():
+                  n = 0
+                  for it in items:
+                      n += it.count() if hasattr(it, "count") and not isinstance(it, (list, set, tuple)) else len(it)
+                  if n:
+                      print(f"  {field.model._meta.label}.{field.name} -> {value!r}: {n}")
 
-              run("GROUPS WITH ANY SWITCH ON (schema-tolerant)", """
-                  SELECT g.equipment_group_id, g.name,
-                         j->>'alternative_booking_enabled' AS alternative_booking,
-                         j->>'alternative_search_other_slots' AS search_other_slots,
-                         j->>'cross_rescheduling_enabled' AS cross_rescheduling,
-                         j->>'auto_allocation_enabled' AS auto_allocation
-                  FROM equipment_equipmentgroup g, LATERAL to_jsonb(g) AS j
-                  WHERE COALESCE((j->>'alternative_booking_enabled')::boolean, false)
-                     OR COALESCE((j->>'alternative_search_other_slots')::boolean, false)
-                     OR COALESCE((j->>'cross_rescheduling_enabled')::boolean, false)
-                     OR COALESCE((j->>'auto_allocation_enabled')::boolean, false)
-                  ORDER BY 1""")
-
-              run("MIXED-DEPARTMENT GROUPS (NULL department counts as its own value)", """
-                  SELECT g.equipment_group_id, g.name AS group_name,
-                         COUNT(e.equipment_id) AS equipment_count,
-                         COUNT(DISTINCT COALESCE(e.internal_department_id::text, 'NULL')) AS distinct_departments,
-                         string_agg(DISTINCT COALESCE(d.id::text || ':' || d.name, 'NULL'), ', ') AS departments,
-                         string_agg(e.equipment_id::text || ':' || e.code || ' [dept '
-                                    || COALESCE(e.internal_department_id::text, 'NULL') || ']',
-                                    ', ' ORDER BY e.equipment_id) AS equipment
-                  FROM equipment_equipmentgroup g
-                  JOIN equipment_equipment e ON e.equipment_group_id = g.equipment_group_id
-                  LEFT JOIN users_department d ON d.id = e.internal_department_id
-                  GROUP BY g.equipment_group_id, g.name
-                  HAVING COUNT(DISTINCT COALESCE(e.internal_department_id::text, 'NULL')) > 1
-                  ORDER BY 1""")
-
-              run("GROUPED EQUIPMENT WITHOUT DEPARTMENT", """
-                  SELECT e.equipment_group_id, g.name AS group_name, e.equipment_id, e.code, e.name
-                  FROM equipment_equipment e
-                  JOIN equipment_equipmentgroup g ON g.equipment_group_id = e.equipment_group_id
-                  WHERE e.internal_department_id IS NULL
-                  ORDER BY 1, 3""")
-
-              run("GROUP INVENTORY", """
-                  SELECT COUNT(*) AS total_groups,
-                         COALESCE(SUM(n), 0) AS equipment_in_groups,
-                         COUNT(*) FILTER (WHERE n = 0) AS groups_zero_members,
-                         COUNT(*) FILTER (WHERE n = 1) AS groups_one_member,
-                         COUNT(*) FILTER (WHERE n > 1) AS groups_multiple_members,
-                         COALESCE(MAX(n), 0) AS max_group_size
-                  FROM (SELECT g.equipment_group_id, COUNT(e.equipment_id) AS n
-                        FROM equipment_equipmentgroup g
-                        LEFT JOIN equipment_equipment e ON e.equipment_group_id = g.equipment_group_id
-                        GROUP BY g.equipment_group_id) s""")
-
-              run("MULTI-MEMBER GROUPS (detail)", """
-                  SELECT g.equipment_group_id, g.name AS group_name, COUNT(*) AS members,
-                         string_agg(e.equipment_id::text || ':' || e.code || ' [dept '
-                                    || COALESCE(e.internal_department_id::text, 'NULL') || ', ' || COALESCE(e.status, '-') || ']',
-                                    ', ' ORDER BY e.equipment_id) AS equipment
-                  FROM equipment_equipmentgroup g
-                  JOIN equipment_equipment e ON e.equipment_group_id = g.equipment_group_id
-                  GROUP BY g.equipment_group_id, g.name HAVING COUNT(*) > 1 ORDER BY 1""")
-
-              run("CHARGE-PROFILE SETTING DIFFERENCES (stored settings only)", f"""
-                  WITH cp AS (
-                      SELECT e.equipment_group_id, e.code, cj->>'user_type' AS user_type,
-                             COALESCE(cj->>'pricing_profile', '-') AS pricing_profile,
-                             (cj - 'id' - 'equipment_id' - 'user_type' - 'pricing_profile' - 'is_active'
-                                 - 'display_text' - 'created_at' - 'updated_at'
-                                 || jsonb_build_object('equipment_profile_type', to_jsonb(e)->'profile_type'))::text AS config
-                      FROM equipment_equipment e
-                      JOIN equipment_chargeprofile c ON c.equipment_id = e.equipment_id AND c.is_active
-                      CROSS JOIN LATERAL to_jsonb(c) AS cj
-                      WHERE e.equipment_group_id IN ({MULTI}))
-                  SELECT equipment_group_id, user_type, pricing_profile,
-                         COUNT(DISTINCT config) AS distinct_configs,
-                         string_agg(code || ' => ' || config, ' ;; ' ORDER BY code) AS configs
-                  FROM cp GROUP BY 1, 2, 3 HAVING COUNT(DISTINCT config) > 1 ORDER BY 1, 2, 3""")
-
-              run("MISSING ACTIVE CHARGE PROFILES (another member has one)", f"""
-                  WITH members AS (
-                      SELECT equipment_group_id, equipment_id, code FROM equipment_equipment
-                      WHERE equipment_group_id IN ({MULTI})),
-                  keys AS (
-                      SELECT DISTINCT m.equipment_group_id, to_jsonb(c)->>'user_type' AS user_type,
-                             COALESCE(to_jsonb(c)->>'pricing_profile', '-') AS pricing_profile
-                      FROM members m JOIN equipment_chargeprofile c ON c.equipment_id = m.equipment_id AND c.is_active)
-                  SELECT k.equipment_group_id, k.user_type, k.pricing_profile, m.equipment_id, m.code
-                  FROM keys k JOIN members m ON m.equipment_group_id = k.equipment_group_id
-                  WHERE NOT EXISTS (
-                      SELECT 1 FROM equipment_chargeprofile c
-                      WHERE c.equipment_id = m.equipment_id AND c.is_active
-                        AND to_jsonb(c)->>'user_type' = k.user_type
-                        AND COALESCE(to_jsonb(c)->>'pricing_profile', '-') = k.pricing_profile)
-                  ORDER BY 1, 2, 3, 4""")
+              # Financial / booking visibility (read-only).
+              from django.apps import apps
+              def cnt(label, **flt):
+                  try:
+                      m = apps.get_model(label)
+                  except LookupError:
+                      return "n/a"
+                  try:
+                      return m.objects.filter(**flt).count()
+                  except Exception as exc:
+                      return f"err:{type(exc).__name__}"
+              print("== booking / financial references to equipment 99 ==")
+              print("  bookings:", cnt("equipment.Booking", equipment_id=EQUIP_ID))
+              for label in ("users.WalletTransaction", "users.Transaction", "payments.Payment"):
+                  for f in ("booking__equipment_id", "equipment_id"):
+                      v = cnt(label, **{f: EQUIP_ID})
+                      if v not in ("n/a",) and not str(v).startswith("err"):
+                          print(f"  {label} via {f}: {v}")
 
               transaction.set_rollback(True)
-          print("EGS_PREFLIGHT_RO_DONE=YES")
+          print("EGS_N1_DRYRUN_DONE=YES")
           PY
           )"
           docker exec -w /app "$CID" python manage.py shell -c "$SCRIPT"
