@@ -1,6 +1,7 @@
-# PROBE BRANCH ONLY (probe/egs-preflight-ro) — DRY RUN for removing test group 30 "N1 Quota Group"
-# and its test equipment 99 "N1-QUOTA". Strictly read-only: uses Django's deletion Collector inside a
-# READ ONLY transaction to list what a delete WOULD remove. Deletes nothing.
+# PROBE BRANCH ONLY (probe/egs-preflight-ro) — remove TEST group 30 "N1 Quota Group" (N1-GRP)
+# and its only member, TEST equipment 99 "N1-QUOTA", as requested by the owner.
+# Step 1 backs up every row the delete will touch (read-only) and uploads it as an artifact.
+# Step 3 deletes only if the rows collected at delete time exactly match the backup.
 name: Show Production Migrations
 
 on:
@@ -10,92 +11,131 @@ jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Dry run — N1 Quota Group removal impact (read-only)
+      - name: Locate production Django container
+        id: find
         run: |
           set -euo pipefail
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           echo "container=$CID host_deploy_head=$(git -C /home/ubuntu/iic-booking-backend rev-parse HEAD 2>/dev/null || echo unknown)"
-          SCRIPT="$(cat <<'PY'
-          from collections import Counter
-          from django.db import connection, transaction
-          from django.db.models.deletion import Collector, ProtectedError, RestrictedError
-          from iic_booking.equipment.models import Equipment, EquipmentGroup
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
 
-          GROUP_ID, GROUP_NAME = 30, "N1 Quota Group"
+      - name: Backup rows to be removed (read-only)
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          SCRIPT="$(cat <<'PY'
+          import json
+          from django.core import serializers
+          from django.db import connection, transaction
+          from django.db.models.deletion import Collector
+          from iic_booking.equipment.models import Booking, Equipment, EquipmentGroup
+
+          GROUP_ID, GROUP_NAME, GROUP_CODE = 30, "N1 Quota Group", "N1-GRP"
           EQUIP_ID, EQUIP_CODE = 99, "N1-QUOTA"
+          EXPECTED_MODELS = {"equipment.ChargeProfile", "equipment.Equipment", "equipment.EquipmentGroup",
+                             "equipment.SlotMaster", "equipment.DailySlot", "equipment.EquipmentGroupQuota"}
 
           with transaction.atomic():
               with connection.cursor() as c:
                   c.execute("SET TRANSACTION READ ONLY")
-                  c.execute("SHOW transaction_read_only")
-                  ro = c.fetchone()[0]
-              print("transaction_read_only=", ro)
-              if ro != "on":
-                  raise SystemExit("STOP: transaction is not read-only")
-
               g = EquipmentGroup.objects.get(pk=GROUP_ID)
-              print("group:", g.pk, repr(g.name), "code=", repr(getattr(g, "code", None)))
-              if g.name != GROUP_NAME:
-                  raise SystemExit("STOP: group name mismatch")
-              members = list(Equipment.objects.filter(equipment_group_id=GROUP_ID)
-                             .values_list("pk", "code", "name", "internal_department_id", "status"))
-              print("group members:", members)
               eq = Equipment.objects.get(pk=EQUIP_ID)
-              print("equipment:", eq.pk, repr(eq.code), repr(eq.name), "dept=", eq.internal_department_id,
-                    "status=", getattr(eq, "status", None), "group=", eq.equipment_group_id)
-              if eq.code != EQUIP_CODE or eq.equipment_group_id != GROUP_ID:
-                  raise SystemExit("STOP: equipment identity mismatch")
-              if [m[0] for m in members] != [EQUIP_ID]:
-                  raise SystemExit("STOP: group has members other than equipment 99")
+              members = list(Equipment.objects.filter(equipment_group_id=GROUP_ID).values_list("pk", flat=True))
+              assert g.name == GROUP_NAME and g.code == GROUP_CODE, "group identity mismatch"
+              assert eq.code == EQUIP_CODE and eq.equipment_group_id == GROUP_ID, "equipment identity mismatch"
+              assert members == [EQUIP_ID], f"unexpected group members {members}"
+              assert Booking.objects.filter(equipment_id=EQUIP_ID).count() == 0, "equipment has bookings"
 
               collector = Collector(using="default")
-              try:
-                  collector.collect([eq])
-                  collector.collect([g])
-              except (ProtectedError, RestrictedError) as exc:
-                  print("DELETE WOULD BE BLOCKED:", type(exc).__name__)
-                  for o in list(getattr(exc, "protected_objects", None) or getattr(exc, "restricted_objects", None) or [])[:50]:
-                      print("  blocker:", o._meta.label, o.pk, str(o)[:120])
-                  raise SystemExit(1)
-
-              print("== rows that would be DELETED (cascade) ==")
-              for model, objs in sorted(collector.data.items(), key=lambda kv: kv[0]._meta.label):
-                  pks = sorted(o.pk for o in objs)
-                  print(f"  {model._meta.label}: {len(pks)} pks={pks[:40]}{' ...' if len(pks) > 40 else ''}")
-              print("== fast deletes (bulk, cascade) ==")
+              collector.collect([eq])
+              collector.collect([g])
+              objs = [o for model_objs in collector.data.values() for o in model_objs]
               for qs in collector.fast_deletes:
-                  n = qs.count()
-                  if n:
-                      print(f"  {qs.model._meta.label}: {n} pks={list(qs.values_list('pk', flat=True)[:40])}")
-              print("== rows that would be UPDATED (SET_NULL / SET_DEFAULT) ==")
-              for (field, value), items in collector.field_updates.items():
-                  n = 0
-                  for it in items:
-                      n += it.count() if hasattr(it, "count") and not isinstance(it, (list, set, tuple)) else len(it)
-                  if n:
-                      print(f"  {field.model._meta.label}.{field.name} -> {value!r}: {n}")
-
-              # Financial / booking visibility (read-only).
-              from django.apps import apps
-              def cnt(label, **flt):
-                  try:
-                      m = apps.get_model(label)
-                  except LookupError:
-                      return "n/a"
-                  try:
-                      return m.objects.filter(**flt).count()
-                  except Exception as exc:
-                      return f"err:{type(exc).__name__}"
-              print("== booking / financial references to equipment 99 ==")
-              print("  bookings:", cnt("equipment.Booking", equipment_id=EQUIP_ID))
-              for label in ("users.WalletTransaction", "users.Transaction", "payments.Payment"):
-                  for f in ("booking__equipment_id", "equipment_id"):
-                      v = cnt(label, **{f: EQUIP_ID})
-                      if v not in ("n/a",) and not str(v).startswith("err"):
-                          print(f"  {label} via {f}: {v}")
-
+                  objs.extend(list(qs))
+              manifest = {}
+              for o in objs:
+                  manifest.setdefault(o._meta.label, set()).add(o.pk)
+              unexpected = set(manifest) - EXPECTED_MODELS
+              assert not unexpected, f"unexpected models in cascade: {sorted(unexpected)}"
+              manifest = {k: sorted(v) for k, v in sorted(manifest.items())}
+              payload = {"manifest": manifest, "rows": json.loads(serializers.serialize("json", objs))}
+              with open("/tmp/egs_n1_backup.json", "w", encoding="utf-8") as fh:
+                  json.dump(payload, fh, indent=1, default=str)
               transaction.set_rollback(True)
-          print("EGS_N1_DRYRUN_DONE=YES")
+          print("BACKUP manifest:", {k: len(v) for k, v in manifest.items()})
+          print("BACKUP rows:", len(payload["rows"]))
           PY
           )"
           docker exec -w /app "$CID" python manage.py shell -c "$SCRIPT"
+          docker cp "$CID:/tmp/egs_n1_backup.json" "$RUNNER_TEMP/egs_n1_backup.json"
+          ls -l "$RUNNER_TEMP/egs_n1_backup.json"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: egs-n1-quota-group-backup
+          path: ${{ runner.temp }}/egs_n1_backup.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Delete test group 30 and test equipment 99 (guarded)
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          SCRIPT="$(cat <<'PY'
+          import json
+          from django.db import connection, transaction
+          from django.db.models.deletion import Collector
+          from iic_booking.equipment.models import Booking, Equipment, EquipmentGroup
+
+          GROUP_ID, EQUIP_ID = 30, 99
+          with open("/tmp/egs_n1_backup.json", encoding="utf-8") as fh:
+              backed_up = json.load(fh)["manifest"]
+
+          with transaction.atomic():
+              with connection.cursor() as c:
+                  c.execute("SET LOCAL lock_timeout = '5s'")
+                  c.execute("SET LOCAL statement_timeout = '60s'")
+              g = EquipmentGroup.objects.select_for_update().get(pk=GROUP_ID)
+              eq = Equipment.objects.select_for_update().get(pk=EQUIP_ID)
+              assert g.name == "N1 Quota Group" and g.code == "N1-GRP", "group identity mismatch"
+              assert eq.code == "N1-QUOTA" and eq.equipment_group_id == GROUP_ID, "equipment identity mismatch"
+              assert list(Equipment.objects.filter(equipment_group_id=GROUP_ID).values_list("pk", flat=True)) == [EQUIP_ID]
+              assert Booking.objects.filter(equipment_id=EQUIP_ID).count() == 0, "equipment has bookings"
+
+              collector = Collector(using="default")
+              collector.collect([eq])
+              collector.collect([g])
+              now = {}
+              for model, objs in collector.data.items():
+                  now.setdefault(model._meta.label, set()).update(o.pk for o in objs)
+              for qs in collector.fast_deletes:
+                  now.setdefault(qs.model._meta.label, set()).update(qs.values_list("pk", flat=True))
+              now = {k: sorted(v) for k, v in sorted(now.items()) if v}
+              if now != backed_up:
+                  raise SystemExit(f"STOP: rows changed since backup; nothing deleted. now={ {k: len(v) for k, v in now.items()} }")
+
+              deleted_total, per_model = collector.delete()
+              print("DELETED:", deleted_total, dict(sorted(per_model.items())))
+              assert not Equipment.objects.filter(pk=EQUIP_ID).exists()
+              assert not EquipmentGroup.objects.filter(pk=GROUP_ID).exists()
+          print("EGS_N1_DELETE_DONE=YES")
+          PY
+          )"
+          docker exec -w /app "$CID" python manage.py shell -c "$SCRIPT"
+
+      - name: Post-check (read-only)
+        run: |
+          set -euo pipefail
+          CID="${{ steps.find.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from django.db import connection
+          with connection.cursor() as c:
+              c.execute('SELECT COUNT(*) FROM equipment_equipment WHERE equipment_id = 99')
+              print('equipment_99_rows=', c.fetchone()[0])
+              c.execute('SELECT COUNT(*) FROM equipment_equipmentgroup WHERE equipment_group_id = 30')
+              print('group_30_rows=', c.fetchone()[0])
+              c.execute('SELECT COUNT(*) FROM equipment_equipment e JOIN equipment_equipmentgroup g ON g.equipment_group_id = e.equipment_group_id WHERE e.internal_department_id IS NULL')
+              print('grouped_equipment_without_department=', c.fetchone()[0])
+          "
+          docker exec "$CID" rm -f /tmp/egs_n1_backup.json
