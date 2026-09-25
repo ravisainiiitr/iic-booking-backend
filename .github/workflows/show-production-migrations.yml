@@ -1,7 +1,5 @@
-# PROBE BRANCH ONLY (probe/egs-preflight-ro) — apply ONLY equipment.0198_booking_result_views_and_data_shares.
-# Gated: backup fresh + complete, release tag/file identity, baseline state, plan == exactly 0198.
-# Runs in a one-off container of the CURRENT production image with the tagged 0198 file mounted read-only;
-# running services are not touched. 0198 only creates two new empty tables and one PeriodicTask row.
+# PROBE BRANCH ONLY (probe/egs-preflight-ro) — READ-ONLY post-deploy verification for v2.5.46.49.
+# No migrations, no restarts, no writes: DB access is inside READ ONLY transactions that are rolled back.
 name: Show Production Migrations
 
 on:
@@ -9,191 +7,129 @@ on:
 
 env:
   RELEASE_TAG: v2.5.46.49-results-sharing-availability
-  RELEASE_SHA: 8af98c8a8e89a4380f04eeb141b20abc77118694
-  MIGRATION_BLOB: 4e716491fb59f9dad01f565055233b21ba6b9ca0
-  MIGRATION_REL: iic_booking/equipment/migrations/0198_booking_result_views_and_data_shares.py
-  MIGRATION_NAME: 0198_booking_result_views_and_data_shares
-  BASELINE_TAG: v2.5.46.48-equipment-group-alternatives
+  RELEASE_SHORT: "8af98c8"
   DEPLOY_DIR: /home/ubuntu/iic-booking-backend
   COMPOSE_FILE: docker-compose.production.yml
+  EXPECTED_FP: "63|7c49e45686e1722a6846dd83ab7e00d1|36|59d2b3085b75e21bfb288f5a828db336"
 
 jobs:
   show:
     runs-on: [self-hosted, Linux]
     steps:
-      - name: Checkout release tag (read-only copy in runner workspace)
-        uses: actions/checkout@v4
-        with:
-          ref: v2.5.46.49-results-sharing-availability
-          path: release
-          fetch-depth: 1
-
-      - name: "Gate A: latest nightly backup fresh and complete"
+      - name: Deployed release state
+        id: st
         run: |
           set -euo pipefail
-          DUMP="$(readlink -f /home/ubuntu/backups/nightly/latest)/db/portal.sql.gz"
-          test -f "$DUMP" || { echo "GATE A FAIL: dump missing"; exit 1; }
-          AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$DUMP") ) / 3600 ))
-          stat -c 'dump=%n size_bytes=%s mtime=%y' "$DUMP"
-          echo "dump_age_hours=$AGE_H"
-          [ "$AGE_H" -le 36 ] || { echo "GATE A FAIL: backup older than 36h"; exit 1; }
-          gzip -t "$DUMP"
-          COMPLETE=$( (set +e +o pipefail; zcat "$DUMP" | tail -n 20 | grep -c 'PostgreSQL database dump complete') )
-          echo "dump_complete_marker=$COMPLETE"
-          [ "$COMPLETE" -ge 1 ] || { echo "GATE A FAIL: dump-complete marker missing"; exit 1; }
-          echo "GATE A PASS"
-
-      - name: "Gate B: release identity and production baseline"
-        id: base
-        run: |
-          set -euo pipefail
-          HEAD_SHA="$(git -C release rev-parse HEAD)"
-          BLOB="$(git -C release rev-parse "HEAD:$MIGRATION_REL")"
-          echo "release_head=$HEAD_SHA migration_blob=$BLOB"
-          [ "$HEAD_SHA" = "$RELEASE_SHA" ] || { echo "GATE B FAIL: release sha mismatch"; exit 1; }
-          [ "$BLOB" = "$MIGRATION_BLOB" ] || { echo "GATE B FAIL: migration file mismatch"; exit 1; }
           CUR_TAG="$(cat "$DEPLOY_DIR/.deploy-state/current_release_tag")"
-          echo "production_current_release_tag=$CUR_TAG"
-          [ "$CUR_TAG" = "$BASELINE_TAG" ] || { echo "GATE B FAIL: production not on baseline tag"; exit 1; }
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          PREV_TAG="$(cat "$DEPLOY_DIR/.deploy-state/previous_release_tag" 2>/dev/null || echo '?')"
+          HEAD="$(git -C "$DEPLOY_DIR" rev-parse --short HEAD)"
+          echo "current_release_tag=$CUR_TAG previous_release_tag=$PREV_TAG deploy_head=$HEAD"
+          [ "$CUR_TAG" = "$RELEASE_TAG" ] && [ "$HEAD" = "$RELEASE_SHORT" ] || { echo "STATE FAIL"; exit 1; }
+          docker compose -f "$DEPLOY_DIR/$COMPOSE_FILE" ps --format 'table {{.Name}}\t{{.Status}}'
+          for n in django celerybeat celeryworker; do
+            C="$(docker ps --format '{{.Names}}' | grep -E "backend-$n-" | head -n 1)"
+            docker inspect -f "$n container={{.Name}} started={{.State.StartedAt}} image={{.Config.Image}} restarts={{.RestartCount}}" "$C"
+          done
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'backend-django-' | head -n 1)"
           echo "container=$CID" >> "$GITHUB_OUTPUT"
-          echo "running_container=$CID"
-          echo "GATE B PASS"
+          echo "worker=$(docker ps --format '{{.Names}}' | grep -E 'backend-celeryworker-' | head -n 1)" >> "$GITHUB_OUTPUT"
+          echo "beat=$(docker ps --format '{{.Names}}' | grep -E 'backend-celerybeat-' | head -n 1)" >> "$GITHUB_OUTPUT"
+          echo "STATE PASS"
 
-      - name: "Gate C: pre-migration state + data fingerprint (read-only)"
+      - name: Django start log scan (since deploy)
+        run: |
+          set +e +o pipefail
+          CID="${{ steps.st.outputs.container }}"
+          docker logs "$CID" > "$RUNNER_TEMP/django.log" 2>&1
+          echo "log_lines=$(wc -l < "$RUNNER_TEMP/django.log")"
+          for p in 'Traceback' 'ImportError' 'ModuleNotFoundError' 'ProgrammingError' 'OperationalError' 'You have [0-9]+ unapplied migration' 'does not exist' 'CRITICAL'; do
+            echo "pattern[$p]=$(grep -Ec "$p" "$RUNNER_TEMP/django.log")"
+          done
+          grep -En 'Traceback|ImportError|ModuleNotFoundError|ProgrammingError|OperationalError|unapplied migration|does not exist|CRITICAL' "$RUNNER_TEMP/django.log" | head -n 20 | cut -c1-240
+          true
+
+      - name: Django check + migration state (read-only)
         run: |
           set -euo pipefail
-          CID="${{ steps.base.outputs.container }}"
-          docker exec -w /app "$CID" python manage.py shell -c "
+          CID="${{ steps.st.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py check 2>&1 | grep -v 'UserWarning\|Outgoing email\|warnings.warn' || true
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>/dev/null | tail -n 3
+          docker exec -w /app "$CID" python manage.py showmigrations equipment 2>/dev/null | grep -q '\[X\] 0198_booking_result_views_and_data_shares' \
+            || { echo "MIGRATION STATE FAIL"; exit 1; }
+          docker exec -w /app "$CID" python manage.py migrate --plan 2>/dev/null | tee "$RUNNER_TEMP/plan.txt"
+          PENDING="$(grep -cE '^[a-z_]+\.[0-9]{4}_' "$RUNNER_TEMP/plan.txt" || true)"
+          echo "pending_migrations=$PENDING"
+          [ "$PENDING" = "0" ] || { echo "PENDING MIGRATIONS"; exit 1; }
+          set +e
+          docker exec -w /app "$CID" python manage.py makemigrations equipment --check --dry-run 2>/dev/null
+          echo "makemigrations_equipment_check_exit=$?"
+          set -e
+          echo "CHECK STEP DONE"
+
+      - name: Celery worker has the new task; beat restarted with the new code
+        run: |
+          set -euo pipefail
+          W="${{ steps.st.outputs.worker }}"; B="${{ steps.st.outputs.beat }}"
+          docker exec "$W" celery -A config.celery_app inspect registered --timeout 15 2>/dev/null > "$RUNNER_TEMP/registered.txt" || true
+          echo "registered_ensure_upcoming_slots=$(grep -c 'equipment.ensure_upcoming_slots' "$RUNNER_TEMP/registered.txt" || true)"
+          echo "registered_archive_expired_samples=$(grep -c 'equipment.archive_expired_samples' "$RUNNER_TEMP/registered.txt" || true)"
+          grep -q 'equipment.ensure_upcoming_slots' "$RUNNER_TEMP/registered.txt" || { echo "TASK NOT REGISTERED ON WORKER"; exit 1; }
+          echo "--- beat log (tail) ---"
+          docker logs --tail 15 "$B" 2>&1 | cut -c1-200
+          echo "CELERY PASS"
+
+      - name: HTTP smoke through the live app
+        run: |
+          set -euo pipefail
+          FAIL=0
+          check() { code="$(curl -sS -o "$RUNNER_TEMP/body" -w '%{http_code}' --max-time 30 "http://127.0.0.1:8080$1" || echo 000)"; echo "GET $1 -> $code (expect $2) bytes=$(wc -c < "$RUNNER_TEMP/body")"; [ "$code" = "$2" ] || FAIL=1; }
+          check /api/v1/analysis/health/ready/ 200
+          check /api/version/ 200
+          check /api/equipments/ 200
+          check /api/results/inbox/ 401
+          check /api/data-sharing/shared-with-me/ 401
+          check "/api/data-sharing/users/search/?q=abc" 401
+          check /api/bookings/1/shares/ 401
+          check "/api/public/equipment-availability/?days=14" 200
+          python3 - "$RUNNER_TEMP/body" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          rows = d["equipment"]
+          with_slots = [r for r in rows if r["next_available_at"]]
+          print(f"public_availability count={d['count']} days={d['days']} until={d['until']} departments={len(d['departments'])} equipment_with_slots={len(with_slots)}")
+          allowed = {"equipment_id", "code", "name", "department_id", "department_name", "next_available_at", "total_available_slots", "dates"}
+          extra = set().union(*[set(r) for r in rows]) - allowed if rows else set()
+          print("unexpected_row_keys=", sorted(extra))
+          for r in with_slots[:3]:
+              print("sample", r["code"], r["next_available_at"], r["total_available_slots"], [(x["date"], x["available_slots"]) for x in r["dates"][:3]])
+          assert not extra
+          PY
+          [ "$FAIL" = "0" ] && echo "HTTP SMOKE PASS" || { echo "HTTP SMOKE FAIL"; exit 1; }
+
+      - name: DB state + fingerprint (read-only)
+        if: always()
+        run: |
+          set -euo pipefail
+          CID="${{ steps.st.outputs.container }}"
+          OUT="$(docker exec -w /app "$CID" python manage.py shell -c "
           from django.db import connection, transaction
           with transaction.atomic():
               c = connection.cursor()
               c.execute('SET TRANSACTION READ ONLY')
-              c.execute(\"SELECT name FROM django_migrations WHERE app='equipment' ORDER BY name DESC LIMIT 1\")
-              last = c.fetchone()[0]
-              c.execute(\"SELECT COUNT(*) FROM django_migrations WHERE app='equipment' AND name='0198_booking_result_views_and_data_shares'\")
-              has0198 = c.fetchone()[0]
-              c.execute(\"SELECT to_regclass('equipment_bookingdatashare') IS NULL, to_regclass('equipment_bookingresultview') IS NULL\")
-              share_absent, view_absent = c.fetchone()
-              c.execute(\"SELECT COUNT(*) FROM django_migrations WHERE app='django_celery_beat'\")
-              beat_migs = c.fetchone()[0]
-              c.execute(\"SELECT COUNT(*) FROM django_celery_beat_periodictask WHERE name='Nightly upcoming slot generation 00:20' OR task='equipment.ensure_upcoming_slots'\")
-              task_rows = c.fetchone()[0]
-              print('pre_last_equipment_migration=', last)
-              print('pre_0198_recorded=', has0198, 'share_table_absent=', share_absent, 'view_table_absent=', view_absent)
-              print('django_celery_beat_migrations=', beat_migs, 'pre_upcoming_slot_task_rows=', task_rows)
-              assert last == '0197_equipment_group_alternatives' and has0198 == 0, 'GATE C FAIL: unexpected migration pre-state'
-              assert share_absent and view_absent, 'GATE C FAIL: new tables already exist'
-              assert beat_migs > 0 and task_rows == 0, 'GATE C FAIL: unexpected celery beat pre-state'
-              transaction.set_rollback(True)
-          print('GATE C PASS')
-          "
-          docker exec -w /app "$CID" python manage.py shell -c "
-          from django.db import connection, transaction
-          with transaction.atomic():
-              c = connection.cursor()
-              c.execute('SET TRANSACTION READ ONLY')
-              c.execute('''SELECT (SELECT COUNT(*) FROM equipment_equipment),
-                (SELECT md5(string_agg(equipment_id::text||'|'||COALESCE(equipment_group_id::text,'-')||'|'||COALESCE(internal_department_id::text,'-')||'|'||code||'|'||COALESCE(status,''), ',' ORDER BY equipment_id)) FROM equipment_equipment),
-                (SELECT COUNT(*) FROM django_celery_beat_periodictask),
-                (SELECT md5(string_agg(id::text||'|'||name||'|'||task||'|'||enabled::text||'|'||COALESCE(crontab_id::text,'-')||'|'||COALESCE(interval_id::text,'-'), ',' ORDER BY id)) FROM django_celery_beat_periodictask),
-                (SELECT COUNT(*) FROM django_celery_beat_crontabschedule)''')
-              print('|'.join(str(v) for v in c.fetchone()))
-              transaction.set_rollback(True)
-          " | tail -n 1 | tee "$RUNNER_TEMP/fp_before.txt"
-
-      - name: "Gate D: migrate --plan must be exactly equipment.0198"
-        run: |
-          set -euo pipefail
-          cd "$DEPLOY_DIR"
-          MIG_SRC="$GITHUB_WORKSPACE/release/$MIGRATION_REL"
-          docker compose -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint "" --user django \
-            -v "$MIG_SRC:/app/$MIGRATION_REL:ro" \
-            django python manage.py migrate equipment "$MIGRATION_NAME" --plan 2>&1 | tee "$RUNNER_TEMP/plan.txt"
-          PLANNED="$(grep -E '^[a-z_]+\.[0-9]{4}_' "$RUNNER_TEMP/plan.txt" || true)"
-          echo "planned_migrations=[$PLANNED]"
-          [ "$PLANNED" = "equipment.$MIGRATION_NAME" ] || { echo "GATE D FAIL: plan is not exactly 0198"; exit 1; }
-          echo "--- SQL (sqlmigrate) ---"
-          docker compose -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint "" --user django \
-            -v "$MIG_SRC:/app/$MIGRATION_REL:ro" \
-            django python manage.py sqlmigrate equipment "$MIGRATION_NAME" 2>&1
-          echo "GATE D PASS"
-
-      - name: Apply ONLY equipment.0198_booking_result_views_and_data_shares
-        run: |
-          set -euo pipefail
-          cd "$DEPLOY_DIR"
-          MIG_SRC="$GITHUB_WORKSPACE/release/$MIGRATION_REL"
-          docker compose -f "$COMPOSE_FILE" run --rm --no-deps --entrypoint "" --user django \
-            -v "$MIG_SRC:/app/$MIGRATION_REL:ro" \
-            django python manage.py migrate equipment "$MIGRATION_NAME" --noinput 2>&1 | tee "$RUNNER_TEMP/migrate.txt"
-          grep -q "Applying equipment.$MIGRATION_NAME... OK" "$RUNNER_TEMP/migrate.txt" \
-            || { echo "MIGRATION FAIL: 0198 not reported OK"; exit 1; }
-          APPLIED="$(grep -c '^  Applying ' "$RUNNER_TEMP/migrate.txt" || true)"
-          echo "applied_count=$APPLIED"
-          [ "$APPLIED" = "1" ] || { echo "MIGRATION FAIL: unexpected number of migrations applied"; exit 1; }
-          echo "MIGRATION 0198 APPLIED"
-
-      - name: Post-migration verification (read-only)
-        run: |
-          set -euo pipefail
-          CID="${{ steps.base.outputs.container }}"
-          docker exec -w /app "$CID" python manage.py shell -c "
-          from django.db import connection, transaction
-          with transaction.atomic():
-              c = connection.cursor()
-              c.execute('SET TRANSACTION READ ONLY')
-              c.execute(\"SELECT name, applied FROM django_migrations WHERE app='equipment' AND name >= '0197' ORDER BY name\")
-              rows = c.fetchall()
-              for r in rows: print('migration', r[0], r[1])
-              assert [r[0] for r in rows] == ['0197_equipment_group_alternatives', '0198_booking_result_views_and_data_shares'], 'unexpected migration rows'
-              for t in ('equipment_bookingdatashare', 'equipment_bookingresultview'):
-                  c.execute(f'SELECT COUNT(*) FROM {t}')
-                  n = c.fetchone()[0]
-                  print(f'table {t} rows={n}')
-                  assert n == 0, f'{t} not empty'
-              c.execute(\"SELECT indexname FROM pg_indexes WHERE schemaname=current_schema() AND tablename IN ('equipment_bookingdatashare','equipment_bookingresultview') ORDER BY 1\")
-              idx = [r[0] for r in c.fetchall()]
-              print('indexes', idx)
-              assert 'uniq_active_booking_data_share' in idx and 'uniq_booking_result_view_per_user' in idx, 'unique indexes missing'
-              c.execute('''SELECT t.name, t.task, t.enabled, s.minute, s.hour, s.day_of_week, s.day_of_month, s.month_of_year, s.timezone
-                           FROM django_celery_beat_periodictask t JOIN django_celery_beat_crontabschedule s ON s.id = t.crontab_id
-                           WHERE t.task IN ('equipment.ensure_upcoming_slots', 'equipment.archive_expired_samples') ORDER BY t.name''')
-              for r in c.fetchall(): print('periodic_task', ' | '.join(str(v) for v in r))
-              c.execute(\"SELECT COUNT(*) FROM django_celery_beat_periodictask WHERE name='Nightly upcoming slot generation 00:20' AND task='equipment.ensure_upcoming_slots' AND enabled\")
-              assert c.fetchone()[0] == 1, 'upcoming slot periodic task missing or disabled'
-              transaction.set_rollback(True)
-          print('POST-MIGRATION SCHEMA/TASK CHECK PASS')
-          "
-          docker exec -w /app "$CID" python manage.py shell -c "
-          from django.db import connection, transaction
-          with transaction.atomic():
-              c = connection.cursor()
-              c.execute('SET TRANSACTION READ ONLY')
+              c.execute('SELECT COUNT(*) FROM equipment_bookingdatashare'); print('SHARES', c.fetchone()[0])
+              c.execute('SELECT COUNT(*) FROM equipment_bookingresultview'); print('RESULT_VIEWS', c.fetchone()[0])
+              c.execute(\"SELECT COUNT(*) FROM django_celery_beat_periodictask WHERE name='Nightly upcoming slot generation 00:20' AND enabled\"); print('UPCOMING_TASK', c.fetchone()[0])
               c.execute('''SELECT (SELECT COUNT(*) FROM equipment_equipment),
                 (SELECT md5(string_agg(equipment_id::text||'|'||COALESCE(equipment_group_id::text,'-')||'|'||COALESCE(internal_department_id::text,'-')||'|'||code||'|'||COALESCE(status,''), ',' ORDER BY equipment_id)) FROM equipment_equipment),
                 (SELECT COUNT(*) FROM django_celery_beat_periodictask WHERE name <> 'Nightly upcoming slot generation 00:20'),
-                (SELECT md5(string_agg(id::text||'|'||name||'|'||task||'|'||enabled::text||'|'||COALESCE(crontab_id::text,'-')||'|'||COALESCE(interval_id::text,'-'), ',' ORDER BY id)) FROM django_celery_beat_periodictask WHERE name <> 'Nightly upcoming slot generation 00:20'),
-                (SELECT COUNT(*) FROM django_celery_beat_crontabschedule)''')
-              print('|'.join(str(v) for v in c.fetchone()))
+                (SELECT md5(string_agg(id::text||'|'||name||'|'||task||'|'||enabled::text||'|'||COALESCE(crontab_id::text,'-')||'|'||COALESCE(interval_id::text,'-'), ',' ORDER BY id)) FROM django_celery_beat_periodictask WHERE name <> 'Nightly upcoming slot generation 00:20')''')
+              print('FP', '|'.join(str(v) for v in c.fetchone()))
+              c.execute('SELECT COUNT(*) FILTER (WHERE alternative_booking_enabled OR alternative_search_other_slots OR cross_rescheduling_enabled OR auto_allocation_enabled) FROM equipment_equipmentgroup')
+              print('GROUP_SWITCHES_ON', c.fetchone()[0])
               transaction.set_rollback(True)
-          " | tail -n 1 | tee "$RUNNER_TEMP/fp_after.txt"
-          echo "fingerprint_before=$(cat "$RUNNER_TEMP/fp_before.txt")"
-          echo "fingerprint_after=$(cat "$RUNNER_TEMP/fp_after.txt")"
-          B="$(cut -d'|' -f1-4 "$RUNNER_TEMP/fp_before.txt")"; A="$(cut -d'|' -f1-4 "$RUNNER_TEMP/fp_after.txt")"
-          [ "$B" = "$A" ] || { echo "DATA FINGERPRINT CHANGED"; exit 1; }
-          CB="$(cut -d'|' -f5 "$RUNNER_TEMP/fp_before.txt")"; CA="$(cut -d'|' -f5 "$RUNNER_TEMP/fp_after.txt")"
-          echo "crontab_schedules_before=$CB after=$CA"
-          [ "$CA" -ge "$CB" ] && [ "$CA" -le $((CB + 1)) ] || { echo "UNEXPECTED CRONTAB CHANGE"; exit 1; }
-          echo "DATA FINGERPRINT UNCHANGED (existing equipment + existing periodic tasks)"
-
-      - name: Running application health after migration (old code, new tables)
-        run: |
-          set -euo pipefail
-          for u in http://127.0.0.1:8080/api/v1/analysis/health/ready/ http://127.0.0.1:8080/api/version/; do
-            code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$u" || true)"
-            echo "$u -> $code"
-            [ "$code" = "200" ] || { echo "HEALTH FAIL"; exit 1; }
-          done
-          docker compose -f "$DEPLOY_DIR/$COMPOSE_FILE" ps --format 'table {{.Name}}\t{{.Status}}'
-          echo "MIGRATION_0198_PHASE_DONE=YES"
+          " 2>/dev/null | grep -E '^(SHARES|RESULT_VIEWS|UPCOMING_TASK|FP|GROUP_SWITCHES_ON) ')"
+          echo "$OUT"
+          echo "$OUT" | grep -qx "FP $EXPECTED_FP" && echo "FINGERPRINT UNCHANGED" || { echo "FINGERPRINT CHANGED"; exit 1; }
+          echo "$OUT" | grep -qx 'UPCOMING_TASK 1' || { echo "TASK MISSING"; exit 1; }
+          echo "$OUT" | grep -qx 'GROUP_SWITCHES_ON 0' || { echo "GROUP SWITCH ON"; exit 1; }
+          echo "VERIFY_DONE=YES"
