@@ -7,7 +7,7 @@ on:
 
 env:
   RELEASE_TAG: v2.5.46.48-equipment-group-alternatives
-  RELEASE_SHORT: 43974e3
+  RELEASE_SHORT: "43974e3"
   DEPLOY_DIR: /home/ubuntu/iic-booking-backend
   COMPOSE_FILE: docker-compose.production.yml
   EXPECTED_FP: "29|a134b37996d15a9fa1f8cef701afc088|63|7c49e45686e1722a6846dd83ab7e00d1|50|296"
