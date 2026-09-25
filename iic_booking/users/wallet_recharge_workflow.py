@@ -11,9 +11,10 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives, send_mail
 from django.db import transaction
 from django.utils import timezone
+from django.utils.html import escape
 
 from iic_booking.communication.utils import get_frontend_absolute_url
 from iic_booking.users.models.user_type import UserType
@@ -442,11 +443,61 @@ def cancel_request(
     return locked
 
 
+def get_recharge_cc_emails(mode: str) -> list[str]:
+    """Admin-configured CC addresses for the given recharge mode."""
+    settings_obj = WalletSricSettings.get_singleton()
+    if mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT:
+        raw = getattr(settings_obj, "cash_deposit_cc_emails", "") or ""
+    else:
+        raw = getattr(settings_obj, "project_grant_cc_emails", "") or ""
+    return _parse_sric_recipient_emails(raw)
+
+
+def _unique_emails(emails, *, exclude=()) -> list[str]:
+    seen = {(e or "").strip().lower() for e in exclude}
+    out: list[str] = []
+    for e in emails:
+        value = (e or "").strip()
+        if not value or "@" not in value or value.lower() in seen:
+            continue
+        seen.add(value.lower())
+        out.append(value)
+    return out
+
+
+def get_recharge_copy_recipients(recharge_request: WalletRechargeRequest, *, exclude=()) -> list[str]:
+    """Requester (always first), wallet owner, then configured CC addresses for the mode."""
+    mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
+    defaults = [getattr(recharge_request.user, "email", "") or ""]
+    wallet_owner = getattr(getattr(recharge_request, "wallet", None), "user", None)
+    if wallet_owner is not None:
+        defaults.append(getattr(wallet_owner, "email", "") or "")
+    return _unique_emails(defaults + get_recharge_cc_emails(mode), exclude=exclude)
+
+
+_RECHARGE_EMAIL_CSS = """
+body{font-family:Arial,sans-serif;line-height:1.6;color:#333}
+.box{max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px}
+.row{margin:8px 0} .label{font-weight:bold;color:#555}
+.amount{font-size:28px;font-weight:800;color:#0d47a1;margin:12px 0 20px;letter-spacing:0.02em}
+.grant-highlight{margin:8px 0 18px;padding:14px 16px;background:#e8f5e9;border:2px solid #2e7d32;border-radius:8px;font-size:15px;font-weight:700;color:#1b5e20;line-height:1.35}
+.grant-debit{background:#fff3e0;border-color:#e65100;color:#bf360c}
+.grant-code{display:block;margin-top:6px;font-size:26px;font-weight:800;letter-spacing:0.03em;color:#0d47a1}
+.txn{font-size:16px;font-weight:700;color:#111;background:#e3f2fd;padding:10px 14px;border-radius:6px;display:inline-block;margin-bottom:12px}
+.btn{display:inline-block;padding:12px 28px;margin:8px;border-radius:6px;color:#fff !important;text-decoration:none;font-weight:bold}
+.ok{background:#2e7d32} .bad{background:#c62828}
+.note{margin-top:16px;padding:12px;background:#fff8e1;border:1px solid #ffe082;font-size:13px}
+.copy-banner{margin:0 0 16px;padding:10px 14px;background:#eceff1;border-left:4px solid #607d8b;font-size:13px}
+"""
+
+
 def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     """
     Send approval-interface email (Approve / Decline buttons).
     Project Grant → SRIC Office recipients.
-    Direct Cash Deposit → SRIC Bill Section + requester + wallet owner.
+    Direct Cash Deposit → SRIC Bill Section.
+    The requester, wallet owner and configured CC addresses get a copy without action links
+    (the links credit the wallet without login, so they go to approvers only).
     Returns number of primary (approval) recipients emailed.
     """
     populate_request_snapshots(recharge_request)
@@ -463,6 +514,7 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
             recharge_request.id,
         )
         return 0
+    copy_recipients = get_recharge_copy_recipients(recharge_request, exclude=recipients)
 
     user = recharge_request.user
     name = user.name or user.email
@@ -479,6 +531,8 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     email = (user.email or "—").strip()
     user_type = getattr(user, "user_type", "") or "—"
     dept_name = recharge_request.department.name if recharge_request.department_id else "—"
+    approver_label = "SRIC Bill Section" if is_cash else "SRIC Office"
+    cc_text = ", ".join(copy_recipients) if copy_recipients else "—"
 
     subject = f"[{txn}] Wallet Recharge ₹{amount_str} — {name}"
     if is_cash:
@@ -488,23 +542,22 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
         )
         grant_rows_html = (
             f'<div class="grant-highlight">Amount to be Credited to Grant<br/>'
-            f'<span class="grant-code">{credit_grant}</span></div>'
+            f'<span class="grant-code">{escape(credit_grant)}</span></div>'
             f'<div class="row"><span class="label">Recharge Mode:</span> {mode_label}</div>'
         )
     else:
         grant_lines_text = (
             f"Amount to be Credited to Grant: {credit_grant}\n"
-            f"Project Grant Code for Debit: {debit_grant}"
+            f"PROJECT GRANT CODE FOR DEBIT: {debit_grant}"
         )
         grant_rows_html = (
             f'<div class="grant-highlight">Amount to be Credited to Grant<br/>'
-            f'<span class="grant-code">{credit_grant}</span></div>'
-            f'<div class="row"><span class="label">Project Grant Code for Debit:</span> {debit_grant}</div>'
+            f'<span class="grant-code">{escape(credit_grant)}</span></div>'
+            f'<div class="grant-highlight grant-debit">Project Grant Code for Debit<br/>'
+            f'<span class="grant-code">{escape(debit_grant)}</span></div>'
         )
 
-    text_body = f"""Wallet Recharge Request — {txn}
-
-INTERNAL TRANSACTION NUMBER: {txn}
+    details_text = f"""INTERNAL TRANSACTION NUMBER: {txn}
 TOTAL AMOUNT: ₹{amount_str}
 
 {grant_lines_text}
@@ -515,7 +568,24 @@ Phone: {phone}
 Employee / ID: {emp}
 User type: {user_type}
 User department: {user_dept}
-Credit department: {dept_name}
+Credit department: {dept_name}"""
+
+    details_html = f"""<div class="txn">Transaction ID: {escape(txn)}</div>
+{grant_rows_html}
+<div class="amount">Total amount: ₹{amount_str}</div>
+<div class="row"><span class="label">Name:</span> {escape(name)}</div>
+<div class="row"><span class="label">Email:</span> {escape(email)}</div>
+<div class="row"><span class="label">Phone:</span> {escape(phone)}</div>
+<div class="row"><span class="label">Employee / ID:</span> {escape(emp)}</div>
+<div class="row"><span class="label">User type:</span> {escape(user_type)}</div>
+<div class="row"><span class="label">User department:</span> {escape(user_dept)}</div>
+<div class="row"><span class="label">Credit department:</span> {escape(dept_name)}</div>
+<div class="row"><span class="label">Request ref:</span> {escape(recharge_request.request_id_display)}</div>"""
+
+    text_body = f"""Wallet Recharge Request — {txn}
+
+{details_text}
+Copy sent to (without action links): {cc_text}
 
 Approve (credits wallet immediately): {approve_url}
 Decline: {reject_url}
@@ -525,30 +595,10 @@ Clicking Approve credits the wallet immediately — no further confirmation.
 Once approved, the request cannot be re-approved.
 """
     html_body = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"/><style>
-body{{font-family:Arial,sans-serif;line-height:1.6;color:#333}}
-.box{{max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px}}
-.row{{margin:8px 0}} .label{{font-weight:bold;color:#555}}
-.amount{{font-size:28px;font-weight:800;color:#0d47a1;margin:12px 0 20px;letter-spacing:0.02em}}
-.grant-highlight{{margin:8px 0 18px;padding:14px 16px;background:#e8f5e9;border:2px solid #2e7d32;border-radius:8px;font-size:15px;font-weight:700;color:#1b5e20;line-height:1.35}}
-.grant-code{{display:block;margin-top:6px;font-size:26px;font-weight:800;letter-spacing:0.03em;color:#0d47a1}}
-.txn{{font-size:16px;font-weight:700;color:#111;background:#e3f2fd;padding:10px 14px;border-radius:6px;display:inline-block;margin-bottom:12px}}
-.btn{{display:inline-block;padding:12px 28px;margin:8px;border-radius:6px;color:#fff !important;text-decoration:none;font-weight:bold}}
-.ok{{background:#2e7d32}} .bad{{background:#c62828}}
-.note{{margin-top:16px;padding:12px;background:#fff8e1;border:1px solid #ffe082;font-size:13px}}
-</style></head><body><div class="box">
+<html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
 <h2>Wallet Recharge Request</h2>
-<div class="txn">Transaction ID: {txn}</div>
-{grant_rows_html}
-<div class="amount">Total amount: ₹{amount_str}</div>
-<div class="row"><span class="label">Name:</span> {name}</div>
-<div class="row"><span class="label">Email:</span> {email}</div>
-<div class="row"><span class="label">Phone:</span> {phone}</div>
-<div class="row"><span class="label">Employee / ID:</span> {emp}</div>
-<div class="row"><span class="label">User type:</span> {user_type}</div>
-<div class="row"><span class="label">User department:</span> {user_dept}</div>
-<div class="row"><span class="label">Credit department:</span> {dept_name}</div>
-<div class="row"><span class="label">Request ref:</span> {recharge_request.request_id_display}</div>
+{details_html}
+<div class="row"><span class="label">Copy sent to:</span> {escape(cc_text)}</div>
 <p style="text-align:center;margin:28px 0">
   <a class="btn ok" href="{approve_url}">Approve</a>
   <a class="btn bad" href="{reject_url}">Decline</a>
@@ -567,67 +617,58 @@ Once the request is <strong>approved</strong>, it cannot be approved again.</div
         fail_silently=False,
     )
 
-    # Inform requester + wallet owner (cash deposit / bank transfer mode)
-    if is_cash:
-        info_recipients: list[str] = []
-        requester_email = (user.email or "").strip()
-        if requester_email and "@" in requester_email:
-            info_recipients.append(requester_email)
-        wallet_owner = getattr(getattr(recharge_request, "wallet", None), "user", None)
-        owner_email = (getattr(wallet_owner, "email", None) or "").strip() if wallet_owner else ""
-        if owner_email and "@" in owner_email and owner_email.lower() not in {
-            e.lower() for e in info_recipients
-        }:
-            info_recipients.append(owner_email)
-        # Exclude addresses already in Bill Section list
-        primary_lower = {e.lower() for e in recipients}
-        info_recipients = [e for e in info_recipients if e.lower() not in primary_lower]
-        if info_recipients:
-            info_subject = f"[{txn}] Wallet Recharge Submitted — next steps"
-            info_text = f"""Your wallet recharge request has been submitted.
-
-Transaction ID: {txn}
-Amount: ₹{amount_str}
-Recharge Mode: {mode_label}
-Department: {dept_name}
-
+    if copy_recipients:
+        sent_to = ", ".join(recipients)
+        if is_cash:
+            copy_subject = f"[{txn}] Wallet Recharge Submitted — next steps"
+            next_steps_text = f"""
 Next steps:
 1. Visit the SRIC Bill Section to deposit cash (or complete the bank transfer).
 2. Share this Transaction ID ({txn}) as your reference.
 3. After approval, upload or update the payment receipt in your Wallet for final reconciliation.
-
-You will receive a further email when the request is processed.
 """
-            info_html = f"""<!DOCTYPE html>
-<html><body style="font-family:Arial,sans-serif;line-height:1.6;color:#333">
-<div style="max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px">
-<h2>Wallet Recharge Request Submitted</h2>
-<p style="font-size:18px;font-weight:700;background:#e3f2fd;padding:10px 14px;border-radius:6px;display:inline-block">Transaction ID: {txn}</p>
-<p style="font-size:24px;font-weight:800;color:#0d47a1">Total amount: ₹{amount_str}</p>
-<p><strong>Recharge Mode:</strong> {mode_label}<br/>
-<strong>Department:</strong> {dept_name}</p>
-<h3>Next steps</h3>
+            next_steps_html = f"""<h3>Next steps</h3>
 <ol>
 <li>Visit the <strong>SRIC Bill Section</strong> to deposit cash (or complete the bank transfer).</li>
-<li>Share Transaction ID <strong>{txn}</strong> as your reference.</li>
+<li>Share Transaction ID <strong>{escape(txn)}</strong> as your reference.</li>
 <li>After approval, upload or update the payment receipt in your Wallet for final reconciliation by Accounts.</li>
-</ol>
+</ol>"""
+        else:
+            copy_subject = f"[{txn}] Wallet Recharge ₹{amount_str} — {name} (copy)"
+            next_steps_text = ""
+            next_steps_html = ""
+
+        copy_text = f"""Wallet Recharge Request — {txn} (copy for your records)
+
+This request has been sent to the {approver_label} for approval ({sent_to}).
+Recharge Mode: {mode_label}
+
+{details_text}
+{next_steps_text}
+You will receive a further email when the request is processed.
+"""
+        copy_html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
+<h2>Wallet Recharge Request</h2>
+<div class="copy-banner">Copy for your records. This request has been sent to the
+<strong>{approver_label}</strong> for approval ({escape(sent_to)}).</div>
+{details_html}
+<div class="row"><span class="label">Recharge Mode:</span> {mode_label}</div>
+{next_steps_html}
 <p>You will receive a further email when the request is processed.</p>
 </div></body></html>"""
-            try:
-                send_mail(
-                    subject=info_subject,
-                    message=info_text,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=info_recipients,
-                    html_message=info_html,
-                    fail_silently=True,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to notify requester/wallet owner for cash deposit request %s",
-                    recharge_request.id,
-                )
+        try:
+            message = EmailMultiAlternatives(
+                subject=copy_subject,
+                body=copy_text,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=copy_recipients[:1],
+                cc=copy_recipients[1:],
+            )
+            message.attach_alternative(copy_html, "text/html")
+            message.send(fail_silently=True)
+        except Exception:
+            logger.exception("Failed to send recharge request copy for %s", recharge_request.id)
 
     WalletRechargeRequest.objects.filter(pk=recharge_request.pk).update(sric_notification_sent=True)
     append_audit_log(
@@ -635,8 +676,14 @@ You will receive a further email when the request is processed.
         action="sric_email_sent" if not is_cash else "bill_section_email_sent",
         from_status=WalletRechargeRequestStatus.PENDING,
         to_status=WalletRechargeRequestStatus.PENDING,
-        message=f"Approval email sent to {', '.join(recipients)}",
-        metadata={"recipients": recipients, "recharge_mode": mode, "transaction_number": txn},
+        message=f"Approval email sent to {', '.join(recipients)}"
+        + (f"; copy to {', '.join(copy_recipients)}" if copy_recipients else ""),
+        metadata={
+            "recipients": recipients,
+            "cc": copy_recipients,
+            "recharge_mode": mode,
+            "transaction_number": txn,
+        },
     )
     return len(recipients)
 
@@ -734,6 +781,14 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
             for u in find_department_administrators(recharge_request.department):
                 if u.email:
                     recipients.append(u.email)
+        try:
+            recipients.extend(
+                get_recharge_cc_emails(
+                    getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
+                )
+            )
+        except Exception:
+            logger.exception("Could not load recharge CC emails for %s", recharge_request.id)
         # Deduplicate, exclude requester
         requester = ""
         try:

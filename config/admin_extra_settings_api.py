@@ -298,8 +298,40 @@ def register_extra_admin_routes(router):
     class WalletSricSettingsSerializer(serializers.ModelSerializer):
         class Meta:
             model = WalletSricSettings
-            fields = ["id", "recipient_emails", "bill_section_emails", "grant_code_for_credit"]
+            fields = [
+                "id",
+                "recipient_emails",
+                "bill_section_emails",
+                "project_grant_cc_emails",
+                "cash_deposit_cc_emails",
+                "grant_code_for_credit",
+            ]
             read_only_fields = ["id"]
+
+        @staticmethod
+        def _validate_email_list(value):
+            import re
+
+            from django.core.validators import validate_email
+            from django.core.exceptions import ValidationError as DjangoValidationError
+
+            invalid = []
+            for part in re.split(r"[\s,;]+", (value or "").strip()):
+                if not part:
+                    continue
+                try:
+                    validate_email(part)
+                except DjangoValidationError:
+                    invalid.append(part)
+            if invalid:
+                raise serializers.ValidationError(f"Invalid email address: {', '.join(invalid)}")
+            return value
+
+        def validate_project_grant_cc_emails(self, value):
+            return self._validate_email_list(value)
+
+        def validate_cash_deposit_cc_emails(self, value):
+            return self._validate_email_list(value)
 
     class IsMainAdminOrDeptAdmin(permissions.BasePermission):
         """Main Admin or Department Administrator may manage SRIC / Bill Section email settings."""
@@ -324,9 +356,14 @@ def register_extra_admin_routes(router):
         def partial_update(self, request, pk=None):
             obj = WalletSricSettings.get_singleton()
             data = dict(request.data)
-            # Department Administrators may only update Bill Section emails
+            # Department Administrators may only update the cash / bank transfer routing and CC lists
             if is_department_admin(request.user) and getattr(request.user, "user_type", None) != UserType.ADMIN:
-                data = {"bill_section_emails": request.data.get("bill_section_emails", obj.bill_section_emails)}
+                data = {
+                    "bill_section_emails": request.data.get("bill_section_emails", obj.bill_section_emails),
+                    "cash_deposit_cc_emails": request.data.get(
+                        "cash_deposit_cc_emails", obj.cash_deposit_cc_emails
+                    ),
+                }
             ser = WalletSricSettingsSerializer(obj, data=data, partial=True)
             ser.is_valid(raise_exception=True)
             ser.save()

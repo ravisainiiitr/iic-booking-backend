@@ -398,6 +398,13 @@ class DynamicInputFieldForm(forms.ModelForm):
 
         return cleaned_data
 
+    def validate_unique(self):
+        # Inline rows are checked together in DynamicInputFieldInlineFormSet so keys can be
+        # reassigned in one save (e.g. existing A -> B plus a new A).
+        if getattr(self, "_unique_checked_by_formset", False):
+            return
+        super().validate_unique()
+
     def save(self, commit=True):
         """Save options as JSON list and resolve default_value index to option value."""
         instance = super().save(commit=False)
@@ -442,6 +449,53 @@ class DynamicInputFieldForm(forms.ModelForm):
             instance.save()
         return instance
 
+
+class DynamicInputFieldInlineFormSet(forms.models.BaseInlineFormSet):
+    """Validate (user_type, field_key) against the final submitted state, not the stored rows."""
+
+    def _construct_form(self, i, **kwargs):
+        form = super()._construct_form(i, **kwargs)
+        form._unique_checked_by_formset = True
+        return form
+
+    def clean(self):
+        # BaseModelFormSet.clean() rejects duplicate keys within the submission.
+        super().clean()
+        if any(self.errors) or not getattr(self.instance, "pk", None):
+            return
+        submitted_pks = {f.instance.pk for f in self.forms if f.instance.pk}
+        final_keys = {
+            ((f.cleaned_data.get("user_type") or ""), f.cleaned_data.get("field_key"))
+            for f in self.forms
+            if getattr(f, "cleaned_data", None)
+            and f.cleaned_data.get("field_key")
+            and not self._should_delete_form(f)
+        }
+        others = DynamicInputField.objects.filter(equipment=self.instance).exclude(pk__in=submitted_pks)
+        for user_type, field_key in others.values_list("user_type", "field_key"):
+            if ((user_type or ""), field_key) in final_keys:
+                raise forms.ValidationError(
+                    _("Field key %(key)s is already used for this user type.") % {"key": field_key}
+                )
+
+    def save(self, commit=True):
+        if commit:
+            # Park rows whose key changes or that are deleted, so the row-by-row saves below
+            # never collide with a stored key that is being vacated in the same submit.
+            moving_pks = [
+                f.instance.pk
+                for f in self.initial_forms
+                if f.instance.pk
+                and (
+                    self._should_delete_form(f)
+                    or {"field_key", "user_type"} & set(f.changed_data)
+                )
+            ]
+            for pk in moving_pks:
+                DynamicInputField.objects.filter(pk=pk).update(user_type=f"__reassign__{pk}")
+        return super().save(commit=commit)
+
+
 class DynamicInputFieldInline(admin.TabularInline):
     """
     Dynamic input fields (kept as a flat formset for Django POST).
@@ -451,6 +505,7 @@ class DynamicInputFieldInline(admin.TabularInline):
     (hidden column — no need to pick user type again).
     """
     form = DynamicInputFieldForm
+    formset = DynamicInputFieldInlineFormSet
     model = DynamicInputField
     extra = 0
     fk_name = 'equipment'

@@ -27,6 +27,24 @@ class WalletSricSettings(models.Model):
             "Configurable by Main Administrator and Department Administrator."
         ),
     )
+    project_grant_cc_emails = models.TextField(
+        _("Project Grant recharge CC email addresses"),
+        blank=True,
+        help_text=_(
+            "Additional addresses copied on Project Grant recharge requests. "
+            "The requesting user is always copied. CC recipients get the request details "
+            "without Approve / Decline links."
+        ),
+    )
+    cash_deposit_cc_emails = models.TextField(
+        _("Direct Cash / Bank Transfer recharge CC email addresses"),
+        blank=True,
+        help_text=_(
+            "Additional addresses copied on Direct Cash Deposit / Bank Transfer recharge requests. "
+            "The requesting user is always copied. CC recipients get the request details "
+            "without Approve / Decline links."
+        ),
+    )
     grant_code_for_credit = models.CharField(
         _("Default grant code (fallback)"),
         max_length=80,
