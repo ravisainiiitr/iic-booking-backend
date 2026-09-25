@@ -292,6 +292,7 @@ from iic_booking.equipment.api_views import (
     partial_cancel_preview,
     user_cancel_booking,
     user_reschedule_booking,
+    booking_reschedule_options,
     list_booking_events,
     create_booking_event_comment,
     booking_sample_trace,
@@ -1284,6 +1285,11 @@ urlpatterns = router.urls + [
     # User booking management endpoints (users can manage their own bookings)
     path("bookings/<int:booking_id>/user-cancel/", user_cancel_booking, name="user-cancel-booking"),
     path("bookings/<int:booking_id>/user-reschedule/", user_reschedule_booking, name="user-reschedule-booking"),
+    path(
+        "bookings/<int:booking_id>/reschedule-options/",
+        booking_reschedule_options,
+        name="booking-reschedule-options",
+    ),
     
     # Booking event history endpoints
     path("bookings/<int:booking_id>/events/", list_booking_events, name="list-booking-events"),

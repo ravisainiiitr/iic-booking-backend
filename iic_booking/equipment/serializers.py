@@ -349,13 +349,25 @@ class EquipmentCategorySerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
+EQUIPMENT_GROUP_ALTERNATIVE_FIELDS = [
+    'alternative_booking_enabled',
+    'alternative_search_other_slots',
+    'auto_allocation_enabled',
+    'cross_rescheduling_enabled',
+]
+
+
 class EquipmentGroupSerializer(serializers.ModelSerializer):
     """Serializer for EquipmentGroup (list/detail)."""
 
     class Meta:
         model = EquipmentGroup
-        fields = ['equipment_group_id', 'name', 'code', 'description', 'created_at', 'updated_at']
-        read_only_fields = ['equipment_group_id', 'created_at', 'updated_at']
+        fields = [
+            'equipment_group_id', 'name', 'code', 'description', 'created_at', 'updated_at',
+            *EQUIPMENT_GROUP_ALTERNATIVE_FIELDS,
+        ]
+        # Switches are changed only via update (Main Admin) or Django admin, never on create.
+        read_only_fields = ['equipment_group_id', 'created_at', 'updated_at', *EQUIPMENT_GROUP_ALTERNATIVE_FIELDS]
 
 
 class EquipmentGroupQuotaSerializer(serializers.ModelSerializer):
@@ -379,7 +391,7 @@ class EquipmentGroupEquipmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Equipment
-        fields = ['equipment_id', 'code', 'name', 'status', 'status_display']
+        fields = ['equipment_id', 'code', 'name', 'status', 'status_display', 'alternative_priority']
 
 
 class EquipmentGroupDetailSerializer(serializers.ModelSerializer):
@@ -392,6 +404,7 @@ class EquipmentGroupDetailSerializer(serializers.ModelSerializer):
         fields = [
             'equipment_group_id', 'name', 'code', 'description',
             'created_at', 'updated_at',
+            *EQUIPMENT_GROUP_ALTERNATIVE_FIELDS,
             'equipment', 'quotas',
         ]
         read_only_fields = ['equipment_group_id', 'created_at', 'updated_at', 'equipment', 'quotas']
@@ -1408,6 +1421,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     managers = EquipmentManagerSerializer(many=True, read_only=True, source='equipment_managers')
     base_charges_by_user_type = serializers.SerializerMethodField()
     print_materials = PrintMaterialSerializer(many=True, read_only=True)
+    group_alternatives_enabled = serializers.SerializerMethodField()
+    group_cross_reschedule_enabled = serializers.SerializerMethodField()
 
     class Meta:
         model = Equipment
@@ -1418,6 +1433,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'description',
             'profile_type',
             'profile_type_display',
+            'group_alternatives_enabled',
+            'group_cross_reschedule_enabled',
             'viewer_profile_type',
             'viewer_profile_type_display',
             'status',
@@ -1626,6 +1643,16 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         fields = list(fields)
         fields.append(_comments_input_field_schema())
         return fields
+
+    def get_group_alternatives_enabled(self, obj):
+        from iic_booking.equipment.equipment_group_service import alternative_booking_enabled
+
+        return alternative_booking_enabled(obj)
+
+    def get_group_cross_reschedule_enabled(self, obj):
+        from iic_booking.equipment.equipment_group_service import cross_rescheduling_enabled
+
+        return cross_rescheduling_enabled(obj)
 
     def get_base_charges_by_user_type(self, obj):
         """Return base charges per user type from active charge profiles.
@@ -1857,7 +1884,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'booking_email_extra_text', 'completion_email_extra_text', 'print_3d_stl_notification_email',
             'istem_portal_url', 'istem_fbr_status_url',
             'profile_type', 'category', 'internal_department', 'visibility_group',
-            'equipment_group', 'enable_multi_mode', 'parent_equipment', 'slot_duration_minutes', 'slots_per_day',
+            'equipment_group', 'alternative_priority', 'enable_multi_mode', 'parent_equipment',
+            'slot_duration_minutes', 'slots_per_day',
             'slot_tolerance_minutes',
             'reschedule_hours_threshold', 'results_base_location', 'split_booking_enabled', 'auto_slot_selection_default', 'weekly_view_display',
             'weekly_view_time_from', 'weekly_view_time_to', 'weekly_view_max_rows', 'weekly_view_default_days',
@@ -1972,9 +2000,29 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                             "Only Lab Incharge users belonging to an Internal department can be assigned."
                         )
                     })
+        self._validate_group_department(attrs, instance)
         # Portal-wide: Remote Analysis stays off for every equipment.
         attrs["enable_remote_analysis"] = False
         return attrs
+
+    def _validate_group_department(self, attrs, instance):
+        from .equipment_group_service import GROUP_DEPARTMENT_MISMATCH_MESSAGE, group_membership_spans_departments
+
+        group = attrs["equipment_group"] if "equipment_group" in attrs else getattr(instance, "equipment_group", None)
+        if group is None:
+            return
+        department = (
+            attrs["internal_department"] if "internal_department" in attrs else getattr(instance, "internal_department", None)
+        )
+        department_id = getattr(department, "pk", None)
+        if instance is not None and instance.pk:
+            if group.pk == instance.equipment_group_id and department_id == instance.internal_department_id:
+                return
+            exclude_ids = [instance.pk]
+        else:
+            exclude_ids = []
+        if group_membership_spans_departments(group_id=group.pk, exclude_ids=exclude_ids, department_id=department_id):
+            raise serializers.ValidationError({"equipment_group": [GROUP_DEPARTMENT_MISMATCH_MESSAGE]})
 
     def create(self, validated_data):
         from django.db import transaction

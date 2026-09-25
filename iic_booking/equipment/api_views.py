@@ -3351,7 +3351,9 @@ def book_equipment(request, pk):
     from datetime import datetime
 
     try:
-        return _book_equipment_impl(request, pk)
+        from .equipment_group_service import run_booking_with_group_alternatives
+
+        return run_booking_with_group_alternatives(request, pk, _book_equipment_impl)
     except Exception as exc:
         # Never re-raise: with ATOMIC_REQUESTS + ASGI, a bare raise becomes a plain-text
         # uvicorn "Internal Server Error" instead of a useful JSON body for the UI.
@@ -3365,6 +3367,28 @@ def book_equipment(request, pk):
             {"error": f"Error creating booking: {exc}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+def _booking_created_event_metadata(request, equipment, *, atmosphere_sensitive_sample=False):
+    """BookingEvent(CREATED) metadata; records Equipment Group alternative provenance when present."""
+    metadata = {"atmosphere_sensitive_sample": True} if atmosphere_sensitive_sample else {}
+    source_id = request.data.get("alternative_of_equipment_id")
+    if source_id not in (None, ""):
+        from .equipment_group_service import validate_alternative_source
+
+        source = validate_alternative_source(source_id, equipment)
+        if source is not None:
+            metadata.update(
+                {
+                    "equipment_group_alternative": True,
+                    "alternative_of_equipment_id": source.pk,
+                    "alternative_of_equipment_code": source.code,
+                    "alternative_of_equipment_name": source.name,
+                    "auto_allocated": bool(getattr(request, "_egs_auto_allocated", False)),
+                    "equipment_group_id": equipment.equipment_group_id,
+                }
+            )
+    return metadata or None
+
 
 def _book_equipment_impl(request, pk):
     from django.db import transaction
@@ -4493,7 +4517,9 @@ def _book_equipment_impl(request, pk):
                         atmosphere_sensitive_sample=atmosphere_sensitive_sample,
                     ),
                     new_status=booking.status,
-                    metadata={"atmosphere_sensitive_sample": True} if atmosphere_sensitive_sample else None,
+                    metadata=_booking_created_event_metadata(
+                        request, equipment, atmosphere_sensitive_sample=atmosphere_sensitive_sample
+                    ),
                     # HOLD / pending payment: do not send booking-confirmed notifications yet.
                     send_notification=not create_as_hold and amount_due <= 0,
                 )
@@ -9621,6 +9647,13 @@ def _enrich_failed_booking_response(
     If slot_unavailable_failure is True and current time is within the slot-window reference instant
     plus PEAK_SLOT_WAITLIST_AFTER_REFERENCE_MINUTES, waitlist is applied regardless of waitlist_on_failure.
     """
+    if slot_unavailable_failure:
+        # Equipment Group alternatives (feature-flagged): only active inside book_equipment when the
+        # caller opted in; the caller then either offers alternatives or re-runs this function.
+        from .equipment_group_service import defer_waitlist_for_alternatives
+
+        if defer_waitlist_for_alternatives(equipment, booking_user, error_message, waitlist_on_failure):
+            return {"error": error_message}
     if slot_unavailable_failure and is_slot_window_peak_waitlist_period(equipment):
         waitlist_on_failure = True
     if not waitlist_on_failure:
@@ -11068,6 +11101,11 @@ def reschedule_booking(request, booking_id):
             {"error": f"Invalid datetime format. Use ISO format (e.g., 2026-01-20T09:00:00Z). Error: {str(e)}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    from .equipment_group_service import perform_cross_equipment_reschedule, wants_cross_equipment_reschedule
+
+    if wants_cross_equipment_reschedule(request, booking):
+        return perform_cross_equipment_reschedule(request, booking, start_time, end_time, staff_endpoint=True)
     
     # Get equipment
     equipment = booking.equipment
@@ -11777,6 +11815,11 @@ def user_reschedule_booking(request, booking_id):
             {"error": f"Invalid datetime format. Use ISO format (e.g., 2026-01-20T09:00:00Z). Error: {str(e)}"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    from .equipment_group_service import perform_cross_equipment_reschedule, wants_cross_equipment_reschedule
+
+    if wants_cross_equipment_reschedule(request, booking):
+        return perform_cross_equipment_reschedule(request, booking, start_time, end_time, staff_endpoint=False)
     
     # Find available slots for the new time range
     # Exclude slots that are currently booked by this booking
@@ -11934,6 +11977,41 @@ def user_reschedule_booking(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def booking_reschedule_options(request, booking_id):
+    """Equipment a booking may be rescheduled onto: the original, plus same-group alternatives
+    when cross-equipment rescheduling is enabled (env flag + group switch)."""
+    from .equipment_group_service import cross_rescheduling_enabled, reschedule_equipment_options
+
+    booking = (
+        Booking.objects.select_related("equipment", "equipment__equipment_group", "equipment__internal_department", "user")
+        .filter(booking_id=booking_id)
+        .first()
+    )
+    if booking is None:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if booking.user_id != request.user.pk and not check_operator_permission(request.user):
+        return Response(
+            {"error": "You don't have permission to view reschedule options for this booking."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    enabled = cross_rescheduling_enabled(booking.equipment)
+    options = reschedule_equipment_options(booking, actor=request.user)
+    public_keys = (
+        "equipment_id", "code", "name", "make", "model_information", "internal_department_name",
+        "is_original", "required_slots", "required_minutes", "dropped_fields",
+    )
+    return Response(
+        {
+            "booking_id": booking.booking_id,
+            "cross_rescheduling_enabled": enabled,
+            "options": [{k: o.get(k) for k in public_keys} for o in options if o.get("ok")],
+        },
+        status=status.HTTP_200_OK,
+    )
+
 
 # S3 prefix under which booking result folders live; search all subfolders for {virtual_booking_id}/
 S3_RESULTS_PREFIX = "Results"

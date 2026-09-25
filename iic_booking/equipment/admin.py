@@ -87,6 +87,34 @@ class EquipmentAdminForm(forms.ModelForm):
             self.fields["image"].help_text = _(
                 "Photo shown on the booking site. Upload a file to set or replace; use the clear checkbox only to remove the image."
             )
+        if "equipment_group" in self.fields:
+            self.fields["equipment_group"].help_text = _(
+                "All equipment in an Equipment Group must belong to the same department."
+            )
+
+    def clean(self):
+        from .equipment_group_service import GROUP_DEPARTMENT_MISMATCH_MESSAGE, group_membership_spans_departments
+
+        cleaned = super().clean()
+        if "equipment_group" not in self.fields:
+            return cleaned
+        group = cleaned.get("equipment_group")
+        if group is None:
+            return cleaned
+        department = (
+            cleaned.get("internal_department") if "internal_department" in self.fields else self.instance.internal_department
+        )
+        is_existing = bool(self.instance.pk)
+        if is_existing and not ({"equipment_group", "internal_department"} & set(self.changed_data)):
+            return cleaned
+        if group_membership_spans_departments(
+            group_id=group.pk,
+            exclude_ids=[self.instance.pk] if is_existing else [],
+            department_id=getattr(department, "pk", None),
+        ):
+            self.add_error("equipment_group", GROUP_DEPARTMENT_MISMATCH_MESSAGE)
+        return cleaned
+
 
 class EquipmentManagerInlineForm(forms.ModelForm):
     """Form for Equipment Office in Charge inline; officer dropdown shows name instead of email."""
@@ -1037,6 +1065,29 @@ class EquipmentInlineFormset(forms.models.BaseInlineFormSet):
         form._parent_obj = getattr(self, 'instance', None)
         return form
 
+    def clean(self):
+        from .equipment_group_service import GROUP_DEPARTMENT_MISMATCH_MESSAGE, group_membership_spans_departments
+
+        super().clean()
+        if any(self.errors):
+            return
+        resulting_ids = []
+        membership_changed = False
+        for form in self.forms:
+            cleaned = getattr(form, 'cleaned_data', None) or {}
+            if not cleaned:
+                continue
+            if cleaned.get('DELETE'):
+                membership_changed = membership_changed or bool(form.instance.pk)
+                continue
+            if form.instance.pk:
+                resulting_ids.append(form.instance.pk)
+            elif cleaned.get('equipment_select'):
+                resulting_ids.append(cleaned['equipment_select'].pk)
+                membership_changed = True
+        if membership_changed and group_membership_spans_departments(equipment_ids=resulting_ids):
+            raise forms.ValidationError(GROUP_DEPARTMENT_MISMATCH_MESSAGE)
+
     def save(self, commit=True):
         """Override save to handle equipment selection."""
         self.new_objects = []
@@ -1099,10 +1150,11 @@ class EquipmentInline(admin.TabularInline):
         """Display equipment information for existing entries."""
         if obj and obj.pk:
             return format_html(
-                '<strong>{}</strong> - {}<br><small>Status: {}</small>',
+                '<strong>{}</strong> - {}<br><small>Status: {} · Alternative priority: {}</small>',
                 obj.code,
                 obj.name,
-                obj.get_status_display() if obj.status else 'N/A'
+                obj.get_status_display() if obj.status else 'N/A',
+                obj.alternative_priority,
             )
         return '-'
     equipment_display.short_description = _('Equipment')
@@ -1120,16 +1172,36 @@ class EquipmentInline(admin.TabularInline):
 @admin.register(EquipmentGroup)
 class EquipmentGroupAdmin(admin.ModelAdmin):
     """Admin for Equipment Group."""
-    list_display = ['name', 'code', 'equipment_count', 'created_at']
-    list_filter = ['created_at']
+    list_display = [
+        'name', 'code', 'equipment_count',
+        'alternative_booking_enabled', 'cross_rescheduling_enabled', 'auto_allocation_enabled',
+        'created_at',
+    ]
+    list_filter = [
+        'alternative_booking_enabled', 'cross_rescheduling_enabled', 'auto_allocation_enabled', 'created_at',
+    ]
     search_fields = ['name', 'code', 'description']
     ordering = ['name']
-    readonly_fields = ['created_at', 'updated_at']
+    readonly_fields = ['created_at', 'updated_at', 'global_flag_status']
     inlines = [EquipmentInline, EquipmentGroupQuotaInline]
     
     fieldsets = (
         (_('Basic Information'), {
             'fields': ('name', 'code', 'description')
+        }),
+        (_('Alternative equipment pool'), {
+            'fields': (
+                'global_flag_status',
+                'alternative_booking_enabled',
+                'alternative_search_other_slots',
+                'auto_allocation_enabled',
+                'cross_rescheduling_enabled',
+            ),
+            'description': _(
+                'Group members are treated as alternatives only when both the global environment flag '
+                'and the group switch are on. Unticking a switch takes effect immediately (rollback). '
+                'Order among members is controlled by each equipment\'s "Alternative priority".'
+            ),
         }),
         (_('Timestamps'), {
             'fields': ('created_at', 'updated_at'),
@@ -1140,6 +1212,21 @@ class EquipmentGroupAdmin(admin.ModelAdmin):
     def equipment_count(self, obj):
         return obj.equipment.count()
     equipment_count.short_description = _('Equipment count')
+
+    def global_flag_status(self, obj):
+        from django.conf import settings as dj_settings
+
+        def _state(name):
+            return "ON" if getattr(dj_settings, name, False) else "OFF"
+
+        return format_html(
+            'Alternative booking: <strong>{}</strong> · Cross-equipment rescheduling: <strong>{}</strong> · '
+            'Auto allocation: <strong>{}</strong>',
+            _state("EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED"),
+            _state("EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED"),
+            _state("EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED"),
+        )
+    global_flag_status.short_description = _('Global environment flags')
 
 
 @admin.register(Equipment)
@@ -1254,7 +1341,8 @@ class EquipmentAdmin(admin.ModelAdmin):
     fieldsets = (
         (_('Basic Information'), {
             'fields': (
-                'name', 'code', 'category', 'equipment_group', 'enable_multi_mode', 'parent_equipment',
+                'name', 'code', 'category', 'equipment_group', 'alternative_priority',
+                'enable_multi_mode', 'parent_equipment',
                 'internal_department', 'visibility_group',
                 'profile_type', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
                 'make', 'show_make_on_card',
@@ -1550,6 +1638,16 @@ class EquipmentAdmin(admin.ModelAdmin):
             if group_id:
                 try:
                     group = EquipmentGroup.objects.get(pk=group_id)
+                    from .equipment_group_service import (
+                        GROUP_DEPARTMENT_MISMATCH_MESSAGE,
+                        group_membership_spans_departments,
+                    )
+
+                    if group_membership_spans_departments(
+                        group_id=group.pk, equipment_ids=list(queryset.values_list('pk', flat=True))
+                    ):
+                        messages.error(request, GROUP_DEPARTMENT_MISMATCH_MESSAGE)
+                        return None
                     updated_count = queryset.update(equipment_group=group)
                     messages.success(
                         request,

@@ -87,6 +87,44 @@ class EquipmentGroup(models.Model):
         verbose_name=_('Description'),
         help_text=_('Optional description of the equipment group'),
     )
+    # Alternative-equipment pool switches. Effective only when the matching
+    # EQUIPMENT_GROUP_*_ENABLED environment flag is also True.
+    alternative_booking_enabled = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_('Use as alternatives for new booking'),
+        help_text=_(
+            'When the requested slot is unavailable, offer other equipment of this group '
+            'before the waitlist. Requires EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED.'
+        ),
+    )
+    alternative_search_other_slots = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_('Also offer other available slots'),
+        help_text=_(
+            'When no group member has the exact requested slot, also offer the earliest other '
+            'available slots within the normal slot window. Off = exact requested slot only.'
+        ),
+    )
+    auto_allocation_enabled = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_('Automatically allocate alternative'),
+        help_text=_(
+            'Book the best alternative automatically instead of asking the user. '
+            'Requires alternative booking and EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED.'
+        ),
+    )
+    cross_rescheduling_enabled = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_('Allow cross-equipment rescheduling'),
+        help_text=_(
+            'Allow bookings to be rescheduled to other equipment of this group. '
+            'Requires EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED.'
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -585,6 +623,15 @@ class Equipment(models.Model):
         related_name='equipment',
         verbose_name=_('Equipment Group'),
         help_text=_('Equipment group this equipment belongs to. Quota configuration is applied at group level.'),
+    )
+    alternative_priority = models.PositiveSmallIntegerField(
+        default=100,
+        db_default=100,
+        verbose_name=_('Alternative priority'),
+        help_text=_(
+            'Ordering among equipment of the same group when offered as an alternative '
+            '(lower = preferred). Ties are broken by equipment ID.'
+        ),
     )
     enable_multi_mode = models.BooleanField(
         default=False,

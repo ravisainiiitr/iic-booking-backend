@@ -3414,11 +3414,8 @@ def admin_api_router():
             partial = kwargs.get("partial", False)
             instance = self.get_object()
             data = request.data or {}
-            for field in ("name", "code", "description"):
-                if field in data:
-                    setattr(instance, field, data[field])
-            instance.save()
             equipment_ids = data.get("equipment_ids")
+            valid_ids = None
             if equipment_ids is not None:
                 if not isinstance(equipment_ids, list):
                     equipment_ids = []
@@ -3428,6 +3425,41 @@ def admin_api_router():
                         valid_ids.append(int(eid))
                     except (TypeError, ValueError):
                         pass
+                from iic_booking.equipment.equipment_group_service import (
+                    GROUP_DEPARTMENT_MISMATCH_MESSAGE,
+                    group_membership_spans_departments,
+                )
+
+                current_ids = set(
+                    Equipment.objects.filter(equipment_group=instance).values_list("equipment_id", flat=True)
+                )
+                # Validated only when membership changes, so existing groups stay editable as-is.
+                if set(valid_ids) != current_ids and group_membership_spans_departments(equipment_ids=valid_ids):
+                    return Response(
+                        {"error": GROUP_DEPARTMENT_MISMATCH_MESSAGE, "code": "GROUP_DEPARTMENT_MISMATCH"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            for field in ("name", "code", "description"):
+                if field in data:
+                    setattr(instance, field, data[field])
+            # Alternative-pool rollout switches: Main Admin only. A None department scope is not enough
+            # (External Relations, Org Admin and staff of non-internal departments also have no scope).
+            if getattr(request.user, "user_type", None) == UserType.ADMIN or getattr(request.user, "is_superuser", False):
+                for field in (
+                    "alternative_booking_enabled",
+                    "alternative_search_other_slots",
+                    "auto_allocation_enabled",
+                    "cross_rescheduling_enabled",
+                ):
+                    if field in data:
+                        raw = data[field]
+                        setattr(
+                            instance,
+                            field,
+                            raw if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "yes", "on"),
+                        )
+            instance.save()
+            if valid_ids is not None:
                 Equipment.objects.filter(equipment_group=instance).exclude(equipment_id__in=valid_ids).update(equipment_group=None)
                 if valid_ids:
                     Equipment.objects.filter(equipment_id__in=valid_ids).update(equipment_group=instance)

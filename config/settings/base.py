@@ -60,6 +60,17 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 SKIP_BOOKING_QUOTA_CHECK = env.bool("SKIP_BOOKING_QUOTA_CHECK", default=False)
 # Expose X-Booking-Perf on book-equipment responses; log slow bookings when True or DEBUG.
 BOOKING_PERFORMANCE_TIMINGS = env.bool("BOOKING_PERFORMANCE_TIMINGS", default=DEBUG)
+# Equipment Group alternatives (docs/equipment_group_alternatives.md). Master kill switches:
+# each feature also needs its per-group switch in admin. Keep False to preserve legacy behaviour.
+EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED = env.bool(
+    "EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED", default=False
+)
+EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED = env.bool(
+    "EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED", default=False
+)
+EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED = env.bool(
+    "EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED", default=False
+)
 
 # URLS
 # ------------------------------------------------------------------------------
