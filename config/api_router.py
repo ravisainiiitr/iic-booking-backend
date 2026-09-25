@@ -417,6 +417,16 @@ from iic_booking.equipment.publication_claim_views import (
     publication_claims_review_queue,
     publication_doi_lookup,
 )
+from iic_booking.equipment.results_sharing_views import (
+    booking_data_share_revoke,
+    booking_data_shares,
+    booking_results_mark_viewed,
+    data_sharing_user_detail,
+    data_sharing_user_search,
+    public_equipment_availability,
+    results_inbox,
+    shared_with_me,
+)
 from iic_booking.communication.api_views import (
     get_notifications,
     mark_notification_as_read,
@@ -1254,6 +1264,18 @@ urlpatterns = router.urls + [
         booking_result_file_download,
         name="booking-result-file-download",
     ),
+    path("bookings/<int:booking_id>/results/mark-viewed/", booking_results_mark_viewed, name="booking-results-mark-viewed"),
+    path("results/inbox/", results_inbox, name="results-inbox"),
+    path("bookings/<int:booking_id>/shares/", booking_data_shares, name="booking-data-shares"),
+    path(
+        "bookings/<int:booking_id>/shares/<int:share_id>/revoke/",
+        booking_data_share_revoke,
+        name="booking-data-share-revoke",
+    ),
+    path("data-sharing/users/search/", data_sharing_user_search, name="data-sharing-user-search"),
+    path("data-sharing/users/<int:user_id>/", data_sharing_user_detail, name="data-sharing-user-detail"),
+    path("data-sharing/shared-with-me/", shared_with_me, name="data-sharing-shared-with-me"),
+    path("public/equipment-availability/", public_equipment_availability, name="public-equipment-availability"),
     path("bookings/<int:booking_id>/istem-fbr/", update_booking_istem_fbr, name="booking-istem-fbr-update"),
     path("bookings/<int:booking_id>/istem-fbr/review/", review_booking_istem_fbr, name="booking-istem-fbr-review"),
     path("bookings/<int:booking_id>/complete/", complete_booking, name="complete-booking"),

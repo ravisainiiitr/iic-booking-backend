@@ -80,6 +80,37 @@ def generate_external_slot_quota_snapshots() -> int:
     return created
 
 
+@shared_task(name="equipment.ensure_upcoming_slots")
+def ensure_upcoming_slots() -> int:
+    """
+    Pre-generate missing daily slots for the current and next week so the public availability
+    page reflects weeks nobody has opened yet. Uses the same generator as the slots API and only
+    touches operational equipment that already has active slot masters.
+
+    Returns:
+        Number of daily slots created.
+    """
+    from .models import Equipment, EquipmentStatus, SlotMaster
+    from .slot_utils import SlotGenerator
+
+    week_start = timezone.localdate() - timedelta(days=timezone.localdate().weekday())
+    equipment_ids = (
+        SlotMaster.objects.filter(is_active=True, equipment__status=EquipmentStatus.ACTIVE)
+        .values_list("equipment_id", flat=True)
+        .distinct()
+    )
+    created = 0
+    for equipment in Equipment.objects.filter(equipment_id__in=list(equipment_ids)):
+        for offset in (0, 7):
+            start = week_start + timedelta(days=offset)
+            try:
+                created += len(SlotGenerator.generate_slots_for_week(equipment, start, start + timedelta(days=6)))
+            except Exception:
+                logger.exception("ensure_upcoming_slots failed equipment_id=%s week=%s", equipment.equipment_id, start)
+    logger.info("ensure_upcoming_slots: created=%d", created)
+    return created
+
+
 @shared_task(name="equipment.send_oic_monthly_reports")
 def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     """

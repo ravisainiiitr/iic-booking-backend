@@ -15,6 +15,7 @@ from iic_booking.users.models.user_type import UserType
 logger = logging.getLogger(__name__)
 from .image_utils import persist_equipment_image_upload
 from .models import (
+    BookingDataShare,
     Equipment,
     EquipmentAdditionRequest,
     EquipmentCategory,
@@ -2380,6 +2381,23 @@ class DailySlotInline(admin.TabularInline):
             return f"#{obj.booking.booking_id}"
         return '-'
     booking_id_display.short_description = _('Booking ID')
+
+
+@admin.register(BookingDataShare)
+class BookingDataShareAdmin(admin.ModelAdmin):
+    """Read-only audit of research-data shares (created/revoked by booking owners)."""
+
+    list_display = ['id', 'booking', 'shared_by', 'shared_with', 'created_at', 'revoked_at']
+    list_filter = ['created_at', 'revoked_at']
+    search_fields = ['booking__booking_id', 'booking__virtual_booking_id', 'shared_by__email', 'shared_with__email']
+    raw_id_fields = ['booking', 'shared_by', 'shared_with', 'revoked_by']
+    readonly_fields = ['booking', 'shared_by', 'shared_with', 'created_at', 'revoked_at', 'revoked_by']
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(Booking)

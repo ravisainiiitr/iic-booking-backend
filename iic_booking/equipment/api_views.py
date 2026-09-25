@@ -204,6 +204,7 @@ from iic_booking.users.models.equipment_supply_chain_role import (
 )
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
+from iic_booking.equipment.results_sharing_service import is_active_share_recipient, mark_results_viewed
 from iic_booking.communication.styled_transactional_emails import send_return_shipping_tracking_email
 from iic_booking.communication.email_branding import build_booking_created_event_comment
 
@@ -12430,14 +12431,14 @@ def booking_results_download(request, booking_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if booking.user != request.user and not check_operator_permission(request.user):
+    if not _user_may_access_booking_results(request.user, booking):
         return Response(
             {"error": "You don't have permission to download this booking's results."},
             status=status.HTTP_403_FORBIDDEN,
         )
     
     # Enforce rating before results download for booking user (operators/admin can bypass).
-    if booking.user == request.user:
+    if _booking_results_gates_apply(request.user, booking):
         if booking.status != BookingStatus.COMPLETED:
             return Response(
                 {"error": "Results can be downloaded only after the booking is completed."},
@@ -12510,6 +12511,7 @@ def booking_results_download(request, booking_id):
     filename = f"Results_{virtual_booking_id}.zip"
     response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    mark_results_viewed(request.user, booking)
     return response
 
 @api_view(["GET"])
@@ -12532,14 +12534,14 @@ def booking_results(request, booking_id):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if booking.user != request.user and not check_operator_permission(request.user):
+    if not _user_may_access_booking_results(request.user, booking):
         return Response(
             {"error": "You don't have permission to view this booking's results."},
             status=status.HTTP_403_FORBIDDEN,
         )
     
     # Enforce rating before results listing for booking user (operators/admin can bypass).
-    if booking.user == request.user:
+    if _booking_results_gates_apply(request.user, booking):
         if booking.status != BookingStatus.COMPLETED:
             return Response(
                 {"exists": False, "virtual_booking_id": None, "files": [], "error": "Booking is not completed yet."},
@@ -12584,14 +12586,24 @@ def booking_results(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
+def _user_may_access_booking_results(user, booking) -> bool:
+    """Booking owner, booking staff, or an active internal share recipient."""
+    if booking.user_id == getattr(user, "pk", None) or check_operator_permission(user):
+        return True
+    return is_active_share_recipient(user, booking)
+
+def _booking_results_gates_apply(user, booking) -> bool:
+    """Completion/rating/FBR gates apply to the owner and share recipients; booking staff bypass them."""
+    return booking.user_id == getattr(user, "pk", None) or not check_operator_permission(user)
+
 def _booking_results_access_denied(request, booking):
     """Shared auth/gate checks for single-file result downloads. Returns Response or None."""
-    if booking.user != request.user and not check_operator_permission(request.user):
+    if not _user_may_access_booking_results(request.user, booking):
         return Response(
             {"error": "You don't have permission to download this booking's results."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    if booking.user == request.user:
+    if _booking_results_gates_apply(request.user, booking):
         if booking.status != BookingStatus.COMPLETED:
             return Response(
                 {"error": "Results can be downloaded only after the booking is completed."},
@@ -12650,11 +12662,13 @@ def booking_result_attachment_download(request, booking_id, attachment_id):
         # Prefer redirect to short-lived presigned URL when possible.
         url = presign_results_s3_get(s3_key)
         if url:
+            mark_results_viewed(request.user, booking)
             return HttpResponseRedirect(url)
         data = download_results_s3_bytes(s3_key)
         if data is not None:
             response = HttpResponse(data, content_type=content_type)
             response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+            mark_results_viewed(request.user, booking)
             return response
 
     path = resolve_dsa_attachment_path(attachment)
@@ -12664,6 +12678,7 @@ def booking_result_attachment_download(request, booking_id, attachment_id):
     content_type = attachment.content_type or mimetypes.guess_type(str(path))[0] or "application/octet-stream"
     response = FileResponse(path.open("rb"), content_type=content_type)
     response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    mark_results_viewed(request.user, booking)
     return response
 
 @api_view(["GET"])
@@ -12691,6 +12706,7 @@ def booking_result_file_download(request, booking_id, file_id):
     content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
     response = FileResponse(brf.file.open("rb"), content_type=content_type)
     response["Content-Disposition"] = f'attachment; filename="{name}"'
+    mark_results_viewed(request.user, booking)
     return response
 
 @api_view(["GET"])

@@ -3216,6 +3216,82 @@ class BookingResultFile(models.Model):
         return f"Booking #{self.booking.booking_id} - {self.original_name or self.file.name}"
 
 
+class BookingResultView(models.Model):
+    """Per-user record that a booking's results were downloaded (drives the View Results ordering)."""
+    booking = models.ForeignKey(
+        Booking,
+        on_delete=models.CASCADE,
+        related_name='result_views',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='booking_result_views',
+    )
+    first_viewed_at = models.DateTimeField(auto_now_add=True)
+    last_viewed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Booking result view')
+        verbose_name_plural = _('Booking result views')
+        constraints = [
+            models.UniqueConstraint(fields=['booking', 'user'], name='uniq_booking_result_view_per_user'),
+        ]
+
+    def __str__(self):
+        return f"Booking #{self.booking_id} results viewed by user {self.user_id}"
+
+
+class BookingDataShare(models.Model):
+    """Read-only sharing of a completed booking's research data with an internal IIT Roorkee user.
+
+    Revoking sets ``revoked_at``; rows are kept as the audit trail.
+    """
+    booking = models.ForeignKey(
+        Booking,
+        on_delete=models.CASCADE,
+        related_name='data_shares',
+    )
+    shared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='booking_data_shares_given',
+    )
+    shared_with = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='booking_data_shares_received',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = _('Booking data share')
+        verbose_name_plural = _('Booking data shares')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['booking', 'shared_with'],
+                condition=models.Q(revoked_at__isnull=True),
+                name='uniq_active_booking_data_share',
+            ),
+        ]
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
+
+    def __str__(self):
+        return f"Booking #{self.booking_id} shared with user {self.shared_with_id}"
+
+
 # ============================================================================
 # Repeat sample request (after completed booking)
 # ============================================================================
