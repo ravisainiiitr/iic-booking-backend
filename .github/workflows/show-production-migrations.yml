@@ -1,4 +1,4 @@
-# PROBE BRANCH ONLY (probe/egs-preflight-ro) — Equipment Group production preflight.
+# PROBE BRANCH ONLY (probe/egs-preflight-ro) — Equipment Group pre-deployment check (backup + preflight).
 # Strictly read-only: SELECT statements inside a READ ONLY transaction that is rolled back.
 # No migrate, no writes, no restarts, no env changes. Prints no secrets.
 name: Show Production Migrations
@@ -23,6 +23,48 @@ jobs:
           echo "container=$CID" >> "$GITHUB_OUTPUT"
           echo "host_deploy_head=$(git -C /home/ubuntu/iic-booking-backend rev-parse HEAD 2>/dev/null || echo unknown)"
           docker exec "$CID" sh -c 'echo "container_GIT_SHA=${GIT_SHA:-} container_BACKEND_GIT_COMMIT=${BACKEND_GIT_COMMIT:-} PORTAL_VERSION=${PORTAL_VERSION:-}"'
+
+      - name: Deployed release pointer and services
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "current_release_tag=$(cat .deploy-state/current_release_tag 2>/dev/null || echo unknown)"
+          echo "previous_release_tag=$(cat .deploy-state/previous_release_tag 2>/dev/null || echo unknown)"
+          git describe --tags --always || true
+          docker compose -f docker-compose.production.yml ps --format 'table {{.Name}}\t{{.Status}}' || true
+
+      - name: Production backup health (read-only)
+        run: |
+          set -uo pipefail
+          echo "=== cron entry ==="
+          crontab -l 2>/dev/null | grep -i backup || echo "no backup entry in ubuntu crontab"
+          echo "=== nightly backup directories (newest 5) ==="
+          ls -1dt /home/ubuntu/backups/nightly/nightly-* 2>/dev/null | head -n 5
+          LATEST="$(readlink -f /home/ubuntu/backups/nightly/latest 2>/dev/null || true)"
+          echo "latest -> ${LATEST:-MISSING}"
+          DUMP="$LATEST/db/portal.sql.gz"
+          if [ -f "$DUMP" ]; then
+            stat -c 'dump=%n size_bytes=%s mtime=%y' "$DUMP"
+            if gzip -t "$DUMP"; then echo "PASS gzip integrity"; else echo "FAIL gzip integrity"; fi
+            echo "--- dump header ---"; zcat "$DUMP" | head -n 5
+            echo "--- dump footer ---"; zcat "$DUMP" | tail -n 3
+            echo "equipment_equipmentgroup_in_dump=$(zcat "$DUMP" | grep -c 'CREATE TABLE public.equipment_equipmentgroup ' || true)"
+          else
+            echo "FAIL latest dump missing: $DUMP"
+          fi
+          echo "=== backup log tail ==="
+          tail -n 25 /var/log/iic-nightly-backup.log 2>/dev/null || echo "backup log not readable"
+          echo "=== RDS automated backups (read-only, if AWS CLI/role available) ==="
+          if command -v aws >/dev/null 2>&1; then
+            aws rds describe-db-instances --region ap-south-1 --db-instance-identifier iic-booking-rds \
+              --query 'DBInstances[0].{retention:BackupRetentionPeriod,latestRestorable:LatestRestorableTime,window:PreferredBackupWindow}' \
+              --output json 2>&1 | head -n 20 || true
+            aws rds describe-db-snapshots --region ap-south-1 --db-instance-identifier iic-booking-rds \
+              --query 'reverse(sort_by(DBSnapshots,&SnapshotCreateTime))[:3].[DBSnapshotIdentifier,SnapshotType,Status,SnapshotCreateTime]' \
+              --output text 2>&1 | head -n 10 || true
+          else
+            echo "aws CLI not installed on runner"
+          fi
 
       - name: Host env file — EQUIPMENT_GROUP_* keys only
         run: |
@@ -185,6 +227,19 @@ jobs:
                         AND to_jsonb(c)->>'user_type' = k.user_type
                         AND COALESCE(to_jsonb(c)->>'pricing_profile', '-') = k.pricing_profile)
                   ORDER BY 1, 2, 3, 4""")
+
+              run("DATA FINGERPRINT (compare before/after migration)", """
+                  SELECT (SELECT COUNT(*) FROM equipment_equipmentgroup) AS groups,
+                         (SELECT md5(string_agg(equipment_group_id::text || '|' || name || '|' || COALESCE(code, '')
+                                 || '|' || COALESCE(description, ''), ',' ORDER BY equipment_group_id))
+                          FROM equipment_equipmentgroup) AS groups_md5,
+                         (SELECT COUNT(*) FROM equipment_equipment) AS equipment,
+                         (SELECT md5(string_agg(equipment_id::text || '|' || COALESCE(equipment_group_id::text, '-')
+                                 || '|' || COALESCE(internal_department_id::text, '-') || '|' || code
+                                 || '|' || COALESCE(status, ''), ',' ORDER BY equipment_id))
+                          FROM equipment_equipment) AS equipment_md5,
+                         (SELECT COUNT(*) FROM equipment_equipmentgroupquota) AS group_quotas,
+                         (SELECT COUNT(*) FROM equipment_chargeprofile) AS charge_profiles""")
 
               transaction.set_rollback(True)
           print("EGS_PREFLIGHT_RO_DONE=YES")
