@@ -35,7 +35,7 @@ jobs:
 
       - name: Production backup health (read-only)
         run: |
-          set -uo pipefail
+          set +e +o pipefail
           echo "=== cron entry ==="
           crontab -l 2>/dev/null | grep -i backup || echo "no backup entry in ubuntu crontab"
           echo "=== nightly backup directories (newest 5) ==="
@@ -46,9 +46,9 @@ jobs:
           if [ -f "$DUMP" ]; then
             stat -c 'dump=%n size_bytes=%s mtime=%y' "$DUMP"
             if gzip -t "$DUMP"; then echo "PASS gzip integrity"; else echo "FAIL gzip integrity"; fi
-            echo "--- dump header ---"; zcat "$DUMP" | head -n 5
-            echo "--- dump footer ---"; zcat "$DUMP" | tail -n 3
-            echo "equipment_equipmentgroup_in_dump=$(zcat "$DUMP" | grep -c 'CREATE TABLE public.equipment_equipmentgroup ' || true)"
+            echo "--- dump header ---"; (set +e +o pipefail; zcat "$DUMP" 2>/dev/null | head -n 3 | grep -v restrict)
+            echo "--- dump footer ---"; (set +e +o pipefail; zcat "$DUMP" 2>/dev/null | tail -n 4 | grep -v restrict)
+            echo "equipment_equipmentgroup_in_dump=$( (set +e +o pipefail; zcat "$DUMP" 2>/dev/null | grep -c 'CREATE TABLE public.equipment_equipmentgroup ') )"
           else
             echo "FAIL latest dump missing: $DUMP"
           fi
