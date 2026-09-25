@@ -731,6 +731,18 @@ class WalletRechargeRequest(Model):
         blank=True,
         help_text=_("Bank UTR submitted by user for offline deposit (govt / NEFT)"),
     )
+    cashbook_parse_entry = OneToOneField(
+        "users.WalletRechargeParseEntry",
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="matched_recharge_request",
+        verbose_name=_("Matched cash-book entry"),
+    )
+    # Snapshot survives deletion/clearing of parse entries so a receipt can never be reused.
+    cashbook_receipt_no = CharField(_("Cash-book Receipt No."), max_length=50, blank=True, db_index=True)
+    cashbook_receipt_date = DateField(_("Cash-book Receipt Date"), null=True, blank=True)
+    cashbook_matched_at = DateTimeField(_("Cash-book matched at"), null=True, blank=True)
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
     responded_at = DateTimeField(
@@ -747,6 +759,18 @@ class WalletRechargeRequest(Model):
         indexes = [
             models.Index(fields=['user', 'status']),
             models.Index(fields=['status', 'created_at']),
+        ]
+        constraints = [
+            UniqueConstraint(
+                fields=["cashbook_receipt_no", "cashbook_receipt_date"],
+                name="unique_wrr_cashbook_receipt_dated",
+                condition=~Q(cashbook_receipt_no="") & Q(cashbook_receipt_date__isnull=False),
+            ),
+            UniqueConstraint(
+                fields=["cashbook_receipt_no"],
+                name="unique_wrr_cashbook_receipt_no_date",
+                condition=~Q(cashbook_receipt_no="") & Q(cashbook_receipt_date__isnull=True),
+            ),
         ]
     
     def __str__(self) -> str:

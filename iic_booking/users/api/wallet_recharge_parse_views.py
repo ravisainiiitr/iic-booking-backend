@@ -6,9 +6,10 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.http import HttpResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -33,6 +34,14 @@ from iic_booking.users.models import (
 from iic_booking.users import imap_fetch
 from iic_booking.users import wallet_recharge_parser
 from iic_booking.users import wallet_recharge_import
+from iic_booking.users.repositories.wallet_repository import (
+    WalletRepository,
+    resolve_internal_department_for_wallet_recharge,
+)
+from iic_booking.users.serializers.wallet_serializer import WalletRechargeRequestSerializer
+from iic_booking.users.api.wallet_views import (
+    _notify_accounts_team_and_faculty_after_recharge_request_user_verified,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,17 +122,19 @@ def process_wallet_recharge_rows(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     from ..wallet_recharge_import import import_wallet_recharge_rows, match_pending_recharge_requests_to_parse_entries
-    credited, skipped, errors, processed_receipts = import_wallet_recharge_rows(
-        import_rows,
-        default_department_id=default_department_id,
-        dry_run=False,
-    )
+
+    # Requests consume their receipts first; the direct import then skips anything already used.
     matched_reqs = 0
     match_errs: list = []
     try:
         matched_reqs, match_errs = match_pending_recharge_requests_to_parse_entries()
     except Exception:
-        pass
+        logger.exception("Cash-book request matching failed before import")
+    credited, skipped, errors, processed_receipts = import_wallet_recharge_rows(
+        import_rows,
+        default_department_id=default_department_id,
+        dry_run=False,
+    )
     if match_errs:
         errors = list(errors) + match_errs[:10]
     return Response({
@@ -179,6 +190,12 @@ def apply_wallet_recharge_parse_entry(request):
         )
 
     entry = get_object_or_404(WalletRechargeParseEntry, pk=entry_id)
+    linked = getattr(entry, "matched_recharge_request", None)
+    if linked is not None:
+        return Response(
+            {"error": f"This cash-book row is already matched to {linked.request_id_display} and cannot be edited."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     new_name = (data.get("name") or "").strip()[:255]
     new_dept = (data.get("department") or "").strip()[:255]
     new_payment = (data.get("payment") or "")[:5000]
@@ -269,6 +286,130 @@ def apply_wallet_recharge_parse_entry(request):
         },
         status=status.HTTP_200_OK,
     )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def admin_wallet_eligible_users(request):
+    """List users who may have an individual wallet (for manual recharge). Admin or accounts-in-charge."""
+    if not _is_wallet_recharge_ops_staff(request.user):
+        return Response(
+            {"error": "Only admin or accounts-in-charge users can list eligible users."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    search = (request.GET.get("search") or "").strip()
+    qs = User.objects.filter(user_type__in=UserType.get_wallet_eligible_codes()).filter(admin_approved=True)
+    if search:
+        qs = qs.filter(Q(email__icontains=search) | Q(name__icontains=search) | Q(emp_id__icontains=search))
+    out = []
+    for u in qs.select_related("department").order_by("name", "email")[:200]:
+        phone = (u.phone_number or "").strip() or None
+        phone2 = (getattr(u, "secondary_phone_number", None) or "").strip() or None
+        out.append(
+            {
+                "id": u.id,
+                "name": u.name or "",
+                "email": u.email,
+                "emp_id": u.emp_id or "",
+                "user_type": u.user_type,
+                "department_name": getattr(u.department, "name", None) if u.department_id else None,
+                "department_id": u.department_id,
+                "phone_number": phone,
+                "secondary_phone_number": phone2,
+                "contact_number": " · ".join(p for p in (phone, phone2) if p) or None,
+            }
+        )
+    return Response({"users": out, "count": len(out)}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def admin_manual_wallet_recharge(request):
+    """
+    Credit a user's sub-wallet against a receipt, record import + parse rows, notify user (CC office).
+    Uses the same duplicate guards as cash-book import. Admin or accounts-in-charge.
+    """
+    if not _is_wallet_recharge_ops_staff(request.user):
+        return Response(
+            {"error": "Only admin or accounts-in-charge users can perform manual wallet recharge."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    data = request.data if isinstance(request.data, dict) else {}
+    uid = data.get("user_id")
+    amount_raw = data.get("amount")
+    dept_id = data.get("department_id")
+    receipt_no = (data.get("receipt_no") or "").strip()
+    payment = (data.get("payment") or "Manual admin recharge")[:5000]
+    name_override = (data.get("name") or "").strip()
+    if not uid or not amount_raw or not dept_id or not receipt_no:
+        return Response(
+            {"error": "user_id, amount, department_id, and receipt_no are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        amount = Decimal(str(amount_raw).replace(",", "").strip())
+    except Exception:
+        return Response({"error": "Invalid amount."}, status=status.HTTP_400_BAD_REQUEST)
+    if amount <= 0:
+        return Response({"error": "Amount must be positive."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        user = User.objects.get(pk=int(uid))
+    except (User.DoesNotExist, TypeError, ValueError):
+        return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not user.can_have_wallet():
+        return Response({"error": "This user is not eligible for an individual wallet."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        dept = Department.objects.get(pk=int(dept_id), department_type=DepartmentType.INTERNAL)
+    except (Department.DoesNotExist, TypeError, ValueError):
+        return Response({"error": "Invalid internal department."}, status=status.HTTP_400_BAD_REQUEST)
+    emp_no = (user.emp_id or "").strip()
+    if not emp_no:
+        return Response({"error": "User has no employee ID; cannot create parse entry key."}, status=status.HTTP_400_BAD_REQUEST)
+    row = _parse_recharge_row_for_import(
+        {
+            "date": data.get("date") or data.get("dated"),
+            "receipt_no": receipt_no,
+            "amount": str(amount),
+            "name": name_override or (user.name or ""),
+            "emp_no": emp_no,
+            "department": dept.name or "",
+            "payment": payment,
+        }
+    )
+    row["remarks"] = "Manual admin recharge"
+    credited, skipped, errors, processed_receipts = wallet_recharge_import.import_wallet_recharge_rows(
+        [row], default_department_id=dept.id, dry_run=False
+    )
+    if credited < 1:
+        return Response(
+            {
+                "error": errors[0] if errors else "Could not credit wallet (duplicate or validation).",
+                "errors": errors,
+                "skipped": skipped,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    WalletRechargeParseEntry.objects.update_or_create(
+        receipt_no=receipt_no,
+        dated=row["dated"],
+        emp_no=emp_no,
+        defaults={
+            "name": row["name"][:255],
+            "department": (dept.name or "")[:255],
+            "amount": f"{amount:,.2f}"[:50],
+            "payment": payment,
+        },
+    )
+    entries = WalletRechargeParseEntry.objects.all().order_by("-created_at")
+    return Response(
+        {
+            "message": "Wallet credited and parse entry saved.",
+            "processed_receipts": processed_receipts,
+            "errors": errors,
+            "rows": [_parse_entry_to_row(e) for e in entries],
+        },
+        status=status.HTTP_200_OK,
+    )
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -765,6 +906,8 @@ def _parser_rows_to_api_result(rows):
             if row_dated is not None:
                 qs = qs.filter(dated=row_dated)
             processed = qs.exists()
+        if receipt_no and not processed:
+            processed = wallet_recharge_import.receipt_used_by_request(receipt_no, row.get("dated")) is not None
         matched_user = None
         if emp_no:
             try:
@@ -834,7 +977,10 @@ def _parse_entry_to_row(entry):
     qs = WalletRechargeImportRecord.objects.filter(receipt_no=receipt_no, user__emp_id=emp_no)
     if row_dated is not None:
         qs = qs.filter(dated=row_dated)
-    processed = qs.exists()
+    linked_req = getattr(entry, "matched_recharge_request", None)
+    if linked_req is None:
+        linked_req = wallet_recharge_import.receipt_used_by_request(receipt_no, row_dated)
+    processed = qs.exists() or linked_req is not None
     matched_user = None
     if emp_no:
         try:
@@ -844,6 +990,8 @@ def _parse_entry_to_row(entry):
             pass
     return {
         "id": entry.id,
+        "linked_request_id": linked_req.id if linked_req else None,
+        "linked_request_display": linked_req.request_id_display if linked_req else "",
         "date": entry.dated.isoformat() if entry.dated else None,
         "receipt_no": receipt_no,
         "name": entry.name or "",
@@ -924,7 +1072,7 @@ def _imap_config_from_request(data):
         d = {}
     email_address = (d.get("email") or getattr(settings, "IMAP_USER", "") or "").strip()
     password = d.get("password") or getattr(settings, "IMAP_PASSWORD", "") or ""
-    host = (d.get("host") or getattr(settings, "IMAP_HOST", "") or "imap.iitr.ac.in").strip()
+    host = (d.get("host") or getattr(settings, "IMAP_HOST", "") or "mapi.iitr.ac.in").strip()
     if not host:
         return None, Response({"error": "IMAP host is required."}, status=status.HTTP_400_BAD_REQUEST)
     if not email_address:

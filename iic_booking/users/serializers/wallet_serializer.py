@@ -557,11 +557,18 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     account_incharge_email = serializers.SerializerMethodField()
     account_incharge_name = serializers.SerializerMethodField()
     fund_receipt_verified_by_name = serializers.SerializerMethodField()
+    cashbook_entry = serializers.SerializerMethodField()
+    cashbook_candidates = serializers.SerializerMethodField()
     audit_logs = WalletRechargeRequestAuditLogSerializer(many=True, read_only=True)
     
     class Meta:
         model = WalletRechargeRequest
         fields = [
+            'cashbook_receipt_no',
+            'cashbook_receipt_date',
+            'cashbook_matched_at',
+            'cashbook_entry',
+            'cashbook_candidates',
             'id',
             'request_id',
             'transaction_number',
@@ -620,6 +627,11 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             'audit_logs',
         ]
         read_only_fields = [
+            'cashbook_receipt_no',
+            'cashbook_receipt_date',
+            'cashbook_matched_at',
+            'cashbook_entry',
+            'cashbook_candidates',
             'id',
             'request_id',
             'transaction_number',
@@ -807,6 +819,26 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             return (u.name or "").strip() or (u.email or "")
         except Exception:
             return ""
+
+    def get_cashbook_entry(self, obj):
+        if not obj.cashbook_parse_entry_id:
+            return None
+        from iic_booking.users.wallet_recharge_import import serialize_parse_entry_brief
+
+        entry = getattr(obj, "cashbook_parse_entry", None)
+        return serialize_parse_entry_brief(entry) if entry else None
+
+    def get_cashbook_candidates(self, obj):
+        """Available cash-book rows matching this request; only for staff views that pass a CashbookIndex."""
+        index = self.context.get("cashbook_index") if hasattr(self, "context") else None
+        if index is None:
+            return None
+        from iic_booking.users.wallet_recharge_import import serialize_parse_entry_brief
+
+        return [
+            serialize_parse_entry_brief(c["entry"], emp_match=c["emp_match"])
+            for c in index.candidates_for(obj)[:5]
+        ]
 
     def get_project_agency(self, obj):
         try:

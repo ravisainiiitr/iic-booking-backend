@@ -1863,12 +1863,34 @@ def admin_api_router():
                 "account_incharge",
                 "processed_by",
                 "fund_receipt_verified_by",
+                "cashbook_parse_entry",
             )
             .prefetch_related("audit_logs", "audit_logs__actor", "payment_receipts")
             .order_by("-created_at")
         )
         serializer_class = WalletRechargeRequestSerializer
         http_method_names = ["get", "post", "head", "options"]
+
+        def _cashbook_index(self):
+            if getattr(self, "_cashbook_index_cache", None) is None:
+                from iic_booking.users.wallet_recharge_import import CashbookIndex
+
+                self._cashbook_index_cache = CashbookIndex()
+            return self._cashbook_index_cache
+
+        def get_serializer_context(self):
+            ctx = super().get_serializer_context()
+            if getattr(self, "action", None) in ("list", "retrieve"):
+                ctx["cashbook_index"] = self._cashbook_index()
+            return ctx
+
+        def _require_cashbook_ops(self, request):
+            if getattr(request.user, "user_type", None) not in {UserType.ADMIN, UserType.FINANCE}:
+                return Response(
+                    {"error": "Only Main Admin or Accounts In-charge can load or auto-match the SRIC cash-book."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            return None
 
         class WalletRechargeRequestPagination(PageNumberPagination):
             page_size = 50
@@ -1956,6 +1978,18 @@ def admin_api_router():
             recharge_mode = (self.request.query_params.get("recharge_mode") or "").strip().lower()
             if recharge_mode in {"project_grant", "direct_cash_deposit"}:
                 qs = qs.filter(recharge_mode=recharge_mode)
+
+            cashbook = (self.request.query_params.get("cashbook") or "").strip().lower()
+            if cashbook == "matched":
+                qs = qs.exclude(cashbook_receipt_no="")
+            elif cashbook in {"received", "awaiting"}:
+                index = self._cashbook_index()
+                open_qs = qs.filter(
+                    cashbook_receipt_no="",
+                    status__in=[WalletRechargeRequestStatus.PENDING, WalletRechargeRequestStatus.APPROVED],
+                )
+                hit_ids = [r.id for r in open_qs.prefetch_related(None) if index.candidates_for(r)]
+                qs = qs.filter(id__in=hit_ids) if cashbook == "received" else open_qs.exclude(id__in=hit_ids)
 
             date_from = (self.request.query_params.get("date_from") or "").strip()
             if date_from:
@@ -2255,6 +2289,94 @@ def admin_api_router():
                 )
             except ValueError as e:
                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        @action(detail=True, methods=["post"], url_path="cashbook-link")
+        def cashbook_link(self, request, pk=None):
+            """Apply one SRIC cash-book entry: approve + credit once (pending) or verify (approved)."""
+            from iic_booking.users.wallet_recharge_import import (
+                CashbookMatchError,
+                link_cashbook_entry_to_request,
+            )
+
+            recharge_request = self.get_object()
+            try:
+                entry_id = int(request.data.get("parse_entry_id"))
+            except (TypeError, ValueError):
+                return Response({"error": "parse_entry_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                updated, outcome = link_cashbook_entry_to_request(
+                    recharge_request.pk,
+                    entry_id,
+                    actor=request.user,
+                    actor_email=request.user.email,
+                )
+            except CashbookMatchError as e:
+                return Response({"error": str(e)}, status=status.HTTP_409_CONFLICT)
+            updated = self.get_queryset().get(pk=updated.pk)
+            message = (
+                f"Approved against cash-book receipt {updated.cashbook_receipt_no}. ₹{updated.amount} credited."
+                if outcome == "approved"
+                else f"Cash-book receipt {updated.cashbook_receipt_no} matched; fund receipt verified."
+            )
+            return Response(
+                {
+                    "message": message,
+                    "outcome": outcome,
+                    "request": self.get_serializer(updated).data,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        @action(detail=False, methods=["post"], url_path="cashbook-auto-match")
+        def cashbook_auto_match(self, request):
+            """Auto-apply cash-book entries where exactly one entry and one request pair up."""
+            from iic_booking.users.wallet_recharge_import import match_pending_recharge_requests_to_parse_entries
+
+            denied = self._require_cashbook_ops(request)
+            if denied is not None:
+                return denied
+            matched, errors = match_pending_recharge_requests_to_parse_entries()
+            return Response({"matched": matched, "errors": errors[:20]}, status=status.HTTP_200_OK)
+
+        @action(
+            detail=False,
+            methods=["post"],
+            url_path="cashbook-upload",
+            parser_classes=[MultiPartParser, FormParser],
+        )
+        def cashbook_upload(self, request):
+            """Upload an SRIC cash-book TXT: store rows (re-uploads are de-duplicated) and auto-match."""
+            from iic_booking.users.wallet_recharge_import import (
+                match_pending_recharge_requests_to_parse_entries,
+                store_parsed_cashbook_rows,
+            )
+            from iic_booking.users.wallet_recharge_parser import parse_wallet_recharge_file
+
+            denied = self._require_cashbook_ops(request)
+            if denied is not None:
+                return denied
+            file_obj = request.FILES.get("file")
+            if not file_obj:
+                return Response({"error": "Upload the cash-book file with key 'file'."}, status=status.HTTP_400_BAD_REQUEST)
+            content = file_obj.read().decode("utf-8", errors="replace")
+            rows = parse_wallet_recharge_file(content)
+            if not rows:
+                return Response(
+                    {"error": "No cash-book rows found in this file. Check that it is the SRIC cash-book TXT."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            stored = store_parsed_cashbook_rows(rows)
+            matched, errors = match_pending_recharge_requests_to_parse_entries()
+            return Response(
+                {
+                    "parsed": len(rows),
+                    "stored": stored,
+                    "skipped_without_emp_or_receipt": len(rows) - stored,
+                    "matched": matched,
+                    "errors": errors[:20],
+                },
+                status=status.HTTP_200_OK,
+            )
 
     class BookingViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]

@@ -63,7 +63,7 @@ class IMAPEmailReader:
         password: Optional[str] = None,
         mailbox: Optional[str] = None,
     ):
-        self.host = host or getattr(settings, "IMAP_HOST", "imap.iitr.ac.in")
+        self.host = host or getattr(settings, "IMAP_HOST", "mapi.iitr.ac.in")
         self.port = port if port is not None else getattr(settings, "IMAP_PORT", 993)
         self.use_ssl = use_ssl if use_ssl is not None else getattr(settings, "IMAP_USE_SSL", True)
         self.user = user or getattr(settings, "IMAP_USER", "")

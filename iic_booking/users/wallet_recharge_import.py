@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from .models import (
@@ -18,7 +19,6 @@ from .models import (
     Wallet,
     WalletRechargeImportRecord,
     WalletRechargeParseEntry,
-    WalletRechargeCreditFacilityStatus,
     WalletRechargeRequest,
     WalletRechargeRequestStatus,
     SubWallet,
@@ -75,57 +75,6 @@ def _first_pending_recharge_request_for_import(user: User, amount: Decimal) -> O
         .order_by("created_at")
         .first()
     )
-
-
-def _write_recharge_request_approved_from_import(
-    req: WalletRechargeRequest,
-    *,
-    receipt_no: str,
-    via_parse_entry_matcher: bool,
-) -> None:
-    """Persist APPROVED state after import credit (no notifications; may run inside atomic)."""
-    msg = (
-        f"Auto-completed: receipt matched IIC account import (Receipt {receipt_no})."
-        if via_parse_entry_matcher
-        else f"Auto-completed: wallet import (Receipt {receipt_no})."
-    )
-    req.status = WalletRechargeRequestStatus.APPROVED
-    req.responded_at = timezone.now()
-    req.response_message = msg
-    req.approved_by_email = getattr(
-        settings, "ACCOUNTS_EMAIL", "accounts@iicbooking.iitr.ac.in"
-    )
-    req.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
-    req.credit_facility_opted_in = False
-    req.save(
-        update_fields=[
-            "status",
-            "responded_at",
-            "response_message",
-            "approved_by_email",
-            "credit_facility_status",
-            "credit_facility_opted_in",
-        ]
-    )
-
-
-def _send_recharge_request_approved_notifications_safe(req: WalletRechargeRequest) -> None:
-    try:
-        from iic_booking.communication.wallet_notifications import (
-            send_wallet_recharge_request_notifications,
-        )
-        from iic_booking.communication.styled_transactional_emails import (
-            send_wallet_recharge_approved_faculty_email,
-        )
-
-        req.refresh_from_db()
-        send_wallet_recharge_request_notifications(req, "APPROVED")
-        try:
-            send_wallet_recharge_approved_faculty_email(req)
-        except Exception:
-            pass
-    except Exception as ex:
-        logger.warning("Recharge approve-after-import notify failed for request %s: %s", req.pk, ex)
 
 
 def import_wallet_recharge_rows(
@@ -200,7 +149,13 @@ def import_wallet_recharge_rows(
             skipped += 1
             continue
 
-        pending_req_to_finalize: Optional[WalletRechargeRequest] = None
+        used_by = receipt_used_by_request(receipt_no, dated)
+        if used_by is not None:
+            errors.append(
+                f"Receipt {receipt_no}: already used for recharge request {used_by.request_id_display}; skipped."
+            )
+            skipped += 1
+            continue
 
         if credit_department_id is not None:
             try:
@@ -214,17 +169,30 @@ def import_wallet_recharge_rows(
                 skipped += 1
                 continue
         else:
-            # Use a pending request only as a department hint. Do not auto-approve —
-            # approval is via SRIC email / admin dashboard only.
-            pending_for_dept = _first_pending_recharge_request_for_import(user, amount)
-            if pending_for_dept and pending_for_dept.department_id:
-                department = pending_for_dept.department
-            else:
-                department = _resolve_department(
-                    user,
-                    row.get("dept_hint"),
-                    default_department_id,
+            # A direct credit here plus a later approval of the pending request would credit twice,
+            # so the receipt must be consumed through the request instead.
+            open_req = _first_pending_recharge_request_for_import(user, amount) or (
+                WalletRechargeRequest.objects.filter(
+                    status=WalletRechargeRequestStatus.APPROVED,
+                    user=user,
+                    amount=amount,
+                    cashbook_receipt_no="",
                 )
+                .order_by("created_at")
+                .first()
+            )
+            if open_req is not None:
+                errors.append(
+                    f"Receipt {receipt_no}: matches {open_req.get_status_display().lower()} recharge request "
+                    f"{open_req.request_id_display}; match it from Wallet Recharge Requests instead. Not credited."
+                )
+                skipped += 1
+                continue
+            department = _resolve_department(
+                user,
+                row.get("dept_hint"),
+                default_department_id,
+            )
         if not department:
             errors.append(f"Receipt {receipt_no}: could not resolve department for user {user.email}; skipped.")
             skipped += 1
@@ -343,144 +311,368 @@ def _request_matches_grant(req: WalletRechargeRequest, grant: str) -> bool:
     return False
 
 
-def _mark_fund_receipt_verified_from_parse(req: WalletRechargeRequest, *, receipt_no: str) -> None:
-    """Mark physical cash-book verification without requiring an actor user."""
-    if getattr(req, "fund_receipt_verified", False):
-        return
-    remarks = f"Auto-verified from SRIC cash-book (Receipt {receipt_no})."
-    req.fund_receipt_verified = True
-    req.fund_receipt_verified_at = timezone.now()
-    req.fund_receipt_verification_remarks = remarks
-    update_fields = [
-        "fund_receipt_verified",
-        "fund_receipt_verified_at",
-        "fund_receipt_verification_remarks",
-    ]
-    if hasattr(req, "updated_at"):
-        update_fields.append("updated_at")
-    req.save(update_fields=update_fields)
-    try:
-        from .wallet_recharge_workflow import append_audit_log
+class CashbookMatchError(Exception):
+    """A cash-book entry cannot be applied to a recharge request (mismatch or already consumed)."""
 
-        append_audit_log(
-            req,
-            action="fund_receipt_verified",
-            from_status=req.status,
-            to_status=req.status,
-            actor_email="sric-cashbook-auto",
-            message=remarks,
-            metadata={"receipt_no": receipt_no, "source": "wallet_recharge_parse"},
-        )
+
+def _parse_entry_amount(entry: WalletRechargeParseEntry) -> Optional[Decimal]:
+    try:
+        amount = Decimal(str((entry.amount or "").replace(",", "").strip()))
     except Exception:
-        logger.exception("Audit log for cash-book verify failed for request %s", req.pk)
+        return None
+    return amount if amount > 0 else None
+
+
+def _request_emp_no(req: WalletRechargeRequest) -> str:
+    emp = (req.employee_number or "").strip()
+    if not emp and req.user_id:
+        emp = (getattr(req.user, "emp_id", "") or "").strip()
+    return emp.upper()
+
+
+def receipt_used_by_request(
+    receipt_no: str, dated: Optional[date], *, exclude_request_id: Optional[int] = None
+) -> Optional[WalletRechargeRequest]:
+    """Request that already consumed this cash-book receipt (a missing date on either side is treated as the same receipt)."""
+    receipt_no = (receipt_no or "").strip()
+    if not receipt_no:
+        return None
+    qs = WalletRechargeRequest.objects.filter(cashbook_receipt_no=receipt_no)
+    if dated is not None:
+        qs = qs.filter(Q(cashbook_receipt_date=dated) | Q(cashbook_receipt_date__isnull=True))
+    if exclude_request_id:
+        qs = qs.exclude(pk=exclude_request_id)
+    return qs.order_by("pk").first()
+
+
+def parse_entry_consumed_reason(entry: WalletRechargeParseEntry) -> str:
+    """Why this entry can no longer be applied to a request ('' when it is still available)."""
+    linked = getattr(entry, "matched_recharge_request", None) if entry.pk else None
+    if linked is not None:
+        return f"Already linked to {linked.request_id_display}."
+    used_by = receipt_used_by_request(entry.receipt_no, entry.dated)
+    if used_by is not None:
+        return f"Receipt {entry.receipt_no} already used for {used_by.request_id_display}."
+    if _import_record_exists_for_parse_entry(entry):
+        return f"Receipt {entry.receipt_no} was already credited via cash-book import."
+    return ""
+
+
+def serialize_parse_entry_brief(entry: WalletRechargeParseEntry, *, emp_match: Optional[bool] = None) -> Dict[str, Any]:
+    out = {
+        "id": entry.id,
+        "receipt_no": (entry.receipt_no or "").strip(),
+        "date": entry.dated.isoformat() if entry.dated else None,
+        "amount": (entry.amount or "").strip(),
+        "emp_no": (entry.emp_no or "").strip(),
+        "name": (entry.name or "").strip(),
+        "department": (entry.department or "").strip(),
+        "credited_to_project_no": (entry.credited_to_project_no or "").strip(),
+        "payment": (entry.payment or "")[:300],
+    }
+    if emp_match is not None:
+        out["emp_match"] = emp_match
+    return out
+
+
+class CashbookIndex:
+    """
+    In-memory view of available (unconsumed) cash-book entries, built once per list request
+    so each recharge row can be matched without extra queries.
+    """
+
+    def __init__(self) -> None:
+        used_receipts: Dict[str, List[Optional[date]]] = {}
+        for rno, rdate in WalletRechargeRequest.objects.exclude(cashbook_receipt_no="").values_list(
+            "cashbook_receipt_no", "cashbook_receipt_date"
+        ):
+            used_receipts.setdefault(rno.strip(), []).append(rdate)
+        imported = set(
+            (rno.strip(), rdate, (emp or "").strip().upper())
+            for rno, rdate, emp in WalletRechargeImportRecord.objects.values_list(
+                "receipt_no", "dated", "user__emp_id"
+            )
+        )
+        imported_no_date = set((rno, emp) for rno, _d, emp in imported)
+
+        self.by_amount: Dict[Decimal, List[Dict[str, Any]]] = {}
+        entries = WalletRechargeParseEntry.objects.select_related("matched_recharge_request").order_by("-dated", "-id")
+        for entry in entries:
+            amount = _parse_entry_amount(entry)
+            if amount is None:
+                continue
+            receipt_no = (entry.receipt_no or "").strip()
+            emp = (entry.emp_no or "").strip().upper()
+            if getattr(entry, "matched_recharge_request", None) is not None:
+                continue
+            dates = used_receipts.get(receipt_no)
+            if dates is not None and (entry.dated is None or None in dates or entry.dated in dates):
+                continue
+            if entry.dated is not None:
+                if (receipt_no, entry.dated, emp) in imported:
+                    continue
+            elif (receipt_no, emp) in imported_no_date:
+                continue
+            self.by_amount.setdefault(amount, []).append(
+                {"entry": entry, "grant": _parse_entry_grant_code(entry), "emp": emp}
+            )
+
+    def candidates_for(self, req: WalletRechargeRequest) -> List[Dict[str, Any]]:
+        if req.cashbook_receipt_no or req.status not in (
+            WalletRechargeRequestStatus.PENDING,
+            WalletRechargeRequestStatus.APPROVED,
+        ):
+            return []
+        req_emp = _request_emp_no(req)
+        out = []
+        for info in self.by_amount.get(Decimal(req.amount), []):
+            emp_match = bool(info["emp"]) and info["emp"] == req_emp
+            if info["grant"]:
+                if not _request_matches_grant(req, info["grant"]):
+                    continue
+            elif not emp_match:
+                continue
+            out.append({**info, "emp_match": emp_match})
+        out.sort(key=lambda c: not c["emp_match"])
+        return out
+
+
+def _entry_matches_request(entry: WalletRechargeParseEntry, req: WalletRechargeRequest) -> Tuple[bool, str]:
+    amount = _parse_entry_amount(entry)
+    if amount is None or amount != Decimal(req.amount):
+        return False, f"Amount mismatch: cash-book ₹{entry.amount} vs request ₹{req.amount}."
+    grant = _parse_entry_grant_code(entry)
+    entry_emp = (entry.emp_no or "").strip().upper()
+    if grant:
+        if not _request_matches_grant(req, grant):
+            return False, (
+                f"Credited to Project No. {entry.credited_to_project_no} does not match the request grant "
+                f"({req.department_grant_code or req.project_grant_code or '—'})."
+            )
+    elif not entry_emp or entry_emp != _request_emp_no(req):
+        return False, "Cash-book row has no Project No. and its Emp No. does not match the requester."
+    return True, ""
+
+
+def link_cashbook_entry_to_request(
+    request_id: int,
+    entry_id: int,
+    *,
+    actor=None,
+    actor_email: str = "",
+) -> Tuple[WalletRechargeRequest, str]:
+    """
+    Apply one cash-book entry to one recharge request, atomically and at most once.
+
+    PENDING  -> approve (single wallet credit via approve_request), record receipt, verify fund receipt.
+    APPROVED -> record receipt and verify fund receipt (no credit).
+
+    Returns (request, outcome) where outcome is "approved" or "verified".
+    Raises CashbookMatchError when the pair is invalid or either side was already consumed.
+    """
+    from django.db import IntegrityError
+
+    from .wallet_recharge_workflow import (
+        RechargeAlreadyProcessed,
+        append_audit_log,
+        approve_request,
+        notify_stakeholders_of_decision,
+    )
+
+    email = (actor_email or getattr(actor, "email", "") or "sric-cashbook-auto").strip()
+    try:
+        with transaction.atomic():
+            try:
+                entry = WalletRechargeParseEntry.objects.select_for_update().get(pk=entry_id)
+            except WalletRechargeParseEntry.DoesNotExist:
+                raise CashbookMatchError("Cash-book entry not found (it may have been cleared).")
+            locked = (
+                WalletRechargeRequest.objects.select_for_update(of=("self",))
+                .select_related("user", "department")
+                .get(pk=request_id)
+            )
+            if locked.cashbook_receipt_no or locked.cashbook_parse_entry_id:
+                raise CashbookMatchError(
+                    f"{locked.request_id_display} is already matched to cash-book receipt "
+                    f"{locked.cashbook_receipt_no or '—'}."
+                )
+            if locked.status not in (WalletRechargeRequestStatus.PENDING, WalletRechargeRequestStatus.APPROVED):
+                raise CashbookMatchError(
+                    f"{locked.request_id_display} is {locked.get_status_display()}; only pending or approved "
+                    "requests can be matched."
+                )
+            reason = parse_entry_consumed_reason(entry)
+            if reason:
+                raise CashbookMatchError(reason)
+            ok, why = _entry_matches_request(entry, locked)
+            if not ok:
+                raise CashbookMatchError(why)
+
+            receipt_no = (entry.receipt_no or "").strip()
+            outcome = "verified"
+            if locked.status == WalletRechargeRequestStatus.PENDING:
+                try:
+                    locked = approve_request(
+                        locked,
+                        response_message=f"Approved against SRIC cash-book receipt {receipt_no}.",
+                        actor=actor,
+                        actor_email=email,
+                    )
+                except RechargeAlreadyProcessed as exc:
+                    raise CashbookMatchError(f"{locked.request_id_display} was already processed ({exc}).")
+                except ValueError as exc:
+                    raise CashbookMatchError(str(exc))
+                outcome = "approved"
+                dated = entry.dated
+                if dated:
+                    fy_start = date(dated.year, 4, 1) if dated.month >= 4 else date(dated.year - 1, 4, 1)
+                else:
+                    today = timezone.localdate()
+                    fy_start = date(today.year, 4, 1) if today.month >= 4 else date(today.year - 1, 4, 1)
+                WalletRechargeImportRecord.objects.create(
+                    receipt_no=receipt_no,
+                    financial_year_start=fy_start,
+                    user=locked.user,
+                    department=locked.department,
+                    amount=locked.amount,
+                    dated=entry.dated,
+                    received_from_raw=f"{entry.name or ''} EMP NO-{entry.emp_no or ''}".strip(),
+                    remarks=f"Credited via {locked.request_id_display} approval (cash-book match).",
+                )
+
+            now = timezone.now()
+            locked.cashbook_parse_entry = entry
+            locked.cashbook_receipt_no = receipt_no
+            locked.cashbook_receipt_date = entry.dated
+            locked.cashbook_matched_at = now
+            fields = ["cashbook_parse_entry", "cashbook_receipt_no", "cashbook_receipt_date", "cashbook_matched_at", "updated_at"]
+            if not locked.fund_receipt_verified:
+                locked.fund_receipt_verified = True
+                locked.fund_receipt_verified_by = actor if getattr(actor, "pk", None) else None
+                locked.fund_receipt_verified_at = now
+                locked.fund_receipt_verification_remarks = (
+                    f"Matched SRIC cash-book receipt {receipt_no}"
+                    f"{' dated ' + entry.dated.isoformat() if entry.dated else ''}"
+                    f" (Credited to Project No. {entry.credited_to_project_no or '—'})."
+                )
+                fields += [
+                    "fund_receipt_verified",
+                    "fund_receipt_verified_by",
+                    "fund_receipt_verified_at",
+                    "fund_receipt_verification_remarks",
+                ]
+            locked.save(update_fields=fields)
+            append_audit_log(
+                locked,
+                action="cashbook_matched",
+                from_status=locked.status,
+                to_status=locked.status,
+                actor=actor,
+                actor_email=email,
+                message=f"Cash-book receipt {receipt_no} matched ({outcome}).",
+                metadata={
+                    "parse_entry_id": entry.id,
+                    "receipt_no": receipt_no,
+                    "dated": entry.dated.isoformat() if entry.dated else None,
+                    "credited_to_project_no": entry.credited_to_project_no or "",
+                    "outcome": outcome,
+                },
+            )
+    except IntegrityError:
+        raise CashbookMatchError("This cash-book receipt was already used for another recharge request.")
+
+    if outcome == "approved":
+        approved_req = locked
+        transaction.on_commit(lambda: notify_stakeholders_of_decision(approved_req))
+    return locked, outcome
 
 
 def match_pending_recharge_requests_to_parse_entries() -> Tuple[int, List[str]]:
     """
-    Match cash-book parse rows to wallet recharge requests.
+    Auto-apply cash-book entries where the pairing is unambiguous in both directions
+    (one available entry for the request, and no other eligible request competing for that entry).
 
-    Matching keys (in order of strength):
-      1. Credited to Project No. == department_grant_code (or project_grant_code)
-      2. Amount equal
-      3. Prefer same emp_id when the parse row has EMP NO
-
-    Behaviour:
-      - PENDING + OTP-verified: credit via import, mark APPROVED, mark fund receipt verified
-      - APPROVED + not yet fund-verified: mark fund receipt verified only (no double-credit)
+    Match rule: amount equal AND Credited to Project No. == request grant code; rows without a
+    Project No. need an exact Emp No. match. Auto-apply additionally requires the Emp No. to match
+    whenever the cash-book row has one. Everything else is left for manual matching on the
+    Wallet Recharge Requests page.
     """
     matched = 0
     errors: List[str] = []
-    for entry in WalletRechargeParseEntry.objects.all().order_by("-created_at"):
-        grant = _parse_entry_grant_code(entry)
-        row = _parse_entry_to_import_row(entry)
-        if not row:
-            continue
-        amount = row["amount"]
-        emp_key = (row.get("emp_no") or "").strip()
-
-        # --- Path A: APPROVED but fund receipt not verified (physical verification) ---
-        approved_qs = (
-            WalletRechargeRequest.objects.filter(
-                status=WalletRechargeRequestStatus.APPROVED,
-                amount=amount,
-                fund_receipt_verified=False,
+    index = CashbookIndex()
+    eligible = list(
+        WalletRechargeRequest.objects.filter(cashbook_receipt_no="")
+        .filter(
+            Q(
+                status=WalletRechargeRequestStatus.PENDING,
+                user_otp_verified=True,
+                department_id__isnull=False,
             )
-            .select_related("department", "user")
-            .order_by("created_at")
+            | Q(status=WalletRechargeRequestStatus.APPROVED, fund_receipt_verified=False)
         )
-        approved_candidates = [r for r in approved_qs if _request_matches_grant(r, grant)] if grant else []
-        if emp_key and approved_candidates:
-            emp_hit = [
-                r
-                for r in approved_candidates
-                if (r.employee_number or getattr(r.user, "emp_id", "") or "").strip() == emp_key
-            ]
-            if emp_hit:
-                approved_candidates = emp_hit
-        if len(approved_candidates) == 1:
-            req = approved_candidates[0]
-            try:
-                _mark_fund_receipt_verified_from_parse(req, receipt_no=str(entry.receipt_no or ""))
-                matched += 1
-            except Exception as ex:
-                errors.append(f"Receipt {entry.receipt_no}: verify failed: {ex}")
-            continue
+        .select_related("user", "department")
+        .order_by("created_at")
+    )
 
-        if _import_record_exists_for_parse_entry(entry):
-            continue
+    # The credit grant (e.g. IIC-000-002) is shared by all requests, so auto-apply only when the
+    # cash-book Emp No. identifies the requester (or the row has no Emp No. at all).
+    def _auto_ok(c: Dict[str, Any]) -> bool:
+        return c["emp_match"] or not c["emp"]
 
-        # --- Path B: PENDING OTP-verified → import credit + approve + verify ---
-        user = None
-        if emp_key:
-            user = User.objects.filter(emp_id=emp_key).first()
-            if user is None:
-                user = User.objects.filter(emp_id__iexact=emp_key).first()
+    req_cands: Dict[int, List[Dict[str, Any]]] = {}
+    entry_reqs: Dict[int, List[WalletRechargeRequest]] = {}
+    for req in eligible:
+        cands = [c for c in index.candidates_for(req) if _auto_ok(c)]
+        req_cands[req.id] = cands
+        for c in cands:
+            entry_reqs.setdefault(c["entry"].id, []).append(req)
 
-        pending_qs = WalletRechargeRequest.objects.filter(
-            status=WalletRechargeRequestStatus.PENDING,
-            amount=amount,
-            user_otp_verified=True,
-            department_id__isnull=False,
-        ).select_related("department", "user").order_by("created_at")
-        if user is not None:
-            pending_qs = pending_qs.filter(user=user)
-
-        pending_candidates = [r for r in pending_qs if (not grant) or _request_matches_grant(r, grant)]
-        # Require grant match when the cash-book row has Credited to Project No.
-        if grant:
-            pending_candidates = [r for r in pending_qs if _request_matches_grant(r, grant)]
-        if not pending_candidates:
+    used_entries: set = set()
+    for req in eligible:
+        cands = req_cands.get(req.id) or []
+        if len(cands) != 1:
             continue
-        if len(pending_candidates) > 1 and not user:
-            # Ambiguous without emp — leave for manual map
+        entry = cands[0]["entry"]
+        if entry.id in used_entries:
             continue
-        req = pending_candidates[0]
-        dept_id = req.department_id
-        credited, _skipped, err_list, _receipts = import_wallet_recharge_rows(
-            [row],
-            default_department_id=dept_id,
-            dry_run=False,
-            credit_department_id=dept_id,
-        )
-        errors.extend(err_list)
-        if credited > 0:
-            locked_req = None
-            with transaction.atomic():
-                locked_req = (
-                    WalletRechargeRequest.objects.select_for_update()
-                    .filter(pk=req.pk, status=WalletRechargeRequestStatus.PENDING)
-                    .first()
-                )
-                if locked_req:
-                    _write_recharge_request_approved_from_import(
-                        locked_req,
-                        receipt_no=str(entry.receipt_no or ""),
-                        via_parse_entry_matcher=True,
-                    )
-                    _mark_fund_receipt_verified_from_parse(
-                        locked_req, receipt_no=str(entry.receipt_no or "")
-                    )
-            if locked_req:
-                _send_recharge_request_approved_notifications_safe(locked_req)
+        pool = entry_reqs.get(entry.id) or []
+        if len(pool) != 1 or pool[0].id != req.id:
+            continue
+        try:
+            link_cashbook_entry_to_request(req.id, entry.id, actor_email="sric-cashbook-auto")
+            used_entries.add(entry.id)
             matched += 1
+        except CashbookMatchError as exc:
+            errors.append(f"Receipt {entry.receipt_no} → {req.request_id_display}: {exc}")
+        except Exception as exc:
+            logger.exception("Cash-book auto-match failed for %s / entry %s", req.pk, entry.pk)
+            errors.append(f"Receipt {entry.receipt_no} → {req.request_id_display}: {exc}")
     return matched, errors
+
+
+def store_parsed_cashbook_rows(rows: List[Dict[str, Any]], *, source_imap_uid: Optional[str] = None) -> int:
+    """Upsert parser output into WalletRechargeParseEntry (key: receipt_no, date, emp_no). Returns rows stored."""
+    stored = 0
+    for row in rows:
+        receipt_no = (row.get("receipt_no") or "").strip()[:50]
+        emp_no = (row.get("emp_no") or "").strip()[:50]
+        amount = row.get("amount")
+        if not receipt_no or not emp_no or amount is None:
+            continue
+        defaults = {
+            "name": (row.get("name") or "").strip()[:255],
+            "department": (row.get("dept_hint") or "").strip()[:255],
+            "amount": f"{amount:,.2f}"[:50],
+            "payment": (row.get("payment_details") or "")[:5000],
+            "credited_to_project_no": (row.get("credited_to_project_no") or "").strip()[:100],
+        }
+        if source_imap_uid:
+            defaults["source_imap_uid"] = source_imap_uid[:32]
+        WalletRechargeParseEntry.objects.update_or_create(
+            receipt_no=receipt_no,
+            dated=row.get("dated"),
+            emp_no=emp_no,
+            defaults=defaults,
+        )
+        stored += 1
+    return stored

@@ -60,6 +60,8 @@ from iic_booking.users.api.wallet_recharge_parse_views import (
     wallet_imap_email_attachments,
     wallet_imap_download_attachment,
     wallet_imap_delete_email_if_processed,
+    admin_wallet_eligible_users,
+    admin_manual_wallet_recharge,
 )
 from iic_booking.users.api.wallet_views import (
     get_wallet,
@@ -1022,6 +1024,8 @@ urlpatterns = router.urls + [
     path("wallet/process-recharge-rows/", process_wallet_recharge_rows, name="wallet-process-recharge-rows"),
     path("wallet/recharge-parse-entries/", wallet_recharge_parse_entries, name="wallet-recharge-parse-entries"),
     path("wallet/recharge-parse-entry-apply/", apply_wallet_recharge_parse_entry, name="wallet-recharge-parse-entry-apply"),
+    path("wallet/admin-eligible-users/", admin_wallet_eligible_users, name="wallet-admin-eligible-users"),
+    path("wallet/admin-manual-recharge/", admin_manual_wallet_recharge, name="wallet-admin-manual-recharge"),
     path(
         "wallet/recharge-request-from-unmatched-parse-row/",
         create_wallet_recharge_request_from_unmatched_parse_row,
