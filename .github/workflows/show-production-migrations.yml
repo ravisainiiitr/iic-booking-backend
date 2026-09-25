@@ -96,6 +96,39 @@ jobs:
           grep -q 'REGRESSION_SUMMARY .* failed=0' "$RUNNER_TEMP/reg.txt" || { echo "REGRESSION HAS FAILURES"; exit 1; }
           echo "REGRESSION PASS"
 
+      - name: "Phase 9: final safety summary (read-only)"
+        if: always()
+        run: |
+          set -euo pipefail
+          CID="${{ steps.st.outputs.container }}"
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from django.conf import settings
+          from django.db import connection, transaction
+          with transaction.atomic():
+              c = connection.cursor()
+              c.execute('SET TRANSACTION READ ONLY')
+              q = {
+                  'C_migration_0197_applied': \"SELECT COUNT(*) FROM django_migrations WHERE app='equipment' AND name='0197_equipment_group_alternatives'\",
+                  'D_equipment_groups': 'SELECT COUNT(*) FROM equipment_equipmentgroup',
+                  'E_grouped_equipment': 'SELECT COUNT(*) FROM equipment_equipment WHERE equipment_group_id IS NOT NULL',
+                  'F_mixed_department_groups': 'SELECT COUNT(*) FROM (SELECT equipment_group_id FROM equipment_equipment WHERE equipment_group_id IS NOT NULL GROUP BY 1 HAVING COUNT(DISTINCT internal_department_id) > 1) t',
+                  'G_grouped_equipment_without_department': 'SELECT COUNT(*) FROM equipment_equipment WHERE equipment_group_id IS NOT NULL AND internal_department_id IS NULL',
+                  'H_alternative_booking_on': 'SELECT COUNT(*) FROM equipment_equipmentgroup WHERE alternative_booking_enabled',
+                  'H2_other_slots_on': 'SELECT COUNT(*) FROM equipment_equipmentgroup WHERE alternative_search_other_slots',
+                  'I_cross_rescheduling_on': 'SELECT COUNT(*) FROM equipment_equipmentgroup WHERE cross_rescheduling_enabled',
+                  'J_auto_allocation_on': 'SELECT COUNT(*) FROM equipment_equipmentgroup WHERE auto_allocation_enabled',
+              }
+              for k, sql in q.items():
+                  c.execute(sql)
+                  print(f'{k}={c.fetchone()[0]}')
+              transaction.set_rollback(True)
+          for f in ('EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED', 'EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED', 'EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED'):
+              print(f'K_{f}={getattr(settings, f, \"UNDEFINED\")}')
+          " 2>/dev/null | grep -E '^[A-K]'
+          echo "K_host_env_file_EQUIPMENT_GROUP_keys=$(grep -cE '^[[:space:]]*EQUIPMENT_GROUP_[A-Z_]+=' "$DEPLOY_DIR/.envs/.production/.django" 2>/dev/null || true)"
+          echo "L_health=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || echo 000)"
+          docker ps --filter name=iic_booking_production_frontend --format 'frontend_container={{.Names}} status={{.Status}} image={{.Image}}'
+
       - name: Data fingerprint unchanged since Phase 3
         if: always()
         run: |
