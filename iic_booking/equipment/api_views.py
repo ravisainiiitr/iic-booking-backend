@@ -427,6 +427,21 @@ def _notify_oic_istem_fbr_submitted(booking) -> None:
         )
     except Exception:
         pass
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    ref = booking_display_id_for_email(booking)
+    notify_in_app(
+        equipment_oic_users(equipment),
+        title="Action needed: verify I-STEM FBR",
+        message=(
+            f"{person_label(booking.user)} submitted I-STEM FBR number {booking.istem_fbr_number} for {ref} — "
+            f"{equipment.name}. Verify it on the I-STEM portal and mark it in Booking Management."
+        ),
+        link=f"/booking-management?expand={booking.booking_id}",
+        notification_type="warning",
+        event="istem_fbr.submitted",
+        extra={"real_booking_id": booking.booking_id, "action_required": True},
+    )
 
 def _to_float_or_none(value):
     """Best-effort numeric conversion for dynamic input field validation."""
@@ -15179,6 +15194,22 @@ def allocate_ta_assignment(request):
     except Exception as e:
         logger.warning("Failed to send TA duty allocation email to %s: %s", nomination.student.email, e)
 
+    from iic_booking.communication.in_app import notify_in_app, person_label
+
+    notify_in_app(
+        [nomination.student],
+        title="Action needed: accept or decline a TA duty",
+        message=(
+            f"{person_label(request.user)} allocated you TA duty for {booking_display_id_for_email(booking)} — "
+            f"{nomination.equipment.name}. Accept or decline it from TA Assignments."
+            + (f" Notes: {allocation_notes}" if allocation_notes else "")
+        ),
+        link="/ta-assignments",
+        notification_type="warning",
+        event="ta_assignment.allocated",
+        created_by=request.user,
+        extra={"assignment_id": assignment.id, "real_booking_id": booking.booking_id, "action_required": True},
+    )
     return Response({"assignment": TAAssignmentSerializer(assignment).data}, status=status.HTTP_201_CREATED)
 
 @api_view(["GET"])
@@ -15343,6 +15374,22 @@ def create_ta_duty_log(request):
         created_by=request.user,
         status=TADutyLogStatus.PENDING,
     )
+    if request.user.id == nomination.student_id:
+        from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+        notify_in_app(
+            equipment_oic_users(nomination.equipment),
+            title="Action needed: verify TA duty log",
+            message=(
+                f"{person_label(nomination.student)} logged TA duty on {duty_log.duty_date} for "
+                f"{nomination.equipment.name}. Verify or reject it from TA Assignments."
+            ),
+            link="/ta-assignments",
+            notification_type="warning",
+            event="ta_duty_log.submitted",
+            created_by=request.user,
+            extra={"duty_log_id": duty_log.id, "action_required": True},
+        )
     return Response({"duty_log": TADutyLogSerializer(duty_log).data}, status=status.HTTP_201_CREATED)
 
 @api_view(["GET"])
@@ -16382,6 +16429,61 @@ def _nomination_to_dict(nom):
         "has_resume": bool(nom.resume),
     }
 
+
+def _notify_nomination_event(nom, event: str, actor, remarks: str = "") -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    equipment = nom.equipment
+    eq_label = f"{equipment.name} ({equipment.code})" if equipment.code else equipment.name
+    semester = _academic_year_label_from_semester(nom.semester)
+    extra = {"nomination_id": nom.pk, "equipment_id": equipment.pk}
+    if event == "created":
+        notify_in_app(
+            [nom.student],
+            title="Action needed: upload your resume for an equipment nomination",
+            message=(
+                f"{person_label(nom.supervisor)} nominated you to operate {eq_label} for {semester}. "
+                "Upload your resume so the Officer in charge can review the nomination."
+            ),
+            link="/my-nomination-requests",
+            notification_type="warning",
+            event="nomination.created",
+            created_by=actor,
+            extra={**extra, "action_required": True},
+        )
+    elif event == "resume_submitted":
+        notify_in_app(
+            equipment_oic_users(equipment),
+            title="Action needed: review equipment operating nomination",
+            message=(
+                f"{person_label(nom.student)} (nominated by {person_label(nom.supervisor)}) submitted a resume "
+                f"to operate {eq_label} for {semester}. Approve or reject the nomination."
+            ),
+            link="/ta-nominations-log",
+            notification_type="warning",
+            event="nomination.resume_submitted",
+            created_by=actor,
+            extra={**extra, "action_required": True},
+        )
+    elif event in ("approved", "rejected"):
+        approved = event == "approved"
+        message = (
+            f"The nomination of {person_label(nom.student)} to operate {eq_label} for {semester} was {event} "
+            f"by {person_label(actor)}." + (f" Remarks: {remarks}" if remarks and not approved else "")
+        )
+        for recipient, link in ((nom.student, "/my-nomination-requests"), (nom.supervisor, "/student-management")):
+            notify_in_app(
+                [recipient],
+                title=f"Equipment operating nomination {event}",
+                message=message,
+                link=link,
+                notification_type="success" if approved else "warning",
+                event=f"nomination.{event}",
+                created_by=actor,
+                extra=extra,
+            )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_equipment_nomination(request):
@@ -16497,6 +16599,7 @@ def create_equipment_nomination(request):
         )
     except Exception as e:
         logger.warning("Failed to send nomination intimation email to student %s: %s", student.email, e)
+    _notify_nomination_event(nom, "created", request.user)
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_201_CREATED)
 
 @api_view(["GET"])
@@ -16571,6 +16674,7 @@ def submit_nomination_resume(request, nomination_id):
     nom.resume = resume_file
     nom.resume_submitted_at = tz.now()
     nom.save(update_fields=["resume", "resume_submitted_at"])
+    _notify_nomination_event(nom, "resume_submitted", request.user)
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
@@ -16731,6 +16835,7 @@ def approve_equipment_nomination(request, nomination_id):
         )
     except Exception as e:
         logger.warning("Failed to send nomination approved email to student %s: %s", nom.student.email, e)
+    _notify_nomination_event(nom, "approved", request.user)
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_200_OK)
 
 @api_view(["POST"])
@@ -16782,6 +16887,7 @@ def reject_equipment_nomination(request, nomination_id):
         )
     except Exception as e:
         logger.warning("Failed to send nomination rejected email to student %s: %s", nom.student.email, e)
+    _notify_nomination_event(nom, "rejected", request.user, remarks=str(remarks or "").strip())
     return Response({"nomination": _nomination_to_dict(nom)}, status=status.HTTP_200_OK)
 
 # ----- TA nomination call (OIC/Admin initiates; email to all Faculty) -----

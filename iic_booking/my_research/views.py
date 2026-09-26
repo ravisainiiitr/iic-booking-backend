@@ -338,6 +338,21 @@ def workspaces_collection(request):
     return Response(serialize_workspace_card(workspace, MemberRole.OWNER), status=status.HTTP_201_CREATED)
 
 
+def _mark_share_notifications_read(user, workspace_id) -> None:
+    from iic_booking.communication.models import CommunicationLog
+
+    try:
+        CommunicationLog.objects.filter(
+            recipient=user,
+            communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
+            metadata__research_workspace_id=str(workspace_id),
+        ).exclude(status=CommunicationLog.CommunicationStatus.READ).update(
+            status=CommunicationLog.CommunicationStatus.READ, read_at=timezone.now()
+        )
+    except Exception:
+        logger.exception("my_research: marking share notifications read failed workspace=%s", workspace_id)
+
+
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def workspace_detail(request, workspace_id):
@@ -345,6 +360,8 @@ def workspace_detail(request, workspace_id):
     if error:
         return error
     workspace = access.workspace
+    if request.method == "GET" and workspace.owner_id != request.user.pk:
+        _mark_share_notifications_read(request.user, workspace.pk)
     if request.method == "PATCH":
         changes = {}
         if "name" in request.data:

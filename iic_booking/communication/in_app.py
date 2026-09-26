@@ -91,6 +91,13 @@ def equipment_oic_users(equipment) -> list:
     return _unique_active(users)
 
 
+def admin_users() -> list:
+    from iic_booking.users.models import User
+    from iic_booking.users.models.user_type import UserType
+
+    return list(User.objects.filter(user_type=UserType.ADMIN, is_active=True))
+
+
 def person_label(user, fallback: str = "a user") -> str:
     if user is None:
         return fallback

@@ -47,6 +47,50 @@ ELIGIBLE_CREDIT_REQUEST_TYPES = frozenset(
 )
 
 
+def _notify_credit_event(facility: WalletCreditFacility, event: str, actor, reason: str = "") -> None:
+    from iic_booking.communication.in_app import admin_users, notify_in_app, person_label
+
+    ref = facility.public_reference
+    amount = f"₹{facility.requested_amount}"
+    extra = {"credit_facility_id": facility.pk, "public_reference": ref}
+    if event == "submitted":
+        notify_in_app(
+            admin_users(),
+            title="Action needed: wallet credit request",
+            message=(
+                f"{person_label(facility.user)} requested wallet credit of {amount} ({ref}). "
+                f"Purpose: {facility.purpose}. Review it in Wallet Credit Management."
+            ),
+            link="/admin/wallet-credit",
+            notification_type="warning",
+            event="wallet_credit.submitted",
+            created_by=actor,
+            extra={**extra, "action_required": True},
+        )
+    elif event == "clarification":
+        notify_in_app(
+            [facility.user],
+            title="Action needed: clarification requested on your wallet credit request",
+            message=f"Your wallet credit request {ref} for {amount} was returned for clarification. Reason: {reason}",
+            link="/wallet/credit-facility",
+            notification_type="warning",
+            event="wallet_credit.clarification",
+            created_by=actor,
+            extra={**extra, "action_required": True},
+        )
+    elif event == "rejected":
+        notify_in_app(
+            [facility.user],
+            title="Wallet credit request rejected",
+            message=f"Your wallet credit request {ref} for {amount} was rejected. Reason: {reason}",
+            link="/wallet/credit-facility",
+            notification_type="error",
+            event="wallet_credit.rejected",
+            created_by=actor,
+            extra=extra,
+        )
+
+
 class WalletCreditError(Exception):
     def __init__(self, code: str, message: str, status: int = 400):
         self.code = code
@@ -486,6 +530,7 @@ def create_and_submit_request(
         new=str(amount),
         reason=purpose_clean,
     )
+    _notify_credit_event(facility, "submitted", locked_user)
     return facility
 
 
@@ -603,6 +648,7 @@ def reject_facility(*, facility: WalletCreditFacility, actor, reason: str) -> Wa
         update_fields=["status", "rejected_at", "rejected_by", "rejection_reason", "updated_at"]
     )
     audit(facility, actor=actor, action="REJECTED", previous=prev, new=facility.status, reason=reason)
+    _notify_credit_event(facility, "rejected", actor, reason=reason.strip())
     return facility
 
 
@@ -617,6 +663,7 @@ def return_for_clarification(*, facility: WalletCreditFacility, actor, reason: s
     facility.status = WalletCreditFacilityStatus.CLARIFICATION
     facility.save(update_fields=["status", "updated_at"])
     audit(facility, actor=actor, action="CLARIFICATION", previous=prev, new=facility.status, reason=reason)
+    _notify_credit_event(facility, "clarification", actor, reason=reason.strip())
     return facility
 
 
