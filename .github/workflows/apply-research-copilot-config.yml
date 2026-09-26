@@ -1,0 +1,178 @@
+# Research Copilot production configuration.
+#   lockdown : Copilot restricted to the two pilot accounts, public (anonymous) Copilot off,
+#              Ollama chat + embedding models pulled. No on-behalf actions.
+#   actions  : lockdown + booking create/cancel/reschedule + wallet credit request actions,
+#              Ollama embeddings. Wallet recharge execution and financial admin stay OFF.
+#   disable  : RESEARCH_COPILOT_ENABLED=false (rollback).
+# Keys listed in docker-compose.production.yml `environment:` are interpolated from the
+# project .env file (they override env_file); every other key lives in .envs/.production/.django.
+# Only django + celeryworker are recreated. Secrets are never printed.
+name: Apply Research Copilot Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "lockdown | actions | disable"
+        required: true
+        type: choice
+        options: [lockdown, actions, disable]
+      confirm:
+        description: "Type COPILOT to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "COPILOT"
+
+      - name: Update env files
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          COMPOSE_ENV="$DEPLOY/.env"
+          DJANGO_ENV="$DEPLOY/.envs/.production/.django"
+          test -f "$DJANGO_ENV"
+          touch "$COMPOSE_ENV"
+          cp -p "$COMPOSE_ENV" "$COMPOSE_ENV.bak-copilot-$TS"
+          cp -p "$DJANGO_ENV" "$DJANGO_ENV.bak-copilot-$TS"
+          export COMPOSE_ENV DJANGO_ENV
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          pilot = "test.student@iic-booking.test,test.faculty@iic-booking.test"
+          compose_upsert, django_upsert, django_remove = {}, {}, set()
+          action_keys = {
+              "COPILOT_BOOKING_CREATE": "True",
+              "COPILOT_BOOKING_CANCEL": "True",
+              "COPILOT_BOOKING_RESCHEDULE": "True",
+              "COPILOT_WALLET_CREDIT": "True",
+          }
+          always_off = {"COPILOT_WALLET_RECHARGE": "False", "COPILOT_FINANCIAL_ADMIN": "False",
+                        "COPILOT_BOOKING_E2E_TEST_MODE": "False"}
+          if mode in ("lockdown", "actions"):
+              compose_upsert = {
+                  "RESEARCH_COPILOT_ENABLED": "true",
+                  "RESEARCH_COPILOT_PILOT_EMAILS": pilot,
+                  "OLLAMA_MODEL": "llama3.2:3b",
+              }
+              django_upsert = {"RESEARCH_COPILOT_PUBLIC_ENABLED": "False", **always_off}
+              if mode == "actions":
+                  django_upsert.update(action_keys)
+                  django_upsert["RESEARCH_COPILOT_EMBEDDING_PROVIDER"] = "ollama"
+                  django_upsert["RESEARCH_COPILOT_EMBEDDING_MODEL"] = "nomic-embed-text"
+              else:
+                  django_remove = set(action_keys)
+          elif mode == "disable":
+              compose_upsert = {"RESEARCH_COPILOT_ENABLED": "false"}
+              django_remove = set(action_keys)
+          else:
+              raise SystemExit("unknown mode")
+
+          def apply(path: Path, upsert: dict, remove: set):
+              out, seen = [], set()
+              for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                  key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+                  if key in remove:
+                      continue
+                  if key in upsert:
+                      if key not in seen:
+                          out.append(f"{key}={upsert[key]}")
+                          seen.add(key)
+                      continue
+                  out.append(line)
+              out += [f"{k}={v}" for k, v in upsert.items() if k not in seen]
+              path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+
+          apply(Path(os.environ["COMPOSE_ENV"]), compose_upsert, set())
+          apply(Path(os.environ["DJANGO_ENV"]), django_upsert, django_remove)
+          print("mode=", mode, "compose_env=", sorted(compose_upsert), "django_env=", sorted(django_upsert),
+                "removed=", sorted(django_remove))
+          PY
+          echo "=== compose .env copilot keys ==="
+          grep -E '^(RESEARCH_COPILOT_|OLLAMA_)' "$COMPOSE_ENV" | sed -E 's/(PILOT_EMAILS=).*/\1<set>/' || true
+          echo "=== .django copilot keys ==="
+          grep -E '^(RESEARCH_COPILOT_|COPILOT_)' "$DJANGO_ENV" || true
+
+      - name: Pull Ollama models
+        if: github.event.inputs.mode != 'disable'
+        run: |
+          set -euo pipefail
+          OC="$(docker ps --format '{{.Names}}' | grep -i ollama | head -n 1)"
+          test -n "$OC"
+          docker exec "$OC" ollama pull llama3.2:3b 2>&1 | tail -n 2
+          docker exec "$OC" ollama pull nomic-embed-text 2>&1 | tail -n 2
+          docker exec "$OC" ollama list
+
+      - name: Recreate django and celeryworker
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
+            [ "$code" = "200" ] && { echo "health=200"; break; }
+            sleep 3
+          done
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery|ollama'
+
+      - name: Verify runtime state
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+          import django
+          django.setup()
+          from django.conf import settings
+          from iic_booking.research_copilot.services.conversation import feature_enabled
+          from iic_booking.research_copilot.services.llm_gateway import get_gateway
+          from iic_booking.users.models import User
+
+          mode = os.environ["MODE"]
+          print("RESEARCH_COPILOT_ENABLED=", settings.RESEARCH_COPILOT_ENABLED)
+          pilot = sorted(e.strip().lower() for e in (settings.RESEARCH_COPILOT_PILOT_EMAILS or "").split(",") if e.strip())
+          print("RESEARCH_COPILOT_PILOT_EMAILS=", pilot)
+          print("RESEARCH_COPILOT_PUBLIC_ENABLED=", getattr(settings, "RESEARCH_COPILOT_PUBLIC_ENABLED", "(not in code yet)"))
+          for k in ("OLLAMA_MODEL", "RESEARCH_COPILOT_EMBEDDING_PROVIDER", "RESEARCH_COPILOT_EMBEDDING_MODEL",
+                    "COPILOT_BOOKING_CREATE", "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE",
+                    "COPILOT_BOOKING_MODIFY", "COPILOT_WALLET_CREDIT", "COPILOT_WALLET_RECHARGE",
+                    "COPILOT_FINANCIAL_PROPOSALS", "COPILOT_FINANCIAL_ADMIN", "COPILOT_BOOKING_E2E_TEST_MODE"):
+              print(f"{k}=", getattr(settings, k, None))
+          h = get_gateway().health()
+          print("gateway_health=", getattr(h, "status", h), getattr(h, "model", ""), getattr(h, "detail", ""))
+          for email in pilot:
+              u = User.objects.filter(email__iexact=email).first()
+              print(f"pilot {email}: exists={bool(u)} allowed={bool(u) and feature_enabled(user=u)}")
+          others = User.objects.filter(is_active=True).exclude(email__in=pilot)
+          allowed = sum(1 for u in others.iterator() if feature_enabled(user=u))
+          print(f"non-pilot active users checked={others.count()} allowed={allowed}")
+          print("anonymous_allowed=", feature_enabled(user=None))
+          if mode in ("lockdown", "actions"):
+              assert settings.RESEARCH_COPILOT_ENABLED is True
+              assert pilot == ["test.faculty@iic-booking.test", "test.student@iic-booking.test"], pilot
+              assert allowed == 0, "non-pilot users can use Copilot"
+              assert str(getattr(h, "status", "")) == "available", "Ollama gateway not healthy"
+          if mode == "disable":
+              assert settings.RESEARCH_COPILOT_ENABLED is False
+          PY
+          echo "=== public endpoints ==="
+          curl -s -m 10 http://127.0.0.1:8080/api/v1/research-copilot/public/bootstrap/ | head -c 200; echo
+          echo "=== ollama host exposure ==="
+          (ss -ltn 2>/dev/null | grep -E ':11434\b') && echo "WARNING_ollama_listening_on_host" || echo "ollama_not_exposed_on_host"
