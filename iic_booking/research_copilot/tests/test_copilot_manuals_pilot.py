@@ -162,6 +162,20 @@ def test_create_conversation_fills_not_null_access_columns():
     assert conv.anonymous_session_key == ""
 
 
+@pytest.mark.django_db
+def test_explicit_equipment_code_resolves_among_variants():
+    from iic_booking.research_copilot.services.v2.equipment_resolver import resolve_equipment
+
+    user = _user("variants@example.com")
+    a = _equipment("Powder X-Ray Diffractometer (PXRD) [A]", "PXRD [A]")
+    _equipment("Powder X-Ray Diffractometer (PXRD) [B]", "PXRD [B]")
+    _equipment("Powder X-Ray Diffractometer (PXRD) [C]", "PXRD [C]")
+
+    exact = resolve_equipment(text="Show available slots for PXRD [A] this week", user=user)
+    assert exact.equipment_id == a.pk
+    assert resolve_equipment(text="Show available slots for PXRD this week", user=user).confidence == "AMBIGUOUS"
+
+
 def test_split_pages_tracks_page_numbers():
     chunks = split_pages(["a " * 10, "b " * 10], chunk_size=8, overlap=2)
     assert chunks[0][1:] == (1, 1)

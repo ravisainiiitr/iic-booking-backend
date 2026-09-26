@@ -37,6 +37,22 @@ def _token_in_text(token: str, text: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(t)}(?![a-z0-9])", text) is not None
 
 
+def _narrow_by_explicit_mention(hits: dict[int, EquipmentCandidate], lower: str) -> dict[int, EquipmentCandidate]:
+    """Keep the candidate whose code or full name appears verbatim in the text ("PXRD [A]" vs [B]/[C])."""
+    best_len = 0
+    best: dict[int, EquipmentCandidate] = {}
+    for eid, cand in hits.items():
+        longest = max(
+            (len(s) for s in (cand.code.strip().lower(), cand.name.strip().lower()) if len(s) >= 3 and s in lower),
+            default=0,
+        )
+        if longest > best_len:
+            best_len, best = longest, {eid: cand}
+        elif longest and longest == best_len:
+            best[eid] = cand
+    return best if len(best) == 1 else hits
+
+
 def _qs_visible(user=None):
     from iic_booking.equipment.models import Equipment
 
@@ -131,6 +147,9 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
             for eq in qs.filter(filt).order_by("name")[:8]:
                 eid = int(eq.pk)
                 hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipment/{eid}")
+
+    if len(hits) > 1:
+        hits = _narrow_by_explicit_mention(hits, lower)
 
     cands = list(hits.values())
     if len(cands) == 1:
