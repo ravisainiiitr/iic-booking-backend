@@ -1,0 +1,138 @@
+# My Research - Research Groups configuration for production.
+#   enable  : MY_RESEARCH_GROUPS_ENABLED=True for all eligible IITR faculty (removes any groups pilot allowlist)
+#             and switches on the daily group update reminder task.
+#   disable : MY_RESEARCH_GROUPS_ENABLED=False and switches the reminder task off. Group data is kept.
+# Only the django and celeryworker services are recreated. MY_RESEARCH_ENABLED is never changed.
+# Secrets are never printed.
+name: Apply My Research Groups Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "enable | disable"
+        required: true
+        type: choice
+        options: [enable, disable]
+      confirm:
+        description: "Type GROUPS to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "GROUPS"
+
+      - name: Update env file and recreate django and celeryworker
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-my-research-groups-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          if mode == "enable":
+              upsert, remove = {"MY_RESEARCH_GROUPS_ENABLED": "True"}, {"MY_RESEARCH_GROUPS_PILOT_EMAILS"}
+          elif mode == "disable":
+              upsert, remove = {"MY_RESEARCH_GROUPS_ENABLED": "False"}, set()
+          else:
+              raise SystemExit("unknown mode")
+
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in remove:
+                  continue
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " upserted=", sorted(upsert), " removed=", sorted(remove))
+          PY
+          grep -E '^MY_RESEARCH_(ENABLED|GROUPS_)' "$ENV_FILE" || true
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery' || true
+
+      - name: Reminder task and runtime verification
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+
+          from django.conf import settings
+          from django_celery_beat.models import PeriodicTask
+
+          from iic_booking.my_research import access, group_access
+          from iic_booking.users.models import User
+
+          mode = os.environ["MODE"]
+          task = PeriodicTask.objects.select_related("crontab").get(
+              name="My Research group update reminders (daily)", task="my_research.group_update_reminders"
+          )
+          c = task.crontab
+          schedule = f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}"
+          want = mode == "enable"
+          if task.enabled != want:
+              task.enabled = want
+              task.save()
+          task.refresh_from_db()
+          print("reminder_task=", {"enabled": task.enabled, "schedule": schedule, "last_run_at": str(task.last_run_at)})
+
+          print("RUNTIME MY_RESEARCH_ENABLED=", settings.MY_RESEARCH_ENABLED)
+          print("RUNTIME MY_RESEARCH_PILOT_EMAILS count=", len(access.pilot_emails()))
+          print("RUNTIME MY_RESEARCH_GROUPS_ENABLED=", settings.MY_RESEARCH_GROUPS_ENABLED)
+          print("RUNTIME MY_RESEARCH_GROUPS_PILOT_EMAILS count=", len(group_access.groups_pilot_emails()))
+          print("RUNTIME groups_enabled()=", group_access.groups_enabled())
+
+          active = User.objects.filter(is_active=True)
+          faculty = [u for u in active.iterator() if group_access.is_group_faculty(u)]
+          can_create = sum(1 for u in faculty if group_access.can_create_group(u))
+          faculty_ids = {u.pk for u in faculty}
+          leaked = sum(1 for u in active.exclude(pk__in=faculty_ids).iterator() if group_access.can_create_group(u))
+          print(f"eligible faculty={len(faculty)} can_create_group=True count={can_create}")
+          print(f"other active users={active.count() - len(faculty)} can_create_group=True count={leaked}")
+          assert leaked == 0, "non-faculty users can create groups"
+          if mode == "enable":
+              assert settings.MY_RESEARCH_GROUPS_ENABLED is True
+              assert not group_access.groups_pilot_emails(), "groups allowlist still set"
+              if group_access.groups_enabled():
+                  assert can_create == len(faculty), "some eligible faculty cannot create groups"
+              else:
+                  print("NOTE: MY_RESEARCH_ENABLED is off, so groups stay hidden until My Research is enabled")
+          else:
+              assert settings.MY_RESEARCH_GROUPS_ENABLED is False
+              assert can_create == 0
+          PY
