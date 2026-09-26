@@ -21,11 +21,12 @@ def create_cleanup_schedule(apps, schema_editor):
         month_of_year='*',
     )
     if not PeriodicTask.objects.filter(name=CLEANUP_TASK_NAME).exists():
+        # Created disabled; it is switched on as part of enabling MY_RESEARCH_ENABLED.
         PeriodicTask.objects.create(
             name=CLEANUP_TASK_NAME,
             task='my_research.cleanup_stale_uploads',
             crontab=crontab,
-            enabled=True,
+            enabled=False,
         )
 
 

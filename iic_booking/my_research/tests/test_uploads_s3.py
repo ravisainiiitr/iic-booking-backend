@@ -451,14 +451,45 @@ def test_cleanup_periodic_task_seed_and_reverse():
     import importlib
 
     from django.apps import apps
-    from django_celery_beat.models import PeriodicTask
+    from django_celery_beat.models import CrontabSchedule, PeriodicTask
+
+    shared_crontab = CrontabSchedule.objects.create(minute="35", hour="*")
+    unrelated = PeriodicTask.objects.create(
+        name="Unrelated hourly job", task="equipment.some_task", crontab=shared_crontab, enabled=True
+    )
 
     migration = importlib.import_module("iic_booking.my_research.migrations.0001_initial")
     migration.create_cleanup_schedule(apps, None)
     migration.create_cleanup_schedule(apps, None)
     task = PeriodicTask.objects.get(task="my_research.cleanup_stale_uploads")
-    assert task.enabled is True
+    assert task.name == "My Research stale upload cleanup (hourly)"
+    assert task.enabled is False
     assert task.crontab.minute == "35"
     assert task.crontab.hour == "*"
+    assert PeriodicTask.objects.filter(task="my_research.cleanup_stale_uploads").count() == 1
+
     migration.remove_cleanup_schedule(apps, None)
     assert not PeriodicTask.objects.filter(task="my_research.cleanup_stale_uploads").exists()
+    unrelated.refresh_from_db()
+    assert unrelated.enabled is True
+    assert unrelated.crontab_id == shared_crontab.pk
+    assert CrontabSchedule.objects.filter(pk=shared_crontab.pk).exists()
+
+
+def test_cleanup_schedule_seed_leaves_an_operator_enabled_task_alone():
+    import importlib
+
+    from django.apps import apps
+    from django_celery_beat.models import CrontabSchedule, PeriodicTask
+
+    migration = importlib.import_module("iic_booking.my_research.migrations.0001_initial")
+    existing = PeriodicTask.objects.create(
+        name=migration.CLEANUP_TASK_NAME,
+        task="my_research.cleanup_stale_uploads",
+        crontab=CrontabSchedule.objects.create(minute="35", hour="*"),
+        enabled=True,
+    )
+    migration.create_cleanup_schedule(apps, None)
+    existing.refresh_from_db()
+    assert existing.enabled is True
+    assert PeriodicTask.objects.filter(name=migration.CLEANUP_TASK_NAME).count() == 1
