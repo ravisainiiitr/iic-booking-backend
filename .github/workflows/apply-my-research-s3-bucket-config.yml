@@ -1,0 +1,139 @@
+# One-off: add the My Research CORS rule and abort-incomplete-multipart lifecycle rule to the media bucket.
+# Refuses to run if either configuration already exists; never touches objects, policy, IAM, or other settings.
+name: Apply My Research S3 Bucket Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_apply:
+        description: "Type APPLY to add the CORS and lifecycle configuration (only if both are absent)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: |
+          test "${{ github.event.inputs.confirm_apply }}" = "APPLY"
+
+      - name: Locate django container
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Apply CORS and lifecycle
+        env:
+          CID: ${{ steps.find.outputs.container }}
+        run: |
+          set -euo pipefail
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import json
+          import sys
+
+          import django
+
+          django.setup()
+
+          from botocore.exceptions import ClientError
+
+          from iic_booking.my_research import storage
+
+          BUCKET = "equip-booking-media"
+          CORS_RULES = [
+              {
+                  "ID": "my-research-browser-uploads",
+                  "AllowedOrigins": ["https://equip.iitr.ac.in"],
+                  "AllowedMethods": ["PUT", "GET", "HEAD"],
+                  "AllowedHeaders": ["content-type", "x-amz-checksum-sha256"],
+                  "ExposeHeaders": ["ETag"],
+                  "MaxAgeSeconds": 3000,
+              }
+          ]
+          LIFECYCLE_RULES = [
+              {
+                  "ID": "my-research-abort-incomplete-multipart",
+                  "Status": "Enabled",
+                  "Filter": {"Prefix": "research/"},
+                  "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 2},
+              }
+          ]
+
+          s3 = storage._client()
+          if storage.bucket_name() != BUCKET:
+              print("RESULT STOP: application bucket is not", BUCKET)
+              sys.exit(1)
+
+
+          def code_of(exc):
+              return exc.response.get("Error", {}).get("Code", ""), exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+
+
+          def snapshot(label):
+              keys = s3.list_objects_v2(Bucket=BUCKET, Prefix="research/", MaxKeys=1000).get("KeyCount", 0)
+              uploads = len(s3.list_multipart_uploads(Bucket=BUCKET, Prefix="research/").get("Uploads", []) or [])
+              print(f"RESULT {label}: research_objects={keys} research_multipart_uploads={uploads}")
+              return keys, uploads
+
+
+          before = snapshot("before")
+
+          print("RESULT --- CORS ---")
+          try:
+              existing = s3.get_bucket_cors(Bucket=BUCKET).get("CORSRules", [])
+              print("RESULT STOP: CORS configuration already exists; not overwriting:", json.dumps(existing, sort_keys=True))
+              sys.exit(2)
+          except ClientError as exc:
+              code, status = code_of(exc)
+              if code != "NoSuchCORSConfiguration":
+                  print(f"RESULT STOP: GetBucketCors pre-check failed: {status} {code}")
+                  sys.exit(2)
+          print("RESULT pre-check GetBucketCors: no configuration")
+          try:
+              s3.put_bucket_cors(Bucket=BUCKET, CORSConfiguration={"CORSRules": CORS_RULES})
+          except ClientError as exc:
+              code, status = code_of(exc)
+              print(f"RESULT STOP: PutBucketCors failed: {status} {code}; no further AWS changes made")
+              sys.exit(3)
+          print("RESULT PutBucketCors: applied")
+          cors_after = s3.get_bucket_cors(Bucket=BUCKET).get("CORSRules", [])
+          print("RESULT GetBucketCors after:", json.dumps(cors_after, sort_keys=True))
+          cors_ok = cors_after == CORS_RULES
+          print("RESULT CORS verification:", "PASS" if cors_ok else "FAIL")
+          if not cors_ok:
+              sys.exit(4)
+
+          print("RESULT --- Lifecycle ---")
+          try:
+              existing = s3.get_bucket_lifecycle_configuration(Bucket=BUCKET).get("Rules", [])
+              print("RESULT STOP: lifecycle configuration already exists; not overwriting:", json.dumps(existing, sort_keys=True, default=str))
+              sys.exit(5)
+          except ClientError as exc:
+              code, status = code_of(exc)
+              if code != "NoSuchLifecycleConfiguration":
+                  print(f"RESULT STOP: GetBucketLifecycleConfiguration pre-check failed: {status} {code}")
+                  sys.exit(5)
+          print("RESULT pre-check GetBucketLifecycleConfiguration: no configuration")
+          try:
+              s3.put_bucket_lifecycle_configuration(Bucket=BUCKET, LifecycleConfiguration={"Rules": LIFECYCLE_RULES})
+          except ClientError as exc:
+              code, status = code_of(exc)
+              print(f"RESULT STOP: PutBucketLifecycleConfiguration failed: {status} {code}")
+              sys.exit(6)
+          print("RESULT PutBucketLifecycleConfiguration: applied")
+          lc_after = s3.get_bucket_lifecycle_configuration(Bucket=BUCKET).get("Rules", [])
+          print("RESULT GetBucketLifecycleConfiguration after:", json.dumps(lc_after, sort_keys=True, default=str))
+          lc_ok = lc_after == LIFECYCLE_RULES
+          print("RESULT Lifecycle verification:", "PASS" if lc_ok else "FAIL")
+
+          after = snapshot("after")
+          print("RESULT object/multipart counts unchanged:", before == after)
+          if not lc_ok or before != after:
+              sys.exit(7)
+          PY
