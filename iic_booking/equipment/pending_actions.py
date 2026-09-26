@@ -161,6 +161,29 @@ def _personal_items(c: _Collector) -> None:
             lambda b: _booking_line(b)
             + (" (rejected — correction required)" if b.istem_fbr_status == IstemFbrStatus.INVALID else ""),
         )
+        from .models import RepeatSampleRequest, RepeatSampleRequestStatus
+
+        c.add(
+            "repeat_sample_ready",
+            "Approved repeat samples to book",
+            RepeatSampleRequest.objects.filter(
+                booking__user=user,
+                status=RepeatSampleRequestStatus.APPROVED,
+                new_booking__isnull=True,
+                booking__repeat_sample_enabled=True,
+            )
+            .select_related("booking__equipment")
+            .order_by("-responded_at"),
+            "/my-bookings",
+            "Your repeat sample request was approved. Open the booking and choose Repeat sample to book it "
+            "(same parameters, no charge).",
+            lambda r: _booking_line(r.booking)
+            + (
+                f" — slots from {timezone.localtime(r.bookable_from).strftime('%d %b, %I:%M %p')}"
+                if r.bookable_from
+                else ""
+            ),
+        )
         c.add(
             "ratings_due",
             "Bookings to rate",

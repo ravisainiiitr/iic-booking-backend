@@ -311,6 +311,7 @@ from iic_booking.equipment.api_views import (
     list_repeat_sample_requests,
     approve_repeat_sample_request,
     reject_repeat_sample_request,
+    user_identity_card,
     bulk_email_recipients,
     send_bulk_email,
     log_no_slot_allocation,
@@ -1332,6 +1333,7 @@ urlpatterns = router.urls + [
     path("repeat-sample-requests/", list_repeat_sample_requests, name="list-repeat-sample-requests"),
     path("repeat-sample-requests/<int:request_id>/approve/", approve_repeat_sample_request, name="approve-repeat-sample-request"),
     path("repeat-sample-requests/<int:request_id>/reject/", reject_repeat_sample_request, name="reject-repeat-sample-request"),
+    path("staff/users/<int:user_id>/identity-card/", user_identity_card, name="user-identity-card"),
     
     # Urgent booking request (internal users) + no-slot allocation log
     path("no-slot-allocation/log/", log_no_slot_allocation, name="log-no-slot-allocation"),

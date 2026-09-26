@@ -66,3 +66,68 @@ def cleanup_stale_uploads(limit: int = 500) -> dict:
     if any(stats.values()):
         logger.info("my_research cleanup_stale_uploads: %s", stats)
     return stats
+
+
+@shared_task(name="my_research.group_update_reminders")
+def group_update_reminders(limit: int = 500) -> dict:
+    """
+    Daily Research Group reminders. Overdue status is also computed on read; this persists it and
+    sends each reminder exactly once (tracked by overdue_notified_at / due_reminder_sent_at).
+    Archived groups are skipped. Does nothing while the groups flag is off.
+    """
+    from .group_access import groups_enabled
+    from .group_models import (
+        GroupStatus,
+        ResearchGroupActivityAssignee,
+        ResearchUpdateRequest,
+        UpdateRequestStatus,
+    )
+    from .group_services import OPEN_ACTIVITY_STATUSES, notify_activity_due, notify_update_overdue, today
+
+    stats = {"overdue": 0, "due_soon": 0}
+    if not groups_enabled():
+        return stats
+    close_old_connections()
+    now_date = today()
+    overdue = (
+        ResearchUpdateRequest.objects.select_related("group", "assigned_to")
+        .filter(
+            status__in=(UpdateRequestStatus.PENDING, UpdateRequestStatus.OVERDUE),
+            due_date__lt=now_date,
+            overdue_notified_at__isnull=True,
+            group__status=GroupStatus.ACTIVE,
+        )
+        .order_by("due_date")[:limit]
+    )
+    for req in overdue:
+        claimed = ResearchUpdateRequest.objects.filter(
+            pk=req.pk,
+            overdue_notified_at__isnull=True,
+            status__in=(UpdateRequestStatus.PENDING, UpdateRequestStatus.OVERDUE),
+        ).update(status=UpdateRequestStatus.OVERDUE, overdue_notified_at=timezone.now())
+        if claimed:
+            notify_update_overdue(req)
+            stats["overdue"] += 1
+    due_soon = (
+        ResearchGroupActivityAssignee.objects.select_related("activity", "activity__group", "user")
+        .filter(
+            removed_at__isnull=True,
+            due_reminder_sent_at__isnull=True,
+            activity__status__in=OPEN_ACTIVITY_STATUSES,
+            activity__due_date__gte=now_date,
+            activity__due_date__lte=now_date + timedelta(days=1),
+            activity__group__status=GroupStatus.ACTIVE,
+        )
+        .order_by("activity__due_date")[:limit]
+    )
+    for assignee in due_soon:
+        claimed = ResearchGroupActivityAssignee.objects.filter(
+            pk=assignee.pk, due_reminder_sent_at__isnull=True
+        ).update(due_reminder_sent_at=timezone.now())
+        if claimed:
+            notify_activity_due(assignee)
+            stats["due_soon"] += 1
+    close_old_connections()
+    if any(stats.values()):
+        logger.info("my_research group_update_reminders: %s", stats)
+    return stats

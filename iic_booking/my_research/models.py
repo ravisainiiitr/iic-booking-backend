@@ -240,3 +240,6 @@ class ResearchActivity(models.Model):
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["workspace", "-created_at"], name="mr_activity_ws_idx")]
+
+
+from .group_models import *  # noqa: E402,F401,F403

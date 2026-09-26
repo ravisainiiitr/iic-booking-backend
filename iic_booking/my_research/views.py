@@ -41,6 +41,7 @@ from .access import (
     pilot_emails,
     resolve_access,
 )
+from .group_access import can_create_group, groups_enabled
 from .models import (
     ActivityAction,
     FileStatus,
@@ -249,6 +250,8 @@ def bootstrap(request):
                     "user_storage_quota": int(settings.MY_RESEARCH_USER_STORAGE_QUOTA or 0),
                     "workspace_storage_quota": int(settings.MY_RESEARCH_WORKSPACE_STORAGE_QUOTA or 0),
                 },
+                "groups_available": groups_enabled(),
+                "can_create_group": can_create_group(request.user),
             }
         )
     return Response(data)

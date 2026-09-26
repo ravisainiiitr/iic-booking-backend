@@ -3103,6 +3103,10 @@ def equipment_daily_slots(request, pk):
             if slot_window_max_date is not None:
                 if urgent_week_extension:
                     slot_window_max_date = slot_window_max_date + timedelta(days=7)
+                elif repeat_sample_extra_week_applies(
+                    user, equipment, request.query_params.get("repeat_sample_booking_id")
+                ):
+                    slot_window_max_date = slot_window_max_date + timedelta(days=7)
                 meb_raw = request.query_params.get("maintenance_extra_week_booking_id")
                 if meb_raw and user and getattr(user, "is_authenticated", False):
                     try:
@@ -3143,6 +3147,10 @@ def equipment_daily_slots(request, pk):
                 week_start = slot_window_min_date
             if slot_window_max_date is not None:
                 if urgent_week_extension:
+                    slot_window_max_date = slot_window_max_date + timedelta(days=7)
+                elif repeat_sample_extra_week_applies(
+                    user, equipment, request.query_params.get("repeat_sample_booking_id")
+                ):
                     slot_window_max_date = slot_window_max_date + timedelta(days=7)
                 meb_raw = request.query_params.get("maintenance_extra_week_booking_id")
                 if meb_raw and user and getattr(user, "is_authenticated", False):
@@ -14323,6 +14331,41 @@ def process_charge_recalculation_pay_now(request, booking_id):
 
 # ============== Repeat sample (redesign) ==============
 
+REPEAT_SAMPLE_BOOKING_DELAY = timedelta(hours=48)
+
+
+def _approved_repeat_request_awaiting_booking(orig_booking):
+    """Latest approved repeat request for this booking whose complimentary repeat has not been booked yet."""
+    return (
+        RepeatSampleRequest.objects.filter(
+            booking=orig_booking,
+            status=RepeatSampleRequestStatus.APPROVED,
+            new_booking__isnull=True,
+        )
+        .order_by("-responded_at", "-id")
+        .first()
+    )
+
+
+def repeat_sample_extra_week_applies(user, equipment, raw_booking_id) -> bool:
+    """True when ``raw_booking_id`` is this user's completed booking with an approved, not-yet-booked repeat
+    request that was granted one extra week of slot access."""
+    if not raw_booking_id or not user or not getattr(user, "is_authenticated", False):
+        return False
+    try:
+        booking_pk = int(raw_booking_id)
+    except (TypeError, ValueError):
+        return False
+    return RepeatSampleRequest.objects.filter(
+        booking__booking_id=booking_pk,
+        booking__equipment_id=equipment.equipment_id,
+        booking__user_id=user.id,
+        status=RepeatSampleRequestStatus.APPROVED,
+        extra_week_granted=True,
+        new_booking__isnull=True,
+    ).exists()
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def enable_repeat_sample(request, booking_id):
@@ -14390,7 +14433,14 @@ def get_repeat_sample_eligibility(request, booking_id):
             "can_create_repeat": False,
             "reason": "A repeat booking has already been created for this booking.",
         }, status=status.HTTP_200_OK)
-    return Response({"can_create_repeat": True, "reason": None}, status=status.HTTP_200_OK)
+    approved_req = _approved_repeat_request_awaiting_booking(booking)
+    return Response({
+        "can_create_repeat": True,
+        "reason": None,
+        "repeat_sample_request_id": approved_req.id if approved_req else None,
+        "bookable_from": approved_req.bookable_from.isoformat() if approved_req and approved_req.bookable_from else None,
+        "extra_week_granted": bool(approved_req and approved_req.extra_week_granted),
+    }, status=status.HTTP_200_OK)
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14430,6 +14480,12 @@ def create_repeat_booking(request, booking_id):
         )
     total_time_minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
 
+    approved_req = _approved_repeat_request_awaiting_booking(orig_booking)
+    earliest_start = approved_req.bookable_from if approved_req else None
+    earliest_label = (
+        timezone.localtime(earliest_start).strftime("%d %b %Y, %I:%M %p") if earliest_start else ""
+    )
+
     slot_ids = None
     if request.data and isinstance(request.data.get("slot_ids"), list):
         raw = request.data.get("slot_ids")
@@ -14456,6 +14512,17 @@ def create_repeat_booking(request, booking_id):
                 {"error": "One or more slots are invalid or not available. Please select only available slots for this equipment."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if earliest_start and daily_slots.filter(start_datetime__lt=earliest_start).exists():
+            return Response(
+                {
+                    "error": (
+                        f"The approved repeat sample can only be booked for slots starting on or after "
+                        f"{earliest_label} (48 hours after approval)."
+                    ),
+                    "bookable_from": earliest_start.isoformat(),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         total_slot_minutes = sum(
             (s.end_datetime - s.start_datetime).total_seconds() / 60
             for s in daily_slots
@@ -14480,6 +14547,8 @@ def create_repeat_booking(request, booking_id):
 
         SlotGenerator.ensure_slot_masters_exist(equipment)
         start_date = timezone.localdate()
+        if earliest_start:
+            start_date = max(start_date, timezone.localtime(earliest_start).date())
         end_date = start_date + timedelta(days=60)
         slots_needed = []
         tolerance = slot_tolerance_minutes_for(equipment)
@@ -14489,6 +14558,8 @@ def create_repeat_booking(request, booking_id):
                 equipment, start_date, end_date
             )
             for ds in available_list:
+                if earliest_start and ds.start_datetime < earliest_start:
+                    continue
                 slots_needed.append(ds)
                 covered = sum((s.end_datetime - s.start_datetime).total_seconds() / 60 for s in slots_needed)
                 if allocated_capacity_covers_analysis(int(covered), total_time_minutes, tolerance):
@@ -14507,6 +14578,8 @@ def create_repeat_booking(request, booking_id):
                 date__lte=end_date,
                 status=SlotStatus.AVAILABLE,
             ).select_related("slot_master").order_by("date", "start_datetime")
+            if earliest_start:
+                available_qs = available_qs.filter(start_datetime__gte=earliest_start)
             for ds in available_qs:
                 slots_needed.append(ds)
                 covered = sum((s.end_datetime - s.start_datetime).total_seconds() / 60 for s in slots_needed)
@@ -14558,10 +14631,15 @@ def create_repeat_booking(request, booking_id):
             created_by=request.user,
             comment=f"Repeat sample booking created for {equipment.name} ({total_time_minutes} min). Original booking: {orig_vid}. No charge; excluded from weekly/monthly limits.",
             new_status=BookingStatus.BOOKED,
+            metadata={"repeat_sample_request_id": approved_req.id} if approved_req else None,
             send_notification=True,
         )
         orig_booking.repeat_sample_enabled = False
         orig_booking.save(update_fields=["repeat_sample_enabled"])
+        if approved_req:
+            approved_req.new_booking = new_booking
+            approved_req.booked_at = timezone.now()
+            approved_req.save(update_fields=["new_booking_id", "booked_at"])
 
     return Response({
         "message": "Repeat booking created successfully.",
@@ -14632,7 +14710,16 @@ def _notify_repeat_sample_decided(repeat_req, actor) -> None:
             created_by=actor,
             extra=extra,
         )
-    outcome = f" New booking {new_ref} was created." if new_ref else ""
+    if new_ref:
+        outcome = f" New booking {new_ref} was created."
+    elif approved and repeat_req.bookable_from:
+        bookable_label = timezone.localtime(repeat_req.bookable_from).strftime("%d %b %Y, %I:%M %p")
+        outcome = (
+            f" The user can book the complimentary repeat themselves for slots from {bookable_label}"
+            " (one additional week of slot access granted)."
+        )
+    else:
+        outcome = ""
     notify_in_app(
         [actor],
         title=f"You {verb} a repeat sample request",
@@ -14776,6 +14863,78 @@ def list_repeat_sample_requests(request):
     serializer = RepeatSampleRequestSerializer(qs, many=True)
     return Response({"repeat_sample_requests": serializer.data}, status=status.HTTP_200_OK)
 
+def _identity_programme_label(target) -> str:
+    degree = (getattr(target, "degree_name", None) or "").strip()
+    branch = (getattr(target, "branch_name", None) or "").strip()
+    if degree or branch:
+        return " — ".join(part for part in (degree, branch) if part)
+    designation = (getattr(target, "designation", None) or "").strip()
+    if designation:
+        return designation
+    try:
+        return target.get_user_type_display_label() or ""
+    except Exception:
+        return ""
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def user_identity_card(request, user_id):
+    """
+    Identity card details for a requesting user (repeat sample, urgent booking and similar requests).
+    Staff only; an OIC / operator / department administrator can only view users who have a booking
+    or an urgent request on equipment within their scope.
+    """
+    if not check_operator_permission(request.user):
+        return Response(
+            {"error": "Only operators, managers, and admins can view user details."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        target = User.objects.select_related("department", "supervisor").get(pk=user_id)
+    except User.DoesNotExist:
+        return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+    equipment_ids = _get_equipment_ids_for_log_access(request.user)
+    if equipment_ids is not None:
+        in_scope = (
+            Booking.objects.filter(user_id=target.pk, equipment_id__in=equipment_ids).exists()
+            or UrgentBookingRequest.objects.filter(user_id=target.pk, equipment_id__in=equipment_ids).exists()
+        )
+        if not in_scope:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    from .serializers import _get_wallet_owner_display_name
+
+    supervisor = getattr(target, "supervisor", None)
+    supervisor_name = (supervisor.name or supervisor.email) if supervisor else None
+    if not supervisor_name:
+        supervisor_name = _get_wallet_owner_display_name(target, {})
+    try:
+        photo_url = target.get_profile_picture_url_or_none(request=request)
+    except Exception:
+        photo_url = None
+    try:
+        user_type_label = target.get_user_type_display_label() or ""
+    except Exception:
+        user_type_label = ""
+    department = getattr(target, "department", None)
+    return Response(
+        {
+            "user_id": target.pk,
+            "name": target.name or "",
+            "email": target.email or "",
+            "phone_number": target.phone_number or "",
+            "department_name": (department.name if department else "") or "",
+            "programme": _identity_programme_label(target),
+            "supervisor_name": supervisor_name or "",
+            "user_type_display": user_type_label,
+            "emp_id": target.emp_id or "",
+            "profile_picture_url": photo_url,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def reject_repeat_sample_request(request, request_id):
@@ -14810,14 +14969,22 @@ def reject_repeat_sample_request(request, request_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def approve_repeat_sample_request(request, request_id):
-    """Approve repeat sample request: create free booking with first available slots and send confirmation. Admin/OIC only."""
+    """
+    Approve a repeat sample request. Admin/OIC only. Body: { admin_notes?: string }.
+
+    No booking is created here. The user is notified and may book one complimentary repeat themselves
+    (parameters inherited from the original booking and locked, no charge), with slots starting no earlier
+    than REPEAT_SAMPLE_BOOKING_DELAY after approval and one additional week of slot access.
+    """
     if not check_operator_permission(request.user):
         return Response(
             {"error": "Only operators, managers, and admins can approve repeat sample requests."},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
-        repeat_req = RepeatSampleRequest.objects.select_related("booking", "booking__user", "booking__equipment", "booking__charge_profile").get(id=request_id)
+        repeat_req = RepeatSampleRequest.objects.select_related(
+            "booking", "booking__user", "booking__equipment"
+        ).get(id=request_id)
     except RepeatSampleRequest.DoesNotExist:
         return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
     if not _repeat_request_in_scope(request.user, repeat_req):
@@ -14825,96 +14992,58 @@ def approve_repeat_sample_request(request, request_id):
     if repeat_req.status != RepeatSampleRequestStatus.PENDING:
         return Response({"error": f"Request is already {repeat_req.status}."}, status=status.HTTP_400_BAD_REQUEST)
     orig_booking = repeat_req.booking
-    equipment = orig_booking.equipment
-    total_time_minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
-    from datetime import date, timedelta
-    from django.utils import timezone
-    from django.db import transaction
-    SlotGenerator.ensure_slot_masters_exist(equipment)
-    start_date = timezone.localdate()
-    end_date = start_date + timedelta(days=60)
-    slots_needed = []
-    # Ensure slots exist using batch week generation
-    current = start_date
-    while current <= end_date:
-        week_end = min(current + timedelta(days=6), end_date)
-        SlotGenerator.generate_slots_for_week(equipment, current, week_end, allow_holiday=False)
-        current = week_end + timedelta(days=1)
-    # Collect available slots until we have enough minutes (with slot tolerance)
-    from .slot_allocation import allocated_capacity_covers_analysis, slot_tolerance_minutes_for
-
-    tolerance = slot_tolerance_minutes_for(equipment)
-    available_qs = DailySlot.objects.filter(
-        slot_master__equipment=equipment,
-        date__gte=start_date,
-        date__lte=end_date,
-        status=SlotStatus.AVAILABLE,
-    ).select_related("slot_master").order_by("date", "start_datetime")
-    for ds in available_qs:
-        slots_needed.append(ds)
-        covered = sum((s.end_datetime - s.start_datetime).total_seconds() / 60 for s in slots_needed)
-        if allocated_capacity_covers_analysis(int(covered), total_time_minutes, tolerance):
-            break
-    covered_final = sum((s.end_datetime - s.start_datetime).total_seconds() / 60 for s in slots_needed)
-    if not slots_needed or not allocated_capacity_covers_analysis(
-        int(covered_final), total_time_minutes, tolerance
-    ):
+    if orig_booking.status != BookingStatus.COMPLETED:
         return Response(
-            {"error": "No available slots found for the requested duration. Try again later or book manually."},
+            {"error": "Only completed bookings can have a repeat sample."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    slot_ids = [s.id for s in slots_needed]
-    daily_slots = DailySlot.objects.filter(id__in=slot_ids).order_by("start_datetime")
-    for s in daily_slots:
-        if s.status != SlotStatus.AVAILABLE:
-            return Response({"error": "One or more slots became unavailable."}, status=status.HTTP_400_BAD_REQUEST)
-    charge_profile = orig_booking.charge_profile
-    user_type = orig_booking.user_type_snapshot or ""
-    input_values = orig_booking.input_values or {}
-    total_charge = Decimal("0")
-    charge_breakdown = [{"description": "Repeat sample (complimentary — no charge)", "amount": 0.0}]
-    notes = f"Repeat sample (approved from request #{repeat_req.id}). Original booking: {orig_booking.virtual_booking_id or orig_booking.booking_id}."
-    with transaction.atomic():
-        new_booking = Booking.objects.create(
-            user=orig_booking.user,
-            equipment=equipment,
-            charge_profile=charge_profile,
-            user_type_snapshot=user_type,
-            total_time_minutes=total_time_minutes,
-            total_charge=total_charge,
-            input_values=input_values,
-            selected_parameters=orig_booking.selected_parameters,
-            charge_breakdown=charge_breakdown,
-            status=BookingStatus.BOOKED,
-            notes=notes,
-            created_by=request.user,
-            source_booking=orig_booking,
-            **initial_istem_fbr_fields_for_charge_profile(charge_profile),
+    if Booking.objects.filter(source_booking=orig_booking).exists():
+        return Response(
+            {"error": "A repeat booking has already been created for this booking."},
+            status=status.HTTP_400_BAD_REQUEST,
         )
-        daily_slots.update(booking=new_booking, status=SlotStatus.BOOKED)
+    now = timezone.now()
+    bookable_from = now + REPEAT_SAMPLE_BOOKING_DELAY
+    bookable_from_label = timezone.localtime(bookable_from).strftime("%d %b %Y, %I:%M %p")
+    with transaction.atomic():
+        repeat_req.status = RepeatSampleRequestStatus.APPROVED
+        repeat_req.responded_at = now
+        repeat_req.responded_by = request.user
+        repeat_req.admin_notes = (request.data.get("admin_notes") or "").strip()
+        repeat_req.bookable_from = bookable_from
+        repeat_req.extra_week_granted = True
+        repeat_req.save(
+            update_fields=[
+                "status", "responded_at", "responded_by_id", "admin_notes",
+                "bookable_from", "extra_week_granted",
+            ]
+        )
+        orig_booking.repeat_sample_enabled = True
+        orig_booking.save(update_fields=["repeat_sample_enabled"])
         create_booking_event(
-            booking=new_booking,
-            event_type=BookingEventType.CREATED,
+            booking=orig_booking,
+            event_type=BookingEventType.REPEAT_SAMPLE_OFFERED,
             created_by=request.user,
-            comment=f"Repeat sample booking created (free) for {equipment.name} – {total_time_minutes} min. Original: {orig_booking.virtual_booking_id or orig_booking.booking_id}.",
-            new_status=BookingStatus.BOOKED,
+            comment=(
+                f"Repeat sample request #{repeat_req.id} approved. You may book one complimentary repeat for "
+                f"{orig_booking.equipment.name} from My Bookings (Repeat sample). Parameters are the same as the "
+                f"original booking and cannot be changed; no charge will be deducted. Choose slots starting on or "
+                f"after {bookable_from_label}; one additional week of slot access has been granted."
+            ),
             metadata={
-                "repeat_sample_from_request": True,
-                "original_booking_id": booking_display_id_for_email(orig_booking),
+                "repeat_sample_request_id": repeat_req.id,
+                "bookable_from": bookable_from.isoformat(),
+                "extra_week_granted": True,
             },
             send_notification=True,
         )
-        repeat_req.status = RepeatSampleRequestStatus.APPROVED
-        repeat_req.responded_at = timezone.now()
-        repeat_req.responded_by = request.user
-        repeat_req.new_booking = new_booking
-        repeat_req.save(update_fields=["status", "responded_at", "responded_by_id", "new_booking_id"])
-    # create_booking_event with send_notification=True already sends booking_created_email to the user
     _notify_repeat_sample_decided(repeat_req, request.user)
     return Response({
-        "message": "Repeat sample request approved. A free booking has been created and the user will be notified.",
+        "message": (
+            "Repeat sample request approved. The user has been notified and can book the complimentary repeat "
+            f"for slots from {bookable_from_label}."
+        ),
         "repeat_sample_request": RepeatSampleRequestSerializer(RepeatSampleRequest.objects.get(id=request_id)).data,
-        "new_booking": BookingSerializer(new_booking).data,
     }, status=status.HTTP_200_OK)
 
 # ----- TA Reward Points (duty earn + booking redeem) -----

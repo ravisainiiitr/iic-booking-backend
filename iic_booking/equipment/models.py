@@ -3303,7 +3303,11 @@ class RepeatSampleRequestStatus(models.TextChoices):
 
 
 class RepeatSampleRequest(models.Model):
-    """User request to repeat a completed booking (e.g. results not appropriate). Admin/OIC can approve (creates free re-book) or reject."""
+    """User request to repeat a completed booking (e.g. results not appropriate).
+
+    Admin/OIC approval grants the user a one-time complimentary self-booking (same parameters, no charge);
+    the user picks slots starting no earlier than ``bookable_from``. Rejection notifies the user.
+    """
     id = models.AutoField(primary_key=True)
     booking = models.ForeignKey(
         Booking,
@@ -3333,7 +3337,21 @@ class RepeatSampleRequest(models.Model):
         null=True,
         blank=True,
         related_name='created_from_repeat_request',
-        help_text=_('New booking created when request was approved (free re-run)'),
+        help_text=_('Complimentary repeat booking created by the user after approval'),
+    )
+    bookable_from = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_('Earliest slot start the user may book for the approved repeat (approval time + 48 hours)'),
+    )
+    extra_week_granted = models.BooleanField(
+        default=False,
+        help_text=_('One additional week of slot access was granted for booking the approved repeat'),
+    )
+    booked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_('When the user created the complimentary repeat booking'),
     )
 
     class Meta:

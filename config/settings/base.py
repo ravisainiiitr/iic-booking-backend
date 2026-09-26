@@ -755,6 +755,13 @@ MY_RESEARCH_BLOCKED_EXTENSIONS = env(
     "MY_RESEARCH_BLOCKED_EXTENSIONS",
     default=".exe,.dll,.msi,.scr,.com,.bat,.cmd,.ps1,.vbs,.vbe,.hta,.cpl,.lnk,.reg,.jse,.wsf,.wsh,.pif,.appx,.msix",
 )
+# Research Groups (faculty supervision: members, activities, update requests). Requires MY_RESEARCH_ENABLED too.
+# Disabling hides the UI and API; groups, members, activities, updates and attachments are kept.
+MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=False)
+# Optional comma-separated emails of faculty allowed to CREATE groups during a pilot (empty = all eligible faculty).
+MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
+MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
+MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
 COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # Optional JSON override for installer matrix, e.g.
 # {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}

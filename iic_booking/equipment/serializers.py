@@ -3524,10 +3524,12 @@ class RepeatSampleRequestSerializer(serializers.ModelSerializer):
     virtual_booking_id = serializers.CharField(source='booking.virtual_booking_id', read_only=True)
     equipment_name = serializers.CharField(source='booking.equipment.name', read_only=True)
     equipment_code = serializers.CharField(source='booking.equipment.code', read_only=True)
+    user_id = serializers.IntegerField(source='booking.user_id', read_only=True)
     user_email = serializers.EmailField(source='booking.user.email', read_only=True)
     user_name = serializers.CharField(source='booking.user.name', read_only=True)
     completed_at = serializers.DateTimeField(source='booking.completed_at', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    responded_by_name = serializers.SerializerMethodField()
     new_booking_id = serializers.SerializerMethodField()
     new_real_booking_id = serializers.IntegerField(source='new_booking.booking_id', read_only=True, allow_null=True)
     new_virtual_booking_id = serializers.CharField(source='new_booking.virtual_booking_id', read_only=True, allow_null=True)
@@ -3536,12 +3538,22 @@ class RepeatSampleRequestSerializer(serializers.ModelSerializer):
         model = RepeatSampleRequest
         fields = [
             'id', 'booking', 'booking_id', 'real_booking_id', 'virtual_booking_id',
-            'equipment_name', 'equipment_code', 'user_email', 'user_name',
+            'equipment_name', 'equipment_code', 'user_id', 'user_email', 'user_name',
             'completed_at', 'status', 'status_display',
-            'user_notes', 'admin_notes', 'requested_at', 'responded_at', 'responded_by',
+            'user_notes', 'admin_notes', 'requested_at', 'responded_at', 'responded_by', 'responded_by_name',
+            'bookable_from', 'extra_week_granted', 'booked_at',
             'new_booking', 'new_booking_id', 'new_real_booking_id', 'new_virtual_booking_id',
         ]
-        read_only_fields = ['id', 'booking', 'requested_at', 'responded_at', 'responded_by', 'new_booking']
+        read_only_fields = [
+            'id', 'booking', 'requested_at', 'responded_at', 'responded_by', 'new_booking',
+            'bookable_from', 'extra_week_granted', 'booked_at',
+        ]
+
+    def get_responded_by_name(self, obj):
+        responder = getattr(obj, "responded_by", None)
+        if not responder:
+            return None
+        return responder.name or responder.email
 
     def get_booking_id(self, obj):
         return booking_display_id_for_email(getattr(obj, "booking", None))
