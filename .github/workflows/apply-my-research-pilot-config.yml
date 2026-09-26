@@ -2,6 +2,8 @@
 #   enable   : MY_RESEARCH_ENABLED=True, pilot allowlist (two test accounts), temporary 8 MiB multipart
 #              threshold / 5 MiB parts for the multipart test, and switch on the hourly cleanup task.
 #   finalize : remove the temporary multipart overrides (back to code defaults); flag and allowlist stay.
+#   open     : general availability for all eligible IITR users: remove the pilot allowlist and temporary
+#              multipart overrides; MY_RESEARCH_ENABLED=True; cleanup task stays enabled.
 #   disable  : MY_RESEARCH_ENABLED=False and remove the temporary multipart overrides.
 # Only the django service is recreated. No other Celery task is modified. Secrets are never printed.
 name: Apply My Research Pilot Config
@@ -10,10 +12,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "enable | finalize | disable"
+        description: "enable | finalize | open | disable"
         required: true
         type: choice
-        options: [enable, finalize, disable]
+        options: [enable, finalize, open, disable]
       confirm:
         description: "Type PILOT to proceed"
         required: true
@@ -55,6 +57,9 @@ jobs:
               }
           elif mode == "finalize":
               remove = set(temp_keys)
+          elif mode == "open":
+              upsert = {"MY_RESEARCH_ENABLED": "True"}
+              remove = set(temp_keys) | {"MY_RESEARCH_PILOT_EMAILS"}
           elif mode == "disable":
               upsert = {"MY_RESEARCH_ENABLED": "False"}
               remove = set(temp_keys)
@@ -114,7 +119,7 @@ jobs:
           )
           c = task.crontab
           schedule = f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}"
-          if mode == "enable" and not task.enabled:
+          if mode in ("enable", "open") and not task.enabled:
               assert schedule == "35 * * * *", schedule
               task.enabled = True
               task.save()
@@ -142,4 +147,14 @@ jobs:
           sample = list(others.order_by("pk")[:200])
           allowed = sum(1 for u in sample if access.can_create_workspace(u))
           print(f"non-pilot eligible users checked={len(sample)} (of {others.count()}) can_create_workspace=True count={allowed}")
+
+          eligible_ids = set(access.eligible_users().values_list("pk", flat=True))
+          ineligible = User.objects.filter(is_active=True).exclude(pk__in=eligible_ids)
+          leaked = sum(1 for u in ineligible.iterator() if access.can_create_workspace(u))
+          print(f"ineligible active users checked={ineligible.count()} can_create_workspace=True count={leaked}")
+          if mode == "open":
+              assert not access.pilot_emails(), "allowlist still set"
+              assert settings.MY_RESEARCH_ENABLED is True
+              assert allowed == len(sample), "some eligible users cannot create"
+              assert leaked == 0, "ineligible users can create"
           PY
