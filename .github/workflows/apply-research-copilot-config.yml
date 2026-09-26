@@ -4,6 +4,8 @@
 #   actions  : lockdown + booking create/cancel/reschedule + wallet credit request actions,
 #              Ollama embeddings. Wallet recharge execution and financial admin stay OFF.
 #   disable  : RESEARCH_COPILOT_ENABLED=false (rollback).
+#   reindex  : re-embed ACTIVE knowledge documents not yet on the configured embedding model.
+#              Drafts and archived documents are left untouched. No env or container changes.
 # Keys listed in docker-compose.production.yml `environment:` are interpolated from the
 # project .env file (they override env_file); every other key lives in .envs/.production/.django.
 # Only django + celeryworker are recreated. Secrets are never printed.
@@ -13,10 +15,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "lockdown | actions | disable"
+        description: "lockdown | actions | disable | reindex"
         required: true
         type: choice
-        options: [lockdown, actions, disable]
+        options: [lockdown, actions, disable, reindex]
       confirm:
         description: "Type COPILOT to proceed"
         required: true
@@ -36,6 +38,7 @@ jobs:
         run: test "${{ github.event.inputs.confirm }}" = "COPILOT"
 
       - name: Update env files
+        if: github.event.inputs.mode != 'reindex'
         env:
           MODE: ${{ github.event.inputs.mode }}
         run: |
@@ -123,6 +126,7 @@ jobs:
           docker exec "$OC" ollama list
 
       - name: Recreate django and celeryworker
+        if: github.event.inputs.mode != 'reindex'
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
@@ -135,6 +139,7 @@ jobs:
           docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery|ollama'
 
       - name: Verify runtime state
+        if: github.event.inputs.mode != 'reindex'
         env:
           MODE: ${{ github.event.inputs.mode }}
         run: |
@@ -191,3 +196,49 @@ jobs:
           curl -s -m 10 http://127.0.0.1:8080/api/v1/research-copilot/public/bootstrap/ | head -c 200; echo
           echo "=== ollama host exposure ==="
           (ss -ltn 2>/dev/null | grep -E ':11434\b') && echo "WARNING_ollama_listening_on_host" || echo "ollama_not_exposed_on_host"
+
+      - name: Rebuild knowledge index
+        if: github.event.inputs.mode == 'reindex'
+        timeout-minutes: 120
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+          django.setup()
+          from collections import Counter
+          from iic_booking.research_copilot.models import DocumentStatus, IndexStatus, KnowledgeChunk, KnowledgeDocument
+          from iic_booking.research_copilot.services.embeddings import get_embedding_provider
+          from iic_booking.research_copilot.services.ingestion import index_document
+
+          provider = get_embedding_provider()
+          print("embedding_provider=", provider.name, provider.version)
+          assert provider.name == "ollama", "embedding provider is not ollama; run actions mode first"
+
+          def chunk_models():
+              return dict(Counter(KnowledgeChunk.objects.values_list("embedding_model", flat=True)))
+
+          print("documents_by_status=", dict(Counter(KnowledgeDocument.objects.values_list("status", flat=True))))
+          print("chunks_by_model_before=", chunk_models())
+          todo = [
+              d for d in KnowledgeDocument.objects.filter(status=DocumentStatus.ACTIVE).order_by("created_at")
+              if KnowledgeChunk.objects.filter(document=d).exclude(
+                  embedding_model=provider.name, embedding_version=provider.version
+              ).exists()
+              or not KnowledgeChunk.objects.filter(document=d).exists()
+          ]
+          print("active_documents_to_reindex=", len(todo))
+          ok = failed = 0
+          for d in todo:
+              job = index_document(d)
+              if job.status == IndexStatus.INDEXED:
+                  ok += 1
+              else:
+                  failed += 1
+                  print("failed document=", d.id, "error=", (job.error_message or "")[:160])
+          print(f"reindexed={ok} failed={failed}")
+          print("chunks_by_model_after=", chunk_models())
+          stale = KnowledgeChunk.objects.filter(document__status=DocumentStatus.ACTIVE).exclude(embedding_model=provider.name).count()
+          print("active_chunks_not_on_provider=", stale)
+          assert failed == 0 and stale == 0, "index rebuild incomplete"
+          PY
