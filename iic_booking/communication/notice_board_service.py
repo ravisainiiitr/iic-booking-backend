@@ -67,18 +67,39 @@ def public_notices_queryset():
     ).filter(Q(expiry_date__isnull=True) | Q(expiry_date__gt=now))
 
 
-def build_equipment_unavailable_copy(equipment) -> tuple[str, str]:
-    code = (getattr(equipment, "code", None) or "").strip() or f"#{equipment.pk}"
-    name = (getattr(equipment, "name", None) or "").strip() or "Equipment"
-    location = (getattr(equipment, "location", None) or "").strip()
-    title = f"Equipment unavailable: {code} — {name}"
+def equipment_display_label(equipment) -> str:
+    """'Name (CODE)', without repeating the code when the name already contains it."""
+    code = (getattr(equipment, "code", None) or "").strip()
+    name = (getattr(equipment, "name", None) or "").strip()
+    if not name:
+        return code or f"Equipment #{equipment.pk}"
+    if not code or code.lower() in name.lower():
+        return name
+    return f"{name} ({code})"
+
+
+def build_equipment_unavailable_copy(equipment, *, since=None) -> tuple[str, str]:
+    label = equipment_display_label(equipment)
+    since_date = since or timezone.localdate()
+    since_text = f"{since_date.day} {since_date:%b %Y}"
+    location = " ".join((getattr(equipment, "location", None) or "").split()).rstrip(".")
+    department = getattr(getattr(equipment, "internal_department", None), "name", None) or ""
+
+    suffix = " — Under Maintenance"
+    title = f"{label[: 255 - len(suffix)]}{suffix}"
     lines = [
-        f"The equipment {name} ({code}) is currently under maintenance / unavailable for booking.",
+        f"{label} is under maintenance from {since_text} and is not available for booking until further notice.",
     ]
     if location:
         lines.append(f"Location: {location}.")
+    if department.strip():
+        lines.append(f"Facility: {department.strip()}.")
     lines.append(
-        "Users are advised not to book this equipment until it is marked Operational again."
+        "New bookings are paused while the equipment is being serviced. "
+        "Please plan your experiments accordingly or contact the facility for urgent requirements."
+    )
+    lines.append(
+        "This notice will be removed automatically once the equipment is back in operation."
     )
     return title, "\n".join(lines)
 
@@ -96,7 +117,10 @@ def create_or_reuse_equipment_unavailable_draft(*, equipment, actor) -> Notice:
         ],
     ).order_by("-created_at")
     existing = open_qs.first()
-    title, description = build_equipment_unavailable_copy(equipment)
+    title, description = build_equipment_unavailable_copy(
+        equipment,
+        since=timezone.localdate(existing.created_at) if existing else None,
+    )
     if existing:
         existing.title = title
         existing.description = description
