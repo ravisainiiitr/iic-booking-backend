@@ -235,6 +235,16 @@ def test_non_dates_keep_default_windows(text):
     assert window.start_date == date(2026, 9, 26) and window.end_date > window.start_date
 
 
+def test_cancel_result_does_not_offer_analysis_workspace():
+    from iic_booking.research_copilot.services.v2.orchestrator import _exec_to_response
+
+    cancelled = _exec_to_response({"ok": True, "action": "CANCEL_BOOKING", "booking_id": 470, "message": "Booking cancelled."})
+    created = _exec_to_response({"ok": True, "action": "CREATE_BOOKING", "booking_id": 470, "message": "Booked."})
+    assert [a["id"] for a in cancelled["suggested_actions"]] == ["view_booking"]
+    assert cancelled["cards"][0]["action"] == "CANCEL_BOOKING"
+    assert "analysis" in [a["id"] for a in created["suggested_actions"]]
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [

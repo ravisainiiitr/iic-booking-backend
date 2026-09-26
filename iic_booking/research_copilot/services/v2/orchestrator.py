@@ -317,6 +317,7 @@ def _exec_to_response(result: dict[str, Any]) -> dict[str, Any]:
         actions = []
         if bid:
             actions.append({"id": "view_booking", "label": "View Booking", "href": f"/my-bookings?booking={bid}", "enabled": True})
+        if bid and result.get("action") != "CANCEL_BOOKING":
             actions.append(
                 {
                     "id": "analysis",
