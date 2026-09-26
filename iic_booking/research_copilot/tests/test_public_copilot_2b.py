@@ -46,7 +46,11 @@ class PublicPermissionTests(SimpleTestCase):
         self.assertTrue(any(n == "get_wallet" for n, _ in plans))
 
 
-@override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="")
+@override_settings(
+    RESEARCH_COPILOT_ENABLED=True,
+    RESEARCH_COPILOT_PILOT_EMAILS="",
+    RESEARCH_COPILOT_PUBLIC_ENABLED=True,
+)
 class PublicAskApiTests(SimpleTestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -80,11 +84,33 @@ class PublicAskApiTests(SimpleTestCase):
         self.assertTrue(payload.get("enabled"))
 
     @override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="pilot@example.com")
-    def test_public_enabled_during_pilot_allowlist(self):
+    def test_public_follows_public_flag_during_pilot_allowlist(self):
         self.assertTrue(conv_svc.feature_enabled(user=None))
         self.assertFalse(
             conv_svc.feature_enabled(user=SimpleNamespace(email="other@example.com"))
         )
+
+
+@override_settings(RESEARCH_COPILOT_ENABLED=True, RESEARCH_COPILOT_PILOT_EMAILS="pilot@example.com")
+class PublicFlagDefaultOffTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    @override_settings(RESEARCH_COPILOT_PUBLIC_ENABLED=False)
+    def test_anonymous_disabled_by_default(self):
+        self.assertFalse(conv_svc.feature_enabled(user=None))
+        self.assertFalse(conv_svc.feature_enabled(user=SimpleNamespace(is_authenticated=False)))
+        self.assertTrue(
+            conv_svc.feature_enabled(user=SimpleNamespace(is_authenticated=True, email="pilot@example.com"))
+        )
+
+    @override_settings(RESEARCH_COPILOT_PUBLIC_ENABLED=False)
+    def test_public_ask_returns_503_when_public_off(self):
+        req = self.factory.post("/api/v1/research-copilot/public/ask/", {"content": "hi"}, format="json")
+        req.user = SimpleNamespace(is_authenticated=False)
+        resp = public_views.public_ask(req)
+        self.assertEqual(resp.status_code, 503)
+        self.assertFalse(conv_svc.public_bootstrap_payload().get("enabled"))
 
 
 class EstimateToolTests(SimpleTestCase):

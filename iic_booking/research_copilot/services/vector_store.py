@@ -42,6 +42,9 @@ class VectorStore(ABC):
         allowed_levels: set[str],
         department_id: int | None,
         limit: int = 8,
+        equipment_id: int | None = None,
+        embedding_model: str | None = None,
+        embedding_version: str | None = None,
     ) -> list[VectorHit]:
         raise NotImplementedError
 
@@ -68,6 +71,9 @@ class DjangoORMVectorStore(VectorStore):
         allowed_levels: set[str],
         department_id: int | None,
         limit: int = 8,
+        equipment_id: int | None = None,
+        embedding_model: str | None = None,
+        embedding_version: str | None = None,
     ) -> list[VectorHit]:
         qs: QuerySet = KnowledgeChunk.objects.select_related("document").filter(
             document__status=DocumentStatus.ACTIVE,
@@ -76,6 +82,13 @@ class DjangoORMVectorStore(VectorStore):
         # Department filter: include global (null) + matching dept
         if department_id is not None:
             qs = qs.filter(Q(document__department_id__isnull=True) | Q(document__department_id=department_id))
+        if equipment_id is not None:
+            qs = qs.filter(document__equipment_id=int(equipment_id))
+        # Vectors from different models live in different spaces; comparing them yields noise.
+        if embedding_model:
+            qs = qs.filter(embedding_model=embedding_model)
+        if embedding_version:
+            qs = qs.filter(embedding_version=embedding_version)
 
         hits: list[VectorHit] = []
         # Cap scan for performance on large corpora
@@ -100,6 +113,9 @@ class DjangoORMVectorStore(VectorStore):
                         "source_uri": doc.source_uri,
                         "equipment_id": doc.equipment_id,
                         "version": doc.version,
+                        "page": (chunk.metadata or {}).get("page"),
+                        "page_end": (chunk.metadata or {}).get("page_end"),
+                        "has_file": bool(doc.source_file_key),
                     },
                 )
             )

@@ -290,11 +290,62 @@ def confirm_mutation(request):
         )
 
     envelope = _exec_to_response(result)
-    http = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
-    # Disabled flags are not a client error — 403 communicates enablement gate
-    if str(result.get("error") or "").endswith("_DISABLED"):
-        http = status.HTTP_403_FORBIDDEN
-    return Response({**result, "response": envelope}, status=http)
+    # Domain outcomes (slot taken, flag disabled, insufficient balance) are 200 + ok=false so the
+    # chat can render the explanation envelope; transport errors above keep 4xx.
+    return Response({**result, "response": envelope}, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([ResearchCopilotMutationThrottle])
+def prepare_mutation(request):
+    """
+    Build a confirmation proposal from a structured card action (e.g. "Book this slot").
+
+    Body: action=CREATE_BOOKING, equipment_id, slot_ids[, number_of_samples, conversation_id]
+    Nothing is executed here; the user still confirms through /mutations/confirm/.
+    """
+    gated = _feature_gate(user=request.user)
+    if gated:
+        return gated
+
+    from iic_booking.research_copilot.services.v2.mutations import booking as booking_mut
+    from iic_booking.research_copilot.services.v2.orchestrator import _prep_to_response, _store_context
+
+    action = (request.data.get("action") or "CREATE_BOOKING").strip().upper()
+    if action != "CREATE_BOOKING":
+        return Response(
+            {"ok": False, "error": "UNSUPPORTED_ACTION", "message": "Only booking proposals can be prepared here."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        equipment_id = int(request.data.get("equipment_id"))
+        slot_ids = [int(x) for x in (request.data.get("slot_ids") or [])][:8]
+        samples = int(request.data.get("number_of_samples") or 1)
+    except (TypeError, ValueError):
+        return Response(
+            {"ok": False, "error": "INVALID_REQUEST", "message": "equipment_id and slot_ids must be integers."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not slot_ids:
+        return Response(
+            {"ok": False, "error": "SLOT_REQUIRED", "message": "Choose a slot to book."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    prep = booking_mut.prepare_booking_create(
+        user=request.user,
+        equipment_id=equipment_id,
+        slot_ids=slot_ids,
+        number_of_samples=max(1, min(samples, 500)),
+    )
+    envelope = _prep_to_response(prep)
+    conversation_id = request.data.get("conversation_id")
+    if conversation_id and prep.get("ok"):
+        conv = Conversation.objects.filter(id=conversation_id, user=request.user).first()
+        if conv is not None:
+            _store_context(conv, dict(envelope.get("metadata") or {}))
+    return Response({**prep, "response": envelope}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])

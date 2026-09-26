@@ -217,6 +217,12 @@ class KnowledgeDocument(models.Model):
     embedding_version = models.CharField(max_length=64, blank=True, default="")
     chunk_count = models.PositiveIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")
+    # Uploaded source file (equipment manual PDFs). Object key in the private S3 bucket; never a public URL.
+    source_file_key = models.CharField(max_length=512, blank=True, default="")
+    original_filename = models.CharField(max_length=255, blank=True, default="")
+    file_sha256 = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    file_size = models.PositiveBigIntegerField(default=0)
+    page_count = models.PositiveIntegerField(default=0)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

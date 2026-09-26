@@ -88,6 +88,45 @@ def _load_slot(*, slot_id: int, equipment_id: int | None = None):
     return slot, None
 
 
+def _slots_bookable_for_user(*, user, equipment_id: int, slot_ids: list[int]) -> bool:
+    """Portal booking-page rules (visibility, slot window, department reservation, multi-mode)."""
+    from iic_booking.research_copilot.services.v2.slot_availability import slot_is_bookable_for_user
+
+    return all(slot_is_bookable_for_user(user=user, equipment_id=equipment_id, slot_id=int(s)) for s in slot_ids)
+
+
+def _copilot_input_values(*, user, equipment, samples: int) -> tuple[dict[str, Any] | None, list[str]]:
+    """
+    Input values Copilot can fill on the user's behalf: the numeric field A (sample count).
+
+    Returns (input_values, missing_labels). When another required field exists, Copilot cannot guess it
+    and the caller must send the user to the portal booking form instead.
+    """
+    from iic_booking.equipment.api_views import _validate_dynamic_numeric_input_limits
+    from iic_booking.equipment.equipment_group_service import _effective_input_fields
+
+    fields = _effective_input_fields(equipment, getattr(user, "user_type", "") or "")
+    by_key = {f.field_key: f for f in fields}
+    values: dict[str, Any] = {}
+    field_a = by_key.get("A")
+    if field_a is None or str(getattr(field_a, "field_type", "")) == "NUMERIC":
+        values["A"] = str(samples)
+    missing = [
+        f.field_label or f.field_key
+        for f in fields
+        if f.is_required and f.field_key not in values and f.default_value in (None, "")
+    ]
+    for f in fields:
+        if f.field_key not in values and f.default_value not in (None, ""):
+            values[f.field_key] = f.default_value
+    if missing:
+        return None, missing
+    error = _validate_dynamic_numeric_input_limits(equipment, values, booking_user=user)
+    if error:
+        return None, [str(error)]
+    return values, []
+
+
 def _booking_owned(*, user, booking_id: int):
     from iic_booking.equipment.models import Booking
 
@@ -167,7 +206,7 @@ def prepare_booking_create(
             "equipment_id": eid,
             "equipment_name": eq.name,
             "message": f"Choose an available slot for **{eq.name}** before confirming a booking.",
-            "href": f"/book-equipment?equipment={eid}",
+            "href": f"/book-equipment?equipment_id={eid}",
             "executable": False,
         }
 
@@ -179,9 +218,36 @@ def prepare_booking_create(
             return _safe_error(err, "That slot is no longer available. Search again for available slots.")
         slots.append(slot)
 
+    if not _slots_bookable_for_user(user=user, equipment_id=eid, slot_ids=[int(s.pk) for s in slots]):
+        return _safe_error(
+            "SLOT_NOT_BOOKABLE",
+            "That slot is not bookable for your account (booking window, department reservation or equipment "
+            "status). Ask for available slots again to see the ones you can book.",
+        )
+
     samples = int(number_of_samples or sample_count or 1)
     if samples < 1:
         samples = 1
+
+    input_values, missing_inputs = _copilot_input_values(user=user, equipment=eq, samples=samples)
+    if input_values is None:
+        slot_date = slots[0].date.isoformat() if slots[0].date else ""
+        return {
+            "ok": True,
+            "action": "CREATE_BOOKING",
+            "status": "NEEDS_PORTAL_FORM",
+            "requires_confirmation": False,
+            "executable": False,
+            "equipment_id": eid,
+            "equipment_name": eq.name,
+            "missing_inputs": missing_inputs,
+            "message": (
+                f"**{eq.name}** needs booking details Copilot can't fill in for you ("
+                + ", ".join(missing_inputs[:5])
+                + "). Open the booking page to complete them."
+            ),
+            "portal_href": f"/book-equipment?equipment_id={eid}" + (f"&date={slot_date}" if slot_date else ""),
+        }
 
     estimate, _ename = _estimate_for_equipment(user=user, equipment_id=eid)
     balance = _wallet_balance(user)
@@ -204,7 +270,7 @@ def prepare_booking_create(
         "number_of_samples": samples,
         "estimated_amount": float(estimate) if estimate is not None else None,
         "wallet_balance": balance,
-        "input_values": {"A": str(samples)},
+        "input_values": input_values,
     }
     if estimate is not None and balance is not None:
         try:
@@ -223,8 +289,9 @@ def prepare_booking_create(
     )
 
     msg = (
-        "Review the booking summary and confirm. "
-        + ("Copilot booking execute is enabled." if executable else "Execute is currently disabled (flag OFF) — Confirm will not create a booking until enablement.")
+        "Review the booking summary and confirm. The wallet is charged under the normal portal rules."
+        if executable
+        else "Booking through Copilot is not enabled for your account. Use the booking page to book this slot."
     )
     try:
         if payload.get("approx_balance_after") is not None and Decimal(str(payload["approx_balance_after"])) < 0:
@@ -257,7 +324,7 @@ def prepare_booking_create(
         "wallet_balance": balance,
         "approx_balance_after": payload.get("approx_balance_after"),
         "message": msg,
-        "portal_href": f"/book-equipment?equipment={eid}",
+        "portal_href": f"/book-equipment?equipment_id={eid}",
     }
 
 
@@ -300,6 +367,17 @@ def execute_booking_create(
                 "That slot is no longer available. Search again for the next available slots.",
                 proposal_id=proposal_id,
             )
+    if not _slots_bookable_for_user(user=user, equipment_id=eid, slot_ids=slot_ids):
+        _audit(
+            user=user,
+            action="execute_booking_create",
+            detail={"ok": False, "error": "SLOT_NOT_BOOKABLE", "proposal_id": proposal_id},
+        )
+        return _safe_error(
+            "SLOT_NOT_BOOKABLE",
+            "That slot is no longer bookable for your account. Search again for available slots.",
+            proposal_id=proposal_id,
+        )
 
     body = {
         "slot_ids": slot_ids,
@@ -491,6 +569,8 @@ def prepare_reschedule(
         if serr:
             # For reschedule target, slot must be AVAILABLE
             return _safe_error(serr, "Target slot is not available.")
+        if not _slots_bookable_for_user(user=user, equipment_id=int(booking.equipment_id), slot_ids=[int(slot_id)]):
+            return _safe_error("SLOT_NOT_BOOKABLE", "Target slot is not bookable for your account.")
         start = slot.start_datetime.isoformat() if slot.start_datetime else None
         end = slot.end_datetime.isoformat() if slot.end_datetime else None
 

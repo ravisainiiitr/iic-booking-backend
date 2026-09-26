@@ -42,21 +42,41 @@ def _drf_json_post(*, user, path: str, body: dict[str, Any]) -> Request:
     return drf_request
 
 
+BOOK_BODY_ALLOWED_KEYS = frozenset({"slot_ids", "number_of_samples", "input_values", "notes"})
+
+
 def call_book_equipment(*, user, equipment_id: int, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """POST /api/equipments/<pk>/book/ equivalent via _book_equipment_impl."""
+    """
+    POST /api/equipments/<pk>/book/ equivalent via _book_equipment_impl.
+
+    Same path as the `book_equipment` view when group alternatives are not requested. Only a fixed set of
+    body keys is forwarded: identity overrides, holds, rush relief, "book any slot" and waitlist fallbacks
+    are portal-UI decisions the user has not confirmed through Copilot.
+    """
+    import logging
+
+    from django.db import connection, transaction
+
     from iic_booking.equipment.api_views import _book_equipment_impl
 
-    # Never accept foreign user_id from Copilot / LLM.
-    safe_body = dict(body or {})
-    for banned in ("user_id", "user", "email", "owner", "owner_id", "target_user", "wallet_owner_id"):
-        safe_body.pop(banned, None)
+    safe_body = {k: v for k, v in (body or {}).items() if k in BOOK_BODY_ALLOWED_KEYS}
+    safe_body["waitlist_on_failure"] = False
 
     drf_request = _drf_json_post(
         user=user,
         path=f"/api/equipments/{equipment_id}/book/",
         body=safe_body,
     )
-    response = _book_equipment_impl(drf_request, equipment_id)
+    try:
+        response = _book_equipment_impl(drf_request, equipment_id)
+    except Exception:  # noqa: BLE001
+        if connection.in_atomic_block:
+            try:
+                transaction.set_rollback(True)
+            except Exception:  # noqa: BLE001
+                pass
+        logging.getLogger(__name__).exception("copilot book_equipment failed equipment_id=%s", equipment_id)
+        return 500, {"error": "The portal could not create the booking. Please try again from the booking page."}
     return _as_data(response)
 
 

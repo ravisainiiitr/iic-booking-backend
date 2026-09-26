@@ -58,7 +58,8 @@ class PhaseCFlagsOffTests(SimpleTestCase):
 class PhaseCPrepareTests(SimpleTestCase):
     @patch.object(wallet_mut, "_wallet_snapshot", return_value={"balance": "1000.00", "sub_wallets": [{"department_id": 33}], "currency": "INR"})
     @patch("iic_booking.research_copilot.services.v2.mutations.proposals.create_proposal")
-    def test_prepare_recharge_ready(self, mock_prop, _snap):
+    @override_settings(COPILOT_WALLET_RECHARGE=True)
+    def test_prepare_recharge_ready_when_execute_enabled(self, mock_prop, _snap):
         mock_prop.return_value = {
             "proposal_id": "pr1",
             "confirmation_token": "tok",
@@ -68,7 +69,29 @@ class PhaseCPrepareTests(SimpleTestCase):
         self.assertTrue(out["ok"])
         self.assertTrue(out["confirmation_required"])
         self.assertEqual(out["amount"], "5000")
+
+    @patch.object(wallet_mut, "_wallet_snapshot", return_value={"balance": "1000.00", "sub_wallets": [{"department_id": 33, "department": "Chem", "balance": "1000.00"}], "currency": "INR"})
+    @patch("iic_booking.research_copilot.services.v2.mutations.proposals.create_proposal")
+    @override_settings(COPILOT_WALLET_RECHARGE=False)
+    def test_prepare_recharge_guidance_when_execute_disabled(self, mock_prop, _snap):
+        out = wallet_mut.prepare_wallet_recharge(user=_user(), text="Recharge ₹5000")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["status"], "RECHARGE_GUIDANCE")
         self.assertFalse(out["executable"])
+        self.assertEqual(out["portal_href"], "/wallet?recharge=1&department_id=33&amount=5000")
+        self.assertEqual(out["sub_wallets"][0]["department"], "Chem")
+        mock_prop.assert_not_called()
+
+    @patch.object(wallet_mut, "_wallet_snapshot", return_value={"balance": "1000.00", "sub_wallets": [], "currency": "INR"})
+    @override_settings(COPILOT_WALLET_RECHARGE=False)
+    def test_recharge_guidance_response_has_card_and_link(self, _snap):
+        from iic_booking.research_copilot.services.v2.orchestrator import _prep_to_response
+
+        prep = wallet_mut.prepare_wallet_recharge(user=_user(), text="how do i recharge my wallet")
+        env = _prep_to_response(prep)
+        self.assertEqual(env["cards"][0]["type"], "recharge_guidance")
+        hrefs = [a.get("href") for a in env["suggested_actions"]]
+        self.assertTrue(any(h and h.startswith("/wallet?recharge=1") for h in hrefs))
 
     @patch.object(wallet_mut, "_wallet_snapshot", return_value={"balance": "1000.00", "sub_wallets": [], "currency": "INR"})
     @patch("iic_booking.research_copilot.services.v2.mutations.domain_bridge.call_wallet_credit_summary", return_value=(200, {"outstanding_amount": "0"}))

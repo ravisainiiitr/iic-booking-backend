@@ -95,9 +95,62 @@ def _default_department_id(user, snap: dict[str, Any] | None = None) -> int | No
     return int(dept) if dept else None
 
 
+def recharge_href(*, department_id: int | None, amount: Decimal | None) -> str:
+    params = ["recharge=1"]
+    if department_id:
+        params.append(f"department_id={int(department_id)}")
+    if amount is not None and amount > 0:
+        params.append(f"amount={amount.normalize():f}")
+    return "/wallet?" + "&".join(params)
+
+
+def recharge_guidance(*, user, amount=None, text: str = "", department_id: int | None = None) -> dict[str, Any]:
+    """
+    How to recharge, with the user's live balances and a deep link that opens the Wallet recharge dialog.
+
+    Used while Copilot-initiated payments are disabled: payment always happens in the portal.
+    """
+    amt = parse_inr_amount(text, amount)
+    if amt is not None and (amt <= 0 or amt > Decimal("10000000")):
+        amt = None
+    snap = _wallet_snapshot(user)
+    dept_id = department_id or _default_department_id(user, snap)
+    subs = [
+        {"department_id": s.get("department_id"), "department": s.get("department"), "balance": s.get("balance")}
+        for s in (snap.get("sub_wallets") or [])
+    ]
+    href = recharge_href(department_id=dept_id, amount=amt)
+    lines = [
+        f"Your wallet balance is **₹{snap.get('balance')}**." if snap.get("balance") is not None else "",
+        "To recharge, open **Wallet → Recharge** and choose one of:",
+        "- **Online payment (SBIePay)**: the balance updates once the payment gateway confirms.",
+        "- **Project grant**: raise a recharge request against your project; it is credited after approval.",
+        "- **Direct cash deposit**: submit the deposit details; it is credited after verification.",
+    ]
+    if amt is not None:
+        lines.append(f"\nThe recharge form will open with **₹{amt}** filled in.")
+    lines.append("\nCopilot never takes payment in chat; you complete the recharge on the Wallet page.")
+    _audit(user=user, action="recharge_guidance", detail={"amount": str(amt) if amt else None, "ok": True})
+    return {
+        "ok": True,
+        "action": "WALLET_RECHARGE",
+        "status": "RECHARGE_GUIDANCE",
+        "requires_confirmation": False,
+        "executable": False,
+        "wallet_balance": snap.get("balance"),
+        "sub_wallets": subs,
+        "department_id": dept_id,
+        "amount": str(amt) if amt is not None else None,
+        "portal_href": href,
+        "message": "\n".join(x for x in lines if x),
+    }
+
+
 def prepare_wallet_recharge(*, user, amount=None, text: str = "", department_id: int | None = None) -> dict[str, Any]:
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to prepare a wallet recharge.")
+    if not _flag("COPILOT_WALLET_RECHARGE"):
+        return recharge_guidance(user=user, amount=amount, text=text, department_id=department_id)
 
     amt = parse_inr_amount(text, amount)
     snap = _wallet_snapshot(user)

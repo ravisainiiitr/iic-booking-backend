@@ -38,13 +38,13 @@ def feature_enabled(*, user=None) -> bool:
     When the allowlist is non-empty, only those emails may use authenticated Copilot
     while the global flag is true. Empty allowlist = all authenticated users (global).
 
-    Anonymous/public mode is allowed whenever the global flag is true (pilot list
-    does not block public FAQ / slots / rough estimates).
+    Anonymous/public mode additionally requires RESEARCH_COPILOT_PUBLIC_ENABLED, so a
+    signed-in pilot never implicitly opens the assistant to signed-out visitors.
     """
     if not bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)):
         return False
-    if user is None:
-        return True
+    if user is None or not getattr(user, "is_authenticated", True):
+        return bool(getattr(settings, "RESEARCH_COPILOT_PUBLIC_ENABLED", False))
     raw = (getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", None) or "").strip()
     if not raw:
         return True
@@ -223,7 +223,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
                 role=MessageRole.ASSISTANT,
                 content=reply,
                 confidence=confidence,
-                citations=[],
+                citations=list((det.get("metadata") or {}).get("citations") or []),
                 suggested_actions=tools_svc.enrich_actions_from_message(
                     user=user,
                     text=text,
@@ -234,7 +234,7 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
                     **(det.get("metadata") or {}),
                     "cards": cards,
                     "response_kind": det.get("response_kind") or "LIVE_DATA",
-                    "llm_used": False,
+                    "llm_used": bool((det.get("metadata") or {}).get("llm_used")),
                     "v2": True,
                 },
             )
@@ -424,131 +424,22 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
 
 def stream_message_deltas(*, user, conversation: Conversation, content: str):
     """
-    Yield SSE-ready dict events. Persists user + assistant messages when stream completes.
+    Yield SSE-ready dict events.
+
+    Delegates to send_message so streaming gets exactly the same deterministic-first path,
+    LLM quota, concurrency slot, persistence and audit as the regular endpoint. Local models
+    return whole completions, so the reply is emitted as one delta followed by "done".
     """
-    text = (content or "").strip()
-    if not text:
-        raise ValueError("empty_message")
-    max_chars = int(getattr(settings, "RESEARCH_COPILOT_MAX_INPUT_CHARS", 4000) or 4000)
-    if len(text) > max_chars:
-        raise ValueError("message_too_long")
-    max_user_msgs = int(getattr(settings, "RESEARCH_COPILOT_MAX_USER_MESSAGES", 40) or 40)
-    if conversation.messages.filter(role=MessageRole.USER).count() >= max_user_msgs:
-        raise ValueError("conversation_limit_reached")
-
-    ctx = build_context(user)
-    Message.objects.create(conversation=conversation, role=MessageRole.USER, content=text)
-    prior = [
-        {"role": m.role, "content": m.content}
-        for m in conversation.messages.order_by("created_at")
-        if m.role in {MessageRole.USER, MessageRole.ASSISTANT}
-    ][:-1]
-
-    from iic_booking.research_copilot.services.portal_grounding import run_portal_grounding
-    from iic_booking.research_copilot.services.prompt_builder import append_portal_context
-
-    grounding = run_portal_grounding(user=user, text=text)
-
-    retrieval = rag_svc.retrieve(
-        query=text,
-        role_bucket=ctx.role_bucket,
-        department_id=ctx.department_id,
-        user=user,
-        conversation=conversation,
-    )
-    citations = retrieval.citations
-    system = build_system_prompt(ctx)
-    system = append_portal_context(system, portal_block=grounding.get("block") or "")
-    system = append_retrieval_context(
-        system,
-        context_block=retrieval.context_block,
-        citations=citations,
-    )
-    llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
-    gateway = get_gateway()
-    from iic_booking.research_copilot.models import AuditAction
-    from iic_booking.research_copilot.services.inference_concurrency import (
-        BUSY_USER_MESSAGE,
-        CopilotBusyError,
-        acquire_generation_slot,
-    )
-
-    audit_svc.write_audit(
-        action=AuditAction.STREAM_STARTED,
-        message="Stream started",
-        user=user,
-        conversation=conversation,
-    )
-
-    pieces: list[str] = []
-    try:
-        with acquire_generation_slot(wait=False):
-            for delta in gateway.stream(llm_messages):
-                pieces.append(delta)
-                yield {"event": "delta", "data": {"text": delta}}
-    except CopilotBusyError:
-        yield {"event": "delta", "data": {"text": BUSY_USER_MESSAGE}}
-        pieces = [BUSY_USER_MESSAGE]
-
-    raw = "".join(pieces).strip() or (
-        "Research Copilot is temporarily unavailable. "
-        "Your booking and other portal operations are unaffected.\n" + ESCALATE_MARKER
-    )
-    reply, escalate = _strip_escalate(raw)
-    reply = _append_sources_footer(reply, citations)
-    confidence = _estimate_confidence(
-        escalate=escalate,
-        provider="stream",
-        text=reply,
-        retrieval_low=retrieval.low_confidence,
-        hit_count=len(citations) + len(grounding.get("tool_results") or []),
-    )
-    if confidence < CONFIDENCE_ESCALATE_THRESHOLD or retrieval.low_confidence:
-        escalate = True
-
-    base_actions = _static_actions(escalate=escalate)
-    for a in reversed(grounding.get("actions") or []):
-        if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
-            base_actions.insert(0, a)
-
-    assistant = Message.objects.create(
-        conversation=conversation,
-        role=MessageRole.ASSISTANT,
-        content=reply,
-        confidence=confidence,
-        citations=rag_svc.citations_as_dicts(citations),
-        suggested_actions=tools_svc.enrich_actions_from_message(
-            user=user,
-            text=text,
-            base_actions=base_actions,
-        ),
-        escalate_hint=escalate,
-        metadata={
-            "streamed": True,
-            "intent": retrieval.intent,
-            "portal_tools": grounding.get("tool_results") or [],
-            "response_modes": grounding.get("modes") or [],
-        },
-    )
-    if not conversation.title or conversation.title == "New conversation":
-        conversation.title = text[:80]
-        conversation.save(update_fields=["title", "updated_at"])
-    else:
-        conversation.save(update_fields=["updated_at"])
-
-    if escalate:
-        KnowledgeGap.objects.create(
-            conversation=conversation,
-            user=user,
-            query_summary=text[:512],
-            reason="escalate_hint_stream",
-        )
-
+    result = send_message(user=user, conversation=conversation, content=content)
+    message = result.get("message") or {}
+    yield {"event": "delta", "data": {"text": message.get("content") or ""}}
     yield {
         "event": "done",
         "data": {
-            "message": serialize_message(assistant),
-            "suggested_prompts": _suggested_for(ctx),
+            "message": message,
+            "suggested_prompts": result.get("suggested_prompts") or [],
+            "cards": result.get("cards") or [],
+            "response_kind": result.get("response_kind"),
         },
     }
 
@@ -740,14 +631,14 @@ def public_ask(*, text: str) -> dict:
             "message": {
                 "role": "assistant",
                 "content": det.get("content") or "",
-                "citations": [],
+                "citations": list((det.get("metadata") or {}).get("citations") or []),
                 "suggested_actions": list(det.get("suggested_actions") or []),
                 "escalate_hint": bool(det.get("escalate_hint")),
                 "metadata": {
                     **(det.get("metadata") or {}),
                     "cards": cards,
                     "public": True,
-                    "llm_used": False,
+                    "llm_used": bool((det.get("metadata") or {}).get("llm_used")),
                     "v2": True,
                 },
             },

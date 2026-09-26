@@ -208,4 +208,5 @@ dependencies = [
     "uvicorn-worker==0.4.0",
     "uvicorn[standard]==0.38.0",
     "whitenoise==6.11.0",
+    "pypdf>=6.19.0",
 ]

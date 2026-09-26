@@ -29,6 +29,7 @@ urlpatterns = [
     ),
     path("tools/execute/", api_views.execute_tool, name="tools-execute"),
     path("mutations/confirm/", api_views.confirm_mutation, name="mutations-confirm"),
+    path("mutations/prepare/", api_views.prepare_mutation, name="mutations-prepare"),
     path("llm/health/", api_views.llm_provider_health, name="llm-provider-health"),
     # Knowledge Engine (AI.2)
     path("knowledge/search/", knowledge_views.knowledge_search, name="knowledge-search"),
@@ -42,6 +43,22 @@ urlpatterns = [
         "knowledge/documents/<uuid:document_id>/reindex/",
         knowledge_views.knowledge_document_reindex,
         name="knowledge-document-reindex",
+    ),
+    path(
+        "knowledge/documents/<uuid:document_id>/file/",
+        knowledge_views.knowledge_document_file,
+        name="knowledge-document-file",
+    ),
+    path("knowledge/manuals/", knowledge_views.knowledge_manuals, name="knowledge-manuals"),
+    path(
+        "knowledge/manuals/<uuid:document_id>/reindex/",
+        knowledge_views.knowledge_manual_reindex,
+        name="knowledge-manual-reindex",
+    ),
+    path(
+        "knowledge/manuals/<uuid:document_id>/archive/",
+        knowledge_views.knowledge_manual_archive,
+        name="knowledge-manual-archive",
     ),
     path("knowledge/rebuild-index/", knowledge_views.knowledge_rebuild_index, name="knowledge-rebuild"),
     path("knowledge/seed/", knowledge_views.knowledge_seed, name="knowledge-seed"),

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from decimal import Decimal
+from datetime import datetime
 from typing import Any
 
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
-from iic_booking.equipment.models import DailySlot, Equipment, SlotStatus
+from iic_booking.equipment.models import Equipment
 from iic_booking.research_copilot.services.v2 import flag
 from iic_booking.research_copilot.services.v2.datetime_resolver import DateWindow, resolve_date_window
 from iic_booking.research_copilot.services.v2.equipment_resolver import resolve_equipment
@@ -54,47 +53,61 @@ def search_available_slots(*, user, text: str, equipment_id: int | None = None, 
             actions=[{"id": "open_equipments", "label": "Browse equipment", "href": "/equipments", "enabled": True}],
         )
 
+    from iic_booking.research_copilot.services.v2.slot_availability import find_bookable_slots
+
     window: DateWindow = resolve_date_window(text)
     eq = Equipment.objects.filter(pk=resolved.equipment_id).first()
     name = eq.name if eq else (resolved.equipment_name or "Equipment")
+    signed_in = bool(user is not None and getattr(user, "is_authenticated", False))
 
     ttl = int(getattr(settings, "COPILOT_AVAILABILITY_CACHE_TTL_SECONDS", 45) or 45)
+    viewer = f"u{user.pk}" if signed_in else "anon"
     ck = _slot_cache_key(resolved.equipment_id, window.start_date.isoformat(), window.end_date.isoformat())
+    ck = f"{ck}:{viewer}:{window.after_time or ''}"
     cached = cache.get(ck)
     if cached is not None:
-        rows = cached
+        lookup_data = cached
     else:
-        qs = (
-            DailySlot.objects.filter(
-                slot_master__equipment_id=resolved.equipment_id,
-                date__gte=window.start_date,
-                date__lte=window.end_date,
-                status=SlotStatus.AVAILABLE,
-                booking__isnull=True,
-            )
-            .select_related("slot_master")
-            .order_by("start_datetime")[:80]
+        lookup = find_bookable_slots(
+            user=user if signed_in else None,
+            equipment_id=resolved.equipment_id,
+            start_date=window.start_date,
+            end_date=window.end_date,
+            after_time=window.after_time,
         )
-        rows = []
-        for s in qs:
-            if window.after_time and s.start_datetime:
-                local_t = timezone.localtime(s.start_datetime).time()
-                if local_t < window.after_time:
-                    continue
-            rows.append(
-                {
-                    "slot_id": s.pk,
-                    "date": s.date.isoformat() if s.date else None,
-                    "start": s.start_datetime.isoformat() if s.start_datetime else None,
-                    "end": s.end_datetime.isoformat() if s.end_datetime else None,
-                    "status": s.status,
-                }
-            )
-        cache.set(ck, rows, ttl)
+        lookup_data = {
+            "ok": lookup.ok,
+            "rows": lookup.rows,
+            "message": lookup.message,
+            "error": lookup.error,
+            "bookable_equipment": lookup.bookable_equipment,
+            "slot_window_max_date": lookup.slot_window_max_date,
+        }
+        cache.set(ck, lookup_data, ttl)
 
-    # earliest → keep first few; cheapest placeholder uses first (estimate separate)
-    earliest = "earliest" in (text or "").lower() or "first available" in (text or "").lower()
+    equipment_href = f"/equipment/{resolved.equipment_id}"
+    book_href = f"/book-equipment?equipment_id={resolved.equipment_id}"
+    if not lookup_data.get("ok"):
+        return build_response(
+            kind="LIVE_DATA",
+            content=lookup_data.get("message") or "Slot availability could not be loaded.",
+            actions=[{"id": "view_equipment", "label": f"View {name}", "href": equipment_href, "enabled": True}],
+            metadata={"equipment_id": resolved.equipment_id, "error": lookup_data.get("error"), "deterministic": True},
+        )
+
+    rows = lookup_data.get("rows") or []
+    lowered = (text or "").lower()
+    earliest = "earliest" in lowered or "first available" in lowered or "next available" in lowered
     display_rows = rows[:5] if earliest else rows[:12]
+
+    content = slots_markdown(equipment_name=name, rows=display_rows, window_label=window.label)
+    if not lookup_data.get("bookable_equipment", True) and lookup_data.get("message"):
+        content = lookup_data["message"]
+    elif not display_rows and lookup_data.get("slot_window_max_date"):
+        content += (
+            f"\n\nBooking for your account currently opens up to **{lookup_data['slot_window_max_date']}**; "
+            "later dates appear once the slot window opens."
+        )
 
     cards = [
         {
@@ -102,28 +115,35 @@ def search_available_slots(*, user, text: str, equipment_id: int | None = None, 
             "title": f"{name} — Available",
             "window": window.label,
             "equipment_id": resolved.equipment_id,
+            "equipment_name": name,
             "items": display_rows,
+            "can_book": signed_in,
         }
     ]
-    actions = [
-        {
-            "id": "view_equipment",
-            "label": f"View {name}",
-            "href": f"/equipments/{resolved.equipment_id}",
-            "enabled": True,
-        },
-        {
-            "id": "book_equipment",
-            "label": "Book",
-            "href": f"/book-equipment?equipment={resolved.equipment_id}",
-            "enabled": True,
-            "requires_confirmation": True,
-            "hint": "Opens portal booking — Copilot Phase A does not create bookings.",
-        },
+    actions: list[dict[str, Any]] = [
+        {"id": "view_equipment", "label": f"View {name}", "href": equipment_href, "enabled": True},
     ]
+    if signed_in:
+        actions.append({"id": "book_equipment", "label": "Open booking page", "href": book_href, "enabled": True})
+        for row in display_rows[:3]:
+            start_local = timezone.localtime(datetime.fromisoformat(row["start"]))
+            actions.append(
+                {
+                    "id": f"book_slot_{row['slot_id']}",
+                    "label": f"Book {start_local.strftime('%a %d %b %H:%M')}",
+                    "type": "copilot_prepare_booking",
+                    "enabled": True,
+                    "requires_confirmation": True,
+                    "payload": {"equipment_id": resolved.equipment_id, "slot_ids": [row["slot_id"]]},
+                }
+            )
+    else:
+        actions.append(
+            {"id": "sign_in_to_book", "label": "Sign in to book", "href": "/auth", "enabled": True}
+        )
     return build_response(
         kind="LIVE_DATA",
-        content=slots_markdown(equipment_name=name, rows=display_rows, window_label=window.label),
+        content=content,
         cards=cards,
         actions=actions,
         metadata={
@@ -132,6 +152,7 @@ def search_available_slots(*, user, text: str, equipment_id: int | None = None, 
             "equipment_resolution": resolved.confidence,
             "window": window.label,
             "slot_count": len(display_rows),
+            "earliest_slot_id": display_rows[0]["slot_id"] if display_rows else None,
             "deterministic": True,
         },
     )
@@ -551,4 +572,257 @@ def docs_rag(*, user, text: str) -> dict:
         content="\n".join(lines),
         actions=actions,
         metadata={"deterministic": True, "rag": True, "citations": cites},
+    )
+
+
+MANUAL_NOT_FOUND_MARKER = "NOT_IN_MANUAL"
+
+_MANUAL_SYSTEM_PROMPT = (
+    "You are IIC Research Copilot. Answer the user's question about the instrument \"{name}\" "
+    "using ONLY the numbered manual excerpts provided.\n"
+    "Rules:\n"
+    "- Every factual statement must end with its excerpt number in square brackets, e.g. [2].\n"
+    "- Never invent values, settings, limits, part numbers or procedures that are not in the excerpts.\n"
+    "- Reproduce safety warnings faithfully; do not soften them.\n"
+    "- If the excerpts do not answer the question, reply with exactly " + MANUAL_NOT_FOUND_MARKER + " and nothing else.\n"
+    "- Be concise: at most 180 words; use short numbered steps for procedures."
+)
+
+
+def _page_label(p: dict) -> str:
+    page, end = p.get("page"), p.get("page_end")
+    if page and end and end != page:
+        return f"pp. {page}-{end}"
+    if page:
+        return f"p. {page}"
+    return ""
+
+
+def _manual_citations(passages: list[dict], *, signed_in: bool) -> list[dict]:
+    out = []
+    for i, p in enumerate(passages, 1):
+        can_open = bool(p.get("has_file") and signed_in)
+        out.append(
+            {
+                "n": i,
+                "source_id": p["document_id"],
+                "document_id": p["document_id"],
+                "title": p.get("title") or "Manual",
+                "snippet": (p.get("content") or "")[:300],
+                "page": p.get("page"),
+                "page_end": p.get("page_end"),
+                "page_label": _page_label(p),
+                "has_file": can_open,
+                "file_endpoint": f"/api/v1/research-copilot/knowledge/documents/{p['document_id']}/file/" if can_open else "",
+                "url": "",
+                "category": "operator_manual",
+                "source_type": "manual",
+                "score": round(float(p.get("score") or 0.0), 3),
+            }
+        )
+    return out
+
+
+def _sources_block(citations: list[dict], used: set[int] | None = None) -> str:
+    lines = ["", "**Sources**"]
+    for c in citations:
+        if used is not None and c["n"] not in used:
+            continue
+        label = c.get("page_label")
+        lines.append(f"[{c['n']}] {c['title']}" + (f", {label}" if label else ""))
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+def _equipment_profile(eq) -> list[str]:
+    lines: list[str] = []
+    if getattr(eq, "important_instruction", None):
+        lines.append(f"**Important instructions:** {str(eq.important_instruction).strip()[:800]}")
+    if getattr(eq, "description", None):
+        lines.append(f"**Description:** {str(eq.description).strip()[:800]}")
+    try:
+        specs = list(eq.equipment_specifications.all().order_by("equipment_specification_id")[:12])
+    except Exception:  # noqa: BLE001
+        specs = []
+    if specs:
+        lines.append("**Specifications:**")
+        for s in specs:
+            lines.append(f"- {s.spec_key}: {str(s.spec_value).strip()[:200]}")
+    return lines
+
+
+def _resolve_manual_equipment(*, user, text: str, context_equipment_id: int | None):
+    """Returns (equipment_id, equipment_name, resolution)."""
+    from iic_booking.research_copilot.services import rag as rag_svc
+
+    resolved = resolve_equipment(text=text, user=user, context_equipment_id=context_equipment_id)
+    if resolved.confidence != "AMBIGUOUS":
+        return resolved.equipment_id, resolved.equipment_name, resolved
+    lower = (text or "").lower()
+    named = [
+        c
+        for c in resolved.candidates
+        if (c.name and c.name.lower() in lower) or (c.code and len(c.code) >= 4 and c.code.lower() in lower)
+    ]
+    if len(named) == 1:
+        return named[0].id, named[0].name, resolved
+    with_manual = [c for c in resolved.candidates if rag_svc.equipment_has_manual(equipment_id=c.id)]
+    if len(with_manual) == 1:
+        return with_manual[0].id, with_manual[0].name, resolved
+    return None, None, resolved
+
+
+def _generate_manual_answer(*, user, name: str, text: str, passages: list[dict]) -> tuple[str | None, str]:
+    """Returns (answer_text or None, reason) where reason explains a None answer."""
+    from iic_booking.research_copilot.services.inference_concurrency import CopilotBusyError, acquire_generation_slot
+    from iic_booking.research_copilot.services.llm_gateway import default_max_tokens, get_gateway
+    from iic_booking.research_copilot.throttles import consume_llm_quota
+
+    if not flag("COPILOT_MANUAL_LLM", True):
+        return None, "llm_disabled"
+    ok, _msg = consume_llm_quota(user=user)
+    if not ok:
+        return None, "quota"
+    # Small CPU-hosted model behind a request-scoped timeout: keep the prompt short.
+    excerpts = []
+    for i, p in enumerate(passages[:4], 1):
+        label = _page_label(p)
+        head = f"[{i}] {p.get('title') or 'Manual'}" + (f" ({label})" if label else "")
+        excerpts.append(f"{head}\n{(p.get('content') or '')[:1100]}")
+    messages = [
+        {"role": "system", "content": _MANUAL_SYSTEM_PROMPT.format(name=name)},
+        {"role": "user", "content": "Manual excerpts:\n\n" + "\n\n".join(excerpts) + f"\n\nQuestion: {text}"},
+    ]
+    try:
+        with acquire_generation_slot(wait=False):
+            result = get_gateway().generate(messages, max_tokens=min(default_max_tokens(), 450))
+    except CopilotBusyError:
+        return None, "busy"
+    except Exception:  # noqa: BLE001
+        return None, "error"
+    answer = (getattr(result, "text", "") or "").strip() if result else ""
+    if not answer or getattr(result, "error_category", ""):
+        return None, "unavailable"
+    return answer, ""
+
+
+def equipment_manual_answer(*, user, text: str, context_equipment_id: int | None = None) -> dict | None:
+    """
+    Grounded answer from the uploaded manual(s) of one equipment, with page citations.
+
+    Returns None when the question does not name a known equipment, so the caller can fall back
+    to general document search.
+    """
+    import re
+
+    from iic_booking.research_copilot.services import rag as rag_svc
+    from iic_booking.research_copilot.services.context_builder import build_context
+
+    if not flag("COPILOT_RAG", True):
+        return None
+    eid, name, resolved = _resolve_manual_equipment(user=user, text=text, context_equipment_id=context_equipment_id)
+    if eid is None and resolved.confidence == "AMBIGUOUS":
+        return build_response(
+            kind="CLARIFICATION",
+            content=clarify_equipment_markdown(resolved.candidates),
+            cards=[
+                {
+                    "type": "equipment_choice",
+                    "title": "Select equipment",
+                    "items": [{"id": c.id, "name": c.name, "href": c.url} for c in resolved.candidates],
+                }
+            ],
+            actions=[
+                {"id": f"eq_{c.id}", "label": c.name, "prompt": f"{c.name}: {text}", "enabled": True}
+                for c in resolved.candidates[:5]
+            ],
+            metadata={"deterministic": True, "equipment_resolution": resolved.confidence},
+        )
+    if eid is None:
+        return None
+
+    from iic_booking.research_copilot.services.v2.equipment_resolver import _qs_visible
+
+    eq = _qs_visible(user).filter(pk=eid).first()
+    if eq is None:
+        return None
+    name = eq.name or name or "Equipment"
+    signed_in = bool(user is not None and getattr(user, "is_authenticated", False))
+    ctx = build_context(user if signed_in else None)
+    passages = rag_svc.manual_passages(
+        query=text,
+        equipment_id=eid,
+        role_bucket=ctx.role_bucket,
+        department_id=ctx.department_id,
+    )
+    equipment_href = f"/equipment/{eid}"
+    base_actions = [
+        {"id": "open_equipment", "label": "Equipment page", "href": equipment_href, "enabled": True},
+        {"id": "find_slots", "label": "Find slots", "prompt": f"Search available slots for {name} this week", "enabled": True},
+    ]
+    meta = {"deterministic": True, "rag": True, "manual": True, "equipment_id": eid, "equipment_name": name}
+
+    if not passages:
+        profile = _equipment_profile(eq)
+        lines = [f"No operating manual has been published for **{name}** in Copilot yet."]
+        if profile:
+            lines += ["", "Here is what the equipment page lists:", "", *profile]
+        lines += ["", "For anything not covered here, contact the facility in-charge or raise a ticket."]
+        return build_response(
+            kind="ANSWER",
+            content="\n".join(lines),
+            actions=base_actions,
+            escalate=not profile,
+            metadata={**meta, "manual_found": False, "citations": []},
+        )
+
+    citations = _manual_citations(passages, signed_in=signed_in)
+    card = {"type": "manual_sources", "title": f"{name} manual", "equipment_id": eid, "items": citations}
+    answer, reason = _generate_manual_answer(user=user, name=name, text=text, passages=passages)
+
+    if answer is not None and MANUAL_NOT_FOUND_MARKER not in answer:
+        used = {int(n) for n in re.findall(r"\[(\d{1,2})\]", answer) if 1 <= int(n) <= len(citations)}
+        answer = re.sub(
+            r"\[(\d{1,2})\]",
+            lambda m: m.group(0) if 1 <= int(m.group(1)) <= len(citations) else "",
+            answer,
+        )
+        if used:
+            content = answer + "\n" + _sources_block(citations, used)
+            return build_response(
+                kind="ANSWER",
+                content=content,
+                cards=[card],
+                actions=base_actions,
+                metadata={**meta, "manual_found": True, "llm_used": True, "citations": citations},
+            )
+        reason = "ungrounded"
+
+    if answer is not None and MANUAL_NOT_FOUND_MARKER in answer:
+        lines = [
+            f"The published manual for **{name}** does not appear to cover that. Closest sections:",
+            "",
+        ]
+        for c in citations[:3]:
+            lines.append(f"- [{c['n']}] {c['page_label'] or c['title']}: {c['snippet'][:200]}")
+        lines += ["", "Please check with the facility in-charge for anything not in the manual."]
+        return build_response(
+            kind="ANSWER",
+            content="\n".join(lines) + "\n" + _sources_block(citations[:3]),
+            cards=[card],
+            actions=base_actions,
+            escalate=True,
+            metadata={**meta, "manual_found": True, "llm_used": True, "answer_in_manual": False, "citations": citations},
+        )
+
+    lines = [f"**From the {name} manual**", ""]
+    for c in citations[:4]:
+        lines.append(f"- [{c['n']}] {c['snippet'][:280].strip()}")
+    if reason in {"busy", "quota"}:
+        lines += ["", "_AI summaries are temporarily unavailable, so these are the most relevant manual passages._"]
+    return build_response(
+        kind="ANSWER",
+        content="\n".join(lines) + "\n" + _sources_block(citations[:4]),
+        cards=[card],
+        actions=base_actions,
+        metadata={**meta, "manual_found": True, "llm_used": False, "llm_skipped": reason, "citations": citations},
     )

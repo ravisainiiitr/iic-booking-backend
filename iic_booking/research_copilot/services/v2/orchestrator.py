@@ -143,6 +143,44 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
             metadata={"deterministic": True, "equipment_id": prep.get("equipment_id")},
         )
 
+    if prep.get("status") == "NEEDS_PORTAL_FORM":
+        return build_response(
+            kind="ACTION_REQUIRED",
+            content=prep.get("message") or "Complete this booking on the booking page.",
+            actions=[
+                {
+                    "id": "portal_booking",
+                    "label": "Open booking page",
+                    "href": prep.get("portal_href") or "/equipments",
+                    "enabled": True,
+                }
+            ],
+            metadata={"deterministic": True, "equipment_id": prep.get("equipment_id")},
+        )
+
+    if prep.get("status") == "RECHARGE_GUIDANCE":
+        href = prep.get("portal_href") or "/wallet?recharge=1"
+        return build_response(
+            kind="LIVE_DATA",
+            content=prep.get("message") or "Open the Wallet page to recharge.",
+            cards=[
+                {
+                    "type": "recharge_guidance",
+                    "title": "Recharge your wallet",
+                    "wallet_balance": prep.get("wallet_balance"),
+                    "sub_wallets": prep.get("sub_wallets") or [],
+                    "amount": prep.get("amount"),
+                    "department_id": prep.get("department_id"),
+                    "portal_href": href,
+                }
+            ],
+            actions=[
+                {"id": "open_recharge", "label": "Open recharge form", "href": href, "enabled": True},
+                {"id": "wallet_credit", "label": "Request wallet credit", "href": "/wallet/credit-facility", "enabled": True},
+            ],
+            metadata={"deterministic": True, "source": "PORTAL_DATA"},
+        )
+
     if prep.get("status") == "NEEDS_AMOUNT":
         return build_response(
             kind="CLARIFICATION",
@@ -231,7 +269,7 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
     lines.append(prep.get("message") or "Confirm to proceed.")
     if not prep.get("executable"):
         lines.append("")
-        lines.append("_Mutation execute flag is OFF — Confirm will not move money until financial enablement._")
+        lines.append("_Copilot can't complete this action for your account yet — use the portal link instead._")
 
     return build_response(
         kind="ACTION_PREPARATION",
@@ -361,6 +399,10 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
         result = read_tools.affiliations(user=user)
     elif intent.intent == "pending_actions":
         result = read_tools.pending_actions(user=user)
+    elif intent.intent == "equipment_manual":
+        result = read_tools.equipment_manual_answer(user=user, text=text, context_equipment_id=ctx_eq)
+        if result is None:
+            result = read_tools.docs_rag(user=user, text=text)
     elif intent.intent == "docs_rag":
         result = read_tools.docs_rag(user=user, text=text)
     elif intent.intent == "prepare_booking":
@@ -437,7 +479,7 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
     meta = dict(result.get("metadata") or {})
     meta["intent"] = intent.intent
     meta["v2"] = True
-    meta["llm_used"] = False
+    meta["llm_used"] = bool(meta.get("llm_used", False))
     result["metadata"] = meta
     _store_context(conversation, meta)
     return result

@@ -140,7 +140,7 @@ class PhaseBCreateWithFlagTests(SimpleTestCase):
         )
         with patch.object(prop_store, "validate_proposal_for_user", return_value=(prop, None)), patch.object(
             booking_mut, "_load_slot", return_value=(slot, None)
-        ), patch(
+        ), patch.object(booking_mut, "_slots_bookable_for_user", return_value=True), patch(
             "iic_booking.research_copilot.services.v2.mutations.domain_bridge.call_book_equipment",
             return_value=(201, {"booking_id": 555, "real_booking_id": 555}),
         ) as mock_book, patch.object(prop_store, "invalidate_proposal"), patch.object(
@@ -171,6 +171,29 @@ class PhaseBCreateWithFlagTests(SimpleTestCase):
             )
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "SLOT_UNAVAILABLE")
+
+    def test_slot_outside_portal_rules_blocks_execute(self):
+        user = _user(3)
+        prop = {
+            "proposal_id": "p4",
+            "confirmation_token": "tok",
+            "action": "CREATE_BOOKING",
+            "user_id": 3,
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "payload": {"equipment_id": 10, "slot_ids": [100]},
+        }
+        slot = SimpleNamespace(pk=100, status="AVAILABLE", booking_id=None, slot_master=SimpleNamespace(equipment_id=10))
+        with patch.object(prop_store, "validate_proposal_for_user", return_value=(prop, None)), patch.object(
+            booking_mut, "_load_slot", return_value=(slot, None)
+        ), patch.object(booking_mut, "_slots_bookable_for_user", return_value=False), patch(
+            "iic_booking.research_copilot.services.v2.mutations.domain_bridge.call_book_equipment"
+        ) as mock_book, patch.object(idem, "get_cached_result", return_value=None), patch.object(booking_mut, "_audit"):
+            out = booking_mut.execute_booking_create(
+                user=user, proposal_id="p4", confirmation_token="tok", idempotency_key="idem-3"
+            )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "SLOT_NOT_BOOKABLE")
+        mock_book.assert_not_called()
 
 
 @override_settings(COPILOT_BOOKING_CANCEL=True)

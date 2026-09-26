@@ -40,6 +40,42 @@ def split_text(text: str, *, chunk_size: int = 500, overlap: int = 80) -> list[s
     return chunks
 
 
+PAGE_BREAK = "\f"
+
+
+def split_pages(pages: list[str], *, chunk_size: int = 350, overlap: int = 60) -> list[tuple[str, int, int]]:
+    """
+    Word-window chunks across a paged document. Returns (text, first_page, last_page), pages 1-based.
+
+    Windows may span a page boundary so short pages are not isolated; citations use the first page.
+    """
+    words: list[tuple[str, int]] = []
+    for page_no, page_text in enumerate(pages, start=1):
+        words.extend((w, page_no) for w in (page_text or "").split())
+    if not words:
+        return []
+    out: list[tuple[str, int, int]] = []
+    start = 0
+    while start < len(words):
+        end = min(len(words), start + chunk_size)
+        window = words[start:end]
+        out.append((" ".join(w for w, _ in window), window[0][1], window[-1][1]))
+        if end >= len(words):
+            break
+        start = max(end - overlap, start + 1)
+    return out
+
+
+def document_chunks(doc: KnowledgeDocument) -> list[tuple[str, dict]]:
+    text = doc.content_text or ""
+    if PAGE_BREAK in text:
+        return [
+            (part, {"page": first, "page_end": last})
+            for part, first, last in split_pages(text.split(PAGE_BREAK))
+        ]
+    return [(part, {}) for part in split_text(text)]
+
+
 def content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
@@ -125,13 +161,16 @@ def index_document(doc: KnowledgeDocument) -> EmbeddingJob:
 
     try:
         # Replace chunks
-        KnowledgeChunk.objects.filter(document=doc).delete()
-        parts = split_text(doc.content_text)
+        parts = document_chunks(doc)
         if not parts:
             raise ValueError("empty_document")
-        vectors = provider.embed_texts(parts)
+        # Embed before touching existing chunks so a failed embedding run keeps the previous index.
+        vectors = provider.embed_texts([f"{doc.title}\n{part}" for part, _meta in parts])
+        if len(vectors) != len(parts):
+            raise ValueError("embedding_count_mismatch")
+        KnowledgeChunk.objects.filter(document=doc).delete()
         chunks: list[KnowledgeChunk] = []
-        for i, (part, vec) in enumerate(zip(parts, vectors)):
+        for i, ((part, extra), vec) in enumerate(zip(parts, vectors)):
             chunk = KnowledgeChunk.objects.create(
                 document=doc,
                 chunk_index=i,
@@ -141,6 +180,8 @@ def index_document(doc: KnowledgeDocument) -> EmbeddingJob:
                     "category": doc.category,
                     "security_level": doc.security_level,
                     "title": doc.title,
+                    "equipment_id": doc.equipment_id,
+                    **extra,
                 },
                 embedding=vec,
                 embedding_model=provider.name,
@@ -170,7 +211,8 @@ def index_document(doc: KnowledgeDocument) -> EmbeddingJob:
         job.save(update_fields=["status", "finished_at", "detail"])
     except Exception as exc:
         doc.index_status = IndexStatus.FAILED
-        doc.status = DocumentStatus.FAILED
+        if not KnowledgeChunk.objects.filter(document=doc).exists():
+            doc.status = DocumentStatus.FAILED
         doc.error_message = str(exc)[:2000]
         doc.save(update_fields=["index_status", "status", "error_message", "updated_at"])
         job.status = IndexStatus.FAILED

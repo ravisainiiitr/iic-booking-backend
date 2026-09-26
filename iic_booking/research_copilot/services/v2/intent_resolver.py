@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,53 @@ class ResolvedIntent:
     params: dict[str, Any] = field(default_factory=dict)
     needs_equipment: bool = False
     needs_auth: bool = False
+
+
+_MANUAL_PHRASES = (
+    "manual",
+    "operating procedure",
+    "operating instruction",
+    "how to operate",
+    "how do i operate",
+    "how to use the",
+    "how do i use the",
+    "how to run",
+    "how do i run",
+    "specification",
+    "spec sheet",
+    "sample prep",
+    "sample preparation",
+    "prepare my sample",
+    "prepare the sample",
+    "prepare sample",
+    "how do i prepare",
+    "sample size",
+    "sample requirement",
+    "sample holder",
+    "how much sample",
+    "maximum sample",
+    "minimum sample",
+    "safety",
+    "precaution",
+    "calibrat",
+    "troubleshoot",
+    "error code",
+    "detector",
+    "resolution of",
+    "accelerating voltage",
+    "vacuum level",
+    "before using",
+    "startup procedure",
+    "shutdown procedure",
+)
+_MANUAL_TOKENS = re.compile(r"(?<![a-z0-9])(sop|sops|specs)(?![a-z0-9])")
+_PRICE_WORDS = ("cost", "price", "fee ", "fees", "charge", "tariff", "rate card")
+
+
+def _is_manual_question(lower: str) -> bool:
+    if any(w in lower for w in _PRICE_WORDS):
+        return False
+    return any(p in lower for p in _MANUAL_PHRASES) or _MANUAL_TOKENS.search(lower) is not None
 
 
 def resolve_intent(text: str) -> ResolvedIntent:
@@ -152,6 +200,11 @@ def resolve_intent(text: str) -> ResolvedIntent:
         return ResolvedIntent("ra_status", True, needs_auth=True)
     if any(x in lower for x in ("my faculty", "who is my faculty", "my affiliation", "my supervisor")):
         return ResolvedIntent("affiliations", True, needs_auth=True)
+
+    # Equipment manual questions (operation, specs, sample prep, safety). Before availability/cost so
+    # "maximum sample size" or "how much sample" is answered from the manual, not as a price estimate.
+    if _is_manual_question(lower):
+        return ResolvedIntent("equipment_manual", True, needs_equipment=True)
 
     # Availability
     slot_words = ("slot", "slots", "availability", "available", "free slot", "earliest", "this week", "tomorrow")

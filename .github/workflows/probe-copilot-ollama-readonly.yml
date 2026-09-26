@@ -97,7 +97,7 @@ jobs:
                       val = "****" if val else ""
                   print(f"SETTING {name}= {val!r}"[:200])
           from iic_booking.research_copilot.services.conversation import feature_enabled
-          print("feature_enabled(anonymous)=", feature_enabled(None))
+          print("feature_enabled(anonymous)=", feature_enabled(user=None))
           from django.apps import apps
           for label in ("Conversation", "Message", "KnowledgeDocument", "KnowledgeChunk", "CopilotAuditEvent"):
               print(f"rows {label}=", apps.get_model("research_copilot", label).objects.count())

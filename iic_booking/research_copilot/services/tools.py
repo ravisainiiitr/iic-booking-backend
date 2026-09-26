@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from django.utils import timezone
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -92,7 +94,8 @@ def _search_equipment(*, arguments: dict, user) -> dict:
 
 
 def _search_slots(*, arguments: dict, user) -> dict:
-    from iic_booking.equipment.models import DailySlot, Equipment, SlotStatus
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.research_copilot.services.v2.slot_availability import find_bookable_slots
 
     equipment_id = arguments.get("equipment_id")
     day_raw = arguments.get("date") or arguments.get("day")
@@ -108,65 +111,56 @@ def _search_slots(*, arguments: dict, user) -> dict:
     except ValueError:
         return _err("invalid_date", "date must be YYYY-MM-DD")
 
-    qs = (
-        DailySlot.objects.filter(
-            slot_master__equipment=eq,
-            date=day,
-            status=SlotStatus.AVAILABLE,
-            booking__isnull=True,
-        )
-        .select_related("slot_master")
-        .order_by("start_datetime")[:40]
-    )
-    slots = [
-        {
-            "slot_id": s.pk,
-            "start": s.start_datetime.isoformat() if s.start_datetime else None,
-            "end": s.end_datetime.isoformat() if s.end_datetime else None,
-            "status": s.status,
-        }
-        for s in qs
-    ]
+    public_mode = bool(arguments.get("public") or arguments.get("anonymous"))
+    viewer = None if public_mode else user
+    lookup = find_bookable_slots(user=viewer, equipment_id=eq.pk, start_date=day, end_date=day, limit=40)
+    if not lookup.ok:
+        return _err((lookup.error or "slots_unavailable").lower(), lookup.message or "Slots unavailable")
+    slots = [{"slot_id": r["slot_id"], "start": r["start"], "end": r["end"], "status": r["status"]} for r in lookup.rows]
 
     if not slots:
+        note = lookup.message or (
+            "No bookable slots for this date. Open the equipment page for the live calendar."
+        )
+        if lookup.slot_window_max_date:
+            note += f" Your booking window currently extends to {lookup.slot_window_max_date}."
         return _ok(
             {
                 "equipment_id": eq.pk,
                 "equipment_name": eq.name,
                 "date": day.isoformat(),
                 "slots": [],
-                "note": "No AVAILABLE unbooked slots found for this date in portal data. Open the equipment page for the authoritative calendar (generation/window rules may apply).",
+                "note": note,
             },
             actions=[
                 {
                     "id": "open_equipment_slots",
                     "label": f"View availability — {eq.name}",
-                    "href": f"/equipments/{eq.pk}",
+                    "href": f"/equipment/{eq.pk}",
                     "enabled": True,
                 }
             ],
         )
 
-    public_mode = bool(arguments.get("public") or arguments.get("anonymous"))
     actions: list[dict] = [
         {
             "id": "open_equipment_slots",
             "label": f"View availability — {eq.name}",
-            "href": f"/equipments/{eq.pk}",
+            "href": f"/equipment/{eq.pk}",
             "enabled": True,
         }
     ]
     if not public_mode:
         actions = [
             {
-                "id": f"book_slot_{i}",
-                "label": f"Review & book {s.get('start') or 'slot'}",
-                "href": f"/book-equipment?equipment={eq.pk}&date={day.isoformat()}",
+                "id": f"book_slot_{s['slot_id']}",
+                "label": f"Book {timezone.localtime(datetime.fromisoformat(s['start'])).strftime('%H:%M')}",
+                "type": "copilot_prepare_booking",
                 "enabled": True,
                 "requires_confirmation": True,
-                "hint": "Opens portal booking; confirmation uses normal booking APIs.",
+                "payload": {"equipment_id": eq.pk, "slot_ids": [s["slot_id"]]},
             }
-            for i, s in enumerate(slots[:5])
+            for s in slots[:5]
         ] + actions
     else:
         actions.append(
@@ -545,7 +539,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
                 {
                     "id": "open_book_equipment",
                     "label": f"Review charges — {eq.name}",
-                    "href": f"/book-equipment?equipment={eq.pk}",
+                    "href": f"/book-equipment?equipment_id={eq.pk}",
                     "enabled": True,
                     "requires_confirmation": not public_mode,
                 }
@@ -602,7 +596,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
         {
             "id": "open_book_equipment",
             "label": f"Review charges — {eq.name}",
-            "href": f"/book-equipment?equipment={eq.pk}",
+            "href": f"/book-equipment?equipment_id={eq.pk}",
             "enabled": True,
             "requires_confirmation": not public_mode,
             "hint": "Portal calculate is the source of truth for cost.",

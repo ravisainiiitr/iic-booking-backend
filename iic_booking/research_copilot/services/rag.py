@@ -49,7 +49,14 @@ class RetrievalResult:
     context_block: str = ""
 
 
-def _keyword_search(*, query: str, allowed_levels: set[str], department_id: int | None, limit: int = 8) -> list[Citation]:
+def _keyword_search(
+    *,
+    query: str,
+    allowed_levels: set[str],
+    department_id: int | None,
+    limit: int = 8,
+    equipment_id: int | None = None,
+) -> list[Citation]:
     tokens = _TOKEN_RE.findall((query or "").lower())
     if not tokens:
         return []
@@ -64,6 +71,8 @@ def _keyword_search(*, query: str, allowed_levels: set[str], department_id: int 
     )
     if department_id is not None:
         qs = qs.filter(Q(document__department_id__isnull=True) | Q(document__department_id=department_id))
+    if equipment_id is not None:
+        qs = qs.filter(document__equipment_id=int(equipment_id))
 
     hits: list[Citation] = []
     for chunk in qs.order_by("chunk_index")[:40]:
@@ -139,6 +148,8 @@ def retrieve(
             allowed_levels=levels,
             department_id=department_id,
             limit=8,
+            embedding_model=provider.name,
+            embedding_version=provider.version,
         ):
             candidates.append(
                 Citation(
@@ -196,3 +207,113 @@ def retrieve(
 
 def citations_as_dicts(citations: list[Citation]) -> list[dict]:
     return [asdict(c) for c in citations]
+
+
+_PASSAGE_STOPWORDS = {
+    "the", "and", "for", "what", "how", "does", "can", "should", "with", "this", "that", "from", "are",
+    "you", "your", "about", "manual", "instrument", "equipment", "tell", "please", "use", "using",
+    "there", "which", "when", "where", "who", "why", "have", "has", "into", "its", "any", "per",
+}
+
+
+def _passage(*, chunk_id, document, content: str, score: float, meta: dict) -> dict:
+    return {
+        "chunk_id": str(chunk_id),
+        "document_id": str(document.id),
+        "title": document.title,
+        "version": document.version or "",
+        "content": content,
+        "page": meta.get("page"),
+        "page_end": meta.get("page_end"),
+        "has_file": bool(document.source_file_key),
+        "score": float(score),
+    }
+
+
+def manual_passages(
+    *,
+    query: str,
+    equipment_id: int,
+    role_bucket: str,
+    department_id: int | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Chunk-level retrieval restricted to one equipment's ACTIVE documents, with page numbers.
+
+    Vector hits only compare against chunks embedded by the current embedding model; keyword
+    hits cover documents that were indexed before an embedding-model switch.
+    """
+    levels = allowed_security_levels(role_bucket)
+    base = KnowledgeChunk.objects.select_related("document").filter(
+        document__status=DocumentStatus.ACTIVE,
+        document__security_level__in=list(levels),
+        document__equipment_id=int(equipment_id),
+    )
+    if department_id is not None:
+        base = base.filter(Q(document__department_id__isnull=True) | Q(document__department_id=department_id))
+    if not base.exists():
+        return []
+
+    passages: dict[str, dict] = {}
+    try:
+        provider = get_embedding_provider()
+        qvec = provider.embed_query(query)
+        store = get_vector_store()
+        hits = store.similarity_search(
+            query_vector=qvec,
+            allowed_levels=levels,
+            department_id=department_id,
+            limit=limit * 2,
+            equipment_id=int(equipment_id),
+            embedding_model=provider.name,
+            embedding_version=provider.version,
+        )
+        chunk_docs = {
+            str(c.id): c
+            for c in base.filter(id__in=[h.chunk_id for h in hits])
+        }
+        for hit in hits:
+            chunk = chunk_docs.get(str(hit.chunk_id))
+            if chunk is None:
+                continue
+            passages[str(chunk.id)] = _passage(
+                chunk_id=chunk.id,
+                document=chunk.document,
+                content=chunk.content,
+                score=max(0.0, min(1.0, hit.score)),
+                meta=chunk.metadata or {},
+            )
+    except Exception:
+        logger.warning("Manual vector search failed", exc_info=True)
+
+    tokens = [t for t in _TOKEN_RE.findall((query or "").lower()) if t not in _PASSAGE_STOPWORDS]
+    if tokens:
+        q_obj = Q()
+        for tok in tokens[:10]:
+            q_obj |= Q(content__icontains=tok)
+        for chunk in base.filter(q_obj).order_by("chunk_index")[:200]:
+            lower = chunk.content.lower()
+            density = sum(1 for t in tokens if t in lower) / max(len(tokens), 1)
+            score = 0.3 + 0.5 * density
+            key = str(chunk.id)
+            if key in passages:
+                passages[key]["score"] = min(1.0, max(passages[key]["score"], score) + 0.1)
+            else:
+                passages[key] = _passage(
+                    chunk_id=chunk.id,
+                    document=chunk.document,
+                    content=chunk.content,
+                    score=score,
+                    meta=chunk.metadata or {},
+                )
+
+    ranked = sorted(passages.values(), key=lambda p: p["score"], reverse=True)
+    return ranked[:limit]
+
+
+def equipment_has_manual(*, equipment_id: int) -> bool:
+    return KnowledgeChunk.objects.filter(
+        document__status=DocumentStatus.ACTIVE,
+        document__equipment_id=int(equipment_id),
+    ).exists()

@@ -39,8 +39,11 @@ class IsCopilotKnowledgeAdmin(BasePermission):
 
 
 def _feature_gate(request=None):
-    user = getattr(request, "user", None) if request is not None else None
-    if not conv_svc.feature_enabled(user=user):
+    # Knowledge administration only needs the global flag: admins curate manuals while the
+    # chat itself may still be limited to a pilot allowlist.
+    from django.conf import settings
+
+    if not bool(getattr(settings, "RESEARCH_COPILOT_ENABLED", False)):
         return Response(
             {
                 "error": {
@@ -139,8 +142,9 @@ def knowledge_document_detail(request, document_id):
         data["content_text"] = doc.content_text
         return Response(data)
     if request.method == "DELETE":
-        doc.status = DocumentStatus.ARCHIVED
-        doc.save(update_fields=["status", "updated_at"])
+        from iic_booking.research_copilot.services.manuals import archive_manual
+
+        archive_manual(doc)
         return Response({"ok": True})
     doc = upsert_document(
         title=request.data.get("title") or doc.title,
@@ -169,6 +173,11 @@ def knowledge_document_reindex(request, document_id):
     if gated:
         return gated
     doc = get_object_or_404(KnowledgeDocument, id=document_id)
+    if doc.source_file_key:
+        from iic_booking.research_copilot.services.manuals import reindex_manual
+
+        reindex_manual(doc)
+        return Response({"job_id": None, "status": "queued", "document": _ser_doc(doc)}, status=202)
     job = index_document(doc)
     return Response({"job_id": str(job.id), "status": job.status, "document": _ser_doc(doc)})
 
@@ -179,8 +188,165 @@ def knowledge_rebuild_index(request):
     gated = _feature_gate(request)
     if gated:
         return gated
-    result = rebuild_all_indexes()
-    return Response(result)
+    from iic_booking.research_copilot.tasks import rebuild_all_indexes_task
+
+    try:
+        async_result = rebuild_all_indexes_task.delay()
+    except Exception:  # noqa: BLE001 - broker down: fall back to the synchronous rebuild
+        return Response(rebuild_all_indexes())
+    return Response({"status": "queued", "task_id": str(async_result.id)}, status=202)
+
+
+def _equipment_names(ids) -> dict[int, str]:
+    from iic_booking.equipment.models import Equipment
+
+    clean = {int(i) for i in ids if i is not None}
+    return dict(Equipment.objects.filter(pk__in=clean).values_list("pk", "name")) if clean else {}
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
+def knowledge_manuals(request):
+    """GET ?equipment_id= lists manuals; POST multipart (file, equipment_id, title?, security_level?, version?)."""
+    gated = _feature_gate(request)
+    if gated:
+        return gated
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.research_copilot.services import manuals as manual_svc
+    from iic_booking.research_copilot.services import pdf_extract
+
+    if request.method == "GET":
+        eq_raw = request.query_params.get("equipment_id")
+        include_archived = str(request.query_params.get("include_archived", "")).lower() in {"1", "true", "yes"}
+        if eq_raw:
+            try:
+                qs = manual_svc.manuals_for_equipment(int(eq_raw), include_archived=include_archived)
+            except (TypeError, ValueError):
+                return Response({"error": {"code": "invalid_equipment_id"}}, status=400)
+        else:
+            qs = KnowledgeDocument.objects.filter(category=manual_svc.MANUAL_CATEGORY).exclude(source_file_key="")
+            if not include_archived:
+                qs = qs.exclude(status=DocumentStatus.ARCHIVED)
+            qs = qs.order_by("-created_at")
+        docs = list(qs[:500])
+        names = _equipment_names(d.equipment_id for d in docs)
+        rows = [manual_svc.serialize_manual(d, equipment_name=names.get(d.equipment_id)) for d in docs]
+        return Response({"count": len(rows), "results": rows, "storage_configured": manual_svc.storage_configured()})
+
+    upload = request.FILES.get("file")
+    if upload is None:
+        return Response({"error": {"code": "file_required", "message": "Attach a PDF as 'file'."}}, status=400)
+    if upload.size and upload.size > pdf_extract.max_bytes():
+        return Response(
+            {"error": {"code": "FILE_TOO_LARGE", "message": f"The file exceeds the {pdf_extract.max_bytes() // (1024 * 1024)} MB limit."}},
+            status=400,
+        )
+    try:
+        equipment = Equipment.objects.get(pk=int(request.data.get("equipment_id")))
+    except (TypeError, ValueError, Equipment.DoesNotExist):
+        return Response({"error": {"code": "equipment_not_found", "message": "Select a valid equipment."}}, status=400)
+
+    data = upload.read(pdf_extract.max_bytes() + 1)
+    try:
+        doc, duplicate = manual_svc.upload_manual(
+            data=data,
+            filename=upload.name or "manual.pdf",
+            equipment=equipment,
+            title=(request.data.get("title") or "").strip(),
+            security_level=(request.data.get("security_level") or SecurityLevel.AUTHENTICATED).strip(),
+            version=(request.data.get("version") or "").strip(),
+            created_by=request.user,
+        )
+    except manual_svc.ManualError as exc:
+        return Response({"error": {"code": exc.code, "message": exc.message}}, status=exc.http_status)
+    payload = manual_svc.serialize_manual(doc, equipment_name=equipment.name)
+    payload["duplicate"] = duplicate
+    return Response(payload, status=status.HTTP_200_OK if duplicate else status.HTTP_201_CREATED)
+
+
+def _manual_or_404(document_id):
+    from iic_booking.research_copilot.services.manuals import MANUAL_CATEGORY
+
+    return get_object_or_404(KnowledgeDocument, id=document_id, category=MANUAL_CATEGORY)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
+def knowledge_manual_reindex(request, document_id):
+    gated = _feature_gate(request)
+    if gated:
+        return gated
+    from iic_booking.research_copilot.services import manuals as manual_svc
+
+    doc = _manual_or_404(document_id)
+    if not doc.source_file_key:
+        return Response({"error": {"code": "no_file", "message": "This document has no stored PDF."}}, status=400)
+    manual_svc.reindex_manual(doc)
+    return Response(manual_svc.serialize_manual(doc), status=202)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsCopilotKnowledgeAdmin])
+def knowledge_manual_archive(request, document_id):
+    gated = _feature_gate(request)
+    if gated:
+        return gated
+    from iic_booking.research_copilot.services import manuals as manual_svc
+
+    doc = manual_svc.archive_manual(_manual_or_404(document_id))
+    return Response(manual_svc.serialize_manual(doc))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def knowledge_document_file(request, document_id):
+    """Short-lived presigned link to a manual PDF, after the same permission checks as retrieval."""
+    from iic_booking.equipment.api_views import user_can_see_equipment
+    from iic_booking.equipment.models import Equipment
+    from iic_booking.research_copilot.services import manuals as manual_svc
+    from iic_booking.research_copilot.services.knowledge_permissions import can_access_document
+
+    is_admin = IsCopilotKnowledgeAdmin().has_permission(request, None)
+    if is_admin:
+        gated = _feature_gate(request)
+        if gated:
+            return gated
+    elif not conv_svc.feature_enabled(user=request.user):
+        return Response({"error": {"code": "research_copilot_disabled", "message": "Copilot disabled"}}, status=503)
+
+    not_found = Response({"error": {"code": "not_found", "message": "Document not found."}}, status=404)
+    doc = KnowledgeDocument.objects.filter(id=document_id).first()
+    if doc is None or not doc.source_file_key:
+        return not_found
+    if not is_admin:
+        ctx = build_context(request.user)
+        if doc.status != DocumentStatus.ACTIVE or not can_access_document(
+            role_bucket=ctx.role_bucket,
+            security_level=doc.security_level,
+            department_id=doc.department_id,
+            user_department_id=ctx.department_id,
+        ):
+            return not_found
+        if doc.equipment_id:
+            eq = Equipment.objects.filter(pk=doc.equipment_id).first()
+            if eq is None or not user_can_see_equipment(request.user, eq):
+                return not_found
+    try:
+        url = manual_svc.presigned_url(doc)
+    except Exception:  # noqa: BLE001
+        return Response({"error": {"code": "storage_unavailable", "message": "The file is temporarily unavailable."}}, status=503)
+    from django.conf import settings as dj_settings
+
+    response = Response(
+        {
+            "url": url,
+            "expires_in": int(getattr(dj_settings, "RESEARCH_COPILOT_MANUAL_URL_EXPIRY_SECONDS", 300) or 300),
+            "filename": doc.original_filename or "manual.pdf",
+            "page_count": doc.page_count,
+        }
+    )
+    response["Cache-Control"] = "private, no-store"
+    return response
 
 
 @api_view(["POST"])

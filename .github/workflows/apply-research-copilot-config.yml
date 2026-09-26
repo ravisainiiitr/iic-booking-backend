@@ -64,6 +64,8 @@ jobs:
           }
           always_off = {"COPILOT_WALLET_RECHARGE": "False", "COPILOT_FINANCIAL_ADMIN": "False",
                         "COPILOT_BOOKING_E2E_TEST_MODE": "False"}
+          # Compose `environment:` overrides these in .django; stale copies there only mislead readers.
+          compose_owned = {"RESEARCH_COPILOT_ENABLED", "RESEARCH_COPILOT_PILOT_EMAILS"}
           if mode in ("lockdown", "actions"):
               compose_upsert = {
                   "RESEARCH_COPILOT_ENABLED": "true",
@@ -75,6 +77,8 @@ jobs:
                   django_upsert.update(action_keys)
                   django_upsert["RESEARCH_COPILOT_EMBEDDING_PROVIDER"] = "ollama"
                   django_upsert["RESEARCH_COPILOT_EMBEDDING_MODEL"] = "nomic-embed-text"
+                  django_upsert["RESEARCH_COPILOT_MAX_TOKENS"] = "700"
+                  django_remove = set(compose_owned)
               else:
                   django_remove = set(action_keys)
           elif mode == "disable":
@@ -169,6 +173,17 @@ jobs:
               assert pilot == ["test.faculty@iic-booking.test", "test.student@iic-booking.test"], pilot
               assert allowed == 0, "non-pilot users can use Copilot"
               assert str(getattr(h, "status", "")) == "available", "Ollama gateway not healthy"
+          if mode == "actions":
+              assert feature_enabled(user=None) is False, "anonymous Copilot must be off during the pilot"
+              for k in ("COPILOT_BOOKING_CREATE", "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE", "COPILOT_WALLET_CREDIT"):
+                  assert getattr(settings, k, False) is True, k
+              for k in ("COPILOT_WALLET_RECHARGE", "COPILOT_FINANCIAL_ADMIN", "COPILOT_BOOKING_E2E_TEST_MODE"):
+                  assert not getattr(settings, k, False), k
+              from iic_booking.research_copilot.services.embeddings import get_embedding_provider
+              ep = get_embedding_provider()
+              vec = ep.embed_query("vacuum pump startup")
+              print("embedding_provider=", ep.name, "dims=", len(vec))
+              assert ep.name == "ollama" and len(vec) > 100, "Ollama embeddings not working"
           if mode == "disable":
               assert settings.RESEARCH_COPILOT_ENABLED is False
           PY

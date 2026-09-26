@@ -52,7 +52,7 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
                 title=eq.name,
                 snippet=" | ".join(p for p in snippet_parts if p),
                 score=0.72,
-                url=f"/equipments/{eq.pk}",
+                url=f"/equipment/{eq.pk}",
                 category="equipment",
             )
         )

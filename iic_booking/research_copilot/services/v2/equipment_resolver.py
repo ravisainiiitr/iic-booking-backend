@@ -66,7 +66,7 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
             confidence="EXACT",
             equipment_id=eid,
             equipment_name=exact.name,
-            candidates=[EquipmentCandidate(eid, exact.name, getattr(exact, "code", "") or "", f"/equipments/{eid}")],
+            candidates=[EquipmentCandidate(eid, exact.name, getattr(exact, "code", "") or "", f"/equipment/{eid}")],
             query=raw,
         )
 
@@ -100,14 +100,14 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
             filt |= Q(name__icontains=n) | Q(code__icontains=n)
         for eq in qs.filter(filt).order_by("name")[:12]:
             eid = int(eq.pk)
-            hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
+            hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipment/{eid}")
         if not hits:
             filt = Q()
             for n in needles:
                 filt |= Q(description__icontains=n)
             for eq in qs.filter(filt).order_by("name")[:8]:
                 eid = int(eq.pk)
-                hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
+                hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipment/{eid}")
 
     # FESEM queries: keep Field Emission / FE-SEM instruments only when possible
     if len(hits) > 1 and ("fesem" in matched_aliases or "fesem" in lower or "fe-sem" in lower):
@@ -130,7 +130,7 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
                 filt |= Q(name__icontains=w) | Q(code__icontains=w)
             for eq in qs.filter(filt).order_by("name")[:8]:
                 eid = int(eq.pk)
-                hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")
+                hits[eid] = EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipment/{eid}")
 
     cands = list(hits.values())
     if len(cands) == 1:
@@ -153,7 +153,7 @@ def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None 
                 confidence="CONTEXTUAL",
                 equipment_id=eid,
                 equipment_name=eq.name,
-                candidates=[EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipments/{eid}")],
+                candidates=[EquipmentCandidate(eid, eq.name, getattr(eq, "code", "") or "", f"/equipment/{eid}")],
                 query=raw,
             )
 
