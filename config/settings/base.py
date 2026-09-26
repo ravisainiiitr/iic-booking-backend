@@ -120,6 +120,7 @@ LOCAL_APPS = [
     "iic_booking.lab_infrastructure.apps.LabInfrastructureConfig",
     "iic_booking.device_provisioning.apps.DeviceProvisioningConfig",
     "iic_booking.research_copilot.apps.ResearchCopilotConfig",
+    "iic_booking.my_research.apps.MyResearchConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -715,6 +716,34 @@ WALLET_CREDIT_ENABLED = env.bool("WALLET_CREDIT_ENABLED", default=False)
 HOD_AFFILIATION_ENABLED = env.bool("HOD_AFFILIATION_ENABLED", default=False)
 STUDENT_LIFECYCLE_ENABLED = env.bool("STUDENT_LIFECYCLE_ENABLED", default=False)
 DEPARTMENT_MAPPING_ENABLED = env.bool("DEPARTMENT_MAPPING_ENABLED", default=False)
+
+# --- My Research (private research workspaces for IITR students/faculty) ---
+# Master switch. Disabling hides the UI and API but never deletes workspaces, metadata or S3 objects.
+MY_RESEARCH_ENABLED = env.bool("MY_RESEARCH_ENABLED", default=False)
+# Optional comma-separated emails allowed to CREATE workspaces during a pilot (empty = all eligible users).
+MY_RESEARCH_PILOT_EMAILS = env("MY_RESEARCH_PILOT_EMAILS", default="")
+# Private bucket for research objects (defaults to the media bucket) and the key prefix used inside it.
+MY_RESEARCH_S3_BUCKET = env("MY_RESEARCH_S3_BUCKET", default="")
+MY_RESEARCH_S3_PREFIX = env("MY_RESEARCH_S3_PREFIX", default="research")
+# Optional explicit SSE for uploads ("AES256" or "aws:kms"); empty relies on the bucket default encryption.
+MY_RESEARCH_S3_SSE = env("MY_RESEARCH_S3_SSE", default="")
+MY_RESEARCH_S3_KMS_KEY_ID = env("MY_RESEARCH_S3_KMS_KEY_ID", default="")
+# Presigned URL lifetimes. Keep downloads short: a revoked viewer keeps an already-issued URL until it expires.
+MY_RESEARCH_DOWNLOAD_URL_EXPIRY_SECONDS = env.int("MY_RESEARCH_DOWNLOAD_URL_EXPIRY_SECONDS", default=300)
+MY_RESEARCH_UPLOAD_URL_EXPIRY_SECONDS = env.int("MY_RESEARCH_UPLOAD_URL_EXPIRY_SECONDS", default=3600)
+MY_RESEARCH_MAX_FILE_SIZE = env.int("MY_RESEARCH_MAX_FILE_SIZE", default=20 * 1024**3)
+MY_RESEARCH_MULTIPART_THRESHOLD = env.int("MY_RESEARCH_MULTIPART_THRESHOLD", default=100 * 1024**2)
+MY_RESEARCH_MULTIPART_PART_SIZE = env.int("MY_RESEARCH_MULTIPART_PART_SIZE", default=64 * 1024**2)
+# 0 = unlimited. Usage counts available and in-flight uploads.
+MY_RESEARCH_USER_STORAGE_QUOTA = env.int("MY_RESEARCH_USER_STORAGE_QUOTA", default=0)
+MY_RESEARCH_WORKSPACE_STORAGE_QUOTA = env.int("MY_RESEARCH_WORKSPACE_STORAGE_QUOTA", default=0)
+MY_RESEARCH_MAX_PENDING_UPLOADS_PER_USER = env.int("MY_RESEARCH_MAX_PENDING_UPLOADS_PER_USER", default=50)
+MY_RESEARCH_PENDING_UPLOAD_TTL_HOURS = env.int("MY_RESEARCH_PENDING_UPLOAD_TTL_HOURS", default=24)
+MY_RESEARCH_MAX_FOLDER_DEPTH = env.int("MY_RESEARCH_MAX_FOLDER_DEPTH", default=20)
+MY_RESEARCH_BLOCKED_EXTENSIONS = env(
+    "MY_RESEARCH_BLOCKED_EXTENSIONS",
+    default=".exe,.dll,.msi,.scr,.com,.bat,.cmd,.ps1,.vbs,.vbe,.hta,.cpl,.lnk,.reg,.jse,.wsf,.wsh,.pif,.appx,.msix",
+)
 COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # Optional JSON override for installer matrix, e.g.
 # {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}
