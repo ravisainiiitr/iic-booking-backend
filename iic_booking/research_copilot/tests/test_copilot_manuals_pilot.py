@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -201,6 +201,38 @@ def test_booking_proposal_states_cancellation_window():
     assert "cancellation window" in soon and until is None
     later, until = _cancellation_window_note(equipment=eq, start=timezone.now() + timedelta(days=5))
     assert later.startswith("You can cancel it yourself until") and "IST" in later and until
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Show available slots for PXRD [C] on 2026-09-30", date(2026, 9, 30)),
+        ("slots for FESEM on 30 Sep", date(2026, 9, 30)),
+        ("slots for FESEM on 1st October 2026 after 2pm", date(2026, 10, 1)),
+        ("Is XRD free on Oct 2?", date(2026, 10, 2)),
+        ("slots on 30/09", date(2026, 9, 30)),
+        ("slots on 03/10/26", date(2026, 10, 3)),
+        ("slots on 5 Jan", date(2027, 1, 5)),
+    ],
+)
+def test_explicit_dates_resolve_to_that_day(text, expected):
+    from iic_booking.research_copilot.services.v2 import datetime_resolver
+
+    with patch.object(datetime_resolver, "_local_today", return_value=date(2026, 9, 26)):
+        window = datetime_resolver.resolve_date_window(text)
+    assert (window.start_date, window.end_date) == (expected, expected)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["slots for PXRD [C] in the next 7 days", "slots after 9.30 this week", "slots for PXRD 2 this week"],
+)
+def test_non_dates_keep_default_windows(text):
+    from iic_booking.research_copilot.services.v2 import datetime_resolver
+
+    with patch.object(datetime_resolver, "_local_today", return_value=date(2026, 9, 26)):
+        window = datetime_resolver.resolve_date_window(text)
+    assert window.start_date == date(2026, 9, 26) and window.end_date > window.start_date
 
 
 @pytest.mark.parametrize(

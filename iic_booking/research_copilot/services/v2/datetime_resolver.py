@@ -29,8 +29,60 @@ class DateWindow:
     ambiguous: bool = False
 
 
+MONTHS = {
+    m: i
+    for i, names in enumerate(
+        [
+            ("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
+            ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"),
+            ("oct", "october"), ("nov", "november"), ("dec", "december"),
+        ],
+        start=1,
+    )
+    for m in names
+}
+_MONTH_RE = "|".join(sorted(MONTHS, key=len, reverse=True))
+_ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+_DAY_MONTH_RE = re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+(?:of\s+)?({_MONTH_RE})\b\.?(?:,?\s*(\d{{4}}))?")
+_MONTH_DAY_RE = re.compile(rf"\b({_MONTH_RE})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b(?:,?\s*(\d{{4}}))?")
+_NUMERIC_DATE_RE = re.compile(r"\b(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?\b")
+
+
 def _local_today() -> date:
     return timezone.localdate()
+
+
+def _safe_date(year: int | None, month: int, day: int, today: date) -> date | None:
+    """A date without a year that has already passed means the next occurrence."""
+    try:
+        d = date(year or today.year, month, day)
+    except ValueError:
+        return None
+    if year is None and d < today:
+        try:
+            d = date(today.year + 1, month, day)
+        except ValueError:
+            return None
+    return d
+
+
+def _explicit_date(lower: str, today: date) -> date | None:
+    m = _ISO_DATE_RE.search(lower)
+    if m:
+        return _safe_date(int(m.group(1)), int(m.group(2)), int(m.group(3)), today)
+    m = _DAY_MONTH_RE.search(lower)
+    if m:
+        return _safe_date(int(m.group(3)) if m.group(3) else None, MONTHS[m.group(2)], int(m.group(1)), today)
+    m = _MONTH_DAY_RE.search(lower)
+    if m:
+        return _safe_date(int(m.group(3)) if m.group(3) else None, MONTHS[m.group(1)], int(m.group(2)), today)
+    m = _NUMERIC_DATE_RE.search(lower)
+    if m:
+        year = int(m.group(3)) if m.group(3) else None
+        if year is not None and year < 100:
+            year += 2000
+        return _safe_date(year, int(m.group(2)), int(m.group(1)), today)
+    return None
 
 
 def resolve_date_window(text: str) -> DateWindow:
@@ -50,6 +102,9 @@ def resolve_date_window(text: str) -> DateWindow:
             hour = hour + 12 if hour < 12 else hour
         after_time = time(hour=min(hour, 23), minute=0)
 
+    explicit = _explicit_date(lower, today)
+    if explicit is not None:
+        return DateWindow(explicit, explicit, after_time, explicit.strftime("%a %d %b %Y"))
     if "tomorrow" in lower:
         d = today + timedelta(days=1)
         return DateWindow(d, d, after_time, "tomorrow")
