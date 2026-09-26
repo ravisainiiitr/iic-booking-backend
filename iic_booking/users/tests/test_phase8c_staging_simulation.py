@@ -13,12 +13,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from iic_booking.equipment.models import (
-    Booking,
-    BookingStatus,
     ChargeProfile,
     DailySlot,
     Equipment,
-    EquipmentManager,
     EquipmentStatus,
     SlotMaster,
     SlotStatus,
@@ -40,9 +37,7 @@ from iic_booking.users.legacy_ledger.migration_notifications import (
     create_notification_batch,
     deliver_notification_recipient,
     queue_notification_batch,
-    select_notification_candidates,
 )
-from iic_booking.users.legacy_ledger.migration_refund import issue_migration_refund
 from iic_booking.users.legacy_ledger.migration_t0 import run_staging_t0
 from iic_booking.users.models import Department, SubWallet, User, Wallet
 from iic_booking.users.models.department import DepartmentType
@@ -53,12 +48,8 @@ from iic_booking.users.models.portal_migration import (
     LegacyEquipmentMapping,
     LegacyEquipmentMappingStatus,
     MigrationBookingSettlement,
-    MigrationNotificationBatch,
-    MigrationNotificationRecipient,
-    MigrationNotificationStatus,
     MigrationNotificationTemplate,
     MigrationSettlementStatus,
-    PortalMigrationPhase,
     PortalMigrationState,
 )
 from iic_booking.users.models.user_type import UserType
@@ -391,39 +382,6 @@ class Phase8CStagingSimulationTests(TestCase):
             MigrationBookingSettlement.objects.filter(status=MigrationSettlementStatus.COMPLETED).count(),
             0,
         )
-
-    def test_refund_authority_matrix_staging(self):
-        faculty = _user(UserType.FACULTY)
-        _wallet(faculty, self.dept, Decimal("0"))
-        oic = _user(UserType.MANAGER)
-        EquipmentManager.objects.create(equipment=self.eq, manager=oic)
-        lab = _user(UserType.OPERATOR)
-        admin = _user(UserType.ADMIN)
-        profile = ChargeProfile.objects.create(
-            equipment=self.eq, user_type=UserType.FACULTY, primary_unit_charge=Decimal("40")
-        )
-        booking = Booking.objects.create(
-            user=faculty,
-            equipment=self.eq,
-            charge_profile=profile,
-            status=BookingStatus.COMPLETED,
-            total_charge=Decimal("40"),
-            wallet_amount_applied=Decimal("40"),
-            total_time_minutes=60,
-            virtual_booking_id=f"IIC{self.eq.code}{uuid.uuid4().hex[:6]}",
-        )
-        state = PortalMigrationState.get_solo()
-        state.end_user_booking_enabled = False
-        state.phase = PortalMigrationPhase.FINANCIAL_FREEZE
-        state.save()
-        issue_migration_refund(booking=booking, actor=oic, reason="8c", confirm=True)
-        self.client.force_authenticate(lab)
-        res = self.client.post(f"/api/bookings/{booking.booking_id}/migration-refund/", {"confirm": True}, format="json")
-        self.assertEqual(res.status_code, 403)
-        self.client.force_authenticate(admin)
-        # duplicate for same booking
-        res = self.client.post(f"/api/bookings/{booking.booking_id}/migration-refund/", {"confirm": True}, format="json")
-        self.assertEqual(res.status_code, 409)
 
     def test_email_preview_api(self):
         admin = _user(UserType.ADMIN, is_staff=True)

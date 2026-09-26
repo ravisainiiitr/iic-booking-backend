@@ -11,12 +11,9 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from iic_booking.equipment.models import (
-    Booking,
-    BookingStatus,
     ChargeProfile,
     DailySlot,
     Equipment,
-    EquipmentManager,
     EquipmentStatus,
     SlotMaster,
     SlotStatus,
@@ -31,7 +28,6 @@ from iic_booking.users.legacy_ledger.booking_bridge import (
 )
 from iic_booking.users.legacy_ledger.equipment_mapping import validate_legacy_equipment_mappings
 from iic_booking.users.legacy_ledger.migration_dry_run import migration_dry_run
-from iic_booking.users.legacy_ledger.migration_refund import MigrationRefundError, issue_migration_refund
 from iic_booking.users.models import Department, SubWallet, User, Wallet
 from iic_booking.users.models.department import DepartmentType
 from iic_booking.users.models.portal_migration import (
@@ -41,9 +37,6 @@ from iic_booking.users.models.portal_migration import (
     LegacyBookingMigrationBatchStatus,
     LegacyEquipmentMapping,
     LegacyEquipmentMappingStatus,
-    MigrationBookingSettlement,
-    MigrationSettlementStatus,
-    PortalMigrationPhase,
     PortalMigrationState,
 )
 from iic_booking.users.models.user_type import UserType
@@ -462,63 +455,3 @@ class DryRunAndCleanupTests(TestCase):
         self.assertTrue(test.is_test_account)
         self.assertEqual(User.objects.filter(is_test_account=True).count(), 1)
 
-
-class Phase8ARefundCompatibilityTests(TestCase):
-    def setUp(self):
-        self.dept = _dept()
-        self.eq = _equipment(self.dept)
-        self.faculty = _user(UserType.FACULTY)
-        _wallet(self.faculty, self.dept, balance=Decimal("0.00"))
-        self.oic = _user(UserType.MANAGER)
-        EquipmentManager.objects.create(equipment=self.eq, manager=self.oic)
-        profile = ChargeProfile.objects.create(
-            equipment=self.eq,
-            user_type=UserType.FACULTY,
-            primary_unit_charge=Decimal("50.00"),
-        )
-        self.booking = Booking.objects.create(
-            user=self.faculty,
-            equipment=self.eq,
-            charge_profile=profile,
-            status=BookingStatus.COMPLETED,
-            total_charge=Decimal("50.00"),
-            wallet_amount_applied=Decimal("50.00"),
-            total_time_minutes=60,
-            virtual_booking_id=f"IIC{self.eq.code}{uuid.uuid4().hex[:6]}",
-        )
-        state = PortalMigrationState.get_solo()
-        state.end_user_booking_enabled = False
-        state.phase = PortalMigrationPhase.FINANCIAL_FREEZE
-        state.booking_migration_mode = "SETTLEMENT"
-        state.save()
-        start = timezone.now() + timedelta(days=4)
-        end = start + timedelta(hours=1)
-        slot = _slot(self.eq, start=start, end=end)
-        block = arm_legacy_block(
-            legacy_booking_id=9200,
-            equipment=self.eq,
-            start_at=start,
-            end_at=end,
-        )
-        self.slot = slot
-        self.block = block
-
-    def test_refund_still_works_and_does_not_free_slots(self):
-        settlement = issue_migration_refund(
-            booking=self.booking,
-            actor=self.oic,
-            reason="8B compat",
-            confirm=True,
-        )
-        self.assertEqual(settlement.status, MigrationSettlementStatus.COMPLETED)
-        self.slot.refresh_from_db()
-        self.assertEqual(self.slot.status, SlotStatus.BLOCKED)
-        self.block.refresh_from_db()
-        self.assertEqual(self.block.status, LegacyBookingBlockStatus.ACTIVE)
-        with self.assertRaises(MigrationRefundError):
-            issue_migration_refund(
-                booking=self.booking,
-                actor=self.oic,
-                reason="dup",
-                confirm=True,
-            )

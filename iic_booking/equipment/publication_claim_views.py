@@ -452,9 +452,80 @@ def my_publication_claims(request):
         .select_related("submitted_by", "reviewed_by", "assigned_reviewer")
         .get()
     )
+    _notify_claim_submitted(claim, request.user)
     payload = serialize_claim(claim)
     payload["approval_path"] = approval_path
     return Response(payload, status=status.HTTP_201_CREATED)
+
+
+def _claim_title(claim: EquipmentPublicationClaim) -> str:
+    title = (claim.title or "").strip()
+    return title if len(title) <= 120 else title[:117] + "…"
+
+
+def _notify_claim_submitted(claim: EquipmentPublicationClaim, actor) -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    title = _claim_title(claim)
+    extra = {"publication_claim_id": claim.pk}
+    auto = claim.status == EquipmentPublicationClaimStatus.APPROVED
+    notify_in_app(
+        [actor],
+        title="Publication added" if auto else "Publication claim submitted",
+        message=f"“{title}”" + (" was added to the equipment publications." if auto else " was sent for review."),
+        link="/my-publications",
+        event="publication_claim.submitted",
+        created_by=actor,
+        extra=extra,
+    )
+    if auto:
+        return
+    if claim.assigned_reviewer_id:
+        reviewers = [claim.assigned_reviewer]
+    else:
+        reviewers = []
+        for eq in claim.equipments.all():
+            reviewers.extend(equipment_oic_users(eq))
+    notify_in_app(
+        [u for u in reviewers if u.id != actor.id],
+        title="Action needed: publication claim",
+        message=f"{person_label(actor)} submitted “{title}” for review.",
+        link="/publication-claims",
+        notification_type="warning",
+        event="publication_claim.submitted",
+        created_by=actor,
+        extra={**extra, "action_required": True},
+    )
+
+
+def _notify_claim_decided(claim: EquipmentPublicationClaim, actor) -> None:
+    from iic_booking.communication.in_app import notify_in_app, person_label
+
+    approved = claim.status == EquipmentPublicationClaimStatus.APPROVED
+    verb = "approved" if approved else "rejected"
+    title = _claim_title(claim)
+    reason = (claim.rejection_reason or "").strip()
+    extra = {"publication_claim_id": claim.pk}
+    notify_in_app(
+        [claim.submitted_by],
+        title=f"Publication claim {verb}",
+        message=f"“{title}” was {verb} by {person_label(actor)}." + (f" Reason: {reason}" if reason and not approved else ""),
+        link="/my-publications",
+        notification_type="info" if approved else "warning",
+        event=f"publication_claim.{verb}",
+        created_by=actor,
+        extra=extra,
+    )
+    if claim.submitted_by_id != actor.id:
+        notify_in_app(
+            [actor],
+            title=f"You {verb} a publication claim",
+            message=f"“{title}” from {person_label(claim.submitted_by)}.",
+            link="/publication-claims",
+            event=f"publication_claim.{verb}",
+            created_by=actor,
+            extra=extra,
+        )
 
 
 @api_view(["GET"])
@@ -574,6 +645,7 @@ def publication_claim_approve(request, claim_id: int):
         claim.save(
             update_fields=["status", "reviewed_by", "reviewed_at", "rejection_reason", "updated_at"]
         )
+    _notify_claim_decided(claim, request.user)
 
     claim = (
         EquipmentPublicationClaim.objects.filter(pk=claim.pk)
@@ -612,6 +684,7 @@ def publication_claim_reject(request, claim_id: int):
     claim.reviewed_at = timezone.now()
     claim.rejection_reason = reason
     claim.save(update_fields=["status", "reviewed_by", "reviewed_at", "rejection_reason", "updated_at"])
+    _notify_claim_decided(claim, request.user)
 
     claim = (
         EquipmentPublicationClaim.objects.filter(pk=claim.pk)

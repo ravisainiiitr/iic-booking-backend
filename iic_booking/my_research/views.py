@@ -941,8 +941,18 @@ def bookings_collection(request, workspace_id):
     workspace = access.workspace
 
     if request.method == "GET":
-        booking_ids = ResearchWorkspaceBooking.objects.filter(workspace=workspace).values_list("booking_id", flat=True)
-        qs = annotate_booking_timing(Booking.objects.filter(booking_id__in=booking_ids)).order_by(
+        links = ResearchWorkspaceBooking.objects.filter(workspace=workspace)
+        raw_folder = request.GET.get("folder")
+        if raw_folder:
+            parsed = _parse_uuid(raw_folder)
+            if parsed is False:
+                return _error("Invalid folder id.", status.HTTP_400_BAD_REQUEST)
+            links = links.filter(folder_id=parsed) if parsed else links.filter(folder__isnull=True)
+        folder_by_booking = {
+            link.booking_id: link.folder
+            for link in links.select_related("folder", "folder__parent")
+        }
+        qs = annotate_booking_timing(Booking.objects.filter(booking_id__in=list(folder_by_booking))).order_by(
             "-first_slot_at", "-booking_id"
         )
         page, size = _page_params(request)
@@ -959,6 +969,13 @@ def bookings_collection(request, workspace_id):
         for booking in items:
             row = serialize_booking_safe(booking)
             row["file_count"] = file_counts.get(booking.booking_id, 0)
+            folder = folder_by_booking.get(booking.booking_id)
+            if folder is not None and folder.deleted_at is None:
+                row["folder_id"] = str(folder.pk)
+                row["folder_path"] = folder_breadcrumbs(folder)
+            else:
+                row["folder_id"] = None
+                row["folder_path"] = []
             results.append(row)
         return Response({"results": results, "pagination": meta})
 
@@ -967,6 +984,9 @@ def bookings_collection(request, workspace_id):
         raw_ids = [request.data.get("booking_id")]
     if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 50:
         return _error("Provide between 1 and 50 booking ids.", status.HTTP_400_BAD_REQUEST)
+    folder, folder_error = _resolve_parent(access, request.data.get("folder_id"))
+    if folder_error:
+        return folder_error
     wanted = {int(b) for b in raw_ids if str(b).isdigit()}
     owned = {
         b.booking_id: b
@@ -974,7 +994,7 @@ def bookings_collection(request, workspace_id):
     }
     linked, already = [], []
     for booking_id in sorted(owned):
-        _, created = link_booking(workspace, owned[booking_id], request.user)
+        _, created = link_booking(workspace, owned[booking_id], request.user, folder=folder)
         (linked if created else already).append(booking_id)
     rejected = sorted(wanted - set(owned)) + [b for b in raw_ids if not str(b).isdigit()]
     if not linked and not already:

@@ -346,12 +346,9 @@ def _freeze_and_blocking_verification() -> dict[str, Any]:
 
 def _refund_and_admin_verification() -> dict[str, Any]:
     return {
-        "oic_refund_scope": "equipment assignment scope only (get_equipment_ids_managed_by_oic)",
-        "main_admin_refund_scope": "all departments",
+        "one_time_migration_refund": "removed",
         "others_refund": False,
-        "can_issue_rbac_verified_in_code": True,
-        "ledger_path": "SubWallet.credit() via MigrationBookingSettlement",
-        "duplicate_protection": "uniq_completed_migration_refund_per_booking + idempotent issue_migration_refund",
+        "duplicate_protection": "uniq_completed_migration_refund_per_booking (historical settlements)",
         "main_admin_global_view": {
             "api_module": "portal_legacy_bridge_views",
             "requires_main_admin": True,

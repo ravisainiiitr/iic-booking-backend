@@ -242,6 +242,45 @@ def test_unlinking_booking_keeps_files(student, workspace, fake_s3, equipment):
     assert client.delete(f"{API}/workspaces/{ws}/bookings/{booking.booking_id}/").status_code == 404
 
 
+def test_booking_linked_to_folder_from_workspace(student, workspace, equipment):
+    client = make_client(student)
+    ws = workspace["id"]
+    sem = _folder(client, ws, "SEM").data
+    raw = _folder(client, ws, "Raw", sem["id"]).data
+    b1 = make_booking(student, equipment)
+    b2 = make_booking(student, equipment)
+
+    resp = client.post(
+        f"{API}/workspaces/{ws}/bookings/", {"booking_ids": [b1.booking_id], "folder_id": raw["id"]}, format="json"
+    )
+    assert resp.status_code == 200 and resp.data["linked"] == [b1.booking_id]
+    client.post(f"{API}/workspaces/{ws}/bookings/", {"booking_ids": [b2.booking_id]}, format="json")
+
+    link = ResearchWorkspaceBooking.objects.get(workspace_id=ws, booking=b1)
+    assert str(link.folder_id) == raw["id"]
+    rows = {r["booking_id"]: r for r in client.get(f"{API}/workspaces/{ws}/bookings/").data["results"]}
+    assert rows[b1.booking_id]["folder_id"] == raw["id"]
+    assert [c["name"] for c in rows[b1.booking_id]["folder_path"]] == ["SEM", "Raw"]
+    assert rows[b2.booking_id]["folder_id"] is None
+
+    in_folder = client.get(f"{API}/workspaces/{ws}/bookings/", {"folder": raw["id"]}).data["results"]
+    assert [r["booking_id"] for r in in_folder] == [b1.booking_id]
+    activity = ResearchActivity.objects.filter(workspace_id=ws, action=ActivityAction.BOOKING_LINKED, target_id=str(b1.booking_id)).get()
+    assert activity.details["folder_name"] == "Raw"
+
+
+def test_booking_link_rejects_foreign_or_bad_folder(student, workspace, equipment, faculty):
+    client = make_client(student)
+    ws = workspace["id"]
+    booking = make_booking(student, equipment)
+    other_ws = make_client(faculty).post(f"{API}/workspaces/", {"name": "Other"}, format="json").data["id"]
+    foreign = _folder(make_client(faculty), other_ws, "Theirs").data
+    url = f"{API}/workspaces/{ws}/bookings/"
+    assert client.post(url, {"booking_ids": [booking.booking_id], "folder_id": foreign["id"]}, format="json").status_code == 404
+    assert client.post(url, {"booking_ids": [booking.booking_id], "folder_id": "nope"}, format="json").status_code == 400
+    assert not ResearchWorkspaceBooking.objects.filter(workspace_id=ws, booking=booking).exists()
+
+
 def test_booking_link_does_not_modify_booking(student, workspace, equipment):
     booking = make_booking(student, equipment)
     before = Booking.objects.filter(pk=booking.pk).values().get()

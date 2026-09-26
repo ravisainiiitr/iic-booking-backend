@@ -469,10 +469,15 @@ def finalize_upload(research_file: ResearchFile, actor) -> ResearchFile:
     return research_file
 
 
-def link_booking(workspace: ResearchWorkspace, booking, actor) -> tuple[ResearchWorkspaceBooking, bool]:
+def link_booking(
+    workspace: ResearchWorkspace, booking, actor, folder: ResearchFolder | None = None
+) -> tuple[ResearchWorkspaceBooking, bool]:
     link, created = ResearchWorkspaceBooking.objects.get_or_create(
-        workspace=workspace, booking=booking, defaults={"added_by": actor}
+        workspace=workspace, booking=booking, defaults={"added_by": actor, "folder": folder}
     )
+    if not created and folder is not None and link.folder_id != folder.pk:
+        link.folder = folder
+        link.save(update_fields=["folder"])
     if created:
         record_activity(
             workspace,
@@ -481,6 +486,7 @@ def link_booking(workspace: ResearchWorkspace, booking, actor) -> tuple[Research
             target_type="booking",
             target_id=booking.booking_id,
             target_label=f"{booking.equipment.name} · {booking_display_id_for_email(booking)}",
+            details={"folder_id": str(folder.pk), "folder_name": folder.name} if folder else None,
         )
     return link, created
 

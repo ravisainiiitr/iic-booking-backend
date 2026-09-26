@@ -6353,8 +6353,70 @@ def _send_leave_submission_emails(req: OperatorLeaveRequest):
     except Exception:
         logger.exception("Failed to send leave submission email(s) to OIC(s) (leave_id=%s).", req.id)
 
+    from iic_booking.communication.in_app import notify_in_app, person_label
+
+    span = f"{req.start_date.isoformat()} ({req.start_session}) to {req.end_date.isoformat()} ({req.end_session})"
+    notify_in_app(
+        [req.operator],
+        title="Leave request submitted",
+        message=f"Your leave request #{req.id} for {span} was sent to the Officer in charge for approval.",
+        link="/leave-management",
+        event="leave.submitted",
+        created_by=req.operator,
+        extra={"leave_request_id": req.id},
+    )
+    notify_in_app(
+        [u for u in _leave_request_oic_recipients_for_operator(req.operator) if u.id != req.operator_id],
+        title="Action needed: Lab Incharge leave request",
+        message=f"{person_label(req.operator)} requested leave for {span}."
+        + (f" Reason: {req.reason}" if req.reason else "")
+        + " Approve or reject it from Leave management.",
+        link="/oic-leave-management",
+        notification_type="warning",
+        event="leave.submitted",
+        created_by=req.operator,
+        extra={"leave_request_id": req.id, "action_required": True},
+    )
+
+def _notify_leave_decision_in_app(req: OperatorLeaveRequest, reviewer: User) -> None:
+    from iic_booking.communication.in_app import notify_in_app, person_label
+
+    if req.status == OperatorLeaveRequest.Status.APPROVED:
+        verb = "approved"
+    elif req.status == OperatorLeaveRequest.Status.REJECTED:
+        verb = "rejected"
+    else:
+        return
+    span = f"{req.start_date.isoformat()} to {req.end_date.isoformat()}"
+    reason = (req.rejection_reason or "").strip()
+    notify_in_app(
+        [req.operator],
+        title=f"Leave request {verb}",
+        message=f"Your leave request #{req.id} ({span}) was {verb} by {person_label(reviewer)}."
+        + (f" Reason: {reason}" if reason and verb == "rejected" else ""),
+        link="/leave-management",
+        notification_type="info" if verb == "approved" else "warning",
+        event=f"leave.{verb}",
+        created_by=reviewer,
+        extra={"leave_request_id": req.id},
+    )
+    if reviewer is not None and reviewer.id != req.operator_id:
+        notify_in_app(
+            [reviewer],
+            title=f"You {verb} a leave request",
+            message=f"Leave request #{req.id} from {person_label(req.operator)} ({span}).",
+            link="/oic-leave-management",
+            event=f"leave.{verb}",
+            created_by=reviewer,
+            extra={"leave_request_id": req.id},
+        )
+
 def _send_leave_decision_email(req: OperatorLeaveRequest, *, reviewer: User):
     """Send decision (approved/rejected) to operator."""
+    try:
+        _notify_leave_decision_in_app(req, reviewer)
+    except Exception:
+        logger.exception("Failed to record leave decision notification (leave_id=%s).", req.id)
     operator = req.operator
     if not operator or not getattr(operator, "email", ""):
         return
@@ -7917,6 +7979,98 @@ def log_booking_attempt(request):
         status=status.HTTP_201_CREATED,
     )
 
+
+def _urgent_type_label(req) -> str:
+    return "Type A rush relief" if req.request_type == UrgentBookingRequestType.NO_SLOT else "Type B urgent"
+
+
+def _notify_urgent_request_submitted(req, actor, *, auto_approved: bool) -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    equipment = req.equipment
+    label = _urgent_type_label(req)
+    extra = {"urgent_booking_request_id": req.id}
+    notify_in_app(
+        [actor],
+        title="Urgent booking auto-approved" if auto_approved else "Urgent booking request submitted",
+        message=(
+            f"{label} request #{req.id} for {equipment.name}: "
+            + ("your held slots were confirmed automatically." if auto_approved else "sent to the Officer in charge for review.")
+        ),
+        link="/my-urgent-requests",
+        event="urgent_request.submitted",
+        created_by=actor,
+        extra=extra,
+    )
+    oics = [u for u in equipment_oic_users(equipment) if u.id != actor.id]
+    if auto_approved:
+        notify_in_app(
+            oics,
+            title="Urgent booking auto-approved",
+            message=f"{label} request #{req.id} from {person_label(actor)} for {equipment.name} was auto-approved.",
+            link="/urgent-requests",
+            event="urgent_request.auto_approved",
+            created_by=actor,
+            extra=extra,
+        )
+    elif req.status == UrgentBookingRequestStatus.PENDING:
+        notify_in_app(
+            oics,
+            title="Action needed: urgent booking request",
+            message=(
+                f"{person_label(actor)} raised a {label} request #{req.id} for {equipment.name}. "
+                "Approve, reject or reschedule it from Urgent requests."
+            ),
+            link="/urgent-requests",
+            notification_type="warning",
+            event="urgent_request.submitted",
+            created_by=actor,
+            extra={**extra, "action_required": True},
+        )
+
+
+def _notify_urgent_request_decided(urg, actor, *, requester_already_notified: bool) -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    equipment = urg.equipment
+    approved = urg.status == UrgentBookingRequestStatus.APPROVED
+    verb = "approved" if approved else "rejected"
+    notes = (urg.admin_notes or "").strip()
+    extra = {"urgent_booking_request_id": urg.id}
+    label = _urgent_type_label(urg)
+    if not requester_already_notified:
+        notify_in_app(
+            [urg.user],
+            title=f"Urgent booking request {verb}",
+            message=f"{label} request #{urg.id} for {equipment.name} was {verb} by the Officer in charge."
+            + (f" Notes: {notes}" if notes else ""),
+            link="/my-urgent-requests",
+            notification_type="info" if approved else "warning",
+            event=f"urgent_request.{verb}",
+            created_by=actor,
+            extra=extra,
+        )
+    notify_in_app(
+        [actor],
+        title=f"You {verb} an urgent booking request",
+        message=f"{label} request #{urg.id} from {person_label(urg.user)} for {equipment.name}."
+        + (f" Notes: {notes}" if notes else ""),
+        link="/urgent-requests",
+        event=f"urgent_request.{verb}",
+        created_by=actor,
+        extra=extra,
+    )
+    notify_in_app(
+        [u for u in equipment_oic_users(equipment) if u.id not in (actor.id, urg.user_id)],
+        title=f"Urgent booking request {verb}",
+        message=f"{label} request #{urg.id} from {person_label(urg.user)} for {equipment.name} was {verb} by {person_label(actor)}.",
+        link="/urgent-requests",
+        event=f"urgent_request.{verb}",
+        created_by=actor,
+        extra=extra,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @parser_classes([MultiPartParser, FormParser, JSONParser])
@@ -8194,6 +8348,7 @@ def create_urgent_booking_request(request):
             e,
             exc_info=True,
         )
+    _notify_urgent_request_submitted(req, request.user, auto_approved=auto_approved)
     if auto_approved:
         message = "Type A rush relief approved — held slots booked at normal rates. The 14-day rush-relief attempt window now resets."
     elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
@@ -9028,6 +9183,10 @@ def update_urgent_booking_request(request, request_id):
             urg.id,
             e,
             exc_info=True,
+        )
+    if new_status in (UrgentBookingRequestStatus.APPROVED, UrgentBookingRequestStatus.REJECTED):
+        _notify_urgent_request_decided(
+            urg, request.user, requester_already_notified=hold_converted or hold_released
         )
     return Response(
         {"message": "Updated.", "id": urg.id, "status": urg.status},
@@ -14397,6 +14556,89 @@ def create_repeat_booking(request, booking_id):
 
 # ============== Repeat sample request (user + admin/OIC) – legacy ==============
 
+def _repeat_request_in_scope(user, repeat_req) -> bool:
+    allowed_ids = _get_equipment_ids_for_log_access(user)
+    return allowed_ids is None or repeat_req.booking.equipment_id in allowed_ids
+
+
+def _notify_repeat_sample_requested(repeat_req, actor) -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    booking = repeat_req.booking
+    equipment = booking.equipment
+    ref = booking_display_id_for_email(booking)
+    extra = {"repeat_sample_request_id": repeat_req.id, "real_booking_id": booking.booking_id}
+    notify_in_app(
+        [actor],
+        title="Repeat sample request submitted",
+        message=f"{ref} — {equipment.name}: your request for a complimentary repeat sample was sent to the Officer in charge for review.",
+        link=f"/my-bookings?booking={ref}",
+        event="repeat_sample.requested",
+        created_by=actor,
+        extra=extra,
+    )
+    oics = [u for u in equipment_oic_users(equipment) if u.id != actor.id]
+    notify_in_app(
+        oics,
+        title="Action needed: repeat sample request",
+        message=(
+            f"{person_label(actor)} requested a complimentary repeat sample for {ref} — {equipment.name}."
+            + (f" Note: {repeat_req.user_notes}" if repeat_req.user_notes else "")
+            + " Approve or reject it from Repeat sample requests."
+        ),
+        link="/repeat-sample-requests",
+        notification_type="warning",
+        event="repeat_sample.requested",
+        created_by=actor,
+        extra={**extra, "action_required": True},
+    )
+
+
+def _notify_repeat_sample_decided(repeat_req, actor) -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    booking = repeat_req.booking
+    equipment = booking.equipment
+    ref = booking_display_id_for_email(booking)
+    approved = repeat_req.status == RepeatSampleRequestStatus.APPROVED
+    verb = "approved" if approved else "rejected"
+    new_ref = booking_display_id_for_email(repeat_req.new_booking) if approved and repeat_req.new_booking_id else ""
+    notes = (repeat_req.admin_notes or "").strip()
+    extra = {"repeat_sample_request_id": repeat_req.id, "real_booking_id": booking.booking_id}
+    if not approved:
+        notify_in_app(
+            [booking.user],
+            title="Repeat sample request rejected",
+            message=f"{ref} — {equipment.name}: the Officer in charge rejected your repeat sample request."
+            + (f" Reason: {notes}" if notes else ""),
+            link=f"/my-bookings?booking={ref}",
+            notification_type="warning",
+            event="repeat_sample.rejected",
+            created_by=actor,
+            extra=extra,
+        )
+    outcome = f" New booking {new_ref} was created." if new_ref else ""
+    notify_in_app(
+        [actor],
+        title=f"You {verb} a repeat sample request",
+        message=f"{ref} — {equipment.name} for {person_label(booking.user)}.{outcome}"
+        + (f" Notes: {notes}" if notes else ""),
+        link="/repeat-sample-requests",
+        event=f"repeat_sample.{verb}",
+        created_by=actor,
+        extra=extra,
+    )
+    notify_in_app(
+        [u for u in equipment_oic_users(equipment) if u.id != actor.id],
+        title=f"Repeat sample request {verb}",
+        message=f"{ref} — {equipment.name} for {person_label(booking.user)} was {verb} by {person_label(actor)}.{outcome}",
+        link="/repeat-sample-requests",
+        event=f"repeat_sample.{verb}",
+        created_by=actor,
+        extra=extra,
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def get_repeat_sample_info(request, booking_id):
@@ -14494,6 +14736,7 @@ def request_repeat_sample(request, booking_id):
         status=RepeatSampleRequestStatus.PENDING,
         user_notes=user_notes,
     )
+    _notify_repeat_sample_requested(repeat_request, request.user)
     return Response({
         "message": "Repeat sample request submitted.",
         "repeat_sample_request": RepeatSampleRequestSerializer(repeat_request).data,
@@ -14510,6 +14753,9 @@ def list_repeat_sample_requests(request):
         )
     status_filter = (request.query_params.get("status") or "").strip().upper()
     qs = RepeatSampleRequest.objects.select_related("booking", "booking__user", "booking__equipment", "new_booking", "responded_by").order_by("-requested_at")
+    equipment_ids = _get_equipment_ids_for_log_access(request.user)
+    if equipment_ids is not None:
+        qs = qs.filter(booking__equipment_id__in=equipment_ids)
     if status_filter in ("PENDING", "APPROVED", "REJECTED"):
         qs = qs.filter(status=status_filter)
     serializer = RepeatSampleRequestSerializer(qs, many=True)
@@ -14525,8 +14771,12 @@ def reject_repeat_sample_request(request, request_id):
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
-        repeat_req = RepeatSampleRequest.objects.select_related("booking").get(id=request_id)
+        repeat_req = RepeatSampleRequest.objects.select_related(
+            "booking", "booking__user", "booking__equipment"
+        ).get(id=request_id)
     except RepeatSampleRequest.DoesNotExist:
+        return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _repeat_request_in_scope(request.user, repeat_req):
         return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
     if repeat_req.status != RepeatSampleRequestStatus.PENDING:
         return Response({"error": f"Request is already {repeat_req.status}."}, status=status.HTTP_400_BAD_REQUEST)
@@ -14536,6 +14786,7 @@ def reject_repeat_sample_request(request, request_id):
     repeat_req.responded_by = request.user
     repeat_req.admin_notes = (request.data.get("admin_notes") or "").strip()
     repeat_req.save(update_fields=["status", "responded_at", "responded_by_id", "admin_notes"])
+    _notify_repeat_sample_decided(repeat_req, request.user)
     return Response({
         "message": "Repeat sample request rejected.",
         "repeat_sample_request": RepeatSampleRequestSerializer(repeat_req).data,
@@ -14553,6 +14804,8 @@ def approve_repeat_sample_request(request, request_id):
     try:
         repeat_req = RepeatSampleRequest.objects.select_related("booking", "booking__user", "booking__equipment", "booking__charge_profile").get(id=request_id)
     except RepeatSampleRequest.DoesNotExist:
+        return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _repeat_request_in_scope(request.user, repeat_req):
         return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
     if repeat_req.status != RepeatSampleRequestStatus.PENDING:
         return Response({"error": f"Request is already {repeat_req.status}."}, status=status.HTTP_400_BAD_REQUEST)
@@ -14642,6 +14895,7 @@ def approve_repeat_sample_request(request, request_id):
         repeat_req.new_booking = new_booking
         repeat_req.save(update_fields=["status", "responded_at", "responded_by_id", "new_booking_id"])
     # create_booking_event with send_notification=True already sends booking_created_email to the user
+    _notify_repeat_sample_decided(repeat_req, request.user)
     return Response({
         "message": "Repeat sample request approved. A free booking has been created and the user will be notified.",
         "repeat_sample_request": RepeatSampleRequestSerializer(RepeatSampleRequest.objects.get(id=request_id)).data,

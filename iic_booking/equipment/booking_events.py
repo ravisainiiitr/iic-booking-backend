@@ -1059,3 +1059,35 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 e,
                 exc_info=True,
             )
+
+    _notify_booking_event_actor(event, user, equipment, display_booking_ref, _staff_notify_events)
+
+
+def _notify_booking_event_actor(event, booking_user, equipment, display_booking_ref, staff_notify_events) -> None:
+    """Keep a bell record for the staff member who acted on someone else's booking."""
+    actor = getattr(event, "created_by", None)
+    if actor is None or actor.id == booking_user.id:
+        return
+    try:
+        if event.event_type in staff_notify_events:
+            from iic_booking.equipment.reports import get_equipment_staff_notify_users
+
+            if actor.id in {s.id for s in get_equipment_staff_notify_users(equipment)}:
+                return
+        from iic_booking.communication.in_app import notify_in_app, person_label
+
+        label = event.get_event_type_display()
+        message = f"{display_booking_ref} — {equipment.name if equipment else ''} for {person_label(booking_user)}"
+        if event.comment:
+            message += f": {event.comment}"
+        notify_in_app(
+            [actor],
+            title=f"You recorded: {label}",
+            message=message,
+            link=f"/booking-management?expand={event.booking.booking_id}",
+            event=f"booking.{str(event.event_type).lower()}",
+            created_by=actor,
+            extra={"real_booking_id": event.booking.booking_id, "event_id": event.event_id},
+        )
+    except Exception:
+        logger.exception("Failed to record booking event for actor event_id=%s", event.event_id)

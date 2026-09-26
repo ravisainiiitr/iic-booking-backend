@@ -197,6 +197,9 @@ class ResearchWorkspaceBooking(models.Model):
 
     workspace = models.ForeignKey(ResearchWorkspace, on_delete=models.CASCADE, related_name="booking_links")
     booking = models.ForeignKey("equipment.Booking", on_delete=models.CASCADE, related_name="research_workspace_links")
+    folder = models.ForeignKey(
+        ResearchFolder, null=True, blank=True, on_delete=models.SET_NULL, related_name="booking_links"
+    )
     added_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )

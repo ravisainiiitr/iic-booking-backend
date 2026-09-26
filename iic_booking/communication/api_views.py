@@ -332,6 +332,7 @@ def notice_requests_mine(request):
             approval_status=Notice.ApprovalStatus.PENDING,
             source=Notice.Source.MANUAL,
         )
+        _notify_notice_submitted(notice, request.user)
         return Response(NoticeSerializer(notice).data, status=status.HTTP_201_CREATED)
 
     # GET
@@ -440,7 +441,38 @@ def notice_request_complete_expiry(request, notice_id):
     if not notice.requested_by_id:
         notice.requested_by = request.user
     notice.save()
+    _notify_notice_submitted(notice, request.user)
     return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
+
+
+def _notify_notice_submitted(notice, actor) -> None:
+    from iic_booking.users.models import User
+    from iic_booking.users.models.user_type import UserType
+
+    from .in_app import notify_in_app, person_label
+
+    title = (getattr(notice, "title", "") or "").strip() or f"Notice #{notice.notice_id}"
+    extra = {"notice_id": notice.notice_id}
+    notify_in_app(
+        [actor],
+        title="Notice request submitted",
+        message=f"“{title}” was sent to the Main Admin for approval.",
+        link="/notice-board-requests",
+        event="notice.submitted",
+        created_by=actor,
+        extra=extra,
+    )
+    admins = User.objects.filter(user_type=UserType.ADMIN, is_active=True).exclude(pk=actor.pk)[:50]
+    notify_in_app(
+        admins,
+        title="Action needed: notice board request",
+        message=f"{person_label(actor)} requested the notice “{title}”. Approve or reject it from Communication → Notices.",
+        link="/admin-settings/communication?tab=notices",
+        notification_type="warning",
+        event="notice.submitted",
+        created_by=actor,
+        extra={**extra, "action_required": True},
+    )
 
 
 @api_view(["GET"])
@@ -495,7 +527,39 @@ def notice_request_approve(request, notice_id):
     notice.reviewed_at = timezone.now()
     notice.review_comment = (request.data.get("review_comment") or "").strip()
     notice.save()
+    _notify_notice_decided(notice, request.user)
     return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
+
+
+def _notify_notice_decided(notice, actor) -> None:
+    from .in_app import notify_in_app, person_label
+
+    approved = notice.approval_status == Notice.ApprovalStatus.APPROVED
+    verb = "approved" if approved else "rejected"
+    title = (getattr(notice, "title", "") or "").strip() or f"Notice #{notice.notice_id}"
+    comment = (notice.review_comment or "").strip()
+    requester = notice.requested_by or getattr(notice, "created_by", None)
+    extra = {"notice_id": notice.notice_id}
+    if requester is not None and requester.id != actor.id:
+        notify_in_app(
+            [requester],
+            title=f"Notice request {verb}",
+            message=f"“{title}” was {verb} by {person_label(actor)}." + (f" Comment: {comment}" if comment else ""),
+            link="/notice-board-requests",
+            notification_type="info" if approved else "warning",
+            event=f"notice.{verb}",
+            created_by=actor,
+            extra=extra,
+        )
+    notify_in_app(
+        [actor],
+        title=f"You {verb} a notice request",
+        message=f"“{title}”" + (f" from {person_label(requester)}." if requester else "."),
+        link="/admin-settings/communication?tab=notices",
+        event=f"notice.{verb}",
+        created_by=actor,
+        extra=extra,
+    )
 
 
 @api_view(["POST"])
@@ -524,6 +588,7 @@ def notice_request_reject(request, notice_id):
     notice.review_comment = (request.data.get("review_comment") or "").strip()
     notice.needs_oic_expiry = False
     notice.save()
+    _notify_notice_decided(notice, request.user)
     return Response(NoticeSerializer(notice).data, status=status.HTTP_200_OK)
 
 

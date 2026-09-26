@@ -14,7 +14,6 @@ from pathlib import Path
 from django.core.management.base import BaseCommand
 
 REQUIRED_FILES = [
-    "iic_booking/users/legacy_ledger/migration_refund.py",
     "iic_booking/users/legacy_ledger/equipment_mapping.py",
     "iic_booking/users/legacy_ledger/booking_bridge.py",
     "iic_booking/users/legacy_ledger/migration_emails.py",
@@ -29,7 +28,6 @@ REQUIRED_FILES = [
     "iic_booking/users/management/commands/migration_cleanup_test_accounts.py",
     "iic_booking/users/management/commands/migration_reconcile_legacy_blocks.py",
     "iic_booking/users/management/commands/migration_abort_batch.py",
-    "iic_booking/users/tests/test_migration_refund_settlement.py",
     "iic_booking/users/tests/test_phase8b_legacy_booking_bridge.py",
     "iic_booking/users/tests/test_phase8c_staging_simulation.py",
     "iic_booking/users/tests/test_real_integration_preflight.py",
@@ -61,7 +59,6 @@ def run_preflight(*, run_tests: bool = False) -> dict:
             sys.executable,
             "-m",
             "pytest",
-            "iic_booking/users/tests/test_migration_refund_settlement.py",
             "iic_booking/users/tests/test_phase8b_legacy_booking_bridge.py",
             "iic_booking/users/tests/test_phase8c_staging_simulation.py",
             "iic_booking/users/tests/test_real_integration_preflight.py",
