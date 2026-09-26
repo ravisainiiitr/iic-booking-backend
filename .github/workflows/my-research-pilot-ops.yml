@@ -1,0 +1,189 @@
+# Operations for the My Research controlled pilot. Every mode is restricted to workspaces owned by the
+# two pilot test accounts; nothing else in the database or bucket is read for modification.
+#   state       : pilot workspaces, files, members, S3 object metadata, research/ prefix listing, cleanup task
+#   make_stale  : backdate the given PENDING_UPLOAD test files past the TTL (for the cleanup test)
+#   run_cleanup : dispatch my_research.cleanup_stale_uploads through Celery and report the outcome
+#   teardown    : delete only the S3 objects recorded on pilot files, then the pilot workspaces
+name: My Research Pilot Ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "state | make_stale | run_cleanup | teardown"
+        required: true
+        type: choice
+        options: [state, make_stale, run_cleanup, teardown]
+      file_ids:
+        description: "make_stale: comma-separated research file ids"
+        required: false
+        default: ""
+      confirm:
+        description: "teardown: type TEARDOWN"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  ops:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          FILE_IDS: ${{ github.event.inputs.file_ids }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker exec -i -w /app -e MODE="$MODE" -e FILE_IDS="$FILE_IDS" -e CONFIRM="$CONFIRM" \
+            -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+          import time
+          from datetime import timedelta
+
+          import django
+
+          django.setup()
+
+          from botocore.exceptions import ClientError
+          from django.utils import timezone
+          from django_celery_beat.models import PeriodicTask
+
+          from iic_booking.my_research import storage
+          from iic_booking.my_research.models import (
+              ResearchActivity, ResearchFile, ResearchFolder, ResearchWorkspace, ResearchWorkspaceMember,
+          )
+
+          PILOT = ["test.student@iic-booking.test", "test.faculty@iic-booking.test"]
+          mode = os.environ["MODE"]
+          s3 = storage._client()
+          bucket = storage.bucket_name()
+          workspaces = ResearchWorkspace.objects.filter(owner__email__in=PILOT).select_related("owner")
+          files = ResearchFile.objects.filter(workspace__in=workspaces).select_related("workspace").order_by("created_at")
+
+
+          def head(key):
+              try:
+                  r = s3.head_object(Bucket=bucket, Key=key, ChecksumMode="ENABLED")
+                  return {"exists": True, "size": r["ContentLength"], "etag": r.get("ETag"),
+                          "sha256": r.get("ChecksumSHA256"), "sse": r.get("ServerSideEncryption"),
+                          "content_type": r.get("ContentType")}
+              except ClientError as exc:
+                  return {"exists": False, "http": exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")}
+
+
+          def research_listing():
+              keys, token = [], None
+              while True:
+                  kw = {"Bucket": bucket, "Prefix": "research/"}
+                  if token:
+                      kw["ContinuationToken"] = token
+                  r = s3.list_objects_v2(**kw)
+                  keys += [(o["Key"], o["Size"]) for o in r.get("Contents", []) or []]
+                  if not r.get("IsTruncated"):
+                      break
+                  token = r["NextContinuationToken"]
+              uploads = s3.list_multipart_uploads(Bucket=bucket, Prefix="research/").get("Uploads", []) or []
+              return keys, uploads
+
+
+          def state():
+              for ws in workspaces:
+                  print(f"WS {ws.pk} owner={ws.owner.email} name={ws.name!r} status={ws.status}")
+                  for f in ResearchFolder.objects.filter(workspace=ws).order_by("created_at"):
+                      print(f"  FOLDER {f.pk} parent={f.parent_id} name={f.name!r}")
+                  for m in ResearchWorkspaceMember.objects.filter(workspace=ws).select_related("user"):
+                      print(f"  MEMBER {m.pk} {m.user.email} role={m.role} revoked_at={m.revoked_at}")
+                  print("  activity_rows=", ResearchActivity.objects.filter(workspace=ws).count())
+              for f in files:
+                  print(f"FILE {f.pk} ws={f.workspace_id} name={f.display_name!r} status={f.status} size={f.size_bytes} "
+                        f"detected={f.detected_type!r} checksum_stored={bool(f.checksum_sha256)} "
+                        f"checksum_verified={f.checksum_verified} multipart={bool(f.multipart_upload_id)} "
+                        f"booking={f.booking_id} created_at={f.created_at:%Y-%m-%d %H:%M:%S} failure={f.failure_reason!r}")
+                  print(f"  KEY {f.storage_key}")
+                  print(f"  S3 {head(f.storage_key)}")
+              keys, uploads = research_listing()
+              recorded = set(files.values_list("storage_key", flat=True))
+              print(f"research/ objects={len(keys)} multipart_uploads={len(uploads)}")
+              for k, size in keys:
+                  print(f"  OBJ {k} size={size} recorded_on_pilot_file={k in recorded}")
+              for u in uploads:
+                  print(f"  MPU {u['Key']} recorded_on_pilot_file={u['Key'] in recorded}")
+              t = PeriodicTask.objects.get(task="my_research.cleanup_stale_uploads")
+              print("cleanup_task=", {"enabled": t.enabled, "last_run_at": str(t.last_run_at), "total_run_count": t.total_run_count})
+
+
+          if mode == "state":
+              state()
+
+          elif mode == "make_stale":
+              ids = [i.strip() for i in os.environ.get("FILE_IDS", "").split(",") if i.strip()]
+              assert ids, "file_ids required"
+              qs = files.filter(pk__in=ids, status="PENDING_UPLOAD")
+              found = set(str(i) for i in qs.values_list("pk", flat=True))
+              print("requested=", len(ids), " eligible_pending_pilot_files=", len(found))
+              assert found == set(ids), f"refusing: not all ids are pending pilot files: {set(ids) - found}"
+              n = qs.update(created_at=timezone.now() - timedelta(hours=25))
+              print("backdated=", n)
+              state()
+
+          elif mode == "run_cleanup":
+              from iic_booking.my_research.tasks import cleanup_stale_uploads
+
+              res = cleanup_stale_uploads.delay()
+              print("dispatched task id=", res.id)
+              try:
+                  print("task result=", res.get(timeout=120))
+              except Exception as exc:  # noqa: BLE001
+                  print("result backend unavailable:", type(exc).__name__, "- waiting for the worker")
+                  time.sleep(45)
+              state()
+
+          elif mode == "teardown":
+              assert os.environ.get("CONFIRM") == "TEARDOWN", "type TEARDOWN"
+              keys, uploads = research_listing()
+              recorded = sorted(set(files.values_list("storage_key", flat=True)))
+              print("recorded_keys=", len(recorded), " research_objects_before=", len(keys), " multipart_before=", len(uploads))
+              for u in uploads:
+                  if u["Key"] in recorded:
+                      s3.abort_multipart_upload(Bucket=bucket, Key=u["Key"], UploadId=u["UploadId"])
+                      print("  aborted multipart", u["Key"])
+              deleted = 0
+              for key in recorded:
+                  before = head(key)
+                  if before.get("exists"):
+                      s3.delete_object(Bucket=bucket, Key=key)
+                      deleted += 1
+                  after = head(key)
+                  print(f"  {key} existed={before.get('exists')} exists_after={after.get('exists')}")
+              ws_ids = [str(w.pk) for w in workspaces]
+              counts = {
+                  "workspaces": len(ws_ids),
+                  "files": files.count(),
+                  "folders": ResearchFolder.objects.filter(workspace__in=workspaces).count(),
+                  "members": ResearchWorkspaceMember.objects.filter(workspace__in=workspaces).count(),
+                  "activity": ResearchActivity.objects.filter(workspace__in=workspaces).count(),
+              }
+              print("deleting pilot rows=", counts, " s3_objects_deleted=", deleted)
+              from django.db import transaction
+
+              with transaction.atomic():
+                  print("files deleted=", ResearchFile.objects.filter(workspace_id__in=ws_ids).delete())
+                  folders = ResearchFolder.objects.filter(workspace_id__in=ws_ids)
+                  while folders.exists():
+                      leaves = folders.filter(children__isnull=True)
+                      print("leaf folders deleted=", leaves.delete())
+                  print("workspaces deleted=", ResearchWorkspace.objects.filter(pk__in=ws_ids).delete())
+              keys_after, uploads_after = research_listing()
+              print(f"research/ objects_after={len(keys_after)} multipart_after={len(uploads_after)}")
+              for k, size in keys_after:
+                  print("  REMAINING", k, size)
+              from django.apps import apps
+
+              for model in apps.get_app_config("my_research").get_models():
+                  print(f"  table {model._meta.db_table} rows={model.objects.count()}")
+          PY

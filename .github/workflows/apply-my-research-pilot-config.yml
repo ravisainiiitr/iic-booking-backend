@@ -1,0 +1,145 @@
+# My Research controlled pilot configuration for production.
+#   enable   : MY_RESEARCH_ENABLED=True, pilot allowlist (two test accounts), temporary 8 MiB multipart
+#              threshold / 5 MiB parts for the multipart test, and switch on the hourly cleanup task.
+#   finalize : remove the temporary multipart overrides (back to code defaults); flag and allowlist stay.
+#   disable  : MY_RESEARCH_ENABLED=False and remove the temporary multipart overrides.
+# Only the django service is recreated. No other Celery task is modified. Secrets are never printed.
+name: Apply My Research Pilot Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "enable | finalize | disable"
+        required: true
+        type: choice
+        options: [enable, finalize, disable]
+      confirm:
+        description: "Type PILOT to proceed"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        run: test "${{ github.event.inputs.confirm }}" = "PILOT"
+
+      - name: Update env file and recreate django
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          ENV_FILE="$DEPLOY/.envs/.production/.django"
+          test -f "$ENV_FILE"
+          cp -p "$ENV_FILE" "$ENV_FILE.bak-my-research-$(date -u +%Y%m%dT%H%M%SZ)"
+          export ENV_FILE
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          env_file = Path(os.environ["ENV_FILE"])
+          temp_keys = ["MY_RESEARCH_MULTIPART_THRESHOLD", "MY_RESEARCH_MULTIPART_PART_SIZE"]
+          upsert, remove = {}, set()
+          if mode == "enable":
+              upsert = {
+                  "MY_RESEARCH_ENABLED": "True",
+                  "MY_RESEARCH_PILOT_EMAILS": "test.student@iic-booking.test,test.faculty@iic-booking.test",
+                  "MY_RESEARCH_MULTIPART_THRESHOLD": str(8 * 1024**2),
+                  "MY_RESEARCH_MULTIPART_PART_SIZE": str(5 * 1024**2),
+              }
+          elif mode == "finalize":
+              remove = set(temp_keys)
+          elif mode == "disable":
+              upsert = {"MY_RESEARCH_ENABLED": "False"}
+              remove = set(temp_keys)
+          else:
+              raise SystemExit("unknown mode")
+
+          out, seen = [], set()
+          for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in remove:
+                  continue
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in upsert.items():
+              if key not in seen:
+                  out.append(f"{key}={value}")
+          env_file.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, " upserted=", sorted(upsert), " removed=", sorted(remove))
+          PY
+          grep -E '^MY_RESEARCH_' "$ENV_FILE" || true
+          cd "$DEPLOY"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django
+          for i in $(seq 1 30); do
+            CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+            if [ -n "$CID" ] && docker exec "$CID" true 2>/dev/null; then break; fi
+            sleep 2
+          done
+          sleep 6
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery' || true
+
+      - name: Cleanup task and runtime verification
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+
+          import django
+
+          django.setup()
+
+          from django.conf import settings
+          from django_celery_beat.models import PeriodicTask
+
+          from iic_booking.my_research import access
+          from iic_booking.users.models import User
+
+          mode = os.environ["MODE"]
+          task = PeriodicTask.objects.select_related("crontab").get(
+              name="My Research stale upload cleanup (hourly)", task="my_research.cleanup_stale_uploads"
+          )
+          c = task.crontab
+          schedule = f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}"
+          if mode == "enable" and not task.enabled:
+              assert schedule == "35 * * * *", schedule
+              task.enabled = True
+              task.save()
+          elif mode == "disable" and task.enabled:
+              task.enabled = False
+              task.save()
+          task.refresh_from_db()
+          print("cleanup_task=", {"enabled": task.enabled, "schedule": schedule, "last_run_at": str(task.last_run_at),
+                                  "total_run_count": task.total_run_count})
+
+          print("RUNTIME MY_RESEARCH_ENABLED=", settings.MY_RESEARCH_ENABLED)
+          print("RUNTIME MY_RESEARCH_PILOT_EMAILS=", sorted(access.pilot_emails()))
+          print("RUNTIME MY_RESEARCH_MULTIPART_THRESHOLD=", settings.MY_RESEARCH_MULTIPART_THRESHOLD)
+          print("RUNTIME MY_RESEARCH_MULTIPART_PART_SIZE=", settings.MY_RESEARCH_MULTIPART_PART_SIZE)
+          print("RUNTIME MY_RESEARCH_DOWNLOAD_URL_EXPIRY_SECONDS=", settings.MY_RESEARCH_DOWNLOAD_URL_EXPIRY_SECONDS)
+
+          for email in sorted(access.pilot_emails()):
+              u = User.objects.filter(email__iexact=email).first()
+              if u is None:
+                  print(f"pilot {email}: USER NOT FOUND")
+                  continue
+              print(f"pilot {email}: active={u.is_active} eligible={access.is_eligible(u)} can_create={access.can_create_workspace(u)}")
+
+          others = access.eligible_users().exclude(email__in=list(access.pilot_emails()))
+          sample = list(others.order_by("pk")[:200])
+          allowed = sum(1 for u in sample if access.can_create_workspace(u))
+          print(f"non-pilot eligible users checked={len(sample)} (of {others.count()}) can_create_workspace=True count={allowed}")
+          PY
