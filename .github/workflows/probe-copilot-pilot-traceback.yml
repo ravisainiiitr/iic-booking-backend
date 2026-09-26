@@ -35,8 +35,25 @@ jobs:
 
           from iic_booking.users.models import User
 
+          from django.db import connection
+
           class Rollback(Exception):
               pass
+
+          with connection.cursor() as cur:
+              cur.execute(
+                  "SELECT column_name, data_type, is_nullable, column_default, character_maximum_length "
+                  "FROM information_schema.columns WHERE table_name = 'research_copilot_conversation' "
+                  "ORDER BY ordinal_position"
+              )
+              for row in cur.fetchall():
+                  print("column", row)
+              cur.execute("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'research_copilot_conversation'")
+              for row in cur.fetchall():
+                  print("index", row)
+              cur.execute("SELECT name, applied FROM django_migrations WHERE app = 'research_copilot' ORDER BY id")
+              for row in cur.fetchall():
+                  print("migration", row[0], row[1].isoformat())
 
           user = User.objects.get(email__iexact="test.student@iic-booking.test")
           client = APIClient(SERVER_NAME="equip.iitr.ac.in")
