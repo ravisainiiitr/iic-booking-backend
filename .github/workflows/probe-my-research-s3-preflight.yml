@@ -1,0 +1,168 @@
+# Read-only S3 preflight for My Research on the production media bucket.
+# Only Get*/List*/Head* calls with the application's own credentials. Never writes, never prints secrets.
+name: Probe My Research S3 Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate django container
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only S3 configuration probe
+        env:
+          CID: ${{ steps.find.outputs.container }}
+        run: |
+          set -euo pipefail
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import json
+          import re
+
+          import django
+
+          django.setup()
+
+          from botocore.exceptions import ClientError
+          from django.conf import settings
+
+          from iic_booking.my_research import storage
+
+          ACCOUNT_RE = re.compile(r"\b\d{12}\b")
+
+
+          def mask(value):
+              return ACCOUNT_RE.sub("<account>", json.dumps(value, default=str, sort_keys=True))
+
+
+          def call(label, fn):
+              try:
+                  return fn()
+              except ClientError as exc:
+                  err = exc.response.get("Error", {})
+                  print(f"{label}: ERROR {err.get('Code')} ({exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode')})")
+              except Exception as exc:  # noqa: BLE001
+                  print(f"{label}: ERROR {type(exc).__name__}")
+              return None
+
+
+          s3 = storage._client()
+          bucket = storage.bucket_name()
+          prefix = (getattr(settings, "MY_RESEARCH_S3_PREFIX", "research") or "research").strip("/")
+          print("bucket=", bucket, " research_prefix=", prefix + "/", " region=", getattr(settings, "AWS_S3_REGION_NAME", ""))
+          print("MY_RESEARCH_S3_SSE=", repr(getattr(settings, "MY_RESEARCH_S3_SSE", "")))
+
+          print("=== existence ===")
+          r = call("head_bucket", lambda: s3.head_bucket(Bucket=bucket))
+          if r is not None:
+              print("head_bucket: OK")
+
+          print("=== block public access (bucket) ===")
+          r = call("get_public_access_block", lambda: s3.get_public_access_block(Bucket=bucket))
+          if r:
+              print("bucket_bpa=", mask(r["PublicAccessBlockConfiguration"]))
+
+          print("=== policy ===")
+          r = call("get_bucket_policy_status", lambda: s3.get_bucket_policy_status(Bucket=bucket))
+          if r:
+              print("policy_status_is_public=", r["PolicyStatus"]["IsPublic"])
+          r = call("get_bucket_policy", lambda: s3.get_bucket_policy(Bucket=bucket))
+          if r:
+              pol = json.loads(r["Policy"])
+              for i, st in enumerate(pol.get("Statement", [])):
+                  print(f"policy_statement[{i}]=", mask({k: st.get(k) for k in ("Sid", "Effect", "Principal", "Action", "Resource", "Condition")}))
+
+          print("=== ownership / ACL ===")
+          r = call("get_bucket_ownership_controls", lambda: s3.get_bucket_ownership_controls(Bucket=bucket))
+          if r:
+              print("ownership=", [rule.get("ObjectOwnership") for rule in r["OwnershipControls"]["Rules"]])
+          r = call("get_bucket_acl", lambda: s3.get_bucket_acl(Bucket=bucket))
+          if r:
+              grants = []
+              for g in r.get("Grants", []):
+                  grantee = g.get("Grantee", {})
+                  grants.append({"type": grantee.get("Type"), "uri": grantee.get("URI"), "permission": g.get("Permission"),
+                                 "is_owner": grantee.get("ID") == r.get("Owner", {}).get("ID")})
+              print("acl_grants=", mask(grants))
+
+          print("=== encryption / versioning ===")
+          r = call("get_bucket_encryption", lambda: s3.get_bucket_encryption(Bucket=bucket))
+          if r:
+              print("encryption=", mask(r["ServerSideEncryptionConfiguration"]["Rules"]))
+          r = call("get_bucket_versioning", lambda: s3.get_bucket_versioning(Bucket=bucket))
+          if r is not None:
+              print("versioning=", r.get("Status", "Never enabled"))
+
+          print("=== CORS ===")
+          r = call("get_bucket_cors", lambda: s3.get_bucket_cors(Bucket=bucket))
+          if r:
+              for i, rule in enumerate(r.get("CORSRules", [])):
+                  print(f"cors_rule[{i}]=", mask(rule))
+
+          print("=== lifecycle ===")
+          r = call("get_bucket_lifecycle_configuration", lambda: s3.get_bucket_lifecycle_configuration(Bucket=bucket))
+          if r:
+              for rule in r.get("Rules", []):
+                  print("lifecycle_rule=", mask({k: rule.get(k) for k in (
+                      "ID", "Status", "Filter", "Prefix", "Expiration", "NoncurrentVersionExpiration",
+                      "AbortIncompleteMultipartUpload", "Transitions")}))
+
+          print("=== application identity / permissions (read-only) ===")
+          import boto3
+
+          sts = boto3.client(
+              "sts",
+              region_name=getattr(settings, "AWS_S3_REGION_NAME", None) or "ap-south-1",
+              aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None) or None,
+              aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None) or None,
+          )
+          ident = call("sts_get_caller_identity", sts.get_caller_identity)
+          arn = ident["Arn"] if ident else ""
+          print("caller_arn=", ACCOUNT_RE.sub("<account>", arn))
+          if arn:
+              iam = boto3.client(
+                  "iam",
+                  aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None) or None,
+                  aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None) or None,
+              )
+              source = arn
+              if ":assumed-role/" in arn:
+                  role = arn.split(":assumed-role/")[1].split("/")[0]
+                  source = f"arn:aws:iam::{arn.split(':')[4]}:role/{role}"
+              obj = f"arn:aws:s3:::{bucket}/{prefix}/*"
+              actions = {
+                  obj: ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:AbortMultipartUpload",
+                        "s3:ListMultipartUploadParts"],
+                  f"arn:aws:s3:::{bucket}": ["s3:ListBucket", "s3:ListBucketMultipartUploads"],
+              }
+              for resource, acts in actions.items():
+                  r = call("iam_simulate_principal_policy",
+                           lambda: iam.simulate_principal_policy(PolicySourceArn=source, ActionNames=acts, ResourceArns=[resource]))
+                  if r:
+                      for ev in r["EvaluationResults"]:
+                          print(f"simulate {ev['EvalActionName']} on {resource.replace(bucket, '<bucket>')}: {ev['EvalDecision']}")
+
+          print("=== read-only permission checks against the research prefix ===")
+          r = call("list_objects_v2(research/)", lambda: s3.list_objects_v2(Bucket=bucket, Prefix=prefix + "/", MaxKeys=5))
+          if r is not None:
+              print("list_objects_v2(research/): OK key_count=", r.get("KeyCount"))
+          r = call("list_multipart_uploads(research/)", lambda: s3.list_multipart_uploads(Bucket=bucket, Prefix=prefix + "/", MaxUploads=5))
+          if r is not None:
+              print("list_multipart_uploads(research/): OK in_progress=", len(r.get("Uploads", []) or []))
+          try:
+              s3.head_object(Bucket=bucket, Key=f"{prefix}/__preflight_missing_object__")
+              print("head_object(missing): unexpectedly exists")
+          except ClientError as exc:
+              code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+              print("head_object(missing):", code, "(404 = missing objects are distinguishable; 403 = s3:ListBucket not granted)")
+          PY
