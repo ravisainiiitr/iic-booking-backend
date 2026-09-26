@@ -1,0 +1,149 @@
+# Read-only production probe for the My Research dark deployment (before and after).
+# Does NOT migrate, write to the database, call S3, or change any setting or schedule.
+name: Probe My Research Dark Deploy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Deployed ref and containers
+        id: find
+        run: |
+          set -euo pipefail
+          DEPLOY=""
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend; do
+            if [ -f "$d/docker-compose.production.yml" ]; then DEPLOY="$d"; break; fi
+          done
+          test -n "$DEPLOY"
+          cd "$DEPLOY"
+          echo "deployed_head=$(git rev-parse --short HEAD)"
+          echo "deployed_describe=$(git describe --tags --always)"
+          echo "current_release_tag=$(cat .deploy-state/current_release_tag 2>/dev/null || echo unknown)"
+          echo "previous_release_tag=$(cat .deploy-state/previous_release_tag 2>/dev/null || echo unknown)"
+          echo "=== containers ==="
+          docker compose -f docker-compose.production.yml ps --format 'table {{.Service}}\t{{.Status}}' || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only application and database probe
+        env:
+          CID: ${{ steps.find.outputs.container }}
+        run: |
+          set -euo pipefail
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import hashlib
+          import json
+
+          import django
+
+          django.setup()
+
+          from django.apps import apps
+          from django.conf import settings
+          from django.db import connection
+          from django.db.migrations.executor import MigrationExecutor
+          from django.db.migrations.recorder import MigrationRecorder
+
+          TASK = "My Research stale upload cleanup (hourly)"
+
+          print("=== feature flag / storage ===")
+          print("my_research_in_INSTALLED_APPS=", any("my_research" in a for a in settings.INSTALLED_APPS))
+          print("MY_RESEARCH_ENABLED=", getattr(settings, "MY_RESEARCH_ENABLED", "<setting not defined>"))
+          print("MY_RESEARCH_PILOT_EMAILS_set=", bool(getattr(settings, "MY_RESEARCH_PILOT_EMAILS", "")))
+          print("MY_RESEARCH_S3_BUCKET_override_set=", bool(getattr(settings, "MY_RESEARCH_S3_BUCKET", "")))
+          print("AWS_STORAGE_BUCKET_NAME=", getattr(settings, "AWS_STORAGE_BUCKET_NAME", ""))
+
+          print("=== postgres ===")
+          with connection.cursor() as c:
+              c.execute("select version()")
+              print("postgres_version=", c.fetchone()[0].split(" on ")[0])
+              c.execute("select now()")
+              print("db_now=", c.fetchone()[0])
+
+          print("=== migrations ===")
+          rec = MigrationRecorder.Migration.objects
+          print("applied_total=", rec.count())
+          for app in ("equipment", "users", "payments", "my_research"):
+              last = rec.filter(app=app).order_by("-id").first()
+              print(f"latest_applied[{app}]=", f"{last.name} @ {last.applied:%Y-%m-%d %H:%M}" if last else None)
+          print("equipment.0197_applied=", rec.filter(app="equipment", name="0197_equipment_group_alternatives").exists())
+          print("equipment.0198_applied=", rec.filter(app="equipment", name="0198_booking_result_views_and_data_shares").exists())
+          print("my_research.0001_applied=", rec.filter(app="my_research", name="0001_initial").exists())
+          ex = MigrationExecutor(connection)
+          plan = ex.migration_plan(ex.loader.graph.leaf_nodes())
+          print("pending_migrations=", [f"{m.app_label}.{m.name}" for m, _ in plan])
+
+          print("=== celery beat ===")
+          from django_celery_beat.models import CrontabSchedule, PeriodicTask
+
+          fields = ("id", "name", "task", "enabled", "crontab_id", "interval_id", "clocked_id", "solar_id",
+                    "args", "kwargs", "queue", "one_off", "expires")
+          rows = [tuple(str(v) for v in r) for r in PeriodicTask.objects.order_by("id").values_list(*fields)]
+          unrelated = [r for r in rows if r[1] != TASK]
+          print("periodic_tasks_total=", len(rows), " enabled=", sum(r[3] == "True" for r in rows))
+          print("unrelated_task_config_sha256=", hashlib.sha256(json.dumps(unrelated).encode()).hexdigest())
+          crons = [tuple(str(v) for v in r) for r in CrontabSchedule.objects.order_by("id").values_list(
+              "id", "minute", "hour", "day_of_week", "day_of_month", "month_of_year")]
+          print("crontab_rows=", len(crons), " sha256=", hashlib.sha256(json.dumps(crons).encode()).hexdigest())
+          print("crontab_35_hourly_rows=", [c[0] for c in crons if c[1:] == ("35", "*", "*", "*", "*")])
+          mr = PeriodicTask.objects.filter(name=TASK).select_related("crontab").first()
+          if mr:
+              ct = mr.crontab
+              print("my_research_task=", {"exists": True, "enabled": mr.enabled, "task": mr.task,
+                    "crontab_id": mr.crontab_id,
+                    "schedule": f"{ct.minute} {ct.hour} {ct.day_of_month} {ct.month_of_year} {ct.day_of_week}" if ct else None,
+                    "last_run_at": str(mr.last_run_at), "total_run_count": mr.total_run_count})
+          else:
+              print("my_research_task=", {"exists": False})
+
+          print("=== my_research tables ===")
+          with connection.cursor() as c:
+              c.execute("select table_name from information_schema.tables "
+                        "where table_schema = 'public' and table_name like 'my\\_research\\_%' order by 1")
+              tables = [r[0] for r in c.fetchall()]
+              print("my_research_tables=", len(tables))
+              for t in tables:
+                  c.execute(f'select count(*) from "{t}"')
+                  print(f"  {t} rows=", c.fetchone()[0])
+
+          print("=== existing data fingerprints (live system; informational) ===")
+          def fingerprint(label, model_label):
+              try:
+                  model = apps.get_model(model_label)
+              except LookupError:
+                  print(f"{label}= <model missing>")
+                  return
+              table = model._meta.db_table
+              pk = model._meta.pk.column
+              with connection.cursor() as c:
+                  c.execute(
+                      f'select count(*), max("{pk}"), '
+                      f'md5(coalesce(string_agg(t::text, \'|\' order by t."{pk}"), \'\')) from "{table}" t'
+                  )
+                  n, max_id, digest = c.fetchone()
+              print(f"{label}= rows {n} max_id {max_id} md5 {digest}")
+
+          fingerprint("equipment", "equipment.Equipment")
+          fingerprint("bookings", "equipment.Booking")
+          fingerprint("wallets", "users.Wallet")
+          fingerprint("sub_wallet_transactions", "users.SubWalletTransaction")
+          fingerprint("wallet_recharge_requests", "users.WalletRechargeRequest")
+          fingerprint("payment_orders", "payments.PaymentOrder")
+          fingerprint("payments", "payments.Payment")
+
+          print("=== celery workers ===")
+          from config.celery_app import app as celery_app
+
+          try:
+              replies = celery_app.control.ping(timeout=5) or []
+              print("celery_ping_workers=", len(replies), [list(r.keys())[0].split("@")[0] for r in replies])
+          except Exception as exc:  # noqa: BLE001
+              print("celery_ping_error=", type(exc).__name__)
+          PY
