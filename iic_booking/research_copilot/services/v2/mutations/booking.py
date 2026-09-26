@@ -158,6 +158,24 @@ def _booking_id_from_text(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _cancellation_window_note(*, equipment, start) -> tuple[str, str | None]:
+    """Mirrors the user cancel endpoint: no self-service cancel within reschedule_hours_threshold of the start."""
+    if not start:
+        return "", None
+    from datetime import timedelta
+
+    hours = int(getattr(equipment, "reschedule_hours_threshold", None) or 48)
+    cutoff = start - timedelta(hours=hours)
+    if timezone.now() > cutoff:
+        return (
+            f"This slot is inside the {hours}-hour cancellation window: once booked, you cannot cancel or "
+            "reschedule it yourself (only an admin can).",
+            None,
+        )
+    local = timezone.localtime(cutoff)
+    return f"You can cancel it yourself until {local:%a %d %b, %H:%M} {local.tzname()}.", _local_iso(cutoff)
+
+
 def prepare_booking_create(
     *,
     user,
@@ -318,10 +336,14 @@ def prepare_booking_create(
             )
     except Exception:  # noqa: BLE001
         pass
+    cancel_note, cancellable_until = _cancellation_window_note(equipment=eq, start=start)
+    if executable and cancel_note:
+        msg += " " + cancel_note
 
     return {
         "ok": True,
         "action": "CREATE_BOOKING",
+        "cancellable_until": cancellable_until,
         "status": "READY_FOR_CONFIRMATION",
         "proposal_id": record["proposal_id"],
         "confirmation_token": record["confirmation_token"],

@@ -190,6 +190,19 @@ def test_booking_times_are_shown_in_portal_local_time():
     assert _local_time_range(start.isoformat(), None) == "09:00 IST"
 
 
+@override_settings(TIME_ZONE="Asia/Kolkata", USE_TZ=True)
+def test_booking_proposal_states_cancellation_window():
+    from types import SimpleNamespace
+
+    from iic_booking.research_copilot.services.v2.mutations.booking import _cancellation_window_note
+
+    eq = SimpleNamespace(reschedule_hours_threshold=48)
+    soon, until = _cancellation_window_note(equipment=eq, start=timezone.now() + timedelta(hours=40))
+    assert "cancellation window" in soon and until is None
+    later, until = _cancellation_window_note(equipment=eq, start=timezone.now() + timedelta(days=5))
+    assert later.startswith("You can cancel it yourself until") and "IST" in later and until
+
+
 @pytest.mark.parametrize(
     "text,expected",
     [
