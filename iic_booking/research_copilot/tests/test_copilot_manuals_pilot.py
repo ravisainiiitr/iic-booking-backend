@@ -190,6 +190,24 @@ def test_booking_times_are_shown_in_portal_local_time():
     assert _local_time_range(start.isoformat(), None) == "09:00 IST"
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Cancel my booking 469", 469),
+        ("cancel booking #469", 469),
+        ("Reschedule booking id: 12 to Monday", 12),
+        ("cancel #7", 7),
+        ("cancel 1234567", 1234567),
+        ("cancel my booking on 28 Sep at 09:00", None),
+        ("cancel my next booking", None),
+    ],
+)
+def test_booking_id_is_read_from_text(text, expected):
+    from iic_booking.research_copilot.services.v2.mutations.booking import _booking_id_from_text
+
+    assert _booking_id_from_text(text) == expected
+
+
 def test_split_pages_tracks_page_numbers():
     chunks = split_pages(["a " * 10, "b " * 10], chunk_size=8, overlap=2)
     assert chunks[0][1:] == (1, 1)

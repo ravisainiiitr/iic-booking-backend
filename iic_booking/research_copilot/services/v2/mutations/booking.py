@@ -148,6 +148,16 @@ def _booking_owned(*, user, booking_id: int):
         return None, "BOOKING_NOT_FOUND"
 
 
+_BOOKING_REF_RE = re.compile(r"(?:\bbooking\s*(?:id|no\.?|number)?\s*[#:]?\s*|#\s*)(\d{1,9})\b", re.IGNORECASE)
+_LONG_NUMBER_RE = re.compile(r"\b(\d{6,})\b")
+
+
+def _booking_id_from_text(text: str) -> int | None:
+    """Booking ids are small integers, so a bare short number (a date or hour) is not treated as one."""
+    m = _BOOKING_REF_RE.search(text or "") or _LONG_NUMBER_RE.search(text or "")
+    return int(m.group(1)) if m else None
+
+
 def prepare_booking_create(
     *,
     user,
@@ -426,11 +436,7 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to cancel a booking.")
 
-    bid = booking_id
-    if not bid:
-        m = re.search(r"\b(\d{6,})\b", text or "")
-        if m:
-            bid = int(m.group(1))
+    bid = booking_id or _booking_id_from_text(text)
     if not bid and ("next" in (text or "").lower()):
         from iic_booking.research_copilot.services import tools as tools_svc
 
@@ -551,17 +557,13 @@ def prepare_reschedule(
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to reschedule a booking.")
 
-    bid = booking_id
+    bid = booking_id or _booking_id_from_text(text)
     if not bid and ("next" in (text or "").lower()):
         from iic_booking.research_copilot.services import tools as tools_svc
 
         nb = tools_svc._get_next_booking(arguments={}, user=user)
         data = (nb or {}).get("data") or {}
         bid = data.get("booking_id")
-    if not bid:
-        m = re.search(r"\b(\d{6,})\b", text or "")
-        if m:
-            bid = int(m.group(1))
     if not bid:
         return _safe_error("BOOKING_REQUIRED", "Specify which booking to reschedule.")
 
