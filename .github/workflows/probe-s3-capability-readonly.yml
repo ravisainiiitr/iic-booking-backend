@@ -1,0 +1,140 @@
+# Read-only capability check of the application's S3 credentials against the media bucket.
+# Issues only Get*/List*/Head* requests; never writes, deletes, or changes bucket configuration.
+name: Probe S3 Capability (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Locate django container
+        id: find
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          echo "container=$CID" >> "$GITHUB_OUTPUT"
+
+      - name: Read-only capability probe
+        env:
+          CID: ${{ steps.find.outputs.container }}
+        run: |
+          set -euo pipefail
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import re
+
+          import django
+
+          django.setup()
+
+          from botocore.exceptions import ClientError
+          from django.conf import settings
+
+          from iic_booking.my_research import storage
+
+          ACCOUNT_RE = re.compile(r"\b\d{12}\b")
+          s3 = storage._client()
+          bucket = storage.bucket_name()
+          prefix = (getattr(settings, "MY_RESEARCH_S3_PREFIX", "research") or "research").strip("/") + "/"
+
+          key_id = getattr(settings, "AWS_ACCESS_KEY_ID", "") or ""
+          print("RESULT credentials: access_key=%s**************** secret=<masked> bucket=%s" % (key_id[:4], bucket))
+
+
+          def outcome(fn, ok_codes=()):
+              """PASS if the request is authorized (including authorized 'not found' answers), DENIED on 403."""
+              try:
+                  fn()
+                  return "PASS", "200"
+              except ClientError as exc:
+                  code = exc.response.get("Error", {}).get("Code", "")
+                  status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                  if status == 403 or code in ("AccessDenied", "AllAccessDisabled"):
+                      return "DENIED", f"{status} {code}"
+                  if code in ok_codes or status == 404:
+                      return "PASS", f"{status} {code}"
+                  return "UNKNOWN", f"{status} {code}"
+
+
+          def report(name, fn, ok_codes=(), note=""):
+              verdict, detail = outcome(fn, ok_codes)
+              print(f"RESULT {name}: {verdict} ({detail}){(' - ' + note) if note else ''}")
+              return verdict
+
+
+          print("RESULT --- required read operations ---")
+          report("GetBucketCors", lambda: s3.get_bucket_cors(Bucket=bucket), ("NoSuchCORSConfiguration",))
+          report("GetBucketLifecycleConfiguration", lambda: s3.get_bucket_lifecycle_configuration(Bucket=bucket),
+                 ("NoSuchLifecycleConfiguration",))
+          report("ListBucket (research/)", lambda: s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1))
+          report("ListBucket (whole bucket)", lambda: s3.list_objects_v2(Bucket=bucket, MaxKeys=1))
+          report("ListMultipartUploads (research/)",
+                 lambda: s3.list_multipart_uploads(Bucket=bucket, Prefix=prefix, MaxUploads=1))
+
+          print("RESULT --- object-level, read-only probes ---")
+          report("GetObject on research/<missing key> via HEAD",
+                 lambda: s3.head_object(Bucket=bucket, Key=prefix + "__capability_probe_missing__"),
+                 note="404 means GetObject is authorized on research/*; 403 would mean denied")
+          first = s3.list_objects_v2(Bucket=bucket, MaxKeys=50).get("Contents") or []
+          existing = next((o for o in first if not o["Key"].startswith(prefix) and not o["Key"].endswith("/")), None)
+          if existing:
+              top = existing["Key"].split("/", 1)[0]
+              report(f"GetObject on an existing media object (HEAD, top-level prefix '{top}/')",
+                     lambda: s3.head_object(Bucket=bucket, Key=existing["Key"]))
+          else:
+              print("RESULT GetObject on existing media object: NOT TESTED (no object found)")
+          report("ListMultipartUploadParts (research/, nonexistent upload id)",
+                 lambda: s3.list_parts(Bucket=bucket, Key=prefix + "__capability_probe__", UploadId="capability-probe-nonexistent"),
+                 ("NoSuchUpload",), note="NoSuchUpload means authorized")
+
+          print("RESULT --- breadth of bucket-configuration read permissions (evidence only) ---")
+          for name, fn, ok in [
+              ("GetBucketPolicy", lambda: s3.get_bucket_policy(Bucket=bucket), ("NoSuchBucketPolicy",)),
+              ("GetBucketAcl", lambda: s3.get_bucket_acl(Bucket=bucket), ()),
+              ("GetEncryptionConfiguration", lambda: s3.get_bucket_encryption(Bucket=bucket), ()),
+              ("GetBucketPublicAccessBlock", lambda: s3.get_public_access_block(Bucket=bucket), ()),
+              ("GetBucketOwnershipControls", lambda: s3.get_bucket_ownership_controls(Bucket=bucket), ()),
+              ("GetBucketVersioning", lambda: s3.get_bucket_versioning(Bucket=bucket), ()),
+              ("GetBucketLocation", lambda: s3.get_bucket_location(Bucket=bucket), ()),
+              ("GetBucketLogging", lambda: s3.get_bucket_logging(Bucket=bucket), ()),
+              ("GetBucketTagging", lambda: s3.get_bucket_tagging(Bucket=bucket), ("NoSuchTagSet",)),
+              ("GetBucketWebsite", lambda: s3.get_bucket_website(Bucket=bucket), ("NoSuchWebsiteConfiguration",)),
+              ("GetReplicationConfiguration", lambda: s3.get_bucket_replication(Bucket=bucket),
+               ("ReplicationConfigurationNotFoundError",)),
+              ("GetBucketNotification", lambda: s3.get_bucket_notification_configuration(Bucket=bucket), ()),
+              ("GetInventoryConfiguration (list)", lambda: s3.list_bucket_inventory_configurations(Bucket=bucket), ()),
+              ("GetMetricsConfiguration (list)", lambda: s3.list_bucket_metrics_configurations(Bucket=bucket), ()),
+              ("ListAllMyBuckets", lambda: s3.list_buckets(), ()),
+          ]:
+              report(name, fn, ok)
+
+          print("RESULT --- evidence that this key already writes media (read-only) ---")
+          default_storage_cfg = (getattr(settings, "STORAGES", {}) or {}).get("default", {})
+          print("RESULT default storage backend:", default_storage_cfg.get("BACKEND", getattr(settings, "DEFAULT_FILE_STORAGE", "")))
+          try:
+              from django.core.files.storage import default_storage
+
+              same_key = getattr(default_storage, "access_key", None) in (None, "", key_id)
+              same_bucket = getattr(default_storage, "bucket_name", None) == bucket
+              print(f"RESULT default storage uses the same bucket: {same_bucket}; same access key: {same_key}")
+          except Exception as exc:  # noqa: BLE001
+              print("RESULT default storage inspection failed:", type(exc).__name__)
+          try:
+              tops = s3.list_objects_v2(Bucket=bucket, Delimiter="/", MaxKeys=100).get("CommonPrefixes") or []
+              for cp in tops[:15]:
+                  page = s3.list_objects_v2(Bucket=bucket, Prefix=cp["Prefix"], MaxKeys=1000).get("Contents") or []
+                  newest = max((o["LastModified"] for o in page), default=None)
+                  print(f"RESULT prefix {cp['Prefix']}: objects_in_first_page={len(page)} newest={newest}")
+          except ClientError as exc:
+              print("RESULT prefix listing error:", exc.response.get("Error", {}).get("Code"))
+
+          print("RESULT --- write operations: not executed (read-only check) ---")
+          for op in ("PutBucketCors", "PutLifecycleConfiguration", "PutObject", "DeleteObject", "CreateMultipartUpload",
+                     "UploadPart", "CompleteMultipartUpload", "AbortMultipartUpload"):
+              print(f"RESULT {op}: NOT TESTED")
+          PY
