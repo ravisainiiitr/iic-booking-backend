@@ -83,7 +83,30 @@ jobs:
               from iic_booking.research_copilot.services.llm_gateway import configured_provider_name, get_gateway
               gw_obj = get_gateway()
               print("gateway_provider=", configured_provider_name(), type(gw_obj).__name__)
-              print("gateway_health=", json.dumps(gw_obj.health())[:400])
+              h = gw_obj.health()
+              print("gateway_health=", str(getattr(h, "__dict__", h))[:400])
           except Exception as exc:
               print("gateway_health_error=", type(exc).__name__, str(exc)[:200])
+
+          pilot = [e for e in str(getattr(settings, "RESEARCH_COPILOT_PILOT_EMAILS", "") or "").split(",") if e.strip()]
+          print("RESEARCH_COPILOT_PILOT_EMAILS_count=", len(pilot))
+          for name in sorted(dir(settings)):
+              if name.startswith(("COPILOT_", "RESEARCH_COPILOT_")) and name != "RESEARCH_COPILOT_PILOT_EMAILS":
+                  val = getattr(settings, name)
+                  if any(s in name for s in ("KEY", "TOKEN", "SECRET")):
+                      val = "****" if val else ""
+                  print(f"SETTING {name}= {val!r}"[:200])
+          from iic_booking.research_copilot.services.conversation import feature_enabled
+          print("feature_enabled(anonymous)=", feature_enabled(None))
+          from django.apps import apps
+          for label in ("Conversation", "Message", "KnowledgeDocument", "KnowledgeChunk", "CopilotAuditEvent"):
+              print(f"rows {label}=", apps.get_model("research_copilot", label).objects.count())
           PY
+          echo "=== env file COPILOT keys (names only) ==="
+          grep -E '^(RESEARCH_COPILOT_|COPILOT_|OLLAMA_)' /home/ubuntu/iic-booking-backend/.envs/.production/.django | sed -E 's/=.*//' || echo "none"
+          echo "=== frontend runtime copilot flag ==="
+          FCID="$(docker ps --format '{{.Names}}' | grep -E 'frontend' | head -n 1 || true)"
+          [ -n "$FCID" ] && docker exec "$FCID" printenv VITE_RESEARCH_COPILOT_ENABLED || echo "frontend_flag_unset_or_no_container"
+          echo "=== public endpoints ==="
+          curl -s -m 5 -o /dev/null -w "public_bootstrap=%{http_code}\n" http://127.0.0.1:8080/api/v1/research-copilot/public/bootstrap/ || true
+          curl -s -m 5 http://127.0.0.1:8080/api/v1/research-copilot/public/bootstrap/ | head -c 300; echo
