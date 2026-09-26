@@ -215,14 +215,25 @@ def _personal_items(c: _Collector) -> None:
 
     def shared_workspaces():
         from iic_booking.communication.models import CommunicationLog
+        from iic_booking.my_research.models import ResearchWorkspaceMember
+        from iic_booking.my_research.services import WORKSPACE_SHARED_TITLE
 
+        active_ids = [
+            str(pk)
+            for pk in ResearchWorkspaceMember.objects.filter(user=user, revoked_at__isnull=True)
+            .exclude(workspace__owner=user)
+            .values_list("workspace_id", flat=True)
+        ]
+        if not active_ids:
+            return
         c.add(
             "workspaces_shared",
             "Research workspaces shared with you",
             CommunicationLog.objects.filter(
                 recipient=user,
                 communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
-                metadata__has_key="research_workspace_id",
+                subject=WORKSPACE_SHARED_TITLE,
+                metadata__research_workspace_id__in=active_ids,
             )
             .exclude(status=CommunicationLog.CommunicationStatus.READ)
             .order_by("-created_at"),

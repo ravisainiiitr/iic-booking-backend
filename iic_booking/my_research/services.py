@@ -544,6 +544,9 @@ def search_workspace(workspace: ResearchWorkspace, q: str, limit: int = 25) -> d
 # ---------------------------------------------------------------- notifications
 
 
+WORKSPACE_SHARED_TITLE = "You have been given read-only access to a Research Workspace"
+
+
 def notify_viewer_added(member: ResearchWorkspaceMember) -> None:
     from iic_booking.communication.email_branding import COLOR_PRIMARY, user_display_name
     from iic_booking.communication.service import CommunicationService
@@ -559,9 +562,14 @@ def notify_viewer_added(member: ResearchWorkspaceMember) -> None:
     try:
         CommunicationService.send_push_notification(
             recipient=recipient,
-            title="You have been given read-only access to a Research Workspace",
+            title=WORKSPACE_SHARED_TITLE,
             message=message,
-            metadata={"notification_type": "info", "link": link, "research_workspace_id": str(workspace.pk)},
+            metadata={
+                "notification_type": "info",
+                "link": link,
+                "research_workspace_id": str(workspace.pk),
+                "event": "research_workspace.shared",
+            },
         )
     except Exception:
         logger.exception("my_research viewer push failed member=%s", member.pk)
@@ -593,7 +601,11 @@ def notify_viewer_removed(member: ResearchWorkspaceMember) -> None:
             recipient=member.user,
             title="Research Workspace access removed",
             message=f"Your read-only access to the research workspace \"{member.workspace.name}\" was removed.",
-            metadata={"notification_type": "info", "research_workspace_id": str(member.workspace_id)},
+            metadata={
+                "notification_type": "info",
+                "research_workspace_id": str(member.workspace_id),
+                "event": "research_workspace.revoked",
+            },
         )
     except Exception:
         logger.exception("my_research viewer removal push failed member=%s", member.pk)
