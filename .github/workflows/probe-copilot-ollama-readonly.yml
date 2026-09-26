@@ -1,0 +1,89 @@
+# Read-only: locate the Ollama service on the production host and check whether the
+# django container can reach it. No install, no restart, no config change, no secrets printed.
+name: Probe Copilot Ollama (read-only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Host resources
+        run: |
+          echo "nproc=$(nproc)"
+          awk '/MemTotal|MemAvailable|SwapTotal|SwapFree/{print}' /proc/meminfo
+          df -h / | tail -n 1
+          echo "loadavg=$(cat /proc/loadavg)"
+
+      - name: Ollama on host
+        run: |
+          echo "=== containers ==="
+          docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' | grep -i -E 'ollama|llm' || echo "no_ollama_container"
+          echo "=== processes ==="
+          pgrep -a ollama || echo "no_ollama_process"
+          echo "=== systemd ==="
+          systemctl is-active ollama 2>/dev/null || echo "systemd_ollama_not_active"
+          systemctl show ollama -p Environment 2>/dev/null | sed -E 's/(KEY|TOKEN|SECRET)=[^ ]*/\1=****/g' || true
+          echo "=== listeners on 11434 ==="
+          (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ':11434\b' || echo "nothing_listening_on_11434"
+          echo "=== /api/version and /api/tags via localhost ==="
+          curl -s -m 5 http://127.0.0.1:11434/api/version || echo "localhost_unreachable"
+          echo
+          curl -s -m 5 http://127.0.0.1:11434/api/tags | python3 -c "import sys,json; d=json.load(sys.stdin); [print('model', m.get('name'), m.get('size'), (m.get('details') or {}).get('parameter_size'), (m.get('details') or {}).get('quantization_level')) for m in d.get('models',[])]" 2>/dev/null || echo "tags_unavailable"
+          echo "=== docker networks ==="
+          docker network ls --format '{{.Name}}\t{{.Driver}}'
+          GW="$(docker network inspect bridge -f '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null || true)"
+          echo "bridge_gateway=$GW"
+
+      - name: Reachability from django container
+        run: |
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "django_container=$CID"
+          docker inspect "$CID" -f '{{range $k, $v := .NetworkSettings.Networks}}net={{$k}} gw={{$v.Gateway}} {{end}}'
+          docker inspect "$CID" -f '{{range .HostConfig.ExtraHosts}}extra_host={{.}} {{end}}'
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import json, socket, urllib.request
+          import django
+          django.setup()
+          from django.conf import settings
+          base = str(getattr(settings, "OLLAMA_BASE_URL", "") or "")
+          print("RESEARCH_COPILOT_ENABLED=", settings.RESEARCH_COPILOT_ENABLED)
+          print("COPILOT_PROVIDER=", getattr(settings, "COPILOT_PROVIDER", "") or getattr(settings, "COPILOT_LLM_PROVIDER", "") or "(unset)")
+          print("OLLAMA_BASE_URL=", base or "(unset)")
+          print("OLLAMA_MODEL=", getattr(settings, "OLLAMA_MODEL", ""))
+          print("OPENAI_API_KEY_configured=", bool(str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()))
+          gw = None
+          try:
+              with open("/proc/net/route") as fh:
+                  for line in fh.readlines()[1:]:
+                      p = line.split()
+                      if p[1] == "00000000":
+                          gw = socket.inet_ntoa(bytes.fromhex(p[2])[::-1])
+          except Exception:
+              pass
+          candidates = [base, "http://ollama:11434", "http://host.docker.internal:11434", "http://172.17.0.1:11434"]
+          if gw:
+              candidates.append(f"http://{gw}:11434")
+          seen = set()
+          for url in candidates:
+              if not url or url in seen:
+                  continue
+              seen.add(url)
+              try:
+                  with urllib.request.urlopen(url.rstrip("/") + "/api/tags", timeout=5) as r:
+                      models = [m.get("name") for m in json.load(r).get("models", [])]
+                  print("REACH", url, "OK models=", models)
+              except Exception as exc:
+                  print("REACH", url, "FAIL", type(exc).__name__, str(exc)[:120])
+          try:
+              from iic_booking.research_copilot.services.llm_gateway import configured_provider_name, get_gateway
+              gw_obj = get_gateway()
+              print("gateway_provider=", configured_provider_name(), type(gw_obj).__name__)
+              print("gateway_health=", json.dumps(gw_obj.health())[:400])
+          except Exception as exc:
+              print("gateway_health_error=", type(exc).__name__, str(exc)[:200])
+          PY
