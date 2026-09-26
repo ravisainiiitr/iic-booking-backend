@@ -339,7 +339,7 @@ def _get_next_booking(*, arguments: dict, user) -> dict:
             "booking_id": best.pk,
             "equipment": getattr(eq, "name", None),
             "status": getattr(best, "status", None),
-            "start": best_start.isoformat() if best_start else None,
+            "start": timezone.localtime(best_start).isoformat() if best_start else None,
             "source": "PORTAL_DATA",
         },
         actions=[

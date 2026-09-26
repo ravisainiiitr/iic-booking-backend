@@ -35,6 +35,13 @@ def _safe_error(code: str, message: str, **extra) -> dict[str, Any]:
     return {"ok": False, "error": code, "message": message, **extra}
 
 
+def _local_iso(dt) -> str | None:
+    """Portal-local ISO time; clients read HH:MM straight from this string."""
+    if not dt:
+        return None
+    return (timezone.localtime(dt) if timezone.is_aware(dt) else dt).isoformat()
+
+
 def _audit(*, user, action: str, detail: dict[str, Any], message: str = "") -> None:
     try:
         from iic_booking.research_copilot.models import AuditAction
@@ -263,8 +270,8 @@ def prepare_booking_create(
         "equipment_name": eq.name,
         "slot_ids": [int(s.pk) for s in slots],
         "date": slots[0].date.isoformat() if slots[0].date else None,
-        "start_time": start.isoformat() if start else None,
-        "end_time": end.isoformat() if end else None,
+        "start_time": _local_iso(start),
+        "end_time": _local_iso(end),
         "duration_minutes": duration_min,
         "sample_count": samples,
         "number_of_samples": samples,
@@ -446,8 +453,8 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
         "equipment_id": int(booking.equipment_id) if booking.equipment_id else None,
         "equipment_name": getattr(booking.equipment, "name", None),
         "status": booking.status,
-        "start_time": start.isoformat() if start else None,
-        "end_time": end.isoformat() if end else None,
+        "start_time": _local_iso(start),
+        "end_time": _local_iso(end),
         "refund": True,
         "notes": "Cancelled via Research Copilot",
         "cancellation_policy_note": (
@@ -571,8 +578,8 @@ def prepare_reschedule(
             return _safe_error(serr, "Target slot is not available.")
         if not _slots_bookable_for_user(user=user, equipment_id=int(booking.equipment_id), slot_ids=[int(slot_id)]):
             return _safe_error("SLOT_NOT_BOOKABLE", "Target slot is not bookable for your account.")
-        start = slot.start_datetime.isoformat() if slot.start_datetime else None
-        end = slot.end_datetime.isoformat() if slot.end_datetime else None
+        start = _local_iso(slot.start_datetime)
+        end = _local_iso(slot.end_datetime)
 
     if not start or not end:
         return {

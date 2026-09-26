@@ -306,7 +306,13 @@ def next_booking(*, user) -> dict:
     if not data or data.get("booking_id") is None:
         content = "You have no upcoming booking in portal data."
     else:
-        content = f"**Next booking** #{data.get('booking_id')} — {data.get('equipment')} ({data.get('status')})\nStart: {data.get('start')}"
+        start = data.get("start")
+        try:
+            start_dt = timezone.localtime(datetime.fromisoformat(start)) if start else None
+        except (TypeError, ValueError):
+            start_dt = None
+        start_label = f"{start_dt:%a %d %b %Y, %H:%M} {start_dt.tzname()}" if start_dt else (start or "")
+        content = f"**Next booking** #{data.get('booking_id')} — {data.get('equipment')} ({data.get('status')})\nStart: {start_label}"
     return build_response(kind="LIVE_DATA", content=content, actions=list((result or {}).get("actions") or []), metadata={"deterministic": True})
 
 

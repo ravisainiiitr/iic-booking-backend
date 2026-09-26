@@ -96,6 +96,28 @@ def _proposal_card(prep: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _local_time_range(start: str | None, end: str | None) -> str:
+    from datetime import datetime
+
+    from django.utils import timezone
+
+    def fmt(value: str | None):
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        return timezone.localtime(dt) if timezone.is_aware(dt) else dt
+
+    s, e = fmt(start), fmt(end)
+    if s is None:
+        return str(start or "")
+    label = f"{s:%H:%M}" + (f"–{e:%H:%M}" if e is not None else "")
+    tz = s.tzname() if timezone.is_aware(s) else ""
+    return f"{label} {tz}".strip()
+
+
 def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
     if not prep.get("ok"):
         return build_response(
@@ -239,10 +261,9 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
         lines.append(f"- Booking: **{prep['booking_id']}**")
     if prep.get("date"):
         lines.append(f"- Date: {prep['date']}")
-    if prep.get("start_time"):
-        lines.append(f"- Start: {prep['start_time']}")
-    if prep.get("end_time"):
-        lines.append(f"- End: {prep['end_time']}")
+    time_range = _local_time_range(prep.get("start_time"), prep.get("end_time"))
+    if time_range:
+        lines.append(f"- Time: {time_range}")
     if prep.get("duration_minutes"):
         lines.append(f"- Duration: {prep['duration_minutes']} minutes")
     if prep.get("sample_count"):

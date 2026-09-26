@@ -176,6 +176,20 @@ def test_explicit_equipment_code_resolves_among_variants():
     assert resolve_equipment(text="Show available slots for PXRD this week", user=user).confidence == "AMBIGUOUS"
 
 
+@override_settings(TIME_ZONE="Asia/Kolkata", USE_TZ=True)
+def test_booking_times_are_shown_in_portal_local_time():
+    from datetime import datetime, timezone as dt_tz
+
+    from iic_booking.research_copilot.services.v2.mutations.booking import _local_iso
+    from iic_booking.research_copilot.services.v2.orchestrator import _local_time_range
+
+    start = datetime(2026, 9, 28, 3, 30, tzinfo=dt_tz.utc)
+    end = datetime(2026, 9, 28, 4, 0, tzinfo=dt_tz.utc)
+    assert _local_iso(start)[11:16] == "09:00"
+    assert _local_time_range(_local_iso(start), _local_iso(end)) == "09:00–09:30 IST"
+    assert _local_time_range(start.isoformat(), None) == "09:00 IST"
+
+
 def test_split_pages_tracks_page_numbers():
     chunks = split_pages(["a " * 10, "b " * 10], chunk_size=8, overlap=2)
     assert chunks[0][1:] == (1, 1)
