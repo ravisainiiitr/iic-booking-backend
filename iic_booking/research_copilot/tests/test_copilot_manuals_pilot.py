@@ -152,6 +152,16 @@ class TestPdfExtract:
         assert exc.value.code == "NO_EXTRACTABLE_TEXT"
 
 
+@pytest.mark.django_db
+def test_create_conversation_fills_not_null_access_columns():
+    from iic_booking.research_copilot.services.conversation import create_conversation
+
+    conv = create_conversation(user=_user("conv-defaults@example.com"), title="t")
+    conv.refresh_from_db()
+    assert conv.access_mode == "authenticated"
+    assert conv.anonymous_session_key == ""
+
+
 def test_split_pages_tracks_page_numbers():
     chunks = split_pages(["a " * 10, "b " * 10], chunk_size=8, overlap=2)
     assert chunks[0][1:] == (1, 1)

@@ -9,6 +9,11 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 
+class ConversationAccessMode(models.TextChoices):
+    PUBLIC = "public", _("Public")
+    AUTHENTICATED = "authenticated", _("Authenticated")
+
+
 class Conversation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
@@ -19,6 +24,13 @@ class Conversation(models.Model):
     title = models.CharField(max_length=255, blank=True, default="")
     user_role_snapshot = models.CharField(max_length=64, blank=True, default="")
     department_id_snapshot = models.IntegerField(null=True, blank=True)
+    # Production columns are NOT NULL without a database default, so every insert must supply them.
+    access_mode = models.CharField(
+        max_length=32,
+        choices=ConversationAccessMode.choices,
+        default=ConversationAccessMode.AUTHENTICATED,
+    )
+    anonymous_session_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
     is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -27,6 +39,7 @@ class Conversation(models.Model):
         ordering = ["-updated_at"]
         indexes = [
             models.Index(fields=["user", "-updated_at"]),
+            models.Index(fields=["anonymous_session_key", "-updated_at"], name="research_co_anonymo_idx"),
         ]
 
     def __str__(self) -> str:
