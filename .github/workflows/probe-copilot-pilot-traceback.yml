@@ -1,0 +1,71 @@
+# Reproduces Research Copilot API calls for a pilot account inside the django container and
+# prints tracebacks. Every database write happens inside a transaction that is rolled back.
+name: Probe Copilot Pilot Traceback
+
+on:
+  workflow_dispatch:
+    inputs:
+      message:
+        description: "Message to send"
+        required: false
+        default: "Show available slots for PXRD [A] this week"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Reproduce with rollback
+        env:
+          MSG: ${{ github.event.inputs.message }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e MSG="$MSG" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import json
+          import os
+          import traceback
+
+          import django
+          django.setup()
+          from django.db import transaction
+          from rest_framework.test import APIClient
+
+          from iic_booking.users.models import User
+
+          class Rollback(Exception):
+              pass
+
+          user = User.objects.get(email__iexact="test.student@iic-booking.test")
+          client = APIClient(SERVER_NAME="equip.iitr.ac.in")
+          client.force_authenticate(user=user)
+          client.raise_request_exception = True
+
+          def call(label, fn):
+              try:
+                  resp = fn()
+                  body = resp.content.decode("utf-8", "replace")[:400]
+                  print(f"{label}: {resp.status_code} {body}")
+                  return resp
+              except Exception:
+                  print(f"{label}: EXCEPTION")
+                  traceback.print_exc()
+                  return None
+
+          try:
+              with transaction.atomic():
+                  r = call("create_conversation", lambda: client.post(
+                      "/api/v1/research-copilot/conversations/", {"title": "probe"}, format="json", secure=True))
+                  conv_id = None
+                  if r is not None and r.status_code == 201:
+                      conv_id = r.json()["conversation"]["id"]
+                  if conv_id:
+                      call("send_message", lambda: client.post(
+                          f"/api/v1/research-copilot/conversations/{conv_id}/messages/",
+                          {"content": os.environ["MSG"]}, format="json", secure=True))
+                  raise Rollback()
+          except Rollback:
+              print("rolled_back=True")
+          PY
