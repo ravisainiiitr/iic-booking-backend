@@ -1,18 +1,30 @@
-﻿name: Tail Production Django Logs
+name: Tail Production Django Logs
 
 on:
   workflow_dispatch:
+    inputs:
+      filter:
+        description: "Only print tracebacks and error lines (true/false)"
+        required: false
+        default: "true"
 
 jobs:
   logs:
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux]
     steps:
-      - name: Tail django logs for bookings 500
+      - name: Tail django logs
+        env:
+          FILTER: ${{ github.event.inputs.filter }}
         run: |
           set -euo pipefail
           CID="$(docker ps -a --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
           echo "container=$CID"
           docker ps --format 'table {{.Names}}\t{{.Status}}' | head -n 20 || true
-          if [ -n "$CID" ]; then
+          if [ -z "$CID" ]; then
+            exit 0
+          fi
+          if [ "${FILTER:-true}" = "true" ]; then
+            docker logs --since 30m "$CID" 2>&1 | grep -E -A 40 'Traceback|ERROR|Internal Server Error' | tail -n 300 || echo "no_errors_in_last_30m"
+          else
             docker logs --tail 250 "$CID" 2>&1 | tail -n 250
           fi
