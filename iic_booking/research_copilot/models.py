@@ -32,6 +32,9 @@ class Conversation(models.Model):
     )
     anonymous_session_key = models.CharField(max_length=64, blank=True, default="", db_index=True)
     is_archived = models.BooleanField(default=False)
+    # Structured workflow state (booking / cancellation step, candidates, pending choice). Kept apart from
+    # chat history; nullable so inserts from code that predates the column keep working.
+    state = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -101,7 +104,24 @@ class MessageFeedback(models.Model):
     )
     rating = models.CharField(max_length=8, choices=FeedbackRating.choices)
     comment = models.TextField(blank=True, default="")
+    reason = models.CharField(max_length=32, blank=True, default="", db_default="")
+    intent = models.CharField(max_length=64, blank=True, default="", db_default="")
+    knowledge_article = models.ForeignKey(
+        "CopilotKnowledgeArticle",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="feedback",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class FeedbackReason(models.TextChoices):
+    INCORRECT = "incorrect", _("Incorrect")
+    NOT_USEFUL = "not_useful", _("Not useful")
+    MISSING_INFORMATION = "missing_information", _("Missing information")
+    ACTION_FAILED = "action_failed", _("Could not complete action")
+    OTHER = "other", _("Other")
 
 
 class AuditAction(models.TextChoices):
@@ -165,7 +185,30 @@ class KnowledgeGap(models.Model):
     query_summary = models.CharField(max_length=512, blank=True, default="")
     reason = models.CharField(max_length=64, blank=True, default="")
     suggested_faq = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=16, blank=True, default="open", db_default="open", db_index=True)
+    intent = models.CharField(max_length=64, blank=True, default="", db_default="")
+    resolved_article = models.ForeignKey(
+        "CopilotKnowledgeArticle",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="resolved_gaps",
+    )
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="research_copilot_resolved_gaps",
+    )
+    resolved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class KnowledgeGapStatus(models.TextChoices):
+    OPEN = "open", _("Open")
+    ANSWERED = "answered", _("Answered by article")
+    DISMISSED = "dismissed", _("Dismissed")
 
 
 class SecurityLevel(models.TextChoices):
@@ -312,6 +355,184 @@ class SearchQueryLog(models.Model):
     latency_ms = models.PositiveIntegerField(default=0)
     citation_ids = models.JSONField(default=list, blank=True)
     low_confidence = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class KnowledgeArticleStatus(models.TextChoices):
+    DRAFT = "draft", _("Draft")
+    PENDING_APPROVAL = "pending_approval", _("Pending approval")
+    APPROVED = "approved", _("Approved")
+    INACTIVE = "inactive", _("Inactive")
+
+
+class KnowledgeArticleCategory(models.TextChoices):
+    BOOKING = "booking", _("Booking")
+    CANCELLATION = "cancellation", _("Cancellation & reschedule")
+    WALLET = "wallet", _("Wallet & payments")
+    EQUIPMENT = "equipment", _("Equipment")
+    ACCOUNT = "account", _("Account & profile")
+    FACULTY = "faculty", _("Faculty & supervisors")
+    RESULTS = "results", _("Samples & results")
+    REMOTE_ANALYSIS = "remote_analysis", _("Remote Analysis")
+    MY_RESEARCH = "my_research", _("My Research")
+    POLICY = "policy", _("Portal policy")
+    GENERAL = "general", _("General")
+
+
+class KnowledgeArticleAudience(models.TextChoices):
+    ALL = "all", _("All signed-in users")
+    INTERNAL = "internal", _("Internal users")
+    EXTERNAL = "external", _("External users")
+    STUDENT = "student", _("Students")
+    FACULTY = "faculty", _("Faculty")
+    STAFF = "staff", _("Staff (admin, OIC, lab)")
+
+
+class KnowledgeArticleSource(models.TextChoices):
+    MANUAL = "manual", _("Written by admin")
+    TICKET = "ticket", _("Support ticket resolution")
+    GAP = "gap", _("Unanswered question")
+
+
+class CopilotKnowledgeArticle(models.Model):
+    """Curated Copilot answer. Only APPROVED articles are ever shown to users."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=255)
+    question = models.TextField(blank=True, default="")
+    answer = models.TextField()
+    category = models.CharField(
+        max_length=32, choices=KnowledgeArticleCategory.choices, default=KnowledgeArticleCategory.GENERAL, db_index=True
+    )
+    keywords = models.JSONField(default=list, blank=True)
+    audience = models.CharField(
+        max_length=16, choices=KnowledgeArticleAudience.choices, default=KnowledgeArticleAudience.ALL
+    )
+    related_equipment = models.ManyToManyField(
+        "equipment.Equipment", blank=True, related_name="copilot_knowledge_articles"
+    )
+    related_feature = models.CharField(max_length=64, blank=True, default="")
+    source = models.CharField(
+        max_length=16, choices=KnowledgeArticleSource.choices, default=KnowledgeArticleSource.MANUAL
+    )
+    source_ticket = models.ForeignKey(
+        "support.Ticket",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="copilot_knowledge_articles",
+    )
+    status = models.CharField(
+        max_length=24, choices=KnowledgeArticleStatus.choices, default=KnowledgeArticleStatus.DRAFT, db_index=True
+    )
+    version = models.PositiveIntegerField(default=1)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="copilot_articles_created",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="copilot_articles_updated",
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="copilot_articles_approved",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    usage_count = models.PositiveIntegerField(default=0)
+    helpful_count = models.PositiveIntegerField(default=0)
+    not_helpful_count = models.PositiveIntegerField(default=0)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        indexes = [models.Index(fields=["status", "category"])]
+
+    def __str__(self) -> str:
+        return self.title
+
+
+class CopilotKnowledgeArticleVersion(models.Model):
+    """Immutable snapshot written on every create / edit / approval / deactivation."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    article = models.ForeignKey(CopilotKnowledgeArticle, on_delete=models.CASCADE, related_name="versions")
+    version = models.PositiveIntegerField()
+    title = models.CharField(max_length=255)
+    question = models.TextField(blank=True, default="")
+    answer = models.TextField()
+    category = models.CharField(max_length=32)
+    keywords = models.JSONField(default=list, blank=True)
+    audience = models.CharField(max_length=16)
+    status = models.CharField(max_length=24)
+    change = models.CharField(max_length=32, blank=True, default="")
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="copilot_article_versions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class EscalationReason(models.TextChoices):
+    NO_VERIFIED_ANSWER = "no_verified_answer", _("No verified answer")
+    ACTION_FAILED = "action_failed", _("Action could not complete")
+    USER_REQUESTED = "user_requested", _("User asked for support")
+    NEGATIVE_FEEDBACK = "negative_feedback", _("Negative feedback")
+    OTHER = "other", _("Other")
+
+
+class CopilotEscalation(models.Model):
+    """Links a support Ticket (existing ticket system) to the Copilot conversation that raised it."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ticket = models.ForeignKey(
+        "support.Ticket",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="copilot_escalations",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="research_copilot_escalations",
+    )
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.SET_NULL, null=True, blank=True, related_name="escalations"
+    )
+    message = models.ForeignKey(Message, on_delete=models.SET_NULL, null=True, blank=True, related_name="escalations")
+    question = models.TextField(blank=True, default="")
+    intent = models.CharField(max_length=64, blank=True, default="")
+    entities = models.JSONField(default=dict, blank=True)
+    equipment_id = models.IntegerField(null=True, blank=True)
+    booking_id = models.IntegerField(null=True, blank=True)
+    reason = models.CharField(max_length=32, choices=EscalationReason.choices, default=EscalationReason.OTHER)
+    copilot_response = models.TextField(blank=True, default="")
+    knowledge_article = models.ForeignKey(
+        CopilotKnowledgeArticle, on_delete=models.SET_NULL, null=True, blank=True, related_name="escalations"
+    )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

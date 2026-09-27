@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from iic_booking.research_copilot import api_views, knowledge_views, public_views
+from iic_booking.research_copilot import api_views, intelligence_views, knowledge_views, public_views
 
 app_name = "research_copilot"
 
@@ -27,6 +27,22 @@ urlpatterns = [
         api_views.conversation_feedback,
         name="conversation-feedback",
     ),
+    path(
+        "conversations/<uuid:conversation_id>/escalate/",
+        intelligence_views.conversation_escalate,
+        name="conversation-escalate",
+    ),
+    # Copilot answers (verified knowledge articles) + admin console
+    path("answers/", intelligence_views.articles_collection, name="answers"),
+    path("answers/<uuid:article_id>/", intelligence_views.article_detail, name="answer-detail"),
+    path("answers/<uuid:article_id>/approve/", intelligence_views.article_approve, name="answer-approve"),
+    path("answers/<uuid:article_id>/deactivate/", intelligence_views.article_deactivate, name="answer-deactivate"),
+    path("answers/from-ticket/<int:ticket_id>/", intelligence_views.article_from_ticket, name="answer-from-ticket"),
+    path("console/unanswered/", intelligence_views.unanswered_list, name="console-unanswered"),
+    path("console/unanswered/<uuid:gap_id>/resolve/", intelligence_views.unanswered_resolve, name="console-resolve"),
+    path("console/escalations/", intelligence_views.escalations_list, name="console-escalations"),
+    path("console/feedback/", intelligence_views.feedback_list, name="console-feedback"),
+    path("console/usage/", intelligence_views.usage_stats, name="console-usage"),
     path("tools/execute/", api_views.execute_tool, name="tools-execute"),
     path("mutations/confirm/", api_views.confirm_mutation, name="mutations-confirm"),
     path("mutations/prepare/", api_views.prepare_mutation, name="mutations-prepare"),

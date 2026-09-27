@@ -686,6 +686,12 @@ RESEARCH_COPILOT_MAX_INPUT_CHARS = env.int("RESEARCH_COPILOT_MAX_INPUT_CHARS", d
 RESEARCH_COPILOT_MAX_CONCURRENT = env.int("RESEARCH_COPILOT_MAX_CONCURRENT", default=2)
 # Optional comma-separated emails for controlled pilot when RESEARCH_COPILOT_ENABLED=true.
 RESEARCH_COPILOT_PILOT_EMAILS = env("RESEARCH_COPILOT_PILOT_EMAILS", default="")
+# Intent/entity understanding, choice cards and structured conversation state (OFF until validated).
+RESEARCH_COPILOT_INTELLIGENCE_ENABLED = env.bool("RESEARCH_COPILOT_INTELLIGENCE_ENABLED", default=False)
+# Approved Copilot knowledge articles answer portal-help questions in chat (OFF until curated).
+RESEARCH_COPILOT_KNOWLEDGE_ENABLED = env.bool("RESEARCH_COPILOT_KNOWLEDGE_ENABLED", default=False)
+# Guided booking / cancellation / reschedule flows in chat. Execution stays gated by COPILOT_BOOKING_*.
+RESEARCH_COPILOT_ACTIONS_ENABLED = env.bool("RESEARCH_COPILOT_ACTIONS_ENABLED", default=False)
 
 # --- Copilot V2 feature flags (mutations OFF by default) ---
 COPILOT_V2_ENABLED = env.bool("COPILOT_V2_ENABLED", default=True)

@@ -127,8 +127,20 @@ def create_conversation(*, user, title: str = "") -> Conversation:
     return conv
 
 
-def list_conversations(*, user, limit: int = 50):
-    return Conversation.objects.filter(user=user, is_archived=False)[:limit]
+def list_conversations(*, user, limit: int = 50, archived: bool = False):
+    from django.db.models import OuterRef, Subquery
+
+    last_user_msg = (
+        Message.objects.filter(conversation=OuterRef("pk"), role=MessageRole.USER).order_by("-created_at").values("content")[:1]
+    )
+    return Conversation.objects.filter(user=user, is_archived=archived).annotate(last_query=Subquery(last_user_msg))[:limit]
+
+
+def archive_conversation(*, user, conversation_id, archived: bool = True) -> Conversation:
+    conv = Conversation.objects.get(id=conversation_id, user=user)
+    conv.is_archived = archived
+    conv.save(update_fields=["is_archived", "updated_at"])
+    return conv
 
 
 def get_conversation(*, user, conversation_id) -> Conversation:
@@ -179,7 +191,54 @@ def _static_actions(*, escalate: bool) -> list[dict]:
     return actions
 
 
-def send_message(*, user, conversation: Conversation, content: str) -> dict:
+def _reply_deterministic(*, user, conversation: Conversation, text: str, det: dict, ctx, enrich: bool = True) -> dict:
+    reply = det.get("content") or ""
+    actions = list(det.get("suggested_actions") or [])
+    cards = list(det.get("cards") or [])
+    escalate = bool(det.get("escalate_hint"))
+    confidence = float(det.get("confidence") or 0.88)
+    meta = dict(det.get("metadata") or {})
+    title_hint = meta.pop("title_hint", None)
+    with transaction.atomic():
+        assistant = Message.objects.create(
+            conversation=conversation,
+            role=MessageRole.ASSISTANT,
+            content=reply,
+            confidence=confidence,
+            citations=list(meta.get("citations") or []),
+            suggested_actions=(
+                tools_svc.enrich_actions_from_message(user=user, text=text, base_actions=actions) if enrich else actions
+            ),
+            escalate_hint=escalate,
+            metadata={
+                **meta,
+                "cards": cards,
+                "response_kind": det.get("response_kind") or "LIVE_DATA",
+                "llm_used": bool(meta.get("llm_used")),
+                "v2": True,
+            },
+        )
+        if not conversation.title or conversation.title == "New conversation":
+            conversation.title = (title_hint or text)[:80]
+        conversation.updated_at = timezone.now()
+        conversation.save(update_fields=["title", "updated_at"])
+    audit_svc.audit_message_replied(
+        user=user,
+        conversation=conversation,
+        confidence=confidence,
+        escalate=escalate,
+    )
+    return {
+        "conversation_id": str(conversation.id),
+        "message": serialize_message(assistant),
+        "suggested_prompts": _suggested_for(ctx),
+        "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
+        "cards": cards,
+        "response_kind": det.get("response_kind"),
+    }
+
+
+def send_message(*, user, conversation: Conversation, content: str, choice: dict | None = None) -> dict:
     """
     Persist user message, prefer deterministic V2 reads, else portal grounding + RAG + LLM.
 
@@ -207,55 +266,19 @@ def send_message(*, user, conversation: Conversation, content: str) -> dict:
             content=text,
         )
 
+    # --- Intelligence layer (flagged): intents, choices, guided actions, verified knowledge ---
+    from iic_booking.research_copilot.services.intelligence.engine import try_intelligent_turn
+
+    smart = try_intelligent_turn(user=user, text=text, conversation=conversation, choice=choice)
+    if smart is not None:
+        return _reply_deterministic(user=user, conversation=conversation, text=text, det=smart, ctx=ctx, enrich=False)
+
     # --- Phase A: deterministic-first (no LLM) ---
     from iic_booking.research_copilot.services.v2.orchestrator import try_deterministic_turn
 
     det = try_deterministic_turn(user=user, text=text, conversation=conversation, public=False)
     if det is not None:
-        reply = det.get("content") or ""
-        actions = list(det.get("suggested_actions") or [])
-        cards = list(det.get("cards") or [])
-        escalate = bool(det.get("escalate_hint"))
-        confidence = float(det.get("confidence") or 0.88)
-        with transaction.atomic():
-            assistant = Message.objects.create(
-                conversation=conversation,
-                role=MessageRole.ASSISTANT,
-                content=reply,
-                confidence=confidence,
-                citations=list((det.get("metadata") or {}).get("citations") or []),
-                suggested_actions=tools_svc.enrich_actions_from_message(
-                    user=user,
-                    text=text,
-                    base_actions=actions,
-                ),
-                escalate_hint=escalate,
-                metadata={
-                    **(det.get("metadata") or {}),
-                    "cards": cards,
-                    "response_kind": det.get("response_kind") or "LIVE_DATA",
-                    "llm_used": bool((det.get("metadata") or {}).get("llm_used")),
-                    "v2": True,
-                },
-            )
-            if not conversation.title or conversation.title == "New conversation":
-                conversation.title = text[:80]
-            conversation.updated_at = timezone.now()
-            conversation.save(update_fields=["title", "updated_at"])
-        audit_svc.audit_message_replied(
-            user=user,
-            conversation=conversation,
-            confidence=confidence,
-            escalate=escalate,
-        )
-        return {
-            "conversation_id": str(conversation.id),
-            "message": serialize_message(assistant),
-            "suggested_prompts": _suggested_for(ctx),
-            "tools_available": tools_svc.list_tools_for_role(ctx.role_bucket),
-            "cards": cards,
-            "response_kind": det.get("response_kind"),
-        }
+        return _reply_deterministic(user=user, conversation=conversation, text=text, det=det, ctx=ctx)
 
     history = [
         {"role": m.role, "content": m.content}
@@ -444,25 +467,43 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
     }
 
 
-def add_feedback(*, user, conversation: Conversation, rating: str, comment: str = "", message_id=None) -> MessageFeedback:
+def add_feedback(
+    *, user, conversation: Conversation, rating: str, comment: str = "", message_id=None, reason: str = ""
+) -> MessageFeedback:
+    from iic_booking.research_copilot.models import AuditAction, CopilotKnowledgeArticle, FeedbackReason
+
     msg = None
     if message_id:
         msg = Message.objects.filter(id=message_id, conversation=conversation).first()
+    meta = (msg.metadata or {}) if msg is not None else {}
+    reason = reason if reason in FeedbackReason.values else ""
+    article = None
+    article_id = meta.get("knowledge_article_id")
+    if article_id:
+        try:
+            article = CopilotKnowledgeArticle.objects.filter(pk=article_id).first()
+        except Exception:  # noqa: BLE001 - malformed ids in old metadata
+            article = None
     fb = MessageFeedback.objects.create(
         conversation=conversation,
         message=msg,
         user=user,
         rating=rating,
         comment=(comment or "")[:2000],
+        reason=reason,
+        intent=str(meta.get("intent") or "")[:64],
+        knowledge_article=article,
     )
-    from iic_booking.research_copilot.models import AuditAction
+    if article is not None:
+        from iic_booking.research_copilot.services.intelligence import knowledge
 
+        knowledge.record_feedback(article.pk, helpful=rating == "up")
     audit_svc.write_audit(
         action=AuditAction.FEEDBACK,
         message=f"Feedback {rating}",
         user=user,
         conversation=conversation,
-        detail={"rating": rating},
+        detail={"rating": rating, "reason": reason},
     )
     return fb
 
@@ -490,7 +531,15 @@ def serialize_conversation(c: Conversation, *, include_messages: bool = False) -
         "department_id_snapshot": c.department_id_snapshot,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "is_archived": bool(c.is_archived),
     }
+    last_query = getattr(c, "last_query", None)
+    if not hasattr(c, "last_query") and not include_messages:
+        last_query = (
+            c.messages.filter(role=MessageRole.USER).order_by("-created_at").values_list("content", flat=True).first()
+        )
+    if last_query is not None:
+        data["last_query"] = str(last_query)[:160]
     if include_messages:
         data["messages"] = [serialize_message(m) for m in c.messages.order_by("created_at")]
     return data
@@ -521,13 +570,14 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "cancel_booking", "label": "Cancel booking", "prompt": "Cancel my next booking."},
             {"id": "wallet", "label": "Wallet balance", "prompt": "What is my wallet balance?"},
             {"id": "wallet_tx", "label": "Wallet transactions", "prompt": "Show my recent wallet transactions."},
-            {"id": "estimate", "label": "Estimate cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
             {"id": "recharge", "label": "Recharge wallet", "prompt": "I want to recharge my wallet."},
             {"id": "credit", "label": "Credit status", "prompt": "What is my outstanding credit?"},
             {"id": "ra_status", "label": "Remote Analysis", "prompt": "What is my Remote Analysis status?"},
             {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
+        "intelligence": _intelligence_flags(user),
+        "command_groups": _command_groups(user),
         "mutation_flags": {
             "booking_create": _booking_flag_for_user(user, "COPILOT_BOOKING_CREATE"),
             "booking_cancel": _booking_flag_for_user(user, "COPILOT_BOOKING_CANCEL"),
@@ -541,6 +591,75 @@ def bootstrap_payload(*, user) -> dict:
             "e2e_test_mode": bool(getattr(settings, "COPILOT_BOOKING_E2E_TEST_MODE", False)),
         },
     }
+
+
+def _intelligence_flags(user) -> dict:
+    from iic_booking.research_copilot.services.intelligence import actions_enabled, intelligence_enabled, knowledge_enabled
+    from iic_booking.research_copilot.services.intelligence.articles import can_approve, can_edit
+
+    return {
+        "enabled": intelligence_enabled(),
+        "knowledge": knowledge_enabled(),
+        "actions": actions_enabled(),
+        "can_manage_knowledge": can_edit(user),
+        "can_approve_knowledge": can_approve(user),
+    }
+
+
+def _command_groups(user) -> list[dict]:
+    """Grouped quick actions. Choice buttons start the guided flows; prompts use the existing reads."""
+    from iic_booking.research_copilot.services.intelligence import intelligence_enabled
+
+    def start(value: str, label: str, fallback_prompt: str) -> dict:
+        if intelligence_enabled():
+            return {"id": f"start_{value}", "label": label, "choice": {"kind": "start", "value": value}}
+        return {"id": f"start_{value}", "label": label, "prompt": fallback_prompt}
+
+    groups = [
+        {
+            "id": "booking",
+            "label": "Booking",
+            "actions": [
+                start("book", "Book equipment", "I want to book equipment."),
+                start("availability", "Check availability", "Search available slots for FESEM this week."),
+                start("estimate", "Estimate cost", "Estimate the cost of booking FESEM."),
+                {"id": "my_bookings", "label": "My bookings", "prompt": "List my recent bookings."},
+                {"id": "next_booking", "label": "Next booking", "prompt": "What is my next booking?"},
+                start("cancel", "Cancel a booking", "Cancel my next booking."),
+                start("reschedule", "Reschedule", "Reschedule my next booking."),
+            ],
+        },
+        {
+            "id": "research",
+            "label": "Research",
+            "actions": [
+                {"id": "find_equipment", "label": "Find equipment", "prompt": "Which technique should I use for elemental composition?"},
+                {"id": "results", "label": "My results", "prompt": "Show my latest results."},
+                {"id": "ra_status", "label": "Remote Analysis", "prompt": "What is my Remote Analysis status?"},
+                {"id": "research_help", "label": "Sample preparation", "prompt": "How do I prepare a sample for FESEM?"},
+            ],
+        },
+        {
+            "id": "account",
+            "label": "Account",
+            "actions": [
+                {"id": "wallet", "label": "Wallet balance", "prompt": "What is my wallet balance?"},
+                {"id": "wallet_tx", "label": "Wallet transactions", "prompt": "Show my recent wallet transactions."},
+                {"id": "credit", "label": "Credit status", "prompt": "What is my outstanding credit?"},
+                {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
+            ],
+        },
+        {
+            "id": "help",
+            "label": "Help",
+            "actions": [
+                {"id": "portal_help", "label": "Portal help", "prompt": "How do I cancel a booking?"},
+                {"id": "support", "label": "Contact support", "prompt": "I want to raise a support ticket."},
+                {"id": "tickets", "label": "My tickets", "href": "/tickets"},
+            ],
+        },
+    ]
+    return groups
 
 
 def _booking_flag_for_user(user, flag_name: str) -> bool:

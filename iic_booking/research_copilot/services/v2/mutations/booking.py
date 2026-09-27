@@ -68,17 +68,29 @@ def _wallet_balance(user) -> Any:
         return None
 
 
-def _estimate_for_equipment(*, user, equipment_id: int) -> tuple[Any, str | None]:
+def _estimate_for_equipment(*, user, equipment_id: int, input_values: dict[str, Any] | None = None) -> tuple[Any, str | None]:
     from iic_booking.research_copilot.services import tools as tools_svc
 
-    try:
-        result = tools_svc._estimate_booking_cost(arguments={"equipment_id": equipment_id}, user=user)
-    except Exception as exc:  # noqa: BLE001
-        return None, str(exc)
-    if not result.get("ok"):
-        return None, (result.get("message") or "estimate_failed")
-    data = result.get("data") or {}
-    return data.get("estimate"), data.get("equipment_name")
+    arguments: dict[str, Any] = {"equipment_id": equipment_id}
+    for key, value in (input_values or {}).items():
+        if len(key) == 1 and key in "ABCDEFG":
+            arguments[key] = value
+    attempts = [arguments]
+    if len(arguments) > 2 and "A" in arguments:
+        # Fall back to the sample count alone if a non-numeric field trips the estimator.
+        attempts.append({"equipment_id": equipment_id, "A": arguments["A"]})
+    error: str | None = None
+    for args in attempts:
+        try:
+            result = tools_svc._estimate_booking_cost(arguments=args, user=user)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            continue
+        if result.get("ok"):
+            data = result.get("data") or {}
+            return data.get("estimate"), data.get("equipment_name")
+        error = result.get("message") or "estimate_failed"
+    return None, error
 
 
 def _load_slot(*, slot_id: int, equipment_id: int | None = None):
@@ -102,12 +114,50 @@ def _slots_bookable_for_user(*, user, equipment_id: int, slot_ids: list[int]) ->
     return all(slot_is_bookable_for_user(user=user, equipment_id=equipment_id, slot_id=int(s)) for s in slot_ids)
 
 
-def _copilot_input_values(*, user, equipment, samples: int) -> tuple[dict[str, Any] | None, list[str]]:
-    """
-    Input values Copilot can fill on the user's behalf: the numeric field A (sample count).
+CHAT_FILLABLE_FIELD_TYPES = frozenset({"NUMERIC", "TEXT", "RADIO", "COMBO", "TOGGLE"})
 
-    Returns (input_values, missing_labels). When another required field exists, Copilot cannot guess it
-    and the caller must send the user to the portal booking form instead.
+
+def _field_descriptor(f) -> dict[str, Any]:
+    options = f.options if isinstance(getattr(f, "options", None), list) else []
+    return {
+        "key": f.field_key,
+        "label": f.field_label or f.field_key,
+        "type": str(getattr(f, "field_type", "") or ""),
+        "required": bool(f.is_required),
+        "options": [
+            {"value": str(o.get("value", o.get("code", o.get("label", "")))), "label": str(o.get("label", o.get("value", "")))}
+            if isinstance(o, dict)
+            else {"value": str(o), "label": str(o)}
+            for o in options[:30]
+        ],
+        "help": (getattr(f, "help_text", "") or "")[:240],
+        "chat_fillable": str(getattr(f, "field_type", "") or "") in CHAT_FILLABLE_FIELD_TYPES,
+    }
+
+
+def missing_input_fields(*, user, equipment, samples: int, provided: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Required booking-form fields (same schema as the booking page) that still have no value."""
+    from iic_booking.equipment.equipment_group_service import _effective_input_fields
+
+    fields = _effective_input_fields(equipment, getattr(user, "user_type", "") or "")
+    values, _missing = _copilot_input_values(user=user, equipment=equipment, samples=samples, provided=provided, validate=False)
+    filled = set((values or {}).keys()) | set((provided or {}).keys())
+    return [
+        _field_descriptor(f)
+        for f in fields
+        if f.is_required and f.field_key not in filled and f.default_value in (None, "")
+    ]
+
+
+def _copilot_input_values(
+    *, user, equipment, samples: int, provided: dict[str, Any] | None = None, validate: bool = True
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """
+    Input values for the booking, from the numeric field A (sample count) plus any values the user
+    supplied in chat for this equipment's own input fields.
+
+    Returns (input_values, missing_labels). When a required field is still missing the caller asks for
+    it in chat (simple field types) or sends the user to the portal booking form.
     """
     from iic_booking.equipment.api_views import _validate_dynamic_numeric_input_limits
     from iic_booking.equipment.equipment_group_service import _effective_input_fields
@@ -118,6 +168,13 @@ def _copilot_input_values(*, user, equipment, samples: int) -> tuple[dict[str, A
     field_a = by_key.get("A")
     if field_a is None or str(getattr(field_a, "field_type", "")) == "NUMERIC":
         values["A"] = str(samples)
+    for key, raw in (provided or {}).items():
+        f = by_key.get(str(key))
+        if f is None or (str(key) == "A" and "A" in values):
+            continue
+        if str(getattr(f, "field_type", "")) not in CHAT_FILLABLE_FIELD_TYPES or raw in (None, ""):
+            continue
+        values[str(key)] = str(raw)[:500]
     missing = [
         f.field_label or f.field_key
         for f in fields
@@ -126,6 +183,8 @@ def _copilot_input_values(*, user, equipment, samples: int) -> tuple[dict[str, A
     for f in fields:
         if f.field_key not in values and f.default_value not in (None, ""):
             values[f.field_key] = f.default_value
+    if not validate:
+        return values, missing
     if missing:
         return None, missing
     error = _validate_dynamic_numeric_input_limits(equipment, values, booking_user=user)
@@ -186,6 +245,7 @@ def prepare_booking_create(
     number_of_samples: int | None = None,
     text: str = "",
     context: dict[str, Any] | None = None,
+    input_values: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate and build CREATE_BOOKING confirmation proposal (does not book)."""
     if user is None or not getattr(user, "is_authenticated", False):
@@ -264,7 +324,10 @@ def prepare_booking_create(
     if samples < 1:
         samples = 1
 
-    input_values, missing_inputs = _copilot_input_values(user=user, equipment=eq, samples=samples)
+    provided_inputs = input_values
+    input_values, missing_inputs = _copilot_input_values(
+        user=user, equipment=eq, samples=samples, provided=provided_inputs
+    )
     if input_values is None:
         slot_date = slots[0].date.isoformat() if slots[0].date else ""
         return {
@@ -276,6 +339,9 @@ def prepare_booking_create(
             "equipment_id": eid,
             "equipment_name": eq.name,
             "missing_inputs": missing_inputs,
+            "missing_fields": missing_input_fields(user=user, equipment=eq, samples=samples, provided=provided_inputs),
+            "slot_ids": [int(s.pk) for s in slots],
+            "sample_count": samples,
             "message": (
                 f"**{eq.name}** needs booking details Copilot can't fill in for you ("
                 + ", ".join(missing_inputs[:5])
@@ -284,7 +350,7 @@ def prepare_booking_create(
             "portal_href": f"/book-equipment?equipment_id={eid}" + (f"&date={slot_date}" if slot_date else ""),
         }
 
-    estimate, _ename = _estimate_for_equipment(user=user, equipment_id=eid)
+    estimate, _ename = _estimate_for_equipment(user=user, equipment_id=eid, input_values=input_values)
     balance = _wallet_balance(user)
 
     start = slots[0].start_datetime
@@ -362,6 +428,8 @@ def prepare_booking_create(
         "estimated_amount": payload["estimated_amount"],
         "wallet_balance": balance,
         "approx_balance_after": payload.get("approx_balance_after"),
+        "input_values": input_values,
+        "slot_ids": payload["slot_ids"],
         "message": msg,
         "portal_href": f"/book-equipment?equipment_id={eid}",
     }
@@ -454,7 +522,19 @@ def execute_booking_create(
     return result
 
 
-def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "") -> dict[str, Any]:
+def prepare_cancellation(
+    *,
+    user,
+    booking_id: int | None = None,
+    text: str = "",
+    slot_ids: list[int] | None = None,
+    reduced_input_values: dict[str, Any] | None = None,
+    preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    CANCEL_BOOKING proposal. Without slot_ids / reduced_input_values the whole booking is cancelled;
+    with them the portal partial-cancellation rules apply (same request body as My Bookings).
+    """
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to cancel a booking.")
 
@@ -473,9 +553,15 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
     if err:
         return _safe_error("BOOKING_FORBIDDEN", "Booking not found for your account.")
 
-    slots = list(booking.daily_slots.all())
+    slots = sorted(booking.daily_slots.all(), key=lambda s: s.start_datetime or timezone.now())
     start = slots[0].start_datetime if slots else None
     end = slots[-1].end_datetime if slots else None
+    owned_slot_ids = {int(s.pk) for s in slots}
+    partial_slot_ids = sorted({int(s) for s in (slot_ids or [])})
+    if partial_slot_ids and not set(partial_slot_ids) <= owned_slot_ids:
+        return _safe_error("SLOT_NOT_IN_BOOKING", "Those slots are not part of this booking.")
+    if partial_slot_ids and set(partial_slot_ids) == owned_slot_ids:
+        partial_slot_ids = []
     payload = {
         "booking_id": int(booking.booking_id),
         "equipment_id": int(booking.equipment_id) if booking.equipment_id else None,
@@ -488,10 +574,33 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
         "cancellation_policy_note": (
             "Cancellation follows the portal cancellation policy and refund rules for this booking."
         ),
+        "cancel_mode": "entire",
     }
+    if partial_slot_ids:
+        payload["cancel_mode"] = "selected_slots"
+        payload["slot_ids"] = partial_slot_ids
+        payload["notes"] = "Selected slots cancelled via Research Copilot"
+    elif reduced_input_values:
+        payload["cancel_mode"] = "reduce_inputs"
+        payload["reduced_input_values"] = {str(k): str(v) for k, v in reduced_input_values.items()}
+        payload["notes"] = "Booking reduced via Research Copilot"
+    if preview:
+        payload["refund_amount"] = preview.get("refund_amount")
+        payload["new_charge"] = preview.get("new_charge")
+        payload["slots_to_release_count"] = preview.get("slots_to_release_count")
+        payload["slots_to_keep_count"] = preview.get("slots_to_keep_count")
     record = prop_store.create_proposal(user=user, action="CANCEL_BOOKING", payload=payload)
     executable = _flag("COPILOT_BOOKING_CANCEL", user=user)
-    _audit(user=user, action="prepare_cancellation", detail={"proposal_id": record["proposal_id"], "booking_id": bid, "ok": True})
+    _audit(
+        user=user,
+        action="prepare_cancellation",
+        detail={
+            "proposal_id": record["proposal_id"],
+            "booking_id": bid,
+            "cancel_mode": payload["cancel_mode"],
+            "ok": True,
+        },
+    )
     return {
         "ok": True,
         "action": "CANCEL_BOOKING",
@@ -503,7 +612,11 @@ def prepare_cancellation(*, user, booking_id: int | None = None, text: str = "")
         "executable": executable,
         "expires_at": record["expires_at"],
         **payload,
-        "message": "Review cancellation details. Confirm only if you want to cancel this booking.",
+        "message": (
+            "Review cancellation details. Confirm only if you want to cancel this booking."
+            if payload["cancel_mode"] == "entire"
+            else "Review the partial cancellation. Only the selected part is cancelled; the rest stays booked."
+        ),
         "portal_href": f"/my-bookings?booking={booking.booking_id}&action=cancel",
     }
 
@@ -539,12 +652,23 @@ def execute_booking_cancel(
     if berr:
         return _safe_error("BOOKING_FORBIDDEN", "Booking not found for your account.")
 
-    status_code, data = domain_bridge.call_user_cancel_booking(
-        user=user,
-        booking_id=booking_id,
-        body={"refund": bool(payload.get("refund", True)), "notes": payload.get("notes") or "Cancelled via Research Copilot"},
-    )
+    body: dict[str, Any] = {
+        "refund": bool(payload.get("refund", True)),
+        "notes": payload.get("notes") or "Cancelled via Research Copilot",
+    }
+    if payload.get("slot_ids"):
+        body["slot_ids"] = [int(s) for s in payload["slot_ids"]]
+    elif payload.get("reduced_input_values"):
+        body["reduced_input_values"] = dict(payload["reduced_input_values"])
+    status_code, data = domain_bridge.call_user_cancel_booking(user=user, booking_id=booking_id, body=body)
     ok = 200 <= status_code < 300
+    partial = bool(ok and (data or {}).get("partial_cancellation"))
+    if ok:
+        message = (data or {}).get("message") or ("Selected slots cancelled." if partial else "Booking cancelled.")
+        if partial:
+            message += " The rest of the booking stays active."
+    else:
+        message = _user_facing_domain_error(data)
     result = {
         "ok": ok,
         "action": "CANCEL_BOOKING",
@@ -553,8 +677,9 @@ def execute_booking_cancel(
         "idempotency_key": key,
         "data": data if ok else None,
         "error": None if ok else (data.get("error") or "CANCEL_FAILED"),
-        "message": "Booking cancelled." if ok else _user_facing_domain_error(data),
+        "message": message,
         "booking_id": booking_id,
+        "partial": partial,
     }
     if ok:
         prop_store.invalidate_proposal(proposal_id)
@@ -575,6 +700,7 @@ def prepare_reschedule(
     end_time: str | None = None,
     slot_id: int | None = None,
     text: str = "",
+    slot_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     if user is None or not getattr(user, "is_authenticated", False):
         return _safe_error("AUTH_REQUIRED", "Sign in to reschedule a booking.")
@@ -595,6 +721,24 @@ def prepare_reschedule(
 
     start = start_time
     end = end_time
+    target_ids = [int(s) for s in (slot_ids or [])]
+    if target_ids and (not start or not end):
+        eq_id = int(booking.equipment_id)
+        targets = []
+        for sid in target_ids:
+            slot, serr = _load_slot(slot_id=sid, equipment_id=eq_id)
+            if serr:
+                return _safe_error(serr, "Target slot is not available.")
+            targets.append(slot)
+        targets.sort(key=lambda s: s.start_datetime)
+        for prev, nxt in zip(targets, targets[1:]):
+            if prev.end_datetime != nxt.start_datetime:
+                return _safe_error("SLOTS_NOT_CONTIGUOUS", "The new slots must be back-to-back.")
+        if not _slots_bookable_for_user(user=user, equipment_id=eq_id, slot_ids=[int(s.pk) for s in targets]):
+            return _safe_error("SLOT_NOT_BOOKABLE", "Target slot is not bookable for your account.")
+        start = _local_iso(targets[0].start_datetime)
+        end = _local_iso(targets[-1].end_datetime)
+        slot_id = slot_id or int(targets[0].pk)
     if slot_id and (not start or not end):
         slot, serr = _load_slot(slot_id=int(slot_id), equipment_id=int(booking.equipment_id))
         if serr:

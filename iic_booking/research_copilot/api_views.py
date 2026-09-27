@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
@@ -74,7 +75,8 @@ def conversations_collection(request):
         return gated
 
     if request.method == "GET":
-        rows = conv_svc.list_conversations(user=request.user)
+        archived = str(request.query_params.get("archived") or "").lower() in {"1", "true", "yes"}
+        rows = conv_svc.list_conversations(user=request.user, archived=archived)
         return Response(
             {
                 "count": len(rows),
@@ -94,7 +96,7 @@ def conversations_collection(request):
     )
 
 
-@api_view(["GET"])
+@api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 @throttle_classes([ResearchCopilotUserThrottle])
 def conversation_detail(request, conversation_id):
@@ -102,7 +104,34 @@ def conversation_detail(request, conversation_id):
     if gated:
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
+    if request.method == "DELETE":
+        # Archive only: conversation history is never deleted from here.
+        conv_svc.archive_conversation(user=request.user, conversation_id=conv.id, archived=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    if request.method == "PATCH":
+        fields = []
+        if "is_archived" in request.data:
+            conv.is_archived = bool(request.data.get("is_archived"))
+            fields.append("is_archived")
+        title = request.data.get("title")
+        if isinstance(title, str) and title.strip():
+            conv.title = title.strip()[:255]
+            fields.append("title")
+        if fields:
+            conv.save(update_fields=[*fields, "updated_at"])
+        return Response(conv_svc.serialize_conversation(conv))
     return Response(conv_svc.serialize_conversation(conv, include_messages=True))
+
+
+def _choice_from_request(data) -> dict | None:
+    raw = data.get("choice") if hasattr(data, "get") else None
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip()[:32]
+    value = str(raw.get("value") or "").strip()[:200]
+    if not kind:
+        return None
+    return {"kind": kind, "value": value}
 
 
 @api_view(["POST"])
@@ -115,7 +144,9 @@ def conversation_messages(request, conversation_id):
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
     content = request.data.get("content") or request.data.get("message") or ""
     try:
-        payload = conv_svc.send_message(user=request.user, conversation=conv, content=content)
+        payload = conv_svc.send_message(
+            user=request.user, conversation=conv, content=content, choice=_choice_from_request(request.data)
+        )
     except ValueError as exc:
         return Response(
             {"error": {"code": str(exc), "message": "Invalid message."}},
@@ -169,14 +200,21 @@ def conversation_feedback(request, conversation_id):
             {"error": {"code": "invalid_rating", "message": "rating must be up or down."}},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    message_id = request.data.get("message_id")
+    if message_id:
+        try:
+            uuid.UUID(str(message_id))
+        except ValueError:
+            message_id = None
     fb = conv_svc.add_feedback(
         user=request.user,
         conversation=conv,
         rating=rating,
         comment=request.data.get("comment") or "",
-        message_id=request.data.get("message_id"),
+        message_id=message_id,
+        reason=str(request.data.get("reason") or "").strip().lower(),
     )
-    return Response({"id": str(fb.id), "rating": fb.rating}, status=status.HTTP_201_CREATED)
+    return Response({"id": str(fb.id), "rating": fb.rating, "reason": fb.reason}, status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])

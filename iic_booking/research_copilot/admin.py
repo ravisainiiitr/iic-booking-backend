@@ -3,6 +3,9 @@ from django.contrib import admin
 from iic_booking.research_copilot.models import (
     Conversation,
     CopilotAuditEvent,
+    CopilotEscalation,
+    CopilotKnowledgeArticle,
+    CopilotKnowledgeArticleVersion,
     EmbeddingJob,
     KnowledgeDocument,
     KnowledgeGap,
@@ -60,3 +63,30 @@ class SearchQueryLogAdmin(admin.ModelAdmin):
     list_display = ("query", "intent", "hit_count", "top_score", "latency_ms", "low_confidence", "created_at")
     list_filter = ("intent", "low_confidence")
     search_fields = ("query",)
+
+
+class CopilotKnowledgeArticleVersionInline(admin.TabularInline):
+    model = CopilotKnowledgeArticleVersion
+    extra = 0
+    can_delete = False
+    fields = ("version", "status", "change", "changed_by", "created_at")
+    readonly_fields = fields
+
+
+@admin.register(CopilotKnowledgeArticle)
+class CopilotKnowledgeArticleAdmin(admin.ModelAdmin):
+    # Status is read-only so approval always goes through the versioned Copilot console.
+    list_display = ("title", "category", "audience", "status", "version", "usage_count", "updated_at")
+    list_filter = ("status", "category", "audience", "source")
+    search_fields = ("title", "question", "answer")
+    readonly_fields = ("id", "status", "version", "approved_by", "approved_at", "usage_count",
+                       "helpful_count", "not_helpful_count", "last_used_at", "created_at", "updated_at")
+    inlines = [CopilotKnowledgeArticleVersionInline]
+
+
+@admin.register(CopilotEscalation)
+class CopilotEscalationAdmin(admin.ModelAdmin):
+    list_display = ("ticket", "user", "intent", "reason", "created_at")
+    list_filter = ("reason",)
+    search_fields = ("question", "user__email")
+    readonly_fields = ("id", "created_at")

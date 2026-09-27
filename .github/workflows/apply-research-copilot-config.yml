@@ -3,6 +3,9 @@
 #              Ollama chat + embedding models pulled. No on-behalf actions.
 #   actions  : lockdown + booking create/cancel/reschedule + wallet credit request actions,
 #              Ollama embeddings. Wallet recharge execution and financial admin stay OFF.
+#   open     : Copilot for every signed-in user (pilot allowlist cleared), intelligence + approved
+#              knowledge answers ON. On-behalf booking/cancel/reschedule/credit actions OFF;
+#              public (anonymous) Copilot stays off. Ollama embeddings kept.
 #   disable  : RESEARCH_COPILOT_ENABLED=false (rollback).
 #   reindex  : re-embed ACTIVE knowledge documents not yet on the configured embedding model.
 #              Drafts and archived documents are left untouched. No env or container changes.
@@ -15,10 +18,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "lockdown | actions | disable | reindex"
+        description: "lockdown | actions | open | disable | reindex"
         required: true
         type: choice
-        options: [lockdown, actions, disable, reindex]
+        options: [lockdown, actions, open, disable, reindex]
       confirm:
         description: "Type COPILOT to proceed"
         required: true
@@ -84,6 +87,24 @@ jobs:
                   django_remove = set(compose_owned)
               else:
                   django_remove = set(action_keys)
+          elif mode == "open":
+              compose_upsert = {
+                  "RESEARCH_COPILOT_ENABLED": "true",
+                  "RESEARCH_COPILOT_PILOT_EMAILS": "",
+                  "OLLAMA_MODEL": "llama3.2:3b",
+              }
+              django_upsert = {
+                  "RESEARCH_COPILOT_PUBLIC_ENABLED": "False",
+                  **always_off,
+                  **{k: "False" for k in action_keys},
+                  "RESEARCH_COPILOT_INTELLIGENCE_ENABLED": "True",
+                  "RESEARCH_COPILOT_KNOWLEDGE_ENABLED": "True",
+                  "RESEARCH_COPILOT_ACTIONS_ENABLED": "False",
+                  "RESEARCH_COPILOT_EMBEDDING_PROVIDER": "ollama",
+                  "RESEARCH_COPILOT_EMBEDDING_MODEL": "nomic-embed-text",
+                  "RESEARCH_COPILOT_MAX_TOKENS": "700",
+              }
+              django_remove = set(compose_owned)
           elif mode == "disable":
               compose_upsert = {"RESEARCH_COPILOT_ENABLED": "false"}
               django_remove = set(action_keys)
@@ -162,7 +183,9 @@ jobs:
           for k in ("OLLAMA_MODEL", "RESEARCH_COPILOT_EMBEDDING_PROVIDER", "RESEARCH_COPILOT_EMBEDDING_MODEL",
                     "COPILOT_BOOKING_CREATE", "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE",
                     "COPILOT_BOOKING_MODIFY", "COPILOT_WALLET_CREDIT", "COPILOT_WALLET_RECHARGE",
-                    "COPILOT_FINANCIAL_PROPOSALS", "COPILOT_FINANCIAL_ADMIN", "COPILOT_BOOKING_E2E_TEST_MODE"):
+                    "COPILOT_FINANCIAL_PROPOSALS", "COPILOT_FINANCIAL_ADMIN", "COPILOT_BOOKING_E2E_TEST_MODE",
+                    "RESEARCH_COPILOT_INTELLIGENCE_ENABLED", "RESEARCH_COPILOT_KNOWLEDGE_ENABLED",
+                    "RESEARCH_COPILOT_ACTIONS_ENABLED"):
               print(f"{k}=", getattr(settings, k, None))
           h = get_gateway().health()
           print("gateway_health=", getattr(h, "status", h), getattr(h, "model", ""), getattr(h, "detail", ""))
@@ -189,6 +212,31 @@ jobs:
               vec = ep.embed_query("vacuum pump startup")
               print("embedding_provider=", ep.name, "dims=", len(vec))
               assert ep.name == "ollama" and len(vec) > 100, "Ollama embeddings not working"
+          if mode == "open":
+              from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed
+
+              assert settings.RESEARCH_COPILOT_ENABLED is True
+              assert pilot == [], pilot
+              active = User.objects.filter(is_active=True)
+              by_type = {}
+              for u in active.iterator():
+                  t = str(getattr(u, "user_type", "") or "unknown")
+                  ok_count, total = by_type.get(t, (0, 0))
+                  by_type[t] = (ok_count + int(feature_enabled(user=u)), total + 1)
+              print("allowed_by_user_type=", {t: f"{a}/{n}" for t, (a, n) in sorted(by_type.items())})
+              assert all(a == n for a, n in by_type.values()), "some active users cannot use Copilot"
+              assert feature_enabled(user=None) is False, "anonymous Copilot must stay off"
+              for k in ("RESEARCH_COPILOT_INTELLIGENCE_ENABLED", "RESEARCH_COPILOT_KNOWLEDGE_ENABLED"):
+                  assert getattr(settings, k, False) is True, k
+              assert getattr(settings, "RESEARCH_COPILOT_ACTIONS_ENABLED", False) is False
+              for k in ("COPILOT_BOOKING_CREATE", "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE",
+                        "COPILOT_WALLET_CREDIT", "COPILOT_WALLET_RECHARGE", "COPILOT_FINANCIAL_ADMIN",
+                        "COPILOT_BOOKING_E2E_TEST_MODE"):
+                  assert not getattr(settings, k, False), k
+              sample = active.first()
+              for k in ("COPILOT_BOOKING_CREATE", "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE"):
+                  assert not booking_mutation_allowed(sample, k), k
+              assert str(getattr(h, "status", "")) == "available", "Ollama gateway not healthy"
           if mode == "disable":
               assert settings.RESEARCH_COPILOT_ENABLED is False
           PY

@@ -80,16 +80,34 @@ def call_book_equipment(*, user, equipment_id: int, body: dict[str, Any]) -> tup
     return _as_data(response)
 
 
+CANCEL_BODY_ALLOWED_KEYS = frozenset({"refund", "notes", "slot_ids", "reduced_input_values"})
+
+
 def call_user_cancel_booking(*, user, booking_id: int, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     from iic_booking.equipment.api_views import user_cancel_booking
 
+    safe_body = {k: v for k, v in (body or {}).items() if k in CANCEL_BODY_ALLOWED_KEYS}
     # @api_view must receive Django HttpRequest (not an already-wrapped DRF Request).
     django_request = _django_json_post(
         user=user,
         path=f"/api/bookings/{booking_id}/user-cancel/",
-        body=body or {"refund": True, "notes": "Cancelled via Research Copilot"},
+        body=safe_body or {"refund": True, "notes": "Cancelled via Research Copilot"},
     )
     response = user_cancel_booking(django_request, booking_id)
+    return _as_data(response)
+
+
+def call_partial_cancel_preview(*, user, booking_id: int, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    """Portal partial-cancellation preview (refund, new charge, slots released) as the signed-in user."""
+    from iic_booking.equipment.api_views import partial_cancel_preview
+
+    safe_body = {k: v for k, v in (body or {}).items() if k in {"slot_ids", "reduced_input_values"}}
+    django_request = _django_json_post(
+        user=user,
+        path=f"/api/bookings/{booking_id}/partial-cancel-preview/",
+        body=safe_body,
+    )
+    response = partial_cancel_preview(django_request, booking_id)
     return _as_data(response)
 
 
