@@ -395,3 +395,58 @@ def open_equipment_image_bytes(equipment) -> Tuple[Optional[bytes], Optional[str
             return content, resolved_path, content_type
 
     return None, None, None
+
+
+EQUIPMENT_IMAGE_THUMB_WIDTHS = (320, 480, 640, 960, 1280)
+# Refuse to decode absurdly large rasters for a thumbnail (decompression-bomb guard).
+_THUMB_MAX_SOURCE_PIXELS = 40_000_000
+
+
+def parse_equipment_image_thumb_width(raw) -> Optional[int]:
+    """Return an allowed thumbnail width for ``?w=``, or None (serve the original)."""
+    try:
+        requested = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if requested <= 0:
+        return None
+    for width in EQUIPMENT_IMAGE_THUMB_WIDTHS:
+        if requested <= width:
+            return width
+    return EQUIPMENT_IMAGE_THUMB_WIDTHS[-1]
+
+
+def make_equipment_image_thumbnail(content: bytes, width: int, *, quality: int = 80) -> Optional[bytes]:
+    """
+    Downscale an equipment photo to ``width`` px wide and encode as WebP.
+
+    Returns None when the source cannot be decoded (e.g. SVG) or is too large, so callers
+    can fall back to serving the original bytes unchanged.
+    """
+    if not content or not width:
+        return None
+    try:
+        import io
+
+        from PIL import Image, ImageOps
+
+        with Image.open(io.BytesIO(content)) as src:
+            if src.width * src.height > _THUMB_MAX_SOURCE_PIXELS:
+                return None
+            src.draft("RGB", (width, width))
+            img = ImageOps.exif_transpose(src)
+            if img.mode not in ("RGB", "RGBA"):
+                has_alpha = img.mode in ("LA", "PA") or "transparency" in img.info
+                img = img.convert("RGBA" if has_alpha else "RGB")
+            if img.width > width:
+                height = max(1, round(img.height * width / img.width))
+                img = img.resize((width, height), Image.LANCZOS)
+            out = io.BytesIO()
+            img.save(out, "WEBP", quality=quality, method=4)
+            data = out.getvalue()
+    except Exception as exc:
+        logger.warning("Equipment image thumbnail generation failed (w=%s): %s", width, exc)
+        return None
+    if not data or len(data) >= len(content):
+        return None
+    return data

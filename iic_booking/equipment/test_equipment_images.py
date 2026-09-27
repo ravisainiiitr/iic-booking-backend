@@ -144,6 +144,119 @@ class EquipmentImagePersistenceTests(TestCase):
         self.assertTrue(resolved)
 
 
+def _png_bytes(width=1600, height=900):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), (40, 120, 200)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+class EquipmentImageThumbnailHelperTests(SimpleTestCase):
+    def test_width_snaps_to_allowed_sizes(self):
+        from iic_booking.equipment.image_utils import parse_equipment_image_thumb_width
+
+        self.assertIsNone(parse_equipment_image_thumb_width(None))
+        self.assertIsNone(parse_equipment_image_thumb_width("abc"))
+        self.assertIsNone(parse_equipment_image_thumb_width("0"))
+        self.assertEqual(parse_equipment_image_thumb_width("100"), 320)
+        self.assertEqual(parse_equipment_image_thumb_width("640"), 640)
+        self.assertEqual(parse_equipment_image_thumb_width("700"), 960)
+        self.assertEqual(parse_equipment_image_thumb_width("99999"), 1280)
+
+    def test_thumbnail_is_smaller_webp(self):
+        from iic_booking.equipment.image_utils import make_equipment_image_thumbnail
+
+        original = _png_bytes()
+        thumb = make_equipment_image_thumbnail(original, 480)
+        self.assertIsNotNone(thumb)
+        self.assertEqual(thumb[:4], b"RIFF")
+        self.assertEqual(thumb[8:12], b"WEBP")
+        self.assertLess(len(thumb), len(original))
+
+    def test_undecodable_source_returns_none(self):
+        from iic_booking.equipment.image_utils import make_equipment_image_thumbnail
+
+        self.assertIsNone(make_equipment_image_thumbnail(b"<svg xmlns='http://www.w3.org/2000/svg'/>", 480))
+
+
+@override_settings(
+    ALLOW_LOCAL_EQUIPMENT_IMAGE_FALLBACK=False,
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class EquipmentImageProxyViewTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.equipment = Equipment.objects.create(
+            name="Proxy Test Rig",
+            code="IMG-PROXY-001",
+            status="ACTIVE",
+        )
+        self.original = _png_bytes()
+        persist_equipment_image_upload(
+            self.equipment, ContentFile(self.original, name="rig.png")
+        )
+        self.equipment.refresh_from_db()
+        self.url = reverse("api:equipment-image-proxy", kwargs={"pk": self.equipment.pk})
+
+    def test_original_served_without_width(self):
+        resp = self.client.get(self.url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, self.original)
+        self.assertEqual(resp["Cache-Control"], "public, max-age=300, must-revalidate")
+        self.assertTrue(resp["ETag"])
+
+    def test_width_param_serves_webp_thumbnail(self):
+        resp = self.client.get(self.url, {"w": "640"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "image/webp")
+        self.assertLess(len(resp.content), len(self.original))
+        self.assertNotEqual(resp["ETag"], self.client.get(self.url)["ETag"])
+
+    def test_thumbnail_is_cached_after_first_request(self):
+        from unittest import mock
+
+        first = self.client.get(self.url, {"w": "480"})
+        self.assertEqual(first.status_code, 200)
+        with mock.patch(
+            "iic_booking.equipment.api_views.open_equipment_image_bytes",
+            side_effect=AssertionError("storage must not be read"),
+        ):
+            second = self.client.get(self.url, {"w": "480"})
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.content, first.content)
+
+    def test_matching_etag_returns_304_without_storage_read(self):
+        from unittest import mock
+
+        for params in ({}, {"w": "640"}):
+            etag = self.client.get(self.url, params)["ETag"]
+            with mock.patch(
+                "iic_booking.equipment.api_views.open_equipment_image_bytes",
+                side_effect=AssertionError("storage must not be read"),
+            ):
+                resp = self.client.get(self.url, params, HTTP_IF_NONE_MATCH=etag)
+            self.assertEqual(resp.status_code, 304)
+            self.assertEqual(resp["ETag"], etag)
+
+    def test_etag_changes_when_image_replaced(self):
+        before = self.client.get(self.url)["ETag"]
+        persist_equipment_image_upload(
+            self.equipment, ContentFile(_png_bytes(800, 600), name="rig2.png")
+        )
+        resp = self.client.get(self.url, HTTP_IF_NONE_MATCH=before)
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotEqual(resp["ETag"], before)
+
+    def test_missing_equipment_is_404(self):
+        resp = self.client.get(reverse("api:equipment-image-proxy", kwargs={"pk": 999999}))
+        self.assertEqual(resp.status_code, 404)
+
+
 class EquipmentImageProxyUrlNameTests(SimpleTestCase):
     def test_proxy_route_resolves(self):
         # Ensure reverse names used by serializers exist at least as strings.

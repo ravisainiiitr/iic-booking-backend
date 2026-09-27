@@ -23,7 +23,12 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date as parse_date_iso
 from django.core.files.storage import default_storage
 
-from .image_utils import get_equipment_image_storage_path, open_equipment_image_bytes
+from .image_utils import (
+    get_equipment_image_storage_path,
+    make_equipment_image_thumbnail,
+    open_equipment_image_bytes,
+    parse_equipment_image_thumb_width,
+)
 from rest_framework import status
 from rest_framework import serializers as drf_serializers
 from rest_framework.decorators import api_view, permission_classes, parser_classes, authentication_classes
@@ -1971,6 +1976,8 @@ def equipment_list(request):
     include_ratings_raw = (request.query_params.get("include_ratings") or "").strip().lower()
     include_ratings = include_ratings_raw in {"1", "true", "yes", "y"}
     if include_ratings:
+        # EquipmentListSerializer reads visibility_group / equipment_group names per row.
+        queryset = queryset.select_related("visibility_group", "equipment_group")
         rating_filter = Q(bookings__rating__isnull=False, bookings__rating_removed=False)
         queryset = queryset.annotate(
             avg_rating=Avg("bookings__rating", filter=rating_filter),
@@ -2455,11 +2462,18 @@ def equipment_image_proxy(request, pk):
     """
     Stream the equipment image from storage through the API so clients use a stable URL (no expiring signed URLs).
     Public endpoint: no login required. Accepts ?token= for restricted equipment when needed.
+
+    Optional ``?w=<px>`` returns a downscaled WebP (snapped to EQUIPMENT_IMAGE_THUMB_WIDTHS) for
+    catalog cards; if the thumbnail cannot be produced the original bytes are served unchanged.
     """
+    import hashlib
+
+    from django.core.cache import cache
+
     from iic_booking.users.api.token_auth import resolve_request_user
 
     try:
-        equipment = Equipment.objects.get(pk=pk)
+        equipment = Equipment.objects.only("equipment_id", "image").get(pk=pk)
     except Equipment.DoesNotExist:
         return Response(
             {"error": "Equipment not found."},
@@ -2476,6 +2490,41 @@ def equipment_image_proxy(request, pk):
             {"error": "No image for this equipment."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    # Short max-age + ETag so replaced catalog photos propagate without a 24h wait.
+    cache_control = "public, max-age=300, must-revalidate"
+    thumb_width = parse_equipment_image_thumb_width(request.query_params.get("w"))
+    # Uploads always get a new storage key, so the stored path identifies the bytes. Deriving the
+    # ETag from it lets revalidations answer 304 without reading the object from S3.
+    etag_source = stored_path if thumb_width is None else f"{stored_path}|w={thumb_width}"
+    etag = '"' + hashlib.sha1(etag_source.encode("utf-8")).hexdigest()[:16] + '"'
+    if_none_match = (request.META.get("HTTP_IF_NONE_MATCH") or "").strip()
+    if if_none_match:
+        client_tags = {t.strip().removeprefix("W/") for t in if_none_match.split(",")}
+        if etag in client_tags or "*" in client_tags:
+            resp = HttpResponse(status=304)
+            resp["ETag"] = etag
+            resp["Cache-Control"] = cache_control
+            return resp
+
+    thumb_cache_key = None
+    if thumb_width is not None:
+        thumb_cache_key = (
+            "equipment-image-thumb:v1:"
+            + hashlib.sha1(stored_path.encode("utf-8")).hexdigest()
+            + f":{thumb_width}"
+        )
+        try:
+            cached_thumb = cache.get(thumb_cache_key)
+        except Exception:
+            cached_thumb = None
+        if cached_thumb:
+            response = HttpResponse(cached_thumb, content_type="image/webp")
+            response["Cache-Control"] = cache_control
+            response["ETag"] = etag
+            response["Content-Length"] = len(cached_thumb)
+            return response
+
     content, resolved_path, content_type = open_equipment_image_bytes(equipment)
     if content is None or not resolved_path:
         logger.warning(
@@ -2488,19 +2537,23 @@ def equipment_image_proxy(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    import hashlib
-
-    etag = '"' + hashlib.sha1((resolved_path or stored_path or "").encode("utf-8")).hexdigest()[:16] + '"'
-    if_none_match = (request.META.get("HTTP_IF_NONE_MATCH") or "").strip()
-    if if_none_match and if_none_match == etag:
-        resp = HttpResponse(status=304)
-        resp["ETag"] = etag
-        resp["Cache-Control"] = "public, max-age=300, must-revalidate"
-        return resp
+    if thumb_width is not None:
+        thumb = make_equipment_image_thumbnail(content, thumb_width)
+        if thumb:
+            try:
+                cache.set(thumb_cache_key, thumb, timeout=7 * 24 * 3600)
+            except Exception:
+                pass
+            response = HttpResponse(thumb, content_type="image/webp")
+            response["Cache-Control"] = cache_control
+            response["ETag"] = etag
+            response["Content-Length"] = len(thumb)
+            return response
+        # Thumbnail not possible (e.g. SVG): serve the original under the original's ETag.
+        etag = '"' + hashlib.sha1(stored_path.encode("utf-8")).hexdigest()[:16] + '"'
 
     response = HttpResponse(content, content_type=content_type or "image/jpeg")
-    # Short max-age + ETag so replaced catalog photos propagate without a 24h wait.
-    response["Cache-Control"] = "public, max-age=300, must-revalidate"
+    response["Cache-Control"] = cache_control
     response["ETag"] = etag
     response["Content-Length"] = len(content)
     return response
