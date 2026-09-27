@@ -1677,7 +1677,7 @@ def send_user_otp_for_recharge(request):
         - department_id: Department ID (required)
         - project_id: Project ID (required for faculty Project Grant mode)
         - recharge_mode: project_grant | direct_cash_deposit
-        - undertaking_accepted: required true for direct_cash_deposit
+        - undertaking_accepted: required true (project grant and direct cash declarations differ)
     
     Returns:
         - request_id: Temporary request ID for OTP verification
@@ -1738,7 +1738,16 @@ def send_user_otp_for_recharge(request):
                 "error": (
                     "You must accept the undertaking before using Direct Cash Deposit / Bank Transfer. "
                     "This option should be used only when no active project grant is available."
-                )
+                ),
+                "code": "undertaking_required",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not undertaking_accepted:
+        return Response(
+            {
+                "error": "Please accept the project undertaking before continuing.",
+                "code": "undertaking_required",
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -1764,15 +1773,18 @@ def send_user_otp_for_recharge(request):
     if recharge_mode == WalletRechargeMode.PROJECT_GRANT:
         if not project_id:
             return Response(
-                {"error": "Project is required for Recharge via Project Grant."},
+                {"error": "Project is required for Recharge via Project Grant.", "code": "project_required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        from ..models import Project
-        try:
-            project = Project.objects.get(id=project_id, faculty=request.user, is_active=True)
-        except Project.DoesNotExist:
+        from ..wallet_recharge_undertaking import active_project_for_recharge
+
+        project = active_project_for_recharge(request.user, project_id)
+        if project is None:
             return Response(
-                {"error": "Invalid project. Project must be active and belong to you."},
+                {
+                    "error": "Invalid project. Project must be active and belong to you.",
+                    "code": "project_inactive",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
     sub_wallet = SubWalletRepository.get_or_create(wallet, department)
@@ -1810,9 +1822,7 @@ def send_user_otp_for_recharge(request):
             amount=amount,
             project=project,
             recharge_mode=recharge_mode,
-            undertaking_accepted=undertaking_accepted
-            if recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
-            else False,
+            undertaking_accepted=undertaking_accepted,
             status=WalletRechargeRequestStatus.PENDING,
             credit_facility_opted_in=credit_facility_opted_in,
         )
@@ -2089,15 +2099,58 @@ def create_wallet_recharge_request(request):
             status=status.HTTP_403_FORBIDDEN,
         )
     
-    # Verify user OTP
-    if not recharge_request.verify_user_otp(user_otp):
-        return Response(
-            {"error": "Invalid or expired OTP. Please request a new OTP."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    
-    # Mark user OTP as verified
-    recharge_request.mark_user_otp_verified()
+    from django.db import transaction
+
+    from ..wallet_recharge_undertaking import active_project_for_recharge, record_undertaking
+
+    with transaction.atomic():
+        recharge_request = WalletRechargeRequest.objects.select_for_update().get(pk=recharge_request.pk)
+        if recharge_request.user_otp_verified:
+            # Retried submit (double click / browser retry): never re-notify or re-create.
+            if recharge_request.user_otp_code and recharge_request.user_otp_code == str(user_otp):
+                return Response(
+                    {
+                        "request": WalletRechargeRequestSerializer(recharge_request).data,
+                        "message": "This recharge request has already been submitted.",
+                        "already_submitted": True,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            return Response(
+                {"error": "Invalid or expired OTP. Please request a new OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not recharge_request.verify_user_otp(user_otp):
+            return Response(
+                {"error": "Invalid or expired OTP. Please request a new OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not recharge_request.undertaking_accepted:
+            recharge_request.delete()
+            return Response(
+                {
+                    "error": "The undertaking was not accepted. Please start the recharge request again.",
+                    "code": "undertaking_required",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if mode == WalletRechargeMode.PROJECT_GRANT and active_project_for_recharge(
+            request.user, recharge_request.project_id
+        ) is None:
+            recharge_request.delete()
+            return Response(
+                {
+                    "error": (
+                        "The selected project is no longer active. "
+                        "Please select another active project and request a new OTP."
+                    ),
+                    "code": "project_inactive",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        recharge_request.mark_user_otp_verified()
+        record_undertaking(recharge_request, request.user)
+
     from ..wallet_credit_facility import try_activate_credit_facility_after_otp_verify
 
     recharge_request.refresh_from_db()

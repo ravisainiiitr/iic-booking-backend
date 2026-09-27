@@ -895,7 +895,7 @@ class WalletRechargeRequestCreateSerializer(serializers.Serializer):
     undertaking_accepted = serializers.BooleanField(
         required=False,
         default=False,
-        help_text="Required for Direct Cash Deposit / Bank Transfer mode",
+        help_text="Required for both Project Grant and Direct Cash Deposit / Bank Transfer modes",
     )
     credit_facility_opted_in = serializers.BooleanField(
         required=False,
