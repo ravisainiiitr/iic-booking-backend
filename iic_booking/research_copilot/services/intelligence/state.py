@@ -24,7 +24,9 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 STATE_TTL = timedelta(minutes=30)
-STICKY_KEYS = ("last_equipment_id", "last_equipment_name", "title_auto")
+STICKY_KEYS = ("last_equipment_id", "last_equipment_name", "title_auto", "provisional_title")
+# Survive a workflow restart within the session but not the TTL, so "book it" after "fesem" still means FESEM.
+CONTEXT_KEYS = ("context_technique",)
 _ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "last": -1}
 
 
@@ -49,7 +51,7 @@ def save(conversation, state: dict[str, Any]) -> None:
 
 
 def reset_workflow(state: dict[str, Any], workflow: str | None = None, **values) -> dict[str, Any]:
-    fresh = {k: state[k] for k in STICKY_KEYS if k in state}
+    fresh = {k: state[k] for k in STICKY_KEYS + CONTEXT_KEYS if k in state}
     if workflow:
         fresh["workflow"] = workflow
     fresh.update({k: v for k, v in values.items() if v is not None})

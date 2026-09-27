@@ -21,7 +21,11 @@ from iic_booking.research_copilot.services.intelligence import entities as entit
 from iic_booking.research_copilot.services.intelligence import equipment as eqsvc
 from iic_booking.research_copilot.services.intelligence import flows
 from iic_booking.research_copilot.services.intelligence import intents as I
-from iic_booking.research_copilot.services.intelligence import intelligence_enabled, knowledge_enabled
+from iic_booking.research_copilot.services.intelligence import (
+    conversational_actions_enabled,
+    intelligence_enabled,
+    knowledge_enabled,
+)
 from iic_booking.research_copilot.services.intelligence import messages as M
 from iic_booking.research_copilot.services.intelligence import security
 from iic_booking.research_copilot.services.intelligence import state as st
@@ -65,6 +69,58 @@ def _is_v2_confirmation(text: str) -> bool:
         return False
 
 
+_TITLE_SUFFIX = {
+    I.BOOKING_REQUEST: "booking",
+    I.AVAILABILITY: "availability",
+    I.COST_ESTIMATE: "cost estimate",
+    I.EQUIPMENT_SEARCH: "instruments",
+    I.EQUIPMENT_INFORMATION: "overview",
+    I.EQUIPMENT_RECOMMENDATION: "related techniques",
+}
+_TITLE_FIXED = {
+    I.CANCELLATION_REQUEST: "Cancel booking",
+    I.PARTIAL_CANCELLATION: "Cancel booking",
+    I.RESCHEDULING_REQUEST: "Reschedule booking",
+    I.MY_BOOKINGS: "My bookings",
+    I.WALLET_BALANCE: "Wallet balance",
+    I.WALLET_TRANSACTIONS: "Wallet transactions",
+    I.WALLET_RECHARGE: "Wallet recharge",
+    I.CREDIT_STATUS: "Wallet credit",
+    I.RESULT_STATUS: "Results",
+    I.SAMPLE_STATUS: "Sample status",
+    I.MY_RESEARCH: "My Research",
+    I.RESEARCH_GROUP: "Research groups",
+    I.SUPPORT_REQUEST: "Support request",
+    I.EQUIPMENT_COMPARISON: "Compare techniques",
+}
+_TITLE_BY_TOPIC = {
+    "faculty_association": "Faculty association",
+    "credit_settlement": "Credit settlement",
+}
+
+
+def conversation_title(intent: str, technique: str | None, text: str, *, topic: str | None = None) -> str:
+    """Short, readable history titles such as "FESEM booking", "XRD availability", "Wallet recharge"."""
+    if topic in _TITLE_BY_TOPIC:
+        return _TITLE_BY_TOPIC[topic]
+    short = terminology.TECHNIQUES[technique].label.split(" (")[0] if technique in terminology.TECHNIQUES else ""
+    if short and intent in _TITLE_SUFFIX:
+        return f"{short} {_TITLE_SUFFIX[intent]}"[:80]
+    if short and intent == I.BARE_TERM:
+        return short
+    if intent in _TITLE_FIXED:
+        return _TITLE_FIXED[intent]
+    if topic:
+        from iic_booking.research_copilot.services.intelligence import topics
+
+        if topic in topics.TOPICS:
+            return topics.TOPICS[topic].title
+    if intent == I.PORTAL_HELP:
+        return "Portal help"
+    cleaned = " ".join((text or "").split())
+    return (cleaned[:77] + "...") if len(cleaned) > 80 else cleaned
+
+
 def _title_for(intent: str, ents: Entities, text: str) -> str:
     tech = ", ".join(terminology.TECHNIQUES[k].label.split(" (")[0] for k in (ents.techniques or [])[:2])
     base = {
@@ -93,6 +149,13 @@ def _title_for(intent: str, ents: Entities, text: str) -> str:
 
 
 def opening(turn: Turn) -> dict[str, Any]:
+    if conversational_actions_enabled():
+        from iic_booking.research_copilot.services.intelligence import topics
+
+        resp = topics.menu(turn, "help")
+        resp["content"] = "Hello! What can I help you with? You can type a question or pick a topic."
+        resp["metadata"]["title_defer"] = True
+        return resp
     options = [{"value": v, "label": label} for v, label in OPENING_OPTIONS]
     st.restart(turn.state)
     st.set_choice(turn.state, kind="start", prompt="How can I help?", options=options)
@@ -118,6 +181,17 @@ def bare_term(turn: Turn, tech) -> dict[str, Any]:
         if total
         else f"No {short} instrument is listed in the IIC catalogue for your account. What would you like to do?"
     )
+    if conversational_actions_enabled():
+        from iic_booking.research_copilot.services.intelligence import dispatch
+
+        turn.state["context_technique"] = tech.key
+        return turn.respond(
+            message_type=M.CHOICE_LIST,
+            content=intro,
+            actions=dispatch.technique_actions(tech.key, has_equipment=bool(total)),
+            source_label=M.SOURCE_EQUIPMENT,
+            extra={"technique": tech.key, "response_type": "CLARIFICATION"},
+        )
     return turn.respond(
         message_type=M.CHOICE_LIST,
         content=intro,
@@ -406,6 +480,16 @@ def _free_input(turn: Turn) -> dict[str, Any] | None:
         if count:
             st.clear_choice(s)
             return changes.cancel_reduce_chosen(turn, count)
+    if (
+        step == "choose_slot"
+        and conversational_actions_enabled()
+        and s.get("equipment_id")
+        and turn.ents.has_date
+        and not turn.ents.techniques
+        and len(turn.text) <= 60
+    ):
+        st.clear_choice(s)
+        return flows.change_slot_window(turn, turn.text)
     return None
 
 
@@ -417,6 +501,12 @@ def _route(turn: Turn) -> dict[str, Any] | None:
     if intent == I.BARE_TERM:
         tech = terminology.bare_technique(turn.text)
         return bare_term(turn, tech) if tech else None
+    if conversational_actions_enabled():
+        from iic_booking.research_copilot.services.intelligence import dispatch
+
+        mapped = dispatch.action_for_text(turn)
+        if mapped is not None:
+            return dispatch.dispatch(turn, *mapped)
     if intent in I.LIVE_READ_INTENTS:
         return None
     if intent == I.SUPPORT_REQUEST:
@@ -451,7 +541,46 @@ def _route(turn: Turn) -> dict[str, Any] | None:
     return None
 
 
-def try_intelligent_turn(*, user, text: str, conversation=None, choice: dict[str, Any] | None = None) -> dict[str, Any] | None:
+_EQUIPMENT_INTENTS = {I.BOOKING_REQUEST, I.AVAILABILITY, I.COST_ESTIMATE, I.EQUIPMENT_SEARCH, I.EQUIPMENT_INFORMATION}
+_CONTEXT_WORDS = {"it", "that", "one", "same", "them", "again", "also", "then", "ok", "okay", "yes", "technique"}
+
+
+def _apply_context(turn: Turn) -> None:
+    """ "book it" / "how much does it cost" right after "fesem" means FESEM (a named instrument still wins)."""
+    key = turn.state.get("context_technique")
+    if key not in terminology.TECHNIQUES or turn.ents.techniques or turn.intent not in _EQUIPMENT_INTENTS:
+        return
+    if set(eqsvc.equipment_query(turn.text).split()) <= _CONTEXT_WORDS:
+        turn.ents.techniques = [key]
+
+
+def _conversational_title(meta, state, turn: Turn, text: str, action, topic_key: str | None) -> None:
+    """A topic menu gives a provisional title ("Wallet") that the first concrete step replaces ("Wallet recharge")."""
+    if state.get("title_auto") or meta.get("title_defer"):
+        return
+    payload = (action or {}).get("payload") or {}
+    technique = (turn.ents.techniques or [None])[0] or payload.get("technique") or meta.get("technique")
+    if technique is None and turn.intent in _EQUIPMENT_INTENTS:
+        technique = state.get("context_technique")
+    title = conversation_title(turn.intent, technique, text, topic=topic_key or meta.get("topic"))
+    if state.get("provisional_title"):
+        meta["replace_title"] = state["provisional_title"]
+    meta["title_hint"] = title
+    if meta.get("response_type") == "CLARIFICATION" or topic_key == "equipment":
+        state["provisional_title"] = title
+    else:
+        state.pop("provisional_title", None)
+        state["title_auto"] = True
+
+
+def try_intelligent_turn(
+    *,
+    user,
+    text: str,
+    conversation=None,
+    choice: dict[str, Any] | None = None,
+    action: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     if not intelligence_enabled() or user is None or not getattr(user, "is_authenticated", False):
         return None
     text = (text or "").strip()
@@ -465,9 +594,17 @@ def try_intelligent_turn(*, user, text: str, conversation=None, choice: dict[str
     ents = entity_svc.extract(text)
     turn = Turn(user=user, text=text, conversation=conversation, state=state, ents=ents)
     response: dict[str, Any] | None = None
+    conversational = conversational_actions_enabled()
+    topic_key: str | None = None
 
     try:
-        if choice and choice.get("kind"):
+        if action and conversational:
+            from iic_booking.research_copilot.services.intelligence import dispatch
+
+            topic_key = (action.get("payload") or {}).get("topic")
+            response = dispatch.dispatch(turn, action["type"], action.get("payload") or {})
+            state["last_intent"] = turn.intent
+        elif choice and choice.get("kind"):
             kind = str(choice.get("kind"))
             value = str(choice.get("value") or "")
             if kind == "start":
@@ -492,9 +629,21 @@ def try_intelligent_turn(*, user, text: str, conversation=None, choice: dict[str
                 if picked is not None:
                     turn.intent = state.get("last_intent") or ""
                     response = handle_choice(turn, state["pending_choice"]["kind"], str(picked["value"]))
+            if response is None and conversational:
+                from iic_booking.research_copilot.services.intelligence import topics
+
+                topic_key = topics.bare_topic(text)
+                if topic_key:
+                    turn.intent = I.PORTAL_HELP
+                    st.clear_choice(state)
+                    response = topics.menu(turn, topic_key)
+                    if topic_key == "help":
+                        response["metadata"]["title_defer"] = True
             if response is None:
                 result = I.classify(text, ents)
                 turn.intent, turn.confidence = result.intent, result.confidence
+                if conversational:
+                    _apply_context(turn)
                 if state.get("pending_choice") and (result.intent == I.UNKNOWN or result.confidence == I.LOW):
                     pending = state["pending_choice"]
                     response = M.envelope(
@@ -518,7 +667,9 @@ def try_intelligent_turn(*, user, text: str, conversation=None, choice: dict[str
     meta.setdefault("intent", turn.intent)
     meta["entities"] = ents.as_dict()
     meta["question"] = (turn.text or text)[:500]
-    if not state.get("title_auto"):
+    if conversational:
+        _conversational_title(meta, state, turn, text, action, topic_key)
+    elif not state.get("title_auto"):
         meta["title_hint"] = _title_for(turn.intent, ents, text)
         state["title_auto"] = True
     response["metadata"] = meta

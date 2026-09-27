@@ -21,3 +21,7 @@ def knowledge_enabled() -> bool:
 
 def actions_enabled() -> bool:
     return intelligence_enabled() and bool(getattr(settings, "RESEARCH_COPILOT_ACTIONS_ENABLED", False))
+
+
+def conversational_actions_enabled() -> bool:
+    return intelligence_enabled() and bool(getattr(settings, "RESEARCH_COPILOT_CONVERSATIONAL_ACTIONS_ENABLED", False))

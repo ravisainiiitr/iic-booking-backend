@@ -199,6 +199,8 @@ def _reply_deterministic(*, user, conversation: Conversation, text: str, det: di
     confidence = float(det.get("confidence") or 0.88)
     meta = dict(det.get("metadata") or {})
     title_hint = meta.pop("title_hint", None)
+    title_defer = bool(meta.pop("title_defer", False))
+    replace_title = meta.pop("replace_title", None)
     with transaction.atomic():
         assistant = Message.objects.create(
             conversation=conversation,
@@ -218,7 +220,10 @@ def _reply_deterministic(*, user, conversation: Conversation, text: str, det: di
                 "v2": True,
             },
         )
-        if not conversation.title or conversation.title == "New conversation":
+        untitled = not conversation.title or conversation.title == "New conversation"
+        if title_hint and replace_title and conversation.title == replace_title:
+            conversation.title = title_hint[:80]
+        elif untitled and not title_defer:
             conversation.title = (title_hint or text)[:80]
         conversation.updated_at = timezone.now()
         conversation.save(update_fields=["title", "updated_at"])
@@ -238,7 +243,9 @@ def _reply_deterministic(*, user, conversation: Conversation, text: str, det: di
     }
 
 
-def send_message(*, user, conversation: Conversation, content: str, choice: dict | None = None) -> dict:
+def send_message(
+    *, user, conversation: Conversation, content: str, choice: dict | None = None, action: dict | None = None
+) -> dict:
     """
     Persist user message, prefer deterministic V2 reads, else portal grounding + RAG + LLM.
 
@@ -258,18 +265,23 @@ def send_message(*, user, conversation: Conversation, content: str, choice: dict
     if user_msg_count >= max_user_msgs:
         raise ValueError("conversation_limit_reached")
 
+    from iic_booking.research_copilot.services.intelligence import conversational_actions_enabled
+
+    # Contextual actions only: no global navigation footer or keyword-derived buttons on any reply.
+    contextual = conversational_actions_enabled()
     ctx = build_context(user)
     with transaction.atomic():
         Message.objects.create(
             conversation=conversation,
             role=MessageRole.USER,
             content=text,
+            **({"metadata": {"action": action}} if action and contextual else {}),
         )
 
     # --- Intelligence layer (flagged): intents, choices, guided actions, verified knowledge ---
     from iic_booking.research_copilot.services.intelligence.engine import try_intelligent_turn
 
-    smart = try_intelligent_turn(user=user, text=text, conversation=conversation, choice=choice)
+    smart = try_intelligent_turn(user=user, text=text, conversation=conversation, choice=choice, action=action)
     if smart is not None:
         return _reply_deterministic(user=user, conversation=conversation, text=text, det=smart, ctx=ctx, enrich=False)
 
@@ -278,7 +290,7 @@ def send_message(*, user, conversation: Conversation, content: str, choice: dict
 
     det = try_deterministic_turn(user=user, text=text, conversation=conversation, public=False)
     if det is not None:
-        return _reply_deterministic(user=user, conversation=conversation, text=text, det=det, ctx=ctx)
+        return _reply_deterministic(user=user, conversation=conversation, text=text, det=det, ctx=ctx, enrich=not contextual)
 
     history = [
         {"role": m.role, "content": m.content}
@@ -306,7 +318,9 @@ def send_message(*, user, conversation: Conversation, content: str, choice: dict
                 content=llm_msg,
                 confidence=0.5,
                 citations=[],
-                suggested_actions=_static_actions(escalate=False)
+                suggested_actions=[]
+                if contextual
+                else _static_actions(escalate=False)
                 + [
                     {"id": "my_bookings", "label": "My bookings", "href": "/my-bookings", "enabled": True},
                     {"id": "equipments", "label": "Find equipment", "href": "/equipments", "enabled": True},
@@ -380,10 +394,18 @@ def send_message(*, user, conversation: Conversation, content: str, choice: dict
         escalate = False
         confidence = 0.5
 
-    base_actions = _static_actions(escalate=escalate)
-    for a in reversed(grounding.get("actions") or []):
-        if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
-            base_actions.insert(0, a)
+    if contextual:
+        from iic_booking.research_copilot.services.intelligence import messages as intel_messages
+
+        reply_actions = [a for a in (grounding.get("actions") or []) if a.get("id")][:3]
+        if escalate:
+            reply_actions.append(intel_messages.ticket_action("no_verified_answer", "Raise Support Ticket"))
+    else:
+        base_actions = _static_actions(escalate=escalate)
+        for a in reversed(grounding.get("actions") or []):
+            if a.get("id") and all(x.get("id") != a.get("id") for x in base_actions):
+                base_actions.insert(0, a)
+        reply_actions = tools_svc.enrich_actions_from_message(user=user, text=text, base_actions=base_actions)
 
     with transaction.atomic():
         assistant = Message.objects.create(
@@ -392,11 +414,7 @@ def send_message(*, user, conversation: Conversation, content: str, choice: dict
             content=reply,
             confidence=confidence,
             citations=rag_svc.citations_as_dicts(citations) if not busy else [],
-            suggested_actions=tools_svc.enrich_actions_from_message(
-                user=user,
-                text=text,
-                base_actions=base_actions,
-            ),
+            suggested_actions=reply_actions,
             escalate_hint=escalate,
             metadata={
                 "provider": provider,

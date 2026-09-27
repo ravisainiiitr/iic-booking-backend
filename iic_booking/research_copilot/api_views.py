@@ -143,9 +143,22 @@ def conversation_messages(request, conversation_id):
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
     content = request.data.get("content") or request.data.get("message") or ""
+    from iic_booking.research_copilot.services.intelligence import actions as copilot_actions
+
+    try:
+        action = copilot_actions.parse(request.data.get("action") if hasattr(request.data, "get") else None)
+    except copilot_actions.InvalidAction as exc:
+        return Response(
+            {"error": {"code": str(exc), "message": "That action is not available."}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     try:
         payload = conv_svc.send_message(
-            user=request.user, conversation=conv, content=content, choice=_choice_from_request(request.data)
+            user=request.user,
+            conversation=conv,
+            content=content,
+            choice=_choice_from_request(request.data),
+            action=action,
         )
     except ValueError as exc:
         return Response(

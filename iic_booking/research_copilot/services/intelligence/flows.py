@@ -256,11 +256,16 @@ def equipment_list(turn: Turn, rows: list[dict[str, Any]], total: int, *, headin
     turn.state["list_query"] = query or {}
     st.set_choice(turn.state, kind="equipment_action", prompt=heading, options=options)
     items = [{**r, "actions": _equipment_row_actions(r)} for r in rows]
+    from iic_booking.research_copilot.services.intelligence import conversational_actions_enabled
+
+    detailed = conversational_actions_enabled()
     lines = [f"**{heading}**", ""]
     for i, r in enumerate(rows, offset + 1):
         extra = " - ".join(x for x in (r["department"], r["location"]) if x)
         status = "" if r["bookable"] else f" ({r['status_label']})"
-        lines.append(f"{i}. **{r['name']}**{status}" + (f" - {extra}" if extra else ""))
+        maker = " ".join(x for x in (r.get("make"), r.get("model")) if x) if detailed else ""
+        code = f" [{r['code']}]" if detailed and r.get("code") else ""
+        lines.append(f"{i}. **{r['name']}**{code}{status}" + (f" ({maker})" if maker else "") + (f" - {extra}" if extra else ""))
     if shown_to < total:
         lines.append("")
         lines.append(f"Showing {offset + 1}-{shown_to} of {total}.")
@@ -340,6 +345,10 @@ def equipment_card(turn: Turn, eq) -> dict[str, Any]:
         oic = []
     lines = [f"**{r['name']}**" + (f" ({r['code']})" if r["code"] else ""), ""]
     lines.append(f"- Status: {r['status_label']}")
+    from iic_booking.research_copilot.services.intelligence import conversational_actions_enabled
+
+    if conversational_actions_enabled() and (r.get("make") or r.get("model")):
+        lines.append(f"- Make / model: {' '.join(x for x in (r.get('make'), r.get('model')) if x)}")
     if r["department"]:
         lines.append(f"- Department: {r['department']}")
     if r["location"]:
@@ -500,24 +509,34 @@ def show_slots(turn: Turn, eq, *, for_booking: bool = False, required: int = 1) 
         return M.error(lookup.message or "Slot availability could not be loaded.", intent=turn.intent,
                        actions=[M.link("calendar", "Open booking calendar", f"/book-equipment?equipment_id={eq.pk}")])
     runs = contiguous_runs(rows, max(1, required))
+    chips = _date_chips(turn.state.get("date_text"))
     if not runs:
         extra = f" for {required} back-to-back slots" if required > 1 else ""
         period = f" in the {turn.state['period']}" if turn.state.get("period") else ""
-        return turn.respond(
-            message_type=M.SLOT_LIST,
-            content=f"No available slots{extra} for **{eq.name}**{period} in the {label}.",
-            cards=[{"type": "slot_list", "equipment_id": r["id"], "equipment_name": eq.name, "items": [], "window": label}],
-            actions=[
+        if chips:
+            turn.state["step"] = "choose_slot"
+            turn.state["required_slots"] = required
+            st.set_choice(turn.state, kind="slot", prompt=f"Dates for {eq.name}", options=chips)
+            actions = [M.choice("slot", c["value"], c["label"]) for c in chips]
+            actions.append(M.link("calendar", "Open booking calendar", f"/book-equipment?equipment_id={eq.pk}"))
+        else:
+            actions = [
                 M.link("calendar", "Open booking calendar", f"/book-equipment?equipment_id={eq.pk}"),
                 M.prompt("other_week", "Check next week", f"Check availability for {eq.name} next week"),
-            ],
+            ]
+        return turn.respond(
+            message_type=M.SLOT_LIST,
+            content=f"No available slots{extra} for **{eq.name}**{period} in the {label}."
+            + (" Try another date." if chips else ""),
+            cards=[{"type": "slot_list", "equipment_id": r["id"], "equipment_name": eq.name, "items": [], "window": label}],
+            actions=actions,
             source_label=M.SOURCE_PORTAL,
         )
     shown = runs[:MAX_SLOT_CHOICES]
     options = [{"value": run_value(run), "label": run_label(run)} for run in shown]
     turn.state["step"] = "choose_slot"
     turn.state["required_slots"] = required
-    st.set_choice(turn.state, kind="slot", prompt=f"Slots for {eq.name}", options=options)
+    st.set_choice(turn.state, kind="slot", prompt=f"Slots for {eq.name}", options=options + chips)
     head = "Choose a slot to continue" if for_booking else "Available slots"
     lines = [f"**{eq.name}: {head.lower()} ({label})**", ""]
     lines += [f"{i}. {o['label']}" for i, o in enumerate(options, 1)]
@@ -535,10 +554,41 @@ def show_slots(turn: Turn, eq, *, for_booking: bool = False, required: int = 1) 
         cards=[{"type": "slot_list", "equipment_id": r["id"], "equipment_name": eq.name, "items": items, "window": label,
                 "choice_kind": "slot"}],
         actions=[M.choice("slot", o["value"], ("Book " if not for_booking else "") + o["label"]) for o in options[:3]]
+        + [M.choice("slot", c["value"], c["label"]) for c in chips]
         + [M.link("calendar", "Open booking calendar", f"/book-equipment?equipment_id={eq.pk}")],
         source_label=M.SOURCE_PORTAL,
         extra={"equipment_id": r["id"]},
     )
+
+
+DATE_CHIPS = (("today", "Today"), ("tomorrow", "Tomorrow"), ("this week", "This week"), ("next week", "Next week"),
+              ("choose", "Choose date"))
+
+
+def _date_chips(current: str | None) -> list[dict[str, Any]]:
+    """Other date windows for the slot step (conversational actions only); the current window is left out."""
+    from iic_booking.research_copilot.services.intelligence import conversational_actions_enabled
+
+    if not conversational_actions_enabled():
+        return []
+    now = (current or "").strip().lower()
+    return [{"value": f"date:{v}", "label": label} for v, label in DATE_CHIPS if v != now]
+
+
+def change_slot_window(turn: Turn, date_text: str) -> dict[str, Any]:
+    s = turn.state
+    eq = eqsvc.get_visible(turn.user, s.get("equipment_id"))
+    if eq is None:
+        st.restart(s)
+        return M.error("That equipment is not available to your account.", intent=turn.intent)
+    if date_text == "choose":
+        s["step"] = "choose_slot"
+        st.clear_choice(s)
+        return turn.respond(message_type=M.TEXT, content="Which date would you like? Type it, for example 14 October or next Monday.",
+                            source_label=M.SOURCE_COPILOT, extra={"equipment_id": int(eq.pk)})
+    s["date_text"] = date_text[:120]
+    s.pop("slot_ids", None)
+    return show_slots(turn, eq, for_booking=s.get("workflow") == "booking", required=int(s.get("required_slots") or 1))
 
 
 # --------------------------------------------------------------------------- cost estimate
@@ -881,6 +931,8 @@ def booking_summary(turn: Turn, eq, prep: dict[str, Any], data: dict[str, Any] |
 def choose_slot(turn: Turn, value: str) -> dict[str, Any]:
     """A slot run picked from a SLOT_LIST (availability or booking)."""
     s = turn.state
+    if value.startswith("date:"):
+        return change_slot_window(turn, value[5:])
     ids = _ids(value)
     if not ids:
         return M.error("That slot option is not valid. Please choose again.", intent=turn.intent)

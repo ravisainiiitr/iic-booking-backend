@@ -692,6 +692,10 @@ RESEARCH_COPILOT_INTELLIGENCE_ENABLED = env.bool("RESEARCH_COPILOT_INTELLIGENCE_
 RESEARCH_COPILOT_KNOWLEDGE_ENABLED = env.bool("RESEARCH_COPILOT_KNOWLEDGE_ENABLED", default=False)
 # Guided booking / cancellation / reschedule flows in chat. Execution stays gated by COPILOT_BOOKING_*.
 RESEARCH_COPILOT_ACTIONS_ENABLED = env.bool("RESEARCH_COPILOT_ACTIONS_ENABLED", default=False)
+# Structured, clickable conversational actions, topic clarification menus and no global action footer.
+RESEARCH_COPILOT_CONVERSATIONAL_ACTIONS_ENABLED = env.bool(
+    "RESEARCH_COPILOT_CONVERSATIONAL_ACTIONS_ENABLED", default=False
+)
 
 # --- Copilot V2 feature flags (mutations OFF by default) ---
 COPILOT_V2_ENABLED = env.bool("COPILOT_V2_ENABLED", default=True)
