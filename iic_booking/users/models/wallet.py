@@ -448,19 +448,31 @@ class WalletRechargeRequestStatus(models.TextChoices):
 class WalletRechargeRejectionReason(models.TextChoices):
     """Predefined rejection reasons for SRIC / admin email rejection form."""
 
-    WRONG_PROJECT_GRANT = "wrong_project_grant", _("Wrong Project Grant Code")
-    INSUFFICIENT_BALANCE = "insufficient_balance", _("Insufficient Balance in Project Grant")
+    WRONG_PROJECT_GRANT = "wrong_project_grant", _("Wrong Project Code")
+    INSUFFICIENT_BALANCE = "insufficient_balance", _("Insufficient Funds in the Project")
     MISMATCH_USER_INFO = "mismatch_user_info", _("Mismatch in User Information")
-    OTHER = "other", _("Others")
+    OTHER = "other", _("Other")
+
+
+PROJECT_GRANT_DECLINE_REASONS = (
+    WalletRechargeRejectionReason.WRONG_PROJECT_GRANT,
+    WalletRechargeRejectionReason.INSUFFICIENT_BALANCE,
+    WalletRechargeRejectionReason.OTHER,
+)
+CASH_DEPOSIT_DECLINE_REASONS = (
+    WalletRechargeRejectionReason.MISMATCH_USER_INFO,
+    WalletRechargeRejectionReason.OTHER,
+)
 
 
 class WalletRechargeCancellationSource(models.TextChoices):
-    """Who cancelled a pending recharge request."""
+    """Who cancelled a recharge request."""
 
     USER = "user", _("Cancelled by User")
     ADMIN = "admin", _("Cancelled by Administrator")
     DEPT_ADMIN = "dept_admin", _("Cancelled by Department Administrator")
     SYSTEM = "system", _("Cancelled by System")
+    SRIC_DECLINED = "sric_declined", _("Declined by SRIC (converted to credit)")
 
 
 class WalletRechargeCreditFacilityStatus(models.TextChoices):
@@ -743,6 +755,34 @@ class WalletRechargeRequest(Model):
     cashbook_receipt_no = CharField(_("Cash-book Receipt No."), max_length=50, blank=True, db_index=True)
     cashbook_receipt_date = DateField(_("Cash-book Receipt Date"), null=True, blank=True)
     cashbook_matched_at = DateTimeField(_("Cash-book matched at"), null=True, blank=True)
+    decline_credit_amount = DecimalField(
+        _("Auto-approved credit on SRIC decline (₹)"),
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text=_(
+            "Amount treated as an auto-approved credit facility when SRIC declined this Project Grant request."
+        ),
+    )
+    decline_credit_outstanding = DecimalField(
+        _("Credit outstanding (₹)"),
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        db_index=True,
+        help_text=_("Part of the decline credit not yet recovered from a later approved recharge."),
+    )
+    decline_credit_settled_at = DateTimeField(_("Decline credit settled at"), null=True, blank=True)
+    credit_settled_amount = DecimalField(
+        _("Adjusted against outstanding credit (₹)"),
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal("0.00"),
+        help_text=_(
+            "Portion of this approved recharge used to settle earlier SRIC-declined credits "
+            "on the same wallet and department."
+        ),
+    )
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
     responded_at = DateTimeField(

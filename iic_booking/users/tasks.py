@@ -219,6 +219,16 @@ def sync_legacy_wallet_ledger() -> dict:
     return result
 
 
+@shared_task(name="users.read_sric_cashbook_mailbox")
+def read_sric_cashbook_mailbox() -> dict:
+    """Read new SRIC cash-book emails and mark matching wallet recharges as fund-received."""
+    from iic_booking.users.wallet_cashbook_mailbox import read_cashbook_mailbox
+
+    result = read_cashbook_mailbox()
+    logger.info("read_sric_cashbook_mailbox: %s", {k: v for k, v in result.items() if k != "errors"})
+    return result
+
+
 @shared_task(name="users.expire_channel_i_students")
 def expire_channel_i_students() -> int:
     """Idempotent student expiry. No-op unless STUDENT_LIFECYCLE_ENABLED."""

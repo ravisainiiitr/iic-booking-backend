@@ -179,13 +179,14 @@ def connect_imap(
     use_ssl: bool,
     email_address: str,
     password: str,
+    timeout: Optional[float] = None,
 ) -> imaplib.IMAP4:
     conn = None
     try:
         if use_ssl:
-            conn = imaplib.IMAP4_SSL(host, port=port)
+            conn = imaplib.IMAP4_SSL(host, port=port, timeout=timeout)
         else:
-            conn = imaplib.IMAP4(host, port=port)
+            conn = imaplib.IMAP4(host, port=port, timeout=timeout)
     except (OSError, socket.timeout, socket.error) as e:
         err_str = str(e).strip()
         winerr = getattr(e, "winerror", None)
@@ -231,6 +232,7 @@ def list_emails(
     sender_filter: Optional[str] = None,
     subject_filter: Optional[str] = None,
     max_results: int = LIST_EMAILS_MAX,
+    timeout: Optional[float] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     List emails (last N when unfiltered). Optional filter by sender and/or subject (substring match).
@@ -239,7 +241,7 @@ def list_emails(
     Returns (list of { uid, subject, from_addr, date }, error_message).
     """
     try:
-        conn = connect_imap(host, port, use_ssl, email_address, password)
+        conn = connect_imap(host, port, use_ssl, email_address, password, timeout=timeout)
     except Exception as e:
         return [], str(e)
     try:
@@ -354,6 +356,7 @@ def fetch_email_attachment(
     email_uid: str,
     folder: str = "INBOX",
     attachment_index: Optional[int] = None,
+    timeout: Optional[float] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
     Fetch one email by UID and return attachment content as text for parsing.
@@ -361,7 +364,7 @@ def fetch_email_attachment(
     Returns (content_str, filename_or_none, error_message).
     """
     try:
-        conn = connect_imap(host, port, use_ssl, email_address, password)
+        conn = connect_imap(host, port, use_ssl, email_address, password, timeout=timeout)
     except Exception as e:
         return None, None, str(e)
     try:

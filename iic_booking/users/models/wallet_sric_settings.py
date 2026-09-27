@@ -54,6 +54,45 @@ class WalletSricSettings(models.Model):
             "has no grant code of its own. Prefer setting codes per department below / on this page."
         ),
     )
+    ar_sric_emails = models.TextField(
+        _("AR SRIC email addresses"),
+        blank=True,
+        help_text=_(
+            "Copied (without Approve / Decline links) on every Project Grant and Direct Cash Deposit "
+            "recharge request and on its final decision."
+        ),
+    )
+    dean_sric_emails = models.TextField(
+        _("Dean SRIC email addresses"),
+        blank=True,
+        help_text=_(
+            "Copied (without Approve / Decline links) on every Project Grant recharge request "
+            "and on its final decision."
+        ),
+    )
+    decline_converts_to_credit = models.BooleanField(
+        _("Treat SRIC-declined Project Grant requests as auto-approved credit"),
+        default=True,
+        help_text=_(
+            "When SRIC declines a Project Grant request (before or after approval), the request is "
+            "cancelled and the amount is treated as an auto-approved credit facility, recovered from "
+            "the faculty member's next approved recharge for the same department."
+        ),
+    )
+    auto_read_cashbook_mailbox = models.BooleanField(
+        _("Read the SRIC cash-book mailbox automatically"),
+        default=True,
+        help_text=_(
+            "Every 30 minutes, read new cash-book emails from the configured senders (IMAP_* server "
+            "settings) and mark matching recharge requests as fund-received."
+        ),
+    )
+    cashbook_sender_emails = models.TextField(
+        _("SRIC cash-book sender addresses"),
+        blank=True,
+        default="bills@sric.iitr.ac.in",
+        help_text=_("Only emails from these senders are read by the automatic cash-book reader."),
+    )
 
     class Meta:
         db_table = "users_walletsricsettings"
@@ -78,3 +117,28 @@ class WalletSricSettings(models.Model):
             obj.bill_section_emails = "ravisaini.15@gmail.com"
             obj.save(update_fields=["bill_section_emails"])
         return obj
+
+
+class WalletCashbookMailboxMessage(models.Model):
+    """One SRIC cash-book email already handled by the automatic mailbox reader."""
+
+    folder = models.CharField(_("Folder"), max_length=120)
+    uid = models.CharField(_("IMAP UID"), max_length=32)
+    subject = models.CharField(_("Subject"), max_length=500, blank=True)
+    from_addr = models.CharField(_("From"), max_length=255, blank=True)
+    attachment_name = models.CharField(_("Attachment"), max_length=255, blank=True)
+    rows_parsed = models.PositiveIntegerField(_("Rows parsed"), default=0)
+    rows_stored = models.PositiveIntegerField(_("Rows stored"), default=0)
+    error = models.TextField(_("Error"), blank=True)
+    processed_at = models.DateTimeField(_("Processed at"), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _("SRIC cash-book mailbox message")
+        verbose_name_plural = _("SRIC cash-book mailbox messages")
+        ordering = ["-processed_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["folder", "uid"], name="unique_cashbook_mailbox_folder_uid"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.folder}#{self.uid} ({self.rows_stored} rows)"

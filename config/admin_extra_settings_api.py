@@ -305,6 +305,11 @@ def register_extra_admin_routes(router):
                 "project_grant_cc_emails",
                 "cash_deposit_cc_emails",
                 "grant_code_for_credit",
+                "ar_sric_emails",
+                "dean_sric_emails",
+                "decline_converts_to_credit",
+                "auto_read_cashbook_mailbox",
+                "cashbook_sender_emails",
             ]
             read_only_fields = ["id"]
 
@@ -331,6 +336,15 @@ def register_extra_admin_routes(router):
             return self._validate_email_list(value)
 
         def validate_cash_deposit_cc_emails(self, value):
+            return self._validate_email_list(value)
+
+        def validate_ar_sric_emails(self, value):
+            return self._validate_email_list(value)
+
+        def validate_dean_sric_emails(self, value):
+            return self._validate_email_list(value)
+
+        def validate_cashbook_sender_emails(self, value):
             return self._validate_email_list(value)
 
     class IsMainAdminOrDeptAdmin(permissions.BasePermission):

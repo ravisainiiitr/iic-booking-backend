@@ -4,6 +4,7 @@ All endpoints require admin-panel user (admin, manager, operator, finance) or is
 """
 import logging
 import os
+import re
 from datetime import datetime, date, timedelta
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -1934,7 +1935,10 @@ def admin_api_router():
                 qs = qs.filter(status=status_filter)
 
             search = (self.request.query_params.get("search") or "").strip()
-            if search:
+            ref = re.fullmatch(r"(?:IIC-?TXN-?|WRR-?)0*(\d+)", search, flags=re.IGNORECASE)
+            if ref:
+                qs = qs.filter(id=int(ref.group(1)))
+            elif search:
                 qs = qs.filter(
                     Q(user__email__icontains=search)
                     | Q(user__name__icontains=search)
@@ -2120,6 +2124,7 @@ def admin_api_router():
             from iic_booking.users.wallet_recharge_workflow import (
                 RechargeAlreadyProcessed,
                 already_processed_page,
+                can_sric_decline,
                 notify_stakeholders_of_decision,
                 reject_request,
             )
@@ -2136,7 +2141,7 @@ def admin_api_router():
                 )
 
             recharge_request = self.get_object()
-            if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+            if not can_sric_decline(recharge_request):
                 page = already_processed_page(
                     recharge_request.status, recharge_request.cancellation_source or ""
                 )
@@ -2167,11 +2172,13 @@ def admin_api_router():
                     actor_email=request.user.email,
                 )
                 notify_stakeholders_of_decision(rejected)
+                message = (
+                    "Declined. The request is cancelled and the amount is treated as an auto-approved credit."
+                    if rejected.status == WalletRechargeRequestStatus.CANCELLED
+                    else "Wallet recharge request rejected."
+                )
                 return Response(
-                    {
-                        "message": "Wallet recharge request rejected.",
-                        "request": WalletRechargeRequestSerializer(rejected).data,
-                    },
+                    {"message": message, "request": WalletRechargeRequestSerializer(rejected).data},
                     status=status.HTTP_200_OK,
                 )
             except RechargeAlreadyProcessed as e:

@@ -65,7 +65,7 @@ from .user_group import UserGroup, UserGroupMember
 from .project import Project
 from .auth_lock import UserLoginLock
 from .auth_settings import AuthSettings
-from .wallet_sric_settings import WalletSricSettings
+from .wallet_sric_settings import WalletCashbookMailboxMessage, WalletSricSettings
 from .test_account_email_settings import TestAccountEmailSettings
 from .user_type_inactivity import UserTypeInactivityTimeout
 from .billing import ExternalBillingProfile
@@ -161,6 +161,7 @@ __all__ = [
     "UserLoginLock",
     "AuthSettings",
     "WalletSricSettings",
+    "WalletCashbookMailboxMessage",
     "TestAccountEmailSettings",
     "UserTypeInactivityTimeout",
     "ExternalBillingProfile",

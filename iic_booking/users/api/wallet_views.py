@@ -2227,11 +2227,14 @@ def wallet_recharge_action_approve(request, token):
             actor_email=(request.data.get("actor_email") or "sric-email-approval").strip(),
         )
         notify_stakeholders_of_decision(approved)
+        message = f"Approved. ₹{approved.amount} credited to the department wallet."
+        if approved.credit_settled_amount > 0:
+            message += (
+                f" ₹{approved.credit_settled_amount} of it was adjusted against the faculty member's "
+                "outstanding auto-approved credit."
+            )
         return Response(
-            {
-                **serialize_request_public(approved),
-                "message": f"Approved. ₹{approved.amount} credited to the department wallet.",
-            },
+            {**serialize_request_public(approved), "message": message},
             status=status.HTTP_200_OK,
         )
     except RechargeAlreadyProcessed as e:
@@ -2254,6 +2257,7 @@ def wallet_recharge_action_reject(request, token):
     from iic_booking.users.wallet_recharge_workflow import (
         RechargeAlreadyProcessed,
         already_processed_page,
+        can_sric_decline,
         notify_stakeholders_of_decision,
         reject_request,
         serialize_request_public,
@@ -2264,7 +2268,7 @@ def wallet_recharge_action_reject(request, token):
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
 
-    if recharge_request.status != WalletRechargeRequestStatus.PENDING:
+    if not can_sric_decline(recharge_request):
         page = already_processed_page(
             recharge_request.status, recharge_request.cancellation_source or ""
         )
@@ -2289,11 +2293,15 @@ def wallet_recharge_action_reject(request, token):
             actor_email=(request.data.get("actor_email") or "sric-email-rejection").strip(),
         )
         notify_stakeholders_of_decision(rejected)
+        if rejected.status == WalletRechargeRequestStatus.CANCELLED:
+            message = (
+                "Declined. The request is cancelled and the amount is treated as an auto-approved "
+                "credit for the faculty member, who has been informed with the selected reason."
+            )
+        else:
+            message = "Wallet recharge request declined."
         return Response(
-            {
-                **serialize_request_public(rejected),
-                "message": "Wallet recharge request rejected.",
-            },
+            {**serialize_request_public(rejected), "message": message},
             status=status.HTTP_200_OK,
         )
     except RechargeAlreadyProcessed as e:

@@ -3,6 +3,7 @@ Import IIC wallet recharge text file: parse rows, match user by emp_id, credit s
 """
 
 import logging
+import re
 from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -587,18 +588,54 @@ def link_cashbook_entry_to_request(
     return locked, outcome
 
 
+TXN_REFERENCE_RE = re.compile(r"IIC\s*-?\s*TXN\s*-?\s*0*(\d+)", re.IGNORECASE)
+
+
+def _entry_transaction_reference(entry: WalletRechargeParseEntry) -> Optional[int]:
+    m = TXN_REFERENCE_RE.search(entry.payment or "")
+    return int(m.group(1)) if m else None
+
+
+def _match_by_transaction_reference(index: "CashbookIndex", errors: List[str]) -> Tuple[int, set]:
+    """Rows quoting IIC-TXN-###### in Payment Details are applied to exactly that request (still validated)."""
+    matched = 0
+    referenced: set = set()
+    for infos in index.by_amount.values():
+        for info in infos:
+            entry = info["entry"]
+            req_id = _entry_transaction_reference(entry)
+            if req_id is None:
+                continue
+            referenced.add(entry.id)
+            try:
+                link_cashbook_entry_to_request(req_id, entry.id, actor_email="sric-cashbook-auto")
+                matched += 1
+            except WalletRechargeRequest.DoesNotExist:
+                errors.append(f"Receipt {entry.receipt_no}: IIC-TXN-{req_id:06d} does not exist.")
+            except CashbookMatchError as exc:
+                errors.append(f"Receipt {entry.receipt_no} → IIC-TXN-{req_id:06d}: {exc}")
+            except Exception as exc:
+                logger.exception("Cash-book reference match failed for entry %s", entry.pk)
+                errors.append(f"Receipt {entry.receipt_no} → IIC-TXN-{req_id:06d}: {exc}")
+    return matched, referenced
+
+
 def match_pending_recharge_requests_to_parse_entries() -> Tuple[int, List[str]]:
     """
-    Auto-apply cash-book entries where the pairing is unambiguous in both directions
-    (one available entry for the request, and no other eligible request competing for that entry).
+    Auto-apply cash-book entries.
+
+    1) Rows whose Payment Details quote an IIC transaction number (IIC-TXN-######) are applied to
+       that request, subject to the usual amount / grant checks.
+    2) Remaining rows are applied where the pairing is unambiguous in both directions
+       (one available entry for the request, and no other eligible request competing for that entry).
 
     Match rule: amount equal AND Credited to Project No. == request grant code; rows without a
     Project No. need an exact Emp No. match. Auto-apply additionally requires the Emp No. to match
     whenever the cash-book row has one. Everything else is left for manual matching on the
     Wallet Recharge Requests page.
     """
-    matched = 0
     errors: List[str] = []
+    matched, referenced_entries = _match_by_transaction_reference(CashbookIndex(), errors)
     index = CashbookIndex()
     eligible = list(
         WalletRechargeRequest.objects.filter(cashbook_receipt_no="")
@@ -622,7 +659,10 @@ def match_pending_recharge_requests_to_parse_entries() -> Tuple[int, List[str]]:
     req_cands: Dict[int, List[Dict[str, Any]]] = {}
     entry_reqs: Dict[int, List[WalletRechargeRequest]] = {}
     for req in eligible:
-        cands = [c for c in index.candidates_for(req) if _auto_ok(c)]
+        cands = [
+            c for c in index.candidates_for(req)
+            if _auto_ok(c) and c["entry"].id not in referenced_entries
+        ]
         req_cands[req.id] = cands
         for c in cands:
             entry_reqs.setdefault(c["entry"].id, []).append(req)
