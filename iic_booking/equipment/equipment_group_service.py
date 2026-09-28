@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable, Optional
@@ -207,8 +208,13 @@ def get_eligible_group_equipment(booking_user, equipment, *, user_type: Optional
 # ---------------------------------------------------------------------------
 
 
+_LABEL_WORD_RE = re.compile(r"[a-z0-9]+(?:\.[0-9]+)?")
+
+
 def _norm_label(label: str) -> str:
-    return " ".join(str(label or "").lower().replace("_", " ").split())
+    """Case, punctuation and simple plurals are ignored ("No. of Samples" == "No of sample")."""
+    words = _LABEL_WORD_RE.findall(str(label or "").lower().replace("_", " "))
+    return " ".join(w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w for w in words)
 
 
 def _effective_input_fields(equipment, user_type: str) -> list:

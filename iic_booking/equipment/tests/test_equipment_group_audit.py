@@ -201,6 +201,26 @@ def test_inputs_same_key_different_type_or_label_is_dropped(egs_factory):
 
 
 @pytest.mark.django_db
+def test_inputs_labels_differing_only_in_punctuation_case_or_plural_still_match(egs_factory):
+    group = egs_factory.group()
+    src, tgt = egs_factory.equipment(group), egs_factory.equipment(group)
+    _field(src, "A", "No of samples", required=True)
+    _field(src, "B", "Number of Slots ( Slot Duration: 1.5 Hour)", required=True)
+    _field(tgt, "A", "No. of Samples", required=True)
+    _field(tgt, "B", "Number of Slots ( Slot Duration: 1.5 Hours )", required=True)
+    mapping = egs.map_inputs(src, tgt, "student", {"A": "2", "B": "1"})
+    assert mapping.values == {"A": "2", "B": "1"}
+    assert mapping.dropped == [] and mapping.complete
+
+    other = egs_factory.equipment(group)
+    _field(other, "A", "No. of Samples", required=True)
+    _field(other, "B", "Number of Slots ( Slot Duration: 2.5 Hours )", required=True)
+    changed = egs.map_inputs(src, other, "student", {"A": "2", "B": "1"})
+    assert changed.values == {"A": "2"}
+    assert [m["key"] for m in changed.missing_required] == ["B"]
+
+
+@pytest.mark.django_db
 def test_inputs_structured_fields_need_identical_definition(egs_factory):
     group = egs_factory.group()
     src, same, different, moved = (egs_factory.equipment(group) for _ in range(4))
