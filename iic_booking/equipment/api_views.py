@@ -3326,21 +3326,30 @@ def equipment_daily_slots(request, pk):
     time_from = getattr(equipment, 'weekly_view_time_from', None)
     time_to = getattr(equipment, 'weekly_view_time_to', None)
     force_time_filter = str(request.query_params.get("apply_weekly_view_time_filter", "")).lower() in ("1", "true", "yes")
-    should_time_filter = (force_time_filter or (not is_admin)) and (not for_external_user) and (time_from is not None or time_to is not None)
-    if should_time_filter:
+    has_view_window = time_from is not None or time_to is not None
+    should_time_filter = (force_time_filter or (not is_admin)) and (not for_external_user) and has_view_window
+
+    def slot_within_window(slot):
         from django.utils import timezone as tz
-        def slot_within_window(slot):
-            if not slot.start_datetime or not slot.end_datetime:
-                return False
-            start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
-            end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
-            st, et = start_local.time(), end_local.time()
-            if time_from is not None and st < time_from:
-                return False
-            if time_to is not None and et > time_to:
-                return False
-            return True
+        if not slot.start_datetime or not slot.end_datetime:
+            return False
+        start_local = tz.localtime(slot.start_datetime) if tz.is_aware(slot.start_datetime) else slot.start_datetime
+        end_local = tz.localtime(slot.end_datetime) if tz.is_aware(slot.end_datetime) else slot.end_datetime
+        st, et = start_local.time(), end_local.time()
+        if time_from is not None and st < time_from:
+            return False
+        if time_to is not None and et > time_to:
+            return False
+        return True
+
+    if should_time_filter:
         filtered_slots = [s for s in filtered_slots if slot_within_window(s)]
+    # Staff see the full day; flag slots regular internal users never see so the grid can mark them.
+    outside_window_slot_ids = (
+        {s.pk for s in filtered_slots if not slot_within_window(s)}
+        if is_admin and has_view_window and not should_time_filter
+        else set()
+    )
 
     # Multi-mode: keep all slots (no blank cells). Overlay label/color for end users.
     from .mode_utils import (
@@ -3376,6 +3385,9 @@ def equipment_daily_slots(request, pk):
     slots_payload = list(serializer.data)
     if not (is_staff_bypass_user(user) or bypasses_multimode_restrictions(user)):
         slots_payload = apply_mode_overlays_to_slot_payloads(equipment, filtered_slots, slots_payload)
+    if outside_window_slot_ids:
+        for row in slots_payload:
+            row["outside_visibility_window"] = row.get("id") in outside_window_slot_ids
 
     # Min/max times for backward compatibility (from the slot_masters we already have)
     agg = (
