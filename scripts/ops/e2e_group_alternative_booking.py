@@ -196,7 +196,7 @@ def run():
         check("ticked: booked slot is on B at the requested time",
               bool(slots) and all(s.slot_master.equipment_id == eq_b.pk for s in slots) and slots[0].start_datetime == t1,
               f"slots={[s.id for s in slots]}")
-        event = BookingEvent.objects.filter(booking=booking).order_by("id").first()
+        event = BookingEvent.objects.filter(booking=booking).order_by("created_at", "pk").first()
         meta = getattr(event, "metadata", None) or {}
         check("ticked: audit records auto allocation from A",
               meta.get("auto_allocated") is True and meta.get("alternative_of_equipment_id") == eq_a.pk, str(meta)[:200])
@@ -228,7 +228,7 @@ def run():
               200 <= code < 300 and booking is not None and booking.equipment_id == eq_b.pk,
               f"status={code} booking={bid} error={(data or {}).get('error')}")
         if booking is not None:
-            event = BookingEvent.objects.filter(booking=booking).order_by("id").first()
+            event = BookingEvent.objects.filter(booking=booking).order_by("created_at", "pk").first()
             meta = getattr(event, "metadata", None) or {}
             check("unticked: audit records a confirmed (not automatic) alternative",
                   meta.get("auto_allocated") is False and meta.get("alternative_of_equipment_id") == eq_a.pk,
