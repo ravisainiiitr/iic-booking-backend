@@ -276,8 +276,45 @@ def _get_detail(client, eq):
     return res.status_code, data
 
 
+def _cover_orphan_columns():
+    """
+    Production tables can carry NOT NULL columns from other release branches that this code has no
+    field for, so plain inserts fail. Give those columns a default for this process only.
+    """
+    from django.apps import apps
+    from django.db import connection, models
+
+    defaults = {
+        "BooleanField": (models.BooleanField, False),
+        "CharField": (models.CharField, ""),
+        "TextField": (models.TextField, ""),
+    }
+    with connection.cursor() as cursor:
+        tables = set(connection.introspection.table_names(cursor))
+        for model in apps.get_models():
+            table = model._meta.db_table
+            if model._meta.proxy or not model._meta.managed or table not in tables:
+                continue
+            known = {f.column for f in model._meta.concrete_fields}
+            for col in connection.introspection.get_table_description(cursor, table):
+                if col.name in known or col.null_ok or hasattr(model, col.name):
+                    continue
+                kind = connection.introspection.get_field_type(col.type_code, col)
+                if kind.endswith("IntegerField") or kind in ("DecimalField", "FloatField"):
+                    field_cls, default = models.IntegerField, 0
+                elif kind in defaults:
+                    field_cls, default = defaults[kind]
+                else:
+                    print("INFO | orphan column without a default:", table, col.name, kind)
+                    continue
+                kwargs = {"max_length": 255} if field_cls is models.CharField else {}
+                field_cls(default=default, **kwargs).contribute_to_class(model, col.name)
+                print("INFO | orphan NOT NULL column (not in code):", table, col.name, kind, "-> default", repr(default))
+
+
 def main():
     print("TAG", TAG, "alternative flag", settings.EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED)
+    _cover_orphan_columns()
     with override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend"), \
             patch.object(Task, "apply_async", lambda *a, **k: None):
         try:
