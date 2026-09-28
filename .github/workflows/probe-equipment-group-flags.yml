@@ -1,0 +1,41 @@
+# Show whether the Equipment Group feature flags are set explicitly in the production environment (read-only)
+name: Probe Equipment Group Flags
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          for name in (
+              "EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED",
+              "EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED",
+              "EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED",
+              "EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED",
+          ):
+              print(name, "env_set=", name in os.environ, "env_value=", os.environ.get(name), "effective=", getattr(settings, name, None))
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
