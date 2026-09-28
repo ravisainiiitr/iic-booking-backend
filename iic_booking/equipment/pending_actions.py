@@ -94,6 +94,25 @@ def _personal_items(c: _Collector) -> None:
             lambda r: f"{_person(r.student)} ({r.student.email}) wants to join your wallet",
         )
 
+    def urgent_supervisor():
+        from .models import UrgentBookingRequest, UrgentBookingRequestStatus
+
+        c.add(
+            "urgent_requests_supervisor",
+            "Urgent bookings awaiting your approval",
+            UrgentBookingRequest.objects.filter(
+                supervisor=user,
+                supervisor_approval_required=True,
+                supervisor_decision="",
+                status=UrgentBookingRequestStatus.PENDING,
+            )
+            .select_related("user", "equipment")
+            .order_by("-requested_at"),
+            "/urgent-requests-wallet",
+            "Your students raised urgent bookings with a 50% surcharge. Approve or reject each before the Officer in charge decides.",
+            lambda r: f"{_person(r.user)} — {r.equipment.name} (request #{r.id})",
+        )
+
     def credit_clarification():
         from iic_booking.users.models.wallet_credit_facility import WalletCreditFacility, WalletCreditFacilityStatus
 
@@ -267,6 +286,7 @@ def _personal_items(c: _Collector) -> None:
 
     for name, fn in (
         ("wallet_join", wallet_join),
+        ("urgent_supervisor", urgent_supervisor),
         ("credit_clarification", credit_clarification),
         ("nominations", nominations),
         ("ta_duties", ta_duties),
@@ -317,7 +337,13 @@ def _staff_items(c: _Collector) -> None:
     c.add(
         "urgent_requests",
         "Urgent booking requests",
-        _scoped(UrgentBookingRequest.objects.filter(status=UrgentBookingRequestStatus.PENDING), "equipment_id", equipment_ids),
+        _scoped(
+            UrgentBookingRequest.objects.filter(status=UrgentBookingRequestStatus.PENDING).exclude(
+                supervisor_approval_required=True, supervisor_decision=""
+            ),
+            "equipment_id",
+            equipment_ids,
+        ),
         "/urgent-requests",
         "Urgent (Type B) booking requests are waiting for your decision.",
     )

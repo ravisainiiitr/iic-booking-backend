@@ -384,7 +384,7 @@ class FallbackGateway(LLMGateway):
             )
         else:
             reply = (
-                "I am **IIC Research Copilot**. Ask about booking, equipment selection, sample status, "
+                "I am **IIC Booking Assistant**. Ask about booking, equipment selection, sample status, "
                 "results, wallet, Remote Analysis software, or documentation. "
                 "Live answers use portal data and institute documents when available — I will not fabricate results."
             )

@@ -501,7 +501,13 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
     except Exception:
         return _err("equipment_not_found", f"Equipment {equipment_id} not found")
 
+    from iic_booking.equipment.charge_visibility import (
+        is_internal_rate_user_type,
+        viewer_may_see_internal_rates,
+    )
+
     public_mode = bool(arguments.get("public") or arguments.get("anonymous"))
+    may_see_internal = not public_mode and viewer_may_see_internal_rates(user)
     actor = user
     if public_mode or actor is None or not getattr(actor, "is_authenticated", False):
         actor = get_charge_estimate_guest_user()
@@ -512,7 +518,16 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
             or getattr(actor, "user_type", None)
             or UserType.STUDENT
         )
+    if not may_see_internal and is_internal_rate_user_type(user_type):
+        user_type = str(UserType.EXTERNAL)
 
+    fallback_profiles = ChargeProfile.objects.filter(
+        equipment=eq,
+        pricing_profile=ChargeProfilePricingProfile.STANDARD,
+        is_active=True,
+    )
+    if not may_see_internal:
+        fallback_profiles = fallback_profiles.exclude(user_type__in=list(UserType.get_internal_user_codes()))
     cp = (
         ChargeProfile.objects.filter(
             equipment=eq,
@@ -520,11 +535,7 @@ def _estimate_booking_cost(*, arguments: dict, user) -> dict:
             pricing_profile=ChargeProfilePricingProfile.STANDARD,
             is_active=True,
         ).first()
-        or ChargeProfile.objects.filter(
-            equipment=eq,
-            pricing_profile=ChargeProfilePricingProfile.STANDARD,
-            is_active=True,
-        ).first()
+        or fallback_profiles.first()
     )
     if not cp:
         return _ok(

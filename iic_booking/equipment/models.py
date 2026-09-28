@@ -501,6 +501,27 @@ class Equipment(models.Model):
         ),
     )
 
+    max_rush_relief_requests_per_week = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_('Max rush-relief urgent bookings per week'),
+        help_text=_(
+            'Maximum number of approved rush-relief (Type A, surcharge waived) urgent bookings for this '
+            'equipment in one calendar week (Monday–Sunday), across all users. Leave empty for no cap.'
+        ),
+    )
+
+    max_surcharge_urgent_requests_per_week = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_('Max surcharge urgent bookings per week'),
+        help_text=_(
+            'Maximum number of surcharge-based (Type B, 50% surcharge) urgent bookings for this equipment in '
+            'one calendar week (Monday–Sunday), across all users. Requests still awaiting approval count '
+            'towards the cap. Leave empty for no cap.'
+        ),
+    )
+
     waitlist_queue_depth = models.PositiveIntegerField(
         null=True,
         blank=True,
@@ -1060,6 +1081,10 @@ class EquipmentManager(models.Model):
         help_text=_('Officer in Charge for this equipment'),
         limit_choices_to={'user_type': UserType.MANAGER},
     )
+    disable_booking_confirmation_email = models.BooleanField(
+        default=False,
+        help_text=_('When checked, this Officer in Charge does not receive booking confirmation emails for this equipment.'),
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text=_('Date and time this assignment was created'))
     updated_at = models.DateTimeField(auto_now=True, help_text=_('Date and time this assignment was last updated'))
 
@@ -1183,6 +1208,10 @@ class EquipmentOperator(models.Model):
         choices=Role.choices,
         default=Role.PRIMARY,
         help_text=_("Operator role for this instrument (primary or secondary)."),
+    )
+    disable_booking_confirmation_email = models.BooleanField(
+        default=False,
+        help_text=_('When checked, this Lab In-charge does not receive booking confirmation emails for this equipment.'),
     )
     created_at = models.DateTimeField(auto_now_add=True, help_text='Date and time the equipment operator was created')
     updated_at = models.DateTimeField(auto_now=True, help_text='Date and time the equipment operator was updated')
@@ -3650,6 +3679,34 @@ class UrgentBookingRequest(models.Model):
         verbose_name=_('Approved by Supervisor'),
     )
     wallet_notes = models.TextField(blank=True, default='')
+    supervisor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='urgent_requests_to_supervise',
+        verbose_name=_('Supervisor'),
+        help_text=_('Faculty supervisor who must approve a surcharge-based urgent request before the OIC decides.'),
+    )
+    supervisor_approval_required = models.BooleanField(
+        default=False,
+        help_text=_('Surcharge-based request raised by a user who has a supervisor; the OIC cannot decide until the supervisor approves.'),
+    )
+    supervisor_decision = models.CharField(
+        max_length=16,
+        blank=True,
+        default='',
+        choices=[('', _('Awaiting supervisor')), ('APPROVED', _('Approved')), ('REJECTED', _('Rejected'))],
+    )
+    supervisor_decided_at = models.DateTimeField(null=True, blank=True)
+
+    @property
+    def pending_supervisor_approval(self) -> bool:
+        return (
+            bool(self.supervisor_approval_required)
+            and not self.supervisor_decision
+            and self.status == UrgentBookingRequestStatus.PENDING
+        )
 
     # Optional: linked hold booking created via "Select Slot" in urgent flow. When admin/OIC approves, this booking is debited and set to BOOKED.
     hold_booking = models.ForeignKey(

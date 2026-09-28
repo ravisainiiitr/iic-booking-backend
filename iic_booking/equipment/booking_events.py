@@ -391,6 +391,17 @@ def _dispatch_booking_event_notification(event_id: int) -> None:
     ).start()
 
 
+BOOKING_CONFIRMATION_EMAIL_TEMPLATES = frozenset(
+    {
+        "booking_created_email",
+        "booking_waitlist_confirmed_email",
+        "repeat_sample_booking_confirmed_email",
+        "booking_confirmed_email",
+        "urgent_booking_hold_confirmed_email",
+    }
+)
+
+
 def send_booking_event_notification(event: BookingEvent) -> None:
     """
     Send email and push notifications for a booking event.
@@ -975,9 +986,17 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     }
     if event.event_type in _staff_notify_events and (email_template_code or push_template_code):
         try:
-            from iic_booking.equipment.reports import get_equipment_staff_notify_users
+            from iic_booking.equipment.reports import (
+                get_booking_confirmation_email_opt_out_user_ids,
+                get_equipment_staff_notify_users,
+            )
 
             staff_users = get_equipment_staff_notify_users(equipment)
+            confirmation_email_opt_out_ids = (
+                get_booking_confirmation_email_opt_out_user_ids(equipment)
+                if email_template_code in BOOKING_CONFIRMATION_EMAIL_TEMPLATES
+                else set()
+            )
             skip_ids = {user.id}
             booker_label = user_display_name(user, fallback="user")
             staff_mgmt_link = (
@@ -1005,7 +1024,11 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     "staff_recipient": True,
                     "booked_for_user_id": user.id,
                 }
-                if email_template_code and (staff.email or "").strip():
+                if (
+                    email_template_code
+                    and (staff.email or "").strip()
+                    and staff.id not in confirmation_email_opt_out_ids
+                ):
                     try:
                         CommunicationService.send_email(
                             recipient=staff,

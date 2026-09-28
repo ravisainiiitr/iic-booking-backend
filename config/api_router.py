@@ -331,6 +331,7 @@ from iic_booking.equipment.api_views import (
     get_no_slot_log_for_user,
     update_urgent_booking_request,
     wallet_approve_urgent_booking_request,
+    urgent_supervisor_email_action,
     get_urgent_request_evidence,
     urgent_hold_expiry_config,
     list_urgent_requests_pending_wallet_approval,
@@ -1355,6 +1356,11 @@ urlpatterns = router.urls + [
     path("urgent-booking-requests/hold-expiry-config/", urgent_hold_expiry_config, name="urgent-hold-expiry-config"),
     path("urgent-booking-requests/<int:request_id>/", update_urgent_booking_request, name="update-urgent-booking-request"),
     path("urgent-booking-requests/<int:request_id>/wallet-approve/", wallet_approve_urgent_booking_request, name="wallet-approve-urgent-booking-request"),
+    path(
+        "urgent-booking-requests/<int:request_id>/supervisor-email-action/<str:action>/",
+        urgent_supervisor_email_action,
+        name="urgent-supervisor-email-action",
+    ),
     path("urgent-booking-requests/<int:request_id>/evidence/", get_urgent_request_evidence, name="get-urgent-request-evidence"),
     path("users/<int:user_id>/no-slot-log/", get_no_slot_log_for_user, name="no-slot-log-for-user"),
 

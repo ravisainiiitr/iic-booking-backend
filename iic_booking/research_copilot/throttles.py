@@ -93,7 +93,7 @@ def consume_llm_quota(*, user) -> tuple[bool, str]:
         cache.set(key, 1, duration)
         return True, ""
     if int(count) >= num:
-        return False, "Research Copilot AI replies are rate-limited right now. Live portal lookups (slots, wallet, bookings) still work — try a direct question, or wait and retry."
+        return False, "Booking Assistant AI replies are rate-limited right now. Live portal lookups (slots, wallet, bookings) still work — try a direct question, or wait and retry."
     try:
         cache.incr(key)
     except ValueError:

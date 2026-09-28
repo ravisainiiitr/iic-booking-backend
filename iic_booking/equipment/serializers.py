@@ -430,6 +430,7 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
             'operator_email',
             'operator_phone',
             'operator_profile_picture',
+            'disable_booking_confirmation_email',
             'created_at'
         ]
         read_only_fields = [
@@ -525,6 +526,7 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
             'manager_email',
             'manager_phone',
             'manager_profile_picture',
+            'disable_booking_confirmation_email',
             'created_at'
         ]
         read_only_fields = [
@@ -1273,6 +1275,8 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'external_slot_quota_percent',
             'urgent_peak_window_minutes',
             'max_urgent_requests',
+            'max_rush_relief_requests_per_week',
+            'max_surcharge_urgent_requests_per_week',
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
@@ -1416,7 +1420,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     viewer_profile_type = serializers.SerializerMethodField()
     viewer_profile_type_display = serializers.SerializerMethodField()
     slot_masters = SlotMasterSerializer(many=True, read_only=True)
-    slot_options = MultiParamDefinitionSerializer(many=True, read_only=True, source='param_definitions')
+    slot_options = serializers.SerializerMethodField()
     operators = serializers.SerializerMethodField()
     managers = EquipmentManagerSerializer(many=True, read_only=True, source='equipment_managers')
     base_charges_by_user_type = serializers.SerializerMethodField()
@@ -1521,6 +1525,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'external_slot_quota_percent',
             'urgent_peak_window_minutes',
             'max_urgent_requests',
+            'max_rush_relief_requests_per_week',
+            'max_surcharge_urgent_requests_per_week',
             'waitlist_queue_depth',
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
@@ -1618,9 +1624,14 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             if getattr(request, "_force_all_input_fields", False):
                 want_all = True
             override_user_type = (request.query_params.get("for_user_type") or "").strip() or None
+        if not self._may_see_internal_rates():
+            from iic_booking.equipment.charge_visibility import is_internal_rate_user_type
+
+            if is_internal_rate_user_type(override_user_type):
+                override_user_type = None
         if want_all:
             return DynamicInputFieldSerializer(
-                qs.order_by("user_type", "field_key"), many=True
+                self._hide_internal_rates(qs).order_by("user_type", "field_key"), many=True
             ).data
 
         user_type = override_user_type
@@ -1685,6 +1696,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         here to avoid accidental overriding of standard prices.
         """
         qs = obj.charge_profiles.filter(pricing_profile=ChargeProfilePricingProfile.STANDARD).order_by("user_type")
+        qs = self._hide_internal_rates(qs)
         serializer = ChargeProfileSerializer(qs, many=True, context=self.context)
         return serializer.data
 
@@ -1740,7 +1752,27 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
 
     def get_pi_charge_profiles(self, obj):
         qs = obj.charge_profiles.filter(pricing_profile=ChargeProfilePricingProfile.PI).order_by("user_type")
+        qs = self._hide_internal_rates(qs)
         return ChargeProfileSerializer(qs, many=True, context=self.context).data
+
+    def get_slot_options(self, obj):
+        qs = self._hide_internal_rates(obj.param_definitions.all())
+        return MultiParamDefinitionSerializer(qs, many=True, context=self.context).data
+
+    def _may_see_internal_rates(self) -> bool:
+        cached = self.context.get("_may_see_internal_rates")
+        if cached is None:
+            from iic_booking.equipment.charge_visibility import request_may_see_internal_rates
+
+            cached = request_may_see_internal_rates(self.context.get("request"))
+            self.context["_may_see_internal_rates"] = cached
+        return cached
+
+    def _hide_internal_rates(self, qs):
+        """Anonymous and external viewers never receive IITR student/faculty rates."""
+        if self._may_see_internal_rates():
+            return qs
+        return qs.exclude(user_type__in=list(UserType.get_internal_user_codes()))
 
 
 # --- Admin write serializers (nested inlines for equipment create/update) ---
@@ -1754,6 +1786,7 @@ class EquipmentManagerWriteSerializer(serializers.Serializer):
         ).order_by('name', 'email'),
         required=True,
     )
+    disable_booking_confirmation_email = serializers.BooleanField(required=False, default=False)
 
 
 class EquipmentOperatorWriteSerializer(serializers.Serializer):
@@ -1770,6 +1803,7 @@ class EquipmentOperatorWriteSerializer(serializers.Serializer):
         required=False,
         default=getattr(EquipmentOperator, "Role").PRIMARY,
     )
+    disable_booking_confirmation_email = serializers.BooleanField(required=False, default=False)
 
 
 class EquipmentSpecificationWriteSerializer(serializers.Serializer):
@@ -1893,6 +1927,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'external_slot_quota_percent',
             'urgent_peak_window_minutes',
             'max_urgent_requests',
+            'max_rush_relief_requests_per_week',
+            'max_surcharge_urgent_requests_per_week',
             'waitlist_queue_depth',
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
@@ -2081,7 +2117,11 @@ def _create_related(equipment, inlines, actor=None):
         EquipmentPI, EquipmentPIAuditLog,
     )
     for item in inlines.get('equipment_managers', []):
-        EquipmentManager.objects.create(equipment=equipment, manager=item['manager'])
+        EquipmentManager.objects.create(
+            equipment=equipment,
+            manager=item['manager'],
+            disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
+        )
     for item in inlines.get('equipment_pis', []):
         epi = EquipmentPI.objects.create(
             equipment=equipment,
@@ -2101,6 +2141,7 @@ def _create_related(equipment, inlines, actor=None):
             equipment=equipment,
             operator=item['operator'],
             role=item.get("role") or EquipmentOperator.Role.PRIMARY,
+            disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
         )
     for item in inlines.get('equipment_specifications', []):
         EquipmentSpecification.objects.create(equipment=equipment, spec_key=item['spec_key'], spec_value=item.get('spec_value', ''))
@@ -2248,7 +2289,11 @@ def _sync_related(equipment, inlines, actor=None):
     if inlines.get('equipment_managers') is not None:
         EquipmentManager.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_managers']:
-            EquipmentManager.objects.create(equipment=equipment, manager=item['manager'])
+            EquipmentManager.objects.create(
+                equipment=equipment,
+                manager=item['manager'],
+                disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
+            )
     if inlines.get('equipment_pis') is not None:
         incoming = {}
         for item in inlines['equipment_pis']:
@@ -2308,6 +2353,7 @@ def _sync_related(equipment, inlines, actor=None):
                 equipment=equipment,
                 operator=item['operator'],
                 role=item.get("role") or EquipmentOperator.Role.PRIMARY,
+                disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
             )
     if inlines.get('equipment_specifications') is not None:
         EquipmentSpecification.objects.filter(equipment=equipment).delete()

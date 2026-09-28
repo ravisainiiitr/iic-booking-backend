@@ -91,7 +91,7 @@ def call_user_cancel_booking(*, user, booking_id: int, body: dict[str, Any] | No
     django_request = _django_json_post(
         user=user,
         path=f"/api/bookings/{booking_id}/user-cancel/",
-        body=safe_body or {"refund": True, "notes": "Cancelled via Research Copilot"},
+        body=safe_body or {"refund": True, "notes": "Cancelled via Booking Assistant"},
     )
     response = user_cancel_booking(django_request, booking_id)
     return _as_data(response)

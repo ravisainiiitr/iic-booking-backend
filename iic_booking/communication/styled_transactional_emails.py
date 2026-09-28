@@ -111,6 +111,65 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
     _send(student.email, "Wallet Join Request Submitted", student_text, student_html)
 
 
+URGENT_SUPERVISOR_ACTION_SALT = "urgent-supervisor-email-action"
+
+
+def signed_urgent_supervisor_action_link(urgent_request, action: str) -> str:
+    payload = {
+        "request_id": int(urgent_request.id),
+        "supervisor_id": int(urgent_request.supervisor_id),
+        "action": str(action).lower(),
+    }
+    token = signing.dumps(payload, salt=URGENT_SUPERVISOR_ACTION_SALT)
+    return get_backend_absolute_url(
+        f"/api/urgent-booking-requests/{urgent_request.id}/supervisor-email-action/{action}/?token={token}"
+    )
+
+
+def send_urgent_supervisor_action_email(urgent_request) -> None:
+    """Ask the student's supervisor to approve a surcharge-based urgent request before the OIC decides."""
+    supervisor = urgent_request.supervisor
+    requester = urgent_request.user
+    equipment = urgent_request.equipment
+    if not supervisor or not getattr(supervisor, "email", None):
+        return
+    approve_link = signed_urgent_supervisor_action_link(urgent_request, "approve")
+    reject_link = signed_urgent_supervisor_action_link(urgent_request, "reject")
+    queue_link = get_frontend_absolute_url("/urgent-requests-wallet")
+    hold = urgent_request.hold_booking if urgent_request.hold_booking_id else None
+    charge = format_inr(hold.total_charge) if hold is not None and hold.total_charge is not None else "—"
+    reason = (urgent_request.reviewer_comment or "").strip() or "—"
+    body = (
+        "<p style='margin:0 0 12px 0;'>A student linked to your wallet has requested an <b>urgent booking with a 50% surcharge</b>. "
+        "Your approval is required before the Officer in charge can allocate slots. "
+        "The wallet is charged only after the Officer in charge gives final approval.</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Requester:</b> {escape(user_display_name(requester))} ({escape(requester.email)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Equipment:</b> {escape(equipment.name)} ({escape(equipment.code)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Request ID:</b> {urgent_request.id}</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Estimated charge (incl. surcharge):</b> {escape(charge)}</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Reason:</b> {escape(reason)}</p>"
+        f"<p style='margin:16px 0 0 0;'>"
+        f"<a href='{escape(approve_link)}' style='display:inline-block;background:#16a34a;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;margin-right:8px;'>Approve</a>"
+        f"<a href='{escape(reject_link)}' style='display:inline-block;background:#dc2626;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Reject</a>"
+        f"</p>"
+        f"<p style='margin:12px 0 0 0;'><a href='{escape(queue_link)}' style='color:{COLOR_PRIMARY};text-decoration:none;'>Open Urgent requests (Supervisor)</a></p>"
+    )
+    html = _shell("Supervisor Action Required", "Urgent booking with 50% surcharge", body)
+    text = (
+        "Supervisor approval required for an urgent booking (50% surcharge).\n"
+        f"Requester: {user_display_name(requester)} ({requester.email})\n"
+        f"Equipment: {equipment.name} ({equipment.code})\nRequest ID: {urgent_request.id}\n"
+        f"Estimated charge: {charge}\nReason: {reason}\n"
+        f"Approve: {approve_link}\nReject: {reject_link}\nReview: {queue_link}"
+    )
+    _send(
+        supervisor.email,
+        f"Urgent Booking – Supervisor Action Required – {equipment.name}",
+        text,
+        html,
+    )
+
+
 def send_wallet_join_request_decision_email(join_request, action: str) -> None:
     """Send colorful decision email to student after approve/reject/remove/cancel."""
     student = join_request.student

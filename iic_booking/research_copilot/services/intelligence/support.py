@@ -97,11 +97,11 @@ def _history(conversation) -> str:
 
 
 def _description(*, question, copilot_response, intent, entities, reason, note, conversation) -> str:
-    parts = ["Raised from IIC Research Copilot.", "", f"Question: {question}"]
+    parts = ["Raised from IIC Booking Assistant.", "", f"Question: {question}"]
     if note:
         parts += ["", f"Additional details from user: {note}"]
     if copilot_response:
-        parts += ["", f"Copilot response: {copilot_response[:1500]}"]
+        parts += ["", f"Booking Assistant response: {copilot_response[:1500]}"]
     parts += ["", f"Reason: {reason}"]
     if intent:
         parts.append(f"Detected intent: {intent}")
@@ -166,7 +166,7 @@ def escalate(
     entities = dict(entities or {})
     data = {
         "ticket_type": ticket_type_for(intent),
-        "subject": ("Copilot: " + question)[:255],
+        "subject": ("Booking Assistant: " + question)[:255],
         "description": _description(
             question=question,
             copilot_response=str(copilot_response or ""),
@@ -191,7 +191,7 @@ def escalate(
         ticket = serializer.save(user=user)
         raised_by = ticket.get_user_name() or "User"
         TicketComment.objects.create(
-            ticket=ticket, user=user, comment=f"Ticket raised by {raised_by} from IIC Research Copilot.", is_internal=False
+            ticket=ticket, user=user, comment=f"Ticket raised by {raised_by} from IIC Booking Assistant.", is_internal=False
         )
         ticket = apply_create_routing_and_events(ticket, actor=user)
         CopilotEscalation.objects.create(

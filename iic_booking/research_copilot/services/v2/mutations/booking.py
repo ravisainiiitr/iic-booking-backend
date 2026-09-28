@@ -570,7 +570,7 @@ def prepare_cancellation(
         "start_time": _local_iso(start),
         "end_time": _local_iso(end),
         "refund": True,
-        "notes": "Cancelled via Research Copilot",
+        "notes": "Cancelled via Booking Assistant",
         "cancellation_policy_note": (
             "Cancellation follows the portal cancellation policy and refund rules for this booking."
         ),
@@ -579,11 +579,11 @@ def prepare_cancellation(
     if partial_slot_ids:
         payload["cancel_mode"] = "selected_slots"
         payload["slot_ids"] = partial_slot_ids
-        payload["notes"] = "Selected slots cancelled via Research Copilot"
+        payload["notes"] = "Selected slots cancelled via Booking Assistant"
     elif reduced_input_values:
         payload["cancel_mode"] = "reduce_inputs"
         payload["reduced_input_values"] = {str(k): str(v) for k, v in reduced_input_values.items()}
-        payload["notes"] = "Booking reduced via Research Copilot"
+        payload["notes"] = "Booking reduced via Booking Assistant"
     if preview:
         payload["refund_amount"] = preview.get("refund_amount")
         payload["new_charge"] = preview.get("new_charge")
@@ -654,7 +654,7 @@ def execute_booking_cancel(
 
     body: dict[str, Any] = {
         "refund": bool(payload.get("refund", True)),
-        "notes": payload.get("notes") or "Cancelled via Research Copilot",
+        "notes": payload.get("notes") or "Cancelled via Booking Assistant",
     }
     if payload.get("slot_ids"):
         body["slot_ids"] = [int(s) for s in payload["slot_ids"]]

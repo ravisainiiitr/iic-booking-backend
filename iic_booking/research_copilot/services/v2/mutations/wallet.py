@@ -313,7 +313,7 @@ def prepare_wallet_credit(*, user, amount=None, text: str = "", purpose: str = "
     purpose_text = (purpose or "").strip()
     if not purpose_text:
         m = re.search(r"(?:for|because|purpose)[:\s]+(.+)$", text or "", flags=re.IGNORECASE)
-        purpose_text = (m.group(1).strip() if m else "") or "Requested via Research Copilot"
+        purpose_text = (m.group(1).strip() if m else "") or "Requested via Booking Assistant"
 
     payload = {
         "requested_amount": str(amt),
@@ -379,7 +379,7 @@ def execute_wallet_credit_request(
     payload = prop.get("payload") or {}
     body = {
         "requested_amount": payload.get("requested_amount"),
-        "purpose": payload.get("purpose") or "Requested via Research Copilot",
+        "purpose": payload.get("purpose") or "Requested via Booking Assistant",
         "department_id": payload.get("department_id"),
     }
     status_code, data = domain_bridge.call_wallet_credit_create(user=user, body=body)

@@ -35,7 +35,7 @@ SUGGESTED_PROMPTS = {
         "Create a support ticket for DSA sync.",
     ],
     "admin": [
-        "Summarize Research Copilot capabilities.",
+        "Summarize Booking Assistant capabilities.",
         "How does Device Provisioning work?",
         "Where are release notes for v2.5?",
         "Escalate a user to support.",

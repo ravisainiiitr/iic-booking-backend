@@ -189,6 +189,29 @@ def get_oic_emails_for_equipment(equipment_id: int) -> list[str]:
     return [m.manager.email for m in managers if m.manager and getattr(m.manager, "email", None)]
 
 
+def get_booking_confirmation_email_opt_out_user_ids(equipment) -> set[int]:
+    """
+    OIC / Lab In-charge user ids who switched off booking confirmation emails for this equipment.
+    A user assigned in several roles is opted out only when every one of their rows is opted out.
+    """
+    if equipment is None:
+        return set()
+    eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
+    if eid is None:
+        return set()
+    opted_out: set[int] = set()
+    keep: set[int] = set()
+    for uid, flag in EquipmentManager.objects.filter(equipment_id=eid).values_list(
+        "manager_id", "disable_booking_confirmation_email"
+    ):
+        (opted_out if flag else keep).add(uid)
+    for uid, flag in EquipmentOperator.objects.filter(equipment_id=eid).values_list(
+        "operator_id", "disable_booking_confirmation_email"
+    ):
+        (opted_out if flag else keep).add(uid)
+    return opted_out - keep
+
+
 def get_equipment_staff_notify_users(equipment) -> list:
     """
     Active Officer In Charge (managers), temporary OIC, and Lab Incharge (operators)

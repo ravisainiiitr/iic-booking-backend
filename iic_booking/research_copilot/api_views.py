@@ -37,7 +37,7 @@ def _feature_gate(*, user=None, audit: bool = True):
             {
                 "error": {
                     "code": "research_copilot_disabled",
-                    "message": "IIC Research Copilot is not enabled on this environment.",
+                    "message": "IIC Booking Assistant is not enabled on this environment.",
                 }
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -56,7 +56,7 @@ def bootstrap(request):
         return Response(
             {
                 "enabled": False,
-                "assistant_name": "IIC Research Copilot",
+                "assistant_name": "IIC Booking Assistant",
                 "role_bucket": ctx.role_bucket,
                 "suggested_prompts": SUGGESTED_PROMPTS.get(ctx.role_bucket) or SUGGESTED_PROMPTS["default"],
                 "tools_available": [],

@@ -35,7 +35,7 @@ SOURCE_KNOWLEDGE = "Verified IIC answer"
 SOURCE_TECHNIQUE = "General technique overview"
 SOURCE_PRICING = "Portal charge engine"
 SOURCE_SUPPORT = "IIC support system"
-SOURCE_COPILOT = "Research Copilot"
+SOURCE_COPILOT = "Booking Assistant"
 
 _KIND_BY_TYPE = {
     TEXT: "ANSWER",

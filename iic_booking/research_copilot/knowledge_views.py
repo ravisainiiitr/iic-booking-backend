@@ -48,7 +48,7 @@ def _feature_gate(request=None):
             {
                 "error": {
                     "code": "research_copilot_disabled",
-                    "message": "IIC Research Copilot is not enabled on this environment.",
+                    "message": "IIC Booking Assistant is not enabled on this environment.",
                 }
             },
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -312,7 +312,7 @@ def knowledge_document_file(request, document_id):
         if gated:
             return gated
     elif not conv_svc.feature_enabled(user=request.user):
-        return Response({"error": {"code": "research_copilot_disabled", "message": "Copilot disabled"}}, status=503)
+        return Response({"error": {"code": "research_copilot_disabled", "message": "Booking Assistant disabled"}}, status=503)
 
     not_found = Response({"error": {"code": "not_found", "message": "Document not found."}}, status=404)
     doc = KnowledgeDocument.objects.filter(id=document_id).first()
@@ -447,7 +447,7 @@ def knowledge_search(request):
 
     if not conv_svc.feature_enabled(user=request.user):
         return Response(
-            {"error": {"code": "research_copilot_disabled", "message": "Copilot disabled"}},
+            {"error": {"code": "research_copilot_disabled", "message": "Booking Assistant disabled"}},
             status=503,
         )
     query = (request.data.get("query") or request.data.get("q") or "").strip()

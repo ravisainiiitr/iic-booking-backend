@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.core import signing
 from django.db import connection, transaction, IntegrityError
 from django.db.models.deletion import ProtectedError, RestrictedError
 from django.db.transaction import TransactionManagementError
@@ -21,6 +22,7 @@ from django.db.models import Q, Min, Max, Sum, Count, Subquery, OuterRef, Decima
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date as parse_date_iso
+from django.utils.html import escape
 from django.core.files.storage import default_storage
 
 from .image_utils import (
@@ -1816,11 +1818,23 @@ def equipment_analysis_charges(request):
         charge_profiles__is_active=True,
     ).distinct()
 
+    from iic_booking.equipment.charge_visibility import (
+        is_internal_rate_user_type,
+        request_may_see_internal_rates,
+    )
+
+    show_internal = request_may_see_internal_rates(request)
+
+    def _visible(user_type_code) -> bool:
+        return show_internal or not is_internal_rate_user_type(user_type_code)
+
     user_type_choices = dict(UserType.get_choices())
     seen_user_types: set[str] = set()
     equipments = []
     for eq in queryset:
-        profiles = getattr(eq, "analysis_charge_profiles", None) or []
+        profiles = [
+            cp for cp in (getattr(eq, "analysis_charge_profiles", None) or []) if _visible(cp.user_type)
+        ]
         if not profiles:
             continue
         charge_profiles = []
@@ -1843,6 +1857,8 @@ def equipment_analysis_charges(request):
             )
         input_fields = []
         for f in getattr(eq, "analysis_input_fields_b", None) or []:
+            if not _visible(f.user_type):
+                continue
             input_fields.append(
                 {
                     "field_key": f.field_key,
@@ -1853,6 +1869,8 @@ def equipment_analysis_charges(request):
             )
         slot_options = []
         for p in getattr(eq, "analysis_param_definitions", None) or []:
+            if not _visible(p.user_type):
+                continue
             slot_options.append(
                 {
                     "user_type": p.user_type,
@@ -2604,7 +2622,30 @@ def equipment_calculate(request, pk):
         else ChargeProfilePricingProfile.STANDARD
     )
 
+    from iic_booking.equipment.charge_visibility import (
+        is_internal_rate_user_type,
+        request_may_see_internal_rates,
+    )
+
     user_type_param = (request.query_params.get("user_type") or "").strip().lower()
+    user_id_param = request.query_params.get("user_id")
+    may_see_internal = request_may_see_internal_rates(request)
+    if user_type_param and not may_see_internal and is_internal_rate_user_type(user_type_param):
+        return Response(
+            {"error": "IIT Roorkee internal rates are shown only to signed-in IIT Roorkee users."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if not user_type_param and not user_id_param:
+        if not may_see_internal and is_internal_rate_user_type(user_type):
+            return Response(
+                {"error": "Select a user category to estimate charges."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if user_is_authenticated and str(user_type) in UserType.get_management_user_codes():
+            return Response(
+                {"error": "Select a user to calculate charges. Staff accounts have no charge profile of their own."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     if user_type_param:
         if not ChargeProfile.objects.filter(
             equipment=equipment,
@@ -2619,7 +2660,6 @@ def equipment_calculate(request, pk):
         user_type = user_type_param
         pricing_profile = ChargeProfilePricingProfile.STANDARD
 
-    user_id_param = request.query_params.get("user_id")
     actor_type = str(request.user.user_type or "").lower() if user_is_authenticated else ""
     if user_id_param and user_is_authenticated and actor_type in (
         UserType.ADMIN,
@@ -3382,6 +3422,8 @@ def equipment_daily_slots(request, pk):
             "slot_window_reference_time": (effective_ref_time.strftime("%H:%M") if effective_ref_time else None) if (slot_window_min_date is not None or slot_window_max_date is not None) else None,
             "urgent_peak_window_minutes": getattr(equipment, "urgent_peak_window_minutes", None),
             "max_urgent_requests": getattr(equipment, "max_urgent_requests", None),
+            "max_rush_relief_requests_per_week": getattr(equipment, "max_rush_relief_requests_per_week", None),
+            "max_surcharge_urgent_requests_per_week": getattr(equipment, "max_surcharge_urgent_requests_per_week", None),
             "waitlist_queue_depth": waitlist_depth,
             "waitlist_current_count": waitlist_current_count,
             "waitlist_has_room": waitlist_has_room,
@@ -3578,6 +3620,14 @@ def _book_equipment_impl(request, pk):
     # Type A advance-week booking: never treat as urgent hold with 50% surcharge
     if rush_relief:
         create_as_hold = False
+        cap_error = _urgent_weekly_cap_error(
+            equipment, UrgentBookingRequestType.NO_SLOT, include_pending=False
+        )
+        if cap_error:
+            return Response(
+                {"error": cap_error, "code": "URGENT_WEEKLY_CAP_REACHED"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     
     # Clean input_values: convert by type. Numeric strings must stay numeric (e.g. "1" -> 1, not True).
     input_values = {}
@@ -8071,7 +8121,13 @@ def _notify_urgent_request_submitted(req, actor, *, auto_approved: bool) -> None
         title="Urgent booking auto-approved" if auto_approved else "Urgent booking request submitted",
         message=(
             f"{label} request #{req.id} for {equipment.name}: "
-            + ("your held slots were confirmed automatically." if auto_approved else "sent to the Officer in charge for review.")
+            + (
+                "your held slots were confirmed automatically."
+                if auto_approved
+                else "sent to your supervisor for approval, then to the Officer in charge."
+                if req.pending_supervisor_approval
+                else "sent to the Officer in charge for review."
+            )
         ),
         link="/my-urgent-requests",
         event="urgent_request.submitted",
@@ -8089,20 +8145,43 @@ def _notify_urgent_request_submitted(req, actor, *, auto_approved: bool) -> None
             created_by=actor,
             extra=extra,
         )
-    elif req.status == UrgentBookingRequestStatus.PENDING:
+    elif req.pending_supervisor_approval and req.supervisor_id:
         notify_in_app(
-            oics,
-            title="Action needed: urgent booking request",
+            [req.supervisor],
+            title="Action needed: approve urgent booking",
             message=(
-                f"{person_label(actor)} raised a {label} request #{req.id} for {equipment.name}. "
-                "Approve, reject or reschedule it from Urgent requests."
+                f"{person_label(actor)} raised a {label} request #{req.id} for {equipment.name} "
+                "(50% urgent surcharge). Approve or reject it before the Officer in charge can allocate slots."
             ),
-            link="/urgent-requests",
+            link="/urgent-requests-wallet",
             notification_type="warning",
-            event="urgent_request.submitted",
+            event="urgent_request.supervisor_pending",
             created_by=actor,
             extra={**extra, "action_required": True},
         )
+    elif req.status == UrgentBookingRequestStatus.PENDING:
+        _notify_oics_urgent_request_pending(req, actor, requester=actor)
+
+
+def _notify_oics_urgent_request_pending(req, actor, *, requester) -> None:
+    from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
+
+    equipment = req.equipment
+    label = _urgent_type_label(req)
+    supervisor_note = " Supervisor has approved it." if req.supervisor_decision == "APPROVED" else ""
+    notify_in_app(
+        [u for u in equipment_oic_users(equipment) if u.id not in (actor.id, requester.id)],
+        title="Action needed: urgent booking request",
+        message=(
+            f"{person_label(requester)} raised a {label} request #{req.id} for {equipment.name}.{supervisor_note} "
+            "Approve, reject or reschedule it from Urgent requests."
+        ),
+        link="/urgent-requests",
+        notification_type="warning",
+        event="urgent_request.submitted",
+        created_by=actor,
+        extra={"urgent_booking_request_id": req.id, "action_required": True},
+    )
 
 
 def _notify_urgent_request_decided(urg, actor, *, requester_already_notified: bool) -> None:
@@ -8234,7 +8313,8 @@ def create_urgent_booking_request(request):
         from datetime import date, timedelta
         from django.conf import settings as django_settings
         from django.utils import timezone as tz
-        now_local = tz.localtime(tz.now()) if getattr(django_settings, "USE_TZ", True) else tz.now()
+        now_utc = tz.now()
+        now_local = tz.localtime(now_utc) if getattr(django_settings, "USE_TZ", True) else now_utc
         now_date = tz.localdate()
         days_since_monday = now_date.weekday()
         current_week_start = now_date - timedelta(days=days_since_monday)
@@ -8292,6 +8372,12 @@ def create_urgent_booking_request(request):
                 {"error": "Maximum number of urgent requests for this equipment has been reached. Please try again later."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    cap_error = _urgent_weekly_cap_error(equip, request_type_val, include_pending=True)
+    if cap_error:
+        return Response(
+            {"error": cap_error, "code": "URGENT_WEEKLY_CAP_REACHED"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     from django.utils import timezone
     from datetime import timedelta
     if request_type_val == UrgentBookingRequestType.NO_SLOT:
@@ -8360,6 +8446,11 @@ def create_urgent_booking_request(request):
             req.evidence_file = evidence
             req.evidence_original_name = (request.data.get("evidence_original_name") or evidence.name or "")[:255]
         req.reviewer_comment = (request.data.get("reviewer_comment") or "").strip()[:8000]
+        # Wallet owners (faculty) have no supervisor, so their requests go straight to the OIC.
+        supervisor = _get_wallet_supervisor_user(request.user)
+        if supervisor is not None and supervisor.id != request.user.id:
+            req.supervisor = supervisor
+            req.supervisor_approval_required = True
     hold = req.hold_booking if req.hold_booking_id else None
     if req.waive_urgent_surcharge and hold is not None and hold.status == BookingStatus.HOLD:
         new_total, new_breakdown, removed = remove_urgent_booking_surcharge(
@@ -8392,6 +8483,12 @@ def create_urgent_booking_request(request):
             rt_label = "Urgent request with reason (50% urgent surcharge)"
         if auto_approved:
             next_steps = "Your held slots have been confirmed automatically (Type A rush relief). The rush-relief attempt window resets from this booking."
+        elif req.pending_supervisor_approval:
+            next_steps = (
+                f"Your Type B request has been sent to your supervisor ({req.supervisor.name or req.supervisor.email}) "
+                "for approval. After the supervisor approves, the Officer in charge will review and allocate slots. "
+                "Your wallet is charged only after the Officer in charge gives final approval."
+            )
         elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
             next_steps = (
                 "Your Type B request is pending OIC/Admin review. They may accept, reject, or reschedule "
@@ -8424,9 +8521,28 @@ def create_urgent_booking_request(request):
             e,
             exc_info=True,
         )
+    if req.pending_supervisor_approval:
+        try:
+            from iic_booking.communication.styled_transactional_emails import (
+                send_urgent_supervisor_action_email,
+            )
+
+            send_urgent_supervisor_action_email(req)
+        except Exception as e:
+            logger.warning(
+                "Failed to send urgent supervisor action email for request id=%s: %s",
+                req.id,
+                e,
+                exc_info=True,
+            )
     _notify_urgent_request_submitted(req, request.user, auto_approved=auto_approved)
     if auto_approved:
         message = "Type A rush relief approved — held slots booked at normal rates. The 14-day rush-relief attempt window now resets."
+    elif req.pending_supervisor_approval:
+        message = (
+            "Type B urgent request submitted (50% surcharge). It has been sent to your supervisor for approval; "
+            "after that the Officer in charge gives final approval. Your wallet is charged only after final approval."
+        )
     elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
         message = (
             "Type B urgent request submitted for OIC/Admin review (50% surcharge). "
@@ -8443,6 +8559,7 @@ def create_urgent_booking_request(request):
             "status": req.status,
             "auto_approved": auto_approved,
             "waive_urgent_surcharge": req.waive_urgent_surcharge,
+            "pending_wallet_approval": req.pending_supervisor_approval,
         },
         status=status.HTTP_201_CREATED,
     )
@@ -8525,7 +8642,8 @@ def list_my_urgent_booking_requests(request):
             "requested_at": req.requested_at.isoformat() if req.requested_at else None,
             "decided_at": req.decided_at.isoformat() if req.decided_at else None,
             "expiry_at": expiry_at.isoformat() if expiry_at else None,
-            "pending_wallet_approval": False,
+            "pending_wallet_approval": req.pending_supervisor_approval,
+            "supervisor_decision": req.supervisor_decision or "",
         })
     return Response(
         {"urgent_requests": results, "total_count": total_count, "limit": limit, "offset": offset},
@@ -8546,7 +8664,7 @@ def list_urgent_booking_requests(request):
         )
     requests_qs = (
         UrgentBookingRequest.objects
-        .select_related("user", "equipment", "decided_by", "wallet_approved_by", "hold_booking")
+        .select_related("user", "equipment", "decided_by", "wallet_approved_by", "supervisor", "hold_booking")
         .order_by("-requested_at")
     )
     # Restrict OIC/manager to their managed equipment; operator to their mapped equipment; admin sees all
@@ -8584,7 +8702,7 @@ def list_urgent_booking_requests(request):
                 evidence_url = default_storage.url(req.evidence_file.name)
             except Exception:
                 pass
-        pending_wallet = False
+        pending_wallet = req.pending_supervisor_approval
         expiry_at = get_effective_expiry_at(req, validity_days_list)
         if log_cache_key in approved_6m_cache:
             approved_6m = approved_6m_cache[log_cache_key]
@@ -8649,6 +8767,9 @@ def list_urgent_booking_requests(request):
             "wallet_approved_by_name": (req.wallet_approved_by.name or req.wallet_approved_by.email) if req.wallet_approved_by else None,
             "wallet_notes": req.wallet_notes or "",
             "pending_wallet_approval": pending_wallet,
+            "supervisor_approval_required": req.supervisor_approval_required,
+            "supervisor_decision": req.supervisor_decision or "",
+            "supervisor_name": (req.supervisor.name or req.supervisor.email) if req.supervisor_id and req.supervisor else None,
             "status": req.status,
             "admin_notes": req.admin_notes or "",
             "decided_at": req.decided_at.isoformat() if req.decided_at else None,
@@ -8674,17 +8795,18 @@ def get_urgent_request_detail(request, request_id):
     """
     try:
         urg = UrgentBookingRequest.objects.select_related(
-            "user", "equipment", "decided_by", "wallet_approved_by", "hold_booking"
+            "user", "equipment", "decided_by", "wallet_approved_by", "supervisor", "hold_booking"
         ).get(pk=int(request_id))
     except (ValueError, UrgentBookingRequest.DoesNotExist):
         return Response({"error": "Urgent request not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not check_operator_permission(request.user):
+    is_supervisor = _is_urgent_request_supervisor(request.user, urg)
+    if not is_supervisor and not check_operator_permission(request.user):
         return Response(
             {"error": "You are not allowed to view this request."},
             status=status.HTTP_403_FORBIDDEN,
         )
     # OIC/operator may only view requests for their managed equipment
-    if check_operator_permission(request.user):
+    if not is_supervisor and check_operator_permission(request.user):
         allowed_ids = _get_equipment_ids_for_log_access(request.user)
         if allowed_ids is not None and urg.equipment_id not in allowed_ids:
             return Response(
@@ -8698,7 +8820,7 @@ def get_urgent_request_detail(request, request_id):
             evidence_url = default_storage.url(urg.evidence_file.name)
         except Exception:
             pass
-    pending_wallet = False
+    pending_wallet = urg.pending_supervisor_approval
     hold_booking_summary = None
     if urg.hold_booking_id and urg.hold_booking:
         hb = urg.hold_booking
@@ -8759,6 +8881,9 @@ def get_urgent_request_detail(request, request_id):
         "wallet_approved_by_name": (urg.wallet_approved_by.name or urg.wallet_approved_by.email) if urg.wallet_approved_by else None,
         "wallet_notes": urg.wallet_notes or "",
         "pending_wallet_approval": pending_wallet,
+        "supervisor_approval_required": urg.supervisor_approval_required,
+        "supervisor_decision": urg.supervisor_decision or "",
+        "supervisor_name": (urg.supervisor.name or urg.supervisor.email) if urg.supervisor_id and urg.supervisor else None,
         "status": urg.status,
         "admin_notes": urg.admin_notes or "",
         "decided_at": urg.decided_at.isoformat() if urg.decided_at else None,
@@ -9197,6 +9322,22 @@ def update_urgent_booking_request(request, request_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
     new_status = request.data.get("status", "").strip().upper()
+    if new_status == UrgentBookingRequestStatus.APPROVED:
+        if urg.pending_supervisor_approval:
+            return Response(
+                {
+                    "error": "The requester's supervisor must approve this surcharge-based urgent request before it can be approved.",
+                    "code": "SUPERVISOR_APPROVAL_PENDING",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if urg.status != UrgentBookingRequestStatus.APPROVED:
+            cap_error = _urgent_weekly_cap_error(urg.equipment, urg.request_type, include_pending=False)
+            if cap_error:
+                return Response(
+                    {"error": cap_error, "code": "URGENT_WEEKLY_CAP_REACHED"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     hold_converted = False
     hold_released = False
     if new_status in (UrgentBookingRequestStatus.APPROVED, UrgentBookingRequestStatus.REJECTED):
@@ -9304,6 +9445,230 @@ def _is_wallet_owner_for_urgent_request(user, urg):
     sup = _get_wallet_supervisor_user(urg.user)
     return sup is not None and sup.id == user.id
 
+
+def _is_urgent_request_supervisor(user, urg) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    return bool(urg.supervisor_id) and urg.supervisor_id == user.id
+
+
+def _current_week_bounds():
+    """Start (Monday 00:00 local) and end (next Monday 00:00 local) of the current calendar week."""
+    from datetime import datetime as _dt, time as _time, timedelta as _td
+    from django.utils import timezone as _tz
+
+    today = _tz.localdate()
+    start_date = today - _td(days=today.weekday())
+    start = _dt.combine(start_date, _time.min)
+    if getattr(settings, "USE_TZ", True):
+        start = _tz.make_aware(start, _tz.get_current_timezone())
+    return start, start + _td(days=7)
+
+
+def _urgent_weekly_cap_usage(equipment, request_type, *, include_pending: bool):
+    """(cap, used) for the equipment's weekly cap of this urgent type; cap is None when uncapped."""
+    from django.db.models import Q
+
+    if request_type == UrgentBookingRequestType.NO_SLOT:
+        cap = getattr(equipment, "max_rush_relief_requests_per_week", None)
+    else:
+        cap = getattr(equipment, "max_surcharge_urgent_requests_per_week", None)
+    if cap is None:
+        return None, 0
+    start, end = _current_week_bounds()
+    counted = Q(status=UrgentBookingRequestStatus.APPROVED, decided_at__gte=start, decided_at__lt=end)
+    if include_pending:
+        counted |= Q(status=UrgentBookingRequestStatus.PENDING)
+    used = UrgentBookingRequest.objects.filter(
+        equipment=equipment, request_type=request_type
+    ).filter(counted).count()
+    return cap, used
+
+
+def _urgent_weekly_cap_error(equipment, request_type, *, include_pending: bool):
+    cap, used = _urgent_weekly_cap_usage(equipment, request_type, include_pending=include_pending)
+    if cap is None or used < cap:
+        return None
+    kind = "rush-relief" if request_type == UrgentBookingRequestType.NO_SLOT else "surcharge-based (50%)"
+    return (
+        f"The weekly limit of {cap} {kind} urgent booking{'s' if cap != 1 else ''} for {equipment.name} "
+        "has been reached for this week (Monday–Sunday). Please try again next week or book a regular slot."
+    )
+
+
+URGENT_SUPERVISOR_ACTION_SALT = "urgent-supervisor-email-action"
+URGENT_SUPERVISOR_ACTION_MAX_AGE = 7 * 24 * 60 * 60
+
+
+def _apply_urgent_supervisor_decision(urg_id, actor, action: str, notes: str = ""):
+    """
+    Record the supervisor's decision on a surcharge-based urgent request.
+    APPROVE forwards it to the OIC (no wallet debit yet); REJECT closes it and releases the held slots.
+    Returns (urg | None, error | None).
+    """
+    from django.utils import timezone
+
+    action = (action or "").strip().upper()
+    if action not in ("APPROVE", "REJECT"):
+        return None, "action must be APPROVE or REJECT."
+    notes = (notes or "").strip()[:4000]
+    with transaction.atomic():
+        try:
+            urg = (
+                UrgentBookingRequest.objects.select_for_update()
+                .select_related("user", "equipment", "supervisor", "hold_booking", "hold_booking__equipment")
+                .get(pk=urg_id)
+            )
+        except UrgentBookingRequest.DoesNotExist:
+            return None, "Urgent request not found."
+        if not _is_urgent_request_supervisor(actor, urg):
+            return None, "Only the requester's supervisor can decide this request."
+        if not urg.pending_supervisor_approval:
+            return urg, "This request has already been processed."
+        now = timezone.now()
+        urg.supervisor_decided_at = now
+        urg.wallet_notes = notes
+        if action == "APPROVE":
+            urg.supervisor_decision = "APPROVED"
+            urg.wallet_approved_at = now
+            urg.wallet_approved_by = actor
+            urg.save(update_fields=[
+                "supervisor_decision", "supervisor_decided_at", "wallet_approved_at",
+                "wallet_approved_by", "wallet_notes",
+            ])
+        else:
+            urg.supervisor_decision = "REJECTED"
+            urg.status = UrgentBookingRequestStatus.REJECTED
+            urg.decided_at = now
+            urg.decided_by = actor
+            urg.save(update_fields=[
+                "supervisor_decision", "supervisor_decided_at", "wallet_notes",
+                "status", "decided_at", "decided_by",
+            ])
+            if urg.hold_booking_id and urg.hold_booking and urg.hold_booking.status == BookingStatus.HOLD:
+                _release_hold_booking(urg.hold_booking)
+    _notify_urgent_supervisor_decision(urg, actor)
+    return urg, None
+
+
+def _notify_urgent_supervisor_decision(urg, actor) -> None:
+    from iic_booking.communication.in_app import notify_in_app, person_label
+
+    approved = urg.supervisor_decision == "APPROVED"
+    equipment = urg.equipment
+    supervisor_name = person_label(actor)
+    notes = (urg.wallet_notes or "").strip()
+    if approved:
+        next_steps = (
+            "Your request is now with the Officer in charge for final approval and slot allocation. "
+            "Your wallet is charged only after the Officer in charge approves."
+        )
+        summary = f"Your supervisor {supervisor_name} approved your urgent booking request."
+    else:
+        next_steps = "Any held slots have been released. No charge was made to your wallet."
+        summary = f"Your supervisor {supervisor_name} rejected your urgent booking request."
+    try:
+        CommunicationService.send_email(
+            recipient=urg.user,
+            template="urgent_booking_supervisor_decision_user_email",
+            template_context={
+                "user_name": urg.user.name or urg.user.email,
+                "request_id": urg.id,
+                "equipment_name": equipment.name,
+                "equipment_code": equipment.code,
+                "decision_phrase": "Approved by Supervisor" if approved else "Rejected by Supervisor",
+                "decision_summary": summary,
+                "supervisor_name": supervisor_name,
+                "supervisor_notes": notes or "—",
+                "next_steps": next_steps,
+                "link": get_frontend_absolute_url("/my-urgent-requests"),
+            },
+            metadata={"urgent_booking_request_id": urg.id},
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to send urgent supervisor decision email for request id=%s: %s", urg.id, e, exc_info=True
+        )
+    try:
+        notify_in_app(
+            [urg.user],
+            title="Supervisor approved your urgent request" if approved else "Supervisor rejected your urgent request",
+            message=f"{summary} Request #{urg.id} for {equipment.name}. {next_steps}"
+            + (f" Notes: {notes}" if notes else ""),
+            link="/my-urgent-requests",
+            notification_type="info" if approved else "warning",
+            event="urgent_request.supervisor_approved" if approved else "urgent_request.supervisor_rejected",
+            created_by=actor,
+            extra={"urgent_booking_request_id": urg.id},
+        )
+        if approved:
+            _notify_oics_urgent_request_pending(urg, actor, requester=urg.user)
+    except Exception as e:
+        logger.warning(
+            "Failed to send urgent supervisor decision notifications for request id=%s: %s", urg.id, e, exc_info=True
+        )
+
+
+def _urgent_supervisor_row(req) -> dict:
+    evidence_url = None
+    if req.evidence_file:
+        try:
+            evidence_url = default_storage.url(req.evidence_file.name)
+        except Exception:
+            pass
+    if req.supervisor_decision == "APPROVED":
+        wallet_status = "approved"
+    elif req.supervisor_decision == "REJECTED":
+        wallet_status = "rejected"
+    else:
+        wallet_status = "pending"
+    hb = req.hold_booking if req.hold_booking_id else None
+    return {
+        "id": req.id,
+        "request_type": req.request_type,
+        "user_id": req.user_id,
+        "user_name": req.user.name or req.user.email,
+        "user_email": req.user.email,
+        "equipment_id": req.equipment_id,
+        "equipment_name": req.equipment.name,
+        "equipment_code": req.equipment.code,
+        "requested_at": req.requested_at.isoformat() if req.requested_at else None,
+        "status": req.status,
+        "wallet_status": wallet_status,
+        "pending_wallet_approval": req.pending_supervisor_approval,
+        "wallet_approved_at": req.wallet_approved_at.isoformat() if req.wallet_approved_at else None,
+        "wallet_approved_by_name": (req.wallet_approved_by.name or req.wallet_approved_by.email) if req.wallet_approved_by else None,
+        "wallet_notes": req.wallet_notes or "",
+        "reviewer_comment": req.reviewer_comment or "",
+        "number_of_samples": req.number_of_samples,
+        "slots_requested": req.slots_requested,
+        "hold_booking_total_charge": str(hb.total_charge) if hb is not None and hb.total_charge is not None else None,
+        "evidence_file_url": evidence_url,
+        "evidence_original_name": req.evidence_original_name or "",
+    }
+
+
+def _supervisor_urgent_queryset(user):
+    return (
+        UrgentBookingRequest.objects.filter(supervisor=user, supervisor_approval_required=True)
+        .select_related("user", "equipment", "wallet_approved_by", "hold_booking")
+        .order_by("-requested_at")
+    )
+
+
+def _paginate_supervisor_urgent(request, qs):
+    try:
+        limit = min(int(request.query_params.get("limit", 50) or 50), 100)
+        offset = max(int(request.query_params.get("offset", 0) or 0), 0)
+    except (TypeError, ValueError):
+        limit, offset = 50, 0
+    total_count = qs.count()
+    rows = [_urgent_supervisor_row(r) for r in qs[offset : offset + limit]]
+    return Response(
+        {"urgent_requests": rows, "total_count": total_count, "limit": limit, "offset": offset},
+        status=status.HTTP_200_OK,
+    )
+
 def _release_hold_booking(hold_booking):
     """Release a HOLD booking: free its slots (AVAILABLE) and set booking status to CANCELLED. No refund (no debit was made)."""
     if not hold_booking or hold_booking.status != BookingStatus.HOLD:
@@ -9400,34 +9765,163 @@ def urgent_hold_expiry_config(request):
 @permission_classes([IsAuthenticated])
 def wallet_approve_urgent_booking_request(request, request_id):
     """
-    Deprecated: supervisor approval is no longer part of urgent request workflow.
+    Supervisor: approve or reject a surcharge-based (Type B) urgent request raised by their student.
+    Body: {action: APPROVE | REJECT, wallet_notes?: str}. Approval forwards the request to the OIC;
+    the wallet is debited only when the OIC gives final approval.
     """
+    try:
+        urg_id = int(request_id)
+    except (TypeError, ValueError):
+        return Response({"error": "Urgent request not found."}, status=status.HTTP_404_NOT_FOUND)
+    urg = UrgentBookingRequest.objects.filter(pk=urg_id).only("id", "supervisor_id").first()
+    if urg is None:
+        return Response({"error": "Urgent request not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _is_urgent_request_supervisor(request.user, urg):
+        return Response(
+            {"error": "Only the requester's supervisor can approve or reject this request."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    urg, err = _apply_urgent_supervisor_decision(
+        urg_id,
+        request.user,
+        request.data.get("action") or "",
+        request.data.get("wallet_notes") or request.data.get("notes") or "",
+    )
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    approved = urg.supervisor_decision == "APPROVED"
     return Response(
-        {"error": "Supervisor approval is no longer required. Requests are reviewed directly by Admin/OIC."},
-        status=status.HTTP_410_GONE,
+        {
+            "message": (
+                "Approved. The request has been forwarded to the Officer in charge for final approval."
+                if approved
+                else "Rejected. The requester has been notified and any held slots were released."
+            ),
+            "id": urg.id,
+            "status": urg.status,
+            "supervisor_decision": urg.supervisor_decision,
+        },
+        status=status.HTTP_200_OK,
     )
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_urgent_requests_pending_wallet_approval(request):
-    """
-    Deprecated: supervisor approval queue is no longer used.
-    """
-    return Response(
-        {"urgent_requests": [], "total_count": 0, "limit": 0, "offset": 0},
-        status=status.HTTP_200_OK,
+    """Supervisor: surcharge-based urgent requests awaiting their approval."""
+    qs = _supervisor_urgent_queryset(request.user).filter(
+        supervisor_decision="", status=UrgentBookingRequestStatus.PENDING
     )
+    return _paginate_supervisor_urgent(request, qs)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_urgent_requests_wallet(request):
-    """
-    Deprecated: supervisor urgent request list is no longer used.
-    """
-    return Response(
-        {"urgent_requests": [], "total_count": 0, "limit": 0, "offset": 0},
-        status=status.HTTP_200_OK,
+    """Supervisor: all surcharge-based urgent requests routed to them. status: pending | approved | rejected."""
+    qs = _supervisor_urgent_queryset(request.user)
+    status_filter = (request.query_params.get("status") or "").strip().lower()
+    if status_filter == "pending":
+        qs = qs.filter(supervisor_decision="", status=UrgentBookingRequestStatus.PENDING)
+    elif status_filter == "approved":
+        qs = qs.filter(supervisor_decision="APPROVED")
+    elif status_filter == "rejected":
+        qs = qs.filter(supervisor_decision="REJECTED")
+    return _paginate_supervisor_urgent(request, qs)
+
+
+def _urgent_email_action_page(title: str, body_html: str, status_code: int = 200) -> HttpResponse:
+    return HttpResponse(
+        (
+            "<!doctype html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            f"<title>{escape(title)}</title></head>"
+            "<body style='font-family:Arial,sans-serif;background:#f5f7fb;padding:24px;margin:0;'>"
+            "<div style='max-width:620px;margin:0 auto;background:#fff;border-radius:12px;padding:20px;border:1px solid #e5e7eb;'>"
+            f"<h2 style='margin:0 0 12px 0;color:#111827;'>{escape(title)}</h2>"
+            f"{body_html}"
+            "</div></body></html>"
+        ),
+        status=status_code,
+        content_type="text/html",
     )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+@authentication_classes([])
+@parser_classes([FormParser, MultiPartParser, JSONParser])
+def urgent_supervisor_email_action(request, request_id, action):
+    """
+    Signed approve/reject link from the supervisor email.
+    GET shows a confirmation page (so link scanners cannot act on it); POST records the decision.
+    """
+    action = (action or "").strip().lower()
+    if action not in ("approve", "reject"):
+        return _urgent_email_action_page("Invalid link", "<p>This link is not valid.</p>", 400)
+    token = (request.query_params.get("token") or request.data.get("token") or "").strip()
+    try:
+        data = signing.loads(token, salt=URGENT_SUPERVISOR_ACTION_SALT, max_age=URGENT_SUPERVISOR_ACTION_MAX_AGE)
+    except signing.SignatureExpired:
+        return _urgent_email_action_page(
+            "Link expired",
+            "<p>This link has expired. Please open <b>Urgent requests (Supervisor)</b> in the portal.</p>",
+            410,
+        )
+    except signing.BadSignature:
+        return _urgent_email_action_page("Invalid link", "<p>This link is not valid.</p>", 400)
+    try:
+        urg_id = int(request_id)
+        if int(data.get("request_id", -1)) != urg_id or str(data.get("action", "")).lower() != action:
+            raise ValueError
+        supervisor_id = int(data.get("supervisor_id"))
+    except (TypeError, ValueError):
+        return _urgent_email_action_page("Invalid link", "<p>This link is not valid.</p>", 400)
+    urg = (
+        UrgentBookingRequest.objects.select_related("user", "equipment", "supervisor", "hold_booking")
+        .filter(pk=urg_id, supervisor_id=supervisor_id)
+        .first()
+    )
+    portal_link = get_frontend_absolute_url("/urgent-requests-wallet")
+    portal_html = (
+        f"<p style='margin:16px 0 0 0;'><a href='{escape(portal_link)}' style='color:#1d4ed8;'>"
+        "Open Urgent requests (Supervisor)</a></p>"
+    )
+    if urg is None:
+        return _urgent_email_action_page("Request not found", "<p>This urgent request no longer exists.</p>" + portal_html, 404)
+    if not urg.pending_supervisor_approval:
+        return _urgent_email_action_page(
+            "Already processed",
+            "<p>This urgent request has already been processed or has expired.</p>" + portal_html,
+        )
+    verb = "Approve" if action == "approve" else "Reject"
+    if request.method == "GET":
+        hb = urg.hold_booking if urg.hold_booking_id else None
+        charge = f"₹{hb.total_charge}" if hb is not None and hb.total_charge is not None else "—"
+        color = "#16a34a" if action == "approve" else "#dc2626"
+        body = (
+            f"<p style='margin:0 0 8px 0;'><b>Requester:</b> {escape(urg.user.name or urg.user.email)} ({escape(urg.user.email)})</p>"
+            f"<p style='margin:0 0 8px 0;'><b>Equipment:</b> {escape(urg.equipment.name)} ({escape(urg.equipment.code)})</p>"
+            f"<p style='margin:0 0 8px 0;'><b>Request ID:</b> {urg.id}</p>"
+            f"<p style='margin:0 0 8px 0;'><b>Estimated charge (incl. 50% urgent surcharge):</b> {escape(charge)}</p>"
+            f"<p style='margin:0 0 12px 0;'><b>Reason:</b> {escape(urg.reviewer_comment or '—')}</p>"
+            f"<form method='post' action=''>"
+            f"<input type='hidden' name='token' value='{escape(token)}'>"
+            "<label style='display:block;margin:0 0 6px 0;color:#374151;'>Notes (optional)</label>"
+            "<textarea name='notes' rows='3' style='width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:8px;'></textarea>"
+            f"<button type='submit' style='margin-top:12px;background:{color};color:#fff;border:0;padding:10px 16px;border-radius:8px;font-weight:700;cursor:pointer;'>"
+            f"{verb} urgent request</button></form>"
+            + portal_html
+        )
+        return _urgent_email_action_page(f"{verb} urgent booking request?", body)
+    urg, err = _apply_urgent_supervisor_decision(
+        urg_id, urg.supervisor, action.upper(), request.data.get("notes") or ""
+    )
+    if err:
+        return _urgent_email_action_page("Could not record decision", f"<p>{escape(err)}</p>" + portal_html, 400)
+    if urg.supervisor_decision == "APPROVED":
+        msg = "Approved. The request has been forwarded to the Officer in charge for final approval and slot allocation."
+    else:
+        msg = "Rejected. The requester has been notified and any held slots were released."
+    return _urgent_email_action_page(f"Urgent request {urg.supervisor_decision.lower()}", f"<p>{escape(msg)}</p>" + portal_html)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -9443,11 +9937,18 @@ def get_urgent_request_evidence(request, request_id):
         return Response({"error": "Urgent request not found."}, status=status.HTTP_404_NOT_FOUND)
     if not urg.evidence_file or not urg.evidence_file.name:
         return Response({"error": "No evidence file for this request."}, status=status.HTTP_404_NOT_FOUND)
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "You are not allowed to view this attachment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    if not _is_urgent_request_supervisor(request.user, urg):
+        if not check_operator_permission(request.user):
+            return Response(
+                {"error": "You are not allowed to view this attachment."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        allowed_ids = _get_equipment_ids_for_log_access(request.user)
+        if allowed_ids is not None and urg.equipment_id not in allowed_ids:
+            return Response(
+                {"error": "You are not allowed to view this attachment."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
     file_name = urg.evidence_file.name
     if not default_storage.exists(file_name):
         logging.warning("Urgent request evidence file not found in storage: %s", file_name)

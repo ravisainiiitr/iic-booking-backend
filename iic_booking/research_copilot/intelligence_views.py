@@ -45,7 +45,7 @@ def _error(code: str, message: str, http_status: int):
 
 
 def _disabled():
-    return _error("research_copilot_disabled", "IIC Research Copilot is not enabled on this environment.", 503)
+    return _error("research_copilot_disabled", "IIC Booking Assistant is not enabled on this environment.", 503)
 
 
 def _editor_gate(user):
@@ -91,7 +91,7 @@ def conversation_escalate(request, conversation_id):
     if not conv_svc.feature_enabled(user=request.user):
         return _disabled()
     if not (intelligence_enabled() or knowledge_enabled()):
-        return _error("escalation_disabled", "Copilot escalation is not enabled.", 404)
+        return _error("escalation_disabled", "Booking Assistant escalation is not enabled.", 404)
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
 
     assistant_msg = None

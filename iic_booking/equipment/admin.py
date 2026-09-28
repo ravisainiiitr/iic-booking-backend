@@ -142,7 +142,7 @@ class EquipmentManagerInline(admin.TabularInline):
     model = EquipmentManager
     form = EquipmentManagerInlineForm
     extra = 0
-    fields = ['manager', 'created_at', 'updated_at']
+    fields = ['manager', 'disable_booking_confirmation_email', 'created_at', 'updated_at']
     readonly_fields = ['created_at', 'updated_at']
     classes = ['collapse']
 
@@ -250,7 +250,7 @@ class EquipmentOperatorInline(admin.TabularInline):
     form = EquipmentOperatorInlineForm
     formset = EquipmentOperatorInlineFormSet
     extra = 0
-    fields = ['operator', 'role', 'created_at', 'updated_at']
+    fields = ['operator', 'role', 'disable_booking_confirmation_email', 'created_at', 'updated_at']
     readonly_fields = ['created_at', 'updated_at']
     classes = ['collapse']
 
@@ -1392,7 +1392,9 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'weekly_view_time_from', 'weekly_view_time_to',
                 'slot_window_reference_weekday', 'slot_window_reference_time',
                 'external_slot_quota_percent',
-                'urgent_peak_window_minutes', 'max_urgent_requests', 'waitlist_queue_depth',
+                'urgent_peak_window_minutes', 'max_urgent_requests',
+                'max_rush_relief_requests_per_week', 'max_surcharge_urgent_requests_per_week',
+                'waitlist_queue_depth',
                 'booking_not_utilize_window_hours',
                 'operator_unavailable_after_booking_end_hours',
                 'operator_absent_disruption_after_booking_end_hours',
