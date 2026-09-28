@@ -33,26 +33,16 @@ def home_page_content(request):
 @permission_classes([AllowAny])
 def site_stats(request):
     """
-    Public counts for the home hero: operational equipment visible on the public catalog,
-    active user accounts (is_active=True), total bookings, and equipment publications.
+    Public counts for the home hero: all equipment in the institute (except disposed), the same
+    for every visitor and role, active user accounts (is_active=True), total bookings, and
+    equipment publications.
     """
     from django.contrib.auth import get_user_model
-    from django.contrib.auth.models import AnonymousUser
 
-    from iic_booking.equipment.api_views import get_visible_equipment_queryset
-    from iic_booking.equipment.models import Booking, EquipmentPublication, EquipmentStatus
+    from iic_booking.equipment.models import Booking, Equipment, EquipmentPublication, EquipmentStatus
 
     User = get_user_model()
-    vis_user = (
-        request.user
-        if getattr(request.user, "is_authenticated", False)
-        else AnonymousUser()
-    )
-    equipment_count = (
-        get_visible_equipment_queryset(vis_user)
-        .filter(status=EquipmentStatus.ACTIVE)
-        .count()
-    )
+    equipment_count = Equipment.objects.exclude(status=EquipmentStatus.DISPOSED).count()
     active_users_count = User.objects.filter(is_active=True).count()
     total_bookings_count = Booking.objects.count()
     publication_count = EquipmentPublication.objects.count()

@@ -25,11 +25,29 @@ logger = logging.getLogger(__name__)
 SAMPLE_SUBMISSION_DEADLINE_ADVANCE_HOURS = 12
 
 
+def booking_is_external_sample(booking: "Booking") -> bool:
+    """External-user booking (Educational Institute, R&D, Industry, MSME, Other), by the type at booking time."""
+    from iic_booking.users.models import UserType
+
+    user_type = getattr(booking, "user_type_snapshot", None)
+    if not user_type:
+        user_type = getattr(getattr(booking, "user", None), "user_type", None)
+    return bool(user_type) and UserType.is_external_user(user_type)
+
+
+def effective_sample_submission_lead_hours(booking: "Booking") -> int:
+    """Equipment lead time, or 0 for atmosphere-sensitive and external samples (deadline = slot start)."""
+    if bool(getattr(booking, "atmosphere_sensitive_sample", False)) or booking_is_external_sample(booking):
+        return 0
+    equipment = getattr(booking, "equipment", None)
+    return int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
+
+
 def compute_sample_submission_deadline(booking: "Booking") -> Optional[datetime]:
     """
     Deadline by which the user should submit the sample:
       slot_start − sample_submission_lead_hours
-    or slot_start when atmosphere-sensitive / lead hours is 0.
+    or slot_start when atmosphere-sensitive, an external sample, or lead hours is 0.
 
     If that instant falls on a Saturday, Sunday, or institute public holiday,
     the deadline is moved to the same clock time on the previous working day
@@ -45,9 +63,8 @@ def compute_sample_submission_deadline(booking: "Booking") -> Optional[datetime]
     start_dt, _end_dt = _booking_slot_bounds(booking)
     if start_dt is None:
         return None
-    atmosphere = bool(getattr(booking, "atmosphere_sensitive_sample", False))
-    lead_hours = int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
-    if atmosphere or lead_hours <= 0:
+    lead_hours = effective_sample_submission_lead_hours(booking)
+    if lead_hours <= 0:
         deadline = start_dt
     else:
         deadline = start_dt - timedelta(hours=lead_hours)
@@ -151,7 +168,7 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
             daily_slots[-1].end_datetime.strftime("%Y-%m-%d %H:%M:%S") if daily_slots else ""
         )
 
-    lead_hours = int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
+    lead_hours = effective_sample_submission_lead_hours(booking)
     deadline_display = deadline.strftime("%Y-%m-%d %H:%M:%S")
     remaining_hours = max(0, remaining // 3600)
     remaining_mins = max(0, (remaining % 3600) // 60)
@@ -305,7 +322,7 @@ def list_approaching_sample_submission_for_user(user) -> list[dict]:
                 "equipment_code": equipment.code if equipment else "",
                 "deadline_at": deadline.isoformat(),
                 "remaining_seconds": remaining,
-                "lead_hours": int(getattr(equipment, "sample_submission_lead_hours", 0) or 0),
+                "lead_hours": effective_sample_submission_lead_hours(booking),
                 "advance_hours": SAMPLE_SUBMISSION_DEADLINE_ADVANCE_HOURS,
                 "link": f"/my-bookings?booking={display_id}",
             }

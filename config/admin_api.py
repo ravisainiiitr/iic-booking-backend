@@ -723,11 +723,11 @@ def admin_api_router():
                 )
             else:
                 scope_department_id = _request_user_scope_id(self.request)
-                # Department Administrator book-for-user: all active end users institute-wide
-                # (equipment remains department-scoped at calculate/book time).
+                # Department Administrator / OIC book-for-user: all active end users institute-wide,
+                # matching _actor_may_book_on_behalf (equipment remains scoped at calculate/book time).
                 skip_dept_scope = (
                     for_booking
-                    and getattr(self.request.user, "user_type", None) == UserType.DEPT_ADMIN
+                    and getattr(self.request.user, "user_type", None) in (UserType.DEPT_ADMIN, UserType.MANAGER)
                 )
                 if scope_department_id is not None and not skip_dept_scope:
                     qs = qs.filter(department_id=scope_department_id)
@@ -1087,11 +1087,19 @@ def admin_api_router():
             except (User.DoesNotExist, ValueError, TypeError):
                 return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
-            # Scope: OIC → own department; Dept Admin → institute-wide (same as for_booking list);
-            # Org Admin → own organization; Main Admin → unrestricted.
+            # Scope: OIC → own department, plus any bookable end user (same as for_booking list);
+            # Dept Admin → institute-wide; Org Admin → own organization; Main Admin → unrestricted.
             if actor_type == UserType.MANAGER:
                 scope_id = _request_user_scope_id(request)
-                if scope_id is None or user.department_id != scope_id:
+                bookable_end_user = getattr(user, "user_type", None) not in (
+                    UserType.ADMIN,
+                    UserType.MANAGER,
+                    UserType.OPERATOR,
+                    UserType.OTHER,
+                    UserType.DEPT_ADMIN,
+                    UserType.FINANCE,
+                )
+                if not bookable_end_user and (scope_id is None or user.department_id != scope_id):
                     raise PermissionDenied("OIC can only view users in their own department.")
             elif actor_type == UserType.ORG_ADMIN:
                 if user.department_id != getattr(actor, "department_id", None):

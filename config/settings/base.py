@@ -71,6 +71,11 @@ EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED = env.bool(
 EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED = env.bool(
     "EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED", default=False
 )
+# OIC / Main Administrator may reschedule a booking onto any equipment of the same group,
+# independent of the two switches above. Set False to withdraw it without a deploy.
+EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED = env.bool(
+    "EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED", default=True
+)
 
 # URLS
 # ------------------------------------------------------------------------------

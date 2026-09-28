@@ -20,6 +20,7 @@ from iic_booking.users.api.auth_views import (
     auth_settings,
     profile_me,
     profile_me_avatar,
+    profile_me_dashboard_menu_layout,
     user_profile_picture_proxy,
     get_register_user_types,
     get_indian_states,
@@ -364,6 +365,8 @@ from iic_booking.equipment.api_views import (
     oic_toggle_equipment_accessory,
     oic_toggle_equipment_additional_accessory,
     oic_print_materials,
+    oic_equipment_settings_list,
+    oic_equipment_settings_update,
     oic_print_material_detail,
     oic_equipment_group_quotas,
     oic_multi_mode_list,
@@ -822,6 +825,11 @@ urlpatterns = router.urls + [
     path("auth/channel-i/staging-fixture/", channel_i_staging_fixture_login, name="channel-i-staging-fixture"),
     path("profiles/me/", profile_me, name="profile-me"),
     path("profiles/me/avatar/", profile_me_avatar, name="profile-me-avatar"),
+    path(
+        "profiles/me/dashboard-menu-layout/",
+        profile_me_dashboard_menu_layout,
+        name="profile-me-dashboard-menu-layout",
+    ),
     path("profiles/me/external-billing/", external_billing_profile_me, name="external-billing-profile-me"),
     path("users/<int:user_id>/profile-picture/", user_profile_picture_proxy, name="user-profile-picture-proxy"),
 
@@ -1403,6 +1411,12 @@ urlpatterns = router.urls + [
         "oic/equipment-additional-accessories/<int:accessory_id>/",
         oic_toggle_equipment_additional_accessory,
         name="oic-toggle-equipment-additional-accessory",
+    ),
+    path("oic/equipment-settings/", oic_equipment_settings_list, name="oic-equipment-settings"),
+    path(
+        "oic/equipment-settings/<int:equipment_id>/",
+        oic_equipment_settings_update,
+        name="oic-equipment-settings-update",
     ),
     path("oic/print-materials/", oic_print_materials, name="oic-print-materials"),
     path(

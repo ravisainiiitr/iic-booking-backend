@@ -66,6 +66,28 @@ def cross_rescheduling_enabled(equipment) -> bool:
     return bool(group and group.cross_rescheduling_enabled)
 
 
+def is_staff_rescheduler(actor) -> bool:
+    """Main Administrator or OIC acting on a booking (not the booking owner path)."""
+    from iic_booking.users.models import UserType
+
+    if actor is None or not getattr(actor, "is_authenticated", False):
+        return False
+    if getattr(actor, "is_superuser", False):
+        return True
+    return getattr(actor, "user_type", None) in (UserType.ADMIN, UserType.MANAGER)
+
+
+def cross_rescheduling_enabled_for(equipment, actor) -> bool:
+    """
+    OIC / Main Administrator may move a booking to any member of its equipment group
+    (EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED kill switch); booking owners still need the
+    environment flag plus the group's cross_rescheduling_enabled switch.
+    """
+    if is_staff_rescheduler(actor) and getattr(settings, "EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED", True):
+        return _group_of(equipment) is not None
+    return cross_rescheduling_enabled(equipment)
+
+
 # ---------------------------------------------------------------------------
 # Group membership and eligibility
 # ---------------------------------------------------------------------------
@@ -889,7 +911,7 @@ def reschedule_target_info(booking, target, *, actor) -> dict:
         info.update(ok=False, code=code, reason=reason)
         return info
 
-    if not cross_rescheduling_enabled(source):
+    if not cross_rescheduling_enabled_for(source, actor):
         return _fail("CROSS_RESCHEDULING_DISABLED", "Cross-equipment rescheduling is not enabled for this equipment.")
     if not source.equipment_group_id or target.equipment_group_id != source.equipment_group_id:
         return _fail("DIFFERENT_GROUP", "The target equipment is not in the same equipment group.")
@@ -923,7 +945,14 @@ def reschedule_target_info(booking, target, *, actor) -> dict:
         source_charge_reference=source_charge,
     )
     # Group members carry the same charge; the booking keeps its charge and wallet debit, so a
-    # target that prices this booking differently is rejected rather than adjusted.
+    # target that prices this booking differently is rejected rather than adjusted. OIC / Admin
+    # may still move it: the original charge is kept unchanged.
+    charge_matches = (
+        source_charge is not None and target_charge is not None and _same_amount(source_charge, target_charge)
+    )
+    info["charge_differs"] = not charge_matches
+    if not charge_matches and is_staff_rescheduler(actor):
+        return info
     if source_charge is None or target_charge is None:
         return _fail(
             "CHARGE_NOT_VERIFIED",
@@ -961,7 +990,7 @@ def reschedule_equipment_options(booking, *, actor) -> list[dict]:
     """Original equipment first, then selectable same-group members (only when the feature is on)."""
     source = booking.equipment
     options = [reschedule_target_info(booking, source, actor=actor)]
-    if not cross_rescheduling_enabled(source):
+    if not cross_rescheduling_enabled_for(source, actor):
         return options
     for member in get_group_members(source):
         info = reschedule_target_info(booking, member, actor=actor)

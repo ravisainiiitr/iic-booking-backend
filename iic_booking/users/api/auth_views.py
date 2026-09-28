@@ -2048,6 +2048,73 @@ def profile_me(request):
     return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+DASHBOARD_MENU_MAX_GROUPS = 20
+DASHBOARD_MENU_MAX_ITEMS = 200
+
+
+def _clean_dashboard_menu_layout(raw):
+    """Validate {"groups": [{"id", "name", "items": [...]}]}; returns (layout, error)."""
+    import re
+
+    if raw in (None, ""):
+        return {"groups": []}, None
+    if not isinstance(raw, dict) or not isinstance(raw.get("groups", []), list):
+        return None, "Layout must be an object with a list of groups."
+    groups = raw.get("groups") or []
+    if len(groups) > DASHBOARD_MENU_MAX_GROUPS:
+        return None, f"At most {DASHBOARD_MENU_MAX_GROUPS} menus can be created."
+    id_re = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+    seen_groups, seen_items, cleaned = set(), set(), []
+    for g in groups:
+        if not isinstance(g, dict):
+            return None, "Each menu must be an object."
+        gid = str(g.get("id") or "").strip()
+        name = " ".join(str(g.get("name") or "").split())[:60]
+        items = g.get("items") or []
+        if not id_re.match(gid) or gid in seen_groups:
+            return None, "Each menu needs a unique id."
+        if not name:
+            return None, "Each menu needs a name."
+        if not isinstance(items, list):
+            return None, "Menu items must be a list."
+        clean_items = []
+        for item in items:
+            iid = str(item or "").strip()
+            if not id_re.match(iid) or iid in seen_items:
+                continue
+            seen_items.add(iid)
+            clean_items.append(iid)
+        if len(seen_items) > DASHBOARD_MENU_MAX_ITEMS:
+            return None, "Too many menu items."
+        seen_groups.add(gid)
+        cleaned.append({"id": gid, "name": name, "items": clean_items})
+    return {"groups": cleaned}, None
+
+
+@api_view(["GET", "PUT"])
+@permission_classes([IsAuthenticated])
+def profile_me_dashboard_menu_layout(request):
+    """
+    GET: the current user's custom dashboard menu groups.
+    PUT: save them (OIC and Main Administrator only). Body: {"groups": [{"id", "name", "items"}]}.
+    """
+    user = request.user
+    if request.method == "GET":
+        layout, _err = _clean_dashboard_menu_layout(getattr(user, "dashboard_menu_layout", None) or {})
+        return Response(layout or {"groups": []}, status=status.HTTP_200_OK)
+    if not (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) in (UserType.ADMIN, UserType.MANAGER)):
+        return Response(
+            {"error": "Only an Officer In Charge or the Main Administrator can customise the dashboard menu."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    layout, err = _clean_dashboard_menu_layout(request.data)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    user.dashboard_menu_layout = layout
+    user.save(update_fields=["dashboard_menu_layout"])
+    return Response(layout, status=status.HTTP_200_OK)
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def profile_me_avatar(request):

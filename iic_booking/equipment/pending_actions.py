@@ -323,15 +323,16 @@ def _staff_items(c: _Collector) -> None:
     equipment_ids = _get_equipment_ids_for_log_access(user)
     oic_ids = None if user_type == UserType.ADMIN else list(get_equipment_ids_managed_by_oic(user.id))
 
-    c.add(
-        "repeat_sample_requests",
-        "Repeat sample requests",
-        _scoped(
-            RepeatSampleRequest.objects.filter(status=RepeatSampleRequestStatus.PENDING), "booking__equipment_id", equipment_ids
-        ),
-        "/repeat-sample-requests",
-        "Users have asked for a complimentary repeat sample. Approve or reject each request.",
-    )
+    if user_type in (UserType.ADMIN, UserType.MANAGER):
+        c.add(
+            "repeat_sample_requests",
+            "Repeat sample requests",
+            _scoped(
+                RepeatSampleRequest.objects.filter(status=RepeatSampleRequestStatus.PENDING), "booking__equipment_id", equipment_ids
+            ),
+            "/repeat-sample-requests",
+            "Users have asked for a complimentary repeat sample. Approve or reject each request.",
+        )
     if user_type == UserType.OPERATOR:
         return
     c.add(

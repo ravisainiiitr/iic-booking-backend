@@ -10,6 +10,7 @@ from django.db.models import DecimalField
 from django.db.models import EmailField
 from django.db.models import ForeignKey
 from django.db.models import ImageField
+from django.db.models import JSONField
 from django.db.models import PROTECT
 from django.db.models import SET_NULL
 from django.db.models import DateTimeField
@@ -273,6 +274,16 @@ class User(AbstractUser):
         help_text=_(
             "True after the user completes or dismisses the role-specific onboarding user guide. "
             "They can still reopen the guide from the Help menu anytime."
+        ),
+    )
+
+    dashboard_menu_layout = JSONField(
+        _("Dashboard menu layout"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Custom dashboard menu groups created by an OIC or Main Administrator: "
+            '{"groups": [{"id", "name", "items": [menu item ids]}]}. Empty = default menu.'
         ),
     )
 

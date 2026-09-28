@@ -229,12 +229,13 @@ def build_booking_lifecycle_countdown(booking):
     # Phase 1: before Sample Accepted — submit sample countdown
     from iic_booking.equipment.sample_submission_deadline_reminders import (
         compute_sample_submission_deadline,
+        effective_sample_submission_lead_hours,
     )
 
     deadline = compute_sample_submission_deadline(booking)
     if deadline is None:
         return None
-    lead_hours = int(getattr(equipment, "sample_submission_lead_hours", 0) or 0)
+    lead_hours = effective_sample_submission_lead_hours(booking)
     created_at = getattr(booking, "created_at", None) or now
     return _payload(
         phase="submit_sample",

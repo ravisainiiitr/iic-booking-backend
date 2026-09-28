@@ -12719,8 +12719,8 @@ def user_reschedule_booking(request, booking_id):
 @permission_classes([IsAuthenticated])
 def booking_reschedule_options(request, booking_id):
     """Equipment a booking may be rescheduled onto: the original, plus same-group alternatives
-    when cross-equipment rescheduling is enabled (env flag + group switch)."""
-    from .equipment_group_service import cross_rescheduling_enabled, reschedule_equipment_options
+    when cross-equipment rescheduling is enabled (env flag + group switch, or OIC / Admin actor)."""
+    from .equipment_group_service import cross_rescheduling_enabled_for, reschedule_equipment_options
 
     booking = (
         Booking.objects.select_related("equipment", "equipment__equipment_group", "equipment__internal_department", "user")
@@ -12734,11 +12734,11 @@ def booking_reschedule_options(request, booking_id):
             {"error": "You don't have permission to view reschedule options for this booking."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    enabled = cross_rescheduling_enabled(booking.equipment)
+    enabled = cross_rescheduling_enabled_for(booking.equipment, request.user)
     options = reschedule_equipment_options(booking, actor=request.user)
     public_keys = (
         "equipment_id", "code", "name", "make", "model_information", "internal_department_name",
-        "is_original", "required_slots", "required_minutes", "dropped_fields",
+        "is_original", "required_slots", "required_minutes", "dropped_fields", "charge_differs",
     )
     return Response(
         {
@@ -14901,6 +14901,17 @@ def _approved_repeat_request_awaiting_booking(orig_booking):
     )
 
 
+REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE = "Only the Officer In Charge or the Main Administrator can manage repeat samples."
+REPEAT_SAMPLE_BY_OIC_MESSAGE = (
+    "Repeat samples are arranged by the Officer In Charge. Please visit the lab with your booking details; "
+    "if a repeat is justified, the OIC will book it for you free of charge and you will receive a confirmation email."
+)
+
+
+def _is_repeat_sample_manager(user) -> bool:
+    return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
+
+
 def repeat_sample_extra_week_applies(user, equipment, raw_booking_id) -> bool:
     """True when ``raw_booking_id`` is this user's completed booking with an approved, not-yet-booked repeat
     request that was granted one extra week of slot access."""
@@ -14923,16 +14934,18 @@ def repeat_sample_extra_week_applies(user, equipment, raw_booking_id) -> bool:
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def enable_repeat_sample(request, booking_id):
-    """Enable repeat sample for a completed booking. Admin/OIC only."""
-    if not check_operator_permission(request.user):
+    """Enable repeat sample for a completed booking. Admin, or the OIC of the booking's equipment."""
+    if not _is_repeat_sample_manager(request.user):
         return Response(
-            {"error": "Only operators, managers, and admins can enable repeat sample."},
+            {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
         booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not _user_can_manage_oic_equipment(request.user, booking.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     if booking.status != BookingStatus.COMPLETED:
         return Response(
             {"error": "Only completed bookings can have repeat sample enabled."},
@@ -14999,17 +15012,27 @@ def get_repeat_sample_eligibility(request, booking_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_repeat_booking(request, booking_id):
-    """Create a replica booking (repeat sample). Only the booking user. Excluded from quota."""
+    """
+    Create a complimentary replica booking (repeat sample), excluded from quota.
+
+    - OIC of the equipment / Main Administrator: marks the completed booking as a repeat and books it for
+      the booking user in one step (no user request needed; approval is recorded). Body: slot_ids?, admin_notes?.
+    - Booking user: only when a repeat was already granted before repeat samples became OIC-only.
+    """
     try:
         orig_booking = Booking.objects.select_related("user", "equipment", "charge_profile").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
-    if orig_booking.user_id != request.user.id:
-        return Response({"error": "Only the booking user can create a repeat booking."}, status=status.HTTP_403_FORBIDDEN)
+    staff_path = orig_booking.user_id != request.user.id
+    if staff_path:
+        if not _is_repeat_sample_manager(request.user):
+            return Response({"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+        if not _user_can_manage_oic_equipment(request.user, orig_booking.equipment_id):
+            return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     if orig_booking.status != BookingStatus.COMPLETED:
         return Response({"error": "Only completed bookings can have a repeat sample."}, status=status.HTTP_400_BAD_REQUEST)
-    if not getattr(orig_booking, "repeat_sample_enabled", False):
-        return Response({"error": "Repeat sample has not been enabled for this booking."}, status=status.HTTP_400_BAD_REQUEST)
+    if not staff_path and not getattr(orig_booking, "repeat_sample_enabled", False):
+        return Response({"error": REPEAT_SAMPLE_BY_OIC_MESSAGE, "code": "REPEAT_SAMPLE_BY_OIC_ONLY"}, status=status.HTTP_403_FORBIDDEN)
     if Booking.objects.filter(source_booking_id=booking_id).exists():
         return Response({"error": "A repeat booking has already been created for this booking."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -15019,14 +15042,14 @@ def create_repeat_booking(request, booking_id):
         booking_is_locked,
         department_equipment_booking_blocked,
     )
-    locked, lock_message = booking_is_locked(request.user)
+    locked, lock_message = booking_is_locked(orig_booking.user)
     if locked:
         return Response(
             {"error": lock_message, "code": "MIGRATION_BOOKING_NOT_ACTIVE"},
             status=status.HTTP_403_FORBIDDEN,
         )
 
-    dept_blocked, dept_message = department_equipment_booking_blocked(equipment, request.user)
+    dept_blocked, dept_message = department_equipment_booking_blocked(equipment, orig_booking.user)
     if dept_blocked:
         return Response(
             {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
@@ -15035,7 +15058,8 @@ def create_repeat_booking(request, booking_id):
     total_time_minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
 
     approved_req = _approved_repeat_request_awaiting_booking(orig_booking)
-    earliest_start = approved_req.bookable_from if approved_req else None
+    earliest_start = approved_req.bookable_from if (approved_req and not staff_path) else None
+    staff_notes = (request.data.get("admin_notes") or "").strip()[:2000] if staff_path and request.data else ""
     earliest_label = (
         timezone.localtime(earliest_start).strftime("%d %b %Y, %I:%M %p") if earliest_start else ""
     )
@@ -15162,6 +15186,26 @@ def create_repeat_booking(request, booking_id):
     notes = discount_remark
 
     with transaction.atomic():
+        if staff_path:
+            now = timezone.now()
+            pending = (
+                RepeatSampleRequest.objects.select_for_update()
+                .filter(booking=orig_booking, status=RepeatSampleRequestStatus.PENDING)
+                .first()
+            )
+            if approved_req is None:
+                approved_req = pending or RepeatSampleRequest(booking=orig_booking)
+                approved_req.status = RepeatSampleRequestStatus.APPROVED
+                approved_req.responded_at = now
+                approved_req.responded_by = request.user
+                approved_req.admin_notes = staff_notes or "Marked as repeat sample by the Officer In Charge at the lab."
+                approved_req.save()
+            elif pending is not None:
+                pending.status = RepeatSampleRequestStatus.REJECTED
+                pending.responded_at = now
+                pending.responded_by = request.user
+                pending.admin_notes = "Superseded: the OIC booked the repeat sample."
+                pending.save(update_fields=["status", "responded_at", "responded_by_id", "admin_notes"])
         new_booking = Booking.objects.create(
             user=orig_booking.user,
             equipment=equipment,
@@ -15179,13 +15223,18 @@ def create_repeat_booking(request, booking_id):
             **{},
         )
         daily_slots.update(booking=new_booking, status=SlotStatus.BOOKED)
+        booked_by = "by the Officer In Charge " if staff_path else ""
         create_booking_event(
             booking=new_booking,
             event_type=BookingEventType.REPEAT_SAMPLE_CREATED,
             created_by=request.user,
-            comment=f"Repeat sample booking created for {equipment.name} ({total_time_minutes} min). Original booking: {orig_vid}. No charge; excluded from weekly/monthly limits.",
+            comment=(
+                f"Repeat sample booking created {booked_by}for {equipment.name} ({total_time_minutes} min). "
+                f"Original booking: {orig_vid}. No charge; excluded from weekly/monthly limits."
+                + (f" Note: {staff_notes}" if staff_notes else "")
+            ),
             new_status=BookingStatus.BOOKED,
-            metadata={"repeat_sample_request_id": approved_req.id} if approved_req else None,
+            metadata={"repeat_sample_request_id": approved_req.id, "booked_by_staff": staff_path} if approved_req else None,
             send_notification=True,
         )
         orig_booking.repeat_sample_enabled = False
@@ -15305,106 +15354,32 @@ def get_repeat_sample_info(request, booking_id):
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
     if booking.user_id != request.user.id:
         return Response({"error": "Only the booking user can view repeat sample info."}, status=status.HTTP_403_FORBIDDEN)
-    if booking.status != BookingStatus.COMPLETED:
-        return Response({
-            "can_request": False,
-            "disclaimer": "",
-            "days_left": None,
-            "reason": "Booking is not completed.",
-        }, status=status.HTTP_200_OK)
-    equipment = booking.equipment
-    days_allowed = getattr(equipment, "repeat_sample_request_days", None) or 0
-    if days_allowed <= 0:
-        return Response({
-            "can_request": False,
-            "disclaimer": getattr(equipment, "repeat_sample_disclaimer", "") or "",
-            "days_left": None,
-            "reason": "Repeat sample request is not enabled for this equipment.",
-        }, status=status.HTTP_200_OK)
-    from django.utils import timezone
-    completed_at = booking.completed_at or booking.updated_at
-    if not completed_at:
-        return Response({
-            "can_request": False,
-            "disclaimer": getattr(equipment, "repeat_sample_disclaimer", "") or "",
-            "days_left": None,
-            "reason": "Completion date unknown.",
-        }, status=status.HTTP_200_OK)
-    if timezone.is_naive(completed_at):
-        completed_at = timezone.make_aware(completed_at)
-    now = timezone.now()
-    elapsed_days = (now - completed_at).days
-    days_left = max(0, days_allowed - elapsed_days)
-    if days_left <= 0:
-        return Response({
-            "can_request": False,
-            "disclaimer": getattr(equipment, "repeat_sample_disclaimer", "") or "",
-            "days_left": 0,
-            "reason": "Time limit for requesting a repeat sample has passed.",
-        }, status=status.HTTP_200_OK)
-    has_pending_or_approved = RepeatSampleRequest.objects.filter(
-        booking=booking,
-        status__in=[RepeatSampleRequestStatus.PENDING, RepeatSampleRequestStatus.APPROVED],
-    ).exists()
-    if has_pending_or_approved:
-        return Response({
-            "can_request": False,
-            "disclaimer": getattr(equipment, "repeat_sample_disclaimer", "") or "",
-            "days_left": days_left,
-            "reason": "A repeat sample request already exists for this booking.",
-        }, status=status.HTTP_200_OK)
     return Response({
-        "can_request": True,
-        "disclaimer": getattr(equipment, "repeat_sample_disclaimer", "") or "",
-        "days_left": days_left,
-        "reason": None,
+        "can_request": False,
+        "disclaimer": "",
+        "days_left": None,
+        "reason": REPEAT_SAMPLE_BY_OIC_MESSAGE,
+        "arranged_by_oic": True,
     }, status=status.HTTP_200_OK)
+
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def request_repeat_sample(request, booking_id):
-    """Create a repeat sample request for a completed booking. Only the booking user."""
-    try:
-        booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
-    except Booking.DoesNotExist:
-        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
-    if booking.user_id != request.user.id:
-        return Response({"error": "Only the booking user can request a repeat sample."}, status=status.HTTP_403_FORBIDDEN)
-    if booking.status != BookingStatus.COMPLETED:
-        return Response({"error": "Only completed bookings can have a repeat sample request."}, status=status.HTTP_400_BAD_REQUEST)
-    equipment = booking.equipment
-    days_allowed = getattr(equipment, "repeat_sample_request_days", None) or 0
-    if days_allowed <= 0:
-        return Response({"error": "Repeat sample request is not enabled for this equipment."}, status=status.HTTP_400_BAD_REQUEST)
-    from django.utils import timezone
-    completed_at = booking.completed_at or booking.updated_at
-    if completed_at and timezone.is_naive(completed_at):
-        completed_at = timezone.make_aware(completed_at)
-    if completed_at:
-        elapsed_days = (timezone.now() - completed_at).days
-        if elapsed_days > days_allowed:
-            return Response({"error": "Time limit for requesting a repeat sample has passed."}, status=status.HTTP_400_BAD_REQUEST)
-    if RepeatSampleRequest.objects.filter(booking=booking, status__in=[RepeatSampleRequestStatus.PENDING, RepeatSampleRequestStatus.APPROVED]).exists():
-        return Response({"error": "A repeat sample request already exists for this booking."}, status=status.HTTP_400_BAD_REQUEST)
-    user_notes = (request.data.get("user_notes") or "").strip()
-    repeat_request = RepeatSampleRequest.objects.create(
-        booking=booking,
-        status=RepeatSampleRequestStatus.PENDING,
-        user_notes=user_notes,
+    """Users can no longer raise repeat sample requests; the OIC marks and books repeats at the lab."""
+    return Response(
+        {"error": REPEAT_SAMPLE_BY_OIC_MESSAGE, "code": "REPEAT_SAMPLE_BY_OIC_ONLY"},
+        status=status.HTTP_403_FORBIDDEN,
     )
-    _notify_repeat_sample_requested(repeat_request, request.user)
-    return Response({
-        "message": "Repeat sample request submitted.",
-        "repeat_sample_request": RepeatSampleRequestSerializer(repeat_request).data,
-    }, status=status.HTTP_201_CREATED)
+
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_repeat_sample_requests(request):
     """List repeat sample requests. Admin/OIC only. Query params: status (PENDING, APPROVED, REJECTED)."""
-    if not check_operator_permission(request.user):
+    if not _is_repeat_sample_manager(request.user):
         return Response(
-            {"error": "Only operators, managers, and admins can list repeat sample requests."},
+            {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
             status=status.HTTP_403_FORBIDDEN,
         )
     status_filter = (request.query_params.get("status") or "").strip().upper()
@@ -15493,9 +15468,9 @@ def user_identity_card(request, user_id):
 @permission_classes([IsAuthenticated])
 def reject_repeat_sample_request(request, request_id):
     """Reject a repeat sample request. Admin/OIC only. Body: { admin_notes?: string }."""
-    if not check_operator_permission(request.user):
+    if not _is_repeat_sample_manager(request.user):
         return Response(
-            {"error": "Only operators, managers, and admins can reject repeat sample requests."},
+            {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
@@ -15530,9 +15505,9 @@ def approve_repeat_sample_request(request, request_id):
     (parameters inherited from the original booking and locked, no charge), with slots starting no earlier
     than REPEAT_SAMPLE_BOOKING_DELAY after approval and one additional week of slot access.
     """
-    if not check_operator_permission(request.user):
+    if not _is_repeat_sample_manager(request.user):
         return Response(
-            {"error": "Only operators, managers, and admins can approve repeat sample requests."},
+            {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
@@ -16346,6 +16321,134 @@ def oic_toggle_equipment_additional_accessory(request, accessory_id):
         accessory.is_enabled = not accessory.is_enabled
     accessory.save(update_fields=["is_enabled"])
     return Response({"additional_accessory": EquipmentAdditionalAccessorySerializer(accessory).data})
+
+OIC_EQUIPMENT_SETTINGS_INT_FIELDS = {
+    "external_slot_quota_percent": (0, 100),
+    "booking_not_utilize_window_hours": (0, 8760),
+    "operator_unavailable_after_booking_end_hours": (0, 8760),
+    "operator_absent_disruption_after_booking_end_hours": (0, 8760),
+    "sample_submission_lead_hours": (0, 8760),
+    "sample_collect_deadline_hours": (0, 8760),
+}
+OIC_EQUIPMENT_SETTINGS_TIME_FIELDS = (
+    "slot_window_reference_time",
+    "weekly_view_time_from",
+    "weekly_view_time_to",
+)
+
+
+def _oic_equipment_settings_row(eq) -> dict:
+    def _t(value):
+        return value.strftime("%H:%M") if value else None
+
+    return {
+        "equipment_id": eq.equipment_id,
+        "equipment_code": eq.code,
+        "equipment_name": eq.name,
+        "profile_type": eq.profile_type,
+        "settings": {
+            "slot_window_reference_weekday": eq.slot_window_reference_weekday,
+            "slot_window_reference_time": _t(eq.slot_window_reference_time),
+            "weekly_view_time_from": _t(eq.weekly_view_time_from),
+            "weekly_view_time_to": _t(eq.weekly_view_time_to),
+            **{name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_INT_FIELDS},
+        },
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def oic_equipment_settings_list(request):
+    """Slot visibility, external quota and booking/sample timing settings for equipment the OIC manages (all for Admin)."""
+    if not _is_admin_user(request.user) and getattr(request.user, "user_type", None) != UserType.MANAGER:
+        return Response(
+            {"error": "Only Admin or Officer In Charge can manage equipment settings."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    rows = [_oic_equipment_settings_row(eq) for eq in _oic_manageable_equipment_qs(request.user)]
+    return Response(
+        {
+            "equipments": rows,
+            "has_print_3d_equipment": any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows),
+        }
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def oic_equipment_settings_update(request, equipment_id):
+    """Update the whitelisted settings on one equipment managed by the OIC (any equipment for Admin)."""
+    from datetime import time as dt_time
+
+    if not _user_can_manage_oic_equipment(request.user, equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+    eq = Equipment.objects.filter(equipment_id=equipment_id).first()
+    if eq is None:
+        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    data = request.data or {}
+    errors: dict = {}
+    changed: list[str] = []
+
+    if "slot_window_reference_weekday" in data:
+        raw = data.get("slot_window_reference_weekday")
+        if raw in (None, ""):
+            eq.slot_window_reference_weekday = None
+            changed.append("slot_window_reference_weekday")
+        else:
+            try:
+                weekday = int(raw)
+            except (TypeError, ValueError):
+                weekday = -1
+            if 0 <= weekday <= 6:
+                eq.slot_window_reference_weekday = weekday
+                changed.append("slot_window_reference_weekday")
+            else:
+                errors["slot_window_reference_weekday"] = "Choose a weekday (Monday–Sunday) or leave empty."
+
+    for name in OIC_EQUIPMENT_SETTINGS_TIME_FIELDS:
+        if name not in data:
+            continue
+        raw = data.get(name)
+        if raw in (None, ""):
+            setattr(eq, name, None)
+            changed.append(name)
+            continue
+        try:
+            hh, mm = str(raw).strip().split(":")[:2]
+            setattr(eq, name, dt_time(int(hh), int(mm)))
+            changed.append(name)
+        except (TypeError, ValueError):
+            errors[name] = "Use a 24-hour time such as 09:30, or leave empty."
+
+    for name, (low, high) in OIC_EQUIPMENT_SETTINGS_INT_FIELDS.items():
+        if name not in data:
+            continue
+        try:
+            value = int(data.get(name))
+        except (TypeError, ValueError):
+            errors[name] = "Enter a whole number."
+            continue
+        if not low <= value <= high:
+            errors[name] = f"Enter a value between {low} and {high}."
+            continue
+        setattr(eq, name, value)
+        changed.append(name)
+
+    if (
+        "weekly_view_time_from" not in errors
+        and "weekly_view_time_to" not in errors
+        and eq.weekly_view_time_from
+        and eq.weekly_view_time_to
+        and eq.weekly_view_time_from >= eq.weekly_view_time_to
+    ):
+        errors["weekly_view_time_to"] = "'Time to' must be later than 'Time from'."
+    if errors:
+        return Response({"error": "Please correct the highlighted settings.", "errors": errors}, status=status.HTTP_400_BAD_REQUEST)
+    if changed:
+        eq.save(update_fields=sorted(set(changed)))
+    return Response({"equipment": _oic_equipment_settings_row(eq)})
+
 
 def _oic_can_manage_print_materials(user) -> bool:
     return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
