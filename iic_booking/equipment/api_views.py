@@ -9518,7 +9518,8 @@ def _apply_urgent_supervisor_decision(urg_id, actor, action: str, notes: str = "
     with transaction.atomic():
         try:
             urg = (
-                UrgentBookingRequest.objects.select_for_update()
+                # supervisor / hold_booking are nullable (LEFT JOIN); PostgreSQL rejects FOR UPDATE on them.
+                UrgentBookingRequest.objects.select_for_update(of=("self",))
                 .select_related("user", "equipment", "supervisor", "hold_booking", "hold_booking__equipment")
                 .get(pk=urg_id)
             )
