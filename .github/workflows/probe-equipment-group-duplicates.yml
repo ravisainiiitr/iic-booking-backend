@@ -1,0 +1,53 @@
+# List equipment groups sharing a name, with members, departments, quotas and switches (read-only)
+name: Probe Equipment Group Duplicates
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          from collections import defaultdict
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from iic_booking.equipment.models import Equipment, EquipmentGroup, EquipmentGroupQuota
+
+          groups = list(EquipmentGroup.objects.order_by("equipment_group_id"))
+          print("total_groups", len(groups))
+          by_name = defaultdict(list)
+          for g in groups:
+              by_name[" ".join((g.name or "").split()).lower()].append(g)
+          dup = {k: v for k, v in by_name.items() if len(v) > 1}
+          print("duplicate_names", len(dup))
+          for g in groups:
+              members = list(Equipment.objects.filter(equipment_group=g).values_list("equipment_id", "code", "internal_department_id"))
+              quotas = [
+                  {k: v for k, v in q.items() if k not in ("created_at", "updated_at", "equipment_group_id")}
+                  for q in EquipmentGroupQuota.objects.filter(equipment_group=g).values()
+              ]
+              marker = "DUP" if len(by_name[" ".join((g.name or "").split()).lower()]) > 1 else "   "
+              print(marker, "group", g.pk, repr(g.name), "code=", repr(g.code),
+                    "switches=", [g.alternative_booking_enabled, g.alternative_search_other_slots, g.auto_allocation_enabled, g.cross_rescheduling_enabled],
+                    "members=", members, "quotas=", quotas)
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
