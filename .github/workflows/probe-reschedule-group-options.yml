@@ -87,7 +87,26 @@ jobs:
                                 "charge_differs=", info.get("charge_differs"))
                       except Exception as exc:
                           print("   ", m.code, "EXCEPTION", type(exc).__name__, str(exc)[:300])
+
+              print("source_name", repr(eq.name))
+              fe_groups = list(EquipmentGroup.objects.filter(name__iexact="FE-SEM").order_by("pk"))
+              if fe_groups:
+                  target_group = eq.equipment_group or fe_groups[0]
+                  sim_ids = [eq.pk] + list(Equipment.objects.filter(equipment_group__in=fe_groups).values_list("pk", flat=True))
+                  Equipment.objects.filter(pk__in=sim_ids).update(equipment_group=target_group)
+                  b = Booking.objects.select_related("equipment", "equipment__equipment_group", "user").get(pk=b.pk)
+                  eq = b.equipment
+                  print("SIMULATED single group", target_group.pk, "members", sim_ids)
+                  for label, actor in actors:
+                      opts = egs.reschedule_equipment_options(b, actor=actor)
+                      print("sim actor", label, "offered=", [o.get("code") for o in opts if o.get("ok")])
+                      for m in Equipment.objects.filter(pk__in=sim_ids).exclude(pk=eq.pk):
+                          info = egs.reschedule_target_info(b, m, actor=actor)
+                          print("   sim", m.code, "ok=", info.get("ok"), "code=", info.get("code"), "reason=", info.get("reason"),
+                                "charge_differs=", info.get("charge_differs"), "slots=", info.get("required_slots"),
+                                "dropped=", info.get("dropped_fields"))
               transaction.set_rollback(True)
+          print("rolled back; no data changed")
           PY
               exit 0
             fi
