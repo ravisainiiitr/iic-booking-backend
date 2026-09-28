@@ -31,6 +31,7 @@ from iic_booking.users.wallet_recharge_workflow import (
     notify_stakeholders_of_decision,
     reject_request,
     serialize_request_public,
+    verify_fund_receipt,
 )
 
 User = get_user_model()
@@ -115,23 +116,27 @@ class DeclineToCreditTests(TestCase):
             reject_request(req, reason_code=WalletRechargeRejectionReason.INSUFFICIENT_BALANCE)
         self.assertEqual(self._balance(), Decimal("1000.00"))
 
+    def _approve_and_receive_funds(self, amount):
+        approved = approve_request(self._request(amount), actor_email="sric@test")
+        self.assertTrue(approved.wallet_credit_pending)
+        with self.captureOnCommitCallbacks(execute=True):
+            return verify_fund_receipt(approved, actor=None, remarks="SRIC cash-book")
+
     def test_next_approval_recovers_credit_fully_then_adds_rest(self):
         reject_request(self._request("1000.00"), reason_code=WalletRechargeRejectionReason.WRONG_PROJECT_GRANT)
         self.assertEqual(self._balance(), Decimal("1000.00"))
-        approved = approve_request(self._request("1500.00"), actor_email="sric@test")
-        self.assertEqual(approved.credit_settled_amount, Decimal("1000.00"))
+        credited = self._approve_and_receive_funds("1500.00")
+        self.assertEqual(credited.credit_settled_amount, Decimal("1000.00"))
         self.assertEqual(self._balance(), Decimal("1500.00"))
         credit = WalletRechargeRequest.objects.get(cancellation_source=WalletRechargeCancellationSource.SRIC_DECLINED)
         self.assertEqual(credit.decline_credit_outstanding, Decimal("0.00"))
         self.assertIsNotNone(credit.decline_credit_settled_at)
-
-        notify_stakeholders_of_decision(approved)
-        self.assertTrue(any("adjusted against outstanding credit" in m.subject for m in mail.outbox))
+        self.assertTrue(any("adjusted against credit" in m.subject for m in mail.outbox))
 
     def test_partial_recovery_leaves_outstanding(self):
         reject_request(self._request("1000.00"), reason_code=WalletRechargeRejectionReason.WRONG_PROJECT_GRANT)
-        approved = approve_request(self._request("600.00"), actor_email="sric@test")
-        self.assertEqual(approved.credit_settled_amount, Decimal("600.00"))
+        credited = self._approve_and_receive_funds("600.00")
+        self.assertEqual(credited.credit_settled_amount, Decimal("600.00"))
         self.assertEqual(self._balance(), Decimal("1000.00"))
         credit = WalletRechargeRequest.objects.get(cancellation_source=WalletRechargeCancellationSource.SRIC_DECLINED)
         self.assertEqual(credit.decline_credit_outstanding, Decimal("400.00"))
@@ -140,7 +145,7 @@ class DeclineToCreditTests(TestCase):
     def test_recovery_after_credit_was_spent(self):
         reject_request(self._request("1000.00"), reason_code=WalletRechargeRejectionReason.WRONG_PROJECT_GRANT)
         SubWallet.objects.get(wallet=self.wallet, department=self.dept).debit(Decimal("1000.00"), "booking")
-        approve_request(self._request("1000.00"), actor_email="sric@test")
+        self._approve_and_receive_funds("1000.00")
         self.assertEqual(self._balance(), Decimal("0.00"))
 
     def test_cash_deposit_decline_is_plain_rejection(self):

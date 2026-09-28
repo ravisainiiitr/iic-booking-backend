@@ -783,6 +783,16 @@ class WalletRechargeRequest(Model):
             "on the same wallet and department."
         ),
     )
+    wallet_credit_pending = BooleanField(
+        _("Wallet credit awaiting fund receipt"),
+        default=False,
+        db_index=True,
+        help_text=_(
+            "Approved by SRIC while the faculty member had a running credit: the wallet is credited "
+            "(and the credit adjusted) only when the SRIC cash-book confirms the funds."
+        ),
+    )
+    wallet_credited_at = DateTimeField(_("Wallet credited at"), null=True, blank=True)
     created_at = DateTimeField(_("Created at"), auto_now_add=True)
     updated_at = DateTimeField(_("Updated at"), auto_now=True)
     responded_at = DateTimeField(

@@ -310,6 +310,7 @@ def register_extra_admin_routes(router):
                 "decline_converts_to_credit",
                 "auto_read_cashbook_mailbox",
                 "cashbook_sender_emails",
+                "fund_receipt_overdue_days",
             ]
             read_only_fields = ["id"]
 

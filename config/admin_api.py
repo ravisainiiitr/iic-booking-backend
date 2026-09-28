@@ -1983,6 +1983,12 @@ def admin_api_router():
             if recharge_mode in {"project_grant", "direct_cash_deposit"}:
                 qs = qs.filter(recharge_mode=recharge_mode)
 
+            if (self.request.query_params.get("overdue") or "").strip().lower() in {"1", "true", "yes"}:
+                from iic_booking.users.wallet_recharge_workflow import overdue_fund_receipt_requests
+
+                _, overdue_rows = overdue_fund_receipt_requests(qs)
+                qs = qs.filter(id__in=[r.id for r in overdue_rows])
+
             cashbook = (self.request.query_params.get("cashbook") or "").strip().lower()
             if cashbook == "matched":
                 qs = qs.exclude(cashbook_receipt_no="")
@@ -2032,12 +2038,47 @@ def admin_api_router():
                 qs = qs.order_by(ordering)
             return qs
 
+        @action(detail=False, methods=["get"], url_path="overdue-fund-receipts")
+        def overdue_fund_receipts(self, request):
+            """Requests with no matching SRIC cash-book entry after the configured days (dashboard alert)."""
+            from iic_booking.users.wallet_recharge_workflow import overdue_fund_receipt_requests
+
+            user = request.user
+            if not (
+                getattr(user, "is_superuser", False)
+                or getattr(user, "user_type", None) in {UserType.ADMIN, UserType.FINANCE}
+            ):
+                return Response({"days": 0, "count": 0, "results": []})
+            days, rows = overdue_fund_receipt_requests(self.get_queryset())
+            now = timezone.now()
+            results = []
+            for r in rows[:100]:
+                since = r.responded_at if r.status == WalletRechargeRequestStatus.APPROVED else r.created_at
+                results.append(
+                    {
+                        "id": r.id,
+                        "transaction_number": r.transaction_number,
+                        "status": r.status,
+                        "recharge_mode": r.recharge_mode,
+                        "amount": str(r.amount),
+                        "user_name": r.user.name or r.user.email,
+                        "user_email": r.user.email,
+                        "department_name": r.department.name if r.department_id else "",
+                        "project_grant_code": r.project_grant_code or "",
+                        "wallet_credit_pending": bool(r.wallet_credit_pending),
+                        "since": since.isoformat() if since else None,
+                        "days_waiting": (now - since).days if since else None,
+                    }
+                )
+            return Response({"days": days, "count": len(rows), "results": results})
+
         @action(detail=True, methods=["post"], url_path="approve")
         def approve(self, request, pk=None):
             from iic_booking.users.models.wallet import WalletRechargeCancellationSource  # noqa: F401
             from iic_booking.users.wallet_recharge_workflow import (
                 RechargeAlreadyProcessed,
                 already_processed_page,
+                approval_result_message,
                 approve_request,
                 notify_stakeholders_of_decision,
             )
@@ -2086,7 +2127,7 @@ def admin_api_router():
                 )
                 return Response(
                     {
-                        "message": f"Approved. ₹{approved.amount} credited.",
+                        "message": approval_result_message(approved),
                         "request": WalletRechargeRequestSerializer(approved).data,
                     },
                     status=status.HTTP_200_OK,
@@ -2125,6 +2166,7 @@ def admin_api_router():
                 RechargeAlreadyProcessed,
                 already_processed_page,
                 can_sric_decline,
+                decline_result_message,
                 notify_stakeholders_of_decision,
                 reject_request,
             )
@@ -2172,13 +2214,11 @@ def admin_api_router():
                     actor_email=request.user.email,
                 )
                 notify_stakeholders_of_decision(rejected)
-                message = (
-                    "Declined. The request is cancelled and the amount is treated as an auto-approved credit."
-                    if rejected.status == WalletRechargeRequestStatus.CANCELLED
-                    else "Wallet recharge request rejected."
-                )
                 return Response(
-                    {"message": message, "request": WalletRechargeRequestSerializer(rejected).data},
+                    {
+                        "message": decline_result_message(rejected),
+                        "request": WalletRechargeRequestSerializer(rejected).data,
+                    },
                     status=status.HTTP_200_OK,
                 )
             except RechargeAlreadyProcessed as e:
@@ -2281,15 +2321,22 @@ def admin_api_router():
                 or request.data.get("response_message")
                 or ""
             ).strip()
+            was_pending = bool(recharge_request.wallet_credit_pending)
             try:
                 verified = verify_fund_receipt(
                     recharge_request,
                     actor=request.user,
                     remarks=remarks,
                 )
+                message = "Fund receipt verified successfully."
+                if was_pending and not verified.wallet_credit_pending:
+                    message += (
+                        f" ₹{verified.amount} credited to the wallet; ₹{verified.credit_settled_amount} "
+                        "adjusted against the running credit."
+                    )
                 return Response(
                     {
-                        "message": "Fund receipt verified successfully.",
+                        "message": message,
                         "request": WalletRechargeRequestSerializer(verified).data,
                     },
                     status=status.HTTP_200_OK,
@@ -2319,12 +2366,15 @@ def admin_api_router():
                 )
             except CashbookMatchError as e:
                 return Response({"error": str(e)}, status=status.HTTP_409_CONFLICT)
+            was_pending = bool(recharge_request.wallet_credit_pending)
             updated = self.get_queryset().get(pk=updated.pk)
             message = (
                 f"Approved against cash-book receipt {updated.cashbook_receipt_no}. ₹{updated.amount} credited."
                 if outcome == "approved"
                 else f"Cash-book receipt {updated.cashbook_receipt_no} matched; fund receipt verified."
             )
+            if was_pending and outcome != "approved":
+                message += f" ₹{updated.amount} credited to the wallet and adjusted against the running credit."
             return Response(
                 {
                     "message": message,

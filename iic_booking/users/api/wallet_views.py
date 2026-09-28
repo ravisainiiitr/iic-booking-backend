@@ -2201,6 +2201,7 @@ def wallet_recharge_action_approve(request, token):
     from iic_booking.users.wallet_recharge_workflow import (
         RechargeAlreadyProcessed,
         already_processed_page,
+        approval_result_message,
         approve_request,
         notify_stakeholders_of_decision,
         serialize_request_public,
@@ -2227,14 +2228,8 @@ def wallet_recharge_action_approve(request, token):
             actor_email=(request.data.get("actor_email") or "sric-email-approval").strip(),
         )
         notify_stakeholders_of_decision(approved)
-        message = f"Approved. ₹{approved.amount} credited to the department wallet."
-        if approved.credit_settled_amount > 0:
-            message += (
-                f" ₹{approved.credit_settled_amount} of it was adjusted against the faculty member's "
-                "outstanding auto-approved credit."
-            )
         return Response(
-            {**serialize_request_public(approved), "message": message},
+            {**serialize_request_public(approved), "message": approval_result_message(approved)},
             status=status.HTTP_200_OK,
         )
     except RechargeAlreadyProcessed as e:
@@ -2258,6 +2253,7 @@ def wallet_recharge_action_reject(request, token):
         RechargeAlreadyProcessed,
         already_processed_page,
         can_sric_decline,
+        decline_result_message,
         notify_stakeholders_of_decision,
         reject_request,
         serialize_request_public,
@@ -2293,15 +2289,8 @@ def wallet_recharge_action_reject(request, token):
             actor_email=(request.data.get("actor_email") or "sric-email-rejection").strip(),
         )
         notify_stakeholders_of_decision(rejected)
-        if rejected.status == WalletRechargeRequestStatus.CANCELLED:
-            message = (
-                "Declined. The request is cancelled and the amount is treated as an auto-approved "
-                "credit for the faculty member, who has been informed with the selected reason."
-            )
-        else:
-            message = "Wallet recharge request declined."
         return Response(
-            {**serialize_request_public(rejected), "message": message},
+            {**serialize_request_public(rejected), "message": decline_result_message(rejected)},
             status=status.HTTP_200_OK,
         )
     except RechargeAlreadyProcessed as e:
@@ -2324,6 +2313,7 @@ def approve_wallet_recharge_request(request, request_id):
     from iic_booking.users.wallet_recharge_workflow import (
         RechargeAlreadyProcessed,
         already_processed_page,
+        approval_result_message,
         approve_request,
         notify_stakeholders_of_decision,
         serialize_request_public,
@@ -2362,11 +2352,10 @@ def approve_wallet_recharge_request(request, request_id):
         )
         notify_stakeholders_of_decision(approved)
         request_serializer = WalletRechargeRequestSerializer(approved)
-        target = approved.department.name if approved.department_id else "wallet"
         return Response(
             {
                 "request": request_serializer.data,
-                "message": f"Wallet recharge request approved. ₹{approved.amount} credited to {target}.",
+                "message": approval_result_message(approved),
             },
             status=status.HTTP_200_OK,
         )

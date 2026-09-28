@@ -7,6 +7,11 @@ from the SRIC cash-book (wallet_recharge_import / wallet_cashbook_mailbox).
 SRIC decline of a Project Grant request (before or after approval) cancels it and treats the
 amount as an auto-approved credit; the next approved recharge for the same wallet and
 department recovers that credit first.
+
+Running credit (outstanding decline credit, a negative sub-wallet balance, or an active
+admin-approved credit facility): an SRIC approval of a Project Grant request does not credit the
+wallet until the SRIC cash-book confirms the funds, and an SRIC decline only cancels the request —
+no second credit is given.
 """
 
 from __future__ import annotations
@@ -79,8 +84,8 @@ def already_processed_page(status: str, cancellation_source: str = "") -> dict[s
                 "page_code": "declined_to_credit",
                 "title": "Declined by SRIC",
                 "message": (
-                    "This request has already been declined by the SRIC Office. The amount is being "
-                    "treated as an auto-approved credit for the faculty member. No further action is required."
+                    "This request has already been declined by the SRIC Office and stands cancelled. "
+                    "No further action is required."
                 ),
             }
         if cancellation_source == WalletRechargeCancellationSource.DEPT_ADMIN:
@@ -248,8 +253,52 @@ def can_sric_decline(recharge_request: WalletRechargeRequest) -> bool:
         recharge_request.status == WalletRechargeRequestStatus.APPROVED
         and not recharge_request.fund_receipt_verified
         and not (recharge_request.cashbook_receipt_no or "").strip()
-        and decline_converts_to_credit(recharge_request)
+        and (bool(recharge_request.wallet_credit_pending) or decline_converts_to_credit(recharge_request))
     )
+
+
+def running_credit_summary(wallet, department_id) -> dict[str, Decimal]:
+    """Credit currently in use on (wallet, department): SRIC-decline credit, overdraft, admin credit facility."""
+    zero = Decimal("0.00")
+    decline_credit = outstanding_decline_credit(wallet.pk, department_id) if department_id else zero
+    balance = (
+        SubWallet.objects.filter(wallet=wallet, department_id=department_id)
+        .values_list("balance", flat=True)
+        .first()
+    )
+    overdraft = -Decimal(balance) if balance is not None and balance < 0 else zero
+    facility = zero
+    try:
+        from django.db.models import Sum
+
+        from iic_booking.users.models.wallet_credit_facility import (
+            ACTIVE_CREDIT_BLOCKING_STATUSES,
+            WalletCreditFacility,
+        )
+        from iic_booking.users.wallet_credit_facility_v2 import feature_enabled
+
+        if department_id and getattr(wallet, "user_id", None) and feature_enabled():
+            facility = (
+                WalletCreditFacility.objects.filter(
+                    user_id=wallet.user_id,
+                    department_id=department_id,
+                    status__in=list(ACTIVE_CREDIT_BLOCKING_STATUSES),
+                    outstanding_amount__gt=0,
+                ).aggregate(total=Sum("outstanding_amount"))["total"]
+                or zero
+            )
+    except Exception:
+        logger.exception("Could not read wallet credit facility for wallet %s", getattr(wallet, "pk", None))
+    return {
+        "decline_credit": decline_credit,
+        "overdraft": overdraft,
+        "credit_facility": facility,
+        "total": decline_credit + overdraft + facility,
+    }
+
+
+def has_running_credit(wallet, department_id) -> bool:
+    return running_credit_summary(wallet, department_id)["total"] > 0
 
 
 def decline_reason_choices(recharge_request: WalletRechargeRequest) -> list[dict[str, str]]:
@@ -304,6 +353,10 @@ def serialize_request_public(recharge_request: WalletRechargeRequest) -> dict[st
         "decline_credit_amount": str(recharge_request.decline_credit_amount or Decimal("0.00")),
         "decline_credit_outstanding": str(recharge_request.decline_credit_outstanding or Decimal("0.00")),
         "credit_settled_amount": str(recharge_request.credit_settled_amount or Decimal("0.00")),
+        "wallet_credit_pending": bool(recharge_request.wallet_credit_pending),
+        "wallet_credited_at": (
+            recharge_request.wallet_credited_at.isoformat() if recharge_request.wallet_credited_at else None
+        ),
         "rejection_reason_choices": decline_reason_choices(recharge_request),
     }
 
@@ -344,7 +397,9 @@ def _lock_for_decline(recharge_request: WalletRechargeRequest) -> WalletRecharge
     return locked
 
 
-def _recover_outstanding_decline_credits(locked: WalletRechargeRequest) -> tuple[Decimal, list[str]]:
+def _recover_outstanding_decline_credits(
+    locked: WalletRechargeRequest, budget: Optional[Decimal] = None
+) -> tuple[Decimal, list[str]]:
     """Apply this approval's amount to older SRIC-declined credits (same wallet + department), oldest first."""
     credits = list(
         WalletRechargeRequest.objects.select_for_update(of=("self",))
@@ -356,7 +411,7 @@ def _recover_outstanding_decline_credits(locked: WalletRechargeRequest) -> tuple
         .exclude(pk=locked.pk)
         .order_by("responded_at", "pk")
     )
-    remaining = Decimal(locked.amount)
+    remaining = Decimal(locked.amount) if budget is None else Decimal(budget)
     recovered = Decimal("0.00")
     refs: list[str] = []
     now = timezone.now()
@@ -404,39 +459,27 @@ def approve_request(
     if not locked.department_id:
         raise ValueError("Department is required for recharge requests")
 
-    description = f"Wallet recharge approved — {locked.request_id_display}"
-    if locked.project_grant_code:
-        description += f" (project grant {locked.project_grant_code})"
-
-    sub_wallet, _ = SubWallet.objects.get_or_create(
-        wallet=locked.wallet,
-        department=locked.department,
-        defaults={"balance": Decimal("0.00")},
-    )
-    sub_wallet.credit(locked.amount, description, related_user=locked.user)
-
-    recovered, credit_refs = _recover_outstanding_decline_credits(locked)
-    if recovered > 0:
-        # The declined amount was already spendable, so recovering it must not push an older
-        # (legacy) overdraft balance any lower than it was before this approval.
-        floor = min(Decimal("0.00"), sub_wallet.balance - Decimal(locked.amount))
-        sub_wallet.debit(
-            recovered,
-            f"Credit recovered — {locked.transaction_number} adjusted against auto-approved credit "
-            f"{', '.join(credit_refs)}",
-            related_user=locked.user,
-            minimum_balance_after=floor,
-        )
+    running = running_credit_summary(locked.wallet, locked.department_id)
+    defer = not _is_cash_mode(locked) and running["total"] > 0
+    now = timezone.now()
+    adjusted = {"decline_credit": Decimal("0.00"), "overdraft": Decimal("0.00"), "refs": []}
+    if not defer:
+        description = f"Wallet recharge approved — {locked.request_id_display}"
+        if locked.project_grant_code:
+            description += f" (project grant {locked.project_grant_code})"
+        adjusted = _credit_wallet_and_adjust(locked, description)
 
     email = _actor_email(actor, actor_email) or "sric-approval"
     locked.status = WalletRechargeRequestStatus.APPROVED
     locked.approved_by_email = email
     locked.processed_by = actor if getattr(actor, "pk", None) else None
     locked.response_message = (response_message or "").strip()
-    locked.responded_at = timezone.now()
+    locked.responded_at = now
     locked.credit_facility_status = WalletRechargeCreditFacilityStatus.INACTIVE
     locked.credit_facility_opted_in = False
-    locked.credit_settled_amount = recovered
+    locked.credit_settled_amount = adjusted["decline_credit"] + adjusted["overdraft"]
+    locked.wallet_credit_pending = defer
+    locked.wallet_credited_at = None if defer else now
     locked.save(
         update_fields=[
             "status",
@@ -447,25 +490,106 @@ def approve_request(
             "credit_facility_status",
             "credit_facility_opted_in",
             "credit_settled_amount",
+            "wallet_credit_pending",
+            "wallet_credited_at",
             "updated_at",
         ]
     )
 
+    message = locked.response_message
+    if defer:
+        note = (
+            f"Running credit ₹{running['total']:,.2f}: wallet will be credited when the SRIC cash-book "
+            "confirms the funds."
+        )
+        message = f"{message} {note}".strip()
     append_audit_log(
         locked,
-        action="approved",
+        action="approved_credit_deferred" if defer else "approved",
         from_status=WalletRechargeRequestStatus.PENDING,
         to_status=WalletRechargeRequestStatus.APPROVED,
         actor=actor,
         actor_email=email,
-        message=locked.response_message,
+        message=message,
         metadata={
             "amount": str(locked.amount),
-            "credit_recovered": str(recovered),
-            "credit_refs": credit_refs,
+            "wallet_credit_deferred": defer,
+            "running_credit": {k: str(v) for k, v in running.items()},
+            "credit_recovered": str(adjusted["decline_credit"]),
+            "overdraft_adjusted": str(adjusted["overdraft"]),
+            "credit_refs": adjusted["refs"],
         },
     )
     return locked
+
+
+def _credit_wallet_and_adjust(locked: WalletRechargeRequest, description: str) -> dict[str, Any]:
+    """Credit the full amount, then settle running credit: overdraft first (via the balance), then decline credits."""
+    amount = Decimal(locked.amount)
+    sub_wallet, _ = SubWallet.objects.get_or_create(
+        wallet=locked.wallet,
+        department=locked.department,
+        defaults={"balance": Decimal("0.00")},
+    )
+    balance_before = Decimal(sub_wallet.balance)
+    sub_wallet.credit(amount, description, related_user=locked.user)
+    overdraft_adjusted = min(amount, -balance_before) if balance_before < 0 else Decimal("0.00")
+
+    budget = amount - overdraft_adjusted
+    recovered, refs = (Decimal("0.00"), [])
+    if budget > 0:
+        recovered, refs = _recover_outstanding_decline_credits(locked, budget=budget)
+    if recovered > 0:
+        # The declined amount was already spendable; recovering it must never push the
+        # balance below where it stood before this recharge.
+        floor = min(Decimal("0.00"), sub_wallet.balance - budget)
+        sub_wallet.debit(
+            recovered,
+            f"Credit recovered — {locked.transaction_number} adjusted against auto-approved credit "
+            f"{', '.join(refs)}",
+            related_user=locked.user,
+            minimum_balance_after=floor,
+        )
+    return {"decline_credit": recovered, "overdraft": overdraft_adjusted, "refs": refs}
+
+
+def apply_deferred_wallet_credit(
+    locked: WalletRechargeRequest, *, actor=None, actor_email: str = "", source: str = ""
+) -> dict[str, Any]:
+    """Credit a deferred approval once SRIC funds are confirmed. Caller holds the row lock inside a transaction."""
+    if not locked.wallet_credit_pending or locked.status != WalletRechargeRequestStatus.APPROVED:
+        return {}
+    adjusted = _credit_wallet_and_adjust(
+        locked,
+        f"Wallet recharge {locked.transaction_number} credited on SRIC fund receipt"
+        + (f" ({source})" if source else ""),
+    )
+    locked.wallet_credit_pending = False
+    locked.wallet_credited_at = timezone.now()
+    locked.credit_settled_amount = adjusted["decline_credit"] + adjusted["overdraft"]
+    locked.save(
+        update_fields=["wallet_credit_pending", "wallet_credited_at", "credit_settled_amount", "updated_at"]
+    )
+    settled = locked.credit_settled_amount
+    append_audit_log(
+        locked,
+        action="wallet_credited_on_fund_receipt",
+        from_status=locked.status,
+        to_status=locked.status,
+        actor=actor,
+        actor_email=_actor_email(actor, actor_email) or "system",
+        message=(
+            f"₹{locked.amount} credited after SRIC fund receipt; ₹{settled} adjusted against running credit."
+        ),
+        metadata={
+            "amount": str(locked.amount),
+            "credit_recovered": str(adjusted["decline_credit"]),
+            "overdraft_adjusted": str(adjusted["overdraft"]),
+            "credit_refs": adjusted["refs"],
+            "source": source,
+        },
+    )
+    return adjusted
 
 
 @transaction.atomic
@@ -490,6 +614,25 @@ def reject_request(
     message = text if code == WalletRechargeRejectionReason.OTHER else (text or label)
 
     email = _actor_email(actor, actor_email) or "sric-rejection"
+    eligible = locked.user_otp_verified and locked.department_id and not _is_cash_mode(locked)
+    if eligible and (
+        locked.wallet_credit_pending
+        or (
+            locked.status == WalletRechargeRequestStatus.PENDING
+            and decline_converts_to_credit(locked)
+            and has_running_credit(locked.wallet, locked.department_id)
+        )
+    ):
+        return _decline_to_credit(
+            locked,
+            code=code,
+            text=text,
+            message=message,
+            label=label,
+            actor=actor,
+            email=email,
+            new_credit=False,
+        )
     if decline_converts_to_credit(locked) and locked.user_otp_verified and locked.department_id:
         return _decline_to_credit(
             locked, code=code, text=text, message=message, label=label, actor=actor, email=email
@@ -544,12 +687,20 @@ def _decline_to_credit(
     label: str,
     actor,
     email: str,
+    new_credit: bool = True,
 ) -> WalletRechargeRequest:
-    """Cancel the request and treat its amount as an auto-approved credit (no admin approval)."""
+    """Cancel the request; with new_credit its amount becomes an auto-approved credit (no admin approval).
+
+    new_credit=False is used when a credit is already running: the request is only cancelled and the
+    wallet is not touched (a deferred approval was never credited).
+    """
     from_status = locked.status
     was_pending = from_status == WalletRechargeRequestStatus.PENDING
-    amount = Decimal(locked.amount)
-    if was_pending:
+    amount = Decimal(locked.amount) if new_credit else Decimal("0.00")
+    running_total = (
+        Decimal("0.00") if new_credit else running_credit_summary(locked.wallet, locked.department_id)["total"]
+    )
+    if was_pending and new_credit:
         sub_wallet, _ = SubWallet.objects.get_or_create(
             wallet=locked.wallet,
             department=locked.department,
@@ -571,6 +722,7 @@ def _decline_to_credit(
     locked.responded_at = timezone.now()
     locked.decline_credit_amount = amount
     locked.decline_credit_outstanding = amount
+    locked.wallet_credit_pending = False
     locked.save(
         update_fields=[
             "status",
@@ -583,12 +735,13 @@ def _decline_to_credit(
             "responded_at",
             "decline_credit_amount",
             "decline_credit_outstanding",
+            "wallet_credit_pending",
             "updated_at",
         ]
     )
     append_audit_log(
         locked,
-        action="declined_to_credit",
+        action="declined_to_credit" if new_credit else "declined_credit_already_running",
         from_status=from_status,
         to_status=WalletRechargeRequestStatus.CANCELLED,
         actor=actor,
@@ -597,7 +750,8 @@ def _decline_to_credit(
         metadata={
             "rejection_reason_code": code,
             "credit_amount": str(amount),
-            "wallet_credited_now": was_pending,
+            "wallet_credited_now": was_pending and new_credit,
+            "running_credit": str(running_total),
         },
     )
     return locked
@@ -982,7 +1136,33 @@ def verify_fund_receipt(
             else None
         },
     )
+    if locked.wallet_credit_pending:
+        apply_deferred_wallet_credit(locked, actor=actor, source="fund receipt verified")
+        credited = locked
+        transaction.on_commit(lambda: send_deferred_credit_applied_notification(credited))
     return locked
+
+
+def overdue_fund_receipt_requests(queryset, days: Optional[int] = None) -> tuple[int, list]:
+    """Requests with no SRIC cash-book match `days` after approval (or after submission while still pending)."""
+    from datetime import timedelta
+
+    from django.db.models import Q
+
+    if days is None:
+        days = WalletSricSettings.get_singleton().fund_receipt_overdue_days or 15
+    cutoff = timezone.now() - timedelta(days=days)
+    rows = list(
+        queryset.filter(fund_receipt_verified=False, cashbook_receipt_no="")
+        .filter(
+            Q(status=WalletRechargeRequestStatus.APPROVED, responded_at__lte=cutoff)
+            | Q(status=WalletRechargeRequestStatus.PENDING, user_otp_verified=True, created_at__lte=cutoff)
+        )
+        .select_related("user", "department")
+        .prefetch_related(None)
+        .order_by("created_at")
+    )
+    return days, rows
 
 
 def outstanding_decline_credit(wallet_id, department_id) -> Decimal:
@@ -1007,7 +1187,11 @@ def send_decline_credit_notification(recharge_request: WalletRechargeRequest) ->
     if reason_label and reason_label != reason:
         reason = f"{reason_label}: {reason}"
     dept_name = recharge_request.department.name if recharge_request.department_id else "—"
-    outstanding = outstanding_decline_credit(recharge_request.wallet_id, recharge_request.department_id)
+    new_credit = (recharge_request.decline_credit_amount or Decimal("0.00")) > 0
+    if new_credit:
+        outstanding = outstanding_decline_credit(recharge_request.wallet_id, recharge_request.department_id)
+    else:
+        outstanding = running_credit_summary(recharge_request.wallet, recharge_request.department_id)["total"]
     outstanding_str = f"{outstanding:,.2f}"
 
     to = _unique_emails(
@@ -1016,7 +1200,38 @@ def send_decline_credit_notification(recharge_request: WalletRechargeRequest) ->
     if not to:
         return
     cc = _unique_emails(get_sric_recipient_emails(), exclude=to)
-    subject = f"[{txn}] Wallet Recharge Declined by SRIC — ₹{amount_str} treated as auto-approved credit"
+    if new_credit:
+        subject = f"[{txn}] Wallet Recharge Declined by SRIC — ₹{amount_str} treated as auto-approved credit"
+        policy = (
+            f"As per the IIC wallet policy, the request stands cancelled and the amount of ₹{amount_str} is "
+            f"treated as an auto-approved credit facility on your {dept_name} wallet. No administrator "
+            "approval is needed and your bookings are not interrupted."
+        )
+        policy_html = (
+            f"As per the IIC wallet policy, the request stands cancelled and the amount of "
+            f"<strong>₹{amount_str}</strong> is treated as an <strong>auto-approved credit facility</strong> "
+            f"on your {escape(dept_name)} wallet. No administrator approval is needed and your bookings are "
+            "not interrupted."
+        )
+        next_step = (
+            "Please raise a fresh recharge request with the correct project details. When it is approved, "
+            "the outstanding credit is adjusted automatically before any balance is added to your wallet."
+        )
+    else:
+        subject = f"[{txn}] Wallet Recharge Declined by SRIC — request cancelled (credit already running)"
+        policy = (
+            f"As a credit facility is already running on your {dept_name} wallet, no new credit is given "
+            "against this request. The request stands cancelled and your wallet balance is unchanged."
+        )
+        policy_html = (
+            f"As a credit facility is <strong>already running</strong> on your {escape(dept_name)} wallet, "
+            "<strong>no new credit is given</strong> against this request. The request stands cancelled "
+            "and your wallet balance is unchanged."
+        )
+        next_step = (
+            "Please raise a fresh recharge request with the correct project details. When its funds are "
+            "received from the SRIC Office, the amount is credited and adjusted against the outstanding credit."
+        )
     text = f"""Dear {name},
 
 Your wallet recharge request {txn} for ₹{amount_str} (department: {dept_name}, project grant code:
@@ -1024,14 +1239,11 @@ Your wallet recharge request {txn} for ₹{amount_str} (department: {dept_name},
 
 Reason: {reason}
 
-As per the IIC wallet policy, the request stands cancelled and the amount of ₹{amount_str} is treated as
-an auto-approved credit facility on your {dept_name} wallet. No administrator approval is needed and your
-bookings are not interrupted.
+{policy}
 
 Outstanding credit on this wallet: ₹{outstanding_str}
 
-Please raise a fresh recharge request with the correct project details. When it is approved, the
-outstanding credit is adjusted automatically before any balance is added to your wallet.
+{next_step}
 
 Institute Instrumentation Centre, IIT Roorkee
 """
@@ -1044,12 +1256,9 @@ Institute Instrumentation Centre, IIT Roorkee
 project grant code: {escape(recharge_request.project_grant_code or '—')}) has been
 <strong>declined by the SRIC Office</strong>.</p>
 <div class="grant-highlight grant-debit">Reason<span class="grant-code" style="font-size:18px">{escape(reason)}</span></div>
-<p>As per the IIC wallet policy, the request stands cancelled and the amount of <strong>₹{amount_str}</strong>
-is treated as an <strong>auto-approved credit facility</strong> on your {escape(dept_name)} wallet.
-No administrator approval is needed and your bookings are not interrupted.</p>
+<p>{policy_html}</p>
 <div class="amount">Outstanding credit: ₹{outstanding_str}</div>
-<div class="note">Please raise a fresh recharge request with the correct project details. When it is approved,
-the outstanding credit is adjusted automatically before any balance is added to your wallet.</div>
+<div class="note">{escape(next_step)}</div>
 <p>Institute Instrumentation Centre, IIT Roorkee</p>
 </div></body></html>"""
     message = EmailMultiAlternatives(
@@ -1091,6 +1300,105 @@ Institute Instrumentation Centre, IIT Roorkee
     )
 
 
+def _send_faculty_html(recharge_request: WalletRechargeRequest, subject: str, heading: str, paragraphs, amount_line: str) -> None:
+    to = _unique_emails(
+        [
+            recharge_request.user.email,
+            getattr(getattr(recharge_request.wallet, "user", None), "email", ""),
+        ]
+    )
+    if not to:
+        return
+    name = recharge_request.user.name or recharge_request.user.email
+    txn = recharge_request.transaction_number
+    text = "\n\n".join([f"Dear {name},", *paragraphs, amount_line, "Institute Instrumentation Centre, IIT Roorkee"])
+    body_html = "".join(f"<p>{escape(p)}</p>" for p in paragraphs)
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
+<h2>{escape(heading)}</h2>
+<div class="txn">Transaction ID: {escape(txn)}</div>
+<p>Dear {escape(name)},</p>
+{body_html}
+<div class="amount">{escape(amount_line)}</div>
+<p>Institute Instrumentation Centre, IIT Roorkee</p>
+</div></body></html>"""
+    message = EmailMultiAlternatives(subject=subject, body=text, from_email=settings.DEFAULT_FROM_EMAIL, to=to)
+    message.attach_alternative(html, "text/html")
+    message.send(fail_silently=True)
+
+
+def send_approved_pending_funds_notification(recharge_request: WalletRechargeRequest) -> None:
+    """SRIC approved while a credit is running: wallet is credited only after the SRIC fund receipt."""
+    txn = recharge_request.transaction_number
+    amount_str = f"{recharge_request.amount:,.2f}"
+    dept_name = recharge_request.department.name if recharge_request.department_id else "—"
+    running = running_credit_summary(recharge_request.wallet, recharge_request.department_id)["total"]
+    _send_faculty_html(
+        recharge_request,
+        f"[{txn}] Wallet Recharge Approved by SRIC — credit on receipt of funds",
+        "Wallet Recharge Approved by SRIC",
+        [
+            f"Your wallet recharge request {txn} for ₹{amount_str} (department: {dept_name}, project grant "
+            f"code: {recharge_request.project_grant_code or '—'}) has been approved by the SRIC Office.",
+            "As a credit facility is currently running on this wallet, the amount will be credited to your "
+            "wallet only after the SRIC Office confirms the actual transfer of funds (SRIC cash-book email). "
+            "At that time it is adjusted against your outstanding credit and any balance is added to your wallet.",
+            "No action is needed from you.",
+        ],
+        f"Outstanding credit today: ₹{running:,.2f}",
+    )
+
+
+def send_deferred_credit_applied_notification(recharge_request: WalletRechargeRequest) -> None:
+    txn = recharge_request.transaction_number
+    amount = Decimal(recharge_request.amount)
+    settled = recharge_request.credit_settled_amount or Decimal("0.00")
+    dept_name = recharge_request.department.name if recharge_request.department_id else "—"
+    running = running_credit_summary(recharge_request.wallet, recharge_request.department_id)["total"]
+    _send_faculty_html(
+        recharge_request,
+        f"[{txn}] Funds received — ₹{amount:,.2f} credited, ₹{settled:,.2f} adjusted against credit",
+        "Wallet Recharge Credited",
+        [
+            f"The SRIC Office has confirmed receipt of funds for your wallet recharge {txn} "
+            f"(₹{amount:,.2f}, department: {dept_name}).",
+            f"₹{amount:,.2f} has been credited to your wallet. ₹{settled:,.2f} of it has been adjusted against "
+            f"your outstanding credit and ₹{amount - settled:,.2f} has been added to your available balance.",
+        ],
+        f"Outstanding credit remaining: ₹{running:,.2f}",
+    )
+
+
+def approval_result_message(recharge_request: WalletRechargeRequest) -> str:
+    amount = recharge_request.amount
+    if recharge_request.wallet_credit_pending:
+        return (
+            f"Approved. The faculty member has a running credit, so ₹{amount} will be credited to the wallet "
+            "and adjusted against that credit only after the SRIC cash-book confirms receipt of the funds."
+        )
+    message = f"Approved. ₹{amount} credited to the department wallet."
+    if (recharge_request.credit_settled_amount or Decimal("0.00")) > 0:
+        message += (
+            f" ₹{recharge_request.credit_settled_amount} of it was adjusted against the faculty member's "
+            "outstanding credit."
+        )
+    return message
+
+
+def decline_result_message(recharge_request: WalletRechargeRequest) -> str:
+    if recharge_request.status != WalletRechargeRequestStatus.CANCELLED:
+        return "Wallet recharge request declined."
+    if (recharge_request.decline_credit_amount or Decimal("0.00")) > 0:
+        return (
+            "Declined. The request is cancelled and the amount is treated as an auto-approved credit for the "
+            "faculty member, who has been informed with the selected reason."
+        )
+    return (
+        "Declined. The faculty member already has a running credit, so no new credit is given; the request "
+        "stands cancelled and the faculty member has been informed with the selected reason."
+    )
+
+
 def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> None:
     """Email requesting user, account in-charge, and department administrators.
 
@@ -1107,9 +1415,15 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
             status_key == WalletRechargeRequestStatus.CANCELLED
             and recharge_request.cancellation_source == WalletRechargeCancellationSource.SRIC_DECLINED
         )
+        credit_deferred = (
+            status_key == WalletRechargeRequestStatus.APPROVED and bool(recharge_request.wallet_credit_pending)
+        )
+        no_new_credit = declined_to_credit and not (recharge_request.decline_credit_amount or Decimal("0.00")) > 0
         try:
             if declined_to_credit:
                 send_decline_credit_notification(recharge_request)
+            elif credit_deferred:
+                send_approved_pending_funds_notification(recharge_request)
             elif status_key == WalletRechargeRequestStatus.APPROVED:
                 send_wallet_recharge_request_notifications(recharge_request, "APPROVED")
                 try:
@@ -1173,8 +1487,12 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
             return
 
         status_label = recharge_request.get_status_display()
-        if declined_to_credit:
+        if no_new_credit:
+            status_label = "Declined by SRIC (cancelled, credit already running)"
+        elif declined_to_credit:
             status_label = "Declined by SRIC (auto-approved credit)"
+        elif credit_deferred:
+            status_label = "Approved by SRIC (wallet credit on fund receipt)"
         txn = getattr(recharge_request, "transaction_number", None) or recharge_request.request_id_display
         amount = recharge_request.amount
         amount_str = f"{amount:,.2f}" if hasattr(amount, "__float__") else str(amount)
@@ -1188,10 +1506,20 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
             reason = f"\nDecline reason: {reason_label or '—'}"
             if recharge_request.response_message and recharge_request.response_message != reason_label:
                 reason += f" — {recharge_request.response_message}"
-        if declined_to_credit:
+        if no_new_credit:
+            reason += (
+                "\nThe faculty member already has a running credit on this wallet, so no new credit is given. "
+                "The request stands cancelled."
+            )
+        elif declined_to_credit:
             reason += (
                 f"\nThe request is cancelled and ₹{amount_str} is treated as an auto-approved credit, "
                 "recovered from the faculty member's next approved recharge for this department."
+            )
+        if credit_deferred:
+            reason += (
+                "\nThe faculty member has a running credit, so the wallet is credited only after the SRIC "
+                "cash-book confirms the funds; the amount is then adjusted against the outstanding credit."
             )
         settled = recharge_request.credit_settled_amount or Decimal("0.00")
         if recharge_request.status == WalletRechargeRequestStatus.APPROVED and settled > 0:

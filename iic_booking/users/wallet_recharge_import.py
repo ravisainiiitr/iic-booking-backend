@@ -466,7 +466,8 @@ def link_cashbook_entry_to_request(
     Apply one cash-book entry to one recharge request, atomically and at most once.
 
     PENDING  -> approve (single wallet credit via approve_request), record receipt, verify fund receipt.
-    APPROVED -> record receipt and verify fund receipt (no credit).
+    APPROVED -> record receipt and verify fund receipt (no credit, unless the approval deferred the
+                wallet credit because of a running credit — then it is credited and adjusted now).
 
     Returns (request, outcome) where outcome is "approved" or "verified".
     Raises CashbookMatchError when the pair is invalid or either side was already consumed.
@@ -476,8 +477,10 @@ def link_cashbook_entry_to_request(
     from .wallet_recharge_workflow import (
         RechargeAlreadyProcessed,
         append_audit_log,
+        apply_deferred_wallet_credit,
         approve_request,
         notify_stakeholders_of_decision,
+        send_deferred_credit_applied_notification,
     )
 
     email = (actor_email or getattr(actor, "email", "") or "sric-cashbook-auto").strip()
@@ -579,12 +582,20 @@ def link_cashbook_entry_to_request(
                     "outcome": outcome,
                 },
             )
+            credited_on_receipt = bool(locked.wallet_credit_pending)
+            if credited_on_receipt:
+                apply_deferred_wallet_credit(
+                    locked, actor=actor, actor_email=email, source=f"cash-book receipt {receipt_no}"
+                )
     except IntegrityError:
         raise CashbookMatchError("This cash-book receipt was already used for another recharge request.")
 
     if outcome == "approved":
         approved_req = locked
         transaction.on_commit(lambda: notify_stakeholders_of_decision(approved_req))
+    elif credited_on_receipt:
+        credited_req = locked
+        transaction.on_commit(lambda: send_deferred_credit_applied_notification(credited_req))
     return locked, outcome
 
 

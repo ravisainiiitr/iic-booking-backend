@@ -93,6 +93,14 @@ class WalletSricSettings(models.Model):
         default="bills@sric.iitr.ac.in",
         help_text=_("Only emails from these senders are read by the automatic cash-book reader."),
     )
+    fund_receipt_overdue_days = models.PositiveSmallIntegerField(
+        _("Flag approved requests without a cash-book match after (days)"),
+        default=15,
+        help_text=_(
+            "Approved recharge requests with no matching SRIC cash-book entry after this many days are "
+            "shown to the Main Administrator and Account In-charge every time they open the dashboard."
+        ),
+    )
 
     class Meta:
         db_table = "users_walletsricsettings"
