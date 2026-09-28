@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 from .image_utils import persist_equipment_image_upload
 from .models import (
     BookingDataShare,
+    CalendarFeedToken,
     Equipment,
     EquipmentAdditionRequest,
     EquipmentCategory,
@@ -2653,6 +2654,20 @@ class EquipmentOperatingTACallAdmin(admin.ModelAdmin):
     raw_id_fields = ["equipment", "semester", "created_by"]
     readonly_fields = ["created_at", "updated_at", "email_sent_at"]
     date_hierarchy = "created_at"
+
+
+@admin.register(CalendarFeedToken)
+class CalendarFeedTokenAdmin(admin.ModelAdmin):
+    """Calendar sync feeds. Deleting a row revokes that user's subscription URL."""
+
+    list_display = ["user", "created_at", "last_accessed_at"]
+    search_fields = ["user__email", "user__name"]
+    raw_id_fields = ["user"]
+    fields = ["user", "created_at", "last_accessed_at"]
+    readonly_fields = ["user", "created_at", "last_accessed_at"]
+
+    def has_add_permission(self, request):
+        return False
 
 
 # @admin.register(ExternalUserQuota)

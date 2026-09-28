@@ -6300,3 +6300,23 @@ class EquipmentAdditionRequest(models.Model):
 
     def __str__(self):
         return f"{self.code} — {self.name} ({self.status})"
+
+
+class CalendarFeedToken(models.Model):
+    """Secret token for a user's read-only booking calendar feed (iCalendar subscription URL)."""
+
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name="calendar_feed_token",
+    )
+    token = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_accessed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("Calendar feed token")
+        verbose_name_plural = _("Calendar feed tokens")
+
+    def __str__(self):
+        return f"Calendar feed for user {self.user_id}"

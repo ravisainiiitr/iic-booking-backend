@@ -403,6 +403,12 @@ from iic_booking.equipment.api_document_views import (
     equipment_proforma_invoice_pdf,
     proforma_invoice_pdf_download,
 )
+from iic_booking.equipment.calendar_sync import (
+    booking_calendar_ics,
+    calendar_feed,
+    calendar_sync_regenerate,
+    calendar_sync_settings,
+)
 from iic_booking.equipment.equipment_addition_requests import (
     equipment_addition_form_choices,
     equipment_addition_request_create,
@@ -1215,6 +1221,10 @@ urlpatterns = router.urls + [
     path("bookings/<int:booking_id>/invoice.pdf", booking_invoice_pdf, name="booking-invoice-pdf"),
     path("bookings/<int:booking_id>/shipping-label.pdf", booking_shipping_label_pdf, name="booking-shipping-label-pdf"),
     path("bookings/<int:booking_id>/return-shipping-label.pdf", booking_return_shipping_label_pdf, name="booking-return-shipping-label-pdf"),
+    path("bookings/<int:booking_id>/calendar.ics", booking_calendar_ics, name="booking-calendar-ics"),
+    path("calendar-sync/", calendar_sync_settings, name="calendar-sync-settings"),
+    path("calendar-sync/regenerate/", calendar_sync_regenerate, name="calendar-sync-regenerate"),
+    path("calendar/feed/<str:token>.ics", calendar_feed, name="calendar-feed"),
     path("equipments/<int:equipment_id>/proforma-invoice.pdf", equipment_proforma_invoice_pdf, name="equipment-proforma-invoice-pdf"),
     path("equipments/<int:pk>/slots/", equipment_daily_slots, name="equipment-daily-slots"),
     path("equipments/<int:pk>/book/", book_equipment, name="book-equipment"),
