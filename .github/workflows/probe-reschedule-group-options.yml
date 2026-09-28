@@ -1,0 +1,96 @@
+# Probe why group members are not offered when rescheduling a booking (read-only, rolled back)
+name: Probe Reschedule Group Options
+
+on:
+  workflow_dispatch:
+    inputs:
+      virtual_booking_id:
+        description: "Booking ID shown to users (e.g. IICULTRA202600003)"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          VBID: ${{ inputs.virtual_booking_id }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e VBID="$VBID" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from django.db import transaction
+          from django.contrib.auth import get_user_model
+          from iic_booking.equipment.models import Booking, Equipment, EquipmentGroup, EquipmentManager
+          from iic_booking.equipment import equipment_group_service as egs
+
+          User = get_user_model()
+          vbid = os.environ["VBID"].strip()
+          for flag in (
+              "EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED",
+              "EQUIPMENT_GROUP_STAFF_CROSS_RESCHEDULING_ENABLED",
+              "EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED",
+          ):
+              print("flag", flag, "=", getattr(settings, flag, "<unset>"))
+
+          with transaction.atomic():
+              b = Booking.objects.select_related("equipment", "equipment__equipment_group", "user").filter(virtual_booking_id=vbid).first()
+              if b is None:
+                  print("booking not found:", vbid)
+                  raise SystemExit(2)
+              eq = b.equipment
+              print("booking", b.pk, vbid, "status=", b.status, "user_type_snapshot=", b.user_type_snapshot,
+                    "owner_type=", b.user.user_type, "charge_profile=", b.charge_profile_id,
+                    "minutes=", b.total_time_minutes, "input_keys=", sorted((b.input_values or {}).keys()))
+              g = eq.equipment_group
+              print("source", eq.pk, eq.code, "status=", eq.status, "dept=", eq.internal_department_id,
+                    "group=", getattr(g, "pk", None), repr(getattr(g, "name", None)), "code=", repr(getattr(g, "code", None)),
+                    "group_cross_resched=", getattr(g, "cross_rescheduling_enabled", None))
+
+              groups = EquipmentGroup.objects.filter(name__icontains="FE-SEM") | EquipmentGroup.objects.filter(code__icontains="FE-SEM")
+              if g is not None:
+                  groups = groups | EquipmentGroup.objects.filter(pk=g.pk)
+              for grp in groups.distinct():
+                  print("group", grp.pk, repr(grp.name), repr(getattr(grp, "code", None)))
+                  for m in Equipment.objects.filter(equipment_group=grp).order_by("equipment_id"):
+                      print("   member", m.pk, m.code, repr(m.name), "status=", m.status, "dept=", m.internal_department_id,
+                            "profile=", m.profile_type)
+
+              actors = []
+              admin = User.objects.filter(user_type="admin", is_active=True).order_by("id").first()
+              if admin:
+                  actors.append(("admin", admin))
+              for em in EquipmentManager.objects.filter(equipment=eq).select_related("manager")[:2]:
+                  actors.append(("oic", em.manager))
+              actors.append(("owner", b.user))
+              members = list(egs.get_group_members(eq)) if eq.equipment_group_id else []
+              print("same-group same-dept members:", [m.code for m in members])
+              for label, actor in actors:
+                  print("actor", label, actor.pk, actor.user_type, "cross_enabled_for=", egs.cross_rescheduling_enabled_for(eq, actor))
+                  for m in Equipment.objects.filter(equipment_group_id=eq.equipment_group_id).exclude(pk=eq.pk) if eq.equipment_group_id else []:
+                      try:
+                          info = egs.reschedule_target_info(b, m, actor=actor)
+                          print("   ", m.code, "ok=", info.get("ok"), "code=", info.get("code"), "reason=", info.get("reason"),
+                                "charge_differs=", info.get("charge_differs"))
+                      except Exception as exc:
+                          print("   ", m.code, "EXCEPTION", type(exc).__name__, str(exc)[:300])
+              transaction.set_rollback(True)
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
