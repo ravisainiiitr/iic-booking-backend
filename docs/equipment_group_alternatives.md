@@ -53,12 +53,12 @@ rules.
 
 Each capability needs its global environment flag **and** its per-group switch.
 
-| Environment flag (default `False`) | Group switch (default off) | Effect |
+| Environment flag | Group switch (default off) | Effect |
 | --- | --- | --- |
-| `EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED` | `alternative_booking_enabled` | Offer alternatives before the waitlist |
+| `EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED` (default `True`; the group switch decides) | `alternative_booking_enabled` | Offer alternatives before the waitlist |
 | (same flag) | `alternative_search_other_slots` | Also offer the earliest slot on other equipment when the same slot is not free |
-| `EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED` (also needs the alternative flag) | `auto_allocation_enabled` | Book the first viable alternative automatically instead of asking |
-| `EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED` | `cross_rescheduling_enabled` | Allow moving a booking to another group member while rescheduling |
+| `EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED` (default `False`) | `auto_allocation_enabled` | Auto-allocate for clients that do not send the user's choice (see below) |
+| `EQUIPMENT_GROUP_CROSS_RESCHEDULING_ENABLED` (default `False`) | `cross_rescheduling_enabled` | Allow moving a booking to another group member while rescheduling |
 
 Per-equipment `alternative_priority` (default 100; lower is offered first) orders the pool.
 
@@ -73,6 +73,16 @@ flags go in the backend `.env` and need a restart of the django and celery conta
 - The frontend sends `offer_group_alternatives: true` to `POST /api/equipments/<id>/book/` only
   when the equipment detail reports `group_alternatives_enabled`. Older clients and the Research
   Copilot never send it, so their behaviour is unchanged.
+- **Booking option "Automatically search and allocate alternate equipment".** Shown under Booking
+  options when the group offers alternatives; sent as `auto_allocate_alternative`.
+  - Ticked: the first viable alternative is booked automatically (see auto-allocation below).
+  - Unticked: the alternatives are shown and the user confirms before anything is booked on another
+    equipment.
+  - When the requested week has no free slot on the chosen equipment, the user can still submit;
+    the request carries no slot selection, so the earliest slot on each other member is searched
+    (independent of `alternative_search_other_slots`).
+  - Requests without `auto_allocate_alternative` keep the group / environment auto-allocation
+    setting.
 - When the booking fails because the slot is unavailable, the waitlist step is deferred and
   same-group alternatives are searched (read-only: no locks, no quota consumption, no slot changes).
   - Eligibility per member: operational, not 3D print, visible to the user, department booking not

@@ -742,7 +742,8 @@ def find_alternatives(*, actor, booking_user, equipment, input_values: dict,
         if window_start is not None and window_end is not None and date_from <= window_date <= date_to:
             slots = find_exact_window_slots(member, minutes, window_start, window_end, **rule_kwargs)
             exact = bool(slots)
-        if not slots and group.alternative_search_other_slots:
+        # Without a requested window (no slot was free to select) the earliest slot is the request.
+        if not slots and (group.alternative_search_other_slots or window_start is None):
             slots = find_earliest_slots(member, minutes, date_from, date_to, not_before=timezone.now(), **rule_kwargs)
         if not slots:
             continue
@@ -847,6 +848,17 @@ def _should_offer_alternatives(request, pk):
     return equipment
 
 
+def user_wants_auto_allocation(data, equipment) -> bool:
+    """
+    The booking user's "Automatically search and allocate alternate equipment" choice. Clients
+    that do not send it keep the group / environment auto-allocation setting.
+    """
+    choice = (data or {}).get("auto_allocate_alternative")
+    if choice is None:
+        return auto_allocation_enabled(equipment)
+    return _truthy(choice)
+
+
 def _internal_book_request(request, body: dict):
     from rest_framework.parsers import JSONParser
     from rest_framework.request import Request
@@ -909,13 +921,13 @@ def run_booking_with_group_alternatives(request, pk, book_impl: Callable):
 
     _log_event("alternatives_found", equipment=equipment.pk, count=len(alternatives))
 
-    if alternatives and auto_allocation_enabled(equipment):
+    if alternatives and user_wants_auto_allocation(data, equipment):
         viable = [a for a in alternatives if not a["missing_required_fields"] and not a["input_error"]]
         if viable:
             choice = viable[0]
             body = _request_body(request)
-            for k in ("offer_group_alternatives", "book_any_available_slots", "book_even_if_single_slot_available",
-                      "request_waitlist_without_slot_selection"):
+            for k in ("offer_group_alternatives", "auto_allocate_alternative", "book_any_available_slots",
+                      "book_even_if_single_slot_available", "request_waitlist_without_slot_selection"):
                 body.pop(k, None)
             body.update(
                 slot_ids=choice["slot_ids"],

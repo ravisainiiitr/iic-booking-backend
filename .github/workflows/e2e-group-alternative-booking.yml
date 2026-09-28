@@ -1,0 +1,21 @@
+# End-to-end check of alternate-equipment booking as the test student. All data is created inside a
+# database transaction that is rolled back, so nothing remains afterwards.
+name: E2E Group Alternative Booking
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Run end-to-end test in the django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/e2e_group_alternative_booking.py
