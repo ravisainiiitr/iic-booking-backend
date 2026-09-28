@@ -150,3 +150,43 @@ def test_without_requested_slots_earliest_slot_is_searched_even_if_group_switch_
         actor=user, booking_user=user, equipment=source, input_values={}, requested_slot_ids=[requested.id]
     )
     assert exact_only == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("urgent_flag", ["rush_relief", "create_as_hold"])
+def test_urgent_bookings_are_not_offered_alternatives(egs_factory, egs_flags_on, urgent_flag):
+    group = egs_factory.group(alternative_booking_enabled=True)
+    user = egs_factory.student()
+    source = egs_factory.equipment(group)
+    target = egs_factory.equipment(group)
+    seen = []
+    body = {"slot_ids": [1], "offer_group_alternatives": True, "auto_allocate_alternative": True, urgent_flag: True}
+
+    with patch.object(egs, "find_alternatives", return_value=[_alt(target)]) as finder, \
+            patch.object(api_views, "add_user_to_waitlist", return_value=(True, 1)), \
+            patch.object(api_views, "_schedule_unsuccessful_booking_waitlist_email"):
+        res = egs.run_booking_with_group_alternatives(_drf_post(user, body), source.pk, _impl(source, seen))
+
+    finder.assert_not_called()
+    assert res.status_code == 400
+    assert [pk for pk, _, _ in seen] == [source.pk]
+
+
+@pytest.mark.django_db
+def test_no_alternative_found_waitlists_the_user_on_the_original_equipment(egs_factory, egs_flags_on):
+    group = egs_factory.group(alternative_booking_enabled=True)
+    user = egs_factory.student()
+    source = egs_factory.equipment(group)
+    seen = []
+    body = {"slot_ids": [1], "offer_group_alternatives": True, "auto_allocate_alternative": True,
+            "waitlist_on_failure": True}
+
+    with patch.object(egs, "find_alternatives", return_value=[]), \
+            patch.object(api_views, "add_user_to_waitlist", return_value=(True, 1)) as wl, \
+            patch.object(api_views, "_schedule_unsuccessful_booking_waitlist_email"):
+        res = egs.run_booking_with_group_alternatives(_drf_post(user, body), source.pk, _impl(source, seen))
+
+    assert res.status_code == 400
+    wl.assert_called_once_with(source, user)
+    assert res.data["waitlist_position"] == 1
+    assert res.data["error"].startswith("Booking Waitlisted")

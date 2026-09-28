@@ -835,7 +835,8 @@ def _should_offer_alternatives(request, pk):
     data = request.data or {}
     if not _truthy(data.get("offer_group_alternatives")) or _truthy(data.get("skip_group_alternatives")):
         return None
-    if _truthy(data.get("create_as_hold")):
+    # Urgent flows are tied to the chosen equipment (Type B hold review, Type A attempt window).
+    if _truthy(data.get("create_as_hold")) or _truthy(data.get("rush_relief")):
         return None
     from .api_views import is_slot_window_peak_waitlist_period
     from .models import Equipment

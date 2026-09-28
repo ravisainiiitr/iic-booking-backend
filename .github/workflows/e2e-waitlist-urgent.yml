@@ -1,0 +1,21 @@
+# End-to-end check of waitlisting, FCFS allocation and urgent Type A / Type B requests with the test
+# accounts. All data is created inside a database transaction that is rolled back.
+name: E2E Waitlist and Urgent Requests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Run end-to-end test in the django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/e2e_waitlist_urgent.py
