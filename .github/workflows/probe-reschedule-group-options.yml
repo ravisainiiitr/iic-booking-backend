@@ -57,14 +57,14 @@ jobs:
                     "minutes=", b.total_time_minutes, "input_keys=", sorted((b.input_values or {}).keys()))
               g = eq.equipment_group
               print("source", eq.pk, eq.code, "status=", eq.status, "dept=", eq.internal_department_id,
-                    "group=", getattr(g, "pk", None), repr(getattr(g, "name", None)), "code=", repr(getattr(g, "code", None)),
+                    "group=", getattr(g, "pk", None), repr(getattr(g, "name", None)),
                     "group_cross_resched=", getattr(g, "cross_rescheduling_enabled", None))
 
-              groups = EquipmentGroup.objects.filter(name__icontains="FE-SEM") | EquipmentGroup.objects.filter(code__icontains="FE-SEM")
+              groups = EquipmentGroup.objects.filter(name__icontains="FE-SEM")
               if g is not None:
                   groups = groups | EquipmentGroup.objects.filter(pk=g.pk)
               for grp in groups.distinct():
-                  print("group", grp.pk, repr(grp.name), repr(getattr(grp, "code", None)))
+                  print("group", grp.pk, repr(grp.name))
                   for m in Equipment.objects.filter(equipment_group=grp).order_by("equipment_id"):
                       print("   member", m.pk, m.code, repr(m.name), "status=", m.status, "dept=", m.internal_department_id,
                             "profile=", m.profile_type)

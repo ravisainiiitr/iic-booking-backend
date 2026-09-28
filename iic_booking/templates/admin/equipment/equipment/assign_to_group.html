@@ -57,7 +57,7 @@
                 <select name="equipment_group" id="id_equipment_group" style="width: 400px;">
                     <option value="">{% trans "--- Remove from group ---" %}</option>
                     {% for group in groups %}
-                    <option value="{{ group.equipment_group_id }}">{{ group.name }} ({{ group.code }})</option>
+                    <option value="{{ group.equipment_group_id }}">{{ group.name }}</option>
                     {% endfor %}
                 </select>
                 <p class="help">

@@ -2800,7 +2800,6 @@ def admin_api_router():
                     | Q(category__name__icontains=search)
                     | Q(category__code__icontains=search)
                     | Q(equipment_group__name__icontains=search)
-                    | Q(equipment_group__code__icontains=search)
                 )
             status_filter = self.request.query_params.get("status", "").strip()
             if status_filter:
@@ -3557,9 +3556,26 @@ def admin_api_router():
                         {"error": GROUP_DEPARTMENT_MISMATCH_MESSAGE, "code": "GROUP_DEPARTMENT_MISMATCH"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-            for field in ("name", "code", "description"):
-                if field in data:
-                    setattr(instance, field, data[field])
+            if "name" in data:
+                from iic_booking.equipment.equipment_group_service import (
+                    GROUP_NAME_TAKEN_MESSAGE,
+                    equipment_group_name_taken,
+                )
+
+                new_name = " ".join(str(data.get("name") or "").split())
+                if not new_name:
+                    return Response(
+                        {"error": "Group name is required.", "code": "GROUP_NAME_REQUIRED"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if equipment_group_name_taken(new_name, exclude_id=instance.pk):
+                    return Response(
+                        {"error": GROUP_NAME_TAKEN_MESSAGE, "code": "GROUP_NAME_TAKEN"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                instance.name = new_name
+            if "description" in data:
+                instance.description = data["description"]
             # Alternative-pool rollout switches: Main Admin only. A None department scope is not enough
             # (External Relations, Org Admin and staff of non-internal departments also have no scope).
             if getattr(request.user, "user_type", None) == UserType.ADMIN or getattr(request.user, "is_superuser", False):

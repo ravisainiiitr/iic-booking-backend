@@ -248,8 +248,8 @@ class Command(BaseCommand):
             defaults={"name": "N1 Concurrency Category", "description": "Phase N.1 SAT"},
         )
         group, _ = EquipmentGroup.objects.get_or_create(
-            code="N1-GRP",
-            defaults={"name": "N1 Quota Group", "description": "Phase N.1 quotas"},
+            name="N1 Quota Group",
+            defaults={"description": "Phase N.1 quotas"},
         )
         EquipmentGroupQuota.objects.update_or_create(
             equipment_group=group,

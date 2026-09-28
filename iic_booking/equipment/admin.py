@@ -1170,25 +1170,40 @@ class EquipmentInline(admin.TabularInline):
         return super().get_formset(request, obj, **kwargs)
 
 
+class EquipmentGroupAdminForm(forms.ModelForm):
+    class Meta:
+        model = EquipmentGroup
+        fields = '__all__'
+
+    def clean_name(self):
+        from .equipment_group_service import GROUP_NAME_TAKEN_MESSAGE, equipment_group_name_taken
+
+        name = " ".join(str(self.cleaned_data.get("name") or "").split())
+        if equipment_group_name_taken(name, exclude_id=getattr(self.instance, "pk", None)):
+            raise forms.ValidationError(GROUP_NAME_TAKEN_MESSAGE)
+        return name
+
+
 @admin.register(EquipmentGroup)
 class EquipmentGroupAdmin(admin.ModelAdmin):
     """Admin for Equipment Group."""
+    form = EquipmentGroupAdminForm
     list_display = [
-        'name', 'code', 'equipment_count',
+        'name', 'equipment_count',
         'alternative_booking_enabled', 'cross_rescheduling_enabled', 'auto_allocation_enabled',
         'created_at',
     ]
     list_filter = [
         'alternative_booking_enabled', 'cross_rescheduling_enabled', 'auto_allocation_enabled', 'created_at',
     ]
-    search_fields = ['name', 'code', 'description']
+    search_fields = ['name', 'description']
     ordering = ['name']
     readonly_fields = ['created_at', 'updated_at', 'global_flag_status']
     inlines = [EquipmentInline, EquipmentGroupQuotaInline]
     
     fieldsets = (
         (_('Basic Information'), {
-            'fields': ('name', 'code', 'description')
+            'fields': ('name', 'description')
         }),
         (_('Alternative equipment pool'), {
             'fields': (
@@ -1265,7 +1280,6 @@ class EquipmentAdmin(admin.ModelAdmin):
         'category__name',
         'category__code',
         'equipment_group__name',
-        'equipment_group__code',
         'parent_equipment__code',
         'parent_equipment__name',
         'internal_department__name',

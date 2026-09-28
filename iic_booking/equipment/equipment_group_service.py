@@ -125,6 +125,97 @@ def group_membership_spans_departments(*, group_id=None, equipment_ids=(), exclu
     return len(departments) > 1
 
 
+GROUP_NAME_TAKEN_MESSAGE = "An equipment group with this name already exists."
+
+
+def normalize_group_name(name) -> str:
+    return " ".join(str(name or "").split()).lower()
+
+
+def equipment_group_name_taken(name, *, exclude_id=None) -> bool:
+    """Groups are identified by name: case and extra spaces do not make a name different."""
+    from .models import EquipmentGroup
+
+    wanted = normalize_group_name(name)
+    if not wanted:
+        return False
+    qs = EquipmentGroup.objects.all()
+    if exclude_id is not None:
+        qs = qs.exclude(pk=exclude_id)
+    return any(normalize_group_name(n) == wanted for n in qs.values_list("name", flat=True))
+
+
+def merge_equipment_groups_by_name(*, apply: bool = False) -> list[dict]:
+    """
+    Fold groups that share a name into one. The kept group is the one with most equipment (lowest id
+    on a tie); it keeps its own quotas, a missing quota type is taken from a duplicate, and switches
+    are OR-ed. Names whose members span departments are skipped. Dry run unless ``apply``.
+    """
+    from collections import defaultdict
+
+    from django.db import transaction
+    from django.db.models import Count
+
+    from .models import Equipment, EquipmentGroup, EquipmentGroupQuota
+
+    switch_fields = (
+        "alternative_booking_enabled",
+        "alternative_search_other_slots",
+        "auto_allocation_enabled",
+        "cross_rescheduling_enabled",
+    )
+    by_name = defaultdict(list)
+    for g in EquipmentGroup.objects.annotate(member_count=Count("equipment")).order_by("equipment_group_id"):
+        by_name[normalize_group_name(g.name)].append(g)
+
+    report = []
+    for name, groups in by_name.items():
+        if len(groups) < 2:
+            continue
+        ids = [g.pk for g in groups]
+        departments = set(
+            Equipment.objects.filter(equipment_group_id__in=ids).values_list("internal_department_id", flat=True)
+        )
+        keep = sorted(groups, key=lambda g: (-g.member_count, g.pk))[0]
+        drop = [g for g in groups if g.pk != keep.pk]
+        entry = {
+            "name": keep.name,
+            "keep_id": keep.pk,
+            "merge_ids": [g.pk for g in drop],
+            "moved_equipment": list(
+                Equipment.objects.filter(equipment_group__in=drop).order_by("equipment_id").values_list("code", flat=True)
+            ),
+            "skipped": None,
+        }
+        if len(departments) > 1:
+            entry["skipped"] = "members belong to different departments"
+            report.append(entry)
+            continue
+        if apply:
+            with transaction.atomic():
+                kept_types = set(EquipmentGroupQuota.objects.filter(equipment_group=keep).values_list("quota_type", flat=True))
+                for g in drop:
+                    for q in EquipmentGroupQuota.objects.filter(equipment_group=g).order_by("id"):
+                        if q.quota_type in kept_types:
+                            q.delete()
+                        else:
+                            q.equipment_group = keep
+                            q.save(update_fields=["equipment_group"])
+                            kept_types.add(q.quota_type)
+                changed = []
+                for field_name in switch_fields:
+                    if not getattr(keep, field_name) and any(getattr(g, field_name) for g in drop):
+                        setattr(keep, field_name, True)
+                        changed.append(field_name)
+                if changed:
+                    keep.save(update_fields=[*changed, "updated_at"])
+                Equipment.objects.filter(equipment_group__in=drop).update(equipment_group=keep)
+                EquipmentGroup.objects.filter(pk__in=[g.pk for g in drop]).delete()
+            _log_event("groups_merged_by_name", name=keep.name, keep=keep.pk, merged=entry["merge_ids"])
+        report.append(entry)
+    return report
+
+
 def get_group_members(equipment, *, exclude_self: bool = True):
     from .models import Equipment
 

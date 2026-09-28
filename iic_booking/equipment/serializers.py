@@ -359,16 +359,26 @@ EQUIPMENT_GROUP_ALTERNATIVE_FIELDS = [
 
 
 class EquipmentGroupSerializer(serializers.ModelSerializer):
-    """Serializer for EquipmentGroup (list/detail)."""
+    """Serializer for EquipmentGroup (list/detail). Groups are identified by name."""
 
     class Meta:
         model = EquipmentGroup
         fields = [
-            'equipment_group_id', 'name', 'code', 'description', 'created_at', 'updated_at',
+            'equipment_group_id', 'name', 'description', 'created_at', 'updated_at',
             *EQUIPMENT_GROUP_ALTERNATIVE_FIELDS,
         ]
         # Switches are changed only via update (Main Admin) or Django admin, never on create.
         read_only_fields = ['equipment_group_id', 'created_at', 'updated_at', *EQUIPMENT_GROUP_ALTERNATIVE_FIELDS]
+
+    def validate_name(self, value):
+        from .equipment_group_service import GROUP_NAME_TAKEN_MESSAGE, equipment_group_name_taken
+
+        value = " ".join(str(value or "").split())
+        if not value:
+            raise serializers.ValidationError("Group name is required.")
+        if equipment_group_name_taken(value, exclude_id=getattr(self.instance, "pk", None)):
+            raise serializers.ValidationError(GROUP_NAME_TAKEN_MESSAGE)
+        return value
 
 
 class EquipmentGroupQuotaSerializer(serializers.ModelSerializer):
@@ -403,7 +413,7 @@ class EquipmentGroupDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = EquipmentGroup
         fields = [
-            'equipment_group_id', 'name', 'code', 'description',
+            'equipment_group_id', 'name', 'description',
             'created_at', 'updated_at',
             *EQUIPMENT_GROUP_ALTERNATIVE_FIELDS,
             'equipment', 'quotas',
@@ -1224,7 +1234,6 @@ class EquipmentListSerializer(serializers.ModelSerializer):
     visibility_group_name = serializers.CharField(source='visibility_group.name', read_only=True, allow_null=True)
     equipment_group_id = serializers.IntegerField(source='equipment_group.equipment_group_id', read_only=True, allow_null=True)
     equipment_group_name = serializers.CharField(source='equipment_group.name', read_only=True, allow_null=True)
-    equipment_group_code = serializers.CharField(source='equipment_group.code', read_only=True, allow_null=True)
     publication_count = serializers.IntegerField(read_only=True, allow_null=True)
     featured_publication_title = serializers.CharField(read_only=True, allow_null=True)
     featured_citation = serializers.CharField(read_only=True, allow_null=True)
@@ -1258,7 +1267,6 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'equipment_group',
             'equipment_group_id',
             'equipment_group_name',
-            'equipment_group_code',
             'publication_count',
             'featured_publication_title',
             'featured_citation',
@@ -1407,7 +1415,6 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     internal_department_code = serializers.CharField(source='internal_department.code', read_only=True, allow_null=True)
     equipment_group_id = serializers.IntegerField(source='equipment_group.equipment_group_id', read_only=True, allow_null=True)
     equipment_group_name = serializers.CharField(source='equipment_group.name', read_only=True, allow_null=True)
-    equipment_group_code = serializers.CharField(source='equipment_group.code', read_only=True, allow_null=True)
     visibility_group_name = serializers.CharField(source='visibility_group.name', read_only=True, allow_null=True)
     specifications = EquipmentSpecificationSerializer(many=True, read_only=True, source='equipment_specifications')
     publications = EquipmentPublicationSerializer(many=True, read_only=True, source='equipment_publications')
@@ -1470,7 +1477,6 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'equipment_group',
             'equipment_group_id',
             'equipment_group_name',
-            'equipment_group_code',
             'enable_multi_mode',
             'parent_equipment',
             'visibility_group',

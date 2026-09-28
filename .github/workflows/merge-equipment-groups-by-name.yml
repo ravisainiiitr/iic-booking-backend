@@ -1,0 +1,42 @@
+# Fold equipment groups that share a name into one group (dry run unless apply=true)
+name: Merge Equipment Groups By Name
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Write the changes (false = dry run)"
+        type: boolean
+        default: false
+
+jobs:
+  merge:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Merge
+        env:
+          APPLY: ${{ inputs.apply }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              if [[ "$APPLY" == "true" ]]; then
+                docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                  python manage.py merge_equipment_groups_by_name --apply
+              else
+                docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                  python manage.py merge_equipment_groups_by_name
+              fi
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

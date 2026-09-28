@@ -73,13 +73,16 @@ class EquipmentGroup(models.Model):
     name = models.CharField(
         max_length=255,
         verbose_name=_('Group Name'),
-        help_text=_('Name of the equipment group'),
+        help_text=_('Name of the equipment group (identifies the group; must be unique)'),
     )
+    # Legacy column kept for old rows; groups are identified by name only.
     code = models.CharField(
         max_length=255,
         unique=True,
-        verbose_name=_('Group Code'),
-        help_text=_('Unique code for the equipment group'),
+        blank=True,
+        null=True,
+        verbose_name=_('Legacy group code'),
+        help_text=_('Not used; groups are identified by name.'),
     )
     description = models.TextField(
         blank=True,
@@ -134,7 +137,7 @@ class EquipmentGroup(models.Model):
         ordering = ['name']
 
     def __str__(self):
-        return f"{self.name} ({self.code})"
+        return self.name
 
 class EquipmentStatus(models.TextChoices):
     """
