@@ -151,6 +151,48 @@ def test_oic_book_for_user_list_is_institute_wide():
     assert staff.status_code in (403, 404)
 
 
+def test_oic_transaction_history_for_other_department_user_shows_own_department_spend():
+    from iic_booking.users.models import Department, SubWallet, SubWalletTransaction, Wallet
+    from iic_booking.users.models.department import DepartmentType
+
+    tag = uuid.uuid4().hex[:4].upper()
+    own = Department.objects.create(name=f"IIC {tag}", code=f"IC{tag}", department_type=DepartmentType.INTERNAL)
+    other = Department.objects.create(name=f"PPE {tag}", code=f"PP{tag}", department_type=DepartmentType.INTERNAL)
+    oic = _user(user_type=UserType.MANAGER, department=own)
+    faculty = _user(user_type=UserType.FACULTY, department=other)
+    wallet, _ = Wallet.objects.get_or_create(user=faculty)
+    own_sw = SubWallet.objects.create(wallet=wallet, department=own, balance=Decimal("100.00"))
+    other_sw = SubWallet.objects.create(wallet=wallet, department=other, balance=Decimal("50.00"))
+    own_txn = SubWalletTransaction.objects.create(
+        sub_wallet=own_sw, transaction_type="debit", amount=Decimal("25.00"), description="Booking #X - IIC eq"
+    )
+    other_txn = SubWalletTransaction.objects.create(
+        sub_wallet=other_sw, transaction_type="debit", amount=Decimal("5.00"), description="Booking #Y - PPE eq"
+    )
+
+    res = _client(oic).get(f"/api/admin/users/{faculty.pk}/transaction-history/")
+    assert res.status_code == 200, getattr(res, "data", res.content)
+    ids = {t["id"] for t in res.data["transactions"]}
+    assert own_txn.pk in ids
+    assert other_txn.pk not in ids
+    assert res.data["scoped_department_names"] == [own.name]
+
+    admin = _user(user_type=UserType.ADMIN)
+    full = _client(admin).get(f"/api/admin/users/{faculty.pk}/transaction-history/")
+    assert full.status_code == 200
+    assert {own_txn.pk, other_txn.pk} <= {t["id"] for t in full.data["transactions"]}
+    assert full.data["scoped_department_names"] is None
+
+    colleague = _user(user_type=UserType.FACULTY, department=own)
+    same = _client(oic).get(f"/api/admin/users/{colleague.pk}/transaction-history/")
+    assert same.status_code == 200
+    assert same.data["scoped_department_names"] is None
+
+    staff = _user(user_type=UserType.OPERATOR, department=other)
+    blocked = _client(oic).get(f"/api/admin/users/{staff.pk}/transaction-history/")
+    assert blocked.status_code == 403
+
+
 # --- Repeat samples -------------------------------------------------------------------------
 
 

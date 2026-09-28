@@ -1431,13 +1431,43 @@ def admin_api_router():
             except (User.DoesNotExist, ValueError, TypeError):
                 return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
+            # OIC: full history for own-department users; for any other bookable end user
+            # (institute-wide book-for-user), only the sub-wallets of the OIC's department and
+            # managed equipment departments, i.e. what was spent on that department's equipment.
+            oic_department_ids = None
             if actor_type == UserType.MANAGER:
                 scope_id = _request_user_scope_id(request)
                 if scope_id is None or user.department_id != scope_id:
-                    raise PermissionDenied("OIC can only view users in their own department.")
+                    bookable_end_user = getattr(user, "user_type", None) not in (
+                        UserType.ADMIN,
+                        UserType.MANAGER,
+                        UserType.OPERATOR,
+                        UserType.OTHER,
+                        UserType.DEPT_ADMIN,
+                        UserType.FINANCE,
+                    )
+                    if not bookable_end_user:
+                        raise PermissionDenied("OIC can only view users in their own department.")
+                    from iic_booking.equipment.models import Equipment
+                    from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
+
+                    oic_department_ids = set(
+                        Equipment.objects.filter(
+                            pk__in=get_equipment_ids_managed_by_oic(actor.id),
+                            internal_department__isnull=False,
+                        ).values_list("internal_department_id", flat=True)
+                    )
+                    if scope_id is not None:
+                        oic_department_ids.add(scope_id)
             elif actor_type == UserType.ORG_ADMIN:
                 if user.department_id != getattr(actor, "department_id", None):
                     raise PermissionDenied("Organization Administrators can only view users in their organization.")
+
+            scoped_department_names = None
+            if oic_department_ids is not None:
+                scoped_department_names = sorted(
+                    Department.objects.filter(id__in=oic_department_ids).values_list("name", flat=True)
+                )
 
             wallet = None
             try:
@@ -1456,9 +1486,12 @@ def admin_api_router():
                     "limit": limit,
                     "offset": offset,
                     "has_wallet": False,
+                    "scoped_department_names": scoped_department_names,
                 }, status=status.HTTP_200_OK)
 
             sub_wallets = list(SubWalletRepository.get_by_wallet(wallet))
+            if oic_department_ids is not None:
+                sub_wallets = [sw for sw in sub_wallets if sw.department_id in oic_department_ids]
             all_transactions = []
             balance_after_map = {}
 
@@ -1490,6 +1523,7 @@ def admin_api_router():
                 "limit": limit,
                 "offset": offset,
                 "has_wallet": True,
+                "scoped_department_names": scoped_department_names,
             }, status=status.HTTP_200_OK)
     class PermissionDefinitionViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
