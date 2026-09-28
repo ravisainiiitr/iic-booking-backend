@@ -8677,6 +8677,9 @@ def list_urgent_booking_requests(request):
     status_filter = request.query_params.get("status", "").strip().upper()
     if status_filter and status_filter in UrgentBookingRequestStatus.values:
         requests_qs = requests_qs.filter(status=status_filter)
+    type_filter = request.query_params.get("request_type", "").strip().upper()
+    if type_filter and type_filter in UrgentBookingRequestType.values:
+        requests_qs = requests_qs.filter(request_type=type_filter)
     limit = min(int(request.query_params.get("limit", 50) or 50), 100)
     offset = int(request.query_params.get("offset", 0) or 0)
     total_count = requests_qs.count()

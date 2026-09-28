@@ -193,6 +193,50 @@ def test_oic_transaction_history_for_other_department_user_shows_own_department_
     assert blocked.status_code == 403
 
 
+# --- Waitlist and urgent requests from the dashboard ---------------------------------------
+
+
+def test_oic_manages_waitlist_of_own_equipment_without_admin_equipment_module():
+    oic = _user(user_type=UserType.MANAGER)
+    mine = _equipment()
+    EquipmentManager.objects.create(equipment=mine, manager=oic)
+    not_mine = _equipment()
+
+    res = _client(oic).get(f"/api/admin/equipment/{mine.pk}/waitlist/")
+    assert res.status_code == 200, getattr(res, "data", res.content)
+    assert _client(oic).get(f"/api/admin/equipment/{not_mine.pk}/waitlist/").status_code == 404
+    assert _client(oic).post(f"/api/admin/equipment/{not_mine.pk}/waitlist-clear/", {}, format="json").status_code == 404
+
+    assert _client(oic).get(f"/api/admin/equipment/{mine.pk}/").status_code == 403
+    student = _user(user_type=UserType.STUDENT)
+    assert _client(student).get(f"/api/admin/equipment/{mine.pk}/waitlist/").status_code == 403
+    unmapped_operator = _user(user_type=UserType.OPERATOR)
+    assert _client(unmapped_operator).get(f"/api/admin/equipment/{mine.pk}/waitlist/").status_code == 404
+
+
+def test_urgent_request_list_filters_by_request_type():
+    from iic_booking.equipment.models import UrgentBookingRequest, UrgentBookingRequestType
+
+    oic = _user(user_type=UserType.MANAGER)
+    eq = _equipment()
+    EquipmentManager.objects.create(equipment=eq, manager=oic)
+    requester = _user(user_type=UserType.FACULTY)
+    type_b = UrgentBookingRequest.objects.create(
+        user=requester, equipment=eq, request_type=UrgentBookingRequestType.REVIEWER_URGENT
+    )
+    type_a = UrgentBookingRequest.objects.create(user=requester, equipment=eq, request_type=UrgentBookingRequestType.NO_SLOT)
+
+    with patch("iic_booking.users.rbac.user_has_permission", return_value=True):
+        only_b = _client(oic).get("/api/urgent-booking-requests/", {"request_type": "reviewer_urgent"})
+        everything = _client(oic).get("/api/urgent-booking-requests/")
+        ignored = _client(oic).get("/api/urgent-booking-requests/", {"request_type": "bogus"})
+    assert only_b.status_code == 200, getattr(only_b, "data", only_b.content)
+    assert [r["id"] for r in only_b.data["urgent_requests"]] == [type_b.pk]
+    assert only_b.data["total_count"] == 1
+    assert {type_a.pk, type_b.pk} <= {r["id"] for r in everything.data["urgent_requests"]}
+    assert ignored.data["total_count"] == everything.data["total_count"]
+
+
 # --- Repeat samples -------------------------------------------------------------------------
 
 
