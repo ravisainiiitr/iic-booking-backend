@@ -1,0 +1,16 @@
+# Read-only: lists exactly which migrations "Migrate Production" would apply. Does NOT modify the database.
+name: Plan Production Migrations
+
+on:
+  workflow_dispatch:
+
+jobs:
+  plan:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: migrate --plan in the django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -w /app "$CID" python manage.py migrate --plan
