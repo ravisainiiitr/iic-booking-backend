@@ -1,0 +1,33 @@
+# Read-only: what serves ports 80/443 on the production host and whether plain http redirects to https.
+# Makes no changes. Used to decide whether only the campus firewall must open port 80 for Google Calendar.
+name: Probe HTTP Port 80
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Listening sockets on 80 / 443
+        run: |
+          (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ':(80|443)\s' || echo "nothing listening on 80/443 (or no permission to list)"
+      - name: Web server processes and containers
+        run: |
+          ps -eo pid,comm,args | grep -Ei 'nginx|traefik|caddy|haproxy|apache|httpd' | grep -v grep || echo "no web server process found"
+          docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}' | grep -Ei ':80->|:443->|nginx|traefik|caddy' || echo "no container publishing 80/443"
+      - name: Local http and https behaviour for the calendar feed path
+        run: |
+          echo "--- http://127.0.0.1 (Host: equip.iitr.ac.in)"
+          curl -sS -o /dev/null -m 10 -w 'status=%{http_code} redirect=%{redirect_url}\n' -H 'Host: equip.iitr.ac.in' http://127.0.0.1/api/calendar/feed/probe-not-a-token.ics || true
+          echo "--- https://127.0.0.1 (Host: equip.iitr.ac.in)"
+          curl -sS -k -o /dev/null -m 10 -w 'status=%{http_code}\n' -H 'Host: equip.iitr.ac.in' https://127.0.0.1/api/calendar/feed/probe-not-a-token.ics || true
+      - name: Public name resolution and addresses
+        run: |
+          getent hosts equip.iitr.ac.in || true
+          echo "host addresses:"; hostname -I 2>/dev/null || true
+          echo "public egress ip:"; curl -sS -m 10 https://checkip.amazonaws.com || true
+      - name: http and https via the public name from this host
+        run: |
+          curl -sS -o /dev/null -m 10 -w 'http  status=%{http_code} redirect=%{redirect_url}\n' http://equip.iitr.ac.in/api/calendar/feed/probe-not-a-token.ics || echo "http via public name failed"
+          curl -sS -o /dev/null -m 10 -w 'https status=%{http_code}\n' https://equip.iitr.ac.in/api/calendar/feed/probe-not-a-token.ics || echo "https via public name failed"
