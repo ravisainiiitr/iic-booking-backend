@@ -1482,6 +1482,7 @@ class EquipmentAdmin(admin.ModelAdmin):
         (_('Basic Information'), {
             'fields': (
                 'name', 'code', 'category', 'equipment_group', 'alternative_priority',
+                'auto_allocate_alternative_default',
                 'enable_multi_mode', 'parent_equipment',
                 'internal_department', 'visibility_group',
                 'profile_type', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',

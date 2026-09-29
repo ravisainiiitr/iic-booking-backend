@@ -548,6 +548,18 @@ class Equipment(models.Model):
         ),
         verbose_name=_('Waitlist queue depth'),
     )
+    auto_allocate_alternative_default = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_('Auto-allocate alternate equipment by default'),
+        help_text=_(
+            'Initial state of "Automatically search and allocate alternate equipment" on the booking page. '
+            'Off (default): if this equipment has no free slot, the user is shown the alternate equipment of the '
+            'same group and asked to confirm before anything is booked. On: the option starts ticked and the '
+            'booking is allocated on the alternate automatically. The user can change it on each booking. '
+            'Applies only when the equipment group offers alternatives.'
+        ),
+    )
     booking_not_utilize_window_hours = models.PositiveIntegerField(
         default=24,
         verbose_name=_('Booking Not Utilize Window (hours)'),
