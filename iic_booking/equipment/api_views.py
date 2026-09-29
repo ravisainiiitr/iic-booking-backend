@@ -1050,10 +1050,49 @@ def _peak_qualified_failed_attempts(user, equipment, days=RUSH_RELIEF_LOOKBACK_D
         log_minutes = local_dt.hour * 60 + local_dt.minute
         return start_minutes <= log_minutes <= start_minutes + peak_minutes
 
+    def resolved_by_alternate(log):
+        info = log.additional_info
+        return isinstance(info, dict) and bool(info.get(ALTERNATE_BOOKING_RESOLVED_KEY))
+
     return [
         log for log in qs
-        if not is_quota_failure(log.failure_reason) and in_peak_window(log.requested_at)
+        if not is_quota_failure(log.failure_reason)
+        and not resolved_by_alternate(log)
+        and in_peak_window(log.requested_at)
     ]
+
+
+ALTERNATE_BOOKING_RESOLVED_KEY = "resolved_by_alternate_booking_id"
+ALTERNATE_ATTEMPT_LINK_MINUTES = 30
+
+
+def _mark_attempt_resolved_by_alternate(*, user, source_equipment_id, booking):
+    """
+    The failed attempt on the original equipment that led to this Equipment Group alternate booking
+    no longer counts toward Type A rush relief: the user was served on the alternate.
+    """
+    from datetime import timedelta
+    from django.utils import timezone
+
+    log = (
+        BookingAttemptLog.objects.filter(
+            user=user,
+            equipment_id=source_equipment_id,
+            outcome=BookingAttemptOutcome.FAILED,
+            requested_at__gte=timezone.now() - timedelta(minutes=ALTERNATE_ATTEMPT_LINK_MINUTES),
+        )
+        .order_by("-requested_at")
+        .first()
+    )
+    if log is None:
+        return None
+    info = log.additional_info if isinstance(log.additional_info, dict) else {}
+    if info.get(ALTERNATE_BOOKING_RESOLVED_KEY):
+        return None
+    info[ALTERNATE_BOOKING_RESOLVED_KEY] = booking.booking_id
+    log.additional_info = info
+    log.save(update_fields=["additional_info"])
+    return log
 
 
 def _record_type_a_rush_relief_usage(*, user, equipment, booking=None):
@@ -4693,6 +4732,9 @@ def _book_equipment_impl(request, pk):
                     )
                 DailySlot.objects.filter(id__in=slot_ids).update(booking=booking, status=SlotStatus.BOOKED)
                 perf.mark("daily_slots_marked_booked")
+                created_metadata = _booking_created_event_metadata(
+                    request, equipment, atmosphere_sensitive_sample=atmosphere_sensitive_sample
+                )
                 create_booking_event(
                     booking=booking,
                     event_type=BookingEventType.CREATED,
@@ -4708,12 +4750,23 @@ def _book_equipment_impl(request, pk):
                         atmosphere_sensitive_sample=atmosphere_sensitive_sample,
                     ),
                     new_status=booking.status,
-                    metadata=_booking_created_event_metadata(
-                        request, equipment, atmosphere_sensitive_sample=atmosphere_sensitive_sample
-                    ),
+                    metadata=created_metadata,
                     # HOLD / pending payment: do not send booking-confirmed notifications yet.
                     send_notification=not create_as_hold and amount_due <= 0,
                 )
+                if created_metadata and created_metadata.get("alternative_of_equipment_id"):
+                    try:
+                        with transaction.atomic():
+                            _mark_attempt_resolved_by_alternate(
+                                user=booking_user,
+                                source_equipment_id=created_metadata["alternative_of_equipment_id"],
+                                booking=booking,
+                            )
+                    except Exception:
+                        logger.exception(
+                            "Failed to mark source attempt resolved for alternate booking %s",
+                            getattr(booking, "booking_id", None),
+                        )
                 if rush_relief and not create_as_hold:
                     try:
                         _record_type_a_rush_relief_usage(
