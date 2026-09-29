@@ -18,23 +18,28 @@ jobs:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Grep Apache and django logs
+        shell: bash
         env:
           PROBE_EQ: ${{ github.event.inputs.equipment_id }}
           SINCE: ${{ github.event.inputs.since_minutes }}
         run: |
-          set -uo pipefail
+          set +e
           mask() { sed -E 's/(token|access|key|signature|Signature|X-Amz-[A-Za-z]+)=[^&" ]*/\1=***/g'; }
           PAT="/api/equipments/${PROBE_EQ}(/|\?| )"
-          echo "=== apache access logs (last matches) ==="
-          for f in /var/log/apache2/*access*.log; do
-            [ -r "$f" ] || { sudo -n test -r "$f" 2>/dev/null || continue; }
-            echo "--- $f"
-            (cat "$f" 2>/dev/null || sudo -n cat "$f" 2>/dev/null) | grep -E "$PAT" | tail -n 80 | mask
+          readf() { cat "$1" 2>/dev/null || sudo -n cat "$1" 2>/dev/null; }
+          echo "=== apache log files ==="
+          ls -la /var/log/apache2/ 2>&1 | head -n 40
+          for f in /var/log/apache2/*.log; do
+            case "$f" in *error*) continue;; esac
+            n=$(readf "$f" | grep -cE "$PAT")
+            echo "--- $f matches=$n"
+            [ "${n:-0}" -gt 0 ] && readf "$f" | grep -E "$PAT" | tail -n 60 | mask
           done
           echo "=== django container log ==="
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           if [ -n "$CID" ]; then
-            docker logs --since "${SINCE}m" "$CID" 2>&1 | grep -E "$PAT|equipments/${PROBE_EQ}/" | tail -n 80 | mask
+            docker logs --since "${SINCE}m" "$CID" 2>&1 | grep -E "equipments/${PROBE_EQ}([/? ]|$)" | tail -n 80 | mask
             echo "=== django errors (last ${SINCE}m) ==="
             docker logs --since "${SINCE}m" "$CID" 2>&1 | grep -E -A 25 'Traceback|Internal Server Error' | tail -n 150 | mask
           fi
+          exit 0
