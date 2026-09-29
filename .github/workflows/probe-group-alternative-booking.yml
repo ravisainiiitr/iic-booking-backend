@@ -1,0 +1,62 @@
+# Show why the "allocate alternate equipment" booking option is or is not offered for equipment (read-only)
+name: Probe Group Alternative Booking
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment_codes:
+        description: "Comma-separated equipment codes (e.g. TGA/DTA [A],TGA/DTA [B])"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          CODES: ${{ inputs.equipment_codes }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e CODES="$CODES" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from iic_booking.equipment.models import Equipment
+          from iic_booking.equipment import equipment_group_service as egs
+
+          for flag in ("EQUIPMENT_GROUP_ALTERNATIVE_BOOKING_ENABLED", "EQUIPMENT_GROUP_AUTO_ALLOCATION_ENABLED"):
+              print("flag", flag, "=", getattr(settings, flag, "<unset>"))
+
+          for code in [c.strip() for c in os.environ["CODES"].split(",") if c.strip()]:
+              eq = Equipment.objects.select_related("equipment_group").filter(code=code).first()
+              if eq is None:
+                  print("equipment not found:", repr(code))
+                  continue
+              g = eq.equipment_group
+              print("equipment", eq.pk, repr(eq.code), "status=", eq.status, "dept=", eq.internal_department_id,
+                    "profile=", eq.profile_type, "auto_allocate_default=", eq.auto_allocate_alternative_default)
+              print("   group", getattr(g, "pk", None), repr(getattr(g, "name", None)),
+                    "use_as_alternatives=", getattr(g, "alternative_booking_enabled", None),
+                    "auto_allocate=", getattr(g, "auto_allocation_enabled", None),
+                    "cross_resched=", getattr(g, "cross_rescheduling_enabled", None))
+              print("   alternative_booking_enabled()=", egs.alternative_booking_enabled(eq))
+              if g is not None:
+                  for m in Equipment.objects.filter(equipment_group=g).order_by("equipment_id"):
+                      print("   member", m.pk, repr(m.code), "status=", m.status, "dept=", m.internal_department_id)
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
