@@ -12,6 +12,14 @@ on:
         description: Look back this many minutes
         required: true
         default: "60"
+      client_ip:
+        description: Optional client IP; when set, prints every access-log request from it
+        required: false
+        default: ""
+      time_match:
+        description: Optional access-log time substring for client_ip lines (e.g. 29/Sep/2026:11:0)
+        required: false
+        default: ""
 
 jobs:
   probe:
@@ -22,6 +30,8 @@ jobs:
         env:
           PROBE_EQ: ${{ github.event.inputs.equipment_id }}
           SINCE: ${{ github.event.inputs.since_minutes }}
+          CLIENT_IP: ${{ github.event.inputs.client_ip }}
+          TIME_MATCH: ${{ github.event.inputs.time_match }}
         run: |
           set +e
           mask() { sed -E 's/(token|access|key|signature|Signature|X-Amz-[A-Za-z]+)=[^&" ]*/\1=***/g'; }
@@ -35,6 +45,13 @@ jobs:
             echo "--- $f matches=$n"
             [ "${n:-0}" -gt 0 ] && readf "$f" | grep -E "$PAT" | tail -n 60 | mask
           done
+          if [ -n "$CLIENT_IP" ]; then
+            echo "=== all requests from client ip (time filter: '${TIME_MATCH}') ==="
+            for f in /var/log/apache2/*.log; do
+              case "$f" in *error*) continue;; esac
+              readf "$f" | grep -F "$CLIENT_IP " | grep -F -- "$TIME_MATCH" | tail -n 300 | mask | sed "s|^|$(basename "$f"): |"
+            done
+          fi
           echo "=== django container log ==="
           CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
           if [ -n "$CID" ]; then
