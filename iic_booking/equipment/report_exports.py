@@ -107,7 +107,7 @@ def build_report_pdf(
         ["Revenue (total)", f"₹{float(summary.get('revenue_total', 0) or 0):.2f}"],
         ["Revenue (internal)", f"₹{float(summary.get('revenue_internal', 0) or 0):.2f}"],
         ["Revenue (external)", f"₹{float(summary.get('revenue_external', 0) or 0):.2f}"],
-        ["Slot hours (all statuses)", f"{float(summary.get('total_hours', 0) or 0):.2f}"],
+        ["Slot hours (all status)", f"{float(summary.get('total_hours', 0) or 0):.2f}"],
         ["Utilized hours (BOOKED slots)", f"{float(summary.get('utilized_hours', 0) or 0):.2f}"],
         ["Downtime hours (maint. + op. absent)", f"{float(summary.get('downtime_hours', 0) or 0):.2f}"],
         ["Utilization factor (booked / all slot hours)", f"{float(summary.get('utilization_factor', 0) or 0) * 100:.2f}%"],
