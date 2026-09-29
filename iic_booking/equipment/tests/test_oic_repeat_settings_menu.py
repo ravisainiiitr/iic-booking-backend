@@ -404,6 +404,32 @@ def test_oic_equipment_settings_list_and_update():
     assert _client(student).get("/api/oic/equipment-settings/").status_code == 403
 
 
+def test_oic_equipment_settings_important_instruction():
+    oic = _user(user_type=UserType.MANAGER)
+    mine = _equipment()
+    EquipmentManager.objects.create(equipment=mine, manager=oic)
+    url = f"/api/oic/equipment-settings/{mine.pk}/"
+
+    assert _client(oic).get("/api/oic/equipment-settings/").data["equipments"][0]["settings"]["important_instruction"] == ""
+
+    res = _client(oic).patch(url, {"important_instruction": "  Wear gloves.\r\nBring your own vials.  "}, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["equipment"]["settings"]["important_instruction"] == "Wear gloves.\nBring your own vials."
+    mine.refresh_from_db()
+    assert mine.important_instruction == "Wear gloves.\nBring your own vials."
+
+    too_long = _client(oic).patch(url, {"important_instruction": "x" * 5001}, format="json")
+    assert too_long.status_code == 400
+    assert set(too_long.data["errors"]) == {"important_instruction"}
+    mine.refresh_from_db()
+    assert mine.important_instruction == "Wear gloves.\nBring your own vials."
+
+    cleared = _client(oic).patch(url, {"important_instruction": "   "}, format="json")
+    assert cleared.status_code == 200
+    mine.refresh_from_db()
+    assert mine.important_instruction is None
+
+
 def test_oic_without_3d_printer_reports_no_print_equipment():
     oic = _user(user_type=UserType.MANAGER)
     EquipmentManager.objects.create(equipment=_equipment(), manager=oic)

@@ -16362,6 +16362,7 @@ OIC_EQUIPMENT_SETTINGS_TIME_FIELDS = (
     "weekly_view_time_from",
     "weekly_view_time_to",
 )
+OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH = 5000
 
 
 def _oic_equipment_settings_row(eq) -> dict:
@@ -16379,6 +16380,7 @@ def _oic_equipment_settings_row(eq) -> dict:
             "weekly_view_time_from": _t(eq.weekly_view_time_from),
             "weekly_view_time_to": _t(eq.weekly_view_time_to),
             **{name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_INT_FIELDS},
+            "important_instruction": eq.important_instruction or "",
         },
     }
 
@@ -16386,7 +16388,7 @@ def _oic_equipment_settings_row(eq) -> dict:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def oic_equipment_settings_list(request):
-    """Slot visibility, external quota and booking/sample timing settings for equipment the OIC manages (all for Admin)."""
+    """Booking rules (slot visibility, external quota, booking/sample timings) and the important instruction for equipment the OIC manages (all for Admin)."""
     if not _is_admin_user(request.user) and getattr(request.user, "user_type", None) != UserType.MANAGER:
         return Response(
             {"error": "Only Admin or Officer In Charge can manage equipment settings."},
@@ -16461,6 +16463,17 @@ def oic_equipment_settings_update(request, equipment_id):
             continue
         setattr(eq, name, value)
         changed.append(name)
+
+    if "important_instruction" in data:
+        raw = data.get("important_instruction")
+        text = "" if raw is None else str(raw).replace("\r\n", "\n").strip()
+        if len(text) > OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH:
+            errors["important_instruction"] = (
+                f"Keep the important instruction under {OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH} characters."
+            )
+        else:
+            eq.important_instruction = text or None
+            changed.append("important_instruction")
 
     if (
         "weekly_view_time_from" not in errors
