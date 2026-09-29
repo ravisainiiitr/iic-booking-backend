@@ -1,0 +1,56 @@
+name: Probe Equipment Create Errors
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: Log window for docker logs --since (e.g. 6h, 24h)
+        required: false
+        default: "24h"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Equipment create requests and tracebacks
+        env:
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -uo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID since=$SINCE"
+          LOG="$(mktemp)"
+          docker logs --since "$SINCE" "$CID" > "$LOG" 2>&1 || true
+          mask() { sed -E 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g; s/(token|password|secret|key)=[^& ]+/\1=<redacted>/Ig'; }
+          echo "=== create requests (admin add / API POST) ==="
+          grep -E '"POST [^"]*(/equipment/equipment/add/|/api/equipments/?( |\?)|/api/admin/equipment|/equipments/create)' "$LOG" | mask | tail -n 40 || echo "none"
+          echo "=== Internal Server Error lines ==="
+          grep -E 'Internal Server Error' "$LOG" | mask | tail -n 40 || echo "none"
+          echo "=== tracebacks mentioning equipment create/save ==="
+          awk '/Traceback \(most recent call last\)/{buf=$0; inblk=1; next} inblk{buf=buf"\n"$0; if ($0 ~ /^[A-Za-z_.]+(Error|Exception)[:]?/ ) { if (buf ~ /equipment/ && buf ~ /(add_view|save_model|create|perform_create|_changeform_view|save\()/) print buf"\n-----"; inblk=0 } }' "$LOG" | mask | tail -n 250 || true
+          rm -f "$LOG"
+      - name: Render equipment admin add view
+        if: always()
+        run: |
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec "$CID" python manage.py shell -c "
+          import traceback
+          from django.contrib.auth import get_user_model
+          from django.test import RequestFactory
+          from django.contrib.admin.sites import site
+          from django.contrib.messages.storage.fallback import FallbackStorage
+          from iic_booking.equipment.models import Equipment
+          User = get_user_model()
+          admin_user = User.objects.filter(is_superuser=True).first()
+          req = RequestFactory().get('/x/equipment/equipment/add/')
+          req.user = admin_user
+          setattr(req, 'session', {})
+          setattr(req, '_messages', FallbackStorage(req))
+          ma = site._registry[Equipment]
+          try:
+              resp = ma.add_view(req)
+              print('add_view status', getattr(resp, 'status_code', type(resp)))
+          except Exception as exc:
+              print('FAIL', type(exc).__name__, exc)
+              traceback.print_exc()
+          "
