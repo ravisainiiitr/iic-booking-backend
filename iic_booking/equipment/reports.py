@@ -252,6 +252,52 @@ def get_equipment_staff_notify_users(equipment) -> list:
     return out
 
 
+def _active_unique_users(users) -> list:
+    seen: set[int] = set()
+    out: list = []
+    for u in users:
+        if not u or not getattr(u, "id", None) or u.id in seen:
+            continue
+        if getattr(u, "is_active", True) is False:
+            continue
+        seen.add(u.id)
+        out.append(u)
+    return out
+
+
+def get_equipment_oic_users(equipment) -> list:
+    """Active Officer In Charge (managers) and current temporary OIC for this equipment."""
+    if equipment is None:
+        return []
+    eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
+    if eid is None:
+        return []
+    from iic_booking.equipment.models import EquipmentTemporaryOIC
+
+    managers = [
+        em.manager for em in EquipmentManager.objects.filter(equipment_id=eid).select_related("manager")
+    ]
+    temporary = [
+        row.temporary_oic
+        for row in EquipmentTemporaryOIC.objects.filter(
+            equipment_id=eid, resume_at__gt=timezone.now()
+        ).select_related("temporary_oic")
+    ]
+    return _active_unique_users(managers + temporary)
+
+
+def get_equipment_lab_incharge_users(equipment) -> list:
+    """Active Lab Incharge (operators) assigned to this equipment."""
+    if equipment is None:
+        return []
+    eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
+    if eid is None:
+        return []
+    return _active_unique_users(
+        eo.operator for eo in EquipmentOperator.objects.filter(equipment_id=eid).select_related("operator")
+    )
+
+
 def get_equipment_ids_managed_by_oic(user_id: int) -> list[int]:
     """Return equipment IDs for which the user is OIC (manager) or temporary OIC (until resume_at)."""
     from iic_booking.equipment.models import EquipmentTemporaryOIC

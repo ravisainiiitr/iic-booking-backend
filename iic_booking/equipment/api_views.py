@@ -13565,11 +13565,13 @@ def create_booking_event_comment(request, booking_id):
         {
             "comment": "Optional comment text",
             "event_type": "COMMENT" (optional, defaults to COMMENT),
-            "send_notification": true (optional, defaults to true)
+            "send_notification": true (optional, defaults to true; notify the booking user),
+            "notify_oic": false (optional; COMMENT only, notify the equipment's Officer In Charge),
+            "notify_lab_incharge": false (optional; COMMENT only, notify the equipment's Lab Incharge)
         }
         
     Returns:
-        Response: Created booking event
+        Response: Created booking event, plus "warnings" when a selected role has nobody assigned
     """
     try:
         booking = Booking.objects.get(booking_id=booking_id)
@@ -13586,9 +13588,15 @@ def create_booking_event_comment(request, booking_id):
             status=status.HTTP_403_FORBIDDEN,
         )
     
+    def _flag(key, default):
+        value = request.data.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on")
+        return bool(value)
+
     comment = request.data.get('comment', '')
     event_type = request.data.get('event_type', BookingEventType.COMMENT)
-    send_notification = request.data.get('send_notification', True)
+    send_notification = _flag('send_notification', True)
     
     if not comment and event_type == BookingEventType.COMMENT:
         return Response(
@@ -13596,13 +13604,40 @@ def create_booking_event_comment(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
     
-    # Create the event
-    from .booking_events import create_booking_event
+    from .booking_events import (
+        COMMENT_RECIPIENTS_METADATA_KEY,
+        create_booking_event,
+        selected_comment_staff,
+    )
+
+    metadata = None
+    warnings = []
+    if event_type == BookingEventType.COMMENT:
+        notify_oic = _flag('notify_oic', False)
+        notify_lab_incharge = _flag('notify_lab_incharge', False)
+        metadata = {
+            COMMENT_RECIPIENTS_METADATA_KEY: {
+                "user": send_notification,
+                "oic": notify_oic,
+                "lab_incharge": notify_lab_incharge,
+            }
+        }
+        if notify_oic or notify_lab_incharge:
+            staff_by_role = selected_comment_staff(
+                booking.equipment, oic=notify_oic, lab_incharge=notify_lab_incharge
+            )
+            if notify_oic and not staff_by_role["oic"]:
+                warnings.append("No Officer In Charge is assigned to this equipment.")
+            if notify_lab_incharge and not staff_by_role["lab_incharge"]:
+                warnings.append("No Lab Incharge is assigned to this equipment.")
+        send_notification = send_notification or notify_oic or notify_lab_incharge
+
     event = create_booking_event(
         booking=booking,
         event_type=event_type,
         created_by=request.user,
         comment=comment,
+        metadata=metadata,
         send_notification=send_notification,
     )
     
@@ -13611,6 +13646,7 @@ def create_booking_event_comment(request, booking_id):
         {
             "message": "Booking event created successfully.",
             "event": serializer.data,
+            "warnings": warnings,
         },
         status=status.HTTP_201_CREATED,
     )

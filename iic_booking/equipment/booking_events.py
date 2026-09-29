@@ -482,6 +482,11 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         notification_type = "info"
         email_template_code = "repeat_sample_booking_confirmed_email"
         push_template_code = "booking_created_push"
+
+    comment_recipients = comment_notify_recipients(event)
+    if comment_recipients is not None and not comment_recipients["user"]:
+        email_template_code = None
+        push_template_code = None
     
     # Prepare template context (use virtual / display id for any user-visible booking reference)
     display_booking_ref = booking_display_id_for_email(booking)
@@ -1083,7 +1088,130 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 exc_info=True,
             )
 
+    if comment_recipients is not None and (comment_recipients["oic"] or comment_recipients["lab_incharge"]):
+        _notify_selected_equipment_staff(event, user, equipment, display_booking_ref, comment_recipients)
+
     _notify_booking_event_actor(event, user, equipment, display_booking_ref, _staff_notify_events)
+
+
+COMMENT_RECIPIENTS_METADATA_KEY = "comment_recipients"
+
+
+def comment_notify_recipients(event) -> Optional[Dict[str, bool]]:
+    """Explicit recipient choice stored on a comment event, or None for legacy comments."""
+    if event.event_type != BookingEventType.COMMENT:
+        return None
+    raw = (event.metadata or {}).get(COMMENT_RECIPIENTS_METADATA_KEY)
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "user": bool(raw.get("user")),
+        "oic": bool(raw.get("oic")),
+        "lab_incharge": bool(raw.get("lab_incharge")),
+    }
+
+
+def selected_comment_staff(equipment, *, oic: bool, lab_incharge: bool) -> Dict[str, list]:
+    from iic_booking.equipment.reports import get_equipment_lab_incharge_users, get_equipment_oic_users
+
+    return {
+        "oic": get_equipment_oic_users(equipment) if oic else [],
+        "lab_incharge": get_equipment_lab_incharge_users(equipment) if lab_incharge else [],
+    }
+
+
+def _notify_selected_equipment_staff(event, booking_user, equipment, display_booking_ref, recipients) -> None:
+    """Email + in-app the comment to the Officer In Charge and/or Lab Incharge chosen by the author."""
+    try:
+        staff_by_role = selected_comment_staff(
+            equipment, oic=recipients["oic"], lab_incharge=recipients["lab_incharge"]
+        )
+    except Exception:
+        logger.exception("Failed to resolve comment recipients for event_id=%s", event.event_id)
+        return
+
+    actor = getattr(event, "created_by", None)
+    skip_ids = {booking_user.id}
+    if actor is not None:
+        skip_ids.add(actor.id)
+    role_labels = {"oic": "Officer In Charge", "lab_incharge": "Lab Incharge"}
+    targets: list = []
+    for role in ("oic", "lab_incharge"):
+        for staff in staff_by_role[role]:
+            if staff.id in skip_ids:
+                continue
+            skip_ids.add(staff.id)
+            targets.append((staff, role_labels[role]))
+    if not targets:
+        return
+
+    booking = event.booking
+    equipment_name = equipment.name if equipment else ""
+    equipment_label = f"{equipment_name} ({equipment.code})" if equipment and equipment.code else equipment_name
+    author_label = user_display_name(actor, fallback="A portal user") if actor else "The portal"
+    booker_label = user_display_name(booking_user, fallback="the user")
+    booker_email = (booking_user.email or "").strip()
+    booker_part = f"{booker_label} ({booker_email})" if booker_email else booker_label
+    comment_text = (event.comment or "").strip()
+    link = absolute_http_url(
+        get_frontend_absolute_url(f"/booking-management?expand={booking.booking_id}")
+        or f"/booking-management?expand={booking.booking_id}"
+    )
+    subject = f"Booking comment – {display_booking_ref} – {equipment_name}"
+    body = (
+        f"{author_label} added a comment on booking {display_booking_ref} for {equipment_label}, "
+        f"booked by {booker_part}. Comment: {comment_text}"
+    )
+    base_meta = {
+        "booking_id": display_booking_ref,
+        "real_booking_id": booking.booking_id,
+        "event_id": event.event_id,
+        "event_type": event.event_type,
+        "link": link,
+        "staff_recipient": True,
+    }
+
+    for staff, role_label in targets:
+        staff_meta = {**base_meta, "recipient_role": role_label}
+        if (staff.email or "").strip():
+            try:
+                CommunicationService.send_email(
+                    recipient=staff,
+                    template="admin_bulk_email",
+                    template_context={
+                        "subject": subject,
+                        "body": body,
+                        "user_name": user_display_name(staff),
+                        "user_email": staff.email or "",
+                        "link": link,
+                    },
+                    metadata=staff_meta,
+                    created_by=actor,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to email booking comment to %s user_id=%s event_id=%s",
+                    role_label,
+                    staff.id,
+                    event.event_id,
+                )
+        try:
+            CommunicationService.send_push_notification(
+                recipient=staff,
+                template="booking_comment_push",
+                template_context={"comment": comment_text, "booking_id": display_booking_ref},
+                metadata=staff_meta,
+                title=f"Booking comment — {display_booking_ref}",
+                message=f"{equipment_name}: {author_label}: {comment_text}",
+                created_by=actor,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to push booking comment to %s user_id=%s event_id=%s",
+                role_label,
+                staff.id,
+                event.event_id,
+            )
 
 
 def _notify_booking_event_actor(event, booking_user, equipment, display_booking_ref, staff_notify_events) -> None:
