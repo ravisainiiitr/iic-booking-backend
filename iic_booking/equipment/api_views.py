@@ -2047,51 +2047,65 @@ def equipment_list(request):
         featured_citation=Subquery(first_pub.values("citation")[:1], output_field=TextField()),
     )
 
-    # Filter by profile_type if provided
     profile_type = request.query_params.get('profile_type')
-    if profile_type:
-        queryset = queryset.filter(profile_type=profile_type)
-
-    # Filter by status if provided
     status_filter = request.query_params.get('status')
-    if status_filter:
-        queryset = queryset.filter(status=status_filter)
+    internal_department_id = (request.query_params.get("internal_department_id") or "").strip()
+    # Department Administrators are always scoped to their own department (ignore client overrides).
+    dept_filter_id = None
+    dept_none = False
+    if getattr(request.user, "is_authenticated", False) and getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN:
+        dept_filter_id = getattr(request.user, "department_id", None)
+        dept_none = not dept_filter_id
+    elif internal_department_id and internal_department_id.lower() != "all":
+        try:
+            dept_filter_id = int(internal_department_id)
+        except (TypeError, ValueError):
+            return Response(
+                {"error": "Invalid internal_department_id."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-    # Search by code or name if provided
+    def apply_catalog_filters(qs):
+        if profile_type:
+            qs = qs.filter(profile_type=profile_type)
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        if dept_none:
+            return qs.none()
+        if dept_filter_id:
+            qs = qs.filter(internal_department_id=dept_filter_id)
+        return qs
+
+    queryset = apply_catalog_filters(queryset)
+
     search = request.query_params.get('search')
     if search:
         queryset = queryset.filter(
             Q(code__icontains=search) | Q(name__icontains=search)
         )
 
-    internal_department_id = (request.query_params.get("internal_department_id") or "").strip()
-    # Department Administrators are always scoped to their own department (ignore client overrides).
-    if getattr(request.user, "is_authenticated", False) and getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN:
-        dept_id = getattr(request.user, "department_id", None)
-        if not dept_id:
-            queryset = queryset.none()
-        else:
-            queryset = queryset.filter(internal_department_id=dept_id)
-    elif internal_department_id and internal_department_id.lower() != "all":
-        try:
-            dept_id = int(internal_department_id)
-        except (TypeError, ValueError):
-            return Response(
-                {"error": "Invalid internal_department_id."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        queryset = queryset.filter(internal_department_id=dept_id)
-
-    # Order by name
     queryset = queryset.order_by('name')
+
+    # Parents whose child modes are listed for this user, ignoring the search, so the catalog
+    # opens a family view only when there is a child mode to show.
+    parents_with_child_modes = set(
+        apply_catalog_filters(get_visible_equipment_queryset(request.user, catalog_scope=catalog_scope))
+        .filter(parent_equipment__isnull=False)
+        .order_by()
+        .values_list("parent_equipment_id", flat=True)
+        .distinct()
+    )
 
     # scope=booking_attempt_log is deprecated: OIC visibility is now enforced in get_visible_equipment_queryset
     serializer_class = EquipmentListSerializer if include_ratings else EquipmentListLiteSerializer
     serializer = serializer_class(queryset, many=True, context={"request": request})
+    rows = serializer.data
+    for row in rows:
+        row["has_child_modes"] = row.get("equipment_id") in parents_with_child_modes
     return Response(
         {
-            "equipments": serializer.data,
-            "count": len(serializer.data),
+            "equipments": rows,
+            "count": len(rows),
         },
         status=status.HTTP_200_OK,
     )
