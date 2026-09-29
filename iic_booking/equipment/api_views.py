@@ -2191,6 +2191,16 @@ def _parse_elements_csv(raw: str) -> set[str]:
     parts = [p.strip() for p in str(raw).split(",")]
     return {p.upper() for p in parts if p}
 
+
+def _element_display(symbol: str) -> str:
+    """Element symbols are matched upper-cased; users see them as written in chemistry (Ag, Al, U)."""
+    s = str(symbol or "").strip()
+    return s[:1].upper() + s[1:].lower()
+
+
+def _elements_display_list(symbols) -> list[str]:
+    return [_element_display(s) for s in sorted(symbols)]
+
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def icpms_min_standards_cover(request):
@@ -2224,14 +2234,14 @@ def icpms_min_standards_cover(request):
 
     if not std_sets:
         return Response(
-            {"count": 0, "standards": [], "uncovered": sorted(target)},
+            {"count": 0, "standards": [], "uncovered": _elements_display_list(target)},
             status=status.HTTP_200_OK,
         )
 
     # Quick check: if impossible, report uncovered.
     union_all = set().union(*[cov for _, cov in std_sets])
     if not target.issubset(union_all):
-        uncovered = sorted(target - union_all)
+        uncovered = _elements_display_list(target - union_all)
         return Response(
             {"error": "Some elements cannot be covered by available standards.", "uncovered": uncovered, "count": 0, "standards": []},
             status=status.HTTP_200_OK,
@@ -2274,12 +2284,12 @@ def icpms_min_standards_cover(request):
                     # Show only the elements from the user's selection that this standard covers.
                     # (Frontend table expects this filtered value.)
                     "list_of_elements": ", ".join(
-                        sorted(target.intersection(_parse_elements_csv(s.get("list_of_elements") or "")))
+                        _elements_display_list(target.intersection(_parse_elements_csv(s.get("list_of_elements") or "")))
                     ),
                 }
                 for s in picked_sorted
             ],
-            "elements": sorted(target),
+            "elements": _elements_display_list(target),
         },
         status=status.HTTP_200_OK,
     )
@@ -2315,7 +2325,7 @@ def icpms_available_standards(request):
                 "id": s["id"],
                 "s_no": s["s_no"],
                 "name_of_std": s["name_of_std"],
-                "list_of_elements": ", ".join(sorted(std_set)) if std_set else "",
+                "list_of_elements": ", ".join(_elements_display_list(std_set)) if std_set else "",
             }
         )
 

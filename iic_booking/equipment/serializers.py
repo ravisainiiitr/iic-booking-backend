@@ -429,6 +429,8 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
     operator_phone = serializers.SerializerMethodField()
     operator_profile_picture = serializers.SerializerMethodField()
     role_display = serializers.CharField(source="get_role_display", read_only=True)
+    office_address = serializers.SerializerMethodField()
+    alternate_phone_number = serializers.SerializerMethodField()
 
     class Meta:
         model = EquipmentOperator
@@ -441,6 +443,8 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
             'operator_email',
             'operator_phone',
             'operator_profile_picture',
+            'office_address',
+            'alternate_phone_number',
             'disable_booking_confirmation_email',
             'created_at'
         ]
@@ -450,8 +454,21 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
             'operator_email',
             'operator_phone',
             'operator_profile_picture',
+            'office_address',
+            'alternate_phone_number',
             'created_at'
         ]
+
+    def get_office_address(self, obj):
+        """The primary row shows the acting secondary operator during coverage; the primary's own office does not apply."""
+        if self._active_secondary_acting_operator(obj):
+            return ""
+        return (obj.office_address or "").strip()
+
+    def get_alternate_phone_number(self, obj):
+        if self._active_secondary_acting_operator(obj):
+            return ""
+        return (obj.alternate_phone_number or "").strip()
 
     def _active_secondary_acting_operator(self, obj):
         """
@@ -537,6 +554,8 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
             'manager_email',
             'manager_phone',
             'manager_profile_picture',
+            'office_address',
+            'alternate_phone_number',
             'disable_booking_confirmation_email',
             'created_at'
         ]
@@ -546,6 +565,8 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
             'manager_email',
             'manager_phone',
             'manager_profile_picture',
+            'office_address',
+            'alternate_phone_number',
             'created_at'
         ]
     
@@ -1796,6 +1817,8 @@ class EquipmentManagerWriteSerializer(serializers.Serializer):
         required=True,
     )
     disable_booking_confirmation_email = serializers.BooleanField(required=False, default=False)
+    office_address = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
+    alternate_phone_number = serializers.CharField(required=False, allow_blank=True, max_length=40, trim_whitespace=True)
 
 
 class EquipmentOperatorWriteSerializer(serializers.Serializer):
@@ -1813,6 +1836,8 @@ class EquipmentOperatorWriteSerializer(serializers.Serializer):
         default=getattr(EquipmentOperator, "Role").PRIMARY,
     )
     disable_booking_confirmation_email = serializers.BooleanField(required=False, default=False)
+    office_address = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
+    alternate_phone_number = serializers.CharField(required=False, allow_blank=True, max_length=40, trim_whitespace=True)
 
 
 class EquipmentSpecificationWriteSerializer(serializers.Serializer):
@@ -2119,6 +2144,21 @@ def _charge_profile_breakpoint(item, cp_type):
     return item.get("breakpoint")
 
 
+def _assignment_contact_fields(item, previous=None):
+    """
+    Office address / additional phone for an OIC or Lab In-charge row.
+    OIC and operator rows are deleted and recreated on every save, so a client that
+    does not send these keys keeps the values already stored for that person.
+    """
+    out = {}
+    for field in ("office_address", "alternate_phone_number"):
+        if field in item:
+            out[field] = (item.get(field) or "").strip()
+        elif previous is not None:
+            out[field] = getattr(previous, field, "") or ""
+    return out
+
+
 def _create_related(equipment, inlines, actor=None):
     from .models import (
         EquipmentManager, EquipmentOperator, EquipmentSpecification, EquipmentPublication,
@@ -2131,6 +2171,7 @@ def _create_related(equipment, inlines, actor=None):
             equipment=equipment,
             manager=item['manager'],
             disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
+            **_assignment_contact_fields(item),
         )
     for item in inlines.get('equipment_pis', []):
         epi = EquipmentPI.objects.create(
@@ -2152,6 +2193,7 @@ def _create_related(equipment, inlines, actor=None):
             operator=item['operator'],
             role=item.get("role") or EquipmentOperator.Role.PRIMARY,
             disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
+            **_assignment_contact_fields(item),
         )
     for item in inlines.get('equipment_specifications', []):
         EquipmentSpecification.objects.create(equipment=equipment, spec_key=item['spec_key'], spec_value=item.get('spec_value', ''))
@@ -2297,12 +2339,17 @@ def _sync_related(equipment, inlines, actor=None):
         EquipmentPI, EquipmentPIAuditLog,
     )
     if inlines.get('equipment_managers') is not None:
+        previous_manager_contacts = {
+            row.manager_id: row
+            for row in EquipmentManager.objects.filter(equipment=equipment)
+        }
         EquipmentManager.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_managers']:
             EquipmentManager.objects.create(
                 equipment=equipment,
                 manager=item['manager'],
                 disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
+                **_assignment_contact_fields(item, previous_manager_contacts.get(item['manager'].pk)),
             )
     if inlines.get('equipment_pis') is not None:
         incoming = {}
@@ -2357,6 +2404,10 @@ def _sync_related(equipment, inlines, actor=None):
                     details={"is_active": is_active},
                 )
     if inlines.get('equipment_operators') is not None:
+        previous_operator_contacts = {
+            row.operator_id: row
+            for row in EquipmentOperator.objects.filter(equipment=equipment)
+        }
         EquipmentOperator.objects.filter(equipment=equipment).delete()
         for item in inlines['equipment_operators']:
             EquipmentOperator.objects.create(
@@ -2364,6 +2415,7 @@ def _sync_related(equipment, inlines, actor=None):
                 operator=item['operator'],
                 role=item.get("role") or EquipmentOperator.Role.PRIMARY,
                 disable_booking_confirmation_email=bool(item.get('disable_booking_confirmation_email', False)),
+                **_assignment_contact_fields(item, previous_operator_contacts.get(item['operator'].pk)),
             )
     if inlines.get('equipment_specifications') is not None:
         EquipmentSpecification.objects.filter(equipment=equipment).delete()

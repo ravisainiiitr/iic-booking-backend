@@ -136,6 +136,15 @@ class EquipmentManagerInlineForm(forms.ModelForm):
             ).order_by('name', 'email')
             self.fields['manager'].queryset = qs
             self.fields['manager'].label_from_instance = lambda obj: obj.name or obj.email or str(obj)
+        _compact_contact_widgets(self.fields)
+
+
+def _compact_contact_widgets(fields):
+    """Keep the per-person address / phone inputs small enough for a tabular inline row."""
+    if "office_address" in fields:
+        fields["office_address"].widget = forms.Textarea(attrs={"rows": 2, "cols": 32})
+    if "alternate_phone_number" in fields:
+        fields["alternate_phone_number"].widget = forms.TextInput(attrs={"size": 16})
 
 
 class EquipmentManagerInline(admin.TabularInline):
@@ -143,9 +152,15 @@ class EquipmentManagerInline(admin.TabularInline):
     model = EquipmentManager
     form = EquipmentManagerInlineForm
     extra = 0
-    fields = ['manager', 'disable_booking_confirmation_email', 'created_at', 'updated_at']
+    fields = [
+        'manager',
+        'office_address',
+        'alternate_phone_number',
+        'disable_booking_confirmation_email',
+        'created_at',
+        'updated_at',
+    ]
     readonly_fields = ['created_at', 'updated_at']
-    classes = ['collapse']
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         """Filter manager field to Internal-department managers only."""
@@ -221,6 +236,7 @@ class EquipmentOperatorInlineForm(forms.ModelForm):
             self.fields['operator'].label_from_instance = lambda obj: obj.name or obj.email or str(obj)
         if "role" in self.fields:
             self.fields["role"].help_text = "Select Primary or Secondary operator for this instrument."
+        _compact_contact_widgets(self.fields)
 
 
 class EquipmentOperatorInlineFormSet(forms.models.BaseInlineFormSet):
@@ -251,9 +267,16 @@ class EquipmentOperatorInline(admin.TabularInline):
     form = EquipmentOperatorInlineForm
     formset = EquipmentOperatorInlineFormSet
     extra = 0
-    fields = ['operator', 'role', 'disable_booking_confirmation_email', 'created_at', 'updated_at']
+    fields = [
+        'operator',
+        'role',
+        'office_address',
+        'alternate_phone_number',
+        'disable_booking_confirmation_email',
+        'created_at',
+        'updated_at',
+    ]
     readonly_fields = ['created_at', 'updated_at']
-    classes = ['collapse']
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         """Filter operator field to Internal-department operators only."""

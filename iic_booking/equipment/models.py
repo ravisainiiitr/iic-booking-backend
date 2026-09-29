@@ -1100,6 +1100,19 @@ class EquipmentManager(models.Model):
         default=False,
         help_text=_('When checked, this Officer in Charge does not receive booking confirmation emails for this equipment.'),
     )
+    office_address = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Office address"),
+        help_text=_("Office address of this Officer in Charge for enquiries about this equipment"),
+    )
+    alternate_phone_number = models.CharField(
+        max_length=40,
+        blank=True,
+        default="",
+        verbose_name=_("Additional phone number"),
+        help_text=_("Extra contact number shown alongside the phone number from the user's profile"),
+    )
     created_at = models.DateTimeField(auto_now_add=True, help_text=_('Date and time this assignment was created'))
     updated_at = models.DateTimeField(auto_now=True, help_text=_('Date and time this assignment was last updated'))
 
@@ -1227,6 +1240,19 @@ class EquipmentOperator(models.Model):
     disable_booking_confirmation_email = models.BooleanField(
         default=False,
         help_text=_('When checked, this Lab In-charge does not receive booking confirmation emails for this equipment.'),
+    )
+    office_address = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Office address"),
+        help_text=_("Office / lab address of this Lab In-charge for enquiries about this equipment"),
+    )
+    alternate_phone_number = models.CharField(
+        max_length=40,
+        blank=True,
+        default="",
+        verbose_name=_("Additional phone number"),
+        help_text=_("Extra contact number shown alongside the phone number from the user's profile"),
     )
     created_at = models.DateTimeField(auto_now_add=True, help_text='Date and time the equipment operator was created')
     updated_at = models.DateTimeField(auto_now=True, help_text='Date and time the equipment operator was updated')
