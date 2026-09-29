@@ -31,6 +31,7 @@ UID_DOMAIN = "iic-booking.iitr"
 FEED_PAST_DAYS = 90
 FEED_MAX_BOOKINGS = 500
 ACCESS_STAMP_INTERVAL = timedelta(minutes=10)
+GOOGLE_ADD_BY_URL = "https://calendar.google.com/calendar/u/0/r/settings/addbyurl"
 
 FEED_STATUSES = frozenset(
     s.value
@@ -320,7 +321,9 @@ def _settings_payload(request, token_obj: CalendarFeedToken) -> dict:
         "eligible": True,
         "feed_url": feed_url,
         "webcal_url": webcal_url,
-        "google_url": "https://calendar.google.com/calendar/r?cid=" + quote(webcal_url, safe=""),
+        # Google fetches cid=webcal:// links over plain http, which is not reachable from outside the
+        # campus network; its "From URL" page keeps the https feed URL the user pastes.
+        "google_url": GOOGLE_ADD_BY_URL,
         "outlook_url": (
             "https://outlook.live.com/calendar/0/addfromweb?url="
             + quote(feed_url, safe="")

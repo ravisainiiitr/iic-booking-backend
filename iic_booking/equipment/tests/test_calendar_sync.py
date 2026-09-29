@@ -118,7 +118,7 @@ def test_settings_creates_stable_token_and_subscription_links(student):
     assert res.data["eligible"] is True
     assert res.data["feed_url"].endswith(f"/api/calendar/feed/{token}.ics")
     assert res.data["webcal_url"].startswith("webcal://")
-    assert res.data["google_url"].startswith("https://calendar.google.com/calendar/r?cid=webcal%3A%2F%2F")
+    assert res.data["google_url"] == "https://calendar.google.com/calendar/u/0/r/settings/addbyurl"
     assert res.data["outlook_url"].startswith("https://outlook.live.com/calendar/0/addfromweb?url=")
 
     again = _client(student).get("/api/calendar-sync/")
