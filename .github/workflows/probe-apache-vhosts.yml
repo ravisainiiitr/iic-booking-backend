@@ -1,0 +1,34 @@
+# Read-only: can the runner manage Apache, and which virtual hosts serve ports 80/443. Makes no changes.
+# Prints only VirtualHost / ServerName / Redirect / Rewrite / SSL-certificate-path lines, never whole files.
+name: Probe Apache Virtual Hosts
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Runner identity and passwordless sudo
+        run: |
+          echo "user=$(whoami) groups=$(id -Gn)"
+          if sudo -n true 2>/dev/null; then echo "passwordless sudo: YES"; else echo "passwordless sudo: NO"; fi
+      - name: Apache virtual host map
+        run: |
+          (sudo -n apache2ctl -S 2>&1 || apache2ctl -S 2>&1) | head -n 60 || true
+      - name: Enabled sites and relevant directives
+        run: |
+          ls -l /etc/apache2/sites-enabled/ 2>&1 || true
+          for f in /etc/apache2/sites-enabled/*; do
+            echo "=== $f"
+            (sudo -n cat "$f" 2>/dev/null || cat "$f" 2>/dev/null) \
+              | grep -Ei '^\s*(<VirtualHost|</VirtualHost|ServerName|ServerAlias|Redirect|RewriteEngine|RewriteCond|RewriteRule|SSLCertificateFile|ProxyPass\s|Include)' || true
+          done
+      - name: Certificate renewal method
+        run: |
+          (sudo -n ls /etc/letsencrypt/renewal/ 2>/dev/null || ls /etc/letsencrypt/renewal/ 2>/dev/null) || echo "no /etc/letsencrypt/renewal"
+          for f in /etc/letsencrypt/renewal/*.conf; do
+            [ -e "$f" ] || continue
+            echo "=== $f"; (sudo -n cat "$f" 2>/dev/null || cat "$f" 2>/dev/null) | grep -Ei '^\s*(authenticator|installer|webroot_path)' || true
+          done
+          systemctl list-timers 2>/dev/null | grep -i certbot || echo "no certbot timer listed"
