@@ -14501,6 +14501,24 @@ def update_booking_input_values(request, booking_id):
     from .calculators import normalize_periodic_table_billable_counts
     current = normalize_periodic_table_billable_counts(equipment, current)
 
+    # Same numeric limits as at booking creation (incl. formula max such as A <= 4*B).
+    # Skipped when no field value changed, so a comments-only edit on a legacy booking still saves.
+    original = dict(booking.input_values) if booking.input_values else {}
+    values_changed = any(
+        current.get(k) != original.get(k)
+        for k in (set(current) | set(original))
+        if k != "comments"
+    )
+    if values_changed:
+        numeric_limit_error = _validate_dynamic_numeric_input_limits(
+            equipment, current, booking_user=booking.user
+        )
+        if numeric_limit_error:
+            return Response(
+                {"error": numeric_limit_error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     booking.input_values = current
     booking.save(update_fields=["input_values"])
 
