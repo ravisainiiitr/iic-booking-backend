@@ -1314,10 +1314,12 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
     elif user.user_type == UserType.MANAGER:
         scope = (catalog_scope or "").strip().lower()
         if scope == "all":
-            # OIC browsing full catalog (not management scope): same rules as end users.
+            # OIC browsing full catalog (not management scope): same rules as end users, plus their own equipment
+            # even when its department catalog is hidden (apply_department_catalog_visibility skips managers).
+            managed_ids = get_equipment_ids_managed_by_oic(user.id)
             queryset = queryset.filter(
-                Q(visibility_group__isnull=True) |
-                Q(visibility_group__members__user=user)
+                (Q(visibility_group__isnull=True) | Q(visibility_group__members__user=user))
+                & (Q(internal_department__equipment_visibility_enabled=True) | Q(equipment_id__in=managed_ids))
             ).distinct()
         else:
             allowed_ids = get_equipment_ids_managed_by_oic(user.id)
@@ -1348,6 +1350,17 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
 
     from .mode_utils import filter_queryset_for_mode_catalog
     return filter_queryset_for_mode_catalog(queryset, user)
+
+
+def user_can_view_equipment_in_catalog(user, equipment) -> bool:
+    """
+    Read-only access for an OIC to equipment they do not manage but can list under "All equipment"
+    (``catalog_scope=all``). Callers must still use ``user_can_see_equipment`` for anything that
+    edits, books or exposes staff-only data.
+    """
+    if not (user and getattr(user, "is_authenticated", False) and user.user_type == UserType.MANAGER):
+        return False
+    return get_visible_equipment_queryset(user, catalog_scope="all").filter(pk=equipment.pk).exists()
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
@@ -2100,7 +2113,9 @@ def equipment_ratings(request, equipment_id: int):
     except Equipment.DoesNotExist:
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if not user_can_see_equipment(request.user, equipment):
+    if not user_can_see_equipment(request.user, equipment) and not user_can_view_equipment_in_catalog(
+        request.user, equipment
+    ):
         return equipment_visibility_denied_response(request.user)
 
     offset_raw = request.query_params.get("offset", "0")
@@ -2395,8 +2410,11 @@ def equipment_detail(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    catalog_only = False
     if not user_can_see_equipment(request.user, equipment):
-        return equipment_visibility_denied_response(request.user)
+        if request.method != "GET" or not user_can_view_equipment_in_catalog(request.user, equipment):
+            return equipment_visibility_denied_response(request.user)
+        catalog_only = True
 
     if request.method == "PATCH":
         if not request.user or not request.user.is_authenticated:
@@ -2481,7 +2499,9 @@ def equipment_detail(request, pk):
         return Response(payload, status=status.HTTP_200_OK)
 
     serializer = EquipmentDetailSerializer(equipment, context={'request': request})
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    payload = dict(serializer.data)
+    payload["viewer_catalog_only"] = catalog_only
+    return Response(payload, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 @authentication_classes([])  # Ignore invalid Authorization headers (stale tokens) for anonymous img loads
@@ -2617,7 +2637,9 @@ def equipment_calculate(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    if not user_can_see_equipment(request.user, equipment):
+    if not user_can_see_equipment(request.user, equipment) and not user_can_view_equipment_in_catalog(
+        request.user, equipment
+    ):
         return equipment_visibility_denied_response(request.user)
     
     # Get user_type: optional user_type query param = estimate for that profile (standard pricing);
@@ -3137,7 +3159,10 @@ def equipment_daily_slots(request, pk):
     user_type = getattr(user, 'user_type', None) if user else None
     is_admin = _is_admin_panel_user(user)
     if not user_can_see_equipment(user, equipment):
-        return equipment_visibility_denied_response(user)
+        if not user_can_view_equipment_in_catalog(user, equipment):
+            return equipment_visibility_denied_response(user)
+        # OIC viewing equipment they do not manage: end-user view (no booker contacts, visibility window applies).
+        is_admin = False
     
     # Get date range from query params or use current week
     start_date_param = request.query_params.get('start_date')

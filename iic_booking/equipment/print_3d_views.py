@@ -213,13 +213,15 @@ def _create_print_analysis(
 @permission_classes([AllowAny])
 def equipment_print_materials(request, pk):
     """List active print materials for a 3D printer equipment."""
-    from .api_views import user_can_see_equipment
+    from .api_views import user_can_see_equipment, user_can_view_equipment_in_catalog
     try:
         equipment = Equipment.objects.get(pk=pk)
     except Equipment.DoesNotExist:
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if not user_can_see_equipment(request.user, equipment):
+    if not user_can_see_equipment(request.user, equipment) and not user_can_view_equipment_in_catalog(
+        request.user, equipment
+    ):
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
 
     user_type_param = (request.query_params.get("user_type") or "").strip().lower()
