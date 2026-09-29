@@ -1,0 +1,80 @@
+# Probe: equipment detail + weekly slots per user type (read-only GETs)
+name: Probe Equipment Detail By User Type
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment_id:
+        description: Equipment id
+        required: true
+        default: "7"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Call equipment_detail and equipment_daily_slots as each user type
+        env:
+          PROBE_EQ: ${{ github.event.inputs.equipment_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -i -e PROBE_EQ="$PROBE_EQ" -w /app "$CID" python - <<'PY'
+          import os, json, traceback, datetime, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from rest_framework.test import APIRequestFactory, force_authenticate
+          from iic_booking.equipment import api_views
+
+          User = get_user_model()
+          eq = int(os.environ["PROBE_EQ"])
+          today = datetime.date.today()
+          start = today - datetime.timedelta(days=today.weekday())
+          end = start + datetime.timedelta(days=6)
+
+          actors = []
+          for email in ("test.student@iic-booking.test", "test.faculty@iic-booking.test"):
+              u = User.objects.filter(email__iexact=email).first()
+              if u:
+                  actors.append(("test_account", u))
+          types = sorted(set(User.objects.filter(is_active=True).values_list("user_type", flat=True)))
+          for t in types:
+              u = User.objects.filter(is_active=True, user_type=t).order_by("-last_login").first()
+              if u:
+                  actors.append(("latest_" + str(t), u))
+
+          rf = APIRequestFactory()
+
+          def call(view, path, query, actor, **kw):
+              req = rf.get(path, query)
+              if actor is not None:
+                  force_authenticate(req, user=actor)
+              try:
+                  resp = view(req, **kw)
+                  data = getattr(resp, "data", None)
+                  msg = ""
+                  if resp.status_code >= 400:
+                      msg = json.dumps(data, default=str)[:300]
+                  return resp.status_code, msg
+              except Exception:
+                  return "EXC", traceback.format_exc()[-2500:]
+
+          for label, actor in [("anonymous", None)] + actors:
+              uid = getattr(actor, "id", None)
+              ut = getattr(actor, "user_type", None)
+              d = call(api_views.equipment_detail, f"/api/equipments/{eq}/", None, actor, pk=eq)
+              s = call(
+                  api_views.equipment_daily_slots,
+                  f"/api/equipments/{eq}/slots/",
+                  {"start_date": start.isoformat(), "end_date": end.isoformat()},
+                  actor,
+                  pk=eq,
+              )
+              print(f"[{label}] user_id={uid} user_type={ut} detail={d[0]} slots={s[0]}")
+              for name, res in (("detail", d), ("slots", s)):
+                  if res[1]:
+                      print(f"  {name}: {res[1]}")
+          PY
