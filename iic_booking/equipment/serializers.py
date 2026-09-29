@@ -1455,6 +1455,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'latitude',
             'longitude',
             'google_maps_url',
+            'office_address',
+            'alternate_phone_number',
             'important_instruction',
             'make',
             'show_make_on_card',
@@ -1920,7 +1922,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Equipment
         fields = [
-            'name', 'code', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url', 'important_instruction',
+            'name', 'code', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
+            'office_address', 'alternate_phone_number', 'important_instruction',
             'make', 'show_make_on_card', 'model_information', 'show_model_on_card',
             'booking_email_extra_text', 'completion_email_extra_text', 'print_3d_stl_notification_email',
             'istem_portal_url', 'istem_fbr_status_url',

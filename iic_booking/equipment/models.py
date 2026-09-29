@@ -221,6 +221,18 @@ class Equipment(models.Model):
         null=True,
         max_length=500,
     )
+    office_address = models.TextField(
+        blank=True,
+        default="",
+        verbose_name=_("Office address"),
+        help_text=_("Optional office address for enquiries about this equipment"),
+    )
+    alternate_phone_number = models.CharField(
+        max_length=40,
+        blank=True,
+        default="",
+        verbose_name=_("Alternate phone number"),
+    )
     image = models.ImageField(
         storage=get_equipment_image_storage,
         upload_to=equipment_image_upload_to,

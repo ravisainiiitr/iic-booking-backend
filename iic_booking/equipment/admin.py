@@ -1361,6 +1361,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'enable_multi_mode', 'parent_equipment',
                 'internal_department', 'visibility_group',
                 'profile_type', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
+                'office_address', 'alternate_phone_number',
                 'make', 'show_make_on_card',
                 'model_information', 'show_model_on_card',
                 'split_booking_enabled',

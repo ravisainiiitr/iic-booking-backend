@@ -416,7 +416,7 @@ def test_oic_without_3d_printer_reports_no_print_equipment():
 def test_dashboard_menu_layout_saved_per_user():
     oic = _user(user_type=UserType.MANAGER)
     url = "/api/profiles/me/dashboard-menu-layout/"
-    assert _client(oic).get(url).data == {"groups": []}
+    assert _client(oic).get(url).data == {"groups": [], "order": []}
 
     layout = {
         "groups": [
@@ -436,7 +436,70 @@ def test_dashboard_menu_layout_saved_per_user():
 
     student = _user(user_type=UserType.STUDENT)
     assert _client(student).put(url, layout, format="json").status_code == 403
-    assert _client(student).get(url).data == {"groups": []}
+    assert _client(student).get(url).data == {"groups": [], "order": []}
+
+
+def test_dashboard_menu_priority_order_saved_for_admin():
+    admin = _user(user_type=UserType.ADMIN)
+    url = "/api/profiles/me/dashboard-menu-layout/"
+    layout = {
+        "groups": [{"id": "g1", "name": "Setup", "items": ["accessories"]}],
+        "order": ["urgent_requests", "group:g1", "urgent_requests", "group:missing", "bad key!", "book_equipment"],
+    }
+    res = _client(admin).put(url, layout, format="json")
+    assert res.status_code == 200, res.data
+    assert res.data["order"] == ["urgent_requests", "group:g1", "book_equipment"]
+    admin.refresh_from_db()
+    assert admin.dashboard_menu_layout["order"] == ["urgent_requests", "group:g1", "book_equipment"]
+    assert _client(admin).put(url, {"groups": [], "order": "nope"}, format="json").status_code == 400
+
+
+# --- OIC slot status / reserve ----------------------------------------------------------------
+
+
+def test_oic_can_change_slot_status_and_reserve_on_managed_equipment():
+    oic = _user(user_type=UserType.MANAGER)
+    mine, not_mine = _equipment(), _equipment()
+    EquipmentManager.objects.create(equipment=mine, manager=oic)
+    start = timezone.now() + timedelta(days=3)
+    slot = _slot(mine, start)
+    other_slot = _slot(not_mine, start)
+
+    with patch("iic_booking.users.rbac.user_has_admin_panel_access", return_value=False), patch(
+        "config.admin_panel_access_api.user_can_access_admin_module", return_value=False
+    ):
+        res = _client(oic).post(
+            f"/api/admin/equipment/{mine.pk}/bulk-slot-status/",
+            {"slot_ids": [slot.id], "status": SlotStatus.BLOCKED, "blocked_label": "Service"},
+            format="json",
+        )
+        assert res.status_code == 200, res.data
+        slot.refresh_from_db()
+        assert slot.status == SlotStatus.BLOCKED
+
+        res = _client(oic).post(
+            f"/api/admin/equipment/{mine.pk}/bulk-home-department-only/",
+            {"slot_ids": [slot.id], "home_department_only": True},
+            format="json",
+        )
+        assert res.status_code == 200, res.data
+
+        res = _client(oic).post(
+            f"/api/admin/equipment/{not_mine.pk}/bulk-slot-status/",
+            {"slot_ids": [other_slot.id], "status": SlotStatus.BLOCKED},
+            format="json",
+        )
+        assert res.status_code == 404
+    other_slot.refresh_from_db()
+    assert other_slot.status == SlotStatus.AVAILABLE
+
+    student = _user(user_type=UserType.STUDENT)
+    res = _client(student).post(
+        f"/api/admin/equipment/{mine.pk}/bulk-slot-status/",
+        {"slot_ids": [slot.id], "status": SlotStatus.AVAILABLE},
+        format="json",
+    )
+    assert res.status_code == 403
 
 
 # --- Staff cross-equipment reschedule -------------------------------------------------------

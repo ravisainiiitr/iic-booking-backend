@@ -2717,6 +2717,9 @@ def admin_api_router():
         # the dashboard, without Admin Panel or the equipment settings module.
         WAITLIST_ACTIONS = frozenset({"waitlist", "waitlist_clear"})
         WAITLIST_STAFF_TYPES = frozenset({UserType.MANAGER, UserType.OPERATOR})
+        # OIC changes slot status / reserves slots of their own (queryset-scoped) equipment
+        # like the Main Admin, without Admin Panel or the equipment settings module.
+        OIC_SLOT_ACTIONS = frozenset({"bulk_slot_status", "bulk_home_department_only"})
 
         def _is_staff_waitlist_request(self):
             return (
@@ -2724,8 +2727,17 @@ def admin_api_router():
                 and getattr(self.request.user, "user_type", None) in self.WAITLIST_STAFF_TYPES
             )
 
+        def _is_oic_slot_request(self):
+            return (
+                getattr(self, "action", None) in self.OIC_SLOT_ACTIONS
+                and getattr(self.request.user, "user_type", None) == UserType.MANAGER
+            )
+
+        def _is_staff_scoped_request(self):
+            return self._is_staff_waitlist_request() or self._is_oic_slot_request()
+
         def get_permissions(self):
-            if self._is_staff_waitlist_request():
+            if self._is_staff_scoped_request():
                 return [permissions.IsAuthenticated()]
             return super().get_permissions()
 
@@ -2734,7 +2746,7 @@ def admin_api_router():
             from config.admin_panel_access_api import assert_admin_section_module
             from iic_booking.users.rbac import user_has_admin_panel_access, user_has_permission
 
-            if self._is_staff_waitlist_request():
+            if self._is_staff_scoped_request():
                 return
             # Lab In-charge / OIC / Accounts In Charge with reports.view may list scoped
             # equipment for the Reports filter without full Admin Panel / equipment module access.
@@ -2786,9 +2798,9 @@ def admin_api_router():
                 if not allowed_ids:
                     return qs.none()
                 qs = qs.filter(equipment_id__in=allowed_ids)
-            # Everyone except Main Admin: strict department isolation. Staff waitlist access is
-            # already limited to managed / mapped equipment, which may sit in another department.
-            if not self._is_staff_waitlist_request():
+            # Everyone except Main Admin: strict department isolation. Staff waitlist and OIC slot
+            # access are already limited to managed / mapped equipment, which may sit in another department.
+            if not self._is_staff_scoped_request():
                 qs = apply_equipment_department_scope(qs, user)
             if self.action != "list":
                 return qs

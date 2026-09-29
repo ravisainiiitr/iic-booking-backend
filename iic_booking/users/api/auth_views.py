@@ -2053,11 +2053,15 @@ DASHBOARD_MENU_MAX_ITEMS = 200
 
 
 def _clean_dashboard_menu_layout(raw):
-    """Validate {"groups": [{"id", "name", "items": [...]}]}; returns (layout, error)."""
+    """
+    Validate {"groups": [{"id", "name", "items": [...]}], "order": [...]}; returns (layout, error).
+
+    ``order`` is the user's top-level menu priority: item ids and ``group:<id>`` keys.
+    """
     import re
 
     if raw in (None, ""):
-        return {"groups": []}, None
+        return {"groups": [], "order": []}, None
     if not isinstance(raw, dict) or not isinstance(raw.get("groups", []), list):
         return None, "Layout must be an object with a list of groups."
     groups = raw.get("groups") or []
@@ -2088,7 +2092,23 @@ def _clean_dashboard_menu_layout(raw):
             return None, "Too many menu items."
         seen_groups.add(gid)
         cleaned.append({"id": gid, "name": name, "items": clean_items})
-    return {"groups": cleaned}, None
+
+    raw_order = raw.get("order") or []
+    if not isinstance(raw_order, list):
+        return None, "Menu order must be a list."
+    order, seen_keys = [], set()
+    for key in raw_order:
+        key = str(key or "").strip()
+        if key in seen_keys:
+            continue
+        ref = key[len("group:"):] if key.startswith("group:") else key
+        if not id_re.match(ref) or (key.startswith("group:") and ref not in seen_groups):
+            continue
+        seen_keys.add(key)
+        order.append(key)
+    if len(order) > DASHBOARD_MENU_MAX_ITEMS + DASHBOARD_MENU_MAX_GROUPS:
+        return None, "Too many menu items."
+    return {"groups": cleaned, "order": order}, None
 
 
 @api_view(["GET", "PUT"])
@@ -2096,12 +2116,12 @@ def _clean_dashboard_menu_layout(raw):
 def profile_me_dashboard_menu_layout(request):
     """
     GET: the current user's custom dashboard menu groups.
-    PUT: save them (OIC and Main Administrator only). Body: {"groups": [{"id", "name", "items"}]}.
+    PUT: save them (OIC and Main Administrator only). Body: {"groups": [{"id", "name", "items"}], "order": [...]}.
     """
     user = request.user
     if request.method == "GET":
         layout, _err = _clean_dashboard_menu_layout(getattr(user, "dashboard_menu_layout", None) or {})
-        return Response(layout or {"groups": []}, status=status.HTTP_200_OK)
+        return Response(layout or {"groups": [], "order": []}, status=status.HTTP_200_OK)
     if not (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) in (UserType.ADMIN, UserType.MANAGER)):
         return Response(
             {"error": "Only an Officer In Charge or the Main Administrator can customise the dashboard menu."},
