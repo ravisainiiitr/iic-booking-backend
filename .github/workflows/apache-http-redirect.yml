@@ -1,0 +1,71 @@
+# Production Apache: redirect plain http (port 80) to https for equip.iitr.ac.in / iicbooking.iitr.ac.in.
+# Needed so Google Calendar one-click subscriptions (fetched over http) reach the https feed.
+# action=apply installs and enables the redirect site; action=remove disables and deletes it.
+# The config is tested before reload; a failed test is rolled back automatically.
+name: Apache HTTP to HTTPS Redirect
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: apply or remove
+        required: true
+        type: choice
+        options: [apply, remove]
+
+jobs:
+  redirect:
+    runs-on: [self-hosted, Linux]
+    env:
+      SITE: 000-http-to-https-redirect
+    steps:
+      - name: Apply redirect site
+        if: inputs.action == 'apply'
+        run: |
+          set -euo pipefail
+          CONF="/etc/apache2/sites-available/${SITE}.conf"
+          if ! sudo -n apache2ctl -M 2>/dev/null | grep -q rewrite_module; then
+            sudo -n a2enmod rewrite
+            echo "enabled mod_rewrite"
+          fi
+          sudo -n tee "$CONF" > /dev/null <<'EOF'
+          # Managed by the "Apache HTTP to HTTPS Redirect" workflow (iic-booking-backend).
+          <VirtualHost *:80>
+              ServerName equip.iitr.ac.in
+              ServerAlias iicbooking.iitr.ac.in
+              RewriteEngine On
+              RewriteCond %{HTTP_HOST} ^(equip|iicbooking)\.iitr\.ac\.in$ [NC]
+              RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+              RewriteRule ^ https://equip.iitr.ac.in%{REQUEST_URI} [R=301,L]
+          </VirtualHost>
+          EOF
+          sudo -n cat "$CONF"
+          sudo -n a2ensite "$SITE" > /dev/null
+          if ! sudo -n apache2ctl configtest; then
+            echo "configtest failed: rolling back"
+            sudo -n a2dissite "$SITE" > /dev/null || true
+            sudo -n rm -f "$CONF"
+            exit 1
+          fi
+          sudo -n systemctl reload apache2
+          echo "redirect site enabled and apache reloaded"
+      - name: Remove redirect site
+        if: inputs.action == 'remove'
+        run: |
+          set -euo pipefail
+          sudo -n a2dissite "$SITE" > /dev/null 2>&1 || true
+          sudo -n rm -f "/etc/apache2/sites-available/${SITE}.conf"
+          sudo -n apache2ctl configtest
+          sudo -n systemctl reload apache2
+          echo "redirect site removed and apache reloaded"
+      - name: Verify
+        run: |
+          sleep 2
+          for host in equip.iitr.ac.in iicbooking.iitr.ac.in; do
+            curl -sS -o /dev/null -m 10 -w "local http  $host -> status=%{http_code} redirect=%{redirect_url}\n" \
+              -H "Host: $host" http://127.0.0.1/api/calendar/feed/probe-not-a-token.ics || true
+          done
+          curl -sS -o /dev/null -m 10 -w 'public https equip -> status=%{http_code}\n' \
+            https://equip.iitr.ac.in/api/calendar/feed/probe-not-a-token.ics || true
+          curl -sS -o /dev/null -m 10 -w 'public http  equip -> status=%{http_code} redirect=%{redirect_url}\n' \
+            http://equip.iitr.ac.in/api/calendar/feed/probe-not-a-token.ics || echo "public http not reachable yet (AWS security group)"
