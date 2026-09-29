@@ -842,13 +842,12 @@ def _should_offer_alternatives(request, pk):
     # Urgent flows are tied to the chosen equipment (Type B hold review, Type A attempt window).
     if _truthy(data.get("create_as_hold")) or _truthy(data.get("rush_relief")):
         return None
-    from .api_views import is_slot_window_peak_waitlist_period
     from .models import Equipment
 
+    # Offered in the peak window too: if no alternative is found (or the user declines), the peak
+    # rule still waitlists the user on the original equipment.
     equipment = Equipment.objects.select_related("equipment_group").filter(pk=pk).first()
     if equipment is None or not alternative_booking_enabled(equipment):
-        return None
-    if is_slot_window_peak_waitlist_period(equipment):
         return None
     return equipment
 
@@ -964,6 +963,8 @@ def run_booking_with_group_alternatives(request, pk, book_impl: Callable):
             alternatives = [a for a in alternatives if a["equipment_id"] != choice["equipment_id"]]
 
     if alternatives:
+        from .api_views import is_slot_window_peak_waitlist_period
+
         return Response(
             {
                 "error": "The selected equipment is not available for your requested slot. "
@@ -972,6 +973,9 @@ def run_booking_with_group_alternatives(request, pk, book_impl: Callable):
                 "original_error": deferred["error_message"],
                 "original_equipment": _equipment_summary(equipment),
                 "alternatives": alternatives,
+                # Declining still waitlists on the original equipment during its peak window.
+                "waitlist_available": bool(deferred["waitlist_on_failure"])
+                or is_slot_window_peak_waitlist_period(equipment),
             },
             status=status.HTTP_409_CONFLICT,
         )

@@ -238,7 +238,7 @@ def test_no_alternatives_falls_back_to_existing_waitlist(egs_factory, egs_flags_
 
 
 @pytest.mark.django_db
-def test_skip_param_and_peak_period_keep_existing_behaviour(egs_factory, egs_flags_on):
+def test_skip_param_keeps_existing_behaviour(egs_factory, egs_flags_on):
     group = egs_factory.group(alternative_booking_enabled=True)
     user = egs_factory.student()
     source = egs_factory.equipment(group)
@@ -251,12 +251,47 @@ def test_skip_param_and_peak_period_keep_existing_behaviour(egs_factory, egs_fla
         assert res.status_code == 400
         finder.assert_not_called()
         assert add_wl.call_count == 1
+    assert len(calls) == 1
 
-        with patch("iic_booking.equipment.api_views.is_slot_window_peak_waitlist_period", return_value=True):
-            req = _drf_post(user, "/x/", {"offer_group_alternatives": True})
-            egs.run_booking_with_group_alternatives(req, source.pk, impl)
-        finder.assert_not_called()
-    assert len(calls) == 2
+
+@pytest.mark.django_db
+def test_alternatives_offered_during_peak_window_with_waitlist_fallback(egs_factory, egs_flags_on):
+    group = egs_factory.group(alternative_booking_enabled=True)
+    user = egs_factory.student()
+    source = egs_factory.equipment(group)
+    impl, _ = _impl_that_fails_on_slot(source)
+    fake_alt = {"equipment_id": 999, "missing_required_fields": [], "input_error": None}
+
+    with patch("iic_booking.equipment.api_views.is_slot_window_peak_waitlist_period", return_value=True), \
+            patch("iic_booking.equipment.api_views.add_user_to_waitlist") as add_wl, \
+            patch.object(egs, "find_alternatives", return_value=[fake_alt]) as finder:
+        req = _drf_post(user, "/x/", {"slot_ids": [1], "offer_group_alternatives": True, "waitlist_on_failure": False})
+        res = egs.run_booking_with_group_alternatives(req, source.pk, impl)
+
+    finder.assert_called_once()
+    add_wl.assert_not_called()
+    assert res.status_code == 409
+    assert res.data["alternatives"] == [fake_alt]
+    assert res.data["waitlist_available"] is True
+
+
+@pytest.mark.django_db
+def test_peak_window_without_alternatives_still_waitlists(egs_factory, egs_flags_on):
+    group = egs_factory.group(alternative_booking_enabled=True)
+    user = egs_factory.student()
+    source = egs_factory.equipment(group)
+    impl, _ = _impl_that_fails_on_slot(source)
+
+    with patch("iic_booking.equipment.api_views.is_slot_window_peak_waitlist_period", return_value=True), \
+            patch("iic_booking.equipment.api_views.add_user_to_waitlist", return_value=(True, 1)) as add_wl, \
+            patch("iic_booking.equipment.api_views._schedule_unsuccessful_booking_waitlist_email"), \
+            patch.object(egs, "find_alternatives", return_value=[]):
+        req = _drf_post(user, "/x/", {"slot_ids": [1], "offer_group_alternatives": True})
+        res = egs.run_booking_with_group_alternatives(req, source.pk, impl)
+
+    assert res.status_code == 400
+    assert add_wl.call_count == 1
+    assert res.data["waitlist_position"] == 1
 
 
 @pytest.mark.django_db
