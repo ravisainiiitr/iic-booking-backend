@@ -1,0 +1,90 @@
+# Read-only: why new TCP connections to equip.iitr.ac.in stall for 1/3/7/15 s (SYN retransmits).
+# Prints counters, limits and selected directives only. Makes no changes, prints no secrets.
+name: Probe TCP Connect Drops
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Host load and uptime
+        run: |
+          echo "loadavg=$(cat /proc/loadavg)"
+          echo "nproc=$(nproc)"
+          uptime || true
+          free -m || true
+
+      - name: Kernel TCP drop counters
+        run: |
+          if command -v nstat >/dev/null 2>&1; then
+            nstat -az 2>/dev/null | grep -E 'ListenOverflows|ListenDrops|Syncookies|TCPReqQFull|TCPBacklogDrop|TCPTimeouts|TcpExtTCPSynRetrans|TCPAbortOnMemory' || true
+          else
+            netstat -s 2>/dev/null | grep -Ei 'listen|SYN|overflow|cookies|dropped' || true
+          fi
+
+      - name: Listen sockets (Recv-Q = queued now, Send-Q = backlog limit)
+        run: |
+          ss -ltnp 2>/dev/null | awk 'NR==1 || /:(80|443|8000|8001|8080)\s/' || ss -ltn
+          echo "=== connection states on :443 ==="
+          ss -tan 'sport = :443' 2>/dev/null | awk 'NR>1{print $1}' | sort | uniq -c || true
+          echo "=== connection states to app ports ==="
+          ss -tan '( dport = :8000 or sport = :8000 )' 2>/dev/null | awk 'NR>1{print $1}' | sort | uniq -c || true
+          ss -s || true
+
+      - name: Kernel limits and conntrack
+        run: |
+          for k in net.core.somaxconn net.ipv4.tcp_max_syn_backlog net.ipv4.tcp_syncookies \
+                   net.core.netdev_max_backlog net.ipv4.ip_local_port_range \
+                   net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max; do
+            echo "$k=$(sysctl -n $k 2>/dev/null || echo n/a)"
+          done
+          echo "=== recent kernel messages (SYN flood / conntrack / drops) ==="
+          (sudo -n dmesg -T 2>/dev/null || dmesg -T 2>/dev/null) | grep -Ei 'SYN flooding|conntrack|dropping|possible SYN' | tail -n 20 || echo "none or no access"
+
+      - name: AWS ENA network allowance counters
+        run: |
+          for dev in $(ls /sys/class/net | grep -v lo); do
+            echo "=== $dev ==="
+            (ethtool -S "$dev" 2>/dev/null || sudo -n ethtool -S "$dev" 2>/dev/null) | grep -E 'allowance_exceeded|linklocal' || echo "no ENA allowance counters"
+          done
+
+      - name: Firewall rate limits (rule summaries only)
+        run: |
+          (sudo -n iptables -S 2>/dev/null | grep -Ei 'limit|connlimit|hashlimit|recent|DROP|REJECT' | head -n 40) || echo "iptables: no access"
+          (sudo -n ufw status 2>/dev/null | head -n 30) || echo "ufw: no access"
+          (sudo -n fail2ban-client status 2>/dev/null) || echo "fail2ban: absent or no access"
+
+      - name: Apache MPM, worker limits and keep-alive
+        run: |
+          (sudo -n apache2ctl -M 2>/dev/null || apache2ctl -M 2>/dev/null) | grep -Ei 'mpm|http2|proxy_http|deflate|expires' || true
+          for f in /etc/apache2/apache2.conf /etc/apache2/mods-enabled/mpm_*.conf /etc/apache2/mods-enabled/http2.conf /etc/apache2/sites-enabled/*; do
+            [ -e "$f" ] || continue
+            echo "=== $f"
+            (sudo -n cat "$f" 2>/dev/null || cat "$f" 2>/dev/null) \
+              | grep -Ei '^\s*(StartServers|ServerLimit|MaxRequestWorkers|MaxClients|ThreadsPerChild|ThreadLimit|MinSpareThreads|MaxSpareThreads|MaxConnectionsPerChild|KeepAlive|KeepAliveTimeout|MaxKeepAliveRequests|Timeout|ListenBacklog|Protocols|ProxyPass\s|ProxyTimeout)' || true
+          done
+          echo "apache_processes=$(pgrep -c apache2 || echo 0)"
+          echo "=== apache error log capacity warnings ==="
+          (sudo -n grep -hEi 'MaxRequestWorkers|server reached|scoreboard is full|AH00484|AH03490' /var/log/apache2/error.log* 2>/dev/null | tail -n 15) || echo "no access"
+          echo "=== server-status (local only) ==="
+          curl -s -m 5 http://127.0.0.1/server-status?auto 2>/dev/null | grep -Ei 'BusyWorkers|IdleWorkers|ConnsTotal|ConnsAsync|Scoreboard' | cut -c1-200 || echo "server-status unavailable"
+
+      - name: App server workers
+        run: |
+          docker ps --format '{{.Names}}\t{{.Status}}' 2>/dev/null || true
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          if [ -n "$CID" ]; then
+            docker top "$CID" -o pid,pcpu,rss,args 2>/dev/null | cut -c1-220 | head -n 30 || true
+          fi
+
+      - name: Connect timing from the host (loopback vs public address)
+        run: |
+          for target in "https://127.0.0.1/" "https://equip.iitr.ac.in/api/equipments/catalog-departments/"; do
+            echo "=== $target ==="
+            for i in $(seq 1 12); do
+              curl -sk -o /dev/null -m 25 -w "connect=%{time_connect} ttfb=%{time_starttransfer} code=%{http_code}\n" "$target" || echo "curl failed"
+            done
+          done
