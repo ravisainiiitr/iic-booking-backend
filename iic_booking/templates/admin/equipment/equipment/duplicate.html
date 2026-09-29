@@ -1,0 +1,62 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+&rsaquo; <a href="{% url 'admin:equipment_equipment_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+&rsaquo; <a href="{% url 'admin:equipment_equipment_change' original.pk %}">{{ original.code }}</a>
+&rsaquo; {% trans 'Duplicate' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+{% if error %}
+<p class="errornote">{{ error }}</p>
+{% endif %}
+
+<div class="module aligned">
+  <p>
+    {% blocktrans with code=original.code name=original.name %}A new equipment will be created from <strong>{{ code }}</strong> ({{ name }}) with the same settings, Officer In-charge, Lab Incharge, PIs, specifications, publications, accessories, charge profiles, input fields, multi-parameter options, print materials, slot masters and quotas.{% endblocktrans %}
+  </p>
+  <p class="help">
+    {% trans "Not copied: bookings, daily slots, waitlist, logs, video, asset/purchase details and data-sync PC settings. The copy is created as Inactive so it is not bookable until you review it and set it Active." %}
+  </p>
+</div>
+
+<form method="post" novalidate>
+  {% csrf_token %}
+  <fieldset class="module aligned">
+    <div class="form-row">
+      <div>
+        <label class="required" for="id_dup_code">{% trans "New code" %}:</label>
+        <input type="text" name="code" id="id_dup_code" value="{{ code }}" maxlength="255" required class="vTextField">
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label class="required" for="id_dup_name">{% trans "New name" %}:</label>
+        <input type="text" name="name" id="id_dup_name" value="{{ name }}" maxlength="255" required class="vTextField">
+      </div>
+    </div>
+    {% if has_image %}
+    <div class="form-row">
+      <div class="checkbox-row">
+        <input type="checkbox" name="copy_image" id="id_dup_copy_image" value="1"{% if copy_image %} checked{% endif %}>
+        <label class="vCheckboxLabel" for="id_dup_copy_image">{% trans "Copy the equipment image" %}</label>
+      </div>
+    </div>
+    {% endif %}
+  </fieldset>
+
+  <div class="submit-row">
+    <input type="submit" value="{% trans 'Create copy and edit' %}" class="default">
+    <a href="{% url 'admin:equipment_equipment_change' original.pk %}" class="button cancel-link">{% trans 'Cancel' %}</a>
+  </div>
+</form>
+{% endblock %}

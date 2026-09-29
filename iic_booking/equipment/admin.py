@@ -1331,7 +1331,108 @@ class EquipmentAdmin(admin.ModelAdmin):
             kwargs['queryset'] = qs
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
     
-    actions = ['generate_slots_one_month', 'assign_to_group']
+    actions = ['generate_slots_one_month', 'assign_to_group', 'duplicate_selected']
+    
+    def get_urls(self):
+        from django.urls import path
+
+        info = (self.opts.app_label, self.opts.model_name)
+        custom = [
+            path(
+                '<path:object_id>/duplicate/',
+                self.admin_site.admin_view(self.duplicate_view),
+                name='%s_%s_duplicate' % info,
+            ),
+        ]
+        return custom + super().get_urls()
+    
+    def _duplicate_done(self, request, source, new, warnings):
+        self.log_addition(request, new, f"Duplicated from {source.code}")
+        self.message_user(
+            request,
+            _('Created "%(new)s" as a copy of "%(src)s" (status Inactive). Review and edit it below, then set it Active.')
+            % {'new': new.code, 'src': source.code},
+            messages.SUCCESS,
+        )
+        for warning in warnings:
+            self.message_user(request, warning, messages.WARNING)
+    
+    def duplicate_view(self, request, object_id):
+        """Copy one equipment (settings, staff, pricing, inputs, slot masters) with a new code and name."""
+        from django.core.exceptions import PermissionDenied
+        from django.http import HttpResponseRedirect
+        from django.template.response import TemplateResponse
+        from .duplicate import duplicate_equipment, suggest_copy_code, suggest_copy_name
+
+        source = self.get_object(request, object_id)
+        if source is None:
+            return self._get_obj_does_not_exist_redirect(request, self.opts, object_id)
+        if not (self.has_add_permission(request) and self.has_view_or_change_permission(request, source)):
+            raise PermissionDenied
+
+        error = None
+        code = suggest_copy_code(source.code)
+        name = suggest_copy_name(source.name)
+        copy_image = bool(getattr(source.image, 'name', ''))
+        if request.method == 'POST':
+            code = (request.POST.get('code') or '').strip()
+            name = (request.POST.get('name') or '').strip()
+            copy_image = bool(request.POST.get('copy_image'))
+            if not code or not name:
+                error = _('Code and name are required.')
+            else:
+                try:
+                    new, warnings = duplicate_equipment(source, code=code, name=name, copy_image=copy_image)
+                except ValueError as exc:
+                    error = str(exc)
+                else:
+                    self._duplicate_done(request, source, new, warnings)
+                    return HttpResponseRedirect(
+                        reverse('admin:equipment_equipment_change', args=[new.pk])
+                    )
+
+        context = {
+            **self.admin_site.each_context(request),
+            'opts': self.opts,
+            'app_label': self.opts.app_label,
+            'original': source,
+            'title': _('Duplicate equipment %(code)s') % {'code': source.code},
+            'code': code,
+            'name': name,
+            'copy_image': copy_image,
+            'has_image': bool(getattr(source.image, 'name', '')),
+            'error': error,
+            'has_view_permission': self.has_view_permission(request, source),
+        }
+        return TemplateResponse(request, 'admin/equipment/equipment/duplicate.html', context)
+    
+    def duplicate_selected(self, request, queryset):
+        """Copy each selected equipment as an Inactive "<CODE>-COPY"; opens the copy when only one is selected."""
+        from django.http import HttpResponseRedirect
+        from .duplicate import duplicate_equipment
+
+        if not self.has_add_permission(request):
+            self.message_user(request, _('You do not have permission to add equipment.'), messages.ERROR)
+            return None
+        created = []
+        for source in queryset.order_by('code'):
+            try:
+                new, warnings = duplicate_equipment(source)
+            except Exception as exc:
+                logger.exception('Duplicate equipment %s failed', source.pk)
+                self.message_user(
+                    request,
+                    _('Could not duplicate "%(code)s": %(err)s') % {'code': source.code, 'err': exc},
+                    messages.ERROR,
+                )
+                continue
+            self._duplicate_done(request, source, new, warnings)
+            created.append(new)
+        if len(created) == 1:
+            return HttpResponseRedirect(reverse('admin:equipment_equipment_change', args=[created[0].pk]))
+        return None
+    
+    duplicate_selected.short_description = _("Duplicate selected equipment (creates Inactive copies)")
     
     inlines = [
         EquipmentManagerInline,

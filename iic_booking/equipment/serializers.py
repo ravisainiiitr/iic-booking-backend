@@ -1995,6 +1995,27 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'param_definitions', 'slot_options',
         ]
 
+    @classmethod
+    def _non_null_fields_with_default(cls):
+        names = set()
+        for name in cls.Meta.fields:
+            try:
+                field = Equipment._meta.get_field(name)
+            except Exception:
+                continue
+            if getattr(field, "concrete", False) and not field.null and field.has_default():
+                names.add(name)
+        return names
+
+    def to_internal_value(self, data):
+        # Blank numeric inputs arrive as null; for NOT NULL columns with a model default,
+        # treat null as "not provided" (default on create, unchanged on update).
+        if isinstance(data, dict):
+            nulls = [k for k in self._non_null_fields_with_default() if k in data and data[k] is None]
+            if nulls:
+                data = {k: v for k, v in data.items() if k not in nulls}
+        return super().to_internal_value(data)
+
     def validate_internal_department(self, value):
         from iic_booking.users.models.department import DepartmentType
 
