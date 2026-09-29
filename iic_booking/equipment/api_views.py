@@ -2519,8 +2519,9 @@ def equipment_image_proxy(request, pk):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    # Short max-age + ETag so replaced catalog photos propagate without a 24h wait.
-    cache_control = "public, max-age=300, must-revalidate"
+    # Short max-age + ETag so replaced catalog photos propagate without a 24h wait; once stale the
+    # browser still paints the cached photo at once and revalidates in the background.
+    cache_control = "public, max-age=300, stale-while-revalidate=604800"
     thumb_width = parse_equipment_image_thumb_width(request.query_params.get("w"))
     # Uploads always get a new storage key, so the stored path identifies the bytes. Deriving the
     # ETag from it lets revalidations answer 304 without reading the object from S3.

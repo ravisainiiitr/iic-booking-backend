@@ -207,7 +207,7 @@ class EquipmentImageProxyViewTests(TestCase):
         resp = self.client.get(self.url)
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.content, self.original)
-        self.assertEqual(resp["Cache-Control"], "public, max-age=300, must-revalidate")
+        self.assertEqual(resp["Cache-Control"], "public, max-age=300, stale-while-revalidate=604800")
         self.assertTrue(resp["ETag"])
 
     def test_width_param_serves_webp_thumbnail(self):
