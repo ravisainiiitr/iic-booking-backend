@@ -1,0 +1,20 @@
+# Read-only: calendar sync links and when a calendar app last fetched them. No tokens or emails printed.
+name: Calendar Feed Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Show calendar feed status
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/calendar_feed_status.py
