@@ -112,6 +112,46 @@ def resolve_pricing_profile_for_user(user, equipment) -> str:
     return standard_or_discounted_pricing_profile(user, equipment)
 
 
+def pi_rate_user_type(user, equipment):
+    """User type of the Equipment PI whose PI rates apply to this billing identity, or None."""
+    if not user:
+        return None
+    if is_equipment_pi(user, equipment):
+        return getattr(user, "user_type", None)
+    owner = wallet_owner_user(user)
+    if owner is not None and getattr(owner, "pk", None) != getattr(user, "pk", None):
+        if is_equipment_pi(owner, equipment):
+            return getattr(owner, "user_type", None)
+    return None
+
+
+def get_active_charge_profile(equipment, user_type, pricing_profile, booking_user=None):
+    """
+    Active ChargeProfile for (equipment, user_type, pricing_profile).
+
+    PI rates are configured for the PI's own category ("PI IIT Faculty"). Students and
+    other members billed through an Equipment PI's wallet get those rates unless a PI row
+    exists for their own user type. Raises ChargeProfile.DoesNotExist when none applies.
+    """
+    rows = ChargeProfile.objects.filter(
+        equipment=equipment, pricing_profile=pricing_profile, is_active=True
+    )
+    own = rows.filter(user_type=user_type).first()
+    if own is not None:
+        return own
+    if pricing_profile == ChargeProfilePricingProfile.PI:
+        from iic_booking.users.models import UserType
+
+        for pi_type in (pi_rate_user_type(booking_user, equipment), UserType.FACULTY):
+            if pi_type and pi_type != user_type:
+                row = rows.filter(user_type=pi_type).first()
+                if row is not None:
+                    return row
+    raise ChargeProfile.DoesNotExist(
+        f"No active {pricing_profile} charge profile applies to user type {user_type}."
+    )
+
+
 def pricing_resolution_meta(user, equipment) -> dict:
     """Explain which billing identity / PI flags produced the resolved profile."""
     owner = wallet_owner_user(user) if user else None

@@ -2726,14 +2726,10 @@ def equipment_calculate(request, pk):
         except (ValueError, User.DoesNotExist):
             pass
     
-    # Get charge profile
+    from .pi_pricing import get_active_charge_profile
+
     try:
-        charge_profile = ChargeProfile.objects.get(
-            equipment=equipment,
-            user_type=user_type,
-            pricing_profile=pricing_profile,
-            is_active=True
-        )
+        charge_profile = get_active_charge_profile(equipment, user_type, pricing_profile, booking_user)
     except ChargeProfile.DoesNotExist:
         return Response(
             {"error": f"No active charge profile found for equipment {pk} and user type {user_type}."},
@@ -2989,13 +2985,15 @@ def _calculate_one_proforma_line(request_user, equipment, input_values):
     Calculate time and charge for one equipment with given input_values, for the given user's type.
     Returns (line_data_dict, error_string). If error_string is set, line_data_dict is None.
     """
+    from .pi_pricing import get_active_charge_profile
+
     user_type = getattr(request_user, "user_type", None) or UserType.STUDENT
     try:
-        charge_profile = ChargeProfile.objects.get(
-            equipment=equipment,
-            user_type=user_type,
-            pricing_profile=_get_charge_profile_pricing_profile_for_user(request_user, equipment),
-            is_active=True,
+        charge_profile = get_active_charge_profile(
+            equipment,
+            user_type,
+            _get_charge_profile_pricing_profile_for_user(request_user, equipment),
+            request_user,
         )
     except ChargeProfile.DoesNotExist:
         return None, f"No charge profile for equipment {equipment.equipment_id} and user type {user_type}."
@@ -3929,12 +3927,14 @@ def _book_equipment_impl(request, pk):
                         book_even_if_single = request.data.get("book_even_if_single_slot_available") is True
                         single_slot_fallback_done = False
                         if book_even_if_single:
+                            from .pi_pricing import get_active_charge_profile
+
                             try:
-                                charge_profile_early = ChargeProfile.objects.get(
-                                    equipment=equipment,
-                                    user_type=user_type,
-                                    pricing_profile=_get_charge_profile_pricing_profile_for_user(booking_user, equipment),
-                                    is_active=True
+                                charge_profile_early = get_active_charge_profile(
+                                    equipment,
+                                    user_type,
+                                    _get_charge_profile_pricing_profile_for_user(booking_user, equipment),
+                                    booking_user,
                                 )
                             except ChargeProfile.DoesNotExist:
                                 charge_profile_early = None
@@ -4224,12 +4224,14 @@ def _book_equipment_impl(request, pk):
         start_time = daily_slots.first().start_datetime
         end_time = daily_slots.last().end_datetime
         booking_date = start_time
+        from .pi_pricing import get_active_charge_profile
+
         try:
-            charge_profile = ChargeProfile.objects.get(
-                equipment=equipment,
-                user_type=user_type,
-                pricing_profile=_get_charge_profile_pricing_profile_for_user(booking_user, equipment),
-                is_active=True,
+            charge_profile = get_active_charge_profile(
+                equipment,
+                user_type,
+                _get_charge_profile_pricing_profile_for_user(booking_user, equipment),
+                booking_user,
             )
         except ChargeProfile.DoesNotExist:
             _create_booking_attempt_log(
@@ -5019,13 +5021,14 @@ def _book_equipment_impl(request, pk):
             )
             return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
     
-    # Get charge profile
+    from .pi_pricing import get_active_charge_profile
+
     try:
-        charge_profile = ChargeProfile.objects.get(
-            equipment=equipment,
-            user_type=user_type,
-                pricing_profile=_get_charge_profile_pricing_profile_for_user(booking_user, equipment),
-            is_active=True
+        charge_profile = get_active_charge_profile(
+            equipment,
+            user_type,
+            _get_charge_profile_pricing_profile_for_user(booking_user, equipment),
+            booking_user,
         )
     except ChargeProfile.DoesNotExist:
         _create_booking_attempt_log(

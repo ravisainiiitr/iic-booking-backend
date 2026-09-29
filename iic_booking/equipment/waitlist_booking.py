@@ -103,13 +103,10 @@ def _resolve_charge_profile_for_user(equipment: Equipment, booking_user):
                     else ChargeProfilePricingProfile.STANDARD
                 )
 
+    from .pi_pricing import get_active_charge_profile
+
     try:
-        charge_profile = ChargeProfile.objects.get(
-            equipment=equipment,
-            user_type=user_type,
-            pricing_profile=pricing_profile,
-            is_active=True,
-        )
+        charge_profile = get_active_charge_profile(equipment, user_type, pricing_profile, booking_user)
         return charge_profile, user_type, is_external
     except ChargeProfile.DoesNotExist:
         return None, user_type, is_external

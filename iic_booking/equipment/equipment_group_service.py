@@ -247,14 +247,18 @@ def resolve_charge_profile(booking_user, equipment, *, user_type: Optional[str] 
     """Same lookup as book-equipment: (equipment, user_type, pricing profile, active)."""
     from .api_views import _get_charge_profile_pricing_profile_for_user
     from .models import ChargeProfile
+    from .pi_pricing import get_active_charge_profile
 
     ut = user_type or _booking_user_type(booking_user)
-    return ChargeProfile.objects.filter(
-        equipment=equipment,
-        user_type=ut,
-        pricing_profile=_get_charge_profile_pricing_profile_for_user(booking_user, equipment),
-        is_active=True,
-    ).first()
+    try:
+        return get_active_charge_profile(
+            equipment,
+            ut,
+            _get_charge_profile_pricing_profile_for_user(booking_user, equipment),
+            booking_user,
+        )
+    except ChargeProfile.DoesNotExist:
+        return None
 
 
 def equipment_eligibility_error(booking_user, equipment, *, user_type: Optional[str] = None) -> Optional[str]:

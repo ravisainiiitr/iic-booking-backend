@@ -1751,12 +1751,16 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
                 pricing = ChargeProfilePricingProfile.STANDARD
         except Exception:
             pricing = ChargeProfilePricingProfile.STANDARD
+        from iic_booking.equipment.pi_pricing import get_active_charge_profile
+
+        try:
+            applied = get_active_charge_profile(
+                obj, user_type, pricing, user if not override_user_type else None
+            )
+        except ChargeProfile.DoesNotExist:
+            applied = None
         cp = (
-            obj.charge_profiles.filter(
-                user_type=user_type,
-                pricing_profile=pricing,
-                is_active=True,
-            ).first()
+            applied
             or obj.charge_profiles.filter(
                 user_type=user_type,
                 pricing_profile=ChargeProfilePricingProfile.STANDARD,
