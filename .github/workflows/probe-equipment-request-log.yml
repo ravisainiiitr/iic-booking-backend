@@ -1,0 +1,40 @@
+# Probe: recent access/app log lines for one equipment's API calls (read-only, tokens masked)
+name: Probe Equipment Request Log
+
+on:
+  workflow_dispatch:
+    inputs:
+      equipment_id:
+        description: Equipment id
+        required: true
+        default: "7"
+      since_minutes:
+        description: Look back this many minutes
+        required: true
+        default: "60"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Grep Apache and django logs
+        env:
+          PROBE_EQ: ${{ github.event.inputs.equipment_id }}
+          SINCE: ${{ github.event.inputs.since_minutes }}
+        run: |
+          set -uo pipefail
+          mask() { sed -E 's/(token|access|key|signature|Signature|X-Amz-[A-Za-z]+)=[^&" ]*/\1=***/g'; }
+          PAT="/api/equipments/${PROBE_EQ}(/|\?| )"
+          echo "=== apache access logs (last matches) ==="
+          for f in /var/log/apache2/*access*.log; do
+            [ -r "$f" ] || { sudo -n test -r "$f" 2>/dev/null || continue; }
+            echo "--- $f"
+            (cat "$f" 2>/dev/null || sudo -n cat "$f" 2>/dev/null) | grep -E "$PAT" | tail -n 80 | mask
+          done
+          echo "=== django container log ==="
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          if [ -n "$CID" ]; then
+            docker logs --since "${SINCE}m" "$CID" 2>&1 | grep -E "$PAT|equipments/${PROBE_EQ}/" | tail -n 80 | mask
+            echo "=== django errors (last ${SINCE}m) ==="
+            docker logs --since "${SINCE}m" "$CID" 2>&1 | grep -E -A 25 'Traceback|Internal Server Error' | tail -n 150 | mask
+          fi
