@@ -1,0 +1,165 @@
+name: Probe Booking Open Readiness (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      week_start:
+        description: "Monday of the booking week to check (YYYY-MM-DD)"
+        required: true
+        default: "2026-10-05"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Containers
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "HEAD=$(git rev-parse --short HEAD) TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo none)"
+          docker compose -f docker-compose.production.yml ps --format '{{.Name}} | {{.Status}}'
+
+      - name: Readiness (SELECT only)
+        env:
+          WEEK_START: ${{ inputs.week_start }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e WEEK_START="$WEEK_START" -w /app "$CID" python - <<'PY'
+          import os, datetime, traceback
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.conf import settings
+          from django.db.models import Count, Q
+          from django.utils import timezone
+
+          ws = datetime.date.fromisoformat(os.environ["WEEK_START"])
+          we = ws + datetime.timedelta(days=6)
+          wd_end = ws + datetime.timedelta(days=4)
+
+          def section(name):
+              print(f"\n===== {name} =====")
+
+          def safe(fn):
+              try:
+                  fn()
+              except Exception:
+                  traceback.print_exc()
+
+          section("clock")
+          print("now_utc", timezone.now().isoformat(), "now_local", timezone.localtime().isoformat(), "TZ", settings.TIME_ZONE)
+          print("SKIP_BOOKING_QUOTA_CHECK", getattr(settings, "SKIP_BOOKING_QUOTA_CHECK", None))
+          print("week", ws, "->", we)
+
+          def portal():
+              from iic_booking.users.models.portal_migration import PortalMigrationState
+              s = PortalMigrationState.objects.order_by("pk").first()
+              if s is None:
+                  print("PortalMigrationState: NO ROW")
+                  return
+              opens = s.booking_opens_at
+              print("booking_opens_at", opens.isoformat() if opens else None,
+                    "local", timezone.localtime(opens).isoformat() if opens else None)
+              print("end_user_booking_enabled", s.end_user_booking_enabled)
+              print("phase", s.phase, "booking_migration_mode", getattr(s, "booking_migration_mode", None))
+              print("legacy_ledger_frozen", s.legacy_ledger_frozen)
+              print("booking_lock_message_len", len(s.booking_lock_message or ""))
+          section("portal migration state"); safe(portal)
+
+          def window():
+              from iic_booking.equipment.models import Equipment, InternalUserSlotWindowSetting
+              g = InternalUserSlotWindowSetting.objects.order_by("pk").first()
+              print("global slot window:", str(g) if g else "NO ROW")
+              ov = Equipment.objects.exclude(slot_window_reference_weekday__isnull=True).values_list(
+                  "code", "slot_window_reference_weekday", "slot_window_reference_time")
+              print("equipment overrides:", list(ov)[:50])
+          section("slot window reference"); safe(window)
+
+          def depts():
+              from iic_booking.users.models import Department, DepartmentType
+              from iic_booking.equipment.models import Equipment, EquipmentStatus
+              for d in Department.objects.filter(department_type=DepartmentType.INTERNAL).order_by("name"):
+                  n_act = Equipment.objects.filter(internal_department=d, status=EquipmentStatus.ACTIVE).count()
+                  n_all = Equipment.objects.filter(internal_department=d).count()
+                  print(f"{d.id:>4} {d.name[:45]:<45} booking={d.equipment_booking_enabled!s:<5} "
+                        f"visible={d.equipment_visibility_enabled!s:<5} equipment active/all={n_act}/{n_all}")
+          section("internal departments"); safe(depts)
+
+          def equipment():
+              from iic_booking.equipment.models import (
+                  ChargeProfile, DailySlot, Equipment, EquipmentStatus, SlotMaster, SlotStatus,
+              )
+              print("status counts", dict(Counter(Equipment.objects.values_list("status", flat=True))))
+              act = Equipment.objects.filter(status=EquipmentStatus.ACTIVE).select_related("internal_department")
+              print("active equipment", act.count())
+              no_dept = [e.code for e in act if e.internal_department_id is None]
+              print("ACTIVE without internal_department:", len(no_dept), no_dept[:40])
+              dept_off = [e.code for e in act if e.internal_department_id and not e.internal_department.equipment_booking_enabled]
+              print("ACTIVE in dept with booking OFF:", len(dept_off), dept_off[:60])
+              vis_off = [e.code for e in act if e.internal_department_id and not e.internal_department.equipment_visibility_enabled]
+              print("ACTIVE in dept with visibility OFF:", len(vis_off), vis_off[:60])
+              vg = [e.code for e in act if getattr(e, "visibility_group_id", None)]
+              print("ACTIVE with visibility_group (restricted):", len(vg), vg[:40])
+
+              no_masters = [e.code for e in act if not SlotMaster.objects.filter(equipment=e, is_active=True).exists()]
+              print("ACTIVE without active SlotMaster:", len(no_masters), no_masters[:40])
+
+              slots = DailySlot.objects.filter(date__gte=ws, date__lte=we, slot_master__equipment__status=EquipmentStatus.ACTIVE)
+              print("next-week slot status counts", dict(Counter(slots.values_list("status", flat=True))))
+              legacy = slots.filter(status=SlotStatus.BLOCKED, blocked_label__startswith="LEGACY_MIGRATION:").count()
+              print("next-week LEGACY_MIGRATION blocked slots", legacy)
+              per_eq = {
+                  r["slot_master__equipment__code"]: r
+                  for r in slots.filter(date__lte=wd_end).values("slot_master__equipment__code").annotate(
+                      total=Count("id"), avail=Count("id", filter=Q(status=SlotStatus.AVAILABLE)),
+                      booked=Count("id", filter=Q(status=SlotStatus.BOOKED)),
+                  )
+              }
+              missing = [e.code for e in act if e.code not in per_eq]
+              print("ACTIVE with NO weekday (Mon-Fri) slots generated for week:", len(missing), missing[:60])
+              zero_avail = [c for c, r in per_eq.items() if r["avail"] == 0]
+              print("ACTIVE with weekday slots but ZERO AVAILABLE:", len(zero_avail),
+                    [(c, per_eq[c]["total"], per_eq[c]["booked"]) for c in zero_avail][:60])
+              print("next-week weekday AVAILABLE total", sum(r["avail"] for r in per_eq.values()),
+                    "BOOKED total", sum(r["booked"] for r in per_eq.values()))
+              home_marked = slots.filter(home_department_only=True).count()
+              print("next-week slots marked for non-home department", home_marked)
+
+              for ut in ("faculty", "student", "external"):
+                  have = set(ChargeProfile.objects.filter(is_active=True, user_type__iexact=ut).values_list("equipment_id", flat=True))
+                  lacking = [e.code for e in act if e.pk not in have]
+                  print(f"ACTIVE without active '{ut}' ChargeProfile:", len(lacking), lacking[:40])
+              ext0 = act.filter(external_slot_quota_percent=0).count()
+              print("ACTIVE with external_slot_quota_percent=0 (external cannot book):", ext0)
+              mm = act.filter(Q(enable_multi_mode=True) | Q(parent_equipment__isnull=False)).count()
+              print("ACTIVE multi-mode/child equipment:", mm)
+          section("equipment + slots"); safe(equipment)
+
+          def ext_snap():
+              from iic_booking.equipment.models import ExternalWeeklySlotQuotaSnapshot
+              qs = ExternalWeeklySlotQuotaSnapshot.objects.filter(week_start=ws)
+              print("snapshots for week", qs.count(), "max=0:", qs.filter(max_external_slots=0).count(),
+                    "total_bookable=0:", qs.filter(total_bookable_slots=0).count())
+              print("zero-cap sample", list(qs.filter(max_external_slots=0).values_list(
+                  "equipment__code", "total_bookable_slots", "external_quota_percent", "created_at"))[:20])
+          section("external weekly snapshots"); safe(ext_snap)
+
+          def holidays():
+              from iic_booking.equipment.models import Holiday
+              print(list(Holiday.objects.filter(date__gte=ws, date__lte=we).values_list("date", "reason", "is_active")))
+          section("holidays in week"); safe(holidays)
+
+          def beat():
+              from django_celery_beat.models import PeriodicTask
+              keys = ("slot", "waitlist", "external", "quota", "legacy", "sync")
+              for t in PeriodicTask.objects.order_by("name"):
+                  if any(k in (t.task or "").lower() or k in t.name.lower() for k in keys):
+                      sched = t.crontab or t.interval
+                      print(f"{t.enabled!s:<5} {t.name[:55]:<55} {t.task:<55} last_run={t.last_run_at} sched={sched}")
+          section("celery beat tasks"); safe(beat)
+
+          print("\nPROBE_DONE")
+          PY
