@@ -1566,6 +1566,9 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'Accepted, or Processing; opens disruption (refund vs reschedule). '
                 'Lifecycle countdowns: submit-sample lead time before slot start, booking timer until slot end after '
                 'Sample Accepted, and collect/discard hours after booking completion. '
+                'When submission lead time and collect/discard deadline are both 0, the equipment is walk-in: '
+                'users bring and take back samples in person, so no sample reminder, collection or disposal emails '
+                'are sent and bookings are not auto-marked Not Utilized. '
                 'Atmosphere-sensitive sample option: when enabled, bookers may choose to submit at slot start. '
                 'Repeat sample: days after completion when user can request a repeat; disclaimer shown in popup. Define actual timings in Slot Masters below.'
             ),

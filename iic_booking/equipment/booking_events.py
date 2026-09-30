@@ -31,6 +31,14 @@ BOOKING_CONFIRMATION_INSTRUCTIONS = (
     "Reports will appear in your booking details when ready, and you will be notified by email."
 )
 
+# Walk-in equipment (no submission lead time and no collect / discard deadline).
+BOOKING_CONFIRMATION_INSTRUCTIONS_WALK_IN = (
+    "Sample handling:\n"
+    "• Please bring your sample with you to your booking slot.\n"
+    "• Take your sample back with you after the analysis.\n\n"
+    "Reports will appear in your booking details when ready, and you will be notified by email."
+)
+
 # Shown only when Equipment.sample_preparation_by_user is True and the recipient is an internal user.
 USER_SAMPLE_PREPARATION_NOTICE_PLAIN = (
     "Wherever feasible, please prepare samples yourself under the guidance of laboratory operators. "
@@ -67,7 +75,12 @@ USER_SAMPLE_PREPARATION_NOTICE_HTML = (
 )
 
 
-def _append_confirmation_instructions_to_context(context: dict, *, also_append_to_comment: bool = True) -> dict:
+def _append_confirmation_instructions_to_context(
+    context: dict,
+    *,
+    also_append_to_comment: bool = True,
+    equipment=None,
+) -> dict:
     """
     Add booking confirmation instructions to the template context.
     We keep it in a dedicated variable and also append to `comment` so existing templates
@@ -75,11 +88,18 @@ def _append_confirmation_instructions_to_context(context: dict, *, also_append_t
     """
     if not isinstance(context, dict):
         return context
-    context.setdefault("booking_confirmation_instructions", BOOKING_CONFIRMATION_INSTRUCTIONS)
+    from .sample_lifecycle_policy import equipment_is_walk_in_sample
+
+    instructions = (
+        BOOKING_CONFIRMATION_INSTRUCTIONS_WALK_IN
+        if equipment_is_walk_in_sample(equipment)
+        else BOOKING_CONFIRMATION_INSTRUCTIONS
+    )
+    context.setdefault("booking_confirmation_instructions", instructions)
     if also_append_to_comment:
         base = (str(context.get("comment", "") or "")).strip()
-        if BOOKING_CONFIRMATION_INSTRUCTIONS not in base:
-            context["comment"] = (base + ("\n\n" if base else "") + BOOKING_CONFIRMATION_INSTRUCTIONS).strip()
+        if instructions not in base:
+            context["comment"] = (base + ("\n\n" if base else "") + instructions).strip()
     return context
 
 
@@ -725,7 +745,9 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 apply_equipment_booking_email_extra_to_context(
                     context, equipment, also_append_to_comment=True
                 )
-                _append_confirmation_instructions_to_context(context, also_append_to_comment=True)
+                _append_confirmation_instructions_to_context(
+                    context, also_append_to_comment=True, equipment=equipment
+                )
                 apply_user_sample_preparation_notice_to_context(
                     context, user, equipment, also_append_to_comment=True
                 )

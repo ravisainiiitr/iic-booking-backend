@@ -276,6 +276,7 @@ def archive_expired_samples() -> int:
         Number of bookings disposed (events created).
     """
     from .models import BookingBufferConfig, BookingSampleTrace, SampleTraceStatus
+    from .sample_lifecycle_policy import walk_in_sample_equipment_q
 
     cfg = BookingBufferConfig.objects.first()
     if not cfg or not getattr(cfg, "auto_archive_enabled", True):
@@ -312,6 +313,8 @@ def archive_expired_samples() -> int:
         .exclude(
             sample_trace_events__status=SampleTraceStatus.DISPOSED,
         )
+        # Walk-in equipment: the user took the sample back, so there is nothing to dispose.
+        .exclude(walk_in_sample_equipment_q("equipment__"))
         .distinct()
         .select_related("user", "equipment")
     )
@@ -477,6 +480,7 @@ def check_booking_not_utilized() -> int:
         SampleTraceStatus,
         SlotStatus,
     )
+    from .sample_lifecycle_policy import walk_in_sample_equipment_q
 
     today = timezone.localdate()
     is_off, reason = Holiday.is_holiday(today)
@@ -515,6 +519,9 @@ def check_booking_not_utilized() -> int:
             n_booked=F("n_slots"),
             has_bad_trace=False,
         )
+        # Walk-in equipment: samples are brought in person and never recorded as received,
+        # so an empty sample lifecycle does not mean the booking went unused.
+        .exclude(walk_in_sample_equipment_q("equipment__"))
         .select_related("user", "equipment")
     )
 

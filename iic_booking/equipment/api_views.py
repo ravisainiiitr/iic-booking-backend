@@ -10986,12 +10986,20 @@ def _try_complete_booking_on_sample_analyzed(booking, acting_user) -> bool:
     return True
 
 def _build_sample_notice_context(booking):
-    """Build common sample notice context for completion/results emails."""
+    """Build common sample notice context for completion/results emails.
+
+    No collection notice when the equipment has no collect / discard deadline, and no
+    preserve-and-return question for walk-in equipment (the user takes the sample back).
+    """
     from datetime import timedelta
+
+    from .sample_lifecycle_policy import equipment_is_walk_in_sample, sample_collect_deadline_hours
 
     user = booking.user
     equipment = getattr(booking, "equipment", None)
-    is_external = UserType.is_external_user(getattr(user, "user_type", None))
+    is_external = UserType.is_external_user(getattr(user, "user_type", None)) and not equipment_is_walk_in_sample(
+        equipment
+    )
     booking_display_id = booking_display_id_for_email(booking) or str(booking.booking_id)
     yes_url = get_frontend_absolute_url(
         f"/my-bookings?booking={booking_display_id}&sample_preservation=YES"
@@ -10999,45 +11007,54 @@ def _build_sample_notice_context(booking):
     no_url = get_frontend_absolute_url(
         f"/my-bookings?booking={booking_display_id}&sample_preservation=NO"
     )
-    hours = int(getattr(equipment, "sample_collect_deadline_hours", 0) or 0) if equipment else 0
+    hours = sample_collect_deadline_hours(equipment)
+    ctx = {
+        "sample_collection_deadline_hours": hours or "",
+        "sample_collection_deadline_at": None,
+        "sample_collection_deadline_display": "",
+        "sample_collection_notice": "",
+        "is_external_user": is_external,
+        "sample_preserve_yes_url": yes_url,
+        "sample_preserve_no_url": no_url,
+    }
     if hours <= 0:
-        hours = 72
+        return ctx
     completed_at = getattr(booking, "completed_at", None) or timezone.now()
     if timezone.is_naive(completed_at):
         completed_at = timezone.make_aware(completed_at)
     deadline = completed_at + timedelta(hours=hours)
     deadline_display = deadline.strftime("%d %B %Y")
-    notice = (
-        "Your analysis has been completed successfully. "
-        "Your sample is now ready for collection. "
-        f"Please collect your sample before {deadline_display}. "
-        "Samples not collected before this date will be discarded as per laboratory policy."
+    ctx.update(
+        {
+            "sample_collection_deadline_at": deadline.isoformat(),
+            "sample_collection_deadline_display": deadline_display,
+            "sample_collection_notice": (
+                "Your sample is now ready for collection. "
+                f"Please collect your sample before {deadline_display}. "
+                "Samples not collected before this date will be discarded as per laboratory policy."
+            ),
+        }
     )
-    return {
-        "sample_collection_deadline_hours": hours,
-        "sample_collection_deadline_at": deadline.isoformat(),
-        "sample_collection_deadline_display": deadline_display,
-        "sample_collection_notice": notice,
-        "is_external_user": is_external,
-        "sample_preserve_yes_url": yes_url,
-        "sample_preserve_no_url": no_url,
-    }
+    return ctx
 
 def _append_sample_notice_plaintext(message, sample_notice_ctx):
     """Append sample collection notice and external-user action links to plain text email."""
     if not message:
         message = ""
     deadline = sample_notice_ctx.get("sample_collection_deadline_display") or ""
-    lines = [
-        "",
-        "Sample Collection Information",
-        "Your analysis has been completed successfully.",
-        "Your sample is now ready for collection.",
-        "",
-        "Sample Collection Deadline",
-        f"Please collect your sample before: {deadline}" if deadline else sample_notice_ctx["sample_collection_notice"],
-        "Samples not collected before this date will be discarded as per laboratory policy.",
-    ]
+    lines = []
+    if deadline:
+        lines.extend(
+            [
+                "",
+                "Sample Collection Information",
+                "Your sample is now ready for collection.",
+                "",
+                "Sample Collection Deadline",
+                f"Please collect your sample before: {deadline}",
+                "Samples not collected before this date will be discarded as per laboratory policy.",
+            ]
+        )
     if sample_notice_ctx["is_external_user"]:
         lines.extend(
             [
@@ -11048,21 +11065,26 @@ def _append_sample_notice_plaintext(message, sample_notice_ctx):
                 f"No: {sample_notice_ctx['sample_preserve_no_url']}",
             ]
         )
+    if not lines:
+        return message
     return message + "\n" + "\n".join(lines)
 
 def _append_sample_notice_html(html_message, sample_notice_ctx):
     """Append sample collection notice and external-user action buttons to HTML email."""
-    deadline = html.escape(sample_notice_ctx.get("sample_collection_deadline_display") or "")
-    notice_html = (
-        "<hr style='margin:16px 0;border:none;border-top:1px solid #ddd;'/>"
-        "<h3 style='margin:0 0 8px;font-size:16px;'>Sample Collection Information</h3>"
-        "<p style='margin:0 0 8px;'>Your analysis has been completed successfully.</p>"
-        "<p style='margin:0 0 8px;'>Your sample is now ready for collection.</p>"
-        "<p style='margin:12px 0 4px;'><strong>Sample Collection Deadline</strong></p>"
-        f"<p style='margin:0 0 8px;'>Please collect your sample before:</p>"
-        f"<p style='margin:0 0 8px;font-size:18px;font-weight:600;'>{deadline}</p>"
-        "<p style='margin:0 0 8px;'>Samples not collected before this date will be discarded as per laboratory policy.</p>"
-    )
+    raw_deadline = sample_notice_ctx.get("sample_collection_deadline_display") or ""
+    if not raw_deadline and not sample_notice_ctx["is_external_user"]:
+        return html_message
+    deadline = html.escape(raw_deadline)
+    notice_html = "<hr style='margin:16px 0;border:none;border-top:1px solid #ddd;'/>"
+    if raw_deadline:
+        notice_html += (
+            "<h3 style='margin:0 0 8px;font-size:16px;'>Sample Collection Information</h3>"
+            "<p style='margin:0 0 8px;'>Your sample is now ready for collection.</p>"
+            "<p style='margin:12px 0 4px;'><strong>Sample Collection Deadline</strong></p>"
+            "<p style='margin:0 0 8px;'>Please collect your sample before:</p>"
+            f"<p style='margin:0 0 8px;font-size:18px;font-weight:600;'>{deadline}</p>"
+            "<p style='margin:0 0 8px;'>Samples not collected before this date will be discarded as per laboratory policy.</p>"
+        )
     if sample_notice_ctx["is_external_user"]:
         yes_url = html.escape(sample_notice_ctx["sample_preserve_yes_url"], quote=True)
         no_url = html.escape(sample_notice_ctx["sample_preserve_no_url"], quote=True)
