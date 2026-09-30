@@ -1,0 +1,83 @@
+name: Prepare Next Week Slots
+
+on:
+  workflow_dispatch:
+    inputs:
+      week_start:
+        description: "Monday of the week to prepare (YYYY-MM-DD); empty = next week"
+        required: false
+        default: ""
+      mode:
+        description: "show (schedule + slot counts only) or run (create missing slots)"
+        required: true
+        default: "show"
+      confirm:
+        description: "Type APPLY when mode is run"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Guard
+        if: ${{ (inputs.mode != 'show' && inputs.mode != 'run') || (inputs.mode == 'run' && inputs.confirm != 'APPLY') }}
+        run: |
+          echo "mode must be show or run; run requires confirm=APPLY"
+          exit 1
+
+      - name: Show schedule and prepare slots
+        env:
+          MODE: ${{ inputs.mode }}
+          WEEK_START: ${{ inputs.week_start }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e MODE="$MODE" -e WEEK_START="$WEEK_START" -w /app "$CID" python - <<'PY'
+          import datetime, os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from django.db.models import Count
+          from django.utils import timezone
+          from django_celery_beat.models import PeriodicTask
+          from iic_booking.equipment.models import DailySlot, EquipmentStatus
+          from iic_booking.equipment.tasks import prepare_next_week_slots
+
+          print("CELERY_TIMEZONE=", getattr(settings, "CELERY_TIMEZONE", None),
+                "DJANGO_CELERY_BEAT_TZ_AWARE=", getattr(settings, "DJANGO_CELERY_BEAT_TZ_AWARE", None))
+          for t in PeriodicTask.objects.filter(
+              task__in=["equipment.prepare_next_week_slots", "equipment.ensure_upcoming_slots",
+                        "equipment.check_booking_not_utilized"]
+          ).select_related("crontab"):
+              c = t.crontab
+              print("TASK", t.name, "| enabled=", t.enabled, "| last_run_at=", t.last_run_at,
+                    "| cron=", f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week}" if c else None,
+                    "| tz=", getattr(c, "timezone", None) if c else None)
+
+          raw = os.environ.get("WEEK_START", "").strip()
+          if raw:
+              monday = datetime.date.fromisoformat(raw)
+          else:
+              today = timezone.localdate()
+              monday = today - datetime.timedelta(days=today.weekday()) + datetime.timedelta(days=7)
+          monday -= datetime.timedelta(days=monday.weekday())
+          sunday = monday + datetime.timedelta(days=6)
+          scope = DailySlot.objects.filter(
+              date__gte=monday, date__lte=sunday, slot_master__equipment__status=EquipmentStatus.ACTIVE
+          )
+
+          def summary(tag):
+              rows = scope.values("date", "status").annotate(n=Count("id")).order_by("date", "status")
+              by = {}
+              for r in rows:
+                  by.setdefault(str(r["date"]), {})[r["status"]] = r["n"]
+              print(tag, monday, "->", sunday, by)
+
+          summary("BEFORE")
+          if os.environ["MODE"] == "run":
+              print("CREATED", prepare_next_week_slots(monday.isoformat()))
+              summary("AFTER")
+          PY
