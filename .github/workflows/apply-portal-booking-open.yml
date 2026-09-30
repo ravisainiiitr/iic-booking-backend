@@ -1,0 +1,74 @@
+name: Apply Portal Booking Open Settings
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_opens_at:
+        description: "ISO datetime with offset, e.g. 2026-09-30T21:00:00+05:30"
+        required: true
+      end_user_booking_enabled:
+        description: "true / false"
+        required: true
+        default: "true"
+      confirm:
+        description: "Type APPLY to change production portal booking settings"
+        required: true
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Guard
+        if: ${{ inputs.confirm != 'APPLY' }}
+        run: |
+          echo "confirm must be APPLY"
+          exit 1
+
+      - name: PATCH portal-migration admin state
+        env:
+          OPENS_AT: ${{ inputs.booking_opens_at }}
+          END_USER: ${{ inputs.end_user_booking_enabled }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e OPENS_AT="$OPENS_AT" -e END_USER="$END_USER" -w /app "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.contrib.auth import get_user_model
+          from django.utils import timezone
+          from django.utils.dateparse import parse_datetime
+          from rest_framework.test import APIRequestFactory, force_authenticate
+          from iic_booking.users.api.portal_migration_views import portal_migration_admin_state
+          from iic_booking.users.models.portal_migration import PortalMigrationState
+          from iic_booking.users.models.user_type import UserType
+
+          opens_raw = os.environ["OPENS_AT"].strip()
+          opens = parse_datetime(opens_raw)
+          assert opens is not None and timezone.is_aware(opens), f"booking_opens_at must be ISO with offset: {opens_raw!r}"
+          end_user = os.environ["END_USER"].strip().lower() in {"1", "true", "yes"}
+
+          def show(label):
+              s = PortalMigrationState.objects.order_by("pk").first()
+              o = s.booking_opens_at
+              print(label, "booking_opens_at=", timezone.localtime(o).isoformat() if o else None,
+                    "end_user_booking_enabled=", s.end_user_booking_enabled,
+                    "mode=", getattr(s, "booking_migration_mode", None), "phase=", s.phase)
+
+          show("BEFORE")
+          User = get_user_model()
+          admin = User.objects.filter(user_type=UserType.ADMIN, is_active=True).order_by("id").first()
+          assert admin is not None, "no active admin user"
+          req = APIRequestFactory().patch(
+              "/api/portal-migration/admin/state/",
+              {"booking_opens_at": opens.isoformat(), "end_user_booking_enabled": end_user},
+              format="json",
+          )
+          force_authenticate(req, user=admin)
+          resp = portal_migration_admin_state(req)
+          print("PATCH status", resp.status_code)
+          assert resp.status_code == 200, resp.data
+          show("AFTER")
+          PY
