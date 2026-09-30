@@ -13,6 +13,8 @@ from .models import BookingInputTemplate, Equipment
 MAX_TEMPLATES_PER_EQUIPMENT = 25
 MAX_NAME_LENGTH = 80
 MAX_INPUT_VALUES_BYTES = 50_000
+MAX_WORKSPACE_ID_LENGTH = 64
+RESEARCH_WORKSPACE_KEY = "research_workspace"
 
 OPTION_KEYS = (
     "auto_slot_selection",
@@ -64,7 +66,17 @@ def _clean_options(raw):
         return {}, None
     if not isinstance(raw, dict):
         return None, "options must be an object."
-    return {key: raw[key] for key in OPTION_KEYS if isinstance(raw.get(key), bool)}, None
+    options = {key: raw[key] for key in OPTION_KEYS if isinstance(raw.get(key), bool)}
+    # Linking to the workspace is checked when a booking is made; a template only remembers the choice.
+    if RESEARCH_WORKSPACE_KEY in raw:
+        workspace = raw[RESEARCH_WORKSPACE_KEY]
+        if workspace is None or workspace == "":
+            options[RESEARCH_WORKSPACE_KEY] = None
+        elif isinstance(workspace, str) and len(workspace.strip()) <= MAX_WORKSPACE_ID_LENGTH:
+            options[RESEARCH_WORKSPACE_KEY] = workspace.strip()
+        else:
+            return None, "research_workspace must be a workspace id."
+    return options, None
 
 
 def _name_taken(user, equipment_id, name, exclude_pk=None):

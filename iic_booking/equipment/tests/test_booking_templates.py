@@ -100,6 +100,25 @@ def test_unknown_or_non_boolean_options_are_dropped(egs_factory):
 
 
 @pytest.mark.django_db
+def test_research_workspace_choice_is_saved(egs_factory):
+    eq = egs_factory.equipment()
+    client = egs_factory.client_for(egs_factory.student())
+    workspace_id = "3f2b8c1e-5d4a-4f6b-9c2e-1a7d0e9b4c21"
+
+    resp = client.post(URL, _payload(eq, options={"research_workspace": f" {workspace_id} "}), format="json")
+    assert resp.status_code == 201, resp.data
+    assert resp.data["options"] == {"research_workspace": workspace_id}
+
+    cleared = client.patch(f"{URL}{resp.data['id']}/", {"options": {"research_workspace": None}}, format="json")
+    assert cleared.status_code == 200
+    assert cleared.data["options"] == {"research_workspace": None}
+
+    for bad in (123, "x" * 65, ["id"]):
+        rejected = client.post(URL, _payload(eq, name=f"Bad {bad!r}"[:40], options={"research_workspace": bad}), format="json")
+        assert rejected.status_code == 400
+
+
+@pytest.mark.django_db
 def test_validation_errors(egs_factory):
     eq = egs_factory.equipment()
     client = egs_factory.client_for(egs_factory.student())
