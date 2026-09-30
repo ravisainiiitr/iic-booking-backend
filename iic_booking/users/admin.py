@@ -192,6 +192,7 @@ class UserAdmin(auth_admin.UserAdmin):
                 ),
             },
         ),
+        (_("Sign-in"), {"fields": ("sign_in_with_email",)}),
         (
             _("Permissions"),
             {
@@ -307,6 +308,13 @@ class UserAdmin(auth_admin.UserAdmin):
 
     user_type_display.short_description = _("User Type")
     user_type_display.admin_order_field = "user_type"
+
+    def save_model(self, request, obj, form, change):
+        super().save_model(request, obj, form, change)
+        if change and "sign_in_with_email" in getattr(form, "changed_data", ()) and obj.has_email_login_toggle():
+            from iic_booking.users.api.auth_views import _send_email_login_toggle_notice
+
+            _send_email_login_toggle_notice(obj, enabled=obj.is_email_login_allowed())
 
     def supervisor_approved_display(self, obj):
         """Show supervisor_approved only for Post Doc/RA; '-' otherwise."""
