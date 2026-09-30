@@ -410,6 +410,28 @@ def test_admin_duplicate_action_redirects_to_single_copy():
     assert res["Location"].endswith(f"/{new.pk}/change/")
 
 
+def test_admin_duplicate_view_shows_database_error_instead_of_500(monkeypatch):
+    from django.db import IntegrityError
+
+    import iic_booking.equipment.duplicate as duplicate_module
+
+    def fail(*args, **kwargs):
+        raise IntegrityError('null value in column "x" violates not-null constraint')
+
+    monkeypatch.setattr(duplicate_module, "duplicate_equipment", fail)
+    src = _source_equipment_with_config()
+    before = Equipment.objects.count()
+    res = _admin_post(
+        _admin(), f"/admin/equipment/equipment/{src.pk}/duplicate/",
+        {"code": "XRD-FAIL-1", "name": "XRD Fail"},
+        lambda ma, req: ma.duplicate_view(req, str(src.pk)),
+    )
+    res.render()
+    assert res.status_code == 200
+    assert "could not be saved" in res.content.decode()
+    assert Equipment.objects.count() == before
+
+
 def _admin_post(user, path, data, call):
     from django.contrib.admin.sites import site
     from django.contrib.messages.storage.fallback import FallbackStorage

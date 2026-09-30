@@ -6,7 +6,7 @@ from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from django.urls import reverse
-from django.db import models
+from django.db import DatabaseError, models
 import json
 import re
 import logging
@@ -1386,6 +1386,9 @@ class EquipmentAdmin(admin.ModelAdmin):
                     new, warnings = duplicate_equipment(source, code=code, name=name, copy_image=copy_image)
                 except ValueError as exc:
                     error = str(exc)
+                except DatabaseError:
+                    logger.exception('Duplicate equipment %s failed', source.pk)
+                    error = _('The copy could not be saved. Nothing was created; please contact the portal team.')
                 else:
                     self._duplicate_done(request, source, new, warnings)
                     return HttpResponseRedirect(
