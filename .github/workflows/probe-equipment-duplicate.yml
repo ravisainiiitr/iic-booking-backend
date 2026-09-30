@@ -64,3 +64,39 @@ jobs:
               print(tb)
           print('equipment rows after probe:', Equipment.objects.count())
           "
+      - name: Database columns unknown to the code that block inserts
+        if: always()
+        run: |
+          set -uo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec "$CID" python manage.py shell -c "
+          from django.apps import apps
+          from django.db import connection
+          from django.db.migrations.loader import MigrationLoader
+
+          print('=== NOT NULL columns without a default that no model field maps to ===')
+          with connection.cursor() as c:
+              for model in apps.get_models(include_auto_created=True):
+                  if model._meta.proxy or not model._meta.managed:
+                      continue
+                  table = model._meta.db_table
+                  known = {f.column for f in model._meta.local_concrete_fields}
+                  for parent in model._meta.get_parent_list():
+                      if parent._meta.db_table == table:
+                          known |= {f.column for f in parent._meta.local_concrete_fields}
+                  c.execute(
+                      'SELECT column_name, data_type FROM information_schema.columns '
+                      'WHERE table_schema = current_schema() AND table_name = %s '
+                      'AND is_nullable = %s AND column_default IS NULL',
+                      [table, 'NO'],
+                  )
+                  for col, dtype in c.fetchall():
+                      if col not in known:
+                          print(table, col, dtype)
+
+          print('=== applied migrations missing from the code ===')
+          loader = MigrationLoader(connection)
+          for app, name in sorted(loader.applied_migrations):
+              if (app, name) not in loader.disk_migrations:
+                  print(app, name)
+          "
