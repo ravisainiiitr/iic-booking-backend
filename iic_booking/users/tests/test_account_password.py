@@ -134,6 +134,46 @@ class AccountPasswordTests(TestCase):
         user.refresh_from_db()
         self.assertTrue(user.check_password(NEW_PASSWORD))
 
+    def test_blank_or_unverifiable_password_counts_as_not_set(self):
+        for stored in ("", "legacy$not-a-django-hash"):
+            with self.subTest(stored=stored):
+                user = self._channel_i_user(f"fac.blank{len(stored)}@test.iitr.ac.in", UserType.FACULTY)
+                User.objects.filter(pk=user.pk).update(password=stored)
+                user.refresh_from_db()
+                self.assertTrue(user.has_usable_password())
+                api = APIClient()
+                api.force_authenticate(user)
+
+                self.assertFalse(api.get(PASSWORD_URL).data["has_password"])
+                resp = api.post(
+                    PASSWORD_URL,
+                    {"new_password": NEW_PASSWORD, "new_password_confirm": NEW_PASSWORD},
+                    format="json",
+                )
+                self.assertEqual(resp.status_code, 200, resp.data)
+                user.refresh_from_db()
+                self.assertTrue(user.check_password(NEW_PASSWORD))
+
+    def test_forgot_password_matches_email_case_insensitively(self):
+        user = self._channel_i_user("Mixed.Case@test.iitr.ac.in")
+        client = APIClient()
+        sent = client.post(FORGOT_OTP_URL, {"email": "mixed.case@test.iitr.ac.in"}, format="json")
+        self.assertEqual(sent.status_code, 200, sent.data)
+        otp = re.search(r"\b(\d{6})\b", mail.outbox[-1].body).group(1)
+        reset = client.post(
+            FORGOT_SET_URL,
+            {
+                "email": "mixed.case@test.iitr.ac.in",
+                "otp": otp,
+                "new_password": NEW_PASSWORD,
+                "new_password_confirm": NEW_PASSWORD,
+            },
+            format="json",
+        )
+        self.assertEqual(reset.status_code, 200, reset.data)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password(NEW_PASSWORD))
+
     def test_external_user_forgot_password_unaffected(self):
         user = User.objects.create_user(
             email="ext.user@example.com", password="Ext-pass-4410", name="Ext", user_type=UserType.EXTERNAL

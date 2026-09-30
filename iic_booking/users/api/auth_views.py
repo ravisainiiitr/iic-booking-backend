@@ -10,6 +10,7 @@ import requests
 import urllib3.util.connection as urllib3_connection
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import identify_hasher
 from django.contrib.auth.tokens import default_token_generator
 from django.core.cache import cache
 from django.core.mail import send_mail
@@ -1289,7 +1290,7 @@ def login(request):
             status=status.HTTP_403_FORBIDDEN,
         )
     
-    if user.user_type in UserType.get_omniport_codes() and not user.has_usable_password():
+    if user.user_type in UserType.get_omniport_codes() and not _has_login_password(user):
         return Response(
             {
                 "error": (
@@ -1387,12 +1388,30 @@ CHANNEL_I_FIRST_LOGIN_MESSAGE = (
 )
 
 
+def _has_login_password(user) -> bool:
+    """
+    True only for a password the user can actually sign in with.
+
+    ``has_usable_password()`` is also True for a blank password field and for hashes Django
+    cannot verify (e.g. imported legacy values); nobody can sign in with those, so they count
+    as "no password" and the user may set one without a current password.
+    """
+    encoded = getattr(user, "password", "") or ""
+    if not encoded or not user.has_usable_password():
+        return False
+    try:
+        identify_hasher(encoded)
+    except ValueError:
+        return False
+    return True
+
+
 def _requires_channel_i_first_login(user) -> bool:
     """Channel i account types that have never signed in and have no password must start with Channel i."""
     return (
         getattr(user, "user_type", None) in UserType.get_omniport_codes()
         and getattr(user, "last_login", None) is None
-        and not user.has_usable_password()
+        and not _has_login_password(user)
     )
 
 
@@ -1568,9 +1587,8 @@ def request_forgot_password_otp(request):
             {"error": "Email is required."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    try:
-        user = User.objects.get(email=email, is_active=True)
-    except User.DoesNotExist:
+    user = User.objects.filter(email__iexact=email, is_active=True).first()
+    if user is None:
         return Response(
             {"error": "No active account found with this email address."},
             status=status.HTTP_404_NOT_FOUND,
@@ -1646,7 +1664,7 @@ def verify_forgot_password_otp_and_set_password(request):
         )
     cache.delete(cache_key)
     try:
-        user = User.objects.get(pk=data["user_id"], email=email, is_active=True)
+        user = User.objects.get(pk=data["user_id"], email__iexact=email, is_active=True)
     except User.DoesNotExist:
         return Response(
             {"error": "User not found."},
@@ -1704,7 +1722,7 @@ def account_password(request):
     from django.core.exceptions import ValidationError
 
     user = request.user
-    has_password = user.has_usable_password()
+    has_password = _has_login_password(user)
     if request.method == "GET":
         return Response({"has_password": has_password, "email": user.email}, status=status.HTTP_200_OK)
 
@@ -1714,7 +1732,7 @@ def account_password(request):
 
     if has_password and not user.check_password(current_password):
         return Response(
-            {"error": "Current password is incorrect. Use \u201cForgot current password?\u201d to reset it by email OTP."},
+            {"error": "Current password is incorrect. Use \u201cSet new password with email OTP\u201d instead."},
             status=status.HTTP_400_BAD_REQUEST,
         )
     if len(new_password) < 8:
