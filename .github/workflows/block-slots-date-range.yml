@@ -1,0 +1,84 @@
+name: Block / Unblock Slots in Date Range
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "block (AVAILABLE -> BLOCKED with label) or unblock (BLOCKED with this exact label -> AVAILABLE)"
+        required: true
+        default: "block"
+      from_datetime:
+        description: "Slots starting at/after this ISO datetime with offset, e.g. 2026-09-30T21:00:00+05:30"
+        required: true
+      to_date:
+        description: "Last slot date to include (YYYY-MM-DD)"
+        required: true
+      label:
+        description: "Blocked label shown on the booking grid"
+        required: true
+        default: "Booking opens from 5 Oct"
+      confirm:
+        description: "Type APPLY to change production slots"
+        required: true
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Guard
+        if: ${{ inputs.confirm != 'APPLY' || (inputs.action != 'block' && inputs.action != 'unblock') }}
+        run: |
+          echo "confirm must be APPLY and action must be block or unblock"
+          exit 1
+
+      - name: Update slots
+        env:
+          ACTION: ${{ inputs.action }}
+          FROM_DT: ${{ inputs.from_datetime }}
+          TO_DATE: ${{ inputs.to_date }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e ACTION="$ACTION" -e FROM_DT="$FROM_DT" -e TO_DATE="$TO_DATE" -e LABEL="$LABEL" -w /app "$CID" python - <<'PY'
+          import datetime, os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db import transaction
+          from django.db.models import Count
+          from django.utils import timezone
+          from django.utils.dateparse import parse_datetime
+          from iic_booking.equipment.models import DailySlot, SlotStatus
+
+          action = os.environ["ACTION"].strip()
+          from_dt = parse_datetime(os.environ["FROM_DT"].strip())
+          assert from_dt is not None and timezone.is_aware(from_dt), "from_datetime must be ISO with offset"
+          to_date = datetime.date.fromisoformat(os.environ["TO_DATE"].strip())
+          label = os.environ["LABEL"].strip()
+          assert label, "label required"
+
+          scope = DailySlot.objects.filter(start_datetime__gte=from_dt, date__lte=to_date)
+
+          def summary(tag):
+              rows = scope.values("date", "status").annotate(n=Count("id")).order_by("date", "status")
+              by = {}
+              for r in rows:
+                  by.setdefault(str(r["date"]), {})[r["status"]] = r["n"]
+              print(tag, by)
+              print(tag, "with label:", scope.filter(blocked_label=label).count())
+
+          summary("BEFORE")
+          with transaction.atomic():
+              if action == "block":
+                  n = scope.filter(status=SlotStatus.AVAILABLE, booking__isnull=True).update(
+                      status=SlotStatus.BLOCKED, blocked_label=label
+                  )
+              else:
+                  n = scope.filter(status=SlotStatus.BLOCKED, blocked_label=label, booking__isnull=True).update(
+                      status=SlotStatus.AVAILABLE, blocked_label=None
+                  )
+          print("UPDATED", action, n)
+          summary("AFTER")
+          PY
