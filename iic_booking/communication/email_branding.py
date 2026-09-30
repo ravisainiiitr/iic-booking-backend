@@ -432,7 +432,7 @@ def booking_location_contact_html() -> str:
         <tr>
           {{% if has_lab_incharge_contact %}}
           <td style="width:50%;padding:8px 10px 0 0;vertical-align:top;">
-            <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:{COLOR_TEXT};margin-bottom:6px;">Lab In-charge</div>
+            <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;font-weight:700;color:{COLOR_TEXT};margin-bottom:6px;">Lab Operator</div>
             <div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.6;color:{COLOR_TEXT};white-space:pre-line;">{{{{ lab_incharge_contact }}}}</div>
           </td>
           {{% endif %}}
@@ -458,7 +458,7 @@ def booking_location_contact_text() -> str:
 {% endif %}{% if lab_google_maps_url %}Open in Google Maps:
 {{ lab_google_maps_url }}
 
-{% endif %}{% if has_lab_incharge_contact %}Lab In-charge:
+{% endif %}{% if has_lab_incharge_contact %}Lab Operator:
 {{ lab_incharge_contact }}
 
 {% endif %}{% if has_oic_contact %}Officer In-charge:

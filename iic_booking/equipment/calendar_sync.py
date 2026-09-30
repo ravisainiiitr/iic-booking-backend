@@ -1,7 +1,7 @@
 """Calendar sync: iCalendar (.ics) subscription feed and per-booking downloads.
 
 Available to internal and external booking users only; staff roles (admin, department
-admin, OIC, lab incharge, accounts, org admin, external relations) are excluded.
+admin, OIC, Lab Operator, accounts, org admin, external relations) are excluded.
 """
 
 from __future__ import annotations

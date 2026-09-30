@@ -975,7 +975,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 exc_info=True
             )
 
-    # Also notify associated Officer In Charge and Lab Incharge (email + in-app).
+    # Also notify associated Officer In Charge and Lab Operator (email + in-app).
     # Failures for staff must not undo a successful user confirmation.
     _staff_notify_events = {
         BookingEventType.CREATED,
@@ -1121,7 +1121,7 @@ def selected_comment_staff(equipment, *, oic: bool, lab_incharge: bool) -> Dict[
 
 
 def _notify_selected_equipment_staff(event, booking_user, equipment, display_booking_ref, recipients) -> None:
-    """Email + in-app the comment to the Officer In Charge and/or Lab Incharge chosen by the author."""
+    """Email + in-app the comment to the Officer In Charge and/or Lab Operator chosen by the author."""
     try:
         staff_by_role = selected_comment_staff(
             equipment, oic=recipients["oic"], lab_incharge=recipients["lab_incharge"]
@@ -1134,7 +1134,7 @@ def _notify_selected_equipment_staff(event, booking_user, equipment, display_boo
     skip_ids = {booking_user.id}
     if actor is not None:
         skip_ids.add(actor.id)
-    role_labels = {"oic": "Officer In Charge", "lab_incharge": "Lab Incharge"}
+    role_labels = {"oic": "Officer In Charge", "lab_incharge": "Lab Operator"}
     targets: list = []
     for role in ("oic", "lab_incharge"):
         for staff in staff_by_role[role]:

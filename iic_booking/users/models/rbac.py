@@ -15,7 +15,7 @@ DEFAULT_PERMISSION_DEFINITIONS: tuple[tuple[str, str, str], ...] = (
     ("wallet.manage", "Manage wallet and billing", "Access financial and wallet actions for the department."),
     ("reports.view", "View reports", "View departmental reports and summaries."),
     ("oic.assign", "Assign OIC", "Assign Officer In Charge users to departmental equipment."),
-    ("lab.assign", "Assign Lab In-Charge", "Assign Lab In-Charge users to departmental equipment."),
+    ("lab.assign", "Assign Lab Operator", "Assign Lab Operator users to departmental equipment."),
     ("finance.assign", "Assign Accounts In-Charge", "Assign Accounts In-Charge users inside the department."),
     ("permissions.manage_staff", "Manage subordinate permissions", "Grant or revoke staff permissions within department caps."),
     ("admin_settings.communication", "Admin Settings: Communication", "Access Communication settings for the department."),

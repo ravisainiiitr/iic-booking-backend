@@ -2095,7 +2095,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                 if not user or getattr(getattr(user, "department", None), "department_type", None) != DepartmentType.INTERNAL:
                     raise serializers.ValidationError({
                         "equipment_operators": (
-                            "Only Lab Incharge users belonging to an Internal department can be assigned."
+                            "Only Lab Operator users belonging to an Internal department can be assigned."
                         )
                     })
         self._validate_group_department(attrs, instance)
@@ -2173,7 +2173,7 @@ def _charge_profile_breakpoint(item, cp_type):
 
 def _assignment_contact_fields(item, previous=None):
     """
-    Office address / additional phone for an OIC or Lab In-charge row.
+    Office address / additional phone for an OIC or Lab Operator row.
     OIC and operator rows are deleted and recreated on every save, so a client that
     does not send these keys keeps the values already stored for that person.
     """
@@ -3097,7 +3097,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     def get_lab_in_charge(self, obj):
         """
-        Return Lab Incharge contact details (EquipmentOperator preferred).
+        Return Lab Operator contact details (EquipmentOperator preferred).
         """
         try:
             equipment = getattr(obj, "equipment", None)

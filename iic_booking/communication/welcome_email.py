@@ -46,7 +46,7 @@ def _user_type_label(user_type: str | None, user_type_alias: str | None = None) 
         "admin": "Institute Administrator",
         "dept_admin": "Department Administrator",
         "manager": "Officer In Charge",
-        "operator": "Lab In-Charge",
+        "operator": "Lab Operator",
         "finance": "Accounts In Charge",
         "external_relations": "External Relations Administrator",
         "org_admin": "Organization Administrator",
@@ -87,7 +87,7 @@ def _role_welcome_line(user_type: str | None) -> str:
             "with the controls designed for day-to-day research facility leadership."
         ),
         "operator": (
-            "As Lab In-Charge, complete runs, update booking status, and keep the instrument calendar "
+            "As Lab Operator, complete runs, update booking status, and keep the instrument calendar "
             "accurate for researchers who depend on your lab."
         ),
         "finance": (

@@ -35,7 +35,7 @@ def user_is_dept_admin(user) -> bool:
 def user_can_manage_tickets(user) -> bool:
     """
     True for staff who may manage (assign/resolve) tickets in their visibility scope.
-    Main Administrator and Department Administrator only — not OIC / Lab In-charge / Finance.
+    Main Administrator and Department Administrator only — not OIC / Lab Operator / Finance.
     """
     return user_is_main_admin(user) or user_is_dept_admin(user)
 

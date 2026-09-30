@@ -644,7 +644,7 @@ def ticket_assignees_search(request):
                             [
                                 ("admin", "Admin"),
                                 ("manager", "Officer In Charge"),
-                                ("operator", "Lab Incharge"),
+                                ("operator", "Lab Operator"),
                                 ("finance", "Accounts In Charge"),
                             ]
                         ).get(u.user_type, u.user_type)

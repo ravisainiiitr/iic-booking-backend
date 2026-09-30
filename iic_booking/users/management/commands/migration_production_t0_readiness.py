@@ -68,7 +68,7 @@ ROLE_BUCKETS = {
 }
 
 UNSUPPORTED_EMAIL_ROLES = {
-    UserType.OPERATOR: "Lab-in-Charge — manual operational briefing; no auto template",
+    UserType.OPERATOR: "Lab Operator — manual operational briefing; no auto template",
     UserType.DEPT_ADMIN: "Department Admin — manual operational briefing; no auto template",
     UserType.FINANCE: "Finance — excluded from migration blast; operational channels only",
     UserType.ORG_ADMIN: "Org Admin — excluded; manual policy",

@@ -1,4 +1,4 @@
-"""Add Comment: selectively notify the booking user, Officer In Charge and Lab Incharge."""
+"""Add Comment: selectively notify the booking user, Officer In Charge and Lab Operator."""
 
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def test_warns_when_selected_role_is_unassigned(setup, sent):
     resp = _post(setup, send_notification=False, notify_lab_incharge=True)
 
     assert resp.status_code == 201, resp.content
-    assert resp.data["warnings"] == ["No Lab Incharge is assigned to this equipment."]
+    assert resp.data["warnings"] == ["No Lab Operator is assigned to this equipment."]
 
 
 def test_nothing_selected_sends_nothing(setup, sent, django_capture_on_commit_callbacks):

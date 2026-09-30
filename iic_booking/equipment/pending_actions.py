@@ -397,12 +397,12 @@ def _staff_items(c: _Collector) -> None:
         if user_type in (UserType.MANAGER, UserType.ADMIN) and getattr(user, "department_id", None):
             c.add(
                 "leave_requests",
-                "Lab Incharge leave requests",
+                "Lab Operator leave requests",
                 OperatorLeaveRequest.objects.filter(
                     status=OperatorLeaveRequest.Status.PENDING, operator__department_id=user.department_id
                 ),
                 "/oic-leave-management",
-                "Leave requests from Lab Incharges in your department need approval.",
+                "Leave requests from Lab Operators in your department need approval.",
             )
 
     def publication_claims():

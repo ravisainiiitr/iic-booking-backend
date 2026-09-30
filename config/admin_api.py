@@ -67,9 +67,9 @@ class IsAdminPanelUserOrAccountsInCharge(permissions.BasePermission):
 
 class IsAdminPanelUserOrReportsStaff(permissions.BasePermission):
     """
-    Admin Panel users, or OIC / Lab In-charge / Accounts In Charge with reports.view.
+    Admin Panel users, or OIC / Lab Operator / Accounts In Charge with reports.view.
 
-    Lab In-charge, OIC, and Accounts In Charge need equipment reports without requiring
+    Lab Operator, OIC, and Accounts In Charge need equipment reports without requiring
     Admin Panel to be enabled for their department role config.
     """
 
@@ -693,7 +693,7 @@ def admin_api_router():
             if target_user_type == UserType.MANAGER and not user_has_permission(user, "oic.assign", department_id=user.department_id):
                 raise PermissionDenied("OIC assignment permission is required.")
             if target_user_type == UserType.OPERATOR and not user_has_permission(user, "lab.assign", department_id=user.department_id):
-                raise PermissionDenied("Lab In-Charge assignment permission is required.")
+                raise PermissionDenied("Lab Operator assignment permission is required.")
             if target_user_type == UserType.FINANCE and not user_has_permission(user, "finance.assign", department_id=user.department_id):
                 raise PermissionDenied("Accounts In-Charge assignment permission is required.")
 
@@ -704,7 +704,7 @@ def admin_api_router():
                 "true",
                 "yes",
             )
-            # Book-on-behalf picker: never offer Admin / OIC / Lab Incharge / Other.
+            # Book-on-behalf picker: never offer Admin / OIC / Lab Operator / Other.
             book_for_excluded = {
                 UserType.ADMIN,
                 UserType.MANAGER,
@@ -804,7 +804,7 @@ def admin_api_router():
                 if staff_type not in allowed:
                     raise PermissionDenied(
                         "Department Administrators can only create Officer In Charge, "
-                        "Lab In Charge, or Accounts In Charge users in their department. "
+                        "Lab Operator, or Accounts In Charge users in their department. "
                         "Use Map Channel-i user for existing accounts."
                     )
                 _require_admin_or_dept_permission(
@@ -1651,7 +1651,7 @@ def admin_api_router():
                 if staff_user.department_id != actor.department_id:
                     raise PermissionDenied("Staff grants can only be managed inside your department.")
                 if staff_user.user_type not in STAFF_ROLE_CODES:
-                    raise PermissionDenied("Only OIC, Lab In-Charge, and Accounts users can receive subordinate grants.")
+                    raise PermissionDenied("Only OIC, Lab Operator, and Accounts users can receive subordinate grants.")
                 dept_admin = actor
 
             allowed_codes = set(
@@ -2713,7 +2713,7 @@ def admin_api_router():
         serializer_class = EquipmentDetailSerializer
         lookup_url_kwarg = "pk"
         lookup_field = "equipment_id"
-        # OIC / Lab In-charge manage waitlists of their own (queryset-scoped) equipment from
+        # OIC / Lab Operator manage waitlists of their own (queryset-scoped) equipment from
         # the dashboard, without Admin Panel or the equipment settings module.
         WAITLIST_ACTIONS = frozenset({"waitlist", "waitlist_clear"})
         WAITLIST_STAFF_TYPES = frozenset({UserType.MANAGER, UserType.OPERATOR})
@@ -2748,7 +2748,7 @@ def admin_api_router():
 
             if self._is_staff_scoped_request():
                 return
-            # Lab In-charge / OIC / Accounts In Charge with reports.view may list scoped
+            # Lab Operator / OIC / Accounts In Charge with reports.view may list scoped
             # equipment for the Reports filter without full Admin Panel / equipment module access.
             ut = getattr(request.user, "user_type", None)
             if (
@@ -2792,7 +2792,7 @@ def admin_api_router():
                 if not allowed_ids:
                     return qs.none()
                 qs = qs.filter(equipment_id__in=allowed_ids)
-            # Lab Incharge (operator): only mapped equipment, within department
+            # Lab Operator: only mapped equipment, within department
             elif ut == UserType.OPERATOR:
                 allowed_ids = _get_equipment_ids_for_log_access(user) or []
                 if not allowed_ids:
@@ -3436,7 +3436,7 @@ def admin_api_router():
         @action(detail=True, methods=["get"], url_path="booking-requesters")
         def booking_requesters(self, request, pk=None):
             """
-            Return recipients for equipment email: booking requesters + OIC + Lab In-Charge.
+            Return recipients for equipment email: booking requesters + OIC + Lab Operator.
             """
             from iic_booking.users.models.user_group import UserGroupMember
 
@@ -3463,7 +3463,7 @@ def admin_api_router():
             # Officer In Charge (managers)
             for em in equipment.equipment_managers.select_related("manager").all():
                 _add(getattr(em, "manager", None), "oic")
-            # Lab In-Charge (operators)
+            # Lab Operator
             for eo in equipment.equipment_operators.select_related("operator").all():
                 _add(getattr(eo, "operator", None), "lab")
 

@@ -653,7 +653,7 @@ def get_calendar_colors():
         out["external_gst_percent"] = 18
         return out
 
-# Booking status colours editable by Lab In-charge (operator) and OIC (manager) from their dashboard.
+# Booking status colours editable by Lab Operator and OIC (manager) from their dashboard.
 # Stored per-user + per-equipment; never writes admin CalendarColorSetting.
 LAB_DASHBOARD_EDITABLE_SLOT_COLORS = (
     "AVAILABLE",
@@ -701,7 +701,7 @@ def lab_dashboard_calendar_colors(request):
     ut = getattr(request.user, "user_type", None)
     if ut not in (UserType.OPERATOR, UserType.MANAGER, UserType.ADMIN):
         return Response(
-            {"detail": "Only Lab In-charge, Officer In Charge, or Admin can manage these colours."},
+            {"detail": "Only Lab Operator, Officer In Charge, or Admin can manage these colours."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -1434,7 +1434,7 @@ def equipment_form_choices(request):
         department_type=DepartmentType.INTERNAL
     ).order_by('name')
     user_groups = UserGroup.objects.all().order_by('name')
-    # Officers / Lab Incharge for equipment assignment: only users whose department is Internal.
+    # Officers / Lab Operator for equipment assignment: only users whose department is Internal.
     managers = (
         User.objects.filter(
             user_type=UserType.MANAGER,
@@ -2480,11 +2480,11 @@ def equipment_detail(request, pk):
                 {"error": "Only admin-panel users can update equipment."},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        # Lab In-charge (operator) may not change Operational / Under Maintenance status.
+        # Lab Operator may not change Operational / Under Maintenance status.
         if "status" in request.data:
             if request.user.user_type == UserType.OPERATOR:
                 return Response(
-                    {"error": "Lab In-charge users cannot change equipment operational status."},
+                    {"error": "Lab Operator users cannot change equipment operational status."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
             if request.user.user_type not in (UserType.ADMIN, UserType.MANAGER, UserType.DEPT_ADMIN):
@@ -5658,7 +5658,7 @@ def list_bookings(request):
     else:
         # Operator/manager/admin scope:
         # - manager (OIC): managed equipment only
-        # - operator (Lab Incharge): mapped equipment only
+        # - operator (Lab Operator): mapped equipment only
         if request.user.user_type == UserType.MANAGER:
             oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
             if not oic_equipment_ids:
@@ -6081,7 +6081,7 @@ def dashboard_summary(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def lab_operator_dashboard(request):
-    """Lab Incharge (operator) and OIC (manager): calendar week + filterable metrics (today/week/month/year/custom date range)."""
+    """Lab Operator and OIC (manager): calendar week + filterable metrics (today/week/month/year/custom date range)."""
     from datetime import date as date_cls
     from collections import defaultdict
 
@@ -6564,7 +6564,7 @@ def _leave_request_oic_recipients_for_operator(operator_user: User):
     return list(recipients.values())
 
 def _send_leave_intimation_emails(req: OperatorLeaveRequest):
-    """Lab In-charge unavailability needs no OIC approval: confirm to submitter and intimate OIC(s)."""
+    """Lab Operator unavailability needs no OIC approval: confirm to submitter and intimate OIC(s)."""
     try:
         operator = req.operator
         if operator and getattr(operator, "email", ""):
@@ -6610,7 +6610,7 @@ def _send_leave_intimation_emails(req: OperatorLeaveRequest):
     )
     notify_in_app(
         oics,
-        title="Lab In-charge unavailability intimation",
+        title="Lab Operator unavailability intimation",
         message=f"{person_label(req.operator)} will be unavailable {span}."
         + (f" Reason: {req.reason}" if req.reason else ""),
         link="/oic-leave-management",
@@ -7975,7 +7975,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
         except Exception:
             wallet_owner_name = None
 
-        # Accounts in charge (finance) + lab in charge + OIC contacts for "undersigned" sections.
+        # Accounts in charge (finance) + Lab Operator + OIC contacts for "undersigned" sections.
         try:
             from iic_booking.users.models.user import User as UserModel
             from iic_booking.users.models.user_type import UserType as UserTypeEnum
@@ -11806,7 +11806,7 @@ def booking_other_disruption(request, booking_id):
     """
     Flag a booking as "Analysis Not Possible" (disruption policy).
 
-    Allowed: Main Admin, Department Administrator, Officer in Charge, Lab In Charge.
+    Allowed: Main Admin, Department Administrator, Officer in Charge, Lab Operator.
     Staff must provide a reason; the same reason is emailed to the user. Behavior matches
     existing disruption policy (awaiting user choice: cancel/refund or reschedule).
     """
@@ -11814,7 +11814,7 @@ def booking_other_disruption(request, booking_id):
     if ut not in (UserType.ADMIN, UserType.DEPT_ADMIN, UserType.MANAGER, UserType.OPERATOR):
         return Response(
             {
-                "error": "Only Admin, Department Administrator, Officer in Charge, or Lab In Charge "
+                "error": "Only Admin, Department Administrator, Officer in Charge, or Lab Operator "
                 "can flag a booking as Analysis Not Possible."
             },
             status=status.HTTP_403_FORBIDDEN,
@@ -13615,7 +13615,7 @@ def create_booking_event_comment(request, booking_id):
             "event_type": "COMMENT" (optional, defaults to COMMENT),
             "send_notification": true (optional, defaults to true; notify the booking user),
             "notify_oic": false (optional; COMMENT only, notify the equipment's Officer In Charge),
-            "notify_lab_incharge": false (optional; COMMENT only, notify the equipment's Lab Incharge)
+            "notify_lab_incharge": false (optional; COMMENT only, notify the equipment's Lab Operator)
         }
         
     Returns:
@@ -13677,7 +13677,7 @@ def create_booking_event_comment(request, booking_id):
             if notify_oic and not staff_by_role["oic"]:
                 warnings.append("No Officer In Charge is assigned to this equipment.")
             if notify_lab_incharge and not staff_by_role["lab_incharge"]:
-                warnings.append("No Lab Incharge is assigned to this equipment.")
+                warnings.append("No Lab Operator is assigned to this equipment.")
         send_notification = send_notification or notify_oic or notify_lab_incharge
 
     event = create_booking_event(
@@ -13830,7 +13830,7 @@ def booking_sample_trace(request, booking_id):
 def set_booking_sample_status(request, booking_id):
     """Set a sample-trace status for a booking.
     - Sample Sent: only booking user if they are student/faculty/external; optional sample_identifiers.
-    - Held at Office, Forwarded to Lab, Sample Accepted, Sample Rejected, Processing, Completed, Returned, Archived, Disposed: only Admin, Officer In Charge, Lab Incharge.
+    - Held at Office, Forwarded to Lab, Sample Accepted, Sample Rejected, Processing, Completed, Returned, Archived, Disposed: only Admin, Officer In Charge, Lab Operator.
     - When status is Completed (Analyzed), a PENDING or BOOKED booking is automatically marked COMPLETED (same as Actions → Complete), with completion email to the user.
     Body: { "status": "...", "sample_identifiers": "", "tracking_id": "", "reason": "" }
     Reason is mandatory for SAMPLE_REJECTED and HELD_AT_OFFICE.
@@ -13896,7 +13896,7 @@ def set_booking_sample_status(request, booking_id):
                 )
         elif not check_operator_permission(request.user):
             return Response(
-                {"error": "Only Admin, Officer In Charge, or Lab Incharge can set this status."},
+                {"error": "Only Admin, Officer In Charge, or Lab Operator can set this status."},
                 status=status.HTTP_403_FORBIDDEN,
             )
         else:
@@ -14053,12 +14053,12 @@ def set_booking_sample_status(request, booking_id):
 def ensure_booking_results_folder(request, booking_id):
     """
     Return the Sample Accepted results folder path recipe for local (lab PC) creation.
-    Staff only (admin / OIC / lab incharge). Creation is done in the browser, not on the server.
+    Staff only (admin / OIC / Lab Operator). Creation is done in the browser, not on the server.
     Requires Sample Accepted (or legacy Processing) on the booking.
     """
     if not check_operator_permission(request.user):
         return Response(
-            {"error": "Only Admin, Officer In Charge, or Lab Incharge can create results folders."},
+            {"error": "Only Admin, Officer In Charge, or Lab Operator can create results folders."},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:

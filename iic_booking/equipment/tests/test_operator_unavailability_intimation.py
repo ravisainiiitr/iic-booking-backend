@@ -1,4 +1,4 @@
-"""Lab In-charge unavailability is an intimation: no OIC approval, shown as Submitted; team calendar is OIC/Admin only."""
+"""Lab Operator unavailability is an intimation: no OIC approval, shown as Submitted; team calendar is OIC/Admin only."""
 
 from __future__ import annotations
 

@@ -1252,13 +1252,13 @@ class EquipmentOperator(models.Model):
     )
     disable_booking_confirmation_email = models.BooleanField(
         default=False,
-        help_text=_('When checked, this Lab In-charge does not receive booking confirmation emails for this equipment.'),
+        help_text=_('When checked, this Lab Operator does not receive booking confirmation emails for this equipment.'),
     )
     office_address = models.TextField(
         blank=True,
         default="",
         verbose_name=_("Office address"),
-        help_text=_("Office / lab address of this Lab In-charge for enquiries about this equipment"),
+        help_text=_("Office / lab address of this Lab Operator for enquiries about this equipment"),
     )
     alternate_phone_number = models.CharField(
         max_length=40,
@@ -4579,7 +4579,7 @@ class CalendarColorSetting(models.Model):
 
 class LabUserCalendarColorPreference(models.Model):
     """
-    Per-user, per-equipment calendar colour overrides for Lab In-charge / OIC dashboards only.
+    Per-user, per-equipment calendar colour overrides for Lab Operator / OIC dashboards only.
     Does not affect admin CalendarColorSetting or booking calendars for other users.
     """
     user = models.ForeignKey(

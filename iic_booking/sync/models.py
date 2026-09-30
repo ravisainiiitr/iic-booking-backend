@@ -187,7 +187,7 @@ class Laboratory(models.Model):
 
     Retained after portal analysis: no equivalent Laboratory / Lab / Lab Section
     entity exists elsewhere. EquipmentGroup is quota-oriented; Equipment.location
-    is unstructured text; lab-in-charge is an operator role, not a lab record.
+    is unstructured text; Lab Operator is an operator role, not a lab record.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

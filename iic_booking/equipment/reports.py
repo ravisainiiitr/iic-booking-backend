@@ -178,7 +178,7 @@ def _aggregate_ratings_for_equipment(
 
 
 def get_lab_operator_emails_for_equipment(equipment_id: int) -> list[str]:
-    """Lab Incharge (operator) emails for equipment."""
+    """Lab Operator emails for equipment."""
     rows = EquipmentOperator.objects.filter(equipment_id=equipment_id).select_related("operator")
     return [r.operator.email for r in rows if r.operator and getattr(r.operator, "email", None)]
 
@@ -191,7 +191,7 @@ def get_oic_emails_for_equipment(equipment_id: int) -> list[str]:
 
 def get_booking_confirmation_email_opt_out_user_ids(equipment) -> set[int]:
     """
-    OIC / Lab In-charge user ids who switched off booking confirmation emails for this equipment.
+    OIC / Lab Operator user ids who switched off booking confirmation emails for this equipment.
     A user assigned in several roles is opted out only when every one of their rows is opted out.
     """
     if equipment is None:
@@ -214,7 +214,7 @@ def get_booking_confirmation_email_opt_out_user_ids(equipment) -> set[int]:
 
 def get_equipment_staff_notify_users(equipment) -> list:
     """
-    Active Officer In Charge (managers), temporary OIC, and Lab Incharge (operators)
+    Active Officer In Charge (managers), temporary OIC, and Lab Operator
     assigned to this equipment — for booking event email + in-app notifications.
     Deduplicated by user id. Prefers active accounts; includes users without email
     so push/in-app can still be delivered when possible.
@@ -287,7 +287,7 @@ def get_equipment_oic_users(equipment) -> list:
 
 
 def get_equipment_lab_incharge_users(equipment) -> list:
-    """Active Lab Incharge (operators) assigned to this equipment."""
+    """Active Lab Operator assigned to this equipment."""
     if equipment is None:
         return []
     eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)

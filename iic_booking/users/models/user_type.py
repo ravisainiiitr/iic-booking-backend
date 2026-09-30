@@ -39,7 +39,7 @@ class UserType:
             (cls.ADMIN, _("Admin")),
             (cls.DEPT_ADMIN, _("Department Administrator")),
             (cls.MANAGER, _("Officer In Charge")),
-            (cls.OPERATOR, _("Lab Incharge")),
+            (cls.OPERATOR, _("Lab Operator")),
             (cls.FINANCE, _("Accounts In Charge")),
             (cls.ORG_ADMIN, _("Organization Administrator")),
             (cls.EXTERNAL_RELATIONS, _("External Relations Administrator")),

@@ -1,4 +1,4 @@
-"""Per-equipment OIC / Lab In-charge contact fields, and ICPMS element symbols shown in chemical case."""
+"""Per-equipment OIC / Lab Operator contact fields, and ICPMS element symbols shown in chemical case."""
 
 from __future__ import annotations
 

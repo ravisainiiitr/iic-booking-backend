@@ -679,7 +679,7 @@ def _booking_templates() -> list[dict[str, Any]]:
             subject="Sample Disposed – {{ equipment_name }}",
             intro=(
                 "Your sample has been disposed after the retention period. "
-                "If you believe this is an error, please contact the lab in-charge or OIC."
+                "If you believe this is an error, please contact the Lab Operator or OIC."
             ),
             description="Sent when lab/OIC marks a sample as DISPOSED after ARCHIVED.",
             detail_rows=[
@@ -1501,7 +1501,7 @@ def _nomination_and_leave_templates() -> list[dict[str, Any]]:
                 "Your unavailability intimation has been submitted and shared with the Officer in-charge. "
                 "No approval is required."
             ),
-            description="Sent to Lab In-charge when an unavailability intimation is submitted.",
+            description="Sent to Lab Operator when an unavailability intimation is submitted.",
             name_var="operator_name",
             detail_rows=[
                 optional_detail_row("Start date", "start_date"),
@@ -1519,16 +1519,16 @@ def _nomination_and_leave_templates() -> list[dict[str, Any]]:
         ),
         _simple_email(
             code="operator_unavailability_intimation_oic_email",
-            title="Lab In-charge Unavailability Intimation",
+            title="Lab Operator Unavailability Intimation",
             subject="Unavailability Intimation – {{ operator_name }}",
             intro=(
-                "For your information: the Lab In-charge below has intimated unavailability. "
+                "For your information: the Lab Operator below has intimated unavailability. "
                 "No approval is required; plan equipment coverage if needed."
             ),
-            description="Sent to OIC(s) when a Lab In-charge intimates unavailability (information only).",
+            description="Sent to OIC(s) when a Lab Operator intimates unavailability (information only).",
             name_var="oic_name",
             detail_rows=[
-                optional_detail_row("Lab In-charge", "operator_name"),
+                optional_detail_row("Lab Operator", "operator_name"),
                 optional_detail_row("Start date", "start_date"),
                 optional_detail_row("Start session", "start_session"),
                 optional_detail_row("End date", "end_date"),
