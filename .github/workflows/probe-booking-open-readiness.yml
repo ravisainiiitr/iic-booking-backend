@@ -138,6 +138,19 @@ jobs:
               print("ACTIVE multi-mode/child equipment:", mm)
           section("equipment + slots"); safe(equipment)
 
+          def per_date():
+              from iic_booking.equipment.models import DailySlot, EquipmentStatus
+              rows = (
+                  DailySlot.objects.filter(date__gte=ws, date__lte=we, slot_master__equipment__status=EquipmentStatus.ACTIVE)
+                  .values("date", "status").annotate(n=Count("id")).order_by("date", "status")
+              )
+              by_date = {}
+              for r in rows:
+                  by_date.setdefault(r["date"], {})[r["status"]] = r["n"]
+              for d in sorted(by_date):
+                  print(d, d.strftime("%a"), by_date[d])
+          section("per-date slot status (active equipment)"); safe(per_date)
+
           def ext_snap():
               from iic_booking.equipment.models import ExternalWeeklySlotQuotaSnapshot
               qs = ExternalWeeklySlotQuotaSnapshot.objects.filter(week_start=ws)
