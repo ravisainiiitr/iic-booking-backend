@@ -230,6 +230,16 @@ class User(AbstractUser):
         default=False,
         help_text=_("When True, access is blocked until user revalidates by submitting documentary evidence (e.g. when program duration > 1 year)."),
     )
+    email_login_enabled = BooleanField(
+        _("Email login enabled"),
+        null=True,
+        blank=True,
+        default=None,
+        help_text=_(
+            "Channel i users only (IITR students, faculty, OIC, Lab Operator): allow signing in with email "
+            "(password or email OTP). Empty = default for the user type (off for students and faculty)."
+        ),
+    )
     
     auto_slot_selection = BooleanField(
         _("Auto Slot Selection"),
@@ -412,6 +422,29 @@ class User(AbstractUser):
         if not self.user_type:
             return False
         return self.user_type in UserType.get_omniport_codes()
+
+    def has_email_login_toggle(self) -> bool:
+        """
+        Channel i users who may choose whether email sign-in is allowed; everyone else always uses email.
+
+        Self-registered alias accounts (e.g. IITR Post Doctoral Fellows) and seeded QA accounts cannot use
+        Channel i, so they sign in only with email and have no toggle.
+        """
+        from iic_booking.users.test_accounts import TEST_EMAIL_DOMAIN
+
+        if (self.user_type_alias or "").strip():
+            return False
+        if (self.email or "").lower().endswith(f"@{TEST_EMAIL_DOMAIN}"):
+            return False
+        return self.user_type in UserType.get_email_login_toggle_codes()
+
+    def is_email_login_allowed(self) -> bool:
+        """Password / email-OTP sign-in allowed. Always True for users without the toggle."""
+        if not self.has_email_login_toggle():
+            return True
+        if self.email_login_enabled is not None:
+            return bool(self.email_login_enabled)
+        return self.user_type not in UserType.get_email_login_default_off_codes()
 
     def uses_email_auth(self) -> bool:
         """Check if user authenticates via email.

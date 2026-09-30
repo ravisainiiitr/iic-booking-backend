@@ -192,6 +192,16 @@ class UserType:
         return {cls.STUDENT, cls.INDIVIDUAL_STUDENT, cls.FACULTY, cls.DEPT_ADMIN, cls.MANAGER, cls.OPERATOR, cls.FINANCE}
 
     @classmethod
+    def get_email_login_toggle_codes(cls) -> set[str]:
+        """Channel i users who choose whether email sign-in (password / email OTP) is allowed."""
+        return {cls.STUDENT, cls.INDIVIDUAL_STUDENT, cls.FACULTY, cls.MANAGER, cls.OPERATOR}
+
+    @classmethod
+    def get_email_login_default_off_codes(cls) -> set[str]:
+        """Toggle users whose email sign-in is off until they turn it on (Channel i preferred)."""
+        return {cls.STUDENT, cls.INDIVIDUAL_STUDENT, cls.FACULTY}
+
+    @classmethod
     def get_email_auth_codes(cls) -> set[str]:
         """Get user type codes that authenticate via email/password.
         

@@ -1289,7 +1289,10 @@ def login(request):
             },
             status=status.HTTP_403_FORBIDDEN,
         )
-    
+
+    if not user.is_email_login_allowed():
+        return _email_login_disabled_response()
+
     if user.user_type in UserType.get_omniport_codes() and not _has_login_password(user):
         return Response(
             {
@@ -1387,6 +1390,19 @@ CHANNEL_I_FIRST_LOGIN_MESSAGE = (
     "My Profile to also sign in with email and password."
 )
 
+EMAIL_LOGIN_DISABLED_CODE = "email_login_disabled"
+EMAIL_LOGIN_DISABLED_MESSAGE = (
+    "Email sign-in is turned off for this account. Please sign in with Channel i. "
+    "To also sign in with email, turn on \u201cSign in with email\u201d in My Profile."
+)
+
+
+def _email_login_disabled_response():
+    return Response(
+        {"error": EMAIL_LOGIN_DISABLED_MESSAGE, "code": EMAIL_LOGIN_DISABLED_CODE},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
 
 def _has_login_password(user) -> bool:
     """
@@ -1458,6 +1474,8 @@ def request_login_otp(request):
             {"error": "No active account found with this email. Please sign up or use password login."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if not user.is_email_login_allowed():
+        return _email_login_disabled_response()
     if _requires_channel_i_first_login(user):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
@@ -1528,6 +1546,8 @@ def verify_login_otp(request):
             {"error": "User not found or inactive."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if not user.is_email_login_allowed():
+        return _email_login_disabled_response()
     try:
         token = _regenerate_auth_token(user)
     except RuntimeError as e:
@@ -1593,6 +1613,8 @@ def request_forgot_password_otp(request):
             {"error": "No active account found with this email address."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if not user.is_email_login_allowed():
+        return _email_login_disabled_response()
     if _requires_channel_i_first_login(user):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
@@ -1670,6 +1692,8 @@ def verify_forgot_password_otp_and_set_password(request):
             {"error": "User not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if not user.is_email_login_allowed():
+        return _email_login_disabled_response()
     if _requires_channel_i_first_login(user):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     user.set_password(new_password)
@@ -1683,14 +1707,17 @@ def verify_forgot_password_otp_and_set_password(request):
 def _send_password_changed_notice(user, *, was_set: bool) -> None:
     subject = "Your IIT Roorkee portal password was " + ("set" if was_set else "changed")
     action = "set" if was_set else "changed"
+    how = (
+        "You can now sign in with Channel i or with your email and password."
+        if user.has_email_login_toggle()
+        else "Use your new password the next time you sign in."
+    )
     body_plain = (
-        f"The password for your Institute Equipment Booking Portal account was {action}. "
-        "You can now sign in with Channel i or with your email and password.\n\n"
+        f"The password for your Institute Equipment Booking Portal account was {action}. {how}\n\n"
         "If you did not do this, reset your password from the sign-in page and contact support."
     )
     html_body = (
-        f"<p>The password for your Institute Equipment Booking Portal account was {action}. "
-        "You can now sign in with Channel i or with your email and password.</p>"
+        f"<p>The password for your Institute Equipment Booking Portal account was {action}. {how}</p>"
         "<p>If you did not do this, reset your password from the sign-in page and contact support.</p>"
     )
     try:
@@ -1715,7 +1742,7 @@ def account_password(request):
     """
     Signed-in user's login password (dual login: Channel i plus email/password).
 
-    GET: {"has_password": bool, "email": str}
+    GET: {"has_password", "email", "email_login_toggle", "email_login_enabled"}
     POST: new_password, new_password_confirm, and current_password when a password already exists.
     """
     from django.contrib.auth.password_validation import validate_password
@@ -1724,7 +1751,13 @@ def account_password(request):
     user = request.user
     has_password = _has_login_password(user)
     if request.method == "GET":
-        return Response({"has_password": has_password, "email": user.email}, status=status.HTTP_200_OK)
+        return Response(_account_login_status(user), status=status.HTTP_200_OK)
+
+    if not user.is_email_login_allowed():
+        return Response(
+            {"error": "Turn on \u201cSign in with email\u201d first.", "code": EMAIL_LOGIN_DISABLED_CODE},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     current_password = request.data.get("current_password") or ""
     new_password = request.data.get("new_password") or ""
@@ -1756,6 +1789,72 @@ def account_password(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+def _account_login_status(user) -> dict:
+    return {
+        "has_password": _has_login_password(user),
+        "email": user.email,
+        "email_login_toggle": user.has_email_login_toggle(),
+        "email_login_enabled": user.is_email_login_allowed(),
+    }
+
+
+def _send_email_login_toggle_notice(user, *, enabled: bool) -> None:
+    subject = "Email sign-in turned " + ("on" if enabled else "off") + " for your IIT Roorkee portal account"
+    detail = (
+        "You can now sign in with Channel i or with your email (password or email OTP)."
+        if enabled
+        else "You can now sign in only with Channel i."
+    )
+    body_plain = (
+        f"Email sign-in was turned {'on' if enabled else 'off'} for your Institute Equipment Booking Portal account. "
+        f"{detail}\n\nIf you did not do this, sign in with Channel i, check My Profile and contact support."
+    )
+    html_body = (
+        f"<p>Email sign-in was turned <strong>{'on' if enabled else 'off'}</strong> for your Institute Equipment "
+        f"Booking Portal account. {detail}</p>"
+        "<p>If you did not do this, sign in with Channel i, check My Profile and contact support.</p>"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=body_plain,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=(
+                redirect_email_for_user(user, original_email=user.email, subject=subject)[0]
+                or [user.email]
+            ),
+            html_message=html_body,
+            fail_silently=True,
+        )
+    except Exception:
+        logger.exception("Failed to send email-login toggle notice for user_id=%s", getattr(user, "id", None))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def account_email_login(request):
+    """Channel i users: turn email sign-in (password / email OTP) on or off. Body: {"enabled": bool}."""
+    user = request.user
+    if not user.has_email_login_toggle():
+        return Response(
+            {"error": "Email sign-in is always on for your account type."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    raw = request.data.get("enabled")
+    if not isinstance(raw, bool):
+        return Response({"error": "\u201cenabled\u201d must be true or false."}, status=status.HTTP_400_BAD_REQUEST)
+    changed = user.is_email_login_allowed() != raw
+    user.email_login_enabled = raw
+    user.save(update_fields=["email_login_enabled"])
+    if changed:
+        _send_email_login_toggle_notice(user, enabled=raw)
+    payload = _account_login_status(user)
+    payload["message"] = (
+        "Email sign-in turned on." if raw else "Email sign-in turned off. Use Channel i to sign in."
+    )
+    return Response(payload, status=status.HTTP_200_OK)
 
 
 @api_view(["POST"])
