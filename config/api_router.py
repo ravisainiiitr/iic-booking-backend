@@ -32,6 +32,7 @@ from iic_booking.users.api.auth_views import (
     verify_login_otp,
     request_forgot_password_otp,
     verify_forgot_password_otp_and_set_password,
+    account_password,
 )
 from iic_booking.users.views import (
     department_list,
@@ -825,6 +826,7 @@ urlpatterns = router.urls + [
     path("auth/forgot-password/request-otp/", request_forgot_password_otp, name="auth-request-forgot-password-otp"),
     path("auth/forgot-password/verify-otp-and-set-password/", verify_forgot_password_otp_and_set_password, name="auth-verify-forgot-password-otp-set-password"),
 
+    path("auth/password/", account_password, name="auth-account-password"),
     path("auth/user/", current_user, name="current-user"),
     path("auth/settings/", auth_settings, name="auth-settings"),
     

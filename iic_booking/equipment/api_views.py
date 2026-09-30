@@ -6525,6 +6525,7 @@ def _leave_request_email_context(req: OperatorLeaveRequest, *, reviewer=None) ->
         "reviewer_name": (getattr(reviewer, "name", "") or getattr(reviewer, "email", "") or "").strip(),
         "rejection_reason": (req.rejection_reason or "").strip(),
         "leave_management_url": get_frontend_absolute_url("/leave-management"),
+        "oic_leave_management_url": get_frontend_absolute_url("/oic-leave-management"),
         "team_calendar_url": get_frontend_absolute_url("/team-calendar"),
     }
 
@@ -6562,65 +6563,62 @@ def _leave_request_oic_recipients_for_operator(operator_user: User):
 
     return list(recipients.values())
 
-def _send_leave_submission_emails(req: OperatorLeaveRequest):
-    """
-    Fire-and-forget emails:
-    - To operator: confirmation
-    - To OIC(s): approval needed
-    """
+def _send_leave_intimation_emails(req: OperatorLeaveRequest):
+    """Lab In-charge unavailability needs no OIC approval: confirm to submitter and intimate OIC(s)."""
     try:
         operator = req.operator
         if operator and getattr(operator, "email", ""):
             CommunicationService.send_email(
                 operator,
-                template="operator_leave_submitted_operator_email",
+                template="operator_unavailability_submitted_operator_email",
                 template_context=_leave_request_email_context(req),
-                metadata={"leave_request_id": req.id, "event": "leave_submitted"},
+                metadata={"leave_request_id": req.id, "event": "leave_intimation_submitted"},
                 created_by=operator,
             )
     except Exception:
-        logger.exception("Failed to send leave submission email to operator (leave_id=%s).", req.id)
+        logger.exception("Failed to send unavailability confirmation email to operator (leave_id=%s).", req.id)
 
-    try:
-        oics = _leave_request_oic_recipients_for_operator(req.operator)
-        for oic in oics:
+    oics = [u for u in _leave_request_oic_recipients_for_operator(req.operator) if u.id != req.operator_id]
+    for oic in oics:
+        try:
             CommunicationService.send_email(
                 oic,
-                template="operator_leave_submitted_oic_email",
+                template="operator_unavailability_intimation_oic_email",
                 template_context={
                     **_leave_request_email_context(req),
                     "oic_name": getattr(oic, "name", "") or getattr(oic, "email", "") or "OIC",
                 },
-                metadata={"leave_request_id": req.id, "event": "leave_submitted"},
+                metadata={"leave_request_id": req.id, "event": "leave_intimation_submitted"},
                 created_by=req.operator,
             )
-    except Exception:
-        logger.exception("Failed to send leave submission email(s) to OIC(s) (leave_id=%s).", req.id)
+        except Exception:
+            logger.exception(
+                "Failed to send unavailability intimation to OIC %s (leave_id=%s).", oic.id, req.id
+            )
 
     from iic_booking.communication.in_app import notify_in_app, person_label
 
     span = f"{req.start_date.isoformat()} ({req.start_session}) to {req.end_date.isoformat()} ({req.end_session})"
     notify_in_app(
         [req.operator],
-        title="Leave request submitted",
-        message=f"Your leave request #{req.id} for {span} was sent to the Officer in charge for approval.",
+        title="Unavailability intimation submitted",
+        message=f"Your unavailability #{req.id} for {span} was submitted and intimated to the Officer in charge.",
         link="/leave-management",
-        event="leave.submitted",
+        event="leave.intimated",
         created_by=req.operator,
         extra={"leave_request_id": req.id},
     )
     notify_in_app(
-        [u for u in _leave_request_oic_recipients_for_operator(req.operator) if u.id != req.operator_id],
-        title="Action needed: Lab Incharge leave request",
-        message=f"{person_label(req.operator)} requested leave for {span}."
-        + (f" Reason: {req.reason}" if req.reason else "")
-        + " Approve or reject it from Leave management.",
+        oics,
+        title="Lab In-charge unavailability intimation",
+        message=f"{person_label(req.operator)} will be unavailable {span}."
+        + (f" Reason: {req.reason}" if req.reason else ""),
         link="/oic-leave-management",
-        notification_type="warning",
-        event="leave.submitted",
+        event="leave.intimated",
         created_by=req.operator,
-        extra={"leave_request_id": req.id, "action_required": True},
+        extra={"leave_request_id": req.id},
     )
+
 
 def _notify_leave_decision_in_app(req: OperatorLeaveRequest, reviewer: User) -> None:
     from iic_booking.communication.in_app import notify_in_app, person_label
@@ -6983,6 +6981,7 @@ def operator_leave_requests(request):
         out = []
         for r in qs:
             eq = r.equipment
+            self_intimated = r.reviewed_by_id is not None and r.reviewed_by_id == r.operator_id
             out.append(
                 {
                     "id": r.id,
@@ -6995,6 +6994,12 @@ def operator_leave_requests(request):
                     "end_session": r.end_session,
                     "reason": r.reason,
                     "status": r.status,
+                    "self_intimated": self_intimated,
+                    "status_display": (
+                        "Submitted"
+                        if self_intimated and r.status == OperatorLeaveRequest.Status.APPROVED
+                        else r.get_status_display()
+                    ),
                     "rejection_reason": r.rejection_reason,
                     "reviewed_at": r.reviewed_at.isoformat() if r.reviewed_at else None,
                 }
@@ -7053,36 +7058,26 @@ def operator_leave_requests(request):
 
     attachment = request.FILES.get("attachment") or request.FILES.get("file")
     is_oic = getattr(request.user, "user_type", None) == UserType.MANAGER
-    now = timezone.now()
-    if is_oic:
-        req = OperatorLeaveRequest.objects.create(
-            equipment=equipment,
-            operator=request.user,
-            start_date=start_date,
-            start_session=start_session,
-            end_date=end_date,
-            end_session=end_session,
-            reason=reason,
-            attachment=attachment if attachment else None,
-            status=OperatorLeaveRequest.Status.APPROVED,
-            reviewed_by=request.user,
-            reviewed_at=now,
-        )
-        threading.Thread(target=_send_leave_oic_self_leave_intimations, args=(req,), daemon=True).start()
-    else:
-        req = OperatorLeaveRequest.objects.create(
-            equipment=equipment,
-            operator=request.user,
-            start_date=start_date,
-            start_session=start_session,
-            end_date=end_date,
-            end_session=end_session,
-            reason=reason,
-            attachment=attachment if attachment else None,
-            status=OperatorLeaveRequest.Status.PENDING,
-        )
-        threading.Thread(target=_send_leave_submission_emails, args=(req,), daemon=True).start()
-    return Response({"id": req.id, "status": req.status}, status=status.HTTP_201_CREATED)
+    # Unavailability is an intimation, not a leave approval: recorded as effective immediately.
+    req = OperatorLeaveRequest.objects.create(
+        equipment=equipment,
+        operator=request.user,
+        start_date=start_date,
+        start_session=start_session,
+        end_date=end_date,
+        end_session=end_session,
+        reason=reason,
+        attachment=attachment if attachment else None,
+        status=OperatorLeaveRequest.Status.APPROVED,
+        reviewed_by=request.user,
+        reviewed_at=timezone.now(),
+    )
+    notify = _send_leave_oic_self_leave_intimations if is_oic else _send_leave_intimation_emails
+    threading.Thread(target=notify, args=(req,), daemon=True).start()
+    return Response(
+        {"id": req.id, "status": req.status, "status_display": "Submitted"},
+        status=status.HTTP_201_CREATED,
+    )
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -7599,16 +7594,16 @@ def team_calendar_department_leaves(request):
     """
     Team calendar: department roster + leave windows for staffing visibility.
 
-    Access: Main Admin, Department Admin, Officer In-charge (manager), Lab In-charge (operator).
+    Access: Main Admin, Department Admin, Officer In-charge (manager).
 
     Query params:
       - month: "YYYY-MM" (optional; default = current local month)
       - department_id: int or "all" (Main Admin only; others are locked to their department)
     """
     utype = getattr(request.user, "user_type", None)
-    if utype not in (UserType.MANAGER, UserType.ADMIN, UserType.OPERATOR, UserType.DEPT_ADMIN):
+    if utype not in (UserType.MANAGER, UserType.ADMIN, UserType.DEPT_ADMIN):
         return Response(
-            {"error": "Only Admin, Department Administrator, OIC, and Lab In-charge can access team calendar."},
+            {"error": "Only Admin, Department Administrator and OIC can access team calendar."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -7645,7 +7640,7 @@ def team_calendar_department_leaves(request):
             except ValueError:
                 all_departments = True
     else:
-        # Department Admin / OIC / Lab In-charge: always their linked department.
+        # Department Admin / OIC: always their linked department.
         dept_id = getattr(getattr(request.user, "department", None), "id", None)
 
     if not all_departments and not dept_id:

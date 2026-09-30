@@ -1289,6 +1289,19 @@ def login(request):
             status=status.HTTP_403_FORBIDDEN,
         )
     
+    if user.user_type in UserType.get_omniport_codes() and not user.has_usable_password():
+        return Response(
+            {
+                "error": (
+                    CHANNEL_I_FIRST_LOGIN_MESSAGE
+                    if user.last_login is None
+                    else "No password is set for this account. Sign in with Channel i, then set a password "
+                    "from My Profile, or use \u201cForgot password?\u201d to set one by email OTP."
+                ),
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
     # Authenticate user (check password)
     authenticated_user = authenticate(request=request, username=email, password=password)
     
@@ -1368,6 +1381,20 @@ LOGIN_OTP_CACHE_PREFIX = "login_otp:"
 FORGOT_OTP_CACHE_PREFIX = "forgot_otp:"
 OTP_EXPIRY_SECONDS = 600  # 10 minutes
 
+CHANNEL_I_FIRST_LOGIN_MESSAGE = (
+    "Your first sign-in must be via Channel i. After signing in, set a password from "
+    "My Profile to also sign in with email and password."
+)
+
+
+def _requires_channel_i_first_login(user) -> bool:
+    """Channel i account types that have never signed in and have no password must start with Channel i."""
+    return (
+        getattr(user, "user_type", None) in UserType.get_omniport_codes()
+        and getattr(user, "last_login", None) is None
+        and not user.has_usable_password()
+    )
+
 
 @api_view(["POST"])
 @authentication_classes([])
@@ -1412,6 +1439,8 @@ def request_login_otp(request):
             {"error": "No active account found with this email. Please sign up or use password login."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if _requires_channel_i_first_login(user):
+        return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     cache_key = f"{LOGIN_OTP_CACHE_PREFIX}{email_raw}"
     cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
@@ -1546,6 +1575,8 @@ def request_forgot_password_otp(request):
             {"error": "No active account found with this email address."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if _requires_channel_i_first_login(user):
+        return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     cache_key = f"{FORGOT_OTP_CACHE_PREFIX}{email}"
     cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
@@ -1621,10 +1652,90 @@ def verify_forgot_password_otp_and_set_password(request):
             {"error": "User not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    if _requires_channel_i_first_login(user):
+        return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     user.set_password(new_password)
     user.save(update_fields=["password"])
     return Response(
         {"message": "Password has been reset successfully. You can now sign in with your new password."},
+        status=status.HTTP_200_OK,
+    )
+
+
+def _send_password_changed_notice(user, *, was_set: bool) -> None:
+    subject = "Your IIT Roorkee portal password was " + ("set" if was_set else "changed")
+    action = "set" if was_set else "changed"
+    body_plain = (
+        f"The password for your Institute Equipment Booking Portal account was {action}. "
+        "You can now sign in with Channel i or with your email and password.\n\n"
+        "If you did not do this, reset your password from the sign-in page and contact support."
+    )
+    html_body = (
+        f"<p>The password for your Institute Equipment Booking Portal account was {action}. "
+        "You can now sign in with Channel i or with your email and password.</p>"
+        "<p>If you did not do this, reset your password from the sign-in page and contact support.</p>"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=body_plain,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=(
+                redirect_email_for_user(user, original_email=user.email, subject=subject)[0]
+                or [user.email]
+            ),
+            html_message=html_body,
+            fail_silently=True,
+        )
+    except Exception:
+        logger.exception("Failed to send password change notice for user_id=%s", getattr(user, "id", None))
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def account_password(request):
+    """
+    Signed-in user's login password (dual login: Channel i plus email/password).
+
+    GET: {"has_password": bool, "email": str}
+    POST: new_password, new_password_confirm, and current_password when a password already exists.
+    """
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
+
+    user = request.user
+    has_password = user.has_usable_password()
+    if request.method == "GET":
+        return Response({"has_password": has_password, "email": user.email}, status=status.HTTP_200_OK)
+
+    current_password = request.data.get("current_password") or ""
+    new_password = request.data.get("new_password") or ""
+    new_password_confirm = request.data.get("new_password_confirm") or ""
+
+    if has_password and not user.check_password(current_password):
+        return Response(
+            {"error": "Current password is incorrect. Use \u201cForgot current password?\u201d to reset it by email OTP."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(new_password) < 8:
+        return Response({"error": "New password must be at least 8 characters."}, status=status.HTTP_400_BAD_REQUEST)
+    if new_password != new_password_confirm:
+        return Response({"error": "New password and confirmation do not match."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        validate_password(new_password, user=user)
+    except ValidationError as exc:
+        return Response({"error": " ".join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save(update_fields=["password"])
+    _send_password_changed_notice(user, was_set=not has_password)
+    return Response(
+        {
+            "has_password": True,
+            "message": (
+                "Password changed." if has_password else "Password set. You can now also sign in with email and password."
+            ),
+        },
         status=status.HTTP_200_OK,
     )
 

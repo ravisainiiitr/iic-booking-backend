@@ -86,6 +86,8 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "operator_leave_submitted_oic_email",
     "operator_leave_approved_operator_email",
     "operator_leave_rejected_operator_email",
+    "operator_unavailability_submitted_operator_email",
+    "operator_unavailability_intimation_oic_email",
 ]
 
 
@@ -1489,6 +1491,55 @@ def _nomination_and_leave_templates() -> list[dict[str, Any]]:
                 "{{ app_name }}, {{ operator_name }}, {{ reviewer_name }}, {{ start_date }}, "
                 "{{ start_session }}, {{ end_date }}, {{ end_session }}, {{ rejection_reason }}, "
                 "{{ leave_id }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="operator_unavailability_submitted_operator_email",
+            title="Unavailability Intimation Submitted",
+            subject="Unavailability Intimation Submitted",
+            intro=(
+                "Your unavailability intimation has been submitted and shared with the Officer in-charge. "
+                "No approval is required."
+            ),
+            description="Sent to Lab In-charge when an unavailability intimation is submitted.",
+            name_var="operator_name",
+            detail_rows=[
+                optional_detail_row("Start date", "start_date"),
+                optional_detail_row("Start session", "start_session"),
+                optional_detail_row("End date", "end_date"),
+                optional_detail_row("End session", "end_session"),
+            ],
+            note_vars=(("reason", "Reason"),),
+            cta_label="View history",
+            cta_var="leave_management_url",
+            variable_help=(
+                "{{ app_name }}, {{ operator_name }}, {{ start_date }}, {{ start_session }}, "
+                "{{ end_date }}, {{ end_session }}, {{ reason }}, {{ leave_id }}, {{ leave_management_url }}"
+            ),
+        ),
+        _simple_email(
+            code="operator_unavailability_intimation_oic_email",
+            title="Lab In-charge Unavailability Intimation",
+            subject="Unavailability Intimation – {{ operator_name }}",
+            intro=(
+                "For your information: the Lab In-charge below has intimated unavailability. "
+                "No approval is required; plan equipment coverage if needed."
+            ),
+            description="Sent to OIC(s) when a Lab In-charge intimates unavailability (information only).",
+            name_var="oic_name",
+            detail_rows=[
+                optional_detail_row("Lab In-charge", "operator_name"),
+                optional_detail_row("Start date", "start_date"),
+                optional_detail_row("Start session", "start_session"),
+                optional_detail_row("End date", "end_date"),
+                optional_detail_row("End session", "end_session"),
+            ],
+            note_vars=(("reason", "Reason"),),
+            cta_label="Open leave management",
+            cta_var="oic_leave_management_url",
+            variable_help=(
+                "{{ app_name }}, {{ oic_name }}, {{ operator_name }}, {{ start_date }}, {{ start_session }}, "
+                "{{ end_date }}, {{ end_session }}, {{ reason }}, {{ leave_id }}, {{ oic_leave_management_url }}"
             ),
         ),
     ]
