@@ -460,17 +460,24 @@ def _get_sample_deadline(*, arguments: dict, user) -> dict:
     booking, err = _own_booking_or_err(booking_id=arguments.get("booking_id"), user=user)
     if err:
         return err
-    from iic_booking.equipment.sample_submission_deadline_reminders import compute_sample_submission_deadline
+    from iic_booking.equipment.sample_submission_deadline_reminders import (
+        compute_sample_submission_deadline,
+        equipment_has_sample_submission_deadline,
+    )
 
     deadline = compute_sample_submission_deadline(booking)
+    if deadline:
+        note = None
+    elif booking.equipment and not equipment_has_sample_submission_deadline(booking.equipment):
+        note = "This equipment has no sample submission deadline."
+    else:
+        note = "Could not compute a sample submission deadline from portal slot/equipment data."
     return _ok(
         {
             "booking_id": booking.pk,
             "equipment": getattr(booking.equipment, "name", None),
             "deadline": deadline.isoformat() if deadline else None,
-            "note": None
-            if deadline
-            else "Could not compute a sample submission deadline from portal slot/equipment data.",
+            "note": note,
             "source": "PORTAL_DATA",
         },
         actions=[

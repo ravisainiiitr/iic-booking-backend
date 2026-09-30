@@ -35,6 +35,11 @@ def booking_is_external_sample(booking: "Booking") -> bool:
     return bool(user_type) and UserType.is_external_user(user_type)
 
 
+def equipment_has_sample_submission_deadline(equipment) -> bool:
+    """Equipment without a lead time (unset or 0) has no sample submission deadline at all."""
+    return int(getattr(equipment, "sample_submission_lead_hours", 0) or 0) > 0
+
+
 def effective_sample_submission_lead_hours(booking: "Booking") -> int:
     """Equipment lead time, or 0 for atmosphere-sensitive and external samples (deadline = slot start)."""
     if bool(getattr(booking, "atmosphere_sensitive_sample", False)) or booking_is_external_sample(booking):
@@ -47,18 +52,19 @@ def compute_sample_submission_deadline(booking: "Booking") -> Optional[datetime]
     """
     Deadline by which the user should submit the sample:
       slot_start − sample_submission_lead_hours
-    or slot_start when atmosphere-sensitive, an external sample, or lead hours is 0.
+    or slot_start for atmosphere-sensitive and external samples.
 
     If that instant falls on a Saturday, Sunday, or institute public holiday,
     the deadline is moved to the same clock time on the previous working day
     (walking back across consecutive non-working days).
 
-    Returns None if slots or equipment are missing.
+    Returns None if slots or equipment are missing, or the equipment has no lead time
+    (no deadline, countdown, reminder email or notification).
     """
     from .serializers import _booking_slot_bounds
 
     equipment = getattr(booking, "equipment", None)
-    if not equipment:
+    if not equipment or not equipment_has_sample_submission_deadline(equipment):
         return None
     start_dt, _end_dt = _booking_slot_bounds(booking)
     if start_dt is None:
@@ -272,6 +278,7 @@ def iter_bookings_for_sample_submission_deadline_reminders():
     return (
         Booking.objects.filter(
             status=BookingStatus.BOOKED,
+            equipment__sample_submission_lead_hours__gt=0,
             sample_submission_deadline_reminder_sent_at__isnull=True,
             daily_slots__start_datetime__gte=now - timedelta(hours=1),
             daily_slots__start_datetime__lte=horizon_end,
@@ -295,7 +302,7 @@ def list_approaching_sample_submission_for_user(user) -> list[dict]:
         status=SampleTraceStatus.SAMPLE_ACCEPTED,
     )
     qs = (
-        Booking.objects.filter(user=user, status=BookingStatus.BOOKED)
+        Booking.objects.filter(user=user, status=BookingStatus.BOOKED, equipment__sample_submission_lead_hours__gt=0)
         .exclude(Exists(accepted))
         .select_related("equipment")
         .prefetch_related(

@@ -87,3 +87,54 @@ class ComputeSampleSubmissionDeadlineTests(SimpleTestCase):
         # Sunday 10:00 raw → Friday 10:00
         self.assertEqual(local.date(), date(2026, 7, 24))
         self.assertEqual(local.time(), time(10, 0))
+
+
+class NoLeadTimeMeansNoDeadlineTests(SimpleTestCase):
+    """Equipment with lead time unset or 0: no deadline, countdown, reminder email or notification."""
+
+    def _booking(self, lead_hours, **extra):
+        return SimpleNamespace(
+            booking_id=1,
+            atmosphere_sensitive_sample=False,
+            user_type_snapshot="student",
+            user=SimpleNamespace(name="U", email="u@example.test", user_type="student"),
+            equipment=SimpleNamespace(sample_submission_lead_hours=lead_hours, name="XRD", code="XRD1"),
+            sample_submission_deadline_reminder_sent_at=None,
+            **extra,
+        )
+
+    @override_settings(TIME_ZONE="Asia/Kolkata", USE_TZ=True)
+    def test_zero_or_unset_lead_time_has_no_deadline_or_reminder(self):
+        from iic_booking.equipment.sample_submission_deadline_reminders import (
+            is_within_sample_submission_advance_window,
+            send_sample_submission_deadline_reminder,
+        )
+
+        start = timezone.now() + timedelta(hours=2)
+        for lead_hours in (0, None):
+            booking = self._booking(lead_hours)
+            with patch(
+                "iic_booking.equipment.serializers._booking_slot_bounds",
+                return_value=(start, start + timedelta(hours=1)),
+            ), patch(
+                "iic_booking.equipment.sample_submission_deadline_reminders.sample_submission_already_accepted",
+                return_value=False,
+            ), patch(
+                "iic_booking.equipment.sample_submission_deadline_reminders.CommunicationService"
+            ) as comm:
+                self.assertIsNone(compute_sample_submission_deadline(booking))
+                self.assertEqual(is_within_sample_submission_advance_window(booking)[0], False)
+                self.assertFalse(send_sample_submission_deadline_reminder(booking))
+            comm.send_email.assert_not_called()
+            comm.send_push_notification.assert_not_called()
+
+    @override_settings(TIME_ZONE="Asia/Kolkata", USE_TZ=True)
+    def test_atmosphere_sensitive_booking_keeps_slot_start_deadline_when_equipment_has_lead_time(self):
+        start = timezone.now() + timedelta(days=3)
+        booking = self._booking(24)
+        booking.atmosphere_sensitive_sample = True
+        with patch(
+            "iic_booking.equipment.serializers._booking_slot_bounds",
+            return_value=(start, start + timedelta(hours=1)),
+        ), patch("iic_booking.equipment.models.Holiday.is_holiday", return_value=(False, None)):
+            self.assertEqual(compute_sample_submission_deadline(booking), start)

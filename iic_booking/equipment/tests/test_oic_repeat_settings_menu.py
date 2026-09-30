@@ -602,3 +602,14 @@ def test_external_samples_have_no_submission_lead_time():
     ), patch("iic_booking.equipment.models.Holiday.is_holiday", return_value=(False, None)):
         assert compute_sample_submission_deadline(external) == start
         assert compute_sample_submission_deadline(internal) == start - timedelta(hours=24)
+
+
+def test_reminder_and_alert_queries_skip_equipment_without_lead_time():
+    from iic_booking.equipment.sample_submission_deadline_reminders import (
+        iter_bookings_for_sample_submission_deadline_reminders,
+        list_approaching_sample_submission_for_user,
+    )
+
+    sql = str(iter_bookings_for_sample_submission_deadline_reminders().query)
+    assert "sample_submission_lead_hours" in sql
+    assert list_approaching_sample_submission_for_user(_user()) == []
