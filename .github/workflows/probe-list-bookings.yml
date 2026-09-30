@@ -1,0 +1,45 @@
+name: Probe List Bookings (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: List bookings and booking wallet transactions (SELECT only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db.models import Max, Min, Q
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+          from iic_booking.users.models.wallet import SubWalletTransaction
+
+          qs = Booking.objects.select_related("user", "equipment").annotate(
+              first_start=Min("daily_slots__start_datetime"), last_end=Max("daily_slots__end_datetime")
+          ).order_by("pk")
+          print("BOOKINGS", qs.count())
+          for b in qs:
+              fs = timezone.localtime(b.first_start).strftime("%Y-%m-%d %H:%M") if b.first_start else "-"
+              le = timezone.localtime(b.last_end).strftime("%H:%M") if b.last_end else "-"
+              u = b.user
+              print(f"#{b.pk} | {u.email if u else '-'} | {getattr(u, 'user_type', '-')} | {b.equipment.code if b.equipment_id else '-'} "
+                    f"| {fs}-{le} | status={b.status} | charge={b.total_charge} | created={timezone.localtime(b.created_at).strftime('%Y-%m-%d %H:%M')}")
+
+          print("\nBOOKING WALLET TXNS")
+          txns = SubWalletTransaction.objects.select_related("sub_wallet__wallet__user", "sub_wallet__department", "related_user").filter(
+              Q(description__istartswith="Booking #") | Q(description__icontains="refund") | Q(description__icontains="cancel")
+          ).order_by("created_at")
+          for t in txns:
+              owner = t.sub_wallet.wallet.user
+              print(f"txn {t.pk} | {timezone.localtime(t.created_at).strftime('%Y-%m-%d %H:%M')} | {t.transaction_type} {t.amount} "
+                    f"| wallet={owner.email if owner else '-'} | dept={t.sub_wallet.department.code or t.sub_wallet.department.name} "
+                    f"| by={t.related_user.email if t.related_user else '-'} | {t.description[:110]}")
+          PY
