@@ -112,6 +112,12 @@ from iic_booking.users.api.wallet_views import (
     legacy_wallet_balance_lookup,
     legacy_wallet_balance_list,
 )
+from iic_booking.users.api.legacy_user_sync_views import (
+    legacy_user_sync_confirm,
+    legacy_user_sync_preview,
+    legacy_user_sync_search,
+    legacy_user_sync_user_detail,
+)
 from iic_booking.users.api.portal_migration_views import (
     portal_booking_status,
     portal_migration_admin_state,
@@ -1122,6 +1128,10 @@ urlpatterns = router.urls + [
     path("portal-migration/legacy-portal/action-gate/", portal_legacy_portal_action_gate, name="portal-legacy-action-gate"),
     path("portal-migration/admin/email-preview/", portal_migration_email_preview, name="portal-migration-email-preview"),
     path("portal-migration/admin/notification-dry-run/", portal_migration_notification_dry_run, name="portal-migration-notification-dry-run"),
+    path("portal-migration/admin/legacy-user-sync/search/", legacy_user_sync_search, name="legacy-user-sync-search"),
+    path("portal-migration/admin/legacy-user-sync/users/<int:user_id>/", legacy_user_sync_user_detail, name="legacy-user-sync-user-detail"),
+    path("portal-migration/admin/legacy-user-sync/preview/", legacy_user_sync_preview, name="legacy-user-sync-preview"),
+    path("portal-migration/admin/legacy-user-sync/confirm/", legacy_user_sync_confirm, name="legacy-user-sync-confirm"),
     # Project endpoints
     path("projects/", project_list, name="project-list"),  # GET: List projects, POST: Create project
     path("projects/<int:project_id>/", project_detail, name="project-detail"),  # GET, PATCH, PUT: Get/Update project

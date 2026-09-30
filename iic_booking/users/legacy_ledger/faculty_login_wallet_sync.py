@@ -25,7 +25,7 @@ from iic_booking.users.legacy_ledger.opening_balance import (
 )
 from iic_booking.users.legacy_ledger.reader import OldMySQLNotConfigured, OldMySQLReader
 from iic_booking.users.models import UserType
-from iic_booking.users.models.portal_migration import LegacyWalletMappingStatus
+from iic_booking.users.models.portal_migration import LegacyWalletAccountMapping, LegacyWalletMappingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,12 @@ def sync_faculty_wallet_from_legacy(
             return {"ok": False, "skipped": True, "reason": "legacy_user_not_found", "employee_id": emp}
 
         old_uid = int(old_user["id"])
+        if (
+            LegacyWalletAccountMapping.objects.filter(new_user=user, migration_batch__startswith="admin-map:")
+            .exclude(old_user_id=old_uid)
+            .exists()
+        ):
+            return {"ok": False, "skipped": True, "reason": "admin_mapped_other_legacy_user", "employee_id": emp}
         wallet = reader.wallet_for_user(old_uid)
         credits, debits = reader.user_ledger_totals(old_uid)
         balance = (

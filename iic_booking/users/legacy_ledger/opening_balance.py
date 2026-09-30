@@ -20,6 +20,8 @@ from iic_booking.users.models import Department, DepartmentType, SubWallet, SubW
 OPENING_SOURCE = "LEGACY_PORTAL_MIGRATION"
 DESC_PREFIX = "Legacy migration opening balance"
 RECONCILE_PREFIX = "Legacy faculty wallet sync"
+ADMIN_SYNC_PREFIX = "Legacy wallet sync (admin)"
+LEGACY_CREDIT_PREFIXES = (RECONCILE_PREFIX, DESC_PREFIX, ADMIN_SYNC_PREFIX)
 IIC_DEPARTMENT_NAME = "Institute Instrumentation Centre"
 
 
@@ -31,8 +33,8 @@ def opening_balance_description(migration_id: str) -> str:
     return f"{DESC_PREFIX} | migration_id={migration_id} | source={OPENING_SOURCE}"
 
 
-def reconcile_description(migration_id: str) -> str:
-    return f"{RECONCILE_PREFIX} | migration_id={migration_id} | source={OPENING_SOURCE}"
+def reconcile_description(migration_id: str, prefix: str = RECONCILE_PREFIX) -> str:
+    return f"{prefix} | migration_id={migration_id} | source={OPENING_SOURCE}"
 
 
 def _general_department() -> Department:
@@ -131,18 +133,16 @@ class ReconcileResult:
     created: bool
 
 
-def _net_credited_for_migration(*, migration_id: str, sub_wallet: SubWallet) -> Decimal:
-    marker = f"migration_id={migration_id}"
-    qs = SubWalletTransaction.objects.filter(
-        sub_wallet=sub_wallet,
-        description__contains=marker,
-    )
+def net_credited_for_migration(*, migration_id: str, sub_wallet: SubWallet | None = None) -> Decimal:
+    """Net legacy-migration credit for migration_id (one sub-wallet, or all when sub_wallet is None)."""
+    marker = f"migration_id={migration_id} |"
+    qs = SubWalletTransaction.objects.filter(description__contains=marker)
+    if sub_wallet is not None:
+        qs = qs.filter(sub_wallet=sub_wallet)
     total = Decimal("0.00")
     for txn in qs:
         desc = txn.description or ""
-        if not (
-            desc.startswith(RECONCILE_PREFIX) or desc.startswith(DESC_PREFIX)
-        ):
+        if not desc.startswith(LEGACY_CREDIT_PREFIXES):
             continue
         amt = Decimal(str(txn.amount or 0)).quantize(Decimal("0.01"))
         if txn.transaction_type == SubWalletTransaction.TransactionType.CREDIT:
@@ -160,11 +160,15 @@ def reconcile_legacy_balance_to_subwallet(
     department: Department | None = None,
     legacy_closing_balance: Decimal | None = None,
     reconciliation_reference: str = "",
+    wallet: Wallet | None = None,
+    related_user=None,
+    description_prefix: str = RECONCILE_PREFIX,
 ) -> ReconcileResult:
     """
-    Bring the user's SubWallet (default: IIC department) net migration credit
+    Bring the SubWallet (default: user's own wallet, IIC department) net migration credit
     in line with target_balance using marker-based credit/debit deltas.
 
+    Pass ``wallet`` to credit a wallet the user does not own (IITR Student → linked faculty wallet).
     Idempotent: a second call with the same target creates no new transaction.
     """
     migration_id = (migration_id or "").strip()
@@ -175,45 +179,22 @@ def reconcile_legacy_balance_to_subwallet(
         raise OpeningBalanceError("target balance cannot be negative")
 
     dept = department or get_iic_department()
-    wallet, _ = Wallet.objects.get_or_create(user=user)
+    if wallet is None:
+        wallet, _ = Wallet.objects.get_or_create(user=user)
     sub, _ = SubWallet.objects.get_or_create(
         wallet=wallet,
         department=dept,
         defaults={"balance": Decimal("0.00")},
     )
-    previous = _net_credited_for_migration(migration_id=migration_id, sub_wallet=sub)
-    delta = (target - previous).quantize(Decimal("0.01"))
-    if delta == 0:
-        return ReconcileResult(
-            sub_wallet=sub,
-            transaction=None,
-            delta=delta,
-            target_balance=target,
-            previous_credited=previous,
-            created=False,
-        )
-
     closing = (
         Decimal(str(legacy_closing_balance)).quantize(Decimal("0.01"))
         if legacy_closing_balance is not None
         else target
     )
-    txn_type = (
-        SubWalletTransaction.TransactionType.CREDIT
-        if delta > 0
-        else SubWalletTransaction.TransactionType.DEBIT
-    )
-    abs_delta = abs(delta)
-    desc = (
-        f"{reconcile_description(migration_id)} | "
-        f"delta={delta} | legacy_closing={closing} | "
-        f"recon={reconciliation_reference or 'n/a'} | "
-        f"ts={timezone.now().isoformat()}"
-    )
     with transaction.atomic():
         sub = SubWallet.objects.select_for_update().get(pk=sub.pk)
-        # Re-check under lock for concurrent logins.
-        previous = _net_credited_for_migration(migration_id=migration_id, sub_wallet=sub)
+        # Checked under lock for concurrent logins / admin syncs.
+        previous = net_credited_for_migration(migration_id=migration_id, sub_wallet=sub)
         delta = (target - previous).quantize(Decimal("0.01"))
         if delta == 0:
             return ReconcileResult(
@@ -231,7 +212,7 @@ def reconcile_legacy_balance_to_subwallet(
         )
         abs_delta = abs(delta)
         desc = (
-            f"{reconcile_description(migration_id)} | "
+            f"{reconcile_description(migration_id, description_prefix)} | "
             f"delta={delta} | legacy_closing={closing} | "
             f"recon={reconciliation_reference or 'n/a'} | "
             f"ts={timezone.now().isoformat()}"
@@ -246,6 +227,7 @@ def reconcile_legacy_balance_to_subwallet(
             amount=abs_delta,
             transaction_type=txn_type,
             description=desc,
+            related_user=related_user,
         )
     return ReconcileResult(
         sub_wallet=sub,
