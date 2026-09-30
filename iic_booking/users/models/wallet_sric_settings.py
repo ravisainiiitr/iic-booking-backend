@@ -27,6 +27,15 @@ class WalletSricSettings(models.Model):
             "Configurable by Main Administrator and Department Administrator."
         ),
     )
+    project_grant_recharge_enabled = models.BooleanField(
+        _("Allow wallet recharge requests via Project Grant"),
+        default=False,
+        db_default=False,
+        help_text=_(
+            "When off, faculty cannot raise new Project Grant recharge requests (or send unsent ones to the "
+            "SRIC Office). Direct Cash Deposit / Bank Transfer is unaffected."
+        ),
+    )
     project_grant_cc_emails = models.TextField(
         _("Project Grant recharge CC email addresses"),
         blank=True,
@@ -125,6 +134,10 @@ class WalletSricSettings(models.Model):
             obj.bill_section_emails = "ravisaini.15@gmail.com"
             obj.save(update_fields=["bill_section_emails"])
         return obj
+
+
+def project_grant_recharge_enabled() -> bool:
+    return bool(WalletSricSettings.get_singleton().project_grant_recharge_enabled)
 
 
 class WalletCashbookMailboxMessage(models.Model):

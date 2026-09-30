@@ -89,7 +89,7 @@ def _personal_items(c: _Collector) -> None:
             WalletJoinRequest.objects.filter(faculty=user, status=WalletJoinRequestStatus.PENDING)
             .select_related("student")
             .order_by("-pk"),
-            "/student-management",
+            "/wallet#wallet-join-requests",
             "Students have asked to join your wallet. Approve or reject each request.",
             lambda r: f"{_person(r.student)} ({r.student.email}) wants to join your wallet",
         )

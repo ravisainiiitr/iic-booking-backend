@@ -1039,7 +1039,7 @@ class WalletSricSettingsAdmin(admin.ModelAdmin):
         class WalletSricSettingsForm(forms.ModelForm):
             class Meta:
                 model = WalletSricSettings
-                fields = ("recipient_emails", "grant_code_for_credit")
+                fields = ("project_grant_recharge_enabled", "recipient_emails", "grant_code_for_credit")
                 widgets = {
                     "recipient_emails": forms.Textarea(attrs={"rows": 5, "cols": 80}),
                     "grant_code_for_credit": forms.TextInput(attrs={"maxlength": 80}),

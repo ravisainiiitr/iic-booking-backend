@@ -33,6 +33,7 @@ from ..models import (
     WalletSricSettings,
 )
 from ..models.user_type import UserType
+from ..models.wallet_sric_settings import project_grant_recharge_enabled
 from ..models.department import Department, DepartmentType
 from ..repositories.wallet_repository import (
     WalletRepository,
@@ -71,6 +72,22 @@ def _is_wallet_recharge_ops_staff(user) -> bool:
     """Admin or Accounts In Charge (finance): wallet recharge parse, IMAP, manual credit."""
     ut = getattr(user, "user_type", None)
     return ut in (UserType.ADMIN, UserType.FINANCE)
+
+
+PROJECT_GRANT_RECHARGE_DISABLED_CODE = "project_grant_recharge_disabled"
+
+
+def _project_grant_recharge_disabled_response() -> Response:
+    return Response(
+        {
+            "error": (
+                "Wallet recharge via Project Grant is currently not available. "
+                "Please use Direct Cash Deposit / Bank Transfer instead."
+            ),
+            "code": PROJECT_GRANT_RECHARGE_DISABLED_CODE,
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 @api_view(["GET"])
@@ -1713,6 +1730,9 @@ def send_user_otp_for_recharge(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not project_grant_recharge_enabled():
+        return _project_grant_recharge_disabled_response()
+
     # Project Grant remains faculty-only. Students may use Direct Cash Deposit / Bank Transfer.
     if is_iitr_student(request.user) and recharge_mode != WalletRechargeMode.DIRECT_CASH_DEPOSIT:
         return Response(
@@ -2098,6 +2118,13 @@ def create_wallet_recharge_request(request):
             {"error": student_otp_offline_forbidden_message()},
             status=status.HTTP_403_FORBIDDEN,
         )
+    if (
+        mode == WalletRechargeMode.PROJECT_GRANT
+        and not recharge_request.user_otp_verified
+        and not project_grant_recharge_enabled()
+    ):
+        recharge_request.delete()
+        return _project_grant_recharge_disabled_response()
     
     from django.db import transaction
 
@@ -2590,6 +2617,14 @@ def send_sric_wallet_recharge_notification(request, request_id):
             {"error": "Verify your email OTP before sending to SRIC Office."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    from iic_booking.users.models.wallet import WalletRechargeMode
+
+    if (
+        (recharge_request.recharge_mode or WalletRechargeMode.PROJECT_GRANT) == WalletRechargeMode.PROJECT_GRANT
+        and not recharge_request.sric_notification_sent
+        and not project_grant_recharge_enabled()
+    ):
+        return _project_grant_recharge_disabled_response()
 
     try:
         count = send_sric_approval_email(recharge_request)
@@ -2921,6 +2956,7 @@ def wallet_student_recharge_settings_view(request):
             "enable_iitr_student_wallet_recharge": global_enabled,
             "department_recharge_available": bool(dept_enabled) if is_student else None,
             "applies_to_current_user": is_student,
+            "project_grant_recharge_enabled": project_grant_recharge_enabled(),
         }
     )
 

@@ -300,6 +300,7 @@ def register_extra_admin_routes(router):
             model = WalletSricSettings
             fields = [
                 "id",
+                "project_grant_recharge_enabled",
                 "recipient_emails",
                 "bill_section_emails",
                 "project_grant_cc_emails",

@@ -108,7 +108,7 @@ def test_faculty_sees_wallet_join_requests_with_details():
 
     item = _items(faculty)["wallet_join_requests"]
     assert item["count"] == 1
-    assert item["link"] == "/student-management"
+    assert item["link"] == "/wallet#wallet-join-requests"
     assert "Asha Verma" in item["details"][0] and student.email in item["details"][0]
 
     res = _client_for(faculty).get("/api/notifications/pending-actions/")

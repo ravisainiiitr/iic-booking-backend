@@ -62,6 +62,18 @@
     {{ formset.management_form }}
 
     <fieldset class="module aligned">
+      <h2>{% translate "Recharge via Project Grant" %}</h2>
+      <div class="form-row">
+        <div class="checkbox-row">
+          {{ form.project_grant_recharge_enabled.errors }}
+          {{ form.project_grant_recharge_enabled }}
+          <label class="vCheckboxLabel" for="{{ form.project_grant_recharge_enabled.id_for_label }}">{{ form.project_grant_recharge_enabled.label }}</label>
+          {% if form.project_grant_recharge_enabled.help_text %}<div class="help">{{ form.project_grant_recharge_enabled.help_text }}</div>{% endif %}
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset class="module aligned">
       <h2>{% translate "SRIC Office emails" %}</h2>
       <p class="sric-help">
         {% translate "Recipients receive the email when a faculty member uses “Send to SRIC Office” on a wallet recharge request (after OTP verification). The email includes the grant code of the internal department selected on that recharge request." %}

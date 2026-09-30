@@ -18,6 +18,7 @@ from iic_booking.users.models.wallet import (
     WalletRechargeRequest,
     WalletRechargeRequestAuditLog,
 )
+from iic_booking.users.models.wallet_sric_settings import WalletSricSettings
 from iic_booking.users.wallet_recharge_undertaking import (
     CASH_UNDERTAKING_IITR_FACULTY,
     PROJECT_GRANT_UNDERTAKING,
@@ -44,6 +45,7 @@ class ProjectGrantRechargeTests(TestCase):
         self.project = Project.objects.create(
             faculty=self.faculty, name="Advanced Materials", project_code="IITR/ABC/2026/001", agency="DST"
         )
+        WalletSricSettings.objects.update_or_create(pk=1, defaults={"project_grant_recharge_enabled": True})
         self.api = APIClient()
         self.api.force_authenticate(self.faculty)
 
