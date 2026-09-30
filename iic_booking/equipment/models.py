@@ -6370,3 +6370,41 @@ class CalendarFeedToken(models.Model):
 
     def __str__(self):
         return f"Calendar feed for user {self.user_id}"
+
+
+class BookingInputTemplate(models.Model):
+    """A user's named set of booking inputs and booking options for one equipment, applied on the booking page."""
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="booking_input_templates",
+    )
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="booking_input_templates",
+    )
+    name = models.CharField(max_length=80)
+    input_values = models.JSONField(default=dict, blank=True)
+    options = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=_("Booking options (e.g. auto-select slots, book any available slots, waitlist, alternate equipment)."),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        verbose_name = _("Booking input template")
+        verbose_name_plural = _("Booking input templates")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "equipment", "name"],
+                name="uniq_booking_input_template_name",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.equipment_id}) for user {self.user_id}"

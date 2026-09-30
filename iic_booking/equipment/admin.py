@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 from .image_utils import persist_equipment_image_upload
 from .models import (
     BookingDataShare,
+    BookingInputTemplate,
     CalendarFeedToken,
     Equipment,
     EquipmentAdditionRequest,
@@ -2791,6 +2792,20 @@ class CalendarFeedTokenAdmin(admin.ModelAdmin):
     raw_id_fields = ["user"]
     fields = ["user", "created_at", "last_accessed_at"]
     readonly_fields = ["user", "created_at", "last_accessed_at"]
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(BookingInputTemplate)
+class BookingInputTemplateAdmin(admin.ModelAdmin):
+    """Users' saved booking templates (created from the booking page)."""
+
+    list_display = ["name", "user", "equipment", "updated_at"]
+    list_filter = ["equipment"]
+    search_fields = ["name", "user__email", "user__name", "equipment__code", "equipment__name"]
+    raw_id_fields = ["user", "equipment"]
+    readonly_fields = ["created_at", "updated_at"]
 
     def has_add_permission(self, request):
         return False

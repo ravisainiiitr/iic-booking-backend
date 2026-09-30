@@ -232,6 +232,7 @@ from iic_booking.equipment.print_3d_views import (
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
+from iic_booking.equipment.booking_templates import booking_template_detail, booking_templates
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
@@ -1326,6 +1327,8 @@ urlpatterns = router.urls + [
         name="booking-reschedule-options",
     ),
     path("server-time/", server_time, name="server-time"),
+    path("booking-templates/", booking_templates, name="booking-templates"),
+    path("booking-templates/<int:template_id>/", booking_template_detail, name="booking-template-detail"),
 
     # Booking event history endpoints
     path("bookings/<int:booking_id>/events/", list_booking_events, name="list-booking-events"),
