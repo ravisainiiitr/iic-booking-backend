@@ -167,9 +167,9 @@ class SlotGenerator:
                 )
             )
         if to_create:
-            return list(DailySlot.objects.bulk_create(to_create))
+            return list(DailySlot.objects.bulk_create(to_create, ignore_conflicts=True))
         return []
-
+    
     @staticmethod
     def generate_slots_for_week(
         equipment: Equipment,
@@ -228,7 +228,8 @@ class SlotGenerator:
                 )
             current_date += timedelta(days=1)
         if to_create:
-            return list(DailySlot.objects.bulk_create(to_create))
+            # Concurrent first loads of the same week race on (slot_master, date); the loser skips its rows.
+            return list(DailySlot.objects.bulk_create(to_create, ignore_conflicts=True))
         return []
 
     @staticmethod

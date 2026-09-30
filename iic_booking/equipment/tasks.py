@@ -90,10 +90,50 @@ def ensure_upcoming_slots() -> int:
     Returns:
         Number of daily slots created.
     """
+    week_start = timezone.localdate() - timedelta(days=timezone.localdate().weekday())
+    created = _generate_week_slots_for_operational_equipment(
+        [week_start, week_start + timedelta(days=7)], allow_holiday=False, log_label="ensure_upcoming_slots"
+    )
+    logger.info("ensure_upcoming_slots: created=%d", created)
+    return created
+
+
+@shared_task(name="equipment.prepare_next_week_slots")
+def prepare_next_week_slots(week_start: Optional[str] = None) -> int:
+    """
+    Wednesday 20:30 IST, ahead of the 21:00 weekly booking opening: create every missing daily slot of
+    next week (Monday–Sunday) for operational equipment, including Saturday, Sunday and holiday rows
+    (created NOT_AVAILABLE). Those closed-day rows are otherwise created by the first signed-in slots
+    request, which would make the first page loads at 21:00 write to the database.
+
+    Args:
+        week_start: Optional Monday "YYYY-MM-DD" for manual runs; defaults to next week's Monday.
+
+    Returns:
+        Number of daily slots created.
+    """
+    monday = None
+    if week_start:
+        try:
+            monday = date.fromisoformat(week_start)
+        except ValueError:
+            logger.warning("prepare_next_week_slots: invalid week_start '%s', using next week", week_start)
+    if monday is None:
+        today = timezone.localdate()
+        monday = today - timedelta(days=today.weekday()) + timedelta(days=7)
+    monday -= timedelta(days=monday.weekday())
+    created = _generate_week_slots_for_operational_equipment(
+        [monday], allow_holiday=True, log_label="prepare_next_week_slots"
+    )
+    logger.info("prepare_next_week_slots: week=%s created=%d", monday.isoformat(), created)
+    return created
+
+
+def _generate_week_slots_for_operational_equipment(week_starts, *, allow_holiday: bool, log_label: str) -> int:
+    """Only operational equipment that already has active slot masters (no default masters are created)."""
     from .models import Equipment, EquipmentStatus, SlotMaster
     from .slot_utils import SlotGenerator
 
-    week_start = timezone.localdate() - timedelta(days=timezone.localdate().weekday())
     equipment_ids = (
         SlotMaster.objects.filter(is_active=True, equipment__status=EquipmentStatus.ACTIVE)
         .values_list("equipment_id", flat=True)
@@ -101,13 +141,15 @@ def ensure_upcoming_slots() -> int:
     )
     created = 0
     for equipment in Equipment.objects.filter(equipment_id__in=list(equipment_ids)):
-        for offset in (0, 7):
-            start = week_start + timedelta(days=offset)
+        for start in week_starts:
             try:
-                created += len(SlotGenerator.generate_slots_for_week(equipment, start, start + timedelta(days=6)))
+                created += len(
+                    SlotGenerator.generate_slots_for_week(
+                        equipment, start, start + timedelta(days=6), allow_holiday=allow_holiday
+                    )
+                )
             except Exception:
-                logger.exception("ensure_upcoming_slots failed equipment_id=%s week=%s", equipment.equipment_id, start)
-    logger.info("ensure_upcoming_slots: created=%d", created)
+                logger.exception("%s failed equipment_id=%s week=%s", log_label, equipment.equipment_id, start)
     return created
 
 
