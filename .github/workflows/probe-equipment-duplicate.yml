@@ -1,0 +1,66 @@
+name: Probe Equipment Duplicate (read-only)
+
+# Read-only: checks primary-key sequences of the tables the Duplicate action writes to, and
+# trial-duplicates each equipment inside a transaction that is always rolled back (no image copy).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Sequences and rolled-back trial duplicates
+        run: |
+          set -uo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          docker exec "$CID" python manage.py shell -c "
+          import traceback
+          from collections import Counter
+          from django.db import connection, transaction
+          from iic_booking.equipment.duplicate import CONFIG_MODELS, duplicate_equipment
+          from iic_booking.equipment.models import Equipment
+
+          print('=== sequences (max id vs sequence) ===')
+          with connection.cursor() as c:
+              for m in (Equipment,) + CONFIG_MODELS:
+                  t = m._meta.db_table
+                  pk = m._meta.pk.column
+                  c.execute('SELECT pg_get_serial_sequence(%s, %s)', [t, pk])
+                  seq = c.fetchone()[0]
+                  c.execute('SELECT MAX(\"%s\") FROM \"%s\"' % (pk, t))
+                  mx = c.fetchone()[0]
+                  last = None
+                  if seq:
+                      c.execute('SELECT last_value, is_called FROM %s' % seq)
+                      last = c.fetchone()
+                  behind = bool(last and mx is not None and last[0] < mx)
+                  print(t, 'max_id=', mx, 'seq=', last, 'BEHIND' if behind else 'ok')
+
+          class Rollback(Exception):
+              pass
+
+          print('=== trial duplicates (rolled back) ===')
+          print('equipment rows before probe:', Equipment.objects.count())
+          ok = 0
+          errors = Counter()
+          first = {}
+          for eq in Equipment.objects.order_by('pk'):
+              try:
+                  with transaction.atomic():
+                      duplicate_equipment(eq, copy_image=False)
+                      raise Rollback()
+              except Rollback:
+                  ok += 1
+              except Exception as exc:
+                  key = type(exc).__name__ + ': ' + str(exc).splitlines()[0][:200]
+                  errors[key] += 1
+                  first.setdefault(key, (eq.pk, traceback.format_exc()[-3000:]))
+          print('ok=', ok, 'failed=', sum(errors.values()))
+          for key, n in errors.most_common():
+              pk, tb = first[key]
+              print('---', n, 'x', key, 'first equipment id', pk)
+              print(tb)
+          print('equipment rows after probe:', Equipment.objects.count())
+          "
