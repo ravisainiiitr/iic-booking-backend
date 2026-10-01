@@ -79,8 +79,8 @@ Declined by SRIC: the amount of a declined Project Grant request is treated as a
 credit is running, an approved Project Grant request is credited only when SRIC confirms the funds
 (Approved · awaiting funds).
 Students: where student recharge is enabled for the account, Recharge Wallet offers Direct Cash Deposit /
-Bank Transfer and Upload payment receipt; after the Department Account In-charge verifies it, the funds go to
-the supervisor's wallet.
+Bank Transfer (same OTP and SRIC Bill Section steps); once approved, the funds go to the supervisor's wallet.
+Uploading a payment receipt is no longer offered as a recharge method.
 A method shown greyed out with "Awaiting Competent Authority Approval" is switched off by the Main
 Administrator. The Copilot will not invent balances; open Wallet for live figures.
 """,

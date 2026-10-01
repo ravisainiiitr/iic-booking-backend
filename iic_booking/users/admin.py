@@ -960,9 +960,9 @@ class WalletStudentRechargeSettingsAdmin(admin.ModelAdmin):
             {
                 "fields": ("enable_iitr_student_wallet_recharge",),
                 "description": _(
-                    "When enabled, IITR Students may recharge via SBIePay or Offline Request "
-                    "(payment receipt upload). Funds are parked in the faculty wallet they are "
-                    "linked to. Individual Students are not affected by this setting."
+                    "When enabled, IITR Students may recharge via Direct Cash Deposit / Bank "
+                    "Transfer (or Pay online when switched on). Funds are parked in the faculty "
+                    "wallet they are linked to. Individual Students are not affected by this setting."
                 ),
             },
         ),

@@ -7,7 +7,8 @@ from django.utils.translation import gettext_lazy as _
 class WalletStudentRechargeSettings(models.Model):
     """
     Single-row settings (pk=1). When enabled, IITR Students (shared faculty wallet)
-    may use SBIePay and Offline payment-receipt recharge. Credits go to the faculty wallet.
+    may use Direct Cash Deposit / Bank Transfer (and online payment when enabled).
+    Credits go to the faculty wallet.
     Individual students are unaffected (they already own a wallet).
     """
 
