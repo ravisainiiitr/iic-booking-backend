@@ -194,7 +194,8 @@ jobs:
                        f"faculty={u.pk} api={total}/{n} db={d['spent_charged']}/{d['charged_n']}")
 
               # ---------- equipment performance report ----------
-              print("\n== equipment performance report (YTD, top equipment) ==")
+              ytd_from, ytd_to = date(today.year, 1, 1), date(today.year, 12, 31)
+              print(f"\n== equipment performance report ({ytd_from}..{ytd_to}, top equipment) ==")
               from iic_booking.equipment.reports import get_equipment_report_data
               from iic_booking.equipment.mode_utils import expand_equipment_ids_for_mode_rollup
               top_eq = [
@@ -221,9 +222,15 @@ jobs:
                   rev_total = dec(rep["summary"]["revenue_total"])
                   by_type = sum((dec(r["total"]) for r in fin.get("revenue_by_user_type") or []), Decimal("0.00"))
                   by_eq = sum((dec(r["total"]) for r in fin.get("revenue_by_equipment") or []), Decimal("0.00"))
+                  db_hours = round(sum(float(m or 0) for m in not_test(Booking.objects.filter(booking_id__in=slot_ids)).exclude(
+                      status__in=["CANCELLED", "REFUNDED", "WAITLISTED", "PENDING", "ABSENT", "UNDER_MAINTENANCE",
+                                  "OTHER_DISRUPTION"]).values_list("total_time_minutes", flat=True)) / 60.0, 2)
                   print(f"equipment={row['equipment_id']} api_in_period={row['total_bookings_in_period']} "
-                        f"api_completed={row['completed_in_period']} api_rev={rev_total} rev_by_type={by_type} rev_by_eq={by_eq} "
-                        f"| db_in_period(slot-linked)={db_in_range} db_completed={db_completed} db_rev={db_rev}")
+                        f"api_completed={row['completed_in_period']} api_hours={row['total_booking_hours']} api_rev={rev_total} "
+                        f"rev_by_type={by_type} rev_by_eq={by_eq} | db_in_period(slot-linked)={db_in_range} "
+                        f"db_completed={db_completed} db_served_hours={db_hours} db_rev={db_rev}")
+                  flag("equip_hours_eq_db", abs(float(row["total_booking_hours"]) - db_hours) < 0.02,
+                       f"equipment={row['equipment_id']} {row['total_booking_hours']} vs {db_hours}")
                   flag("equip_in_period_ge_slot_linked", int(row["total_bookings_in_period"]) >= db_in_range,
                        f"equipment={row['equipment_id']} {row['total_bookings_in_period']} vs {db_in_range}")
                   flag("equip_completed_eq_db", int(row["completed_in_period"]) == db_completed,
