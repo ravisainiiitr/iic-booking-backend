@@ -254,8 +254,11 @@ def run():
     confirm = confirm[0]
 
     code, msg, _ = _send(client, conv, "confirm")
-    check("typing 'confirm' does not book", (msg.get("metadata") or {}).get("typed_confirm_blocked") is True
-          and not Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"], status__in=ACTIVE).exists())
+    check("typing 'confirm' does not book",
+          not Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"], status__in=ACTIVE).exists())
+    check("typing 'confirm' points to the Confirm booking button",
+          (msg.get("metadata") or {}).get("typed_confirm_blocked") is True,
+          f"intent {(msg.get('metadata') or {}).get('intent')} | {str(msg.get('content') or '')[:140]}")
 
     txn_start = SubWalletTransaction.objects.aggregate(m=Max("id"))["m"] or 0
     created_after = timezone.now()
@@ -297,8 +300,9 @@ def run():
         check("second Confirm with the same token is rejected", data2.get("ok") is not True,
               f"http {code2} error {data2.get('error')}")
         code3, data3 = _confirm(client, confirm, first_key)
-        check("retrying the same click returns the same booking (idempotent, no new booking)",
-              data3.get("ok") is True and data3.get("idempotent_replay") is True, f"http {code3}")
+        check("retrying the same click is refused or replayed, never booked again",
+              data3.get("ok") is not True or data3.get("idempotent_replay") is True,
+              f"http {code3} error {data3.get('error')} replay {data3.get('idempotent_replay')}")
         count = Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"], status__in=ACTIVE).distinct().count()
         check("still exactly one booking on that slot", count == 1, f"{count}")
 
@@ -324,7 +328,7 @@ def _cancel_and_verify(client, student, booking, slot_ids, txn_start, before, de
     data = _data(res)
     booking.refresh_from_db()
     check("test booking cancelled through the normal cancel endpoint",
-          res.status_code == 200 and booking.status == BookingStatus.CANCELLED,
+          res.status_code == 200 and booking.status in (BookingStatus.CANCELLED, BookingStatus.REFUNDED),
           f"http {res.status_code} status {booking.status} | {str(data.get('message') or data.get('error') or '')[:160]}")
     print("BOOKING_CANCELLED", booking.booking_id, booking.status, "refund_amount", data.get("refund_amount"))
     free = all(

@@ -553,6 +553,25 @@ class TestAssistantTurns:
         assert bad.json()["ok"] is False
         assert not Booking.objects.filter(equipment=lab.xrd).exists()
 
+    def test_typed_confirm_blocked_with_production_layers_on(self, lab, settings):
+        from iic_booking.equipment.models import Booking
+
+        settings.COPILOT_BOOKING_CREATE = True
+        settings.RESEARCH_COPILOT_ACTIONS_ENABLED = True
+        settings.RESEARCH_COPILOT_KNOWLEDGE_ENABLED = True
+        settings.RESEARCH_COPILOT_CONVERSATIONAL_ACTIONS_ENABLED = True
+        _slot, conv, resp = self._to_summary(lab)
+        card, _ = _card(resp, "ba_booking_summary")
+        for text in ("confirm", "Confirm booking", "yes, book it"):
+            meta = _post(lab, conv, text).json()["message"]["metadata"]
+            assert meta.get("typed_confirm_blocked") is True, text
+        assert not Booking.objects.filter(equipment=lab.xrd).exists()
+
+        prop_store.invalidate_proposal(card["proposal_id"])
+        meta = _post(lab, conv, "confirm").json()["message"]["metadata"]
+        assert meta.get("intent") != "assistant:typed_confirm"
+        assert not Booking.objects.filter(equipment=lab.xrd).exists()
+
     def test_bare_technique_and_choices_fall_through(self, lab):
         from iic_booking.research_copilot.services.assistant.engine import try_assistant_turn
 

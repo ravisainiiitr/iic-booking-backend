@@ -279,6 +279,27 @@ def _planned(user, conversation, text: str, ctx: dict[str, Any]) -> dict[str, An
     return None
 
 
+def _typed_confirm_reply(conversation, text: str) -> dict[str, Any] | None:
+    """A typed "yes/confirm" after a booking summary never books; point at the Confirm booking button."""
+    pid = ba_state.load(conversation).get("pending_proposal_id")
+    if not pid:
+        return None
+    from iic_booking.research_copilot.services.v2.intent_resolver import resolve_intent
+    from iic_booking.research_copilot.services.v2.mutations import proposals as prop_store
+
+    if resolve_intent(text).intent != "confirm_proposal":
+        return None
+    if not prop_store.get_proposal(pid):
+        return None
+    return C.reply(
+        "To place the booking, press **Confirm booking** on the booking summary card above. "
+        "Typed replies never create a booking.",
+        kind="CLARIFICATION",
+        intent="typed_confirm",
+        extra={"typed_confirm_blocked": True},
+    )
+
+
 def try_assistant_turn(
     *,
     user,
@@ -294,11 +315,18 @@ def try_assistant_turn(
         return None
     try:
         if assistant_action is not None:
-            return _dispatch_action(user, conversation, assistant_action)
+            out = _dispatch_action(user, conversation, assistant_action)
+            meta = (out or {}).get("metadata") or {}
+            if meta.get("executable") and meta.get("proposal_id"):
+                ba_state.save(conversation, pending_proposal_id=meta["proposal_id"])
+            return out
         from iic_booking.research_copilot.services.intelligence import security
 
         if security.detect_injection(text or ""):
             return None
+        blocked = _typed_confirm_reply(conversation, text or "")
+        if blocked is not None:
+            return blocked
         intel_busy = False
         try:
             from iic_booking.research_copilot.services.intelligence import state as intel_state
