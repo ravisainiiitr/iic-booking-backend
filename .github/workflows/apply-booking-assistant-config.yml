@@ -10,6 +10,10 @@
 #   planner       : BOOKING_ASSISTANT_LLM_PLANNER=auto. Uses repo secret OPENAI_API_KEY when present (written to
 #                   the env file, never printed); otherwise an OpenAI key already on the host. Fails if neither.
 #                   COPILOT_PROVIDER is not changed: Copilot chat stays on its current provider.
+#   seed-knowledge: re-seed the baseline knowledge articles (seed_research_copilot_knowledge --force) so the
+#                   assistant answers from the articles shipped in the deployed release. Articles are matched by
+#                   title and updated in place. No env or container changes. Run after releases that touch
+#                   research_copilot/services/seed_knowledge.py.
 # Note: apply-research-copilot-config modes open/global reset COPILOT_BOOKING_CREATE and
 # RESEARCH_COPILOT_ACTIONS_ENABLED to False; run mode=enable here again after using them.
 name: Apply Booking Assistant Config
@@ -18,11 +22,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "status | e2e-allowlist | enable | disable | planner"
+        description: "status | e2e-allowlist | enable | disable | planner | seed-knowledge"
         required: true
         default: status
         type: choice
-        options: [status, e2e-allowlist, enable, disable, planner]
+        options: [status, e2e-allowlist, enable, disable, planner, seed-knowledge]
       confirm:
         description: "Type ASSISTANT to change config (not needed for status)"
         required: false
@@ -73,8 +77,26 @@ jobs:
           echo "test student id: $SID"
           echo "id=$SID" >> "$GITHUB_OUTPUT"
 
+      - name: Seed knowledge articles
+        if: github.event.inputs.mode == 'seed-knowledge'
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py seed_research_copilot_knowledge --force
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+          django.setup()
+          from collections import Counter
+          from iic_booking.research_copilot.models import KnowledgeChunk, KnowledgeDocument
+          print("documents_by_status=", dict(Counter(KnowledgeDocument.objects.values_list("status", flat=True))))
+          print("chunks_by_model=", dict(Counter(KnowledgeChunk.objects.values_list("embedding_model", flat=True))))
+          PY
+
       - name: Update env file
-        if: github.event.inputs.mode != 'status'
+        if: github.event.inputs.mode != 'status' && github.event.inputs.mode != 'seed-knowledge'
         env:
           MODE: ${{ github.event.inputs.mode }}
           STUDENT_ID: ${{ steps.student.outputs.id }}
@@ -146,7 +168,7 @@ jobs:
           grep -E '^(COPILOT_BOOKING_|RESEARCH_COPILOT_ACTIONS_ENABLED|BOOKING_ASSISTANT_)' "$DJANGO_ENV" || true
 
       - name: Recreate django and celeryworker
-        if: github.event.inputs.mode != 'status'
+        if: github.event.inputs.mode != 'status' && github.event.inputs.mode != 'seed-knowledge'
         run: |
           set -euo pipefail
           cd /home/ubuntu/iic-booking-backend
