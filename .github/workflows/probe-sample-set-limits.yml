@@ -1,0 +1,150 @@
+name: Probe Sample Set Limits (read-only)
+
+# Shows which equipment get the combined field A / B maximum across all sample sets
+# (iic_booking/equipment/sample_set_limits.py) and why the others do not. Runs inside a READ ONLY
+# transaction that is rolled back; prints equipment ids/names and input-field config only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      name_filter:
+        description: Equipment name fragment to print in detail
+        required: false
+        default: 'APREO'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Resolve combined A/B maxima per equipment (SELECT only)
+        env:
+          NAME_FILTER: ${{ github.event.inputs.name_filter }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e NAME_FILTER="${NAME_FILTER:-APREO}" -w /app "$CID" python - <<'PY'
+          import os
+          import re
+          from collections import Counter, defaultdict
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment import sample_set_limits as ssl
+          from iic_booking.equipment.models import DynamicInputField, DynamicInputFieldType, Equipment, EquipmentStatus
+          from iic_booking.equipment.numeric_field_limits import _to_float, parse_numeric_help_text
+
+          NAME_FILTER = (os.environ.get("NAME_FILTER") or "APREO").strip()
+          KEYS = ssl.COMBINED_LIMIT_FIELD_KEYS
+
+          def help_lines(ht):
+              if not ht or not str(ht).strip():
+                  return []
+              return str(ht).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")
+
+          def classify(f):
+              """(category, combined_max, reason) using the deployed sample_set_limits helpers."""
+              if f.field_type != DynamicInputFieldType.NUMERIC:
+                  return "non_numeric", None, f"not applied: field type {f.field_type} (only NUMERIC is checked)"
+              if ssl._has_max_formula(f.options):
+                  return "formula", None, "not applied: formula maximum (checked per sample set only)"
+              v = ssl.configured_static_max(f)
+              if v is None:
+                  return "not_configured", None, "not applied: no options.max and no help-text max (UI default 100 is not summed)"
+              src = "options.max" if isinstance(f.options, dict) and _to_float(f.options.get("max")) is not None else "help_text"
+              return "applies", v, f"applies: combined max {ssl._pretty(v)} (from {src})"
+
+          def warn_help_line2(f):
+              lines = help_lines(f.help_text)
+              if len(lines) >= 2 and lines[1].strip() and re.search(r"[A-Za-z]", lines[1]):
+                  return f" WARNING help line 2 is not a plain number ({lines[1].strip()!r}); parser read {parse_numeric_help_text(f.help_text).get('max')}"
+              return ""
+
+          def describe(f):
+              lines = help_lines(f.help_text)
+              line2 = lines[1].strip() if len(lines) >= 2 else ("<single-line help_text>" if lines else "<no help_text>")
+              raw_max = f.options.get("max") if isinstance(f.options, dict) else None
+              cat, v, reason = classify(f)
+              print(f"    field {f.field_key} user_type={f.user_type or '<shared>'!r} label={f.field_label!r} "
+                    f"type={f.field_type} options={f.options!r} options.max={raw_max!r} help_line2={line2!r} "
+                    f"help_parsed={parse_numeric_help_text(f.help_text)} -> {reason}{warn_help_line2(f)}")
+
+          def short(eq):
+              return f"{eq.equipment_id}:{(eq.name or '')[:60]}"
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              print(f"module helpers: {[n for n in dir(ssl) if not n.startswith('__')]}")
+
+              print(f"\n== detail: equipment name contains {NAME_FILTER!r} (any status) ==")
+              for eq in Equipment.objects.filter(name__icontains=NAME_FILTER).order_by("equipment_id"):
+                  print(f"equipment id={eq.equipment_id} code={eq.code!r} status={eq.status} name={eq.name!r}")
+                  rows = list(DynamicInputField.objects.filter(equipment=eq, field_key__in=KEYS).order_by("field_key", "user_type", "pk"))
+                  if not rows:
+                      print("    no A/B input fields")
+                  for f in rows:
+                      describe(f)
+                  user_types = sorted({f.user_type for f in rows} | {""})
+                  for ut in user_types:
+                      eff = ssl.combined_limit_fields(eq, user_type=ut or None)
+                      print(f"    combined_limit_fields(user_type={ut or '<shared/none>'!r}) = "
+                            f"{[(k, l, ssl._pretty(m)) for k, l, m in eff]}")
+
+              print("\n== summary: active equipment (status=ACTIVE) ==")
+              active = list(Equipment.objects.filter(status=EquipmentStatus.ACTIVE).order_by("equipment_id"))
+              by_eq = defaultdict(list)
+              for f in DynamicInputField.objects.filter(equipment__in=active, field_key__in=KEYS).order_by("pk"):
+                  by_eq[f.equipment_id].append(f)
+
+              row_counts = {k: Counter() for k in KEYS}
+              eq_status = {k: defaultdict(list) for k in KEYS}
+              warnings = []
+              for eq in active:
+                  for k in KEYS:
+                      rows = [f for f in by_eq.get(eq.equipment_id, []) if f.field_key == k]
+                      if not rows:
+                          eq_status[k]["no_field"].append(short(eq))
+                          continue
+                      cats = Counter()
+                      maxes = set()
+                      for f in rows:
+                          cat, v, _ = classify(f)
+                          row_counts[k][cat] += 1
+                          cats[cat] += 1
+                          if v is not None:
+                              maxes.add(ssl._pretty(v))
+                          w = warn_help_line2(f)
+                          if w:
+                              warnings.append(f"{short(eq)} field {k} user_type={f.user_type or '<shared>'!r}:{w}")
+                      if set(cats) == {"applies"}:
+                          eq_status[k]["applies"].append(f"{short(eq)} max={sorted(maxes)}")
+                      elif "applies" in cats:
+                          eq_status[k]["partial"].append(f"{short(eq)} rows={dict(cats)} max={sorted(maxes)}")
+                      else:
+                          eq_status[k][cats.most_common(1)[0][0]].append(short(eq))
+
+              print(f"active equipment: {len(active)}")
+              for k in KEYS:
+                  print(f"\nfield {k}: input-field rows by category {dict(row_counts[k])}")
+                  print(f"field {k}: equipment by category " + str({c: len(v) for c, v in eq_status[k].items()}))
+              for k in KEYS:
+                  for cat in ("formula", "not_configured", "non_numeric", "partial", "no_field"):
+                      ids = eq_status[k].get(cat) or []
+                      if ids:
+                          print(f"\nfield {k} {cat} ({len(ids)}):")
+                          for s in ids:
+                              print(f"  {s}")
+              b_no_fixed = [s.split(":")[0] for cat in ("formula", "not_configured", "non_numeric", "partial") for s in eq_status["B"].get(cat) or []]
+              print(f"\nequipment ids whose B field has no fixed max (formula / not configured / non-numeric / partial): {sorted(b_no_fixed, key=int)}")
+              print("help-text warnings:", warnings if warnings else "none")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
