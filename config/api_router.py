@@ -427,6 +427,7 @@ from iic_booking.equipment.equipment_addition_requests import (
     equipment_addition_request_approve,
     equipment_addition_request_reject,
 )
+from iic_booking.equipment.completion_reminders import bookings_awaiting_completion_view
 from iic_booking.equipment.pending_actions import pending_actions
 from iic_booking.equipment.publication_claim_views import (
     my_publication_claims,
@@ -1262,6 +1263,11 @@ urlpatterns = router.urls + [
     ),
     path("bookings/stats/", booking_stats, name="booking-stats"),
     path("bookings/lab-operator-dashboard/", lab_operator_dashboard, name="lab-operator-dashboard"),
+    path(
+        "bookings/awaiting-completion/",
+        bookings_awaiting_completion_view,
+        name="bookings-awaiting-completion",
+    ),
     path(
         "bookings/lab-dashboard-calendar-colors/",
         lab_dashboard_calendar_colors,

@@ -77,6 +77,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "support_ticket_resolution_email",
     "admin_bulk_email",
     "oic_monthly_report",
+    "booking_completion_overdue_staff_email",
     "ta_operating_nomination_call_email",
     "student_nomination_intimation_email",
     "nomination_approved_student_email",
@@ -1299,6 +1300,28 @@ def _registration_and_support_templates() -> list[dict[str, Any]]:
                 "Schedule: equipment.send_oic_monthly_reports."
             ),
             variable_help="{{ date_from }}, {{ date_to }}, {{ equipment_codes }}, {{ equipment_name }}",
+        ),
+        _simple_email(
+            code="booking_completion_overdue_staff_email",
+            title="Bookings Awaiting Completion",
+            subject="Reminder: {{ booking_count }} booking(s) awaiting completion",
+            intro=(
+                "The booking time of the bookings below is over, but they have not yet been marked as "
+                "completed. Please complete them (or take the appropriate action) so users receive their "
+                "results and the sample lifecycle stays up to date."
+            ),
+            description=(
+                "Daily 09:00 digest to each Officer in charge / Lab in-charge listing their bookings whose "
+                "slot time is over but which are not marked Completed. Schedule: "
+                "equipment.send_booking_completion_reminders."
+            ),
+            post_details_html="{{ bookings_html }}",
+            post_details_text="{{ bookings_text }}",
+            cta_label="Open dashboard",
+            variable_help=(
+                "{{ user_name }}, {{ user_email }}, {{ booking_count }}, {{ bookings_html }}, "
+                "{{ bookings_text }}, {{ link }}"
+            ),
         ),
     ]
 

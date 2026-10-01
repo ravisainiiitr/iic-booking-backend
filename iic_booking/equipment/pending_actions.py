@@ -17,6 +17,7 @@ from iic_booking.users.models.user_type import UserType
 logger = logging.getLogger(__name__)
 
 MAX_DETAILS = 3
+MAX_COMPLETION_DETAILS = 50
 RECENT_RESULTS_DAYS = 30
 
 
@@ -49,13 +50,22 @@ class _Collector:
         self.user = user
         self.items: list[dict[str, Any]] = []
 
-    def add(self, key: str, label: str, qs_or_count, link: str, description: str, detail: Callable | None = None):
+    def add(
+        self,
+        key: str,
+        label: str,
+        qs_or_count,
+        link: str,
+        description: str,
+        detail: Callable | None = None,
+        max_details: int = MAX_DETAILS,
+    ):
         count = qs_or_count if isinstance(qs_or_count, int) else qs_or_count.count()
         if not count:
             return
         item: dict[str, Any] = {"key": key, "label": label, "count": count, "link": link, "description": description}
         if detail is not None and not isinstance(qs_or_count, int):
-            item["details"] = [detail(obj) for obj in qs_or_count[:MAX_DETAILS]]
+            item["details"] = [detail(obj) for obj in qs_or_count[:max_details]]
         self.items.append(item)
 
     def safely(self, name: str, fn: Callable[[], None]) -> None:
@@ -501,8 +511,24 @@ def _admin_items(c: _Collector) -> None:
         c.safely(name, fn)
 
 
+def _completion_items(c: _Collector) -> None:
+    from .completion_reminders import DASHBOARD_PATH, bookings_awaiting_completion_for_user, pending_action_detail
+
+    c.add(
+        "bookings_awaiting_completion",
+        "Bookings awaiting completion",
+        bookings_awaiting_completion_for_user(c.user),
+        DASHBOARD_PATH,
+        "The booking time of these bookings is over but they are not marked as completed yet. "
+        "Complete each booking (or take the appropriate action).",
+        pending_action_detail,
+        max_details=MAX_COMPLETION_DETAILS,
+    )
+
+
 def collect_pending_actions(user) -> list[dict[str, Any]]:
     c = _Collector(user)
+    c.safely("completion", lambda: _completion_items(c))
     c.safely("staff", lambda: _staff_items(c))
     c.safely("admin", lambda: _admin_items(c))
     c.safely("personal", lambda: _personal_items(c))

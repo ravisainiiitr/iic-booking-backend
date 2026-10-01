@@ -129,6 +129,22 @@ def prepare_next_week_slots(week_start: Optional[str] = None) -> int:
     return created
 
 
+@shared_task(name="equipment.send_booking_completion_reminders")
+def send_booking_completion_reminders() -> int:
+    """
+    Daily 09:00 IST: email each Officer in charge / Lab in-charge one digest of their bookings whose slot
+    time is over but which are not yet marked Completed.
+
+    Returns:
+        Number of digest emails sent.
+    """
+    from .completion_reminders import send_booking_completion_reminders as send_digests
+
+    sent = send_digests()
+    logger.info("send_booking_completion_reminders: sent=%d", sent)
+    return sent
+
+
 def _generate_week_slots_for_operational_equipment(week_starts, *, allow_holiday: bool, log_label: str) -> int:
     """Only operational equipment that already has active slot masters (no default masters are created)."""
     from .models import Equipment, EquipmentStatus, SlotMaster
