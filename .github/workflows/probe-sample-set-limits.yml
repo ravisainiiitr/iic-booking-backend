@@ -76,6 +76,47 @@ jobs:
           def short(eq):
               return f"{eq.equipment_id}:{(eq.name or '')[:60]}"
 
+          # Where else could a per-field / per-booking maximum live? Only configuration columns whose names
+          # look like limits are printed (numbers / booleans / formulas); no user, contact or booking rows.
+          LIMIT_NAME = re.compile(r"max|min|limit|cap|quota|slot|duration|count|per_|consecutive|split|formula|window|advance", re.I)
+          SKIP_NAME = re.compile(r"email|phone|mobile|contact|address|password|token|secret|user(?!_type)|oic|operator|image|video|file|url|name|description|note|comment", re.I)
+          SKIP_MODEL = re.compile(r"booking|waitlist|request|log|history|notification|payment|invoice|feedback|message|wallet|transaction|audit|review|rating|attendance|template", re.I)
+
+          def limit_columns(model):
+              out = []
+              for fld in model._meta.concrete_fields:
+                  if fld.is_relation or not LIMIT_NAME.search(fld.name) or SKIP_NAME.search(fld.name):
+                      continue
+                  out.append(fld.name)
+              return out
+
+          def scan_limit_sources(eq):
+              cols = limit_columns(Equipment)
+              print("    equipment limit-like columns: " + str({c: getattr(eq, c) for c in cols}))
+              for rel in Equipment._meta.related_objects:
+                  model = rel.related_model
+                  if SKIP_MODEL.search(model.__name__) or not getattr(rel, "field", None):
+                      continue
+                  cols = limit_columns(model)
+                  if model is DynamicInputField:
+                      cols = [f.name for f in model._meta.concrete_fields if not f.is_relation]
+                  if not cols:
+                      continue
+                  try:
+                      qs = model._default_manager.filter(**{rel.field.name: eq})
+                      n = qs.count()
+                  except Exception as exc:  # noqa: BLE001
+                      print(f"    {model.__name__}: skipped ({type(exc).__name__})")
+                      continue
+                  if not n:
+                      continue
+                  print(f"    {model.__name__} rows={n} columns={cols}")
+                  if model is DynamicInputField:
+                      qs = qs.filter(field_key__in=KEYS)
+                  seen = Counter(tuple((c, str(getattr(r, c))[:160]) for c in cols) for r in qs[:200])
+                  for vals, cnt in seen.most_common(15):
+                      print(f"      x{cnt} {dict(vals)}")
+
           with transaction.atomic():
               if connection.vendor == "postgresql":
                   with connection.cursor() as cur:
@@ -96,6 +137,24 @@ jobs:
                       eff = ssl.combined_limit_fields(eq, user_type=ut or None)
                       print(f"    combined_limit_fields(user_type={ut or '<shared/none>'!r}) = "
                             f"{[(k, l, ssl._pretty(m)) for k, l, m in eff]}")
+                  scan_limit_sources(eq)
+
+              print("\n== schema scan: per-booking slot / sample limit columns in any app ==")
+              from django.apps import apps
+              PER_BOOKING = re.compile(r"(max|limit|cap).*(slot|sample)|(slot|sample).*(max|limit|cap)|per_booking", re.I)
+              for model in apps.get_models():
+                  hits = [f.name for f in model._meta.concrete_fields if not f.is_relation and PER_BOOKING.search(f.name)]
+                  if not hits:
+                      continue
+                  label = f"{model._meta.app_label}.{model.__name__}"
+                  if SKIP_MODEL.search(model.__name__):
+                      print(f"  {label}: {hits} (row values not printed)")
+                      continue
+                  try:
+                      vals = {h: dict(Counter(str(v) for v in model._default_manager.values_list(h, flat=True)[:5000]).most_common(8)) for h in hits}
+                  except Exception as exc:  # noqa: BLE001
+                      vals = f"skipped ({type(exc).__name__})"
+                  print(f"  {label}: {vals}")
 
               print("\n== summary: active equipment (status=ACTIVE) ==")
               active = list(Equipment.objects.filter(status=EquipmentStatus.ACTIVE).order_by("equipment_id"))
