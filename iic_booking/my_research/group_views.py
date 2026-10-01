@@ -61,12 +61,15 @@ from .group_models import (
 )
 from .group_services import (
     ASSIGNEE_STATUSES,
+    HIDDEN_SELF_DRAFT_Q,
     OPEN_ACTIVITY_STATUSES,
     OPEN_REQUEST_STATUSES,
+    SELF_REQUEST_Q,
     activity_queryset,
     annotate_member_workload,
     build_attachment_key,
     group_counts,
+    is_hidden_self_draft,
     mark_attachment_failed,
     member_work_counts,
     notify_activity_assigned,
@@ -223,6 +226,7 @@ def _needs_attention(user, managed_ids) -> dict:
         request_queryset()
         .filter(group_id__in=active_ids)
         .filter(Q(status__in=OPEN_REQUEST_STATUSES) | Q(status=UpdateRequestStatus.SUBMITTED))
+        .exclude(HIDDEN_SELF_DRAFT_Q)
         .order_by("due_date", "requested_at")[:12]
     )
     due_activities = list(
@@ -254,6 +258,7 @@ def _my_work(user, group_ids) -> dict:
     requests = (
         request_queryset()
         .filter(group_id__in=group_ids, assigned_to=user, status__in=OPEN_REQUEST_STATUSES)
+        .exclude(SELF_REQUEST_Q)
         .order_by("due_date", "requested_at")[:30]
     )
     return {
@@ -563,7 +568,10 @@ def member_detail(request, group_id, member_id):
         .distinct()
         .order_by("-updated_at")[:30]
     )
-    requests = request_queryset().filter(group=group, assigned_to=member.user).order_by("-requested_at")[:15]
+    requests = (
+        request_queryset().filter(group=group, assigned_to=member.user).exclude(HIDDEN_SELF_DRAFT_Q)
+        .order_by("-requested_at")[:15]
+    )
     related_ws = ResearchWorkspace.objects.select_related("owner", "owner__department").filter(
         Q(group_links__group=group, owner=member.user)
         | Q(group_activities__group=group, group_activities__assignees__user=member.user,
@@ -1000,7 +1008,7 @@ def updates_list(request, group_id):
     if error:
         return error
     user = request.user
-    qs = request_queryset().filter(group=access.group)
+    qs = request_queryset().filter(group=access.group).exclude(HIDDEN_SELF_DRAFT_Q)
     if not access.is_manager:
         qs = qs.filter(assigned_to=user)
     else:
@@ -1082,7 +1090,7 @@ def _request_access(request, request_id, *, write: bool = False):
     if access is None:
         return None, None, False, _not_found("Update request")
     is_assignee = req.assigned_to_id == request.user.pk
-    if not access.is_manager and not is_assignee:
+    if not is_assignee and (not access.is_manager or is_hidden_self_draft(req)):
         return None, None, False, _not_found("Update request")
     if write and req.group.is_archived:
         return None, None, False, _archived()
@@ -1098,6 +1106,65 @@ def update_request_detail(request, request_id):
     return Response(serialize_request(req, request.user, can_manage=access.is_manager))
 
 
+def _parse_submission(data) -> tuple[dict | None, Response | None]:
+    texts = {k: _text(data.get(k), MAX_TEXT, multiline=True) for k in ("work_completed", "current_status", "blockers", "next_steps")}
+    if not (texts["work_completed"] or texts["current_status"]):
+        return None, _error("Describe the work completed or the current status.", status.HTTP_400_BAD_REQUEST)
+    progress = _parse_percent(data.get("progress_percent"))
+    if progress is False:
+        return None, _error("Progress must be between 0 and 100.", status.HTTP_400_BAD_REQUEST)
+    expected = _parse_date(data.get("expected_completion_date"))
+    if expected is False:
+        return None, _error("Invalid expected completion date.", status.HTTP_400_BAD_REQUEST)
+    raw_attachments = data.get("attachment_ids") or []
+    if not isinstance(raw_attachments, list) or len(raw_attachments) > int(settings.MY_RESEARCH_GROUP_MAX_ATTACHMENTS):
+        return None, _error("Invalid attachments.", status.HTTP_400_BAD_REQUEST)
+    attachment_ids = [str(a) for a in raw_attachments if _is_uuid(a)]
+    if len(attachment_ids) != len(raw_attachments):
+        return None, _not_found("Attachment")
+    return {"texts": texts, "progress": progress, "expected": expected, "attachment_ids": attachment_ids}, None
+
+
+def _submission_attachments(req, user, parsed: dict) -> tuple[list | None, Response | None]:
+    ids = parsed["attachment_ids"]
+    if not ids:
+        return [], None
+    attachments = list(
+        ResearchUpdateAttachment.objects.filter(
+            pk__in=ids, request=req, uploaded_by=user, status=AttachmentStatus.AVAILABLE, update__isnull=True
+        )
+    )
+    if len(attachments) != len(set(ids)):
+        return None, _not_found("Attachment")
+    return attachments, None
+
+
+def _store_submission(req, user, parsed: dict, attachments: list, *, unprompted: bool = False) -> Response | None:
+    """Saves the update and closes the request. Returns an error response if the request is no longer open."""
+    now = timezone.now()
+    progress = parsed["progress"]
+    with transaction.atomic():
+        locked = ResearchUpdateRequest.objects.select_for_update().get(pk=req.pk)
+        if locked.status not in OPEN_REQUEST_STATUSES or ResearchUpdate.objects.filter(request=locked).exists():
+            return _error("This update request is no longer open.", status.HTTP_409_CONFLICT, "request_closed")
+        update = ResearchUpdate.objects.create(
+            request=locked, submitted_by=user, progress_percent=progress,
+            expected_completion_date=parsed["expected"], **parsed["texts"],
+        )
+        ResearchUpdateAttachment.objects.filter(pk__in=[a.pk for a in attachments]).update(update=update)
+        locked.status = UpdateRequestStatus.SUBMITTED
+        locked.completed_at = now
+        locked.save(update_fields=["status", "completed_at"])
+        if locked.activity_id and progress is not None:
+            ResearchGroupActivityAssignee.objects.filter(
+                activity_id=locked.activity_id, user=user, removed_at__isnull=True
+            ).update(progress_percent=progress, updated_at=now)
+        record_event(req.group, user, GroupEventAction.UPDATE_SUBMITTED, subject_user=user,
+                     target_type="update_request", target_id=req.pk, target_label=req.title,
+                     details={"unprompted": True} if unprompted else None)
+    return None
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def update_request_submit(request, request_id):
@@ -1109,48 +1176,109 @@ def update_request_submit(request, request_id):
         return _error("Only the person asked for this update can submit it.", status.HTTP_403_FORBIDDEN, "not_assignee")
     if req.status not in OPEN_REQUEST_STATUSES:
         return _error("This update request is no longer open.", status.HTTP_409_CONFLICT, "request_closed")
-    data = request.data
-    texts = {k: _text(data.get(k), MAX_TEXT, multiline=True) for k in ("work_completed", "current_status", "blockers", "next_steps")}
-    if not (texts["work_completed"] or texts["current_status"]):
-        return _error("Describe the work completed or the current status.", status.HTTP_400_BAD_REQUEST)
-    progress = _parse_percent(data.get("progress_percent"))
-    if progress is False:
-        return _error("Progress must be between 0 and 100.", status.HTTP_400_BAD_REQUEST)
-    expected = _parse_date(data.get("expected_completion_date"))
-    if expected is False:
-        return _error("Invalid expected completion date.", status.HTTP_400_BAD_REQUEST)
-    raw_attachments = data.get("attachment_ids") or []
-    if not isinstance(raw_attachments, list) or len(raw_attachments) > int(settings.MY_RESEARCH_GROUP_MAX_ATTACHMENTS):
-        return _error("Invalid attachments.", status.HTTP_400_BAD_REQUEST)
-    attachment_ids = [str(a) for a in raw_attachments if _is_uuid(a)]
-    attachments = list(
-        ResearchUpdateAttachment.objects.filter(
-            pk__in=attachment_ids, request=req, uploaded_by=user, status=AttachmentStatus.AVAILABLE, update__isnull=True
-        )
-    )
-    if len(attachments) != len(set(attachment_ids)) or len(attachment_ids) != len(raw_attachments):
-        return _not_found("Attachment")
-    now = timezone.now()
-    with transaction.atomic():
-        locked = ResearchUpdateRequest.objects.select_for_update().get(pk=req.pk)
-        if locked.status not in OPEN_REQUEST_STATUSES or ResearchUpdate.objects.filter(request=locked).exists():
-            return _error("This update request is no longer open.", status.HTTP_409_CONFLICT, "request_closed")
-        update = ResearchUpdate.objects.create(
-            request=locked, submitted_by=user, progress_percent=progress, expected_completion_date=expected, **texts
-        )
-        ResearchUpdateAttachment.objects.filter(pk__in=[a.pk for a in attachments]).update(update=update)
-        locked.status = UpdateRequestStatus.SUBMITTED
-        locked.completed_at = now
-        locked.save(update_fields=["status", "completed_at"])
-        if locked.activity_id and progress is not None:
-            ResearchGroupActivityAssignee.objects.filter(
-                activity_id=locked.activity_id, user=user, removed_at__isnull=True
-            ).update(progress_percent=progress, updated_at=now)
-        record_event(req.group, user, GroupEventAction.UPDATE_SUBMITTED, subject_user=user,
-                     target_type="update_request", target_id=req.pk, target_label=req.title)
+    parsed, error = _parse_submission(request.data)
+    if error:
+        return error
+    attachments, error = _submission_attachments(req, user, parsed)
+    if error:
+        return error
+    error = _store_submission(req, user, parsed, attachments, unprompted=is_hidden_self_draft(req))
+    if error:
+        return error
     req = request_queryset().get(pk=req.pk)
     transaction.on_commit(lambda: notify_update_submitted(req))
     return Response(serialize_request(req, user, can_manage=access.is_manager))
+
+
+DEFAULT_SELF_UPDATE_TITLE = "Progress update"
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def update_self_send(request, group_id):
+    """A member sends an update nobody asked for.
+
+    `{"draft": true}` only opens a hidden draft so attachments can be uploaded through the existing
+    attachment endpoints; sending with `request_id` submits that draft. Without a draft, the request
+    and the update are created together.
+    """
+    access, error = _group(request, group_id)
+    if error:
+        return error
+    group, user = access.group, request.user
+    if access.membership is None or access.is_manager:
+        return _error("Only group members can send updates to their supervisor.", status.HTTP_403_FORBIDDEN,
+                      "group_member_only")
+    if group.is_archived:
+        return _archived()
+    data = request.data
+    title = _text(data.get("title"), 1000) or DEFAULT_SELF_UPDATE_TITLE
+    if len(title) > 250:
+        return _error("Title can be at most 250 characters.", status.HTTP_400_BAD_REQUEST)
+    activity = None
+    if data.get("activity_id") not in (None, ""):
+        raw = data.get("activity_id")
+        activity = (
+            ResearchGroupActivity.objects.filter(
+                group=group, pk=str(raw), assignees__user=user, assignees__removed_at__isnull=True
+            ).first()
+            if _is_uuid(raw) else None
+        )
+        if activity is None:
+            return _not_found("Activity")
+
+    if data.get("draft") is True:
+        now = timezone.now()
+        with transaction.atomic():
+            ResearchUpdateRequest.objects.filter(
+                group=group, assigned_to=user, requested_by=user, status__in=OPEN_REQUEST_STATUSES
+            ).update(status=UpdateRequestStatus.CANCELLED, cancelled_at=now)
+            draft = ResearchUpdateRequest.objects.create(
+                group=group, activity=activity, requested_by=user, assigned_to=user, title=title,
+                recurrence=UpdateRecurrence.NONE,
+            )
+        return Response(serialize_request(request_queryset().get(pk=draft.pk), user, can_manage=False),
+                        status=status.HTTP_201_CREATED)
+
+    parsed, error = _parse_submission(data)
+    if error:
+        return error
+    raw_draft = data.get("request_id")
+    with transaction.atomic():
+        if raw_draft not in (None, ""):
+            req = (
+                ResearchUpdateRequest.objects.filter(
+                    pk=str(raw_draft), group=group, assigned_to=user, requested_by=user, status__in=OPEN_REQUEST_STATUSES
+                ).first()
+                if _is_uuid(raw_draft) else None
+            )
+            if req is None:
+                return _not_found("Update draft")
+            changed = []
+            if req.title != title:
+                req.title = title
+                changed.append("title")
+            if "activity_id" in data and req.activity_id != (activity.pk if activity else None):
+                req.activity = activity
+                changed.append("activity")
+            if changed:
+                req.save(update_fields=changed)
+        else:
+            req = ResearchUpdateRequest.objects.create(
+                group=group, activity=activity, requested_by=user, assigned_to=user, title=title,
+                recurrence=UpdateRecurrence.NONE,
+            )
+        attachments, error = _submission_attachments(req, user, parsed)
+        if error:
+            transaction.set_rollback(True)
+            return error
+        error = _store_submission(req, user, parsed, attachments, unprompted=True)
+        if error:
+            transaction.set_rollback(True)
+            return error
+    req = request_queryset().get(pk=req.pk)
+    transaction.on_commit(lambda: notify_update_submitted(req))
+    return Response(serialize_request(req, user, can_manage=False), status=status.HTTP_201_CREATED)
 
 
 @api_view(["POST"])
@@ -1260,7 +1388,8 @@ def _attachment_access(request, attachment_id, *, statuses):
     if att is None:
         return None, None, _not_found("Attachment")
     access = resolve_group_access(request.user, att.request.group_id)
-    if access is None or not (access.is_manager or att.request.assigned_to_id == request.user.pk):
+    is_assignee = att.request.assigned_to_id == request.user.pk
+    if access is None or not (is_assignee or (access.is_manager and not is_hidden_self_draft(att.request))):
         return None, None, _not_found("Attachment")
     return access, att, None
 

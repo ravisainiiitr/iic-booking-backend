@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from typing import Any, Iterable
 
 from django.conf import settings
-from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models import Count, F, IntegerField, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.html import escape
@@ -42,6 +42,11 @@ OPEN_ACTIVITY_STATUSES = (
     GroupActivityStatus.UNDER_REVIEW,
 )
 OPEN_REQUEST_STATUSES = (UpdateRequestStatus.PENDING, UpdateRequestStatus.OVERDUE)
+# A member's unprompted update is stored as a request they "asked" themselves. It is submitted in
+# the same call, so it never counts as pending/overdue; an unsubmitted one is only an attachment
+# draft and stays hidden from everyone except its author.
+SELF_REQUEST_Q = Q(requested_by__isnull=False, requested_by_id=F("assigned_to_id"))
+HIDDEN_SELF_DRAFT_Q = SELF_REQUEST_Q & ~Q(status__in=(UpdateRequestStatus.SUBMITTED, UpdateRequestStatus.REVIEWED))
 # Statuses an assignee may set on their own assignment; review/completion stays with faculty.
 ASSIGNEE_STATUSES = (
     GroupActivityStatus.NOT_STARTED,
@@ -180,6 +185,7 @@ def annotate_member_workload(queryset):
             ResearchUpdateRequest.objects.filter(
                 assigned_to=OuterRef("user"), group=OuterRef("group"), status__in=OPEN_REQUEST_STATUSES
             )
+            .exclude(SELF_REQUEST_Q)
             .order_by()
             .values("assigned_to")
             .annotate(c=Count("pk"))
@@ -323,17 +329,28 @@ def serialize_submission(update) -> dict[str, Any] | None:
     }
 
 
+def is_self_request(req: ResearchUpdateRequest) -> bool:
+    return req.requested_by_id is not None and req.requested_by_id == req.assigned_to_id
+
+
+def is_hidden_self_draft(req: ResearchUpdateRequest) -> bool:
+    return is_self_request(req) and req.status not in (UpdateRequestStatus.SUBMITTED, UpdateRequestStatus.REVIEWED)
+
+
 def serialize_request(req: ResearchUpdateRequest, user, *, can_manage: bool) -> dict[str, Any]:
     status_value = effective_request_status(req)
     submission = getattr(req, "submission", None)
     days_overdue = (today() - req.due_date).days if status_value == UpdateRequestStatus.OVERDUE and req.due_date else 0
     is_assignee = req.assigned_to_id == user.pk
+    unprompted = is_self_request(req)
     attachments = [a for a in req.attachments.all() if a.status == AttachmentStatus.AVAILABLE]
     return {
         "id": str(req.id),
         "group_id": str(req.group_id),
         "group_name": req.group.name,
         "activity": {"id": str(req.activity_id), "title": req.activity.title} if req.activity_id else None,
+        "is_unprompted": unprompted,
+        "origin": "member" if unprompted else "requested",
         "title": req.title,
         "instructions": req.instructions,
         "due_date": req.due_date,
@@ -353,7 +370,7 @@ def serialize_request(req: ResearchUpdateRequest, user, *, can_manage: bool) -> 
         "permissions": {
             "can_submit": is_assignee and status_value in OPEN_REQUEST_STATUSES and not req.group.is_archived,
             "can_review": can_manage and status_value == UpdateRequestStatus.SUBMITTED,
-            "can_cancel": can_manage and status_value in OPEN_REQUEST_STATUSES,
+            "can_cancel": can_manage and status_value in OPEN_REQUEST_STATUSES and not unprompted,
         },
     }
 
@@ -390,8 +407,8 @@ def group_counts(group_ids: Iterable) -> dict:
         ResearchUpdateRequest.objects.filter(group_id__in=ids)
         .values("group_id")
         .annotate(
-            pending=Count("pk", filter=Q(status__in=OPEN_REQUEST_STATUSES) & ~overdue_q),
-            overdue=Count("pk", filter=overdue_q),
+            pending=Count("pk", filter=Q(status__in=OPEN_REQUEST_STATUSES) & ~overdue_q & ~SELF_REQUEST_Q),
+            overdue=Count("pk", filter=overdue_q & ~SELF_REQUEST_Q),
             submitted=Count("pk", filter=Q(status=UpdateRequestStatus.SUBMITTED)),
         )
     ):
@@ -440,6 +457,7 @@ def member_work_counts(user, group_ids: Iterable) -> dict:
         result[row["activity__group_id"]]["my_active_activities"] = row["c"]
     for row in (
         ResearchUpdateRequest.objects.filter(assigned_to=user, group_id__in=ids, status__in=OPEN_REQUEST_STATUSES)
+        .exclude(SELF_REQUEST_Q)
         .values("group_id").annotate(c=Count("pk"))
     ):
         result[row["group_id"]]["my_open_requests"] = row["c"]
@@ -563,7 +581,33 @@ def notify_update_requested(req: ResearchUpdateRequest) -> None:
            [("Group", req.group.name), ("Due", due), ("Instructions", req.instructions[:1000])], path)
 
 
+def group_manager_users(group: ResearchGroup) -> list:
+    """Owner plus active faculty managers (the people who review updates)."""
+    from .group_access import is_group_faculty
+
+    managers = [group.owner]
+    for member in ResearchGroupMember.objects.filter(
+        group=group, status=GroupMemberStatus.ACTIVE, role=GroupRole.MANAGER
+    ).select_related("user", "user__department"):
+        if member.user_id != group.owner_id and is_group_faculty(member.user):
+            managers.append(member.user)
+    return managers
+
+
+def notify_unprompted_update(req: ResearchUpdateRequest) -> None:
+    message = f"{_actor_name(req.assigned_to)} sent an update \"{req.title}\" in {req.group.name}."
+    path = f"/my-research/groups/{req.group_id}?tab=updates&request={req.pk}"
+    for manager in group_manager_users(req.group):
+        if manager.pk == req.assigned_to_id:
+            continue
+        _push(manager, "Research update received", message, path, "research_group.update_sent",
+              research_group_id=req.group_id, research_update_request_id=req.pk)
+
+
 def notify_update_submitted(req: ResearchUpdateRequest) -> None:
+    if is_self_request(req):
+        notify_unprompted_update(req)
+        return
     if req.requested_by is None:
         return
     _push(

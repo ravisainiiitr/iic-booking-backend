@@ -82,7 +82,13 @@ def group_update_reminders(limit: int = 500) -> dict:
         ResearchUpdateRequest,
         UpdateRequestStatus,
     )
-    from .group_services import OPEN_ACTIVITY_STATUSES, notify_activity_due, notify_update_overdue, today
+    from .group_services import (
+        OPEN_ACTIVITY_STATUSES,
+        SELF_REQUEST_Q,
+        notify_activity_due,
+        notify_update_overdue,
+        today,
+    )
 
     stats = {"overdue": 0, "due_soon": 0}
     if not groups_enabled():
@@ -97,6 +103,7 @@ def group_update_reminders(limit: int = 500) -> dict:
             overdue_notified_at__isnull=True,
             group__status=GroupStatus.ACTIVE,
         )
+        .exclude(SELF_REQUEST_Q)
         .order_by("due_date")[:limit]
     )
     for req in overdue:

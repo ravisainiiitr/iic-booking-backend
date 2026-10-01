@@ -334,6 +334,58 @@ def serialize_booking_safe(booking) -> dict[str, Any]:
     }
 
 
+def annotate_booking_results(queryset):
+    from iic_booking.equipment.booking_results_service import booking_has_results_annotation
+
+    return queryset.select_related("equipment", "charge_profile").annotate(
+        has_results_db=booking_has_results_annotation()
+    )
+
+
+def booking_results_summary(booking, viewer, *, include_files: bool) -> dict[str, Any]:
+    """Official results of a booking as the existing results system would show them to `viewer`.
+
+    Read-through only: access, completion/rating/FBR gates and download URLs all come from the
+    booking results system. Viewers it would refuse get `can_view: False` and nothing else.
+    Results kept only in the lab's S3 results folder are listed by the booking's own results
+    endpoint (`results_path`), not here.
+    """
+    from iic_booking.equipment.api_views import _booking_results_gates_apply, _user_may_access_booking_results
+    from iic_booking.equipment.booking_results_service import merge_booking_result_files
+    from iic_booking.equipment.results_sharing_views import _results_lock
+
+    summary: dict[str, Any] = {"booking_id": booking.booking_id, "can_view": False}
+    if not _user_may_access_booking_results(viewer, booking):
+        return summary
+    has_results = bool(getattr(booking, "has_results_db", False)) or booking.results_available_notified_at is not None
+    code, message = _results_lock(booking) if _booking_results_gates_apply(viewer, booking) else (None, None)
+    summary.update(
+        {
+            "can_view": True,
+            "has_results": has_results,
+            "locked_code": code,
+            "locked_reason": message,
+            "results_path": f"/bookings/{booking.booking_id}/results/",
+            "download_all_path": f"/bookings/{booking.booking_id}/results/download/",
+        }
+    )
+    if include_files:
+        files = []
+        if has_results and code is None:
+            files = [
+                {
+                    "name": f.get("name") or "",
+                    "size_bytes": int(f.get("size_bytes") or 0),
+                    "source": f.get("source") or "",
+                    "uploaded_at": f.get("uploaded_at"),
+                    "download_url": f.get("download_url") or "",
+                }
+                for f in merge_booking_result_files(booking=booking, s3_files=[], request=None)
+            ]
+        summary["files"] = files
+    return summary
+
+
 # ---------------------------------------------------------------- publications
 
 

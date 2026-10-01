@@ -18,14 +18,14 @@ import uuid
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from iic_booking.equipment.models import Booking, EquipmentPublicationClaim
+from iic_booking.equipment.models import Booking, BookingStatus, EquipmentPublicationClaim
 
 from . import file_policy, storage
 from .access import (
@@ -59,7 +59,9 @@ from .services import (
     FolderError,
     UploadVerificationError,
     active_folders,
+    annotate_booking_results,
     annotate_booking_timing,
+    booking_results_summary,
     annotate_folder_counts,
     annotate_workspace_stats,
     file_queryset,
@@ -1058,6 +1060,73 @@ def linkable_bookings(request, workspace_id):
         qs = qs.filter(match)
     qs = annotate_booking_timing(qs).order_by("-created_at")[:50]
     return Response({"results": [serialize_booking_safe(b) for b in qs]})
+
+
+MAX_RESULTS_BOOKINGS = 100
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def workspace_booking_results(request, workspace_id):
+    """Official results of the workspace's linked bookings, filtered by the caller's own results access."""
+    access, error = _access(request, workspace_id)
+    if error:
+        return error
+    linked = ResearchWorkspaceBooking.objects.filter(workspace=access.workspace)
+    raw_ids = request.query_params.get("booking_ids")
+    if raw_ids:
+        wanted = {int(v) for v in str(raw_ids).split(",") if v.strip().isdigit()}
+        linked = linked.filter(booking_id__in=wanted)
+    booking_ids = list(linked.order_by("-added_at").values_list("booking_id", flat=True)[:MAX_RESULTS_BOOKINGS])
+    bookings = annotate_booking_results(Booking.objects.filter(booking_id__in=booking_ids)).order_by("-booking_id")
+    return Response({"results": [booking_results_summary(b, request.user, include_files=True) for b in bookings]})
+
+
+RECENT_BOOKING_EXCLUDED_STATUSES = (
+    BookingStatus.CANCELLED,
+    BookingStatus.REFUNDED,
+    BookingStatus.BOOKING_NOT_UTILIZED,
+)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def my_bookings(request):
+    """The caller's own recent bookings with results status and the projects each one is filed in.
+
+    `?unfiled=1` returns only completed bookings that are not linked to any project yet.
+    """
+    denied = _gate(request)
+    if denied:
+        return denied
+    user = request.user
+    try:
+        limit = min(max(int(request.query_params.get("limit", 20)), 1), 50)
+    except (TypeError, ValueError):
+        limit = 20
+    filed_ids = ResearchWorkspaceBooking.objects.filter(booking__user=user).values("booking_id")
+    unfiled_qs = Booking.objects.filter(user=user, status=BookingStatus.COMPLETED).exclude(booking_id__in=filed_ids)
+    if request.query_params.get("unfiled") in ("1", "true"):
+        qs = unfiled_qs.order_by(F("completed_at").desc(nulls_last=True), "-created_at")
+    else:
+        qs = Booking.objects.filter(user=user).exclude(status__in=RECENT_BOOKING_EXCLUDED_STATUSES).order_by("-created_at")
+    items = list(annotate_booking_results(annotate_booking_timing(qs))[:limit])
+    projects: dict[int, list] = {}
+    for link in (
+        ResearchWorkspaceBooking.objects.filter(booking_id__in=[b.booking_id for b in items], workspace__owner=user)
+        .select_related("workspace")
+        .order_by("workspace__name")
+    ):
+        projects.setdefault(link.booking_id, []).append(
+            {"id": str(link.workspace_id), "name": link.workspace.name, "status": link.workspace.status}
+        )
+    results = []
+    for booking in items:
+        row = serialize_booking_safe(booking)
+        row["projects"] = projects.get(booking.booking_id, [])
+        row["results"] = booking_results_summary(booking, user, include_files=False)
+        results.append(row)
+    return Response({"results": results, "unfiled_count": unfiled_qs.count()})
 
 
 # ---------------------------------------------------------------- equipment

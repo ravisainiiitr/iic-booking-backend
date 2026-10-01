@@ -19,6 +19,10 @@ urlpatterns = [
         "workspaces/<uuid:workspace_id>/bookings/<int:booking_id>/", views.booking_unlink, name="booking-unlink"
     ),
     path("workspaces/<uuid:workspace_id>/linkable-bookings/", views.linkable_bookings, name="linkable-bookings"),
+    path(
+        "workspaces/<uuid:workspace_id>/booking-results/", views.workspace_booking_results, name="booking-results"
+    ),
+    path("my-bookings/", views.my_bookings, name="my-bookings"),
     path("workspaces/<uuid:workspace_id>/equipment/", views.equipment_used, name="equipment"),
     path("workspaces/<uuid:workspace_id>/publications/", views.publications_collection, name="publications"),
     path(
@@ -58,6 +62,7 @@ urlpatterns = [
     ),
     path("groups/<uuid:group_id>/activities/", group_views.activities_collection, name="group-activities"),
     path("groups/<uuid:group_id>/updates/", group_views.updates_list, name="group-updates"),
+    path("groups/<uuid:group_id>/updates/self/", group_views.update_self_send, name="group-update-self"),
     path("groups/<uuid:group_id>/update-requests/", group_views.update_requests_create, name="group-update-requests"),
     path("groups/<uuid:group_id>/workspaces/", group_views.group_workspaces, name="group-workspaces"),
     path(
