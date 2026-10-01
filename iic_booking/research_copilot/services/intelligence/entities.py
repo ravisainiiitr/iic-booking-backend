@@ -47,6 +47,7 @@ class Entities:
     period: str | None = None
     sample_count: int | None = None
     booking_ref: int | None = None
+    booking_vref: str | None = None
     earliest: bool = False
     partial: bool = False
     entire: bool = False
@@ -76,6 +77,10 @@ def extract(text: str) -> Entities:
     m = _BOOKING_RE.search(text or "")
     if m:
         ents.booking_ref = int(m.group(1))
+    else:
+        from iic_booking.research_copilot.services.booking_refs import find_virtual_ref
+
+        ents.booking_vref = find_virtual_ref(text or "")
     ents.earliest = bool(_EARLIEST_RE.search(lower))
     ents.partial = bool(_PARTIAL_RE.search(lower))
     ents.entire = bool(_ENTIRE_RE.search(lower))

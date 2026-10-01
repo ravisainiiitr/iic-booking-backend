@@ -306,6 +306,27 @@ class _Lab(_World):
         self.tem = self.equipment("Transmission Electron Microscope", "TEM-200")
         self.sem = self.equipment("Tabletop SEM", "SEM-T1")
 
+    def fund(self, student=None, *, balance="10000.00", department=None, **limits):
+        """Supervisor wallet the student books from (same setup as the spending-limit tests)."""
+        from decimal import Decimal
+
+        from iic_booking.users.models.user_type import UserType
+        from iic_booking.users.models.wallet import Wallet, WalletJoinRequest, WalletJoinRequestStatus
+        from iic_booking.users.repositories.wallet_repository import SubWalletRepository
+        from iic_booking.users.tests.factories import UserFactory
+
+        student = student or self.student
+        faculty = UserFactory(user_type=UserType.FACULTY, department=self.department)
+        wallet = Wallet.objects.create(user=faculty)
+        WalletJoinRequest.objects.create(
+            student=student, faculty=faculty, wallet=wallet, status=WalletJoinRequestStatus.APPROVED,
+            responded_at=timezone.now() - timedelta(days=60), **limits,
+        )
+        sub = SubWalletRepository.get_or_create(wallet, department or self.department)
+        if Decimal(balance) > 0:
+            sub.credit(Decimal(balance), description="Recharge")
+        return sub
+
     def hidden(self, name, code):
         from iic_booking.users.models.user_group import UserGroup
 
@@ -506,6 +527,7 @@ class TestAssistantTurns:
         assert not any(c.get("type") == "ba_booking_form" for c in cards)
 
     def _to_summary(self, lab, settings_obj=None):
+        lab.fund()
         start = lab.future(days=4, hour=10)
         slot = lab.slot(lab.xrd, start)
         conv = _new_conv(lab)

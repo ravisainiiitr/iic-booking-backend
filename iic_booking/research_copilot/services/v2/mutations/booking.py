@@ -114,7 +114,130 @@ def _slots_bookable_for_user(*, user, equipment_id: int, slot_ids: list[int]) ->
     return all(slot_is_bookable_for_user(user=user, equipment_id=equipment_id, slot_id=int(s)) for s in slot_ids)
 
 
-CHAT_FILLABLE_FIELD_TYPES = frozenset({"NUMERIC", "TEXT", "RADIO", "COMBO", "TOGGLE"})
+CHAT_FILLABLE_FIELD_TYPES = frozenset({"NUMERIC", "TEXT", "RADIO", "COMBO", "TOGGLE", "PERIODIC_TABLE"})
+_CHOICE_FIELD_TYPES = frozenset({"RADIO", "COMBO"})
+_TRUE_VALUES = {"true", "yes", "1", "on"}
+_FALSE_VALUES = {"false", "no", "0", "off"}
+
+
+def periodic_field_info(f) -> dict[str, Any]:
+    """Selectable / locked element symbols for a PERIODIC_TABLE field (same Help-text rules as the portal)."""
+    from iic_booking.equipment.periodic_elements import PERIODIC_SYMBOL_BY_TOKEN, parse_periodic_help_text
+
+    disabled, locked = parse_periodic_help_text(getattr(f, "help_text", "") or "")
+    symbols = sorted(set(PERIODIC_SYMBOL_BY_TOKEN.values()))
+    return {
+        "allowed": [s for s in symbols if s not in disabled],
+        "disabled": sorted(disabled),
+        "locked": sorted(locked),
+    }
+
+
+def _periodic_symbols(f, raw: Any) -> tuple[list[str] | None, str | None]:
+    from iic_booking.equipment.periodic_elements import PERIODIC_SYMBOL_BY_TOKEN
+
+    parts = raw if isinstance(raw, (list, tuple)) else str(raw or "").replace(";", ",").replace(" ", ",").split(",")
+    info = periodic_field_info(f)
+    allowed = set(info["allowed"])
+    lookup = {str(k).lower(): v for k, v in PERIODIC_SYMBOL_BY_TOKEN.items()}
+    lookup.update({s.lower(): s for s in allowed})
+    out: list[str] = []
+    for part in parts:
+        token = str(part).strip()
+        if not token:
+            continue
+        sym = lookup.get(token.lower())
+        label = f.field_label or f.field_key
+        if sym is None:
+            return None, f"{label}: \"{token}\" is not an element symbol."
+        if sym not in allowed:
+            return None, f"{label}: {sym} cannot be selected for this equipment."
+        if sym not in out:
+            out.append(sym)
+    return out, None
+
+
+def istem_ack_error(user) -> str:
+    """Booking page rule (client-side there): external users confirm I-STEM registration in Profile first."""
+    from iic_booking.users.models.user_type import UserType
+
+    if UserType.is_external_user(getattr(user, "user_type", "") or "") and not getattr(user, "istem_portal_acknowledged", False):
+        return "Confirm I-STEM portal registration in your Profile before booking (Profile → I-STEM confirmation → Save)."
+    return ""
+
+
+def portal_slots_needed(analysis_minutes: Any, slot_minutes: Any, tolerance_minutes: Any = 0) -> int:
+    """Same as the booking page's slotsNeededForAnalysisTime (integer minutes, tolerance subtracted first)."""
+    import math
+
+    def _whole(v: Any) -> int:
+        try:
+            return max(0, math.floor(float(v or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    analysis, duration, tolerance = _whole(analysis_minutes), _whole(slot_minutes), _whole(tolerance_minutes)
+    if analysis <= 0:
+        return 0
+    if duration <= 0:
+        return 1
+    adjusted = analysis - tolerance
+    if adjusted <= 0:
+        return 1
+    return max(1, math.ceil(adjusted / duration))
+
+
+def _slot_minutes(slot) -> int:
+    if getattr(slot, "start_datetime", None) and getattr(slot, "end_datetime", None):
+        return int(round((slot.end_datetime - slot.start_datetime).total_seconds() / 60))
+    return 0
+
+
+def selection_matches_required_time(equipment, slots: list, required_minutes: Any) -> bool:
+    """Booking page isSelectionValidForBooking: the selected slots must cover the analysis time."""
+    if not slots:
+        return False
+    try:
+        required = float(required_minutes or 0)
+    except (TypeError, ValueError):
+        required = 0.0
+    durations = [_slot_minutes(s) for s in slots]
+    selected = sum(durations)
+    one = durations[0] or int(getattr(equipment, "slot_duration_minutes", 0) or 0) or 60
+    tolerance = max(0, int(getattr(equipment, "slot_tolerance_minutes", 0) or 0))
+    ten_percent = 0.1 * one
+    soft = tolerance if tolerance > 0 else ten_percent
+    min_needed = portal_slots_needed(required, one, tolerance)
+    if min_needed <= 1:
+        return len(slots) == 1
+    if required - soft <= selected <= required + ten_percent:
+        return True
+    return selected >= min_needed * one and len(slots) == min_needed
+
+
+def required_analysis_minutes(*, user, equipment, input_values: dict[str, Any]) -> tuple[float | None, str | None]:
+    """Analysis time for these inputs from the portal calculate endpoint (what the booking page uses)."""
+    from iic_booking.research_copilot.services.v2.mutations import domain_bridge as bridge
+
+    sets = (input_values or {}).get("_sample_sets") or None
+    try:
+        code, data = bridge.call_equipment_calculate(
+            user=user, equipment_id=int(equipment.pk), input_values=input_values or {}, sample_sets=sets
+        )
+    except Exception:  # noqa: BLE001
+        return None, None
+    if 400 <= code < 500:
+        return None, str(data.get("error") or data.get("detail") or "These inputs could not be priced for your account.")[:400]
+    if code >= 500:
+        return None, None
+    try:
+        return float(data.get("total_time_minutes") or 0), None
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _choice_values(f) -> set[str]:
+    return {o["value"] for o in _field_descriptor(f)["options"]} | {o["label"] for o in _field_descriptor(f)["options"]}
 
 
 def _field_descriptor(f) -> dict[str, Any]:
@@ -165,26 +288,75 @@ def _copilot_input_values(
     fields = _effective_input_fields(equipment, getattr(user, "user_type", "") or "")
     by_key = {f.field_key: f for f in fields}
     values: dict[str, Any] = {}
+    problems: list[str] = []
     field_a = by_key.get("A")
     if field_a is None or str(getattr(field_a, "field_type", "")) == "NUMERIC":
         values["A"] = str(samples)
-    for key, raw in (provided or {}).items():
-        f = by_key.get(str(key))
-        if f is None or (str(key) == "A" and "A" in values):
+    provided = dict(provided or {})
+    for key, raw in list(provided.items()):
+        key = str(key)
+        if key.endswith("_elements"):
+            key = key[: -len("_elements")]
+            if key in provided:
+                continue
+        f = by_key.get(key)
+        if f is None or (key == "A" and "A" in values):
             continue
-        if str(getattr(f, "field_type", "")) not in CHAT_FILLABLE_FIELD_TYPES or raw in (None, ""):
+        ftype = str(getattr(f, "field_type", ""))
+        if ftype not in CHAT_FILLABLE_FIELD_TYPES or raw in (None, ""):
             continue
-        values[str(key)] = str(raw)[:500]
+        label = f.field_label or f.field_key
+        if ftype == "PERIODIC_TABLE":
+            symbols, err = _periodic_symbols(f, provided.get(f"{key}_elements", raw))
+            if err:
+                problems.append(err)
+            elif symbols:
+                values[f"{key}_elements"] = ",".join(symbols)
+                values[key] = str(len([s for s in symbols if s not in set(periodic_field_info(f)["locked"])]))
+            continue
+        text = str(raw).strip()[:500]
+        if ftype in _CHOICE_FIELD_TYPES:
+            opts = _choice_values(f)
+            if opts and text not in opts:
+                problems.append(f"{label}: choose one of the listed options.")
+                continue
+        elif ftype == "TOGGLE":
+            low = text.lower()
+            if low not in _TRUE_VALUES | _FALSE_VALUES:
+                problems.append(f"{label}: answer yes or no.")
+                continue
+            text = "true" if low in _TRUE_VALUES else "false"
+        elif ftype == "NUMERIC":
+            try:
+                float(text)
+            except ValueError:
+                problems.append(f"{label} must be a number.")
+                continue
+        values[key] = text
+
+    def _empty(f) -> bool:
+        if f.field_key not in values:
+            return True
+        # Booking page: a required numeric 0 counts as not filled in.
+        if str(getattr(f, "field_type", "")) in ("NUMERIC", "PERIODIC_TABLE"):
+            try:
+                return float(values[f.field_key]) == 0
+            except (TypeError, ValueError):
+                return False
+        return False
+
     missing = [
         f.field_label or f.field_key
         for f in fields
-        if f.is_required and f.field_key not in values and f.default_value in (None, "")
+        if f.is_required and _empty(f) and f.default_value in (None, "")
     ]
     for f in fields:
         if f.field_key not in values and f.default_value not in (None, ""):
             values[f.field_key] = f.default_value
     if not validate:
         return values, missing
+    if problems:
+        return None, problems
     if missing:
         return None, missing
     error = _validate_dynamic_numeric_input_limits(equipment, values, booking_user=user)
@@ -246,6 +418,7 @@ def prepare_booking_create(
     text: str = "",
     context: dict[str, Any] | None = None,
     input_values: dict[str, Any] | None = None,
+    sample_sets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate and build CREATE_BOOKING confirmation proposal (does not book)."""
     if user is None or not getattr(user, "is_authenticated", False):
@@ -256,6 +429,9 @@ def prepare_booking_create(
     locked, lock_message = booking_is_locked(user)
     if locked:
         return _safe_error("BOOKING_LOCKED", lock_message or "Booking is temporarily locked.")
+    istem = istem_ack_error(user)
+    if istem:
+        return _safe_error("ISTEM_ACK_REQUIRED", istem)
 
     ctx = context or {}
     eid = equipment_id or ctx.get("equipment_id") or ctx.get("last_equipment_id")
@@ -329,6 +505,12 @@ def prepare_booking_create(
         user=user, equipment=eq, samples=samples, provided=provided_inputs
     )
     if input_values is None:
+        _values, missing_only = _copilot_input_values(
+            user=user, equipment=eq, samples=samples, provided=provided_inputs, validate=False
+        )
+        if not missing_only or any(m not in missing_only for m in missing_inputs):
+            return _safe_error("INVALID_INPUT", "Please check: " + "; ".join(str(m) for m in missing_inputs[:5]))
+    if input_values is None:
         slot_date = slots[0].date.isoformat() if slots[0].date else ""
         return {
             "ok": True,
@@ -349,6 +531,24 @@ def prepare_booking_create(
             ),
             "portal_href": f"/book-equipment?equipment_id={eid}" + (f"&date={slot_date}" if slot_date else ""),
         }
+
+    if sample_sets:
+        from iic_booking.equipment.api_views import _normalize_sample_sets_input
+
+        input_values, sets_error = _normalize_sample_sets_input(eq, input_values, list(sample_sets), booking_user=user)
+        if sets_error:
+            return _safe_error("INVALID_SAMPLE_SETS", sets_error)
+
+    required_minutes, calc_error = required_analysis_minutes(user=user, equipment=eq, input_values=input_values)
+    if calc_error:
+        return _safe_error("CHARGE_CALCULATION_FAILED", calc_error)
+    if required_minutes is not None and not selection_matches_required_time(eq, slots, required_minutes):
+        return _safe_error(
+            "SLOT_SELECTION_MISMATCH",
+            f"These inputs need about {int(required_minutes)} minutes of instrument time, which the selected "
+            f"slot{'s' if len(slots) != 1 else ''} do not match. Pick a time block of the right length.",
+            required_minutes=required_minutes,
+        )
 
     estimate, _ename = _estimate_for_equipment(user=user, equipment_id=eid, input_values=input_values)
     balance = _wallet_balance(user)
@@ -479,6 +679,9 @@ def _execute_claimed_booking_create(*, user, proposal_id: str, prop: dict[str, A
     payload = prop.get("payload") or {}
     eid = int(payload["equipment_id"])
     slot_ids = [int(x) for x in (payload.get("slot_ids") or [])]
+    istem = istem_ack_error(user)
+    if istem:
+        return _safe_error("ISTEM_ACK_REQUIRED", istem, proposal_id=proposal_id)
 
     # Revalidate slots before execute
     for sid in slot_ids:
@@ -886,8 +1089,23 @@ def _user_facing_domain_error(data: dict) -> str:
 def _friendly_book_message(ok: bool, data: dict) -> str:
     if not ok:
         return _user_facing_domain_error(data)
-    bid = (data or {}).get("real_booking_id") or (data or {}).get("booking_id") or (data or {}).get("id")
-    return f"Booking confirmed. Booking ID: {bid}" if bid else "Booking confirmed."
+    d = data or {}
+    ref = d.get("virtual_booking_id") or d.get("booking_id")
+    if not ref and d.get("real_booking_id"):
+        from iic_booking.research_copilot.services.booking_refs import display_ref_for_id
+
+        ref = display_ref_for_id(d["real_booking_id"])
+    msg = f"Booking confirmed. Booking ID: {ref}" if ref else "Booking confirmed."
+    if d.get("payment_required"):
+        due = d.get("amount_due")
+        msg += (
+            f" Payment of ₹{due} is still due; complete it from My Bookings to keep the booking."
+            if due not in (None, "")
+            else " A payment is still due; complete it from My Bookings to keep the booking."
+        )
+    if d.get("require_istem_fbr"):
+        msg += " This booking needs your I-STEM FBR number; submit it from My Bookings."
+    return msg
 
 
 # Back-compat aliases used by earlier scaffold

@@ -8,7 +8,6 @@ department reservations) and then the booking endpoint's home-department filter.
 
 from __future__ import annotations
 
-import math
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -34,16 +33,14 @@ def _local(value: str | None) -> datetime | None:
 
 
 def slots_needed(eq, total_time_minutes: Any) -> int:
-    """Portal rule: ceil((analysis time - tolerance) / slot duration), minimum one slot."""
-    minutes = int(getattr(eq, "slot_duration_minutes", 0) or 0)
-    tolerance = int(getattr(eq, "slot_tolerance_minutes", 0) or 0)
-    try:
-        total = float(total_time_minutes or 0)
-    except (TypeError, ValueError):
-        total = 0.0
-    if minutes <= 0 or total <= 0:
-        return 1
-    return max(1, math.ceil((total - tolerance) / minutes))
+    """Booking page rule: ceil((analysis time - tolerance) / slot duration) on whole minutes, minimum one slot."""
+    from iic_booking.research_copilot.services.v2.mutations.booking import portal_slots_needed
+
+    return max(1, portal_slots_needed(
+        total_time_minutes,
+        getattr(eq, "slot_duration_minutes", 0) or 0,
+        getattr(eq, "slot_tolerance_minutes", 0) or 0,
+    ))
 
 
 def estimate_one_sample(user, eq) -> dict[str, Any]:

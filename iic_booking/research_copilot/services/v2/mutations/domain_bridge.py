@@ -132,6 +132,27 @@ def _django_get(*, user, path: str):
     return request
 
 
+def call_equipment_calculate(
+    *, user, equipment_id: int, input_values: dict[str, Any], sample_sets: list[dict[str, Any]] | None = None
+) -> tuple[int, dict[str, Any]]:
+    """GET /api/equipments/<pk>/calculate/ as the user: the booking page's analysis time and charge."""
+    import json
+    from urllib.parse import urlencode
+
+    from iic_booking.equipment.api_views import equipment_calculate
+
+    params: list[tuple[str, str]] = []
+    for key, value in (input_values or {}).items():
+        if str(key).startswith("_") or value is None:
+            continue
+        params.append((str(key), ",".join(map(str, value)) if isinstance(value, list) else str(value)))
+    if sample_sets:
+        params.append(("sample_sets", json.dumps(sample_sets)))
+    path = f"/api/equipments/{int(equipment_id)}/calculate/"
+    response = equipment_calculate(_django_get(user=user, path=f"{path}?{urlencode(params)}" if params else path), int(equipment_id))
+    return _as_data(response)
+
+
 def _strip_identity(body: dict[str, Any] | None) -> dict[str, Any]:
     safe = dict(body or {})
     for banned in ("user_id", "user", "email", "owner", "owner_id", "target_user", "wallet_owner_id", "faculty_id"):

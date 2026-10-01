@@ -149,13 +149,23 @@ def _for_equipment(user, conversation, eq, intent: str, when: When | None, topic
     return out
 
 
+def _remember_flow(conversation, eq, **values: Any) -> None:
+    from iic_booking.research_copilot.services.assistant import guided
+
+    flow = guided.load(conversation)
+    fresh = {} if int(flow.get("equipment_id") or 0) == int(eq.pk) else {"samples": None, "inputs": {}, "sets": [], "required_minutes": None}
+    guided.save(conversation, equipment_id=int(eq.pk), department_id=int(eq.internal_department_id or 0), **fresh, **values)
+
+
 def _dispatch_action(user, conversation, action: dict[str, Any]) -> dict[str, Any]:
-    from iic_booking.research_copilot.services.assistant import booking_flow, bookings
+    from iic_booking.research_copilot.services.assistant import booking_flow, bookings, guided
 
     t = action["type"]
     p = action.get("payload") or {}
     if t == A.UPCOMING:
         return bookings.upcoming_reply(user)
+    if t == A.FLOW:
+        return guided.handle(user, conversation, p)
     eq = _visible(user, p.get("equipment_id"))
     if eq is None:
         return _gone()
@@ -168,10 +178,47 @@ def _dispatch_action(user, conversation, action: dict[str, Any]) -> dict[str, An
         return _for_equipment(user, conversation, eq, "info", None, p.get("topic") or "overview")
     if t == A.PICK_SLOT:
         ba_state.remember_equipment(conversation, eq, None, "book")
+        _remember_flow(conversation, eq, step="inputs", slot_ids=list(p["slot_ids"]))
         return booking_flow.pick_slot(user, eq, p["slot_ids"])
     if t == A.REVIEW:
-        return booking_flow.review(user, eq, p["slot_ids"], int(p.get("number_of_samples") or 1), p.get("input_values") or {})
+        _remember_flow(
+            conversation, eq, step="inputs", slot_ids=list(p["slot_ids"]),
+            samples=int(p.get("number_of_samples") or 1), inputs=p.get("input_values") or {}, sets=p.get("sample_sets") or [],
+        )
+        return booking_flow.review(
+            user, eq, p["slot_ids"], int(p.get("number_of_samples") or 1), p.get("input_values") or {}, p.get("sample_sets") or [],
+        )
     return C.reply("That option is not available.", intent="invalid")
+
+
+_START_BOOK_RE = re.compile(
+    r"^(hi |hello |hey )?((i|we)\s+(want|would like|wish|need)\s+to\s+|(can|could)\s+(i|you)\s+(help\s+me\s+)?|"
+    r"help\s+me\s+|let'?s\s+|please\s+)?"
+    r"(book|make\s+a\s+booking|new\s+booking|start\s+a\s+booking|reserve)"
+    r"(\s+(an?|some|the)?\s*(equipment|instruments?|machines?|slots?|booking|facility))?"
+    r"(\s+(for\s+me|please|now))?[\s.!?]*$"
+)
+
+
+def _start_choice(user, conversation, choice: dict[str, Any] | None, action: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The 'Book equipment' quick action / BOOK_EQUIPMENT button start the guided flow here."""
+    from iic_booking.research_copilot.services.assistant import guided
+
+    if choice and choice.get("kind") == "start" and choice.get("value") == "book":
+        return guided.handle(user, conversation, {"step": "start"})
+    if action and str(action.get("type") or "").upper() == "BOOK_EQUIPMENT":
+        p = action.get("payload") or {}
+        eid = p.get("equipment_id")
+        if not eid:
+            query = str(p.get("equipment_query") or p.get("technique") or "").strip()
+            if query:
+                m = matching.match_equipment(user, query)
+                if m.status == "unique" and m.equipment is not None:
+                    eid = m.equipment.pk
+        if eid and _visible(user, eid) is not None:
+            return guided.handle(user, conversation, {"step": "equipment", "equipment_id": int(eid)})
+        return guided.handle(user, conversation, {"step": "start"})
+    return None
 
 
 def _info_topic(lower: str) -> str | None:
@@ -311,9 +358,9 @@ def try_assistant_turn(
 ) -> dict[str, Any] | None:
     if not assistant_enabled() or user is None or not getattr(user, "is_authenticated", False):
         return None
-    if assistant_action is None and (choice or action):
-        return None
     try:
+        if assistant_action is None and (choice or action):
+            return _start_choice(user, conversation, choice, action)
         if assistant_action is not None:
             out = _dispatch_action(user, conversation, assistant_action)
             meta = (out or {}).get("metadata") or {}
@@ -327,6 +374,14 @@ def try_assistant_turn(
         blocked = _typed_confirm_reply(conversation, text or "")
         if blocked is not None:
             return blocked
+        from iic_booking.research_copilot.services.assistant import guided
+
+        if _START_BOOK_RE.match(normalize(text or "")):
+            return guided.handle(user, conversation, {"step": "start"})
+        if guided.active(conversation):
+            typed = guided.handle_text(user, conversation, text or "")
+            if typed is not None:
+                return typed
         intel_busy = False
         try:
             from iic_booking.research_copilot.services.intelligence import state as intel_state

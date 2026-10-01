@@ -62,11 +62,15 @@ def _summary(booking) -> dict[str, Any]:
     start = timezone.localtime(slots[0].start_datetime) if slots and slots[0].start_datetime else None
     end = timezone.localtime(slots[-1].end_datetime) if slots and slots[-1].end_datetime else None
     open_, cutoff = _window(booking)
-    label = f"#{booking.booking_id} {getattr(booking.equipment, 'name', '')}"
+    from iic_booking.research_copilot.services.booking_refs import display_ref
+
+    ref = display_ref(booking)
+    label = f"{ref} {getattr(booking.equipment, 'name', '')}"
     if start:
         label += f" - {start:%a %d %b, %H:%M}" + (f"-{end:%H:%M}" if end else "")
     return {
         "booking_id": int(booking.booking_id),
+        "ref": ref,
         "equipment_id": int(booking.equipment_id) if booking.equipment_id else None,
         "equipment_name": getattr(booking.equipment, "name", ""),
         "status": booking.status,
@@ -102,8 +106,14 @@ def _owned(user, booking_id):
 def _pick_booking(turn: Turn, *, workflow: str, kind: str, verb: str) -> dict[str, Any] | Any:
     """Owned booking from '#123' / 'next booking', else a CANCELLATION_SELECTION list. Returns a booking or a response."""
     ents = turn.ents
-    if ents.booking_ref:
-        b = _owned(turn.user, ents.booking_ref)
+    if ents.booking_ref or getattr(ents, "booking_vref", None):
+        from iic_booking.research_copilot.services.booking_refs import owned_booking_by_virtual_ref
+
+        b = (
+            _owned(turn.user, ents.booking_ref)
+            if ents.booking_ref
+            else owned_booking_by_virtual_ref(turn.user, ents.booking_vref, _qs(turn.user))
+        )
         if b is None:
             return M.error("I couldn't find that booking among your active bookings.", intent=turn.intent,
                            actions=[M.link("my_bookings", "My Bookings", "/my-bookings")])
@@ -136,7 +146,7 @@ def _closed(turn: Turn, info: dict[str, Any], verb: str) -> dict[str, Any]:
     when = f" Self-service {verb} closed on {info['cutoff']}." if info.get("cutoff") else ""
     return turn.respond(
         message_type=M.TEXT,
-        content=f"Booking #{info['booking_id']} ({info['equipment_name']}) is inside the equipment's {verb} window.{when} "
+        content=f"Booking {info['ref']} ({info['equipment_name']}) is inside the equipment's {verb} window.{when} "
         "Only an admin can change it now. I can raise a support ticket for you.",
         actions=[M.ticket_action("user_requested", "Ask the admin (support ticket)"),
                  M.link("my_bookings", "My Bookings", f"/my-bookings?booking={info['booking_id']}")],
@@ -220,7 +230,7 @@ def cancel_mode(turn: Turn, mode: str) -> dict[str, Any]:
     info = _summary(booking)
     if mode == "keep":
         st.restart(s)
-        return turn.respond(message_type=M.TEXT, content=f"OK, booking #{info['booking_id']} stays as it is.",
+        return turn.respond(message_type=M.TEXT, content=f"OK, booking {info['ref']} stays as it is.",
                             source_label=M.SOURCE_COPILOT)
     if mode == "portal":
         st.restart(s)
@@ -239,7 +249,7 @@ def cancel_mode(turn: Turn, mode: str) -> dict[str, Any]:
         st.set_choice(s, kind="cancel_slots", prompt="Select the slots to cancel", options=options)
         return turn.respond(
             message_type=M.CANCELLATION_SELECTION,
-            content=f"Select the slots of booking #{info['booking_id']} you want to cancel, then press Continue. "
+            content=f"Select the slots of booking {info['ref']} you want to cancel, then press Continue. "
             "The other slots stay booked.",
             cards=[{"type": "choice_list", "kind": "cancel_slots", "prompt": "Slots to cancel", "multi": True,
                     "allow_text": False, "options": options, "submit_label": "Preview refund"}],
@@ -255,7 +265,7 @@ def cancel_mode(turn: Turn, mode: str) -> dict[str, Any]:
         st.set_choice(s, kind="cancel_reduce", prompt="New number of samples", options=options)
         return turn.respond(
             message_type=M.FORM_REQUEST,
-            content=f"Booking #{info['booking_id']} has {current} samples. How many samples do you want to keep?",
+            content=f"Booking {info['ref']} has {current} samples. How many samples do you want to keep?",
             cards=[{"type": "form_request", "submit_label": "Preview refund", "choice_kind": "cancel_reduce",
                     "fields": [{"key": "keep", "label": "Samples to keep", "type": "NUMERIC", "required": True, "min": 1,
                                 "max": current - 1}]}],
@@ -322,7 +332,7 @@ def _prepare_cancel(turn: Turn, booking, *, slot_ids=None, reduced=None, preview
     executable = bool(prep.get("executable")) and actions_enabled()
     info = _summary(booking)
     partial = prep.get("cancel_mode") != "entire"
-    lines = [f"**{'Partial cancellation' if partial else 'Cancel booking'}: #{info['booking_id']}**", "",
+    lines = [f"**{'Partial cancellation' if partial else 'Cancel booking'}: {info['ref']}**", "",
              f"- Equipment: {info['equipment_name']}"]
     if info["start"]:
         lines.append(f"- Booking time: {run_label([{'start': info['start'], 'end': info['end'], 'date': ''}])}")
@@ -421,7 +431,7 @@ def reschedule_selected(turn: Turn, booking) -> dict[str, Any]:
     options = [{"value": run_value(r), "label": run_label(r)} for r in shown]
     s["step"] = "reschedule_slot"
     st.set_choice(s, kind="reschedule_slot", prompt="New time", options=options)
-    lines = [f"**Reschedule #{info['booking_id']} ({eq.name})**", "", f"Current: {info['label'].split(' - ', 1)[-1]}",
+    lines = [f"**Reschedule {info['ref']} ({eq.name})**", "", f"Current: {info['label'].split(' - ', 1)[-1]}",
              "", "New times with the same duration:"] + [f"{i}. {o['label']}" for i, o in enumerate(options, 1)]
     return turn.respond(
         message_type=M.SLOT_LIST,
@@ -454,7 +464,7 @@ def reschedule_slot_chosen(turn: Turn, value: str) -> dict[str, Any]:
     executable = bool(prep.get("executable")) and actions_enabled()
     start, end = _dt(prep.get("start_time")), _dt(prep.get("end_time"))
     info = _summary(booking)
-    lines = [f"**Reschedule #{info['booking_id']}**", "", f"- Equipment: {info['equipment_name']}",
+    lines = [f"**Reschedule {info['ref']}**", "", f"- Equipment: {info['equipment_name']}",
              f"- From: {info['label'].split(' - ', 1)[-1]}"]
     if start:
         lines.append(f"- To: {start:%a %d %b, %H:%M}" + (f"-{end:%H:%M}" if end else ""))

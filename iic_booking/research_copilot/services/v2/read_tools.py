@@ -282,7 +282,7 @@ def my_bookings(*, user) -> dict:
     for r in (rows if isinstance(rows, list) else [])[:8]:
         if not isinstance(r, dict):
             continue
-        lines.append(f"- #{r.get('booking_id')} {r.get('equipment') or ''} — {r.get('status')}")
+        lines.append(f"- {r.get('booking_ref') or r.get('booking_id')} {r.get('equipment') or ''} — {r.get('status')}")
         items.append(r)
     if len(lines) == 2:
         lines.append("No bookings found.")
@@ -312,7 +312,7 @@ def next_booking(*, user) -> dict:
         except (TypeError, ValueError):
             start_dt = None
         start_label = f"{start_dt:%a %d %b %Y, %H:%M} {start_dt.tzname()}" if start_dt else (start or "")
-        content = f"**Next booking** #{data.get('booking_id')} — {data.get('equipment')} ({data.get('status')})\nStart: {start_label}"
+        content = f"**Next booking** {data.get('booking_ref') or data.get('booking_id')} — {data.get('equipment')} ({data.get('status')})\nStart: {start_label}"
     return build_response(kind="LIVE_DATA", content=content, actions=list((result or {}).get("actions") or []), metadata={"deterministic": True})
 
 
@@ -474,16 +474,26 @@ def ra_status(*, user) -> dict:
         return build_response(kind="ACTION_REQUIRED", content="Sign in required.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
     from iic_booking.equipment.models import Booking
 
-    b = Booking.objects.filter(user=user).order_by("-booking_id").first()
+    from iic_booking.research_copilot.services.booking_refs import display_ref
+
+    b = Booking.objects.select_related("equipment").filter(user=user).order_by("-booking_id").first()
     if not b:
         return build_response(kind="LIVE_DATA", content="No bookings found to check Remote Analysis status.")
+    ref = display_ref(b)
+    if not getattr(b.equipment, "enable_remote_analysis", False):
+        return build_response(
+            kind="LIVE_DATA",
+            content=f"Remote Analysis is not enabled for **{getattr(b.equipment, 'name', '')}**, so booking {ref} has no Analysis Workspace.",
+            actions=[{"id": "open_booking", "label": "Open booking", "href": f"/my-bookings?booking={b.booking_id}", "enabled": True}],
+            metadata={"deterministic": True},
+        )
     try:
         from iic_booking.equipment.remote_analysis_integration.eligibility import BookingAnalysisEligibilityService
 
         elig = BookingAnalysisEligibilityService().evaluate(b)
         eligible = getattr(elig, "eligible", None)
         reason = getattr(elig, "reason", None) or getattr(elig, "message", "") or ""
-        content = f"**Remote Analysis** for booking #{b.booking_id}:\n\n- Eligible: {eligible}\n- Detail: {reason or '—'}"
+        content = f"**Remote Analysis** for booking {ref}:\n\n- Eligible: {eligible}\n- Detail: {reason or '—'}"
     except Exception as exc:  # noqa: BLE001
         content = f"Could not evaluate Remote Analysis eligibility ({exc}). Open Analysis Workspace for details."
     return build_response(
@@ -528,7 +538,7 @@ def pending_actions(*, user) -> dict:
         nb = tools_svc._get_next_booking(arguments={}, user=user)
         data = (nb or {}).get("data") or {}
         if data.get("booking_id"):
-            items.append({"id": "next_booking", "label": f"Upcoming booking #{data.get('booking_id')}", "href": "/my-bookings"})
+            items.append({"id": "next_booking", "label": f"Upcoming booking {data.get('booking_ref') or data.get('booking_id')}", "href": "/my-bookings"})
     except Exception:  # noqa: BLE001
         pass
     items.append({"id": "wallet", "label": "Review wallet / recharge if needed", "href": "/wallet"})

@@ -236,13 +236,37 @@ def test_non_dates_keep_default_windows(text):
 
 
 def test_cancel_result_does_not_offer_analysis_workspace():
-    from iic_booking.research_copilot.services.v2.orchestrator import _exec_to_response
+    from types import SimpleNamespace
 
-    cancelled = _exec_to_response({"ok": True, "action": "CANCEL_BOOKING", "booking_id": 470, "message": "Booking cancelled."})
-    created = _exec_to_response({"ok": True, "action": "CREATE_BOOKING", "booking_id": 470, "message": "Booked."})
+    from iic_booking.research_copilot.services.v2 import orchestrator
+
+    booking = SimpleNamespace(
+        pk=470, virtual_booking_id="IICICPMS/MS202600470", equipment=SimpleNamespace(name="ICP-MS", enable_remote_analysis=True),
+    )
+    with patch.object(orchestrator, "_executed_booking", return_value=booking), patch(
+        "iic_booking.research_copilot.services.booking_refs.display_ref", return_value=booking.virtual_booking_id
+    ):
+        cancelled = orchestrator._exec_to_response({"ok": True, "action": "CANCEL_BOOKING", "booking_id": 470, "message": "Booking cancelled."})
+        created = orchestrator._exec_to_response({"ok": True, "action": "CREATE_BOOKING", "booking_id": 470, "message": "Booked."})
     assert [a["id"] for a in cancelled["suggested_actions"]] == ["view_booking"]
     assert cancelled["cards"][0]["action"] == "CANCEL_BOOKING"
     assert "analysis" in [a["id"] for a in created["suggested_actions"]]
+    assert created["cards"][0]["booking_ref"] == "IICICPMS/MS202600470"
+    assert created["suggested_actions"][0]["href"] == "/my-bookings?booking=470"
+
+
+def test_created_booking_hides_workspace_when_remote_analysis_disabled():
+    from types import SimpleNamespace
+
+    from iic_booking.research_copilot.services.v2 import orchestrator
+
+    booking = SimpleNamespace(pk=471, virtual_booking_id="IICXRD202600471", equipment=SimpleNamespace(name="XRD", enable_remote_analysis=False))
+    with patch.object(orchestrator, "_executed_booking", return_value=booking), patch(
+        "iic_booking.research_copilot.services.booking_refs.display_ref", return_value=booking.virtual_booking_id
+    ):
+        created = orchestrator._exec_to_response({"ok": True, "action": "CREATE_BOOKING", "booking_id": 471, "message": "Booked."})
+    assert [a["id"] for a in created["suggested_actions"]] == ["view_booking"]
+    assert created["cards"][0]["booking_ref"] == "IICXRD202600471"
 
 
 @pytest.mark.parametrize(

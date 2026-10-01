@@ -15,6 +15,7 @@ from typing import Any
 from django.db.models import Q
 from django.utils import timezone
 
+from iic_booking.research_copilot.services.booking_refs import display_ref
 from iic_booking.research_copilot.services.intelligence import actions as A
 from iic_booking.research_copilot.services.intelligence import booking_changes as changes
 from iic_booking.research_copilot.services.intelligence import entities as entity_svc
@@ -258,8 +259,9 @@ def view_bookings(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
     if upcoming:
         lines = ["**Your upcoming bookings**", ""] + [_booking_line(b) for b in upcoming[:MAX_ROWS]]
         for b in upcoming[:3]:
-            actions.append(A.make(A.BOOKING_DETAILS, f"Details #{b['booking_id']}", payload={"booking_id": b["booking_id"]},
-                                  utterance=f"Show booking #{b['booking_id']}"))
+            ref = b.get("ref") or b["booking_id"]
+            actions.append(A.make(A.BOOKING_DETAILS, f"Details {ref}", payload={"booking_id": b["booking_id"]},
+                                  utterance=f"Show booking {ref}"))
         actions += [
             A.make(A.RESCHEDULE_BOOKING, "Reschedule", utterance="Reschedule my booking"),
             A.make(A.CANCEL_BOOKING, "Cancel", utterance="Cancel my booking"),
@@ -270,7 +272,7 @@ def view_bookings(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
         lines = ["You have no upcoming bookings."]
         if recent:
             lines += ["", "**Recent bookings**", ""]
-            lines += [f"- #{b.booking_id} {getattr(b.equipment, 'name', '')} ({str(b.status).replace('_', ' ').title()})"
+            lines += [f"- {display_ref(b)} {getattr(b.equipment, 'name', '')} ({str(b.status).replace('_', ' ').title()})"
                       for b in recent]
         cards = None
     actions.append(A.make(A.BOOK_EQUIPMENT, "Book equipment", utterance="I want to book equipment",
@@ -305,15 +307,15 @@ def booking_details(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
         lines.append(f"- Self-service changes open until {info['cutoff']}" if info.get("cutoff") else "")
         actions += [
             A.make(A.RESCHEDULE_BOOKING, "Reschedule", payload={"booking_id": b.booking_id},
-                   utterance=f"Reschedule booking #{b.booking_id}"),
-            A.make(A.CANCEL_BOOKING, "Cancel", payload={"booking_id": b.booking_id}, utterance=f"Cancel booking #{b.booking_id}"),
+                   utterance=f"Reschedule booking {info['ref']}"),
+            A.make(A.CANCEL_BOOKING, "Cancel", payload={"booking_id": b.booking_id}, utterance=f"Cancel booking {info['ref']}"),
         ]
     elif active:
         lines.append("- The self-service change window has closed; an admin can still help.")
         actions.append(M.ticket_action("user_requested", "Ask the admin (support ticket)"))
     if not active:
         actions.append(A.make(A.VIEW_RESULT, "Results", payload={"booking_id": b.booking_id},
-                              utterance=f"Show results for booking #{b.booking_id}"))
+                              utterance=f"Show results for booking {info['ref']}"))
     actions.append(M.link("open_booking", "Open in My Bookings", f"/my-bookings?booking={b.booking_id}"))
     return _respond(turn, "\n".join(x for x in lines if x), actions, extra={"booking_id": int(b.booking_id)})
 
@@ -542,11 +544,12 @@ def view_results(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             ready = False
         status = str(b.status).replace("_", " ").title()
-        lines.append(f"- #{b.booking_id} {getattr(b.equipment, 'name', '')} ({status}): "
+        ref = display_ref(b)
+        lines.append(f"- {ref} {getattr(b.equipment, 'name', '')} ({status}): "
                      + ("results available" if ready else "no results uploaded yet"))
         if ready and len(actions) < 3:
-            actions.append(A.make(A.VIEW_RESULT, f"Results #{b.booking_id}", payload={"booking_id": b.booking_id},
-                                  utterance=f"Show results for booking #{b.booking_id}"))
+            actions.append(A.make(A.VIEW_RESULT, f"Results {ref}", payload={"booking_id": b.booking_id},
+                                  utterance=f"Show results for booking {ref}"))
     actions.append(A.make(A.SAMPLE_STATUS, "Sample status", utterance="Show my sample status"))
     actions.append(M.link("my_bookings", "Open My Bookings", "/my-bookings"))
     return _respond(turn, "\n".join(lines), actions)
@@ -562,7 +565,8 @@ def view_result(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
         return M.error("I couldn't find that booking among yours.", intent=turn.intent,
                        actions=[A.make(A.VIEW_RESULTS, "My results", utterance="Show my results")])
     d = res.get("data") or {}
-    lines = [f"**Booking #{d.get('booking_id')} {d.get('equipment') or ''}**", ""]
+    ref = d.get("booking_ref") or d.get("booking_id")
+    lines = [f"**Booking {ref} {d.get('equipment') or ''}**", ""]
     if d.get("results_available"):
         lines.append("Results are available.")
         names = d.get("file_names") or []
@@ -577,7 +581,7 @@ def view_result(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
         "\n".join(lines),
         [
             {**M.link("open_results", "Open results", f"/my-bookings?booking={bid}&tab=results"), "primary": True, "style": A.PRIMARY},
-            A.make(A.SAMPLE_STATUS, "Sample status", payload={"booking_id": bid}, utterance=f"Sample status for booking #{bid}"),
+            A.make(A.SAMPLE_STATUS, "Sample status", payload={"booking_id": bid}, utterance=f"Sample status for booking {ref}"),
         ],
         extra={"booking_id": bid},
     )
@@ -592,8 +596,9 @@ def sample_status(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
                        actions=[A.make(A.VIEW_BOOKINGS, "View my bookings", utterance="Show my bookings")])
     d = res.get("data") or {}
     bid = d.get("booking_id")
+    ref = d.get("booking_ref") or bid
     latest = str(d.get("latest_sample_status") or "").replace("_", " ").title() or "No sample updates yet"
-    lines = [f"**Booking #{bid} {d.get('equipment') or ''}**", "", f"- Sample status: {latest}",
+    lines = [f"**Booking {ref} {d.get('equipment') or ''}**", "", f"- Sample status: {latest}",
              f"- Booking status: {str(d.get('booking_status') or '').replace('_', ' ').title()}"]
     for e in (d.get("events") or [])[:3]:
         when = str(e.get("created_at") or "")[:10]
@@ -602,7 +607,7 @@ def sample_status(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
     return _respond(
         turn,
         "\n".join(lines),
-        [A.make(A.VIEW_RESULT, "Results", payload={"booking_id": bid}, utterance=f"Show results for booking #{bid}"),
+        [A.make(A.VIEW_RESULT, "Results", payload={"booking_id": bid}, utterance=f"Show results for booking {ref}"),
          M.link("open_booking", "Open booking", f"/my-bookings?booking={bid}")],
         extra={"booking_id": bid},
     )

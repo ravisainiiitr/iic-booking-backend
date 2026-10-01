@@ -590,7 +590,8 @@ class TestApi:
                       {"content": "Book equipment", "choice": {"kind": "start", "value": "book"}}, format="json")
         assert resp.status_code == 200
         body = resp.json()
-        assert body["message"]["metadata"]["message_type"] == M.CHOICE_LIST
+        # The Booking Assistant's guided flow owns "Book equipment" (department -> equipment -> ...).
+        assert body["message"]["metadata"]["intent"].startswith("assistant:flow")
 
     def test_escalation_creates_ticket_once(self, world):
         from iic_booking.research_copilot.models import CopilotEscalation

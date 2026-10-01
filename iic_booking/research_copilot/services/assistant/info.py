@@ -92,11 +92,12 @@ def input_fields(user, eq) -> list[dict[str, Any]]:
     return out
 
 
-def instructions(user, eq) -> str:
-    by_type = getattr(eq, "important_instruction_by_user_type", None) or {}
-    ut = str(getattr(user, "user_type", "") or "")
-    text = by_type.get(ut) if isinstance(by_type, dict) else None
-    return _clean(text or getattr(eq, "important_instruction", "") or "", 900)
+def instructions(user, eq, limit: int = 900) -> str:
+    from iic_booking.equipment.rich_text import resolve_important_instruction, rich_text_to_plain
+
+    text = resolve_important_instruction(eq, str(getattr(user, "user_type", "") or ""))
+    plain = rich_text_to_plain(text)
+    return plain if len(plain) <= limit else plain[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
 def rules(eq) -> list[str]:

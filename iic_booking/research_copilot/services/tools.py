@@ -8,6 +8,8 @@ from typing import Any
 
 from django.utils import timezone
 
+from iic_booking.research_copilot.services.booking_refs import display_ref
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -216,6 +218,7 @@ def _search_bookings(*, arguments: dict, user) -> dict:
         rows.append(
             {
                 "booking_id": b.pk,
+                "booking_ref": display_ref(b),
                 "equipment": getattr(eq, "name", None),
                 "status": getattr(b, "status", None),
                 "start": start.isoformat() if start else None,
@@ -228,7 +231,7 @@ def _search_bookings(*, arguments: dict, user) -> dict:
         actions=[
             {
                 "id": f"open_booking_{r['booking_id']}",
-                "label": f"View booking #{r['booking_id']}",
+                "label": f"View booking {r['booking_ref']}",
                 "href": r["url"],
                 "enabled": True,
             }
@@ -337,6 +340,7 @@ def _get_next_booking(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "booking_id": best.pk,
+            "booking_ref": display_ref(best),
             "equipment": getattr(eq, "name", None),
             "status": getattr(best, "status", None),
             "start": timezone.localtime(best_start).isoformat() if best_start else None,
@@ -345,7 +349,7 @@ def _get_next_booking(*, arguments: dict, user) -> dict:
         actions=[
             {
                 "id": f"open_booking_{best.pk}",
-                "label": f"View booking #{best.pk}",
+                "label": f"View booking {display_ref(best)}",
                 "href": f"/my-bookings?booking={best.pk}",
                 "enabled": True,
             }
@@ -398,6 +402,7 @@ def _get_sample_status(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "booking_id": booking.pk,
+            "booking_ref": display_ref(booking),
             "booking_status": getattr(booking, "status", None),
             "equipment": getattr(booking.equipment, "name", None),
             "latest_sample_status": getattr(latest, "status", None) if latest else None,
@@ -407,7 +412,7 @@ def _get_sample_status(*, arguments: dict, user) -> dict:
         actions=[
             {
                 "id": f"open_booking_{booking.pk}",
-                "label": f"Open booking #{booking.pk}",
+                "label": f"Open booking {display_ref(booking)}",
                 "href": f"/my-bookings?booking={booking.pk}",
                 "enabled": True,
             }
@@ -438,6 +443,7 @@ def _get_booking_results(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "booking_id": booking.pk,
+            "booking_ref": display_ref(booking),
             "equipment": getattr(booking.equipment, "name", None),
             "booking_status": getattr(booking, "status", None),
             "results_available": available,
@@ -475,6 +481,7 @@ def _get_sample_deadline(*, arguments: dict, user) -> dict:
     return _ok(
         {
             "booking_id": booking.pk,
+            "booking_ref": display_ref(booking),
             "equipment": getattr(booking.equipment, "name", None),
             "deadline": deadline.isoformat() if deadline else None,
             "note": note,
@@ -483,7 +490,7 @@ def _get_sample_deadline(*, arguments: dict, user) -> dict:
         actions=[
             {
                 "id": f"open_booking_{booking.pk}",
-                "label": f"Open booking #{booking.pk}",
+                "label": f"Open booking {display_ref(booking)}",
                 "href": f"/my-bookings?booking={booking.pk}",
                 "enabled": True,
             }
@@ -842,13 +849,18 @@ def _prepare_launch_remote_analysis(*, arguments: dict, user) -> dict:
     from iic_booking.equipment.models import Booking
 
     try:
-        booking = Booking.objects.get(pk=int(booking_id), user=user)
+        booking = Booking.objects.select_related("equipment").get(pk=int(booking_id), user=user)
     except Booking.DoesNotExist:
         return _err("booking_not_found", "Booking not found for this user")
+    except (TypeError, ValueError):
+        return _err("invalid_booking_id", "booking_id must be an integer")
+    if not getattr(booking.equipment, "enable_remote_analysis", False):
+        return _err("remote_analysis_disabled", "Remote Analysis is not enabled for this booking's equipment.")
     return _ok(
         {
             "requires_confirmation": True,
             "booking_id": booking.pk,
+            "booking_ref": display_ref(booking),
             "message": "Full desktop Remote Analysis continues through Analysis Workspace.",
         },
         actions=[

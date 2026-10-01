@@ -11,18 +11,21 @@ from iic_booking.research_copilot.services.assistant import cards as C
 
 _ACTIVE_EXCLUDED = ("CANCELLED", "REFUNDED", "COMPLETED", "ABSENT")
 _NUMERIC_REF = re.compile(r"(?:\bbooking\s*(?:id|no\.?|number|ref)?\s*[#:]?\s*|#\s*)(\d{1,9})\b", re.IGNORECASE)
-_VIRTUAL_REF = re.compile(r"\b([A-Za-z]{2,}[A-Za-z0-9]*\d{6,}R?)\b")
 
 
 def booking_ref(text: str) -> str | None:
+    from iic_booking.research_copilot.services.booking_refs import find_virtual_ref
+
+    virtual = find_virtual_ref(text or "")
+    if virtual:
+        return virtual
     m = _NUMERIC_REF.search(text or "")
-    if m:
-        return m.group(1)
-    m = _VIRTUAL_REF.search(text or "")
-    return m.group(1).upper() if m else None
+    return m.group(1) if m else None
 
 
 def _row(b) -> dict[str, Any]:
+    from iic_booking.research_copilot.services.booking_refs import display_ref
+
     slots = sorted(b.daily_slots.all(), key=lambda s: s.start_datetime or timezone.now())
     start = slots[0].start_datetime if slots else None
     end = slots[-1].end_datetime if slots else None
@@ -30,7 +33,7 @@ def _row(b) -> dict[str, Any]:
     le = timezone.localtime(end) if end else None
     return {
         "booking_id": int(b.pk),
-        "reference": b.virtual_booking_id or str(b.pk),
+        "reference": display_ref(b),
         "equipment": getattr(b.equipment, "name", ""),
         "equipment_id": int(b.equipment_id) if b.equipment_id else None,
         "status": b.status,
@@ -63,7 +66,7 @@ def upcoming_reply(user, *, limit: int = 8) -> dict[str, Any]:
         )
     lines = [f"You have {len(rows)} upcoming booking{'s' if len(rows) != 1 else ''}:"]
     for r in rows:
-        lines.append(f"- **{r['equipment']}** — {r['when']} · {r['status_label']} (#{r['reference']})")
+        lines.append(f"- **{r['equipment']}** — {r['when']} · {r['status_label']} ({r['reference']})")
     return C.reply(
         "\n".join(lines),
         cards=[{"type": "ba_bookings", "title": "Upcoming bookings", "items": rows}],
@@ -94,7 +97,7 @@ def status_reply(user, ref: str) -> dict[str, Any]:
             intent="booking_status",
         )
     r = _row(b)
-    content = f"Booking **#{r['reference']}** for **{r['equipment']}** is **{r['status_label']}**."
+    content = f"Booking **{r['reference']}** for **{r['equipment']}** is **{r['status_label']}**."
     if r["when"]:
         content += f"\n\nSlot: {r['when']}."
     return C.reply(

@@ -17,13 +17,20 @@ PICK_SLOT = "ba_pick_slot"
 REVIEW = "ba_review"
 INFO = "ba_info"
 UPCOMING = "ba_upcoming"
+FLOW = "ba_flow"
+
+FLOW_STEPS = (
+    "start", "department", "equipment", "inputs", "slots", "slot",
+    "edit_inputs", "change_slot", "change_equipment", "change_department", "cancel",
+)
+MAX_SAMPLE_SETS = 20
 
 INTENTS = ("availability", "book", "info", "overview", "location", "contacts", "charges", "instructions", "inputs", "rules")
 TOPICS = ("overview", "location", "contacts", "charges", "instructions", "inputs", "rules")
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
-_FIELD_KEY_RE = re.compile(r"^[A-Z]$")
+_FIELD_KEY_RE = re.compile(r"^[A-Z](_elements)?$")
 
 
 class InvalidAssistantAction(ValueError):
@@ -108,13 +115,44 @@ def _inputs(value: Any) -> dict[str, str]:
     return out
 
 
+def _sample_sets(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > MAX_SAMPLE_SETS:
+        raise InvalidAssistantAction("invalid_sample_sets")
+    return [s for s in (_inputs(v) for v in value) if s]
+
+
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else _int(value)
+
+
+def _step(value: Any) -> str:
+    if value not in FLOW_STEPS:
+        raise InvalidAssistantAction("invalid_step")
+    return value
+
+
 _SCHEMAS: dict[str, dict[str, Any]] = {
     PICK_EQUIPMENT: {"equipment_id": _int, "intent": "intent", "when": _when},
     AVAILABILITY: {"equipment_id": _int, "when": _when},
     PICK_SLOT: {"equipment_id": _int, "slot_ids": _slot_ids},
-    REVIEW: {"equipment_id": _int, "slot_ids": _slot_ids, "number_of_samples": "samples", "input_values": _inputs},
+    REVIEW: {
+        "equipment_id": _int, "slot_ids": _slot_ids, "number_of_samples": "samples",
+        "input_values": _inputs, "sample_sets": _sample_sets,
+    },
     INFO: {"equipment_id": _int, "topic": "topic"},
     UPCOMING: {},
+    FLOW: {
+        "step": _step,
+        "department_id": _optional_int,
+        "equipment_id": _optional_int,
+        "number_of_samples": "samples",
+        "input_values": _inputs,
+        "sample_sets": _sample_sets,
+        "slot_ids": _slot_ids,
+        "when": _when,
+    },
 }
 _REQUIRED = {
     PICK_EQUIPMENT: {"equipment_id"},
@@ -123,6 +161,7 @@ _REQUIRED = {
     REVIEW: {"equipment_id", "slot_ids"},
     INFO: {"equipment_id"},
     UPCOMING: set(),
+    FLOW: {"step"},
 }
 ACTION_TYPES = frozenset(_SCHEMAS)
 

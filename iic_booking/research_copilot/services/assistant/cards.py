@@ -52,6 +52,14 @@ def assistant_action(label: str, action_type: str, payload: dict[str, Any], *, p
     }
 
 
+def flow_action(label: str, step: str, payload: dict[str, Any] | None = None, *, primary: bool = False) -> dict[str, Any]:
+    return assistant_action(label, "ba_flow", {"step": step, **(payload or {})}, primary=primary)
+
+
+def step_info(index: int, label: str) -> dict[str, Any]:
+    return {"index": index, "total": 5, "label": label}
+
+
 def equipment_options_card(
     rows: list[dict[str, Any]],
     *,

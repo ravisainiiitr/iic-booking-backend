@@ -268,7 +268,8 @@ class TestMatrix:
         eq = world.equipment("Bruker D8 Advance XRD", "XRD-B1")
         b, _ = world.booking(world.student, eq, world.future(days=6))
         out = _say(world, world.conversation(), "show my bookings")
-        assert f"#{b.booking_id}" in out["content"]
+        assert b.virtual_booking_id in out["content"]
+        assert f"#{b.booking_id}" not in out["content"]
         first = out["suggested_actions"][0]
         assert first["action_type"] == A.BOOKING_DETAILS and first["payload"] == {"booking_id": b.booking_id}
 

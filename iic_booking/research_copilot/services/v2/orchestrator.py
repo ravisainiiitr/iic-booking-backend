@@ -310,28 +310,59 @@ def _prep_to_response(prep: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _executed_booking_pk(result: dict[str, Any]) -> int | None:
+    data = result.get("data") or {}
+    pk = result.get("booking_id") or data.get("real_booking_id")
+    if pk is None and str(data.get("booking_id") or "").isdigit():
+        pk = data.get("booking_id")
+    try:
+        return int(pk) if pk is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _executed_booking(result: dict[str, Any]):
+    from iic_booking.equipment.models import Booking
+
+    pk = _executed_booking_pk(result)
+    return Booking.objects.select_related("equipment").filter(pk=pk).first() if pk is not None else None
+
+
 def _exec_to_response(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("ok"):
+        from iic_booking.research_copilot.services.booking_refs import display_ref
+
         data = result.get("data") or {}
-        bid = result.get("booking_id") or data.get("real_booking_id") or data.get("booking_id")
+        booking = _executed_booking(result)
+        pk = int(booking.pk) if booking is not None else _executed_booking_pk(result)
+        ref = display_ref(booking) if booking is not None else str(data.get("virtual_booking_id") or "")
         actions = []
-        if bid:
-            actions.append({"id": "view_booking", "label": "View Booking", "href": f"/my-bookings?booking={bid}", "enabled": True})
-        if bid and result.get("action") != "CANCEL_BOOKING":
+        if pk:
+            actions.append({"id": "view_booking", "label": "View Booking", "href": f"/my-bookings?booking={pk}", "enabled": True})
+        # Same gate as the booking details page: only equipment with Remote Analysis enabled has a workspace.
+        workspace = bool(booking is not None and getattr(booking.equipment, "enable_remote_analysis", False))
+        if pk and workspace and result.get("action") != "CANCEL_BOOKING":
             actions.append(
                 {
                     "id": "analysis",
                     "label": "Open Analysis Workspace",
-                    "href": f"/analysis-workspace/{bid}",
+                    "href": f"/analysis-workspace/{pk}",
                     "enabled": True,
                 }
             )
         return build_response(
             kind="LIVE_DATA",
             content=result.get("message") or "Done.",
-            cards=[{"type": "booking_success", "booking_id": bid, "action": result.get("action"), "replay": result.get("idempotent_replay")}],
+            cards=[{
+                "type": "booking_success",
+                "booking_id": pk,
+                "booking_ref": ref or None,
+                "equipment_name": getattr(getattr(booking, "equipment", None), "name", None),
+                "action": result.get("action"),
+                "replay": result.get("idempotent_replay"),
+            }],
             actions=actions,
-            metadata={"deterministic": True, "mutation_execute": True, "ok": True, "booking_id": bid},
+            metadata={"deterministic": True, "mutation_execute": True, "ok": True, "booking_id": pk, "booking_ref": ref or None},
         )
     return build_response(
         kind="ERROR",
