@@ -10,47 +10,269 @@ SEED_ARTICLES: list[dict] = [
         "title": "How to Book Equipment",
         "category": DocumentCategory.USER_GUIDE,
         "security_level": SecurityLevel.AUTHENTICATED,
-        "tags": ["booking", "slots", "faq"],
+        "tags": ["booking", "slots", "faq", "server clock", "important instruction"],
         "external_url": "/equipments",
         "content_text": """
 To book equipment on the IIC Equipment Booking Portal:
-1. Sign in and open Equipments.
-2. Select the instrument matching your measurement need.
-3. Review specifications, charges, and important instructions.
-4. Choose an available slot and submit the booking.
-5. Ensure wallet balance or approval workflow is satisfied.
-Never invent slot availability — always check the equipment page.
+1. Sign in and open Browse and Book Equipment (or Equipments).
+2. Select the instrument matching your measurement need and open it.
+3. Review specifications, Calculate charges and the Important instruction. A lab can show a different
+   important instruction to each user type, so read the one shown to you.
+4. Fill the booking inputs, or pick a saved template under Booking template. Add sample sets under
+   Samples with different parameters if your samples need different settings.
+5. Choose free slots and submit the booking. Your wallet (or your supervisor's wallet) is charged when the
+   booking is created; wallet balance, quotas and supervisor spending limits are checked at that moment.
+6. Track the booking from View Booking on the dashboard.
+Booking windows: next week's slots normally open every Wednesday at 9:00 PM. The booking page shows the
+exact window for each account, and the server clock in its header shows portal time (IST) — windows open by
+that clock. Admins and OICs can book any week.
+You can also book through the Booking Assistant (bottom-right button): choose Book equipment and follow the
+steps. Never invent slot availability — always check the equipment page or live slots.
 """,
     },
     {
         "title": "Booking Status Meanings",
         "category": DocumentCategory.FAQ,
         "security_level": SecurityLevel.AUTHENTICATED,
-        "tags": ["status", "SAMPLE_ACCEPTED", "HOLD"],
-        "external_url": "/bookings",
+        "tags": ["status", "waitlisted", "booked", "not utilized", "refunded"],
+        "external_url": "/my-bookings",
         "content_text": """
-Common booking and sample statuses:
-- PENDING: awaiting approval or operator action.
-- SAMPLE_ACCEPTED: operator accepted the sample; experiment can proceed.
-- HOLD: paused pending clarification, payment, or operator decision.
-- COMPLETED: experiment finished; results may be available.
-- CANCELLED: booking cancelled per institute cancellation policy.
+Common booking statuses shown in View Booking:
+- Pending: request submitted, awaiting confirmation or the next system step.
+- Awaiting payment: payment or wallet debit is still needed before the slot is secured.
+- Waitlisted (WL1, WL2, ...): no slot was free; you are in the FCFS waitlist and are not charged until promoted.
+- Booked: the slot is confirmed; note the sample submission deadline.
+- Awaiting your choice (disruption): maintenance, operator absence or another disruption needs your decision.
+- Under Maintenance / Operator Absent / Analysis Not Possible: lab-side holds; watch emails and View Booking.
+- Booking Not Utilized: the session did not proceed for user-side reasons (usually no refund).
+- Completed: the analysis finished; results may be available in View results.
+- Cancelled / Refunded: cancelled under the cancellation policy. Cancelled and refunded bookings keep their
+  original start and end dates.
 """,
     },
     {
         "title": "Wallet, Recharge and Grants",
         "category": DocumentCategory.POLICY,
         "security_level": SecurityLevel.AUTHENTICATED,
-        "tags": ["wallet", "recharge", "grant", "credit"],
+        "tags": ["wallet", "recharge", "grant", "sric", "project grant", "cash", "bank transfer", "decline reason"],
         "external_url": "/wallet",
         "content_text": """
 Wallet guidance:
-- Check balance under Wallet.
-- Students typically use faculty/department wallets; join requests may be required.
-- Recharge requests follow department approval workflows.
-- Credit facility and grant expiry are managed per institute wallet rules.
-- Refunds follow finance/support processes — escalate if needed.
-The Copilot will not invent balances; open Wallet for live figures.
+- Open Wallet management to see balances (one sub-wallet per department) and transactions. The buttons at the
+  top of the Wallet page are Transfer (faculty), Credit Facility and Recharge Wallet.
+- Students and project staff book from their supervisor's or PI's wallet: open Wallet, find the faculty under
+  Request to Join Wallet and click Send Request; the faculty approves it.
+Recharge Wallet (faculty):
+1. Choose the Recharge method: Project Grant (sponsored project funds, approved by the SRIC Office) or
+   Direct Cash Deposit / Bank Transfer.
+2. For Project Grant select the project or Add Project (name, code, funding agency, dates).
+3. Choose the department sub-wallet in Credit to and the Amount (minimum Rs 100).
+4. Accept the undertaking and enter the OTP sent to your email (valid 10 minutes).
+5. Note the Transaction ID. Cash / Bank transfer: deposit or transfer at the SRIC Bill Section and share the
+   transaction number with them.
+Statuses: Awaiting OTP, Pending, Approved, Approved · awaiting funds, Declined by SRIC, Rejected.
+Decline reasons: Project Grant — Wrong Project Code, Insufficient Funds in the Project, Project Already Closed,
+Other. Cash / Bank transfer — Mismatch in User Information, Other. The reason is shown on the wallet, and the
+emails to the SRIC offices name who approved a recharge.
+Declined by SRIC: the amount of a declined Project Grant request is treated as an auto-approved credit
+(shown as outstanding) and is adjusted when the funds of the next approved recharge are received. While a
+credit is running, an approved Project Grant request is credited only when SRIC confirms the funds
+(Approved · awaiting funds).
+Students: where student recharge is enabled for the account, Recharge Wallet offers Direct Cash Deposit /
+Bank Transfer and Upload payment receipt; after the Department Account In-charge verifies it, the funds go to
+the supervisor's wallet.
+A method shown greyed out with "Awaiting Competent Authority Approval" is switched off by the Main
+Administrator. The Copilot will not invent balances; open Wallet for live figures.
+""",
+    },
+    {
+        "title": "Wallet Transfer and Credit Facility",
+        "category": DocumentCategory.POLICY,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["wallet", "transfer", "credit facility", "credit", "faculty credit"],
+        "external_url": "/wallet/credit-facility",
+        "content_text": """
+Transfer (faculty): Wallet page -> Transfer. Moves balance to another internal user under the same department
+grant. Choose From department (grant), Recipient (same grant), Amount and optional remarks, then confirm with an
+email OTP. No admin approval is needed. Past transfers are listed under Transfer history.
+Credit Facility: Wallet page -> Credit Facility. Eligible faculty, staff and HoDs choose the Department, enter
+the Requested Amount and Purpose / Reason, and click Submit Credit Request. The Credit facility rules card shows
+the minimum, maximum per request, maximum outstanding, duration and reminders. The Main Administrator approves
+each request (Admin Settings -> User Management -> Wallet Credit Management); only one facility can be active at
+a time. Requests are tracked under My Credit Facilities.
+Faculty Credit Facility: if a department offers it and the faculty member is eligible (date of joining), Avail
+credit on that department's sub-wallet gives a one-time negative-balance credit that later recharges recover.
+Once closed it cannot be availed again.
+Each option can be switched off by the Main Administrator in Wallet payment modes.
+""",
+    },
+    {
+        "title": "Booking Templates",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["template", "booking template", "preferred slot", "save as template", "booking templates page"],
+        "external_url": "/booking-templates",
+        "content_text": """
+A booking template saves the booking form for one equipment — inputs, sample sets, booking options and the
+research workspace where available — so the same analysis can be booked again quickly. Templates are private,
+up to 25 per equipment, only for equipment you are allowed to book, and never book anything by themselves: you
+still click Book.
+Booking Templates page: on the dashboard open Booking Templates (Open templates). It lists all your templates
+grouped by equipment with key inputs, sample sets, booking options and preferred slot; search, filter by
+department or equipment, and sort by Group by equipment, Recently updated or Name (A–Z).
+Create: on the Booking Templates page click New template, choose a Department, pick the equipment (Find
+equipment) and click Continue. You can also start from the booking page (Booking template picker -> Create
+template) or Booking templates on the equipment page -> Create template. Fill the form, choose Booking options (Auto-select all required slots,
+Add to the waitlist if the booking cannot be completed, Book any available slots, Book even if single slot is
+available, and where offered Automatically search and allocate alternate equipment), enter a Template name and
+click Save template.
+Preferred slot (optional): pick the Day, Start time and Number of slots. Opening the booking page with the
+template pre-selects that slot when it is free. Next week's slots open Wednesday at 9:00 PM.
+If this slot is already taken when I click Book: Ask me (recommended), Book the next free slot later the same
+day, or Book the next free slot on any day I can book. The automatic options need the consent tick: the portal
+may book the next free slot of the same length and charge the wallet; wallet balance, spending limits and quotas
+are still checked. With Ask me, the page shows Nearest free slots of the same length.
+Use: pick a template under Booking template (Choose a template to fill the form). The first template is applied
+automatically; choose No template (default form) to start blank.
+Manage: on the Booking Templates page use Book now (opens the booking page with the template filled in), Edit
+(Update template), and the card menu's Duplicate (the copy's slot-taken choice is reset to Ask me) or Delete
+(bookings are not affected). Manage templates on the booking page and Booking templates on the equipment page
+offer Edit, Book with this template and delete.
+After any booking attempt, Save these parameters as a template saves the inputs; tick Pre-select this slot next
+time to remember the slot.
+""",
+    },
+    {
+        "title": "Sample Sets and Editing Booking Inputs",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["sample set", "element", "periodic table", "edit inputs", "pay difference", "refund"],
+        "external_url": "/my-bookings",
+        "content_text": """
+Sample sets: the details at the top of the booking form are sample set 1. Under Samples with different
+parameters click Add sample with different parameters to add more sets. Every set has the same fields as set 1,
+including Select elements (periodic table) and sample tables. Each set is charged and timed separately and added
+to the same booking. Use Duplicate this sample set or Remove this sample set as needed.
+Editing inputs after booking: open the booking and choose Edit User Inputs. Values can be changed until the
+booking is completed (the Officer In Charge can also edit after completion). Field limits still apply.
+If the charge goes up, pay the difference (Pay now) within 1 minute or the edit is cancelled and the previous
+values are restored. A lower charge is refunded after the Officer In Charge confirms it (Confirm refund). OICs
+and admins can use Deduct Money to debit an unpaid difference from the user's wallet.
+""",
+    },
+    {
+        "title": "Booking Assistant — Guided Booking",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["booking assistant", "copilot", "guided booking", "virtual booking id", "confirm booking"],
+        "content_text": """
+The Booking Assistant is the round button at the bottom-right of the portal. Choose Book equipment for a guided
+booking in five steps: Department -> Equipment -> booking inputs (sample sets, element selection and the
+equipment's important instruction) -> slot (Earlier / Later to move dates) -> summary.
+On the summary, tick "I have read the instructions above" and press Confirm booking. Nothing is booked until
+then; typing "confirm" does not book. In-chat booking is rolled out in stages — where it is not enabled the
+summary offers Continue on booking page with the details filled in.
+After booking the assistant shows the virtual booking ID with View Booking, and Open Analysis Workspace only
+when the equipment has Remote Analysis enabled.
+At any step use Change slot, Change samples/inputs or Change equipment; details already entered are kept.
+Cancel stops without booking.
+Free text still works, for example "I need FESEM tomorrow — what are my options?", "What are the TEM charges?"
+or "Show my upcoming bookings". Bookings can be referred to by their virtual booking ID.
+The same checks as the booking page apply: slot length, input limits, wallet balance, quotas and spending limits.
+""",
+    },
+    {
+        "title": "Student Management and Spending Limits",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["student management", "spending limit", "identity card", "delink", "ta nomination", "supervisor"],
+        "external_url": "/student-management",
+        "content_text": """
+Faculty open Student management from the dashboard to see students linked to their wallet (students appear after
+the faculty approves their wallet join request).
+- Spending limit: set a Weekly limit and/or Monthly limit (Rs) per student and Save; leave empty for no limit.
+  Weeks run Monday–Sunday and months are calendar months (IST). Usage This week / This month is shown.
+  Counted: bookings the student creates in the period at their current charge; never-charged or fully refunded
+  bookings are excluded and an unpaid input-edit difference counts only once paid. Bookings made by the lab
+  (OIC or admin) on the student's behalf are not blocked. Students see "Supervisor spending limit" on the
+  booking page, and a booking that would exceed the limit is blocked.
+- Click a student's name to open the Student identity card.
+- Turn off the Linked toggle to delink a student (optional message; Keep linked cancels).
+- TA operating nominations: during an open call, click Nominate student; outcomes appear in the Nominations log.
+Supervisors receive one booking email per booking made by a linked student, matching the student's email, with a
+Booked by row. Supervisors also approve their students' Type B urgent requests under Urgent booking requests.
+""",
+    },
+    {
+        "title": "View Booking, Results and Calendar Sync",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["view booking", "my bookings", "filters", "calendar sync", "book again", "results"],
+        "external_url": "/my-bookings",
+        "content_text": """
+The View Booking tile on the dashboard opens your bookings (page title My Bookings). Filters: search, Status,
+start and end dates and All equipment; More filters shows the rest; Apply / Clear. Cancelled and refunded
+bookings keep their original dates.
+Book again opens the booking form with earlier inputs filled in. Sync to calendar adds bookings to Google
+Calendar, Outlook or Apple Calendar or gives a private link; subscribing keeps the calendar updated, a one-time
+add does not. Published results appear on the booking and under View results.
+Staff (Lab Operator, OIC, Department Administrator, Admin) get the staff View Booking page (formerly Booking
+Management) with columns S.No., Booking ID, Equipment Name, User Name, Supervisor Name, User Mobile, User Email,
+Booking Start Date and Duration — every column is sortable — and a hover box on booked slots.
+""",
+    },
+    {
+        "title": "OIC Tools — Urgent Booking, Waitlist, Slot Status and Tickets",
+        "category": DocumentCategory.SOP,
+        "security_level": SecurityLevel.OPERATOR,
+        "tags": ["oic", "urgent booking", "waitlist", "confirm manually", "change slot status", "tickets", "important instruction"],
+        "content_text": """
+Urgent booking (dashboard, formerly Urgent Requests): Type B requests (urgent with reason, 50% surcharge) from
+students arrive after their supervisor approves; the OIC gives final approval and may reschedule, including
+weekends. The wallet is charged only after final approval.
+Equipment waitlist: opens on the first equipment. Confirm manually -> Confirm waitlisted booking places a
+waitlisted booking into any unbooked slot (including weekends, holidays, closed, blocked and maintenance slots);
+the charge is debited from the user's wallet. Only OICs and admins can confirm manually.
+Change slot status (equipment page menu): double-click a date or drag across dates to open the Week view, which
+opens on the current week. The week arrows change week on a single click; double-clicking a date jumps to its
+week. Time labels select rows and day headers select columns.
+Support tickets: Tickets marked to me lists tickets assigned to the OIC/Lab Operator or raised for their
+equipment.
+Bookings awaiting completion: dashboard card plus a reminder email every day at 9:00 AM until completed.
+Calculate charges works on any catalog equipment (view-only when not assigned); Book for a user and Change slot
+status stay on assigned equipment.
+Equipment Booking Configuration: Important instruction with rich formatting — Default (all user types) plus
+"Add an instruction for a user type". A sample submission lead time of 0 means no sample deadline; if both the
+lead time and the sample collect deadline are 0 (walk-in equipment), no sample emails are sent and no automatic
+Not Utilized happens.
+""",
+    },
+    {
+        "title": "What's New — October 2026",
+        "category": DocumentCategory.RELEASE_NOTES,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["what's new", "release notes", "october 2026"],
+        "content_text": """
+Changes released in September–October 2026:
+- Booking templates with an optional preferred weekly slot and "If this slot is already taken" options;
+  Save these parameters as a template after any booking attempt; a Booking Templates dashboard page to create,
+  edit, duplicate, delete and book with templates.
+- Samples with different parameters (sample sets) with element selection in every set.
+- Edit User Inputs after booking: 1 minute to pay a higher charge; lower charges refunded after OIC confirmation.
+- Booking Assistant guided booking (Department -> Equipment -> inputs -> slot -> summary) with virtual booking IDs.
+- Wallet: Transfer, Credit Facility and Recharge Wallet buttons together; Project Grant (SRIC) and Direct Cash
+  Deposit / Bank Transfer recharge with OTP; Project Already Closed decline reason; approver named in SRIC emails.
+- Student management: spending limits, identity card, Linked toggle, TA nominations; supervisor booking email.
+- View Booking (renamed from Booking Management) with S.No., sorting and More filters; cancelled and refunded
+  bookings keep their dates; Sync to calendar.
+- OIC: Urgent booking final approval, Confirm manually on the waitlist, Change slot status week view (single-click
+  arrows), view-only charges for all equipment, Tickets marked to me, daily completion reminders, important
+  instruction per user type, walk-in equipment.
+- Admin: Wallet payment modes switches, Experience ratings with Export CSV, New ticket email alerts, Booking
+  Assistant Knowledge and Copilot Answers & Console, Legacy user sync.
+- Smaller: server clock on the booking page, Back button on every page, larger home icon on the sign-in page,
+  Sign in with email option for Channel i users, Lab In-charge renamed Lab Operator, Support tickets on the Lab
+  Operator dashboard.
 """,
     },
     {
@@ -113,10 +335,21 @@ Full operator manuals may be department-specific and higher security.
         "title": "Cancellation and Urgent Booking Policy (Summary)",
         "category": DocumentCategory.POLICY,
         "security_level": SecurityLevel.AUTHENTICATED,
-        "tags": ["cancellation", "urgent", "policy"],
+        "tags": ["cancellation", "urgent", "policy", "type a", "type b", "rush relief", "surcharge"],
         "content_text": """
-Cancellation: follow portal cancellation rules for your booking state; wallet adjustments may apply.
-Urgent booking: use Urgent Request flows when no suitable slot exists; approvals follow institute policy.
+Cancellation: cancel or reschedule from View Booking (My Bookings) until the equipment's cutoff (48 hours unless
+the lab set another value) before the slot; partial cancellation of multi-slot bookings is allowed where enabled.
+Refunds follow the cancellation policy and are shown before you confirm.
+Urgent booking: on the booking page click Request urgent booking (students can also use Urgent booking request on
+the dashboard) and choose a type:
+- Type A — Rush relief (no surcharge): for internal users with at least 2 failed peak-window booking attempts in
+  the last 14 days (quota-limit failures do not count). Book a slot in the advance week at normal rates; using
+  Type A resets the 14-day window.
+- Type B — Urgent with reason (50% surcharge): select slots, give a reason (at least 10 characters, optional
+  supporting document) and accept the surcharge. Slots are held, not confirmed. Students need their supervisor's
+  approval first; the Officer In Charge then gives final approval and may reschedule, including weekends. The
+  wallet is charged only after final approval. Weekly caps may apply.
+Urgent requests are separate from the waitlist and never cancel other users' confirmed bookings.
 Maintenance and disruption: unavailable equipment shows maintenance or disruption messaging on the equipment page.
 """,
     },
@@ -129,6 +362,10 @@ Maintenance and disruption: unavailable equipment shows maintenance or disruptio
 Admin-only: Knowledge Center operations.
 - Upload or create documents; set security level carefully.
 - Rebuild index after bulk updates.
+- After a release that changes these baseline articles, re-seed them with the management command
+  seed_research_copilot_knowledge --force (or POST /api/v1/research-copilot/knowledge/seed/ with force=true);
+  articles are matched by title and updated in place.
+- Verified answers in Booking Assistant Knowledge take priority over these baseline articles; keep them consistent.
 - Review Failed documents and Knowledge Gaps for FAQ candidates.
 - Never auto-publish suggested FAQs without human review.
 """,

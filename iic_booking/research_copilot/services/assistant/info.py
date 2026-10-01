@@ -282,12 +282,19 @@ def _builtin_policy(topic: str, eq=None) -> list[str]:
     hours = int(getattr(eq, "reschedule_hours_threshold", None) or 48) if eq is not None else None
     cutoff = f"{hours} hours" if hours else "the instrument's cutoff (48 hours unless the lab set another value)"
     if topic in ("cancel", "edit"):
-        return [
+        lines = [
             f"You can cancel or reschedule a booking yourself from **My Bookings** until {cutoff} before the slot starts.",
             "Inside that window only an admin can change it; raise a support ticket if you need help.",
             "You can also release part of a multi-slot booking (partial cancellation) or move it to another free slot (reschedule).",
             "I can start a cancellation or reschedule for you here: just say \"cancel my next booking\" or \"reschedule my next booking\".",
         ]
+        if topic == "edit":
+            lines.append(
+                "To change the booking inputs, open the booking and choose **Edit User Inputs** (until the booking is "
+                "completed). If the charge goes up, pay the difference within 1 minute or the edit is cancelled; a lower "
+                "charge is refunded after the Officer In Charge confirms it."
+            )
+        return lines
     if topic == "refund":
         return [
             "Refunds are calculated by the portal when you cancel, under the cancellation policy, and the amount is shown "
@@ -296,9 +303,13 @@ def _builtin_policy(topic: str, eq=None) -> list[str]:
         ]
     if topic == "recharge":
         return [
-            "Open **Wallet** and choose **Recharge**; payment goes through the portal's online payment page.",
+            "Open **Wallet** and click **Recharge Wallet**. Faculty can choose **Project Grant** (approved by the SRIC "
+            "Office) or **Direct Cash Deposit / Bank Transfer** (deposit at the SRIC Bill Section and share the "
+            "transaction number); confirm with the OTP sent to your email. The minimum is ₹100.",
             "Students book from their supervisor's wallet once the supervisor approves the wallet join request.",
-            "If you need credit instead, use **Request wallet credit** on the Wallet page (Main Administrator approval).",
+            "If you need credit instead, click **Credit Facility** on the Wallet page and submit a credit request "
+            "(Main Administrator approval). Faculty can also use **Transfer** to move balance to another user under "
+            "the same department grant.",
         ]
     if topic == "sample_submission":
         lead = getattr(eq, "sample_submission_lead_hours", None) if eq is not None else None
