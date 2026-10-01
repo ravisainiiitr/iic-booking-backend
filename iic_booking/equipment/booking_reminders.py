@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
 from iic_booking.equipment.booking_events import (
+    apply_booking_party_to_context,
     apply_equipment_booking_email_extra_to_context,
     apply_user_sample_preparation_notice_to_context,
 )
@@ -72,6 +73,7 @@ def send_reminder_for_booking(booking: "Booking") -> None:
     apply_user_sample_preparation_notice_to_context(
         template_context, user, equipment, also_append_to_comment=False
     )
+    apply_booking_party_to_context(template_context, booking)
 
     metadata = {
         "booking_id": display_booking_ref,

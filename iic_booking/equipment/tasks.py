@@ -430,6 +430,9 @@ def archive_expired_samples() -> int:
                     "disposed_at": timezone.localtime(event.created_at).strftime("%d %b %Y, %I:%M %p"),
                     "remarks": event.reason or "",
                 }
+                from iic_booking.equipment.booking_events import apply_booking_party_to_context
+
+                apply_booking_party_to_context(ctx, b)
                 CommunicationService.send_email(
                     recipient=b.user,
                     template="sample_disposed_email",

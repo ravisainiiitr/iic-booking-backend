@@ -12,6 +12,7 @@ from django.utils import timezone
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import booking_display_id_for_email, get_frontend_absolute_url
 from iic_booking.equipment.booking_events import (
+    apply_booking_party_to_context,
     apply_equipment_booking_email_extra_to_context,
     apply_user_sample_preparation_notice_to_context,
 )
@@ -208,6 +209,7 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
     apply_user_sample_preparation_notice_to_context(
         template_context, user, equipment, also_append_to_comment=False
     )
+    apply_booking_party_to_context(template_context, booking)
 
     metadata = {
         "booking_id": display_booking_ref,

@@ -11087,11 +11087,13 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
         context.update(context_extra)
 
     from .booking_events import (
+        apply_booking_party_to_context,
         apply_equipment_completion_email_extra_to_context,
         append_completion_email_extra_html,
         append_completion_email_extra_plaintext,
     )
 
+    apply_booking_party_to_context(context, booking)
     apply_equipment_completion_email_extra_to_context(context, equipment)
 
     rendered = CommunicationService.render_template(template_obj, context=context)
@@ -13254,6 +13256,9 @@ def _send_results_available_push_and_email(booking):
         "sample_preserve_yes_url": sample_notice_ctx.get("sample_preserve_yes_url") or "",
         "sample_preserve_no_url": sample_notice_ctx.get("sample_preserve_no_url") or "",
     }
+    from .booking_events import apply_booking_party_to_context
+
+    apply_booking_party_to_context(context, booking)
 
     try:
         CommunicationService.send_email(
@@ -14231,6 +14236,9 @@ def set_booking_sample_status(request, booking_id):
                 "disposed_at": timezone.localtime(event.created_at).strftime("%d %b %Y, %I:%M %p"),
                 "remarks": reason or "",
             }
+            from .booking_events import apply_booking_party_to_context
+
+            apply_booking_party_to_context(ctx, booking)
             CommunicationService.send_email(
                 recipient=booking.user,
                 template="sample_disposed_email",

@@ -113,7 +113,7 @@ class CommunicationService:
         """
         from .email_branding import sanitize_template_context
 
-        context = sanitize_template_context(context or {})
+        context = sanitize_template_context(context or {}, template_code=getattr(template, "code", None))
 
         def _truthy(value: Any) -> bool:
             if value is None:

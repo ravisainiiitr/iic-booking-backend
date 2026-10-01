@@ -301,6 +301,12 @@ def add_user_to_waitlist(equipment: Equipment, user) -> Tuple[bool, Optional[int
         return True, position
 
 
+def _waitlist_party_context(user, equipment) -> dict:
+    from iic_booking.equipment.booking_events import booking_party_context
+
+    return booking_party_context(user, equipment)
+
+
 def send_unsuccessful_booking_waitlist_email(user, equipment: Equipment, position: int, failure_reason: str = ""):
     """Send email to user: booking unsuccessful, you have been added to the waitlist at position X."""
     try:
@@ -316,6 +322,7 @@ def send_unsuccessful_booking_waitlist_email(user, equipment: Equipment, positio
                 "waitlist_position": _format_waitlist_code(position),
                 "waitlist_requested_at": requested_at,
                 "failure_reason": failure_reason or "The selected slots were not available.",
+                **_waitlist_party_context(user, equipment),
             },
         )
     except Exception as e:
@@ -340,6 +347,7 @@ def send_waitlist_unsuccessful_email(user, equipment: Equipment, position: int, 
                 "waitlist_position": _format_waitlist_code(position),
                 "waitlist_requested_at": requested_at,
                 "failure_reason": failure_reason or "Your waitlisted booking could not be confirmed.",
+                **_waitlist_party_context(user, equipment),
             },
         )
     except Exception as e:

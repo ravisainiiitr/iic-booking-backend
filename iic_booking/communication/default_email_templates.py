@@ -12,6 +12,7 @@ from typing import Any, Optional, Sequence
 from iic_booking.communication.email_branding import (
     PRODUCT_NAME,
     booking_details_rows,
+    booking_party_rows,
     booking_location_contact_html,
     booking_location_contact_text,
     branded_plain_footer,
@@ -92,8 +93,9 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
 ]
 
 
+_BOOKING_PARTY_HELP = "{{ booked_by_display }}, {{ charged_to_display }}"
 _BOOKING_COMMON_HELP = (
-    "{{ user_name }}, {{ user_email }}, {{ booking_id }}, {{ equipment_name }}, "
+    "{{ user_name }}, {{ user_email }}, {{ booking_id }}, " + _BOOKING_PARTY_HELP + ", {{ equipment_name }}, "
     "{{ equipment_code }}, {{ start_time }}, {{ end_time }}, {{ booking_date }}, "
     "{{ slot_id_display }}, {{ duration_display }}, {{ total_hours }}, {{ total_charge }}, "
     "{{ comment }}, {{ link }}"
@@ -510,6 +512,7 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Sent when booking charges are recalculated after user input edit.",
             detail_rows=[
                 optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
                 optional_detail_row("Equipment", "equipment_name"),
                 optional_detail_row("Equipment code", "equipment_code"),
                 optional_detail_row("Previous charge", "previous_charge"),
@@ -522,8 +525,8 @@ def _booking_templates() -> list[dict[str, Any]]:
                 ("comment", "Note"),
             ),
             variable_help=(
-                "{{ user_name }}, {{ user_email }}, {{ booking_id }}, {{ equipment_name }}, "
-                "{{ equipment_code }}, {{ previous_charge }}, {{ new_charge }}, "
+                "{{ user_name }}, {{ user_email }}, {{ booking_id }}, " + _BOOKING_PARTY_HELP + ", "
+                "{{ equipment_name }}, {{ equipment_code }}, {{ previous_charge }}, {{ new_charge }}, "
                 "{{ charge_breakdown_text }}, {{ refund_amount }}, {{ extra_amount }}, {{ comment }}, {{ link }}"
             ),
         ),
@@ -538,10 +541,15 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Sent to the user when a booked slot is marked Booking Not Utilized. No refund.",
             detail_rows=[
                 optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
                 optional_detail_row("Equipment", "equipment_name"),
                 optional_detail_row("Slot", "slot_details"),
             ],
-            variable_help="{{ user_name }}, {{ user_email }}, {{ equipment_name }}, {{ slot_details }}, {{ booking_id }}, {{ link }}",
+            variable_help=(
+                "{{ user_name }}, {{ user_email }}, {{ equipment_name }}, {{ slot_details }}, {{ booking_id }}, "
+                + _BOOKING_PARTY_HELP
+                + ", {{ link }}"
+            ),
         ),
         _simple_email(
             code="booking_not_utilized_wallet_owner_email",
@@ -554,14 +562,13 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Sent to the wallet owner/supervisor when a student's booking is marked Booking Not Utilized.",
             name_var="wallet_owner_name",
             detail_rows=[
-                optional_detail_row("Student / user", "student_name"),
-                optional_detail_row("Student email", "student_email"),
+                optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
                 optional_detail_row("Equipment", "equipment_name"),
                 optional_detail_row("Slot", "slot_details"),
-                optional_detail_row("Booking ID", "booking_id"),
             ],
             variable_help=(
-                "{{ wallet_owner_name }}, {{ student_name }}, {{ student_email }}, "
+                "{{ wallet_owner_name }}, {{ student_name }}, {{ student_email }}, " + _BOOKING_PARTY_HELP + ", "
                 "{{ equipment_name }}, {{ slot_details }}, {{ booking_id }}, {{ link }}"
             ),
         ),
@@ -575,6 +582,7 @@ def _booking_templates() -> list[dict[str, Any]]:
             ),
             description="Sent when a booking fails and the user is added to the equipment waitlist.",
             detail_rows=[
+                *booking_party_rows(),
                 optional_detail_row("Equipment", "equipment_name"),
                 optional_detail_row("Equipment code", "equipment_code"),
                 optional_detail_row("Queue position", "waitlist_position"),
@@ -582,7 +590,7 @@ def _booking_templates() -> list[dict[str, Any]]:
             ],
             note_vars=(("failure_reason", "Reason"),),
             variable_help=(
-                "{{ user_name }}, {{ user_email }}, {{ equipment_name }}, {{ equipment_code }}, "
+                "{{ user_name }}, {{ user_email }}, " + _BOOKING_PARTY_HELP + ", {{ equipment_name }}, {{ equipment_code }}, "
                 "{{ waitlist_position }}, {{ failure_reason }}, {{ waitlist_joined_at_display }}, {{ link }}"
             ),
         ),
@@ -596,8 +604,6 @@ def _booking_templates() -> list[dict[str, Any]]:
             ),
             description="Sent when a waitlist entry is auto-confirmed and the wallet is debited.",
             detail_rows=[
-                optional_detail_row("Booked for", "booked_for_user_name"),
-                optional_detail_row("Booked-for email", "booked_for_user_email"),
                 optional_detail_row("Waitlist request time", "waitlist_joined_at_display"),
                 optional_detail_row("Queue position when joined", "waitlist_position"),
                 *booking_details_rows(include_wallet=True),
@@ -606,7 +612,7 @@ def _booking_templates() -> list[dict[str, Any]]:
             post_details_text=booking_location_contact_text(),
             cta_label="Open booking",
             variable_help=(
-                "{{ user_name }}, {{ user_email }}, {{ booked_for_user_name }}, {{ booked_for_user_email }}, "
+                "{{ user_name }}, {{ user_email }}, " + _BOOKING_PARTY_HELP + ", "
                 "{{ waitlist_joined_at_display }}, {{ waitlist_position }}, {{ booking_id }}, "
                 "{{ virtual_booking_id }}, {{ equipment_name }}, {{ equipment_code }}, {{ start_time }}, "
                 "{{ end_time }}, {{ total_charge }}, {{ wallet_balance_after }}, {{ link }}"
@@ -692,11 +698,16 @@ def _booking_templates() -> list[dict[str, Any]]:
             description="Sent when lab/OIC marks a sample as DISPOSED after ARCHIVED.",
             detail_rows=[
                 optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
                 optional_detail_row("Equipment", "equipment_name"),
                 optional_detail_row("Disposed at", "disposed_at"),
             ],
             note_vars=(("remarks", "Remarks"),),
-            variable_help="{{ user_name }}, {{ user_email }}, {{ equipment_name }}, {{ booking_id }}, {{ disposed_at }}, {{ remarks }}",
+            variable_help=(
+                "{{ user_name }}, {{ user_email }}, {{ equipment_name }}, {{ booking_id }}, "
+                + _BOOKING_PARTY_HELP
+                + ", {{ disposed_at }}, {{ remarks }}"
+            ),
         ),
         _simple_email(
             code="sample_submission_deadline_reminder_email",
@@ -714,6 +725,7 @@ def _booking_templates() -> list[dict[str, Any]]:
             ),
             detail_rows=[
                 optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
                 optional_detail_row("Equipment", "equipment_name"),
                 optional_detail_row("Equipment code", "equipment_code"),
                 optional_detail_row("Slot start", "start_time"),
@@ -726,8 +738,8 @@ def _booking_templates() -> list[dict[str, Any]]:
             ),
             cta_label="View booking",
             variable_help=(
-                "{{ user_name }}, {{ user_email }}, {{ booking_id }}, {{ equipment_name }}, "
-                "{{ equipment_code }}, {{ start_time }}, {{ end_time }}, {{ submission_deadline }}, "
+                "{{ user_name }}, {{ user_email }}, {{ booking_id }}, " + _BOOKING_PARTY_HELP + ", "
+                "{{ equipment_name }}, {{ equipment_code }}, {{ start_time }}, {{ end_time }}, {{ submission_deadline }}, "
                 "{{ lead_hours }}, {{ advance_hours }}, {{ remaining_label }}, {{ link }}, "
                 "{{ user_sample_preparation_notice }}, {{ equipment_booking_email_extra }}"
             ),

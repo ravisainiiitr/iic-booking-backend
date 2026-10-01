@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -103,7 +104,10 @@ def test_faculty_gets_one_copy_of_the_student_email_with_booked_by(setup, sent):
     assert faculty_ctx["wallet_balance_after"] == student_ctx["wallet_balance_after"] == "₹500.00"
 
     assert student_ctx["user_name"] == "Asha Verma"
-    assert not student_ctx.get("booked_by_display")
+    assert student_ctx["booked_by_display"] == faculty_ctx["booked_by_display"]
+    assert student_ctx["charged_to_display"] == faculty_ctx["charged_to_display"] == (
+        "Ravi Kumar (ravi.kumar@example.com)"
+    )
     assert sent.cc[setup.student] == []
 
 
@@ -119,8 +123,8 @@ def test_supervisor_email_renders_booked_by_row_and_prof_greeting(setup, sent):
 
     student_out = _render("booking_created_email", _email_to(sent, setup.student))
     assert "Hello Asha Verma," in student_out["html_message"]
-    assert "Booked by" not in student_out["html_message"]
-    assert "Booked by" not in student_out["message"]
+    assert "- Booked by: Asha Verma (asha.verma@example.com)" in student_out["message"]
+    assert "Booked by your student" not in student_out["html_message"]
 
 
 def test_supervisor_booking_for_student_is_not_also_copied(setup, sent):
@@ -197,19 +201,29 @@ def test_no_faculty_copy_when_student_pays_from_own_wallet(setup, sent):
     _send(setup, event_type="CREATED")
 
     assert setup.faculty not in [r for r, _t, _c in sent.emails]
-    assert "Charged to the wallet of" not in _email_to(sent, setup.oic)["comment"]
+    for recipient in (setup.student, setup.oic):
+        ctx = _email_to(sent, recipient)
+        assert ctx["booked_by_display"] == "Asha Verma (asha.verma@example.com)"
+        assert ctx["charged_to_display"] == ""
+        out = _render("booking_created_email", ctx)
+        assert "Charged to wallet of" not in out["html_message"]
+        assert "Charged to wallet of" not in out["message"]
 
 
-def test_confirmation_to_oic_names_the_student_and_wallet_owner(setup, sent):
+def test_confirmation_to_oic_shows_booked_by_and_charged_to_rows(setup, sent):
     _send(setup, event_type="CREATED")
 
     oic_ctx = _email_to(sent, setup.oic)
     assert oic_ctx["user_name"] == "Meena OIC"
-    assert oic_ctx["comment"].startswith(
-        "Booked by: Asha Verma (asha.verma@example.com).\n"
-        "Charged to the wallet of: Ravi Kumar (ravi.kumar@example.com)."
-    )
-    assert not oic_ctx.get("booked_by_display")
+    assert oic_ctx["booked_by_display"] == "Asha Verma (asha.verma@example.com)"
+    assert oic_ctx["charged_to_display"] == "Ravi Kumar (ravi.kumar@example.com)"
+    assert "Booked by" not in oic_ctx["comment"]
+    assert "Charged to the wallet of" not in oic_ctx["comment"]
+
+    out = _render("booking_created_email", oic_ctx)
+    assert "Charged to wallet of" in out["html_message"]
+    assert "Ravi Kumar (ravi.kumar@example.com)" in out["html_message"]
+    assert "- Charged to wallet of: Ravi Kumar (ravi.kumar@example.com)" in out["message"]
 
 
 def test_urgent_hold_confirmation_to_oic_names_the_student(setup, sent):
@@ -221,10 +235,135 @@ def test_urgent_hold_confirmation_to_oic_names_the_student(setup, sent):
         metadata={"urgent_hold_converted": True},
     )
 
-    assert _email_to(sent, setup.oic)["comment"].startswith("Booked by: Asha Verma")
+    assert _email_to(sent, setup.oic)["booked_by_display"].startswith("Asha Verma")
 
 
 def test_cancellation_reason_to_oic_is_left_unchanged(setup, sent):
     _send(setup, event_type="CANCELLED", comment="Instrument down")
 
     assert _email_to(sent, setup.oic)["comment"] == "Instrument down"
+
+
+@pytest.mark.parametrize(
+    "event_kwargs, template",
+    [
+        ({"event_type": "CREATED"}, "booking_created_email"),
+        ({"event_type": "CREATED", "metadata": {"from_waitlist": True}}, "booking_waitlist_confirmed_email"),
+        ({"event_type": "CANCELLED", "comment": "Instrument down"}, "booking_cancelled_email"),
+        ({"event_type": "RESCHEDULED"}, "booking_rescheduled_email"),
+        ({"event_type": "COMPLETED"}, "booking_completed_email"),
+        ({"event_type": "REFUNDED"}, "booking_refunded_email"),
+        ({"event_type": "CHARGE_RECALCULATED"}, "booking_charge_recalculated_email"),
+    ],
+)
+def test_every_recipient_sees_booked_by_and_charged_to_rows(setup, sent, event_kwargs, template):
+    _send(setup, **event_kwargs)
+
+    recipients = [setup.student, setup.oic]
+    if event_kwargs["event_type"] in ("CREATED", "COMPLETED", "CHARGE_RECALCULATED"):
+        recipients.append(setup.faculty)
+    for recipient in recipients:
+        sent_templates = [t for r, t, _c in sent.emails if r == recipient]
+        assert sent_templates == [template], (recipient, sent_templates)
+        out = _render(template, _email_to(sent, recipient))
+        for body in (out["html_message"], out["message"]):
+            assert "Booked by" in body
+            assert "Asha Verma (asha.verma@example.com)" in body
+            assert "Charged to wallet of" in body
+            assert "Ravi Kumar (ravi.kumar@example.com)" in body
+
+
+def test_created_note_drops_summary_lines_and_keeps_instructions(setup, sent):
+    from iic_booking.communication.email_branding import build_booking_created_event_comment
+
+    comment = build_booking_created_event_comment(
+        equipment_name=setup.equipment.name,
+        total_time_minutes=60,
+        total_charge=100,
+        booking_user=setup.student,
+        created_by=setup.student,
+    )
+    _send(setup, event_type="CREATED", comment=comment)
+
+    for recipient in (setup.student, setup.faculty, setup.oic):
+        out = _render("booking_created_email", _email_to(sent, recipient))
+        for body in (out["html_message"], out["message"]):
+            assert "Booking created for" not in body
+            assert not re.search(r"(?m)^\s*(Duration|Charges):", body)
+            assert "Charges: ₹100.00" not in body
+            assert "Booked by your student" not in body
+            assert "This booking is charged to your wallet" not in body
+            assert "Sample submission and collection" in body
+            assert "You do not need to visit the laboratory" in body
+
+
+def test_note_is_hidden_when_only_summary_lines_remain(setup, sent):
+    _send(setup, event_type="CANCELLED", comment="Booking created for\nXRD\n\nDuration: 1 Hour\nCharges: ₹100.00")
+
+    for recipient in (setup.student, setup.oic):
+        ctx = _email_to(sent, recipient)
+        assert ctx["comment"] == ""
+        out = _render("booking_cancelled_email", ctx)
+        assert "Reason" not in out["html_message"]
+        assert "Reason:" not in out["message"]
+
+
+def test_render_trims_note_even_when_sender_left_it_untrimmed(setup):
+    out = _render(
+        "booking_created_email",
+        {
+            "user_name": "Asha Verma",
+            "booking_id": "IICX-1",
+            "comment": "Booked by: Asha Verma (a@x).\nCharged to the wallet of: Ravi (r@x).\n\nBring the sample.",
+        },
+    )
+    assert "Charged to the wallet of" not in out["html_message"]
+    assert "Booked by: Asha" not in out["message"]
+    assert "Bring the sample." in out["html_message"]
+
+
+def test_reminder_and_not_utilized_emails_show_party_rows(setup, sent):
+    from iic_booking.equipment.booking_not_utilized_service import send_booking_not_utilized_emails
+    from iic_booking.equipment.booking_reminders import send_reminder_for_booking
+
+    send_reminder_for_booking(setup.booking)
+    send_booking_not_utilized_emails(setup.booking, [])
+
+    for template in ("booking_reminder_email", "booking_not_utilized_email"):
+        ctx = next(c for r, t, c in sent.emails if r == setup.student and t == template)
+        out = _render(template, ctx)
+        assert "Asha Verma (asha.verma@example.com)" in out["html_message"]
+        assert "Ravi Kumar (ravi.kumar@example.com)" in out["html_message"]
+
+
+def test_comment_email_keeps_the_author_text_verbatim():
+    out = _render("booking_comment_email", {"user_name": "Asha", "comment": "Duration: please extend by 1 hour"})
+    assert "Duration: please extend by 1 hour" in out["html_message"]
+
+
+@pytest.mark.parametrize(
+    "note, expected",
+    [
+        (
+            "Booking created for\nPowder X-Ray Diffractometer (PXRD) [A]\n\nDuration: 1 Hour\nCharges: ₹100.00\n\n"
+            "Sample submission and collection:\n• Morning: 10:00–10:30",
+            "Sample submission and collection:\n• Morning: 10:00–10:30",
+        ),
+        (
+            "Booked by: Akanksha Arya (a@x).\nCharged to the wallet of: Sanjeev Manhas (s@x).\n\nBooking created for\nPXRD",
+            "",
+        ),
+        (
+            "Booked by your student: Asha (a@x). This booking is charged to your wallet.\n\nKeep dry.",
+            "Keep dry.",
+        ),
+        ("Hold created for\nSEM\n\nDuration: 2 Hours\nCharges: ₹10\n\nPayment pending: ₹10", "Payment pending: ₹10"),
+        ("Booking created for TGA (135 minutes) on behalf of another user.", ""),
+        ("Charges recalculated: previous ₹10.00, new ₹20.00.", "Charges recalculated: previous ₹10.00, new ₹20.00."),
+        ("Instrument down", "Instrument down"),
+    ],
+)
+def test_strip_booking_summary_from_note(note, expected):
+    from iic_booking.communication.email_branding import strip_booking_summary_from_note
+
+    assert strip_booking_summary_from_note(note) == expected

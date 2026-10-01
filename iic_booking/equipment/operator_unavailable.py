@@ -128,6 +128,9 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
         "refund_amount": str(booking.total_charge),
         "comment": absent_notes or "Operator was unavailable. A full refund has been issued to your wallet.",
     }
+    from iic_booking.equipment.booking_events import apply_booking_party_to_context
+
+    apply_booking_party_to_context(ctx, booking)
     try:
         CommunicationService.send_email(
             recipient=user,

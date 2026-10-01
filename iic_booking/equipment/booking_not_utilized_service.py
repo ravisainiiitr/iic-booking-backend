@@ -86,6 +86,13 @@ def send_booking_not_utilized_emails(
         "slot_details": slot_details,
         "booking_id": booking_display_id_for_email(booking),
     }
+    from iic_booking.equipment.booking_events import (
+        _person_label,
+        _supervisor_salutation,
+        apply_booking_party_to_context,
+    )
+
+    apply_booking_party_to_context(ctx, booking)
     try:
         CommunicationService.send_email(
             recipient=user,
@@ -106,7 +113,8 @@ def send_booking_not_utilized_emails(
                 **ctx,
                 "student_name": getattr(user, "name", None) or getattr(user, "email", None) or "Student",
                 "student_email": getattr(user, "email", "") or "",
-                "wallet_owner_name": getattr(owner, "name", None) or getattr(owner, "email", None) or "Faculty",
+                "wallet_owner_name": _supervisor_salutation(owner),
+                "charged_to_display": _person_label(owner, "Supervisor"),
             }
             CommunicationService.send_email(
                 recipient=owner,

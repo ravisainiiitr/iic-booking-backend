@@ -175,6 +175,57 @@ def build_booking_created_event_comment(
     return "\n".join(lines).strip()
 
 
+_NOTE_SUMMARY_LINE_PREFIXES = (
+    "booked by:",
+    "booked by your student:",
+    "charged to the wallet of:",
+    "duration:",
+    "charges:",
+)
+_NOTE_SUMMARY_LINES = frozenset({"this booking is charged to your wallet."})
+_NOTE_CREATED_FOR_RE = re.compile(r"^(booking|hold) created for\b", re.IGNORECASE)
+# Free-text comments typed by users and staff are shown exactly as written.
+_NOTE_TRIM_EXEMPT_TEMPLATES = frozenset({"booking_comment_email"})
+_NOTE_TRIM_TEMPLATE_PREFIXES = (
+    "booking_",
+    "urgent_booking_hold_",
+    "repeat_sample_",
+    "operator_unavailable_",
+    "sample_",
+)
+
+
+def strip_booking_summary_from_note(text: Any) -> str:
+    """
+    Drop the booked-by / wallet / equipment / duration / charges lines from a booking Note:
+    the Booking Details card already shows them.
+    """
+    out: list[str] = []
+    skip_equipment_line = False
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        lowered = line.lower()
+        if skip_equipment_line:
+            skip_equipment_line = False
+            if line:
+                continue
+        if _NOTE_CREATED_FOR_RE.match(line):
+            # "Booking created for" on its own line is followed by the equipment name.
+            skip_equipment_line = lowered.rstrip(":") in ("booking created for", "hold created for")
+            continue
+        if lowered.startswith(_NOTE_SUMMARY_LINE_PREFIXES) or lowered in _NOTE_SUMMARY_LINES:
+            continue
+        if not line and (not out or not out[-1]):
+            continue
+        out.append(raw.rstrip())
+    return "\n".join(out).strip()
+
+
+def trims_booking_note(template_code: Optional[str]) -> bool:
+    code = (template_code or "").strip().lower()
+    return bool(code) and code not in _NOTE_TRIM_EXEMPT_TEMPLATES and code.startswith(_NOTE_TRIM_TEMPLATE_PREFIXES)
+
+
 def scrub_internal_user_ids_from_text(text: Any) -> str:
     """Replace legacy 'on behalf of user <pk>' phrases in stored comments."""
     value = str(text or "").strip()
@@ -662,6 +713,14 @@ def paragraph_html(text: str) -> str:
     )
 
 
+def booking_party_rows() -> list[str]:
+    """Who booked, and whose wallet was charged when it is not the booker's own."""
+    return [
+        optional_detail_row("Booked by", "booked_by_display"),
+        optional_detail_row("Charged to wallet of", "charged_to_display"),
+    ]
+
+
 def booking_details_rows(
     *,
     include_status: bool = False,
@@ -672,7 +731,7 @@ def booking_details_rows(
 ) -> list[str]:
     rows = [
         optional_detail_row("Booking ID", "booking_id"),
-        optional_detail_row("Booked by", "booked_by_display"),
+        *booking_party_rows(),
         optional_detail_row("Equipment", "equipment_name"),
         optional_detail_row("Equipment code", "equipment_code"),
         optional_detail_row("Start time", "start_time"),
@@ -748,6 +807,7 @@ def build_standard_email(
         for label, var in (
             ("Booking ID", "booking_id"),
             ("Booked by", "booked_by_display"),
+            ("Charged to wallet of", "charged_to_display"),
             ("Equipment", "equipment_name"),
             ("Start time", "start_time"),
             ("End time", "end_time"),
@@ -776,7 +836,9 @@ def build_standard_email(
     }
 
 
-def sanitize_template_context(context: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+def sanitize_template_context(
+    context: Optional[Mapping[str, Any]], template_code: Optional[str] = None
+) -> dict[str, Any]:
     """Normalize common fields before render (safe defaults, no raw PK names)."""
     ctx = dict(context or {})
     for key in ("user_name", "booked_for_user_name", "faculty_name", "student_name", "operator_name"):
@@ -786,6 +848,8 @@ def sanitize_template_context(context: Optional[Mapping[str, Any]]) -> dict[str,
                 ctx[key] = ""
     if "comment" in ctx:
         comment = scrub_internal_user_ids_from_text(ctx.get("comment"))
+        if trims_booking_note(template_code):
+            comment = strip_booking_summary_from_note(comment)
         if comment.lower() in ("no comment", "none", "null", "-"):
             comment = ""
         ctx["comment"] = comment

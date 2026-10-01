@@ -16,6 +16,8 @@ from iic_booking.communication.email_branding import (
     format_duration_minutes,
     format_email_datetime,
     format_inr,
+    strip_booking_summary_from_note,
+    trims_booking_note,
     user_display_name,
 )
 
@@ -82,12 +84,6 @@ def _person_label(person, fallback: str) -> str:
     return f"{name} ({email})" if email and email != name else name
 
 
-def _prepend_to_comment(context: dict, notice: str) -> None:
-    """The `comment` note is rendered by every booking template, including admin-customised ones."""
-    base = (str(context.get("comment", "") or "")).strip()
-    context["comment"] = notice + ("\n\n" + base if base else "")
-
-
 def _booking_wallet_owner(user, equipment):
     """Owner of the wallet charged for this user's booking, when it is someone else (e.g. the supervisor)."""
     from iic_booking.users.repositories.wallet_repository import WalletRepository
@@ -99,6 +95,28 @@ def _booking_wallet_owner(user, equipment):
         return None
     owner = wallet_target.wallet.user
     return owner if owner and owner.id != user.id else None
+
+
+def booking_party_context(user, equipment) -> Dict[str, str]:
+    """Values for the "Booked by" and "Charged to wallet of" rows of the Booking Details card."""
+    if user is None:
+        return {"booked_by_display": "", "charged_to_display": ""}
+    try:
+        wallet_owner = _booking_wallet_owner(user, equipment)
+    except Exception:
+        logger.warning("Wallet owner lookup failed for user_id=%s", getattr(user, "id", None), exc_info=True)
+        wallet_owner = None
+    return {
+        "booked_by_display": _person_label(user, "User"),
+        "charged_to_display": _person_label(wallet_owner, "Supervisor") if wallet_owner else "",
+    }
+
+
+def apply_booking_party_to_context(context: dict, booking) -> dict:
+    """Fill the booked-by / charged-to rows for any email built from a booking."""
+    if isinstance(context, dict) and booking is not None:
+        context.update(booking_party_context(getattr(booking, "user", None), getattr(booking, "equipment", None)))
+    return context
 
 
 _EXISTING_TITLE_RE = re.compile(r"^(prof(essor)?|dr)\b", re.IGNORECASE)
@@ -581,6 +599,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         "duration_display": "",
         "wallet_balance_after": "",
         "link": "",
+        **booking_party_context(user, equipment),
     }
     
     # Add status information if available
@@ -614,6 +633,8 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         "user_email",
         "booked_for_user_name",
         "booked_for_user_email",
+        "booked_by_display",
+        "charged_to_display",
         "booking_id",
         "virtual_booking_id",
         "equipment_name",
@@ -781,6 +802,8 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     comment_val = str(context.get("comment", "") or "").strip()
     if comment_val.lower() in ("no comment", "none", "null", "-"):
         comment_val = ""
+    if trims_booking_note(email_template_code):
+        comment_val = strip_booking_summary_from_note(comment_val)
     context["comment"] = comment_val
     
     # Metadata for communication log
@@ -1082,18 +1105,6 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             )
             skip_ids = {user.id}
             booker_label = user_display_name(user, fallback="user")
-            staff_booked_by_notice = ""
-            if email_template_code in BOOKING_CONFIRMATION_EMAIL_TEMPLATES:
-                staff_booked_by_notice = f"Booked by: {_person_label(user, 'user')}."
-                try:
-                    staff_wallet_owner = _booking_wallet_owner(user, equipment)
-                except Exception:
-                    logger.warning("Wallet owner lookup failed for staff copy of event %s", event.event_id, exc_info=True)
-                    staff_wallet_owner = None
-                if staff_wallet_owner:
-                    staff_booked_by_notice += (
-                        f"\nCharged to the wallet of: {_person_label(staff_wallet_owner, 'supervisor')}."
-                    )
             staff_mgmt_link = (
                 get_frontend_absolute_url(f"/booking-management?expand={booking.booking_id}")
                 or f"/booking-management?expand={booking.booking_id}"
@@ -1112,8 +1123,6 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 # Drop end-user sample-prep footer for staff copies.
                 staff_context["user_sample_preparation_notice"] = ""
                 staff_context["user_sample_preparation_notice_html"] = ""
-                if staff_booked_by_notice:
-                    _prepend_to_comment(staff_context, staff_booked_by_notice)
                 staff_context["link"] = staff_mgmt_link
                 staff_meta = {
                     **metadata,
