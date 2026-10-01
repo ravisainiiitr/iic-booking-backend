@@ -676,6 +676,11 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     # Get start and end times from slots (for email/display)
     # When equipment has Hide time (SLOT_ID): for non-admin/OIC recipients show date only and hide duration; admin/OIC always get full time.
     daily_slots = list(booking.daily_slots.select_related('slot_master').all().order_by('start_datetime'))
+    released_range = []
+    if not daily_slots and getattr(booking, "pk", None):
+        from iic_booking.equipment.models import BookingSlotRange
+
+        released_range = list(BookingSlotRange.objects.filter(booking_id=booking.pk)[:1])
     from iic_booking.users.models.user_type import UserType
 
     def _format_local(dt, fmt=None):
@@ -697,9 +702,17 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             and not recipient_is_staff
         )
         if not daily_slots:
-            ctx["start_time"] = ""
-            ctx["end_time"] = ""
-            ctx["booking_date"] = ""
+            # Cancelled / refunded: slots are already released, use the range stored at release time.
+            released = released_range[0] if released_range else None
+            if released and released.start_datetime and use_slot_id_display:
+                booking_date_str = format_email_datetime(released.start_datetime).split(",")[0]
+                ctx["start_time"] = f"Date: {booking_date_str}"
+                ctx["end_time"] = ""
+                ctx["booking_date"] = booking_date_str
+            else:
+                ctx["start_time"] = _format_local(released.start_datetime) if released else ""
+                ctx["end_time"] = _format_local(released.end_datetime) if released else ""
+                ctx["booking_date"] = ""
             ctx["slot_id_display"] = ""
             return
         if use_slot_id_display:

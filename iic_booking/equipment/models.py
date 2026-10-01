@@ -2324,9 +2324,70 @@ class SlotMaster(models.Model):
                 raise ValidationError(_('Close time must be after open time.'))
 
 
+def remember_booking_slot_ranges(slot_qs) -> None:
+    """Store each linked booking's first slot start / last slot end before its slots are released.
+
+    Cancel, refund, reschedule, hold-release and maintenance paths unlink slots with
+    ``.update(booking=None)``; afterwards the booking has no slots to derive its dates from.
+    Never raises: a failure here must not block releasing slots.
+    """
+    try:
+        with transaction.atomic():
+            booking_ids = list(
+                slot_qs.filter(booking__isnull=False)
+                .order_by()
+                .values_list("booking_id", flat=True)
+                .distinct()
+            )
+            if not booking_ids:
+                return
+            ranges = {
+                row["booking_id"]: (row["first_start"], row["last_end"])
+                for row in DailySlot.objects.filter(booking_id__in=booking_ids)
+                .order_by()
+                .values("booking_id")
+                .annotate(
+                    first_start=models.Min("start_datetime"),
+                    last_end=models.Max("end_datetime"),
+                )
+            }
+            existing = {
+                r.booking_id: r for r in BookingSlotRange.objects.filter(booking_id__in=ranges.keys())
+            }
+            to_create, to_update = [], []
+            for booking_id, (start, end) in ranges.items():
+                row = existing.get(booking_id)
+                if row is None:
+                    to_create.append(
+                        BookingSlotRange(booking_id=booking_id, start_datetime=start, end_datetime=end)
+                    )
+                else:
+                    row.start_datetime, row.end_datetime = start, end
+                    row.updated_at = timezone.now()
+                    to_update.append(row)
+            if to_create:
+                BookingSlotRange.objects.bulk_create(to_create)
+            if to_update:
+                BookingSlotRange.objects.bulk_update(to_update, ["start_datetime", "end_datetime", "updated_at"])
+    except Exception:
+        logger.exception("Could not remember booking slot ranges before releasing slots")
+
+
+class DailySlotQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        releases = ("booking" in kwargs and kwargs["booking"] is None) or (
+            "booking_id" in kwargs and kwargs["booking_id"] is None
+        )
+        if releases:
+            remember_booking_slot_ranges(self)
+        return super().update(**kwargs)
+
+
 class DailySlot(models.Model):
     """Daily slot instance generated from SlotMaster for booking."""
-    
+
+    objects = DailySlotQuerySet.as_manager()
+
     slot_master = models.ForeignKey(
         SlotMaster,
         on_delete=models.CASCADE,
@@ -3891,6 +3952,31 @@ class BookingEvent(models.Model):
     
     def __str__(self):
         return f"Event #{self.event_id} - {self.get_event_type_display()} - Booking #{self.booking.booking_id}"
+
+
+class BookingSlotRange(models.Model):
+    """Booking's slot time range captured when its slots were last released.
+
+    Booking start/end are derived from linked daily slots; once a cancel / refund releases
+    them, this keeps the original dates for booking details, lists and sorting.
+    """
+
+    booking = models.OneToOneField(
+        Booking,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="released_slot_range",
+    )
+    start_datetime = models.DateTimeField(null=True, blank=True)
+    end_datetime = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("Booking slot range")
+        verbose_name_plural = _("Booking slot ranges")
+
+    def __str__(self):
+        return f"Booking #{self.booking_id}: {self.start_datetime} – {self.end_datetime}"
 
 
 # ============================================================================

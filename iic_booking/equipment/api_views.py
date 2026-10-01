@@ -5895,21 +5895,10 @@ def list_bookings(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     
-    # Ordering
-    ordering = request.query_params.get('ordering', '-created_at')
-    # Validate ordering field to prevent SQL injection
-    valid_ordering_fields = [
-        'booking_id', '-booking_id',
-        'created_at', '-created_at',
-        'updated_at', '-updated_at',
-        'status', '-status',
-        'total_charge', '-total_charge',
-        'total_time_minutes', '-total_time_minutes',
-    ]
-    if ordering in valid_ordering_fields:
-        queryset = queryset.order_by(ordering)
-    else:
-        queryset = queryset.order_by('-created_at')
+    # Ordering (whitelisted keys, incl. View Booking column sorts such as start_time / user_name)
+    from .booking_list_ordering import apply_booking_list_ordering
+
+    queryset = apply_booking_list_ordering(queryset, request.query_params.get('ordering', '-created_at'))
 
     list_view = request.query_params.get('list_view', '').strip().lower() in ('1', 'true', 'yes')
     # Fast flag for UI: operator complete files OR DSA-imported result attachments.

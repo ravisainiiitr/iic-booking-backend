@@ -35,6 +35,7 @@ from .models import (
     BookingStatus,
     IstemFbrStatus,
     BookingEvent,
+    BookingSlotRange,
     BookingSampleTrace,
     SampleTraceStatus,
     BookingCancellationRequest,
@@ -255,6 +256,32 @@ build_booking_completion_countdown = build_booking_lifecycle_countdown
 from .image_utils import get_equipment_image_storage_path, equipment_image_available
 
 logger = logging.getLogger(__name__)
+
+
+def _released_slot_range(serializer, booking):
+    """(start, end) stored when the booking's slots were released (cancel / refund), or None.
+
+    List serializers load the ranges for the whole page in one query (cached in the context).
+    """
+    pk = getattr(booking, "pk", None)
+    if pk is None:
+        return None
+    cache = serializer.context.setdefault("_released_slot_range_cache", {})
+    if pk not in cache:
+        ids = {pk}
+        siblings = getattr(getattr(serializer, "parent", None), "instance", None)
+        if isinstance(siblings, QuerySet):
+            siblings = siblings._result_cache
+        if isinstance(siblings, (list, tuple)):
+            ids.update(getattr(b, "pk", None) for b in siblings)
+        ids = {i for i in ids if i is not None and i not in cache}
+        for i in ids:
+            cache[i] = None
+        for booking_id, start, end in BookingSlotRange.objects.filter(booking_id__in=ids).values_list(
+            "booking_id", "start_datetime", "end_datetime"
+        ):
+            cache[booking_id] = (start, end)
+    return cache.get(pk)
 
 
 def _get_wallet_owner_display_name(user, cache: dict):
@@ -3304,28 +3331,30 @@ class BookingSerializer(serializers.ModelSerializer):
         return list(self.get_input_fields(obj))
 
     def get_start_time(self, obj):
-        """Get start time from the earliest daily slot."""
+        """Earliest daily slot start; after the slots were released, the stored original start."""
         prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("daily_slots")
         if prefetched is not None:
-            if not prefetched:
-                return None
-            return min(prefetched, key=lambda s: s.start_datetime).start_datetime
-        daily_slots = obj.daily_slots.all().order_by('start_datetime')
-        if daily_slots.exists():
-            return daily_slots.first().start_datetime
-        return None
-    
+            if prefetched:
+                return min(prefetched, key=lambda s: s.start_datetime).start_datetime
+        else:
+            first = obj.daily_slots.all().order_by('start_datetime').first()
+            if first is not None:
+                return first.start_datetime
+        released = _released_slot_range(self, obj)
+        return released[0] if released else None
+
     def get_end_time(self, obj):
-        """Get end time from the latest daily slot."""
+        """Latest daily slot end; after the slots were released, the stored original end."""
         prefetched = getattr(obj, "_prefetched_objects_cache", {}).get("daily_slots")
         if prefetched is not None:
-            if not prefetched:
-                return None
-            return max(prefetched, key=lambda s: s.end_datetime).end_datetime
-        daily_slots = obj.daily_slots.all().order_by('-end_datetime')
-        if daily_slots.exists():
-            return daily_slots.first().end_datetime
-        return None
+            if prefetched:
+                return max(prefetched, key=lambda s: s.end_datetime).end_datetime
+        else:
+            last = obj.daily_slots.all().order_by('-end_datetime').first()
+            if last is not None:
+                return last.end_datetime
+        released = _released_slot_range(self, obj)
+        return released[1] if released else None
 
     def get_equipment_weekly_view_display(self, obj):
         """Equipment's weekly view display: TIME or SLOT_ID (Hide time). Used by frontend to show date-only when SLOT_ID."""
@@ -3524,7 +3553,8 @@ class BookingListSerializer(serializers.ModelSerializer):
             with_start = [s for s in slots if getattr(s, 'start_datetime', None)]
             if with_start:
                 return min(with_start, key=lambda s: s.start_datetime).start_datetime
-        return None
+        released = _released_slot_range(self, obj)
+        return released[0] if released else None
 
     def get_end_time(self, obj):
         daily_slots = getattr(obj, 'daily_slots', None)
@@ -3533,7 +3563,8 @@ class BookingListSerializer(serializers.ModelSerializer):
             with_end = [s for s in slots if getattr(s, 'end_datetime', None)]
             if with_end:
                 return max(with_end, key=lambda s: s.end_datetime).end_datetime
-        return None
+        released = _released_slot_range(self, obj)
+        return released[1] if released else None
 
     def get_equipment_weekly_view_display(self, obj):
         if obj.equipment_id and getattr(obj, 'equipment', None):
