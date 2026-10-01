@@ -116,6 +116,19 @@ jobs:
                   seen = Counter(tuple((c, str(getattr(r, c))[:160]) for c in cols) for r in qs[:200])
                   for vals, cnt in seen.most_common(15):
                       print(f"      x{cnt} {dict(vals)}")
+                  if model is Equipment:
+                      print(f"      (reverse relation {rel.get_accessor_name()} via {rel.field.name})")
+              group = getattr(eq, "equipment_group", None)
+              print(f"    equipment_group: {getattr(group, 'pk', None)} {getattr(group, 'code', None)!r}")
+              if group is not None:
+                  from iic_booking.equipment.models import EquipmentGroupQuota
+                  gq_cols = [f.name for f in EquipmentGroupQuota._meta.concrete_fields
+                             if not f.is_relation and f.name not in ("id", "created_at", "updated_at")]
+                  for q in EquipmentGroupQuota.objects.filter(equipment_group=group):
+                      vals = {c: getattr(q, c) for c in gq_cols}
+                      slots = {c: round(v / eq.slot_duration_minutes, 2) for c, v in vals.items()
+                               if c.endswith("_minutes") and eq.slot_duration_minutes}
+                      print(f"      EquipmentGroupQuota {vals} -> in {eq.slot_duration_minutes}-min slots: {slots}")
 
           with transaction.atomic():
               if connection.vendor == "postgresql":
