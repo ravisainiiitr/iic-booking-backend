@@ -8,7 +8,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import BookingInputTemplate, Equipment
+from .models import BookingInputTemplate, DynamicInputField, DynamicInputFieldType, Equipment, EquipmentStatus
 from .template_slot_preference import (
     MAX_PREFERRED_SLOT_COUNT,
     apply_preference_fields,
@@ -23,6 +23,9 @@ MAX_NAME_LENGTH = 80
 MAX_INPUT_VALUES_BYTES = 50_000
 MAX_WORKSPACE_ID_LENGTH = 64
 RESEARCH_WORKSPACE_KEY = "research_workspace"
+SAMPLE_SETS_KEY = "_sample_sets"
+SUMMARY_MAX_ITEMS = 4
+SUMMARY_MAX_VALUE_LENGTH = 60
 
 OPTION_KEYS = (
     "auto_slot_selection",
@@ -35,20 +38,114 @@ OPTION_KEYS = (
 )
 
 
-def _serialize(template):
+def template_booking_block(user, equipment):
+    """Why ``user`` may not keep a template for ``equipment`` (same access rules as booking it), or None."""
+    from iic_booking.users.legacy_ledger.booking_lock import department_equipment_booking_blocked
+
+    from .api_views import user_can_see_equipment
+
+    if not user_can_see_equipment(user, equipment):
+        return "You are not authorized to book this equipment."
+    blocked, message = department_equipment_booking_blocked(equipment, user)
+    if blocked:
+        return message
+    return None
+
+
+def _field_labels(user, equipment_ids):
+    """{equipment_id: {field_key: (label, field_type)}}, preferring fields scoped to the user's type."""
+    if not equipment_ids:
+        return {}
+    user_type = str(getattr(user, "user_type", "") or "")
+    rows = DynamicInputField.objects.filter(
+        equipment_id__in=list(equipment_ids), user_type__in=[user_type, ""]
+    ).values_list("equipment_id", "user_type", "field_key", "field_label", "field_type")
+    labels = {}
+    for equipment_id, field_user_type, key, label, field_type in rows:
+        per_equipment = labels.setdefault(equipment_id, {})
+        if key in per_equipment and not field_user_type:
+            continue
+        per_equipment[key] = (label or key, field_type)
+    return labels
+
+
+def _summary_value(value, field_type, elements):
+    if elements:
+        return elements
+    if field_type == DynamicInputFieldType.TABLE and isinstance(value, list):
+        rows = sum(1 for row in value if isinstance(row, list) and any(str(c).strip() for c in row))
+        return f"{rows} row{'' if rows == 1 else 's'}" if rows else None
+    if isinstance(value, bool):
+        return "Yes" if value else None
+    if isinstance(value, list):
+        text = ", ".join(str(v) for v in value if not isinstance(v, (list, dict)) and str(v).strip())
+    elif isinstance(value, dict):
+        return None
+    else:
+        text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    if len(text) > SUMMARY_MAX_VALUE_LENGTH:
+        text = text[: SUMMARY_MAX_VALUE_LENGTH - 1].rstrip() + "…"
+    return text
+
+
+def input_summary(input_values, labels):
+    """Up to SUMMARY_MAX_ITEMS filled inputs as [{key, label, value}], in field-key order."""
+    values = input_values if isinstance(input_values, dict) else {}
+    items = []
+    for key in sorted(labels):
+        if key not in values:
+            continue
+        label, field_type = labels[key]
+        raw_elements = values.get(f"{key}_elements")
+        elements = raw_elements.strip() if isinstance(raw_elements, str) else ""
+        text = _summary_value(values[key], field_type, elements.replace(",", ", ") if elements else "")
+        if text is None:
+            continue
+        items.append({"key": key, "label": label, "value": text})
+        if len(items) >= SUMMARY_MAX_ITEMS:
+            break
+    return items
+
+
+def _sample_set_count(input_values):
+    extra = (input_values or {}).get(SAMPLE_SETS_KEY) if isinstance(input_values, dict) else None
+    return 1 + (sum(1 for s in extra if isinstance(s, dict)) if isinstance(extra, list) else 0)
+
+
+def _serialize(template, *, labels=None, booking_block=False):
+    """``booking_block`` is the template_booking_block() result, or False when it was not computed."""
     equipment = template.equipment
-    return {
+    department = getattr(equipment, "internal_department", None) if equipment is not None else None
+    input_values = template.input_values or {}
+    data = {
         "id": template.pk,
         "equipment": template.equipment_id,
         "equipment_code": getattr(equipment, "code", None),
         "equipment_name": getattr(equipment, "name", None),
+        "equipment_status": getattr(equipment, "status", None),
+        "equipment_parent": getattr(equipment, "parent_equipment_id", None),
+        "department_id": getattr(department, "id", None),
+        "department_name": getattr(department, "name", None),
+        "department_code": getattr(department, "code", None),
         "name": template.name,
-        "input_values": template.input_values or {},
+        "input_values": input_values,
         "options": template.options or {},
+        "sample_set_count": _sample_set_count(input_values),
         **serialize_preference(template),
         "created_at": template.created_at.isoformat() if template.created_at else None,
         "updated_at": template.updated_at.isoformat() if template.updated_at else None,
     }
+    if labels is not None:
+        data["input_summary"] = input_summary(input_values, labels.get(template.equipment_id, {}))
+    if booking_block is not False:
+        operational = (getattr(equipment, "status", "") or "").strip() == EquipmentStatus.ACTIVE
+        data["bookable"] = booking_block is None and operational
+        data["booking_block_reason"] = booking_block or (
+            None if operational else "This equipment is not operational right now."
+        )
+    return data
 
 
 def _clean_name(raw):
@@ -141,26 +238,50 @@ def _name_taken_response(name):
     )
 
 
+def _serialize_one(user, template):
+    return _serialize(
+        template,
+        labels=_field_labels(user, [template.equipment_id]),
+        booking_block=template_booking_block(user, template.equipment),
+    )
+
+
+def _owned_templates(user):
+    return BookingInputTemplate.objects.filter(user=user).select_related("equipment__internal_department")
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def booking_templates(request):
+    """GET: all of the user's templates (``?equipment=<id>`` for one equipment, ``?department=<id>`` for one
+    department). POST: create a template from just an equipment id, a name and the booking inputs."""
     user = request.user
     if request.method == "GET":
-        qs = BookingInputTemplate.objects.filter(user=user).select_related("equipment")
-        equipment_param = request.query_params.get("equipment")
-        if equipment_param:
-            if not str(equipment_param).isdigit():
-                return Response({"error": "equipment must be an equipment id."}, status=status.HTTP_400_BAD_REQUEST)
-            qs = qs.filter(equipment_id=int(equipment_param))
-        return Response({"templates": [_serialize(t) for t in qs]})
+        qs = _owned_templates(user)
+        for param, lookup in (("equipment", "equipment_id"), ("department", "equipment__internal_department_id")):
+            raw = request.query_params.get(param)
+            if raw:
+                if not str(raw).isdigit():
+                    return Response({"error": f"{param} must be an id."}, status=status.HTTP_400_BAD_REQUEST)
+                qs = qs.filter(**{lookup: int(raw)})
+        templates = list(qs)
+        equipment_by_id = {t.equipment_id: t.equipment for t in templates}
+        labels = _field_labels(user, equipment_by_id.keys())
+        blocks = {pk: template_booking_block(user, eq) for pk, eq in equipment_by_id.items()}
+        return Response(
+            {"templates": [_serialize(t, labels=labels, booking_block=blocks[t.equipment_id]) for t in templates]}
+        )
 
     data = request.data if isinstance(request.data, dict) else {}
     equipment_id = data.get("equipment")
     if not str(equipment_id or "").isdigit():
         return Response({"error": "Choose the equipment for this template."}, status=status.HTTP_400_BAD_REQUEST)
-    equipment = Equipment.objects.filter(pk=int(equipment_id)).first()
+    equipment = Equipment.objects.select_related("internal_department").filter(pk=int(equipment_id)).first()
     if equipment is None:
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+    block = template_booking_block(user, equipment)
+    if block:
+        return Response({"error": block, "code": "equipment_not_bookable"}, status=status.HTTP_403_FORBIDDEN)
     name, error = _clean_name(data.get("name"))
     if error:
         return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
@@ -186,20 +307,18 @@ def booking_templates(request):
             template.save()
     except IntegrityError:
         return _name_taken_response(name)
-    return Response(_serialize(template), status=status.HTTP_201_CREATED)
+    return Response(_serialize_one(user, template), status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET", "PATCH", "PUT", "DELETE"])
 @permission_classes([IsAuthenticated])
 def booking_template_detail(request, template_id):
-    template = (
-        BookingInputTemplate.objects.select_related("equipment").filter(pk=template_id, user=request.user).first()
-    )
+    template = _owned_templates(request.user).filter(pk=template_id).first()
     if template is None:
         return Response({"error": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "GET":
-        return Response(_serialize(template))
+        return Response(_serialize_one(request.user, template))
 
     if request.method == "DELETE":
         template.delete()
@@ -238,7 +357,7 @@ def booking_template_detail(request, template_id):
                 template.save(update_fields=[*update_fields, "updated_at"])
         except IntegrityError:
             return _name_taken_response(template.name)
-    return Response(_serialize(template))
+    return Response(_serialize_one(request.user, template))
 
 
 @api_view(["GET"])
