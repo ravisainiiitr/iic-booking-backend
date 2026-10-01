@@ -249,7 +249,7 @@ class TestWorkspaceBookingResults:
         row = rows[booking.booking_id]
         assert row["can_view"] is True and row["has_results"] is True and row["locked_code"] is None
         assert [f["name"] for f in row["files"]] == ["xrd_pattern.csv"]
-        assert row["files"][0]["download_url"] == f"/api/bookings/{booking.booking_id}/results/files/{brf.pk}/"
+        assert row["files"][0]["download_url"] == f"http://testserver/api/bookings/{booking.booking_id}/results/files/{brf.pk}/"
         assert row["results_path"] == f"/bookings/{booking.booking_id}/results/"
         assert rows[empty.booking_id]["has_results"] is False and rows[empty.booking_id]["files"] == []
 

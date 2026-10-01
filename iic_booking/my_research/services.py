@@ -342,7 +342,7 @@ def annotate_booking_results(queryset):
     )
 
 
-def booking_results_summary(booking, viewer, *, include_files: bool) -> dict[str, Any]:
+def booking_results_summary(booking, viewer, *, include_files: bool, request=None) -> dict[str, Any]:
     """Official results of a booking as the existing results system would show them to `viewer`.
 
     Read-through only: access, completion/rating/FBR gates and download URLs all come from the
@@ -380,7 +380,7 @@ def booking_results_summary(booking, viewer, *, include_files: bool) -> dict[str
                     "uploaded_at": f.get("uploaded_at"),
                     "download_url": f.get("download_url") or "",
                 }
-                for f in merge_booking_result_files(booking=booking, s3_files=[], request=None)
+                for f in merge_booking_result_files(booking=booking, s3_files=[], request=request)
             ]
         summary["files"] = files
     return summary

@@ -1079,7 +1079,9 @@ def workspace_booking_results(request, workspace_id):
         linked = linked.filter(booking_id__in=wanted)
     booking_ids = list(linked.order_by("-added_at").values_list("booking_id", flat=True)[:MAX_RESULTS_BOOKINGS])
     bookings = annotate_booking_results(Booking.objects.filter(booking_id__in=booking_ids)).order_by("-booking_id")
-    return Response({"results": [booking_results_summary(b, request.user, include_files=True) for b in bookings]})
+    return Response(
+        {"results": [booking_results_summary(b, request.user, include_files=True, request=request) for b in bookings]}
+    )
 
 
 RECENT_BOOKING_EXCLUDED_STATUSES = (
