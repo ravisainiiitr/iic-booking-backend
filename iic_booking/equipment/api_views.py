@@ -244,15 +244,20 @@ def _is_admin_panel_user(user) -> bool:
 def _actor_may_book_on_behalf(actor, equipment) -> str | None:
     """
     Allow booking/calculating for another user.
-    Main Admin / OIC: any equipment.
+    Main Admin: any equipment.
+    OIC: only equipment they are (temporary) Officer In-charge of.
     Department Administrator: only equipment in their assigned internal department.
     Returns an error message string if not allowed, else None.
     """
     if not actor or not getattr(actor, "is_authenticated", False):
         return "Authentication required."
     ut = str(getattr(actor, "user_type", None) or "").strip().lower()
-    if ut in (UserType.ADMIN, UserType.MANAGER):
+    if ut == UserType.ADMIN:
         return None
+    if ut == UserType.MANAGER:
+        if _user_can_act_as_oic_for_equipment(actor, equipment):
+            return None
+        return "You can only book on behalf of users for equipment you are Officer In-charge of."
     if ut == UserType.DEPT_ADMIN:
         dept_id = getattr(actor, "department_id", None)
         if not dept_id:
@@ -400,6 +405,18 @@ def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
         temporary_oic=user,
         resume_at__gt=now_ts,
     ).exists()
+
+
+def _oic_booking_scope_denied(user, booking):
+    """403 response when an OIC acts on a booking of equipment they are not (temporary) OIC of."""
+    if getattr(user, "user_type", None) != UserType.MANAGER:
+        return None
+    if _user_can_act_as_oic_for_equipment(user, booking.equipment):
+        return None
+    return Response(
+        {"error": "You can only manage bookings for equipment you are Officer In-charge of."},
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 def _notify_oic_istem_fbr_submitted(booking) -> None:
     """Email OIC(s) for the equipment when external user submits I-STEM FBR."""
@@ -1448,6 +1465,16 @@ def user_can_view_equipment_in_catalog(user, equipment) -> bool:
         return False
     return get_visible_equipment_queryset(user, catalog_scope="all").filter(pk=equipment.pk).exists()
 
+
+def get_charge_visible_equipment_queryset(user):
+    """
+    Equipment whose rate cards / charge estimates the user may read. OICs get the full
+    ``catalog_scope=all`` catalog here; slot and booking management stay on the managed scope.
+    """
+    if user and getattr(user, "is_authenticated", False) and user.user_type == UserType.MANAGER:
+        return get_visible_equipment_queryset(user, catalog_scope="all")
+    return get_visible_equipment_queryset(user)
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_category_list(request):
@@ -1860,7 +1887,7 @@ def equipment_analysis_charges(request):
     )
 
     queryset = (
-        get_visible_equipment_queryset(request.user)
+        get_charge_visible_equipment_queryset(request.user)
         .exclude(status=EquipmentStatus.DISPOSED)
         .select_related("internal_department", "category")
         .prefetch_related(
@@ -2031,7 +2058,7 @@ def equipment_analysis_charges(request):
     ]
 
     dept_rows = (
-        get_visible_equipment_queryset(request.user)
+        get_charge_visible_equipment_queryset(request.user)
         .exclude(status=EquipmentStatus.DISPOSED)
         .filter(internal_department__isnull=False)
         .values("internal_department_id", "internal_department__name", "internal_department__code")
@@ -11184,6 +11211,9 @@ def complete_booking(request, booking_id):
                     {"error": "Booking not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+            scope_denied = _oic_booking_scope_denied(request.user, booking)
+            if scope_denied:
+                return scope_denied
             if booking.status not in [BookingStatus.PENDING, BookingStatus.BOOKED]:
                 return Response(
                     {"error": f"Cannot complete booking with status '{booking.status}'. Only PENDING or BOOKED bookings can be completed."},
@@ -11324,6 +11354,9 @@ def refund_booking(request, booking_id):
             {"error": "Booking not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    scope_denied = _oic_booking_scope_denied(request.user, booking)
+    if scope_denied:
+        return scope_denied
 
     # Don't allow refunding already refunded or not-utilized bookings
     if booking.status in (BookingStatus.REFUNDED, BookingStatus.BOOKING_NOT_UTILIZED):
@@ -11392,6 +11425,9 @@ def mark_booking_not_utilized(request, booking_id):
             {"error": "Booking not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    scope_denied = _oic_booking_scope_denied(request.user, booking)
+    if scope_denied:
+        return scope_denied
 
     if booking.status != BookingStatus.BOOKED:
         return Response(
@@ -11987,6 +12023,9 @@ def reschedule_booking(request, booking_id):
             {"error": "Booking not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    scope_denied = _oic_booking_scope_denied(request.user, booking)
+    if scope_denied:
+        return scope_denied
 
     # Only allow rescheduling PENDING, BOOKED, or disruption-pending
     if booking.status not in [BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.DISRUPTION_PENDING]:

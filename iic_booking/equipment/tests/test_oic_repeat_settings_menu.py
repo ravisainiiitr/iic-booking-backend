@@ -539,6 +539,7 @@ def test_oic_can_reschedule_onto_group_member_with_flags_off(egs_factory, egs_fl
     booking = egs_factory.booking(owner, source, egs_factory.future(days=4, hour=10))
     target_slot = egs_factory.slot(target, egs_factory.future(days=5, hour=11))
     oic = UserFactory(user_type=UserType.MANAGER)
+    EquipmentManager.objects.create(equipment=source, manager=oic)
 
     owner_options = egs.reschedule_equipment_options(booking, actor=owner)
     assert [o["equipment_id"] for o in owner_options] == [source.pk]
