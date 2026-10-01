@@ -7,6 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from iic_booking.communication.default_email_templates import get_default_email_templates
+from iic_booking.communication.models import CommunicationTemplate
+from iic_booking.communication.service import CommunicationService
 from iic_booking.equipment import booking_events
 from iic_booking.equipment.models import BookingEvent, BookingStatus, EquipmentManager
 from iic_booking.users.models.user_type import UserType
@@ -16,10 +19,11 @@ from iic_booking.users.tests.factories import UserFactory
 
 @pytest.fixture
 def sent(monkeypatch):
-    calls = SimpleNamespace(emails=[], pushes=[])
+    calls = SimpleNamespace(emails=[], pushes=[], cc={})
 
     def _email(recipient, template=None, template_context=None, metadata=None, created_by=None, cc_emails=None):
         calls.emails.append((recipient, template, dict(template_context or {})))
+        calls.cc[recipient] = list(cc_emails or [])
         from iic_booking.communication.models import CommunicationLog
 
         return SimpleNamespace(status=CommunicationLog.CommunicationStatus.SENT)
@@ -52,12 +56,14 @@ def setup(egs_factory, monkeypatch):
         return SimpleNamespace(wallet=wallet, balance=Decimal("500.00"), refresh_from_db=lambda: None), True
 
     monkeypatch.setattr(WalletRepository, "get_booking_wallet_target", staticmethod(_target))
-    return SimpleNamespace(student=student, faculty=faculty, oic=oic, booking=booking, state=state)
+    return SimpleNamespace(
+        student=student, faculty=faculty, oic=oic, booking=booking, equipment=equipment, state=state
+    )
 
 
-def _send(setup, **kwargs):
+def _send(setup, created_by=None, **kwargs):
     event = booking_events.create_booking_event(
-        booking=setup.booking, created_by=setup.student, send_notification=False, **kwargs
+        booking=setup.booking, created_by=created_by or setup.student, send_notification=False, **kwargs
     )
     booking_events.send_booking_event_notification(
         BookingEvent.objects.select_related("booking", "booking__user", "booking__equipment").get(
@@ -72,18 +78,93 @@ def _email_to(sent, recipient):
     return matches[0]
 
 
-def test_confirmation_to_faculty_names_the_student(setup, sent):
+def _render(code, ctx):
+    spec = next(t for t in get_default_email_templates() if t["code"] == code)
+    template = CommunicationTemplate(
+        code=spec["code"],
+        name=spec["name"],
+        communication_type="email",
+        subject=spec["subject"],
+        body_text=spec["body_text"],
+        body_html=spec["body_html"],
+    )
+    return CommunicationService.render_template(template, ctx)
+
+
+def test_faculty_gets_one_copy_of_the_student_email_with_booked_by(setup, sent):
     _send(setup, event_type="CREATED")
 
     faculty_ctx = _email_to(sent, setup.faculty)
-    assert faculty_ctx["user_name"] == "Ravi Kumar"
-    assert faculty_ctx["student_name"] == "Asha Verma"
-    assert faculty_ctx["comment"].startswith(
-        "Booked by your student: Asha Verma (asha.verma@example.com). This booking is charged to your wallet."
-    )
-
     student_ctx = _email_to(sent, setup.student)
-    assert "Booked by your student" not in student_ctx["comment"]
+    assert faculty_ctx["user_name"] == "Prof. Ravi Kumar"
+    assert faculty_ctx["booked_by_display"] == "Asha Verma (asha.verma@example.com)"
+    assert faculty_ctx["comment"] == student_ctx["comment"]
+    assert "Booked by" not in faculty_ctx["comment"]
+    assert faculty_ctx["wallet_balance_after"] == student_ctx["wallet_balance_after"] == "₹500.00"
+
+    assert student_ctx["user_name"] == "Asha Verma"
+    assert not student_ctx.get("booked_by_display")
+    assert sent.cc[setup.student] == []
+
+
+def test_supervisor_email_renders_booked_by_row_and_prof_greeting(setup, sent):
+    _send(setup, event_type="CREATED")
+
+    faculty_out = _render("booking_created_email", _email_to(sent, setup.faculty))
+    assert "Hello Prof. Ravi Kumar," in faculty_out["html_message"]
+    assert "Booked by" in faculty_out["html_message"]
+    assert "Asha Verma (asha.verma@example.com)" in faculty_out["html_message"]
+    assert "- Booked by: Asha Verma (asha.verma@example.com)" in faculty_out["message"]
+    assert "Booked by your student" not in faculty_out["html_message"]
+
+    student_out = _render("booking_created_email", _email_to(sent, setup.student))
+    assert "Hello Asha Verma," in student_out["html_message"]
+    assert "Booked by" not in student_out["html_message"]
+    assert "Booked by" not in student_out["message"]
+
+
+def test_supervisor_booking_for_student_is_not_also_copied(setup, sent):
+    _send(setup, event_type="CREATED", created_by=setup.faculty)
+
+    assert _email_to(sent, setup.faculty)["booked_by_display"].startswith("Asha Verma")
+    assert sent.cc[setup.student] == []
+
+
+def test_other_creator_is_still_copied_on_the_student_email(setup, sent):
+    clerk = UserFactory(user_type=UserType.FACULTY, name="Other Staff", admin_approved=True)
+
+    _send(setup, event_type="CREATED", created_by=clerk)
+
+    assert sent.cc[setup.student] == [clerk.email]
+    assert _email_to(sent, setup.faculty)
+
+
+def test_supervisor_who_is_also_the_oic_gets_one_email(setup, sent):
+    EquipmentManager.objects.create(equipment=setup.equipment, manager=setup.faculty)
+
+    _send(setup, event_type="CREATED")
+
+    assert _email_to(sent, setup.faculty)["user_name"] == "Prof. Ravi Kumar"
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("Prof. Ravi Kumar", "Prof. Ravi Kumar"),
+        ("prof Ravi Kumar", "prof Ravi Kumar"),
+        ("Professor Ravi Kumar", "Professor Ravi Kumar"),
+        ("Dr. Ravi Kumar", "Dr. Ravi Kumar"),
+        ("Drona Rao", "Prof. Drona Rao"),
+        ("", "ravi.kumar@example.com"),
+    ],
+)
+def test_prof_prefix_is_not_doubled(setup, sent, name, expected):
+    setup.faculty.name = name
+    setup.faculty.save()
+
+    _send(setup, event_type="CREATED")
+
+    assert _email_to(sent, setup.faculty)["user_name"] == expected
 
 
 def test_urgent_hold_confirmation_to_faculty_names_the_student(setup, sent):
@@ -95,7 +176,10 @@ def test_urgent_hold_confirmation_to_faculty_names_the_student(setup, sent):
         metadata={"urgent_hold_converted": True},
     )
 
-    assert "Booked by your student: Asha Verma" in _email_to(sent, setup.faculty)["comment"]
+    faculty_ctx = _email_to(sent, setup.faculty)
+    assert faculty_ctx["booked_by_display"] == "Asha Verma (asha.verma@example.com)"
+    assert faculty_ctx["user_name"] == "Prof. Ravi Kumar"
+    assert "Booked by" not in faculty_ctx["comment"]
 
 
 def test_student_without_a_name_is_shown_once_by_email(setup, sent):
@@ -104,9 +188,7 @@ def test_student_without_a_name_is_shown_once_by_email(setup, sent):
 
     _send(setup, event_type="CREATED")
 
-    assert _email_to(sent, setup.faculty)["comment"].startswith(
-        "Booked by your student: asha.verma@example.com. This booking"
-    )
+    assert _email_to(sent, setup.faculty)["booked_by_display"] == "asha.verma@example.com"
 
 
 def test_no_faculty_copy_when_student_pays_from_own_wallet(setup, sent):
@@ -127,7 +209,7 @@ def test_confirmation_to_oic_names_the_student_and_wallet_owner(setup, sent):
         "Booked by: Asha Verma (asha.verma@example.com).\n"
         "Charged to the wallet of: Ravi Kumar (ravi.kumar@example.com)."
     )
-    assert "Booked by your student" not in oic_ctx["comment"]
+    assert not oic_ctx.get("booked_by_display")
 
 
 def test_urgent_hold_confirmation_to_oic_names_the_student(setup, sent):

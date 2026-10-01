@@ -101,18 +101,27 @@ def _booking_wallet_owner(user, equipment):
     return owner if owner and owner.id != user.id else None
 
 
+_EXISTING_TITLE_RE = re.compile(r"^(prof(essor)?|dr)\b", re.IGNORECASE)
+
+
+def _supervisor_salutation(person) -> str:
+    """'Prof. <name>' for the supervisor's greeting, keeping a title the name already carries."""
+    name = user_display_name(person, fallback="")
+    if not name:
+        return user_display_name(person)
+    if "@" in name or _EXISTING_TITLE_RE.match(name):
+        return name
+    return f"Prof. {name}"
+
+
 def _wallet_owner_context(context: dict, wallet_owner, booker) -> dict:
-    """Wallet owner's copy of the booker's email, naming the student who booked on their wallet."""
+    """Wallet owner's copy of the booker's email: same content, with who booked in the details card."""
     ctx = context.copy()
-    ctx["user_name"] = user_display_name(wallet_owner)
+    ctx["user_name"] = _supervisor_salutation(wallet_owner)
     ctx["user_email"] = wallet_owner.email
     ctx["student_name"] = user_display_name(booker, fallback="your student")
     ctx["student_email"] = (getattr(booker, "email", "") or "").strip()
-    _prepend_to_comment(
-        ctx,
-        f"Booked by your student: {_person_label(booker, 'your student')}. "
-        "This booking is charged to your wallet.",
-    )
+    ctx["booked_by_display"] = _person_label(booker, "your student")
     return ctx
 
 
@@ -785,6 +794,23 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         "link": context["link"],
     }
     
+    supervisor = None
+    if event.event_type == BookingEventType.CREATED and email_template_code:
+        try:
+            supervisor = _booking_wallet_owner(user, equipment)
+        except Exception:
+            logger.warning("Wallet owner lookup failed for event %s", event.event_id, exc_info=True)
+    # Receives the supervisor's own copy below, so is not also copied on the booker's email.
+    creator = event.created_by
+    cc_creator = bool(
+        creator
+        and creator.id != user.id
+        and (creator.email or "").strip()
+        and event.event_type == BookingEventType.CREATED
+        and not (supervisor and creator.id == supervisor.id)
+    )
+    supervisor_emailed_ids = set()
+
     # Send email notification
     if email_template_code:
         try:
@@ -814,16 +840,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 template=email_template_code,
                 template_context=context,
                 metadata=metadata,
-                cc_emails=(
-                    [event.created_by.email]
-                    if (
-                        event.created_by
-                        and event.created_by.id != user.id
-                        and (event.created_by.email or "").strip()
-                        and event.event_type == BookingEventType.CREATED
-                    )
-                    else None
-                ),
+                cc_emails=[creator.email] if cc_creator else None,
             )
             from iic_booking.communication.models import CommunicationLog
 
@@ -840,50 +857,43 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             )
             raise
     # For internal student: also send booking confirmation to the associated Wallet owner (Supervisor)
-    if event.event_type == BookingEventType.CREATED and email_template_code:
+    if supervisor is not None:
         try:
-            from iic_booking.users.repositories.wallet_repository import WalletRepository
-
-            wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
-                user, getattr(booking.equipment, "internal_department", None)
+            wallet_context = _wallet_owner_context(context, supervisor, user)
+            CommunicationService.send_email(
+                recipient=supervisor,
+                template=email_template_code,
+                template_context=wallet_context,
+                metadata=metadata,
             )
-            if has_wallet and wallet_target and getattr(wallet_target, "wallet", None):
-                wallet_owner = wallet_target.wallet.user
-                if wallet_owner and wallet_owner.id != user.id:
-                    wallet_context = _wallet_owner_context(context, wallet_owner, user)
-                    CommunicationService.send_email(
-                        recipient=wallet_owner,
-                        template=email_template_code,
+            supervisor_emailed_ids.add(supervisor.id)
+            logger.info(
+                "Booking confirmation sent to wallet owner %s for booking %s (booked for %s)",
+                supervisor.email,
+                display_booking_ref,
+                user.email,
+            )
+            if push_template_code:
+                try:
+                    booker_label = user_display_name(user, fallback="student")
+                    CommunicationService.send_push_notification(
+                        recipient=supervisor,
+                        template=push_template_code,
                         template_context=wallet_context,
                         metadata=metadata,
+                        title="Student booking confirmed",
+                        message=(
+                            f"{display_booking_ref} — {equipment.name}: "
+                            f"booking by {booker_label} is confirmed."
+                        ),
                     )
-                    logger.info(
-                        "Booking confirmation sent to wallet owner %s for booking %s (booked for %s)",
-                        wallet_owner.email,
-                        display_booking_ref,
-                        user.email,
+                except Exception as push_err:
+                    logger.error(
+                        "Failed to send booking confirmation push to wallet owner %s: %s",
+                        supervisor.email,
+                        push_err,
+                        exc_info=True,
                     )
-                    if push_template_code:
-                        try:
-                            booker_label = user_display_name(user, fallback="student")
-                            CommunicationService.send_push_notification(
-                                recipient=wallet_owner,
-                                template=push_template_code,
-                                template_context=wallet_context,
-                                metadata=metadata,
-                                title="Student booking confirmed",
-                                message=(
-                                    f"{display_booking_ref} — {equipment.name}: "
-                                    f"booking by {booker_label} is confirmed."
-                                ),
-                            )
-                        except Exception as push_err:
-                            logger.error(
-                                "Failed to send booking confirmation push to wallet owner %s: %s",
-                                wallet_owner.email,
-                                push_err,
-                                exc_info=True,
-                            )
         except Exception as e:
             logger.error(
                 f"Failed to send booking confirmation to wallet owner: {str(e)}",
@@ -1115,6 +1125,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                     email_template_code
                     and (staff.email or "").strip()
                     and staff.id not in confirmation_email_opt_out_ids
+                    and staff.id not in supervisor_emailed_ids
                 ):
                     try:
                         CommunicationService.send_email(

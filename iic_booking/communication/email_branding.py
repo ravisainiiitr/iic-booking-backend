@@ -672,6 +672,7 @@ def booking_details_rows(
 ) -> list[str]:
     rows = [
         optional_detail_row("Booking ID", "booking_id"),
+        optional_detail_row("Booked by", "booked_by_display"),
         optional_detail_row("Equipment", "equipment_name"),
         optional_detail_row("Equipment code", "equipment_code"),
         optional_detail_row("Start time", "start_time"),
@@ -746,6 +747,7 @@ def build_standard_email(
         # Plain-text mirror uses common vars when present
         for label, var in (
             ("Booking ID", "booking_id"),
+            ("Booked by", "booked_by_display"),
             ("Equipment", "equipment_name"),
             ("Start time", "start_time"),
             ("End time", "end_time"),
