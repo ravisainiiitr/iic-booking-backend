@@ -470,6 +470,16 @@ def try_deterministic_turn(*, user, text: str, conversation=None, public: bool =
                 content="There is no pending action to confirm. Prepare a booking or financial proposal first.",
                 metadata={"deterministic": True},
             )
+        elif pending not in ("CANCEL_BOOKING", "RESCHEDULE_BOOKING", "WALLET_RECHARGE", "WALLET_CREDIT"):
+            # New bookings spend wallet money, so they only run from the explicit Confirm booking button.
+            result = build_response(
+                kind="CLARIFICATION",
+                content=(
+                    "To place the booking, press **Confirm booking** on the booking summary card above. "
+                    "Typed replies never create a booking."
+                ),
+                metadata={"deterministic": True, "typed_confirm_blocked": True},
+            )
         else:
             if pending == "CANCEL_BOOKING":
                 exec_result = booking_mut.execute_booking_cancel(

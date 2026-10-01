@@ -143,11 +143,18 @@ def conversation_messages(request, conversation_id):
         return gated
     conv = get_object_or_404(Conversation, id=conversation_id, user=request.user)
     content = request.data.get("content") or request.data.get("message") or ""
+    from iic_booking.research_copilot.services.assistant import actions as assistant_actions
     from iic_booking.research_copilot.services.intelligence import actions as copilot_actions
 
+    raw_action = request.data.get("action") if hasattr(request.data, "get") else None
+    action = None
+    assistant_action = None
     try:
-        action = copilot_actions.parse(request.data.get("action") if hasattr(request.data, "get") else None)
-    except copilot_actions.InvalidAction as exc:
+        if assistant_actions.is_assistant_action(raw_action):
+            assistant_action = assistant_actions.parse(raw_action)
+        else:
+            action = copilot_actions.parse(raw_action)
+    except (copilot_actions.InvalidAction, assistant_actions.InvalidAssistantAction) as exc:
         return Response(
             {"error": {"code": str(exc), "message": "That action is not available."}},
             status=status.HTTP_400_BAD_REQUEST,
@@ -159,6 +166,7 @@ def conversation_messages(request, conversation_id):
             content=content,
             choice=_choice_from_request(request.data),
             action=action,
+            assistant_action=assistant_action,
         )
     except ValueError as exc:
         return Response(

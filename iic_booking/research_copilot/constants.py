@@ -17,6 +17,7 @@ SUGGESTED_PROMPTS = {
         "Help me choose between TEM and FESEM.",
     ],
     "faculty": [
+        "Is XRD free next Monday morning?",
         "Show how students join my wallet.",
         "What equipment is under maintenance?",
         "Explain credit facility for my lab.",
@@ -41,12 +42,14 @@ SUGGESTED_PROMPTS = {
         "Escalate a user to support.",
     ],
     "external": [
+        "I need FESEM tomorrow — what are my options?",
         "How do I book equipment as an external user?",
         "What documents do I need for billing?",
         "Where are my results?",
         "Talk to support.",
     ],
     "default": [
+        "I need FESEM tomorrow — what are my options?",
         "How do I book equipment?",
         "Where is my sample?",
         "Wallet and recharge help",

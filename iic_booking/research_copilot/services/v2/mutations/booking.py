@@ -459,7 +459,23 @@ def execute_booking_create(
     )
     if err:
         return _safe_error(err, _human_proposal_error(err))
+    if not prop_store.claim_proposal(proposal_id):
+        return _safe_error(
+            "PROPOSAL_IN_PROGRESS",
+            "This booking is already being confirmed. Check My Bookings in a moment before trying again.",
+            proposal_id=proposal_id,
+        )
+    try:
+        result = _execute_claimed_booking_create(user=user, proposal_id=proposal_id, prop=prop, key=key)
+    except Exception:
+        prop_store.release_claim(proposal_id)
+        raise
+    if not result.get("ok"):
+        prop_store.release_claim(proposal_id)
+    return result
 
+
+def _execute_claimed_booking_create(*, user, proposal_id: str, prop: dict[str, Any], key: str) -> dict[str, Any]:
     payload = prop.get("payload") or {}
     eid = int(payload["equipment_id"])
     slot_ids = [int(x) for x in (payload.get("slot_ids") or [])]

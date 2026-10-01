@@ -244,7 +244,13 @@ def _reply_deterministic(*, user, conversation: Conversation, text: str, det: di
 
 
 def send_message(
-    *, user, conversation: Conversation, content: str, choice: dict | None = None, action: dict | None = None
+    *,
+    user,
+    conversation: Conversation,
+    content: str,
+    choice: dict | None = None,
+    action: dict | None = None,
+    assistant_action: dict | None = None,
 ) -> dict:
     """
     Persist user message, prefer deterministic V2 reads, else portal grounding + RAG + LLM.
@@ -275,8 +281,26 @@ def send_message(
             conversation=conversation,
             role=MessageRole.USER,
             content=text,
-            **({"metadata": {"action": action}} if action and contextual else {}),
+            **(
+                {"metadata": {"action": assistant_action or action}}
+                if assistant_action or (action and contextual)
+                else {}
+            ),
         )
+
+    # --- Booking Assistant: availability, equipment Q&A, confirm-gated booking over live data ---
+    from iic_booking.research_copilot.services.assistant.engine import try_assistant_turn
+
+    helper = try_assistant_turn(
+        user=user,
+        text=text,
+        conversation=conversation,
+        assistant_action=assistant_action,
+        choice=choice,
+        action=action,
+    )
+    if helper is not None:
+        return _reply_deterministic(user=user, conversation=conversation, text=text, det=helper, ctx=ctx, enrich=False)
 
     # --- Intelligence layer (flagged): intents, choices, guided actions, verified knowledge ---
     from iic_booking.research_copilot.services.intelligence.engine import try_intelligent_turn
@@ -579,6 +603,11 @@ def bootstrap_payload(*, user) -> dict:
         "capabilities": ctx.capabilities,
         "llm_provider": configured_provider_name(),
         "command_actions": [
+            {"id": "ba_options", "label": "FESEM tomorrow?", "prompt": "I need FESEM tomorrow — what are my options?"},
+            {"id": "ba_upcoming", "label": "Upcoming bookings", "prompt": "Show my upcoming bookings."},
+            {"id": "ba_capability", "label": "Which instrument?", "prompt": "Which equipment can do x-ray diffraction?"},
+            {"id": "ba_charges", "label": "Charges", "prompt": "What are the charges for XRD?"},
+            {"id": "ba_cancel_rules", "label": "Cancellation rules", "prompt": "How do I cancel a booking?"},
             {"id": "find_equipment", "label": "Find equipment", "prompt": "Help me find suitable equipment for my sample."},
             {"id": "search_slots", "label": "Find available slots", "prompt": "Search available slots for FESEM this week."},
             {"id": "estimate_cost", "label": "Estimate cost", "prompt": "Estimate the cost of booking FESEM for 2 hours."},
@@ -595,6 +624,7 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
         "intelligence": _intelligence_flags(user),
+        "booking_assistant": {"enabled": _booking_assistant_enabled()},
         "command_groups": _command_groups(user),
         "mutation_flags": {
             "booking_create": _booking_flag_for_user(user, "COPILOT_BOOKING_CREATE"),
@@ -609,6 +639,12 @@ def bootstrap_payload(*, user) -> dict:
             "e2e_test_mode": bool(getattr(settings, "COPILOT_BOOKING_E2E_TEST_MODE", False)),
         },
     }
+
+
+def _booking_assistant_enabled() -> bool:
+    from iic_booking.research_copilot.services.assistant.engine import assistant_enabled
+
+    return assistant_enabled()
 
 
 def _intelligence_flags(user) -> dict:
