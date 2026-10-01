@@ -133,7 +133,11 @@ def wallet_credit_v2_summary(request):
     policy = WalletCreditPolicy.get_solo()
     enabled = feature_enabled()
     blocking = user_has_blocking_facility(request.user)
-    eligibility = {"allowed": False, "code": "FEATURE_DISABLED", "message": "Feature disabled."}
+    eligibility = {
+        "allowed": False,
+        "code": "FEATURE_DISABLED",
+        "message": "Awaiting Competent Authority Approval.",
+    }
     if enabled:
         try:
             assert_user_may_request_credit(request.user)
@@ -186,7 +190,10 @@ def wallet_credit_v2_list_or_create(request):
         qs = WalletCreditFacility.objects.filter(user=request.user).order_by("-created_at")
         return Response({"results": [_serialize_facility(f) for f in qs[:100]]})
     if not feature_enabled():
-        return Response({"error": "Feature disabled.", "code": "FEATURE_DISABLED"}, status=403)
+        return Response(
+            {"error": "Wallet Credit Facility: Awaiting Competent Authority Approval.", "code": "FEATURE_DISABLED"},
+            status=403,
+        )
     try:
         facility = create_and_submit_request(
             user=request.user,

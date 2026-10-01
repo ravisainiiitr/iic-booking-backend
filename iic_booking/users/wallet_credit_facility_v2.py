@@ -485,7 +485,9 @@ def create_and_submit_request(
     department_id: int | None = None,
 ) -> WalletCreditFacility:
     if not feature_enabled():
-        raise WalletCreditError("FEATURE_DISABLED", "Wallet Credit Facility is not enabled.", status=403)
+        raise WalletCreditError(
+            "FEATURE_DISABLED", "Wallet Credit Facility: Awaiting Competent Authority Approval.", status=403
+        )
     assert_user_may_request_credit(user)
     if not department_id:
         raise WalletCreditError(
@@ -577,8 +579,15 @@ def approve_facility(
         raise WalletCreditError("AMOUNT_TOO_HIGH", f"Approved amount exceeds policy max ₹{policy.max_credit_amount}.")
     if approved != money(facility.requested_amount) and not (reason or "").strip():
         raise WalletCreditError("REASON_REQUIRED", "Reason is mandatory when reducing the approved amount.")
+    latest_due = timezone.localdate() + timedelta(days=int(policy.max_credit_duration_days))
     if due_date is None:
-        due_date = (timezone.localdate() + timedelta(days=int(policy.max_credit_duration_days)))
+        due_date = latest_due
+    elif due_date > latest_due:
+        raise WalletCreditError(
+            "DUE_DATE_TOO_LATE",
+            f"Repayment due date cannot be later than {latest_due:%d %b %Y} "
+            f"(policy maximum {policy.max_credit_duration_days} days).",
+        )
     prev_status = facility.status
     prev_amount = str(facility.approved_amount or "")
     facility.approved_amount = approved

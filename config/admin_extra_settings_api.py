@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from rest_framework import permissions, serializers, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -482,6 +484,91 @@ def register_extra_admin_routes(router):
         def update(self, request, pk=None):
             return self.partial_update(request, pk=pk)
 
+    class WalletModeSettingsSerializer(serializers.Serializer):
+        project_grant_recharge_enabled = serializers.BooleanField(required=False)
+        direct_cash_recharge_enabled = serializers.BooleanField(required=False)
+        online_gateway_recharge_enabled = serializers.BooleanField(required=False)
+        peer_transfer_enabled = serializers.BooleanField(required=False)
+        credit_facility_enabled = serializers.BooleanField(required=False)
+        credit_max_amount = serializers.DecimalField(
+            max_digits=12, decimal_places=2, min_value=Decimal("1.00"), required=False
+        )
+        credit_max_days = serializers.IntegerField(min_value=1, max_value=3650, required=False)
+
+    class WalletModeSettingsViewSet(ViewSet):
+        """Main Administrator switches for wallet funding / transfer options and credit caps."""
+
+        permission_classes = [IsMainAdmin]
+        SRIC_FIELDS = (
+            "project_grant_recharge_enabled",
+            "direct_cash_recharge_enabled",
+            "online_gateway_recharge_enabled",
+            "peer_transfer_enabled",
+        )
+
+        @staticmethod
+        def _payload():
+            from iic_booking.users.identity.flags import wallet_credit_enabled
+            from iic_booking.users.models.wallet_credit_facility import WalletCreditPolicy
+
+            sric = WalletSricSettings.get_singleton()
+            policy = WalletCreditPolicy.get_solo()
+            return {
+                "project_grant_recharge_enabled": sric.project_grant_recharge_enabled,
+                "direct_cash_recharge_enabled": sric.direct_cash_recharge_enabled,
+                "online_gateway_recharge_enabled": sric.online_gateway_recharge_enabled,
+                "peer_transfer_enabled": sric.peer_transfer_enabled,
+                "credit_facility_enabled": policy.enabled,
+                "credit_facility_available_in_environment": wallet_credit_enabled(),
+                "credit_max_amount": str(policy.max_credit_amount),
+                "credit_max_days": policy.max_credit_duration_days,
+            }
+
+        def list(self, request):
+            return Response(self._payload())
+
+        def retrieve(self, request, pk=None):
+            return self.list(request)
+
+        def partial_update(self, request, pk=None):
+            from django.db import transaction
+
+            from iic_booking.users.models.wallet_credit_facility import WalletCreditPolicy
+
+            ser = WalletModeSettingsSerializer(data=request.data, partial=True)
+            ser.is_valid(raise_exception=True)
+            data = ser.validated_data
+            with transaction.atomic():
+                sric = WalletSricSettings.get_singleton()
+                sric_updates = [f for f in self.SRIC_FIELDS if f in data]
+                for f in sric_updates:
+                    setattr(sric, f, data[f])
+                if sric_updates:
+                    sric.save(update_fields=sric_updates)
+                policy = WalletCreditPolicy.get_solo()
+                policy_updates = []
+                if "credit_facility_enabled" in data:
+                    policy.enabled = data["credit_facility_enabled"]
+                    policy_updates.append("enabled")
+                if "credit_max_amount" in data:
+                    policy.max_credit_amount = data["credit_max_amount"]
+                    policy_updates.append("max_credit_amount")
+                    if policy.max_outstanding_amount < policy.max_credit_amount:
+                        policy.max_outstanding_amount = policy.max_credit_amount
+                        policy_updates.append("max_outstanding_amount")
+                    if policy.min_request_amount > policy.max_credit_amount:
+                        policy.min_request_amount = policy.max_credit_amount
+                        policy_updates.append("min_request_amount")
+                if "credit_max_days" in data:
+                    policy.max_credit_duration_days = data["credit_max_days"]
+                    policy_updates.append("max_credit_duration_days")
+                if policy_updates:
+                    policy.save(update_fields=[*policy_updates, "updated_at"])
+            return Response(self._payload())
+
+        def update(self, request, pk=None):
+            return self.partial_update(request, pk=pk)
+
     router.register(r"semesters", SemesterViewSet, basename="admin-semesters")
     router.register(r"icpms-standards", ICPMSStandardSampleViewSet, basename="admin-icpms-standards")
     router.register(
@@ -505,6 +592,7 @@ def register_extra_admin_routes(router):
         basename="admin-student-equipment-nominations",
     )
     router.register(r"wallet-sric-settings", WalletSricSettingsViewSet, basename="admin-wallet-sric-settings")
+    router.register(r"wallet-mode-settings", WalletModeSettingsViewSet, basename="admin-wallet-mode-settings")
     router.register(
         r"wallet-withdrawal-requests",
         WalletWithdrawalRequestViewSet,

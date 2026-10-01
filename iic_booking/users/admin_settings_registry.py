@@ -75,6 +75,12 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
                 "path": "/admin/section/userGroupMembers",
             },
             {
+                "key": "user_management.wallet_payment_modes",
+                "label": "Wallet Payment Modes",
+                "path": "/admin-settings/wallet-payment-modes",
+                "main_admin_only": True,
+            },
+            {
                 "key": "user_management.wallet_sric_settings",
                 "label": "Wallet SRIC Office Notification Settings",
                 "path": "/admin-settings/wallet-sric-settings",

@@ -130,7 +130,12 @@ def razorpay_create_order(request):
             return Response(payload, status=status.HTTP_201_CREATED)
 
         # WALLET_RECHARGE
+        from iic_booking.users.api.wallet_views import online_gateway_recharge_disabled_response
+        from iic_booking.users.models.wallet_sric_settings import online_gateway_recharge_enabled
         from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
+
+        if not online_gateway_recharge_enabled():
+            return online_gateway_recharge_disabled_response()
 
         try:
             amount = Decimal(str(request.data.get("amount") or "0")).quantize(Decimal("0.01"))

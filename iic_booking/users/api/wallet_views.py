@@ -33,7 +33,13 @@ from ..models import (
     WalletSricSettings,
 )
 from ..models.user_type import UserType
-from ..models.wallet_sric_settings import project_grant_recharge_enabled
+from ..models.wallet_sric_settings import (
+    AWAITING_APPROVAL_MESSAGE,
+    direct_cash_recharge_enabled,
+    online_gateway_recharge_enabled,
+    project_grant_recharge_enabled,
+    wallet_mode_flags,
+)
 from ..models.department import Department, DepartmentType
 from ..repositories.wallet_repository import (
     WalletRepository,
@@ -88,6 +94,27 @@ def _project_grant_recharge_disabled_response() -> Response:
         },
         status=status.HTTP_403_FORBIDDEN,
     )
+
+
+DIRECT_CASH_RECHARGE_DISABLED_CODE = "direct_cash_recharge_disabled"
+ONLINE_GATEWAY_RECHARGE_DISABLED_CODE = "online_gateway_recharge_disabled"
+
+
+def _wallet_mode_disabled_response(label: str, code: str) -> Response:
+    return Response(
+        {"error": f"Wallet recharge via {label}: {AWAITING_APPROVAL_MESSAGE}", "code": code},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _direct_cash_recharge_disabled_response() -> Response:
+    return _wallet_mode_disabled_response(
+        "Direct Cash Deposit / Bank Transfer", DIRECT_CASH_RECHARGE_DISABLED_CODE
+    )
+
+
+def online_gateway_recharge_disabled_response() -> Response:
+    return _wallet_mode_disabled_response("online payment gateway", ONLINE_GATEWAY_RECHARGE_DISABLED_CODE)
 
 
 @api_view(["GET"])
@@ -1503,6 +1530,8 @@ def create_razorpay_order(request):
     """Create a Razorpay order for sub-wallet recharge.
     Request Body: amount (required), department_id (required, internal department).
     """
+    if not online_gateway_recharge_enabled():
+        return online_gateway_recharge_disabled_response()
     serializer = WalletCreditSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     amount = serializer.validated_data['amount']
@@ -1732,6 +1761,8 @@ def send_user_otp_for_recharge(request):
 
     if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not project_grant_recharge_enabled():
         return _project_grant_recharge_disabled_response()
+    if recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT and not direct_cash_recharge_enabled():
+        return _direct_cash_recharge_disabled_response()
 
     # Project Grant remains faculty-only. Students may use Direct Cash Deposit / Bank Transfer.
     if is_iitr_student(request.user) and recharge_mode != WalletRechargeMode.DIRECT_CASH_DEPOSIT:
@@ -2125,6 +2156,13 @@ def create_wallet_recharge_request(request):
     ):
         recharge_request.delete()
         return _project_grant_recharge_disabled_response()
+    if (
+        mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
+        and not recharge_request.user_otp_verified
+        and not direct_cash_recharge_enabled()
+    ):
+        recharge_request.delete()
+        return _direct_cash_recharge_disabled_response()
     
     from django.db import transaction
 
@@ -2956,7 +2994,7 @@ def wallet_student_recharge_settings_view(request):
             "enable_iitr_student_wallet_recharge": global_enabled,
             "department_recharge_available": bool(dept_enabled) if is_student else None,
             "applies_to_current_user": is_student,
-            "project_grant_recharge_enabled": project_grant_recharge_enabled(),
+            **wallet_mode_flags(),
         }
     )
 

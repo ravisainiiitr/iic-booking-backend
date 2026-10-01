@@ -63,6 +63,20 @@ def _error_response(exc: PeerTransferError):
     return Response({"error": exc.message, "code": exc.code}, status=http)
 
 
+PEER_TRANSFER_DISABLED_CODE = "peer_transfer_disabled"
+
+
+def _peer_transfer_disabled_response():
+    from iic_booking.users.models.wallet_sric_settings import AWAITING_APPROVAL_MESSAGE, peer_transfer_enabled
+
+    if peer_transfer_enabled():
+        return None
+    return Response(
+        {"error": f"Wallet transfer within the same department: {AWAITING_APPROVAL_MESSAGE}", "code": PEER_TRANSFER_DISABLED_CODE},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def wallet_peer_transfer_eligible_recipients(request):
@@ -91,6 +105,9 @@ def wallet_peer_transfer_eligible_recipients(request):
 @permission_classes([IsAuthenticated])
 def wallet_peer_transfer_send_otp(request):
     """Create a pending transfer and email OTP to the initiating faculty user."""
+    disabled = _peer_transfer_disabled_response()
+    if disabled is not None:
+        return disabled
     department_id = request.data.get("department_id")
     recipient_id = request.data.get("recipient_id")
     amount = request.data.get("amount")
@@ -144,6 +161,9 @@ def wallet_peer_transfer_send_otp(request):
 @permission_classes([IsAuthenticated])
 def wallet_peer_transfer_confirm(request):
     """Verify OTP and execute the transfer atomically."""
+    disabled = _peer_transfer_disabled_response()
+    if disabled is not None:
+        return disabled
     transfer_id = request.data.get("transfer_id")
     otp = (request.data.get("otp") or request.data.get("user_otp") or "").strip()
     if not transfer_id or not otp:

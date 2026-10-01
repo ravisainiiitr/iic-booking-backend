@@ -36,6 +36,24 @@ class WalletSricSettings(models.Model):
             "SRIC Office). Direct Cash Deposit / Bank Transfer is unaffected."
         ),
     )
+    direct_cash_recharge_enabled = models.BooleanField(
+        _("Allow wallet recharge via Direct Cash Deposit / Bank Transfer"),
+        default=True,
+        db_default=True,
+        help_text=_("When off, users cannot raise new Direct Cash Deposit / Bank Transfer recharge requests."),
+    )
+    online_gateway_recharge_enabled = models.BooleanField(
+        _("Allow wallet recharge via online payment gateway"),
+        default=False,
+        db_default=False,
+        help_text=_("When on, users can recharge a department sub-wallet instantly through Razorpay."),
+    )
+    peer_transfer_enabled = models.BooleanField(
+        _("Allow wallet transfers within the same department"),
+        default=True,
+        db_default=True,
+        help_text=_("When off, faculty cannot start new wallet-to-wallet transfers."),
+    )
     project_grant_cc_emails = models.TextField(
         _("Project Grant recharge CC email addresses"),
         blank=True,
@@ -138,6 +156,36 @@ class WalletSricSettings(models.Model):
 
 def project_grant_recharge_enabled() -> bool:
     return bool(WalletSricSettings.get_singleton().project_grant_recharge_enabled)
+
+
+def direct_cash_recharge_enabled() -> bool:
+    return bool(WalletSricSettings.get_singleton().direct_cash_recharge_enabled)
+
+
+def online_gateway_recharge_enabled() -> bool:
+    return bool(WalletSricSettings.get_singleton().online_gateway_recharge_enabled)
+
+
+def peer_transfer_enabled() -> bool:
+    return bool(WalletSricSettings.get_singleton().peer_transfer_enabled)
+
+
+AWAITING_APPROVAL_MESSAGE = "Awaiting Competent Authority Approval."
+
+
+def wallet_mode_flags() -> dict:
+    """Wallet funding / transfer options the Main Administrator can switch on or off."""
+    from iic_booking.users.wallet_credit_facility_v2 import feature_enabled as credit_feature_enabled
+
+    s = WalletSricSettings.get_singleton()
+    return {
+        "project_grant_recharge_enabled": bool(s.project_grant_recharge_enabled),
+        "direct_cash_recharge_enabled": bool(s.direct_cash_recharge_enabled),
+        "online_gateway_recharge_enabled": bool(s.online_gateway_recharge_enabled),
+        "peer_transfer_enabled": bool(s.peer_transfer_enabled),
+        "credit_facility_enabled": bool(credit_feature_enabled()),
+        "disabled_message": AWAITING_APPROVAL_MESSAGE,
+    }
 
 
 class WalletCashbookMailboxMessage(models.Model):
