@@ -1759,7 +1759,7 @@ def send_user_otp_for_recharge(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not project_grant_recharge_enabled():
+    if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not project_grant_recharge_enabled(request.user):
         return _project_grant_recharge_disabled_response()
     if recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT and not direct_cash_recharge_enabled():
         return _direct_cash_recharge_disabled_response()
@@ -2152,7 +2152,7 @@ def create_wallet_recharge_request(request):
     if (
         mode == WalletRechargeMode.PROJECT_GRANT
         and not recharge_request.user_otp_verified
-        and not project_grant_recharge_enabled()
+        and not project_grant_recharge_enabled(request.user)
     ):
         recharge_request.delete()
         return _project_grant_recharge_disabled_response()
@@ -2660,7 +2660,7 @@ def send_sric_wallet_recharge_notification(request, request_id):
     if (
         (recharge_request.recharge_mode or WalletRechargeMode.PROJECT_GRANT) == WalletRechargeMode.PROJECT_GRANT
         and not recharge_request.sric_notification_sent
-        and not project_grant_recharge_enabled()
+        and not project_grant_recharge_enabled(request.user)
     ):
         return _project_grant_recharge_disabled_response()
 
@@ -2994,7 +2994,7 @@ def wallet_student_recharge_settings_view(request):
             "enable_iitr_student_wallet_recharge": global_enabled,
             "department_recharge_available": bool(dept_enabled) if is_student else None,
             "applies_to_current_user": is_student,
-            **wallet_mode_flags(),
+            **wallet_mode_flags(request.user),
         }
     )
 

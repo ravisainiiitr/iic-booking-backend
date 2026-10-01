@@ -154,7 +154,21 @@ class WalletSricSettings(models.Model):
         return obj
 
 
-def project_grant_recharge_enabled() -> bool:
+def project_grant_switch_exempt(user) -> bool:
+    """Test faculty accounts may always use Project Grant recharge, whatever the admin switch says."""
+    from iic_booking.users.models.user_type import UserType
+    from iic_booking.users.test_accounts import is_test_user
+
+    return (
+        user is not None
+        and str(getattr(user, "user_type", "") or "") == UserType.FACULTY
+        and is_test_user(user)
+    )
+
+
+def project_grant_recharge_enabled(user=None) -> bool:
+    if project_grant_switch_exempt(user):
+        return True
     return bool(WalletSricSettings.get_singleton().project_grant_recharge_enabled)
 
 
@@ -173,13 +187,14 @@ def peer_transfer_enabled() -> bool:
 AWAITING_APPROVAL_MESSAGE = "Awaiting Competent Authority Approval."
 
 
-def wallet_mode_flags() -> dict:
-    """Wallet funding / transfer options the Main Administrator can switch on or off."""
+def wallet_mode_flags(user=None) -> dict:
+    """Wallet funding / transfer options the Main Administrator can switch on or off, as seen by ``user``."""
     from iic_booking.users.wallet_credit_facility_v2 import feature_enabled as credit_feature_enabled
 
     s = WalletSricSettings.get_singleton()
     return {
-        "project_grant_recharge_enabled": bool(s.project_grant_recharge_enabled),
+        "project_grant_recharge_enabled": bool(s.project_grant_recharge_enabled)
+        or project_grant_switch_exempt(user),
         "direct_cash_recharge_enabled": bool(s.direct_cash_recharge_enabled),
         "online_gateway_recharge_enabled": bool(s.online_gateway_recharge_enabled),
         "peer_transfer_enabled": bool(s.peer_transfer_enabled),

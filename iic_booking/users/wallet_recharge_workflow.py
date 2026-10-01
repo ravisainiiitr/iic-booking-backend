@@ -832,6 +832,15 @@ def _unique_emails(emails, *, exclude=()) -> list[str]:
     return out
 
 
+def route_for_test_requester(recharge_request: WalletRechargeRequest, emails: list[str]) -> list[str]:
+    """Mail about a test account's request goes to the test-account inbox, never to real approvers."""
+    from iic_booking.users.test_accounts import email_redirects, is_test_user
+
+    if not emails or not is_test_user(getattr(recharge_request, "user", None)):
+        return emails
+    return email_redirects()
+
+
 def get_recharge_copy_recipients(recharge_request: WalletRechargeRequest, *, exclude=()) -> list[str]:
     """Requester (always first), wallet owner, then configured CC addresses for the mode."""
     mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
@@ -873,7 +882,9 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
     is_cash = mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
 
-    recipients = get_sric_bill_section_emails() if is_cash else get_sric_recipient_emails()
+    recipients = route_for_test_requester(
+        recharge_request, get_sric_bill_section_emails() if is_cash else get_sric_recipient_emails()
+    )
     if not recipients:
         logger.warning(
             "No %s recipients configured for recharge request %s",
@@ -881,7 +892,10 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
             recharge_request.id,
         )
         return 0
-    copy_recipients = get_recharge_copy_recipients(recharge_request, exclude=recipients)
+    copy_recipients = _unique_emails(
+        route_for_test_requester(recharge_request, get_recharge_copy_recipients(recharge_request)),
+        exclude=recipients,
+    )
 
     user = recharge_request.user
     name = user.name or user.email
@@ -1194,12 +1208,13 @@ def send_decline_credit_notification(recharge_request: WalletRechargeRequest) ->
         outstanding = running_credit_summary(recharge_request.wallet, recharge_request.department_id)["total"]
     outstanding_str = f"{outstanding:,.2f}"
 
-    to = _unique_emails(
-        [user.email, getattr(getattr(recharge_request.wallet, "user", None), "email", "")]
+    to = route_for_test_requester(
+        recharge_request,
+        _unique_emails([user.email, getattr(getattr(recharge_request.wallet, "user", None), "email", "")]),
     )
     if not to:
         return
-    cc = _unique_emails(get_sric_recipient_emails(), exclude=to)
+    cc = _unique_emails(route_for_test_requester(recharge_request, get_sric_recipient_emails()), exclude=to)
     if new_credit:
         subject = f"[{txn}] Wallet Recharge Declined by SRIC — ₹{amount_str} treated as auto-approved credit"
         policy = (
@@ -1483,6 +1498,7 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
             seen.add(key)
             unique.append(e.strip())
 
+        unique = route_for_test_requester(recharge_request, unique)
         if not unique:
             return
 
