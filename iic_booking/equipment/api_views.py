@@ -15897,18 +15897,30 @@ def user_identity_card(request, user_id):
     """
     Identity card details for a requesting user (repeat sample, urgent booking and similar requests).
     Staff only; an OIC / operator / department administrator can only view users who have a booking
-    or an urgent request on equipment within their scope.
+    or an urgent request on equipment within their scope. Faculty can view students currently
+    linked to their wallet (approved join request).
     """
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "Only operators, managers, and admins can view user details."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    is_staff_viewer = check_operator_permission(request.user)
+    if not is_staff_viewer:
+        if getattr(request.user, "user_type", None) != UserType.FACULTY:
+            return Response(
+                {"error": "Only operators, managers, and admins can view user details."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        linked = WalletJoinRequest.objects.filter(
+            faculty=request.user,
+            student_id=user_id,
+            status=WalletJoinRequestStatus.APPROVED,
+        ).exists()
+        if not linked:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
     try:
         target = User.objects.select_related("department", "supervisor").get(pk=user_id)
     except User.DoesNotExist:
         return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-    equipment_ids = _get_equipment_ids_for_log_access(request.user)
+    equipment_ids = _get_equipment_ids_for_log_access(request.user) if is_staff_viewer else None
     if equipment_ids is not None:
         in_scope = (
             Booking.objects.filter(user_id=target.pk, equipment_id__in=equipment_ids).exists()

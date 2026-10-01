@@ -217,3 +217,33 @@ def test_identity_card_is_staff_only_and_scoped(setup):
     assert _client_for(outsider).get(url).status_code == 404
     with patch("iic_booking.users.rbac.user_has_permission", return_value=False):
         assert _client_for(student).get(url).status_code == 403
+
+
+def test_identity_card_visible_to_linked_supervisor_only(setup):
+    from iic_booking.users.models.wallet import Wallet, WalletJoinRequest, WalletJoinRequestStatus
+
+    eq, student, oic, booking, req = setup
+    supervisor = _user(user_type=UserType.FACULTY)
+    other_faculty = _user(user_type=UserType.FACULTY)
+    link = WalletJoinRequest.objects.create(
+        student=student,
+        faculty=supervisor,
+        wallet=Wallet.objects.create(user=supervisor),
+        status=WalletJoinRequestStatus.APPROVED,
+    )
+    WalletJoinRequest.objects.create(
+        student=student,
+        faculty=other_faculty,
+        wallet=Wallet.objects.create(user=other_faculty),
+        status=WalletJoinRequestStatus.PENDING,
+    )
+    url = f"/api/staff/users/{student.pk}/identity-card/"
+
+    res = _client_for(supervisor).get(url)
+    assert res.status_code == 200, res.data
+    assert res.data["email"] == student.email
+    assert _client_for(other_faculty).get(url).status_code == 404
+    assert _client_for(supervisor).get(f"/api/staff/users/{oic.pk}/identity-card/").status_code == 404
+
+    link.remove()
+    assert _client_for(supervisor).get(url).status_code == 404
