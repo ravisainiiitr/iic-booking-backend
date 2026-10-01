@@ -11,20 +11,13 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .calculators import split_sample_sets
-from .numeric_field_limits import _to_float, parse_numeric_help_text
+from .numeric_field_limits import _to_float, numeric_constraints, numeric_max_formula
 
 COMBINED_LIMIT_FIELD_KEYS = ("A", "B")
 
 
 def _has_max_formula(options: Any) -> bool:
-    if isinstance(options, dict):
-        formula = options.get("max_formula")
-        return isinstance(formula, str) and bool(formula.strip())
-    if isinstance(options, str):
-        return bool(options.strip())
-    if isinstance(options, list) and len(options) == 1 and isinstance(options[0], str):
-        return bool(options[0].strip())
-    return False
+    return bool(numeric_max_formula(options))
 
 
 def configured_static_max(field) -> Optional[float]:
@@ -33,14 +26,10 @@ def configured_static_max(field) -> Optional[float]:
     The UI fallback of 100 is not an equipment rule, so it is not returned. A formula maximum
     (e.g. A <= B*4) is a per-set relationship and is checked per set only.
     """
-    options = field.options
-    if _has_max_formula(options):
+    configured = numeric_constraints(options=field.options, help_text=field.help_text)
+    if configured["max_formula"]:
         return None
-    if isinstance(options, dict):
-        value = _to_float(options.get("max"))
-        if value is not None:
-            return value
-    return parse_numeric_help_text(field.help_text).get("max")
+    return configured["max"]
 
 
 def booking_field_user_type(booking) -> str:

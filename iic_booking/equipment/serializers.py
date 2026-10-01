@@ -1932,6 +1932,20 @@ class DynamicInputFieldWriteSerializer(serializers.Serializer):
     help_text = serializers.CharField(allow_blank=True, required=False, default='')
     source_element_field_key = serializers.CharField(max_length=1, allow_blank=True, allow_null=True, required=False, default=None)
 
+    def validate(self, attrs):
+        if str(attrs.get('field_type') or '').strip().upper() == DynamicInputFieldType.NUMERIC:
+            from .numeric_field_limits import normalize_numeric_field_config
+
+            try:
+                attrs['options'], attrs['help_text'] = normalize_numeric_field_config(
+                    attrs.get('options'), attrs.get('help_text')
+                )
+            except ValueError as exc:
+                key = str(attrs.get('field_key') or '').upper()
+                user_type = str(attrs.get('user_type') or '').strip() or 'all user types'
+                raise serializers.ValidationError({'options': [f"Field {key} ({user_type}): {exc}"]})
+        return attrs
+
 
 class ChargeProfileWriteSerializer(serializers.Serializer):
     user_type = serializers.CharField(max_length=50)

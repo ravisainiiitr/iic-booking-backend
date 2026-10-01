@@ -241,6 +241,8 @@ def _choice_values(f) -> set[str]:
 
 
 def _field_descriptor(f) -> dict[str, Any]:
+    from iic_booking.equipment.numeric_field_limits import numeric_help_text_for_display
+
     options = f.options if isinstance(getattr(f, "options", None), list) else []
     return {
         "key": f.field_key,
@@ -253,7 +255,7 @@ def _field_descriptor(f) -> dict[str, Any]:
             else {"value": str(o), "label": str(o)}
             for o in options[:30]
         ],
-        "help": (getattr(f, "help_text", "") or "")[:240],
+        "help": numeric_help_text_for_display(getattr(f, "field_type", ""), getattr(f, "help_text", ""))[:240],
         "chat_fillable": str(getattr(f, "field_type", "") or "") in CHAT_FILLABLE_FIELD_TYPES,
     }
 

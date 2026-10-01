@@ -502,20 +502,13 @@ def _resolve_numeric_max_for_field_a(field, input_values, equipment):
     1) options.max_formula (supports A..Z + SLOT_DURATION_MINUTES),
     2) options.max
     """
+    from .numeric_field_limits import numeric_max_formula
+
     raw_options = field.options
     opts = raw_options if isinstance(raw_options, dict) else {}
-    formula = None
-
-    if isinstance(opts, dict):
-        formula = opts.get("max_formula")
-    elif isinstance(raw_options, str):
-        # Legacy/plain mode: options saved as formula string (e.g. "B*4")
-        formula = raw_options
-    elif isinstance(raw_options, list) and len(raw_options) == 1 and isinstance(raw_options[0], str):
-        # Legacy list mode from older admin handling: ["B*4"]
-        formula = raw_options[0]
-    if isinstance(formula, str) and formula.strip():
-        expr = formula.strip()
+    formula = numeric_max_formula(opts)
+    if formula:
+        expr = formula
         for token in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
             v = _to_float_or_none(input_values.get(token))
             expr = re.sub(
