@@ -66,6 +66,11 @@ from iic_booking.users.api.wallet_recharge_parse_views import (
     admin_wallet_eligible_users,
     admin_manual_wallet_recharge,
 )
+from iic_booking.users.api.student_spending_limit_views import (
+    faculty_student_spending_limits,
+    my_student_spending_limit,
+    student_spending_limit_detail,
+)
 from iic_booking.users.api.wallet_views import (
     get_wallet,
     get_wallet_balance,
@@ -998,6 +1003,9 @@ urlpatterns = router.urls + [
     path("wallet/join-requests/<int:request_id>/remove/", remove_student_from_wallet, name="wallet-join-request-remove"),
     path("wallet/join-requests/<int:request_id>/delete/", delete_wallet_join_request, name="wallet-join-request-delete"),
     path("wallet/join-requests/<int:request_id>/resend-notification/", resend_wallet_join_request_notification, name="wallet-join-request-resend-notification"),
+    path("wallet/join-requests/<int:request_id>/spending-limit/", student_spending_limit_detail, name="wallet-join-request-spending-limit"),
+    path("wallet/student-spending-limits/", faculty_student_spending_limits, name="wallet-student-spending-limits"),
+    path("wallet/my-spending-limit/", my_student_spending_limit, name="wallet-my-spending-limit"),
     
     # Wallet recharge request endpoints
     path("wallet/credit-facility/settings/", wallet_credit_facility_settings_view, name="wallet-credit-facility-settings"),

@@ -406,6 +406,12 @@ def create_booking_for_waitlist_user(
     ok_w, w_err = subwallet_booking_balance_ok(booking_target, total_charge, False)
     if not ok_w:
         return None, w_err or "Insufficient wallet balance"
+    from iic_booking.users.student_spending_limits import spending_limit_error
+
+    if not staff_override:
+        limit_err = spending_limit_error(booking_user, booking_target, total_charge)
+        if limit_err:
+            return None, limit_err
 
     if staff_override:
         staff_label = (
@@ -448,6 +454,10 @@ def create_booking_for_waitlist_user(
             ok_w2, w_err2 = subwallet_booking_balance_ok(booking_target, total_charge, False)
             if not ok_w2:
                 return None, w_err2 or "Insufficient wallet balance"
+            if not staff_override:
+                limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
+                if limit_err:
+                    return None, limit_err
 
             if total_charge > 0:
                 from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit

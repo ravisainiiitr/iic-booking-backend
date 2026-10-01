@@ -416,6 +416,9 @@ class WalletJoinRequestSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
             'responded_at',
+            'spending_limit_enabled',
+            'weekly_limit_inr',
+            'monthly_limit_inr',
         ]
         read_only_fields = [
             'id',
@@ -427,6 +430,9 @@ class WalletJoinRequestSerializer(serializers.ModelSerializer):
             'created_at',
             'updated_at',
             'responded_at',
+            'spending_limit_enabled',
+            'weekly_limit_inr',
+            'monthly_limit_inr',
         ]
     
     def get_student_name(self, obj):

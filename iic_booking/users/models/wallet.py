@@ -358,6 +358,32 @@ class WalletJoinRequest(Model):
         blank=True,
         help_text=_("When the faculty responded to the request"),
     )
+    spending_limit_enabled = BooleanField(
+        _("Spending limit enabled"),
+        default=False,
+        help_text=_("When on, the student's bookings on the supervisor's wallet are capped by the limits below"),
+    )
+    weekly_limit_inr = DecimalField(
+        _("Weekly limit (INR)"),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Maximum the student may charge to the wallet per week (Monday–Sunday, IST)"),
+    )
+    monthly_limit_inr = DecimalField(
+        _("Monthly limit (INR)"),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Maximum the student may charge to the wallet per calendar month (IST)"),
+    )
+    spending_limit_updated_at = DateTimeField(
+        _("Spending limit updated at"),
+        null=True,
+        blank=True,
+    )
     
     class Meta:
         verbose_name = _("Wallet Join Request")

@@ -1103,7 +1103,9 @@ def _peak_qualified_failed_attempts(user, equipment, days=RUSH_RELIEF_LOOKBACK_D
 
     def is_quota_failure(reason):
         r = (reason or "").strip().lower()
-        return bool(r) and ("quota check failed" in r or "weekly quota" in r or "monthly quota" in r)
+        return bool(r) and (
+            "quota check failed" in r or "weekly quota" in r or "monthly quota" in r or "spending limit" in r
+        )
 
     def in_peak_window(requested_at):
         if not apply_time_window or requested_at is None:
@@ -1298,6 +1300,7 @@ def _get_no_slot_log_for_urgent_display(user, equipment):
             Q(failure_reason__icontains="quota check failed")
             | Q(failure_reason__icontains="weekly quota")
             | Q(failure_reason__icontains="monthly quota")
+            | Q(failure_reason__icontains="spending limit")
         )
         .order_by("-requested_at")
     )
@@ -4527,6 +4530,13 @@ def _book_equipment_impl(request, pk):
                 {"error": bal_err or "Insufficient wallet balance"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if not is_admin:
+            limit_resp = _student_spending_limit_response(
+                request, equipment, booking_user, booking_target, total_charge,
+                slots_requested=len(slot_ids), duration_minutes=total_time_minutes,
+            )
+            if limit_resp is not None:
+                return limit_resp
         perf.mark("wallet_precheck_done")
         try:
             debit_transaction = None
@@ -4741,6 +4751,12 @@ def _book_equipment_impl(request, pk):
                         )
                         if not quota_ok:
                             raise ValueError(quota_err or "Quota check failed.")
+                if not is_admin:
+                    from iic_booking.users.student_spending_limits import spending_limit_error
+
+                    limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
+                    if limit_err:
+                        raise ValueError(limit_err)
                 debit_transaction = None
                 wallet_applied = wallet_applied_precheck
                 amount_due = amount_due_precheck
@@ -5429,6 +5445,13 @@ def _book_equipment_impl(request, pk):
             {"error": bal_err2 or "Insufficient wallet balance"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not is_admin:
+        limit_resp = _student_spending_limit_response(
+            request, equipment, booking_user, booking_target, total_charge,
+            slots_requested=daily_slots.count(), duration_minutes=total_time_minutes,
+        )
+        if limit_resp is not None:
+            return limit_resp
     
     try:
         debit_transaction = None
@@ -5463,6 +5486,12 @@ def _book_equipment_impl(request, pk):
                 )
                 if not ext_quota.allowed:
                     raise ValueError(ext_quota.message or "External weekly slot quota exceeded.")
+            if not is_admin:
+                from iic_booking.users.student_spending_limits import spending_limit_error
+
+                limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
+                if limit_err:
+                    raise ValueError(limit_err)
             # Only debit wallet when there is a positive charge (skip for free bookings and for hold bookings)
             if total_charge > 0 and not create_as_hold:
                 from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit
@@ -10314,6 +10343,29 @@ def _student_booking_description_suffix(wallet_target, booking_user):
         return ""
     student_label = (booking_user.name or booking_user.email or "").strip() or f"User #{booking_user.id}"
     return f" - Student: {student_label}"
+
+
+def _student_spending_limit_response(
+    request, equipment, booking_user, wallet_target, amount, *, slots_requested=1, duration_minutes=None
+):
+    """400 response when the supervisor's weekly / monthly limit for this student would be exceeded."""
+    from iic_booking.users.student_spending_limits import SPENDING_LIMIT_ERROR_CODE, spending_limit_error
+
+    limit_err = spending_limit_error(booking_user, wallet_target, amount)
+    if not limit_err:
+        return None
+    _create_booking_attempt_log(
+        request, equipment, BookingAttemptOutcome.FAILED,
+        failure_reason=limit_err,
+        slots_requested=slots_requested,
+        number_of_samples=request.data.get("number_of_samples") or 1,
+        duration_minutes=duration_minutes,
+        additional_info=_get_additional_info_from_request(request, equipment),
+    )
+    return Response(
+        {"error": limit_err, "code": SPENDING_LIMIT_ERROR_CODE},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
 
 def _get_slots_duration_minutes(slot_ids):
     """Return total duration in minutes for the given slot IDs (from DailySlot start/end). Used to know required duration when finding alternatives."""
@@ -15232,6 +15284,17 @@ def process_charge_recalculation_pay_now(request, booking_id):
     ok_pay, pay_err = subwallet_booking_balance_ok(wallet_target, amount, False)
     if not ok_pay:
         return Response({"error": pay_err or "Insufficient wallet balance."}, status=status.HTTP_400_BAD_REQUEST)
+    from iic_booking.users.student_spending_limits import SPENDING_LIMIT_ERROR_CODE, spending_limit_error
+
+    enforce_limit = booking.user_id == request.user.id
+    if enforce_limit:
+        limit_err = spending_limit_error(
+            booking.user, wallet_target, amount, attribution_at=booking.created_at, charge_label="additional charge"
+        )
+        if limit_err:
+            return Response(
+                {"error": limit_err, "code": SPENDING_LIMIT_ERROR_CODE}, status=status.HTTP_400_BAD_REQUEST
+            )
     try:
         with transaction.atomic():
             from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit
@@ -15239,6 +15302,17 @@ def process_charge_recalculation_pay_now(request, booking_id):
             locked = Booking.objects.select_for_update().get(pk=booking.pk)
             if locked.charge_recalculation_pending_amount != amount or payment_window_expired(locked):
                 raise ValueError("The amount to pay has changed or the time to pay has passed. Please refresh the booking.")
+            if enforce_limit:
+                limit_err = spending_limit_error(
+                    booking.user,
+                    wallet_target,
+                    amount,
+                    attribution_at=booking.created_at,
+                    charge_label="additional charge",
+                    lock=True,
+                )
+                if limit_err:
+                    raise ValueError(limit_err)
             txn = wallet_target.debit(
                 amount=amount,
                 description=description,
