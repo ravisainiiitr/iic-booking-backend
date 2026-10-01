@@ -75,6 +75,47 @@ USER_SAMPLE_PREPARATION_NOTICE_HTML = (
 )
 
 
+def _person_label(person, fallback: str) -> str:
+    """Name with email in brackets; just the email when the person has no name."""
+    name = user_display_name(person, fallback=fallback)
+    email = (getattr(person, "email", "") or "").strip()
+    return f"{name} ({email})" if email and email != name else name
+
+
+def _prepend_to_comment(context: dict, notice: str) -> None:
+    """The `comment` note is rendered by every booking template, including admin-customised ones."""
+    base = (str(context.get("comment", "") or "")).strip()
+    context["comment"] = notice + ("\n\n" + base if base else "")
+
+
+def _booking_wallet_owner(user, equipment):
+    """Owner of the wallet charged for this user's booking, when it is someone else (e.g. the supervisor)."""
+    from iic_booking.users.repositories.wallet_repository import WalletRepository
+
+    wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
+        user, getattr(equipment, "internal_department", None)
+    )
+    if not (has_wallet and wallet_target and getattr(wallet_target, "wallet", None)):
+        return None
+    owner = wallet_target.wallet.user
+    return owner if owner and owner.id != user.id else None
+
+
+def _wallet_owner_context(context: dict, wallet_owner, booker) -> dict:
+    """Wallet owner's copy of the booker's email, naming the student who booked on their wallet."""
+    ctx = context.copy()
+    ctx["user_name"] = user_display_name(wallet_owner)
+    ctx["user_email"] = wallet_owner.email
+    ctx["student_name"] = user_display_name(booker, fallback="your student")
+    ctx["student_email"] = (getattr(booker, "email", "") or "").strip()
+    _prepend_to_comment(
+        ctx,
+        f"Booked by your student: {_person_label(booker, 'your student')}. "
+        "This booking is charged to your wallet.",
+    )
+    return ctx
+
+
 def _append_confirmation_instructions_to_context(
     context: dict,
     *,
@@ -796,9 +837,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             if has_wallet and wallet_target and getattr(wallet_target, "wallet", None):
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
-                    wallet_context = context.copy()
-                    wallet_context["user_name"] = user_display_name(wallet_owner)
-                    wallet_context["user_email"] = wallet_owner.email
+                    wallet_context = _wallet_owner_context(context, wallet_owner, user)
                     CommunicationService.send_email(
                         recipient=wallet_owner,
                         template=email_template_code,
@@ -848,9 +887,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             if has_wallet and wallet_target and getattr(wallet_target, "wallet", None):
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
-                    wallet_context = context.copy()
-                    wallet_context["user_name"] = user_display_name(wallet_owner)
-                    wallet_context["user_email"] = wallet_owner.email
+                    wallet_context = _wallet_owner_context(context, wallet_owner, user)
                     booker_label = user_display_name(user, fallback="student")
                     if email_template_code:
                         CommunicationService.send_email(
@@ -891,9 +928,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             if has_wallet and wallet_target and getattr(wallet_target, "wallet", None):
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
-                    wallet_context = context.copy()
-                    wallet_context["user_name"] = user_display_name(wallet_owner)
-                    wallet_context["user_email"] = wallet_owner.email
+                    wallet_context = _wallet_owner_context(context, wallet_owner, user)
                     CommunicationService.send_email(
                         recipient=wallet_owner,
                         template=email_template_code,
@@ -925,9 +960,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             if has_wallet and wallet_target and getattr(wallet_target, "wallet", None):
                 wallet_owner = wallet_target.wallet.user
                 if wallet_owner and wallet_owner.id != user.id:
-                    wallet_context = context.copy()
-                    wallet_context["user_name"] = user_display_name(wallet_owner)
-                    wallet_context["user_email"] = wallet_owner.email
+                    wallet_context = _wallet_owner_context(context, wallet_owner, user)
                     CommunicationService.send_email(
                         recipient=wallet_owner,
                         template=email_template_code,
@@ -1026,6 +1059,18 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             )
             skip_ids = {user.id}
             booker_label = user_display_name(user, fallback="user")
+            staff_booked_by_notice = ""
+            if email_template_code in BOOKING_CONFIRMATION_EMAIL_TEMPLATES:
+                staff_booked_by_notice = f"Booked by: {_person_label(user, 'user')}."
+                try:
+                    staff_wallet_owner = _booking_wallet_owner(user, equipment)
+                except Exception:
+                    logger.warning("Wallet owner lookup failed for staff copy of event %s", event.event_id, exc_info=True)
+                    staff_wallet_owner = None
+                if staff_wallet_owner:
+                    staff_booked_by_notice += (
+                        f"\nCharged to the wallet of: {_person_label(staff_wallet_owner, 'supervisor')}."
+                    )
             staff_mgmt_link = (
                 get_frontend_absolute_url(f"/booking-management?expand={booking.booking_id}")
                 or f"/booking-management?expand={booking.booking_id}"
@@ -1044,6 +1089,8 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 # Drop end-user sample-prep footer for staff copies.
                 staff_context["user_sample_preparation_notice"] = ""
                 staff_context["user_sample_preparation_notice_html"] = ""
+                if staff_booked_by_notice:
+                    _prepend_to_comment(staff_context, staff_booked_by_notice)
                 staff_context["link"] = staff_mgmt_link
                 staff_meta = {
                     **metadata,

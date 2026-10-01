@@ -25,6 +25,8 @@ from .ticket_service import (
     tickets_queryset_for,
     user_can_access_ticket,
     user_can_manage_tickets,
+    user_handles_tickets,
+    user_is_ticket_handler,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,6 +187,12 @@ def ticket_list(request):
                 assigned_to = request.query_params.get('assigned_to')
                 if assigned_to:
                     queryset = queryset.filter(assigned_to_id=assigned_to)
+            elif user_handles_tickets(request.user):
+                scope = (request.query_params.get("scope") or "").strip().lower()
+                if scope == "mine":
+                    queryset = queryset.filter(user=request.user)
+                elif scope == "assigned":
+                    queryset = queryset.exclude(user=request.user)
         else:
             # Public users cannot see tickets
             return Response(
@@ -352,6 +360,11 @@ def ticket_detail(request, ticket_id):
 
     # For non-staff users, only allow updating description, except requester may mark resolved.
     if not user_can_manage_tickets(request.user) and not is_resolve_by_requester:
+        if not is_requester:
+            return Response(
+                {"error": "You can view and reply to this ticket, but not edit it."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if 'description' not in request.data or len(request.data) > 1:
             return Response(
                 {"error": "You can only update the description of your ticket."},
@@ -528,7 +541,8 @@ def ticket_comment_create(request, ticket_id):
     )
 
     # Public staff comments should be sent to the ticket owner and shown as action updates.
-    if user_can_manage_tickets(request.user) and not is_internal:
+    staff_reply = user_can_manage_tickets(request.user) or user_is_ticket_handler(request.user, ticket)
+    if staff_reply and not is_internal and ticket.user_id != request.user.id:
         _send_ticket_update_email(
             ticket,
             action_summary="A support team comment was added.",

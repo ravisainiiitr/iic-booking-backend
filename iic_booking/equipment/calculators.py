@@ -313,11 +313,44 @@ def normalize_periodic_table_billable_counts(
     return out
 
 
+SAMPLE_SETS_KEY = "_sample_sets"
+MAX_SAMPLE_SETS = 20
+
+
+def split_sample_sets(input_values: Optional[Dict[str, Any]]) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """Split input values into the primary set and the additional sample parameter sets.
+
+    Additional sets live under ``_sample_sets`` as a list of input dicts (same field keys as the
+    primary set); each set is billed and timed as if it were its own request.
+    """
+    if not input_values or not isinstance(input_values, dict):
+        return {}, []
+    base = {k: v for k, v in input_values.items() if k != SAMPLE_SETS_KEY}
+    raw = input_values.get(SAMPLE_SETS_KEY)
+    sets = [s for s in raw if isinstance(s, dict) and s] if isinstance(raw, list) else []
+    return base, sets[:MAX_SAMPLE_SETS]
+
+
 def build_safe_input_values_for_charge_calculation(
     input_values: Optional[Dict[str, Any]],
     equipment=None,
 ) -> Dict[str, Any]:
-    """Scalar input values for time/charge; excludes periodic table ``*_elements`` keys."""
+    """Scalar input values for time/charge; excludes periodic table ``*_elements`` keys.
+
+    Additional sample parameter sets (``_sample_sets``) are kept, each made safe the same way.
+    """
+    base_values, sample_sets = split_sample_sets(input_values)
+    safe = _build_safe_scalar_input_values(base_values, equipment)
+    safe_sets = [s for s in (_build_safe_scalar_input_values(x, equipment) for x in sample_sets) if s]
+    if safe_sets:
+        safe[SAMPLE_SETS_KEY] = safe_sets
+    return safe
+
+
+def _build_safe_scalar_input_values(
+    input_values: Optional[Dict[str, Any]],
+    equipment=None,
+) -> Dict[str, Any]:
     normalized = (
         normalize_periodic_table_billable_counts(equipment, input_values)
         if equipment is not None
@@ -398,6 +431,12 @@ class TimeCalculationEngine:
         """
         import logging
         logger = logging.getLogger(__name__)
+        base_values, sample_sets = split_sample_sets(input_values)
+        if sample_sets:
+            return sum(
+                int(TimeCalculationEngine.calculate_time(charge_profile, group, slot_duration_minutes) or 0)
+                for group in [base_values, *sample_sets]
+            )
         profile_type = get_charge_profile_type(charge_profile)
         logger.info(f"Calculating time for charge profile: {profile_type}")
         logger.info(f"Input values: {input_values}")
@@ -648,6 +687,12 @@ class ChargeCalculationEngine:
                 [{"description": "Discounted Charge Profile", "amount": 0.0}],
             )
 
+        base_values, sample_sets = split_sample_sets(input_values)
+        if sample_sets:
+            return ChargeCalculationEngine._calculate_sample_sets_charge(
+                charge_profile, [base_values, *sample_sets], selected_parameters
+            )
+
         profile_type = get_charge_profile_type(charge_profile)
         if profile_type == ChargeProfileType.SAMPLE:
             total, breakdown = ChargeCalculationEngine._calculate_sample_charge(
@@ -676,6 +721,30 @@ class ChargeCalculationEngine:
         else:
             raise ValidationError(f"Unsupported profile type: {charge_profile.profile_type}")
 
+        return finalize_charge_result(total, breakdown)
+
+    @staticmethod
+    def _calculate_sample_sets_charge(
+        charge_profile: ChargeProfile,
+        groups: List[Dict[str, Any]],
+        selected_parameters: Optional[List[str]] = None,
+    ) -> Tuple[Decimal, List[Dict[str, Any]]]:
+        """Charge each sample parameter set on its own (with its own time) and add them up."""
+        equipment = getattr(charge_profile, "equipment", None)
+        slot_duration = getattr(equipment, "slot_duration_minutes", None)
+        total = Decimal("0")
+        breakdown: List[Dict[str, Any]] = []
+        for index, group in enumerate(groups, start=1):
+            group_time = TimeCalculationEngine.calculate_time(charge_profile, group, slot_duration)
+            group_total, group_breakdown = ChargeCalculationEngine.calculate_charge(
+                charge_profile, group, group_time, selected_parameters=selected_parameters
+            )
+            total += Decimal(str(group_total))
+            for line in group_breakdown:
+                if isinstance(line, dict):
+                    breakdown.append({**line, "description": f"Sample set {index}: {line.get('description', '')}"})
+                else:
+                    breakdown.append(line)
         return finalize_charge_result(total, breakdown)
 
     @staticmethod

@@ -1572,6 +1572,23 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['equipment_id']
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if request is None or "important_instruction" not in data:
+            return data
+        params = getattr(request, "query_params", None) or getattr(request, "GET", {})
+        if str(params.get("all_input_fields") or "").lower() in ("1", "true", "yes"):
+            return data
+        from .rich_text import resolve_important_instruction
+
+        user = getattr(request, "user", None)
+        user_type = (params.get("for_user_type") or "").strip() or (
+            getattr(user, "user_type", None) if user is not None and getattr(user, "is_authenticated", False) else None
+        )
+        data["important_instruction"] = resolve_important_instruction(instance, user_type) or None
+        return data
+
     def get_image_url(self, obj):
         """Return stable proxy URL for equipment image when the file exists in storage."""
         return _equipment_image_url(

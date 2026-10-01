@@ -710,6 +710,15 @@ class Equipment(models.Model):
         verbose_name=_('Important Instruction'),
         help_text=_('Important instructions shown prominently on the equipment page (above specifications).'),
     )
+    important_instruction_by_user_type = models.JSONField(
+        default=dict,
+        blank=True,
+        verbose_name=_('Important instruction per user type'),
+        help_text=_(
+            'Optional instruction per user type code (e.g. {"student": "..."}). '
+            'User types without an entry see the default important instruction.'
+        ),
+    )
 
     # -------------------------------------------------------------------------
     # Asset lifecycle (procurement entry, warranty, supplier) — optional fields

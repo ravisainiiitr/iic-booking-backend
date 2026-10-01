@@ -40,11 +40,40 @@ def user_can_manage_tickets(user) -> bool:
     return user_is_main_admin(user) or user_is_dept_admin(user)
 
 
+def handled_equipment_ids_for(user) -> list[int]:
+    """Equipment the OIC manages (incl. temporary OIC) or the Lab in-charge is mapped to."""
+    user_type = _user_type(user)
+    try:
+        if user_type == "manager":
+            from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
+
+            return list(get_equipment_ids_managed_by_oic(user.id))
+        if user_type == "operator":
+            from iic_booking.equipment.models import EquipmentOperator
+
+            return list(
+                EquipmentOperator.objects.filter(operator_id=user.id).values_list("equipment_id", flat=True)
+            )
+    except Exception:
+        logger.exception("Failed to resolve handled equipment for user=%s", getattr(user, "pk", None))
+    return []
+
+
+def user_handles_tickets(user) -> bool:
+    """OIC and Lab in-charge see tickets assigned to them or raised for their equipment."""
+    return bool(
+        user
+        and getattr(user, "is_authenticated", False)
+        and _user_type(user) in ("manager", "operator")
+    )
+
+
 def tickets_queryset_for(user):
     """
     Tickets visible to the user:
     - Main admin: all tickets
     - Department admin: own tickets + tickets for equipment in their department
+    - OIC / Lab in-charge: own tickets + tickets assigned to them + tickets for their equipment
     - Everyone else: only tickets they raised
     """
     from django.db.models import Q
@@ -62,7 +91,25 @@ def tickets_queryset_for(user):
             q |= Q(related_equipment__internal_department_id=dept_id)
         return Ticket.objects.filter(q).distinct()
 
+    if user_handles_tickets(user):
+        q = Q(user=user) | Q(assigned_to=user)
+        equipment_ids = handled_equipment_ids_for(user)
+        if equipment_ids:
+            q |= Q(related_equipment_id__in=equipment_ids)
+        return Ticket.objects.filter(q).distinct()
+
     return Ticket.objects.filter(user=user)
+
+
+def user_is_ticket_handler(user, ticket: Ticket) -> bool:
+    """True when an OIC / Lab in-charge sees this ticket because it is assigned to them or their equipment."""
+    if not user_handles_tickets(user) or ticket is None:
+        return False
+    if ticket.assigned_to_id and ticket.assigned_to_id == user.id:
+        return True
+    if ticket.related_equipment_id:
+        return ticket.related_equipment_id in set(handled_equipment_ids_for(user))
+    return False
 
 
 def user_can_access_ticket(user, ticket: Ticket) -> bool:
@@ -130,8 +177,9 @@ def notify_ticket_assignee(ticket: Ticket, *, assigned_by=None, previous_assigne
     if ticket.related_equipment_id:
         equip = f"{ticket.related_equipment.code} — {ticket.related_equipment.name}"
 
+    support_path = "/admin-settings/support" if user_can_manage_tickets(assignee) else "/tickets"
     base = (getattr(settings, "FRONTEND_URL", None) or "").rstrip("/")
-    link = f"{base}/admin-settings/support" if base else ""
+    link = f"{base}{support_path}" if base else ""
 
     subject = f"Support ticket #{ticket.ticket_id} assigned to you"
     lines = [
@@ -176,7 +224,7 @@ def notify_ticket_assignee(ticket: Ticket, *, assigned_by=None, previous_assigne
                 "notification_type": "info",
                 "kind": "ticket_assigned",
                 "ticket_id": ticket.ticket_id,
-                "link": "/admin-settings/support",
+                "link": support_path,
             },
         )
     except Exception:

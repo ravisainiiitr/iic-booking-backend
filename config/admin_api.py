@@ -2715,7 +2715,7 @@ def admin_api_router():
         lookup_field = "equipment_id"
         # OIC / Lab Operator manage waitlists of their own (queryset-scoped) equipment from
         # the dashboard, without Admin Panel or the equipment settings module.
-        WAITLIST_ACTIONS = frozenset({"waitlist", "waitlist_clear"})
+        WAITLIST_ACTIONS = frozenset({"waitlist", "waitlist_clear", "waitlist_slots", "waitlist_confirm"})
         WAITLIST_STAFF_TYPES = frozenset({UserType.MANAGER, UserType.OPERATOR})
         # OIC changes slot status / reserves slots of their own (queryset-scoped) equipment
         # like the Main Admin, without Admin Panel or the equipment settings module.
@@ -3511,6 +3511,229 @@ def admin_api_router():
                 "message": f"Waitlist cleared. Removed {deleted} entry(ies).",
                 "deleted": deleted,
             }, status=status.HTTP_200_OK)
+
+        def _assert_manual_waitlist_confirm_allowed(self):
+            # Lab Operators may view the waitlist; manual confirmation is OIC / admin only.
+            if getattr(self.request.user, "user_type", None) == UserType.OPERATOR:
+                raise PermissionDenied("Only the Officer In Charge can confirm waitlisted bookings manually.")
+
+        @action(detail=True, methods=["get"], url_path="waitlist-slots")
+        def waitlist_slots(self, request, pk=None):
+            """
+            All slots of one date (any status, incl. weekends / holidays / maintenance) so the OIC
+            can map a waitlisted request manually. Query: date=YYYY-MM-DD, entry_id (optional).
+            """
+            from datetime import datetime as _dt
+
+            from iic_booking.equipment.slot_utils import SlotGenerator
+            from iic_booking.equipment.waitlist import _get_latest_waitlist_attempt_payload
+
+            self._assert_manual_waitlist_confirm_allowed()
+            equipment = self.get_object()
+            raw_date = (request.query_params.get("date") or "").strip()
+            try:
+                target_date = _dt.strptime(raw_date, "%Y-%m-%d").date()
+            except ValueError:
+                return Response({"error": "Provide date as YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+            SlotGenerator.ensure_slot_masters_exist(equipment)
+            SlotGenerator.generate_slots_for_week(equipment, target_date, target_date, allow_holiday=True)
+            slots = (
+                DailySlot.objects.filter(slot_master__equipment=equipment, date=target_date)
+                .select_related("booking", "booking__user")
+                .order_by("start_datetime")
+            )
+            rows = []
+            for s in slots:
+                booked = bool(s.booking_id) or s.status == SlotStatus.BOOKED
+                rows.append({
+                    "id": s.id,
+                    "start_datetime": s.start_datetime.isoformat() if s.start_datetime else None,
+                    "end_datetime": s.end_datetime.isoformat() if s.end_datetime else None,
+                    "status": s.status,
+                    "status_display": s.get_status_display(),
+                    "selectable": not booked,
+                    "booking_id": s.booking_id,
+                    "booked_by": (
+                        getattr(getattr(s.booking, "user", None), "name", None)
+                        or getattr(getattr(s.booking, "user", None), "email", None)
+                    ) if s.booking_id else None,
+                })
+
+            requirement = {}
+            entry_id = request.query_params.get("entry_id")
+            if entry_id:
+                entry = WaitlistEntry.objects.filter(equipment=equipment, id=entry_id).select_related("user").first()
+                if entry:
+                    _inputs, _params, slots_requested, duration_minutes = _get_latest_waitlist_attempt_payload(
+                        entry.user, equipment
+                    )
+                    requirement = {
+                        "slots_requested": slots_requested,
+                        "duration_minutes": duration_minutes,
+                    }
+            return Response({
+                "date": target_date.isoformat(),
+                "slot_duration_minutes": int(getattr(equipment, "slot_duration_minutes", None) or 60),
+                "slots": rows,
+                "requirement": requirement,
+            })
+
+        @action(detail=True, methods=["post"], url_path="waitlist-confirm")
+        def waitlist_confirm(self, request, pk=None):
+            """
+            OIC manually confirms one waitlist entry into chosen slots. Any unbooked slot is allowed
+            (weekend, holiday, not available, blocked, under maintenance). Body: entry_id, slot_ids.
+            """
+            from iic_booking.equipment.calculators import (
+                TimeCalculationEngine,
+                build_safe_input_values_for_charge_calculation,
+            )
+            from iic_booking.equipment.slot_allocation import (
+                allocated_capacity_covers_analysis,
+                slot_tolerance_minutes_for,
+            )
+            from iic_booking.equipment.waitlist import _get_latest_waitlist_attempt_payload
+            from iic_booking.equipment.waitlist_booking import (
+                _resolve_charge_profile_for_user,
+                create_booking_for_waitlist_user,
+                reduce_waitlist_inputs_to_fit_available_slots,
+            )
+
+            self._assert_manual_waitlist_confirm_allowed()
+            equipment = self.get_object()
+            entry_id = request.data.get("entry_id")
+            raw_slot_ids = request.data.get("slot_ids") or []
+            try:
+                slot_ids = sorted({int(x) for x in raw_slot_ids})
+            except (TypeError, ValueError):
+                return Response({"error": "slot_ids must be a list of slot IDs."}, status=status.HTTP_400_BAD_REQUEST)
+            if not slot_ids:
+                return Response({"error": "Select at least one slot."}, status=status.HTTP_400_BAD_REQUEST)
+            entry = (
+                WaitlistEntry.objects.filter(equipment=equipment, id=entry_id).select_related("user").first()
+                if entry_id
+                else None
+            )
+            if not entry:
+                return Response({"error": "Waitlist entry not found."}, status=status.HTTP_404_NOT_FOUND)
+            if (entry.status or "ACTIVE").strip().upper() == "OPT_OUT":
+                return Response(
+                    {"error": "The user has opted out of this waitlist entry."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            slots = list(
+                DailySlot.objects.filter(slot_master__equipment=equipment, id__in=slot_ids).order_by("start_datetime")
+            )
+            if len(slots) != len(slot_ids):
+                return Response({"error": "One or more slots were not found."}, status=status.HTTP_400_BAD_REQUEST)
+            taken = [s.id for s in slots if s.booking_id or s.status == SlotStatus.BOOKED]
+            if taken:
+                return Response(
+                    {"error": f"Slots {taken} are already booked."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            slot_minutes = sum(
+                int((s.end_datetime - s.start_datetime).total_seconds() / 60)
+                for s in slots
+                if s.start_datetime and s.end_datetime
+            )
+            slot_duration = int(getattr(equipment, "slot_duration_minutes", None) or 60) or 60
+
+            user = entry.user
+            input_values, selected_parameters, _slots_req, attempt_duration = _get_latest_waitlist_attempt_payload(
+                user, equipment
+            )
+            time_override = None
+            requirement_note = None
+            if input_values:
+                charge_profile, _ut, _ext = _resolve_charge_profile_for_user(equipment, user)
+                required_minutes = None
+                if charge_profile:
+                    try:
+                        required_minutes = int(
+                            TimeCalculationEngine.calculate_time(
+                                charge_profile,
+                                build_safe_input_values_for_charge_calculation(input_values, equipment=equipment),
+                                slot_duration_minutes=slot_duration,
+                            )
+                        )
+                    except Exception:
+                        required_minutes = None
+                if not required_minutes and attempt_duration:
+                    required_minutes = int(attempt_duration)
+                if required_minutes and allocated_capacity_covers_analysis(
+                    slot_minutes, required_minutes, slot_tolerance_minutes_for(equipment)
+                ):
+                    time_override = required_minutes
+                elif required_minutes:
+                    reduced = reduce_waitlist_inputs_to_fit_available_slots(
+                        equipment,
+                        user,
+                        input_values=input_values,
+                        selected_parameters=selected_parameters,
+                        desired_slots=len(slots),
+                        max_slots_available=len(slots),
+                    )
+                    if not reduced:
+                        return Response(
+                            {
+                                "error": (
+                                    f"The request needs about {required_minutes} minutes but the selected slots "
+                                    f"cover {slot_minutes} minutes. Select more slots."
+                                )
+                            },
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    reduced_inputs, time_override, _n = reduced
+                    requirement_note = (
+                        "Waitlist requirement adjusted to fit the slots chosen by the Officer In Charge. "
+                        f"Original duration: {required_minutes}m. Fulfilled: {time_override}m."
+                    )
+                    input_values = reduced_inputs
+
+            booking, err = create_booking_for_waitlist_user(
+                equipment,
+                user,
+                slot_ids,
+                created_by=request.user,
+                input_values=input_values or None,
+                selected_parameters=selected_parameters,
+                total_time_minutes_override=time_override,
+                requirement_note=requirement_note,
+                waitlist_joined_at=getattr(entry, "created_at", None),
+                staff_override=True,
+            )
+            if not booking:
+                return Response(
+                    {"error": err or "Could not confirm the waitlisted booking."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if getattr(entry, "sample_submitted", False):
+                try:
+                    from iic_booking.equipment.models import BookingSampleTrace, SampleTraceStatus
+
+                    BookingSampleTrace.objects.create(
+                        booking=booking,
+                        status=SampleTraceStatus.SAMPLE_SENT,
+                        sample_identifiers=(getattr(entry, "sample_identifiers", None) or "")[:2000],
+                        tracking_id=(getattr(entry, "sample_tracking_id", None) or "")[:2000],
+                        reason="Sample submitted while waitlisted (awaiting confirmation at the time).",
+                        created_by=request.user,
+                    )
+                except Exception:
+                    logger.exception("Failed to copy waitlist sample onto booking %s", booking.booking_id)
+            entry.delete()
+            return Response(
+                {
+                    "message": f"Booking #{booking.booking_id} confirmed for {getattr(user, 'name', None) or user.email}.",
+                    "booking_id": booking.booking_id,
+                    "total_charge": str(booking.total_charge),
+                    "total_time_minutes": booking.total_time_minutes,
+                },
+                status=status.HTTP_201_CREATED,
+            )
 
     class EquipmentCategoryViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]

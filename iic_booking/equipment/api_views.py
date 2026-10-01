@@ -565,6 +565,53 @@ def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user
             return f"{label} cannot be greater than {pretty}."
     return None
 
+
+def _normalize_sample_sets_input(equipment, input_values, raw_sets, booking_user=None):
+    """Clean additional sample parameter sets into ``input_values['_sample_sets']``.
+
+    ``raw_sets`` is a list of input dicts (or its JSON string, for query params). Each set is
+    cleaned and validated like the primary inputs. Returns (input_values, error_message).
+    """
+    import json as _json
+
+    from .calculators import MAX_SAMPLE_SETS, SAMPLE_SETS_KEY, normalize_periodic_table_billable_counts
+
+    out = {k: v for k, v in (input_values or {}).items() if k != SAMPLE_SETS_KEY}
+    if raw_sets in (None, "", []):
+        return out, None
+    if isinstance(raw_sets, str):
+        try:
+            raw_sets = _json.loads(raw_sets)
+        except ValueError:
+            return out, "Sample sets must be a JSON list."
+    if not isinstance(raw_sets, list):
+        return out, "Sample sets must be a list."
+    if len(raw_sets) > MAX_SAMPLE_SETS:
+        return out, f"At most {MAX_SAMPLE_SETS + 1} sample sets are allowed in one booking."
+    cleaned_sets = []
+    for index, raw in enumerate(raw_sets, start=2):
+        if not isinstance(raw, dict):
+            return out, f"Sample set {index} is invalid."
+        cleaned = {}
+        for key, value in raw.items():
+            key = str(key)
+            if key.startswith("_"):
+                continue
+            value = _clean_single_input_value(value)
+            if value is None or value == []:
+                continue
+            cleaned[key] = value
+        if not cleaned:
+            continue
+        cleaned = normalize_periodic_table_billable_counts(equipment, cleaned)
+        error = _validate_dynamic_numeric_input_limits(equipment, cleaned, booking_user=booking_user)
+        if error:
+            return out, f"Sample set {index}: {error}"
+        cleaned_sets.append(cleaned)
+    if cleaned_sets:
+        out[SAMPLE_SETS_KEY] = cleaned_sets
+    return out, None
+
 # Pricing profile selector for booking/charge calculation.
 def _get_charge_profile_pricing_profile_for_user(user, equipment) -> str:
     """
@@ -2800,6 +2847,12 @@ def equipment_calculate(request, pk):
     if numeric_limit_error:
         return Response({"error": numeric_limit_error}, status=status.HTTP_400_BAD_REQUEST)
 
+    input_values, sample_sets_error = _normalize_sample_sets_input(
+        equipment, input_values, request.query_params.get("sample_sets"), booking_user=booking_user
+    )
+    if sample_sets_error:
+        return Response({"error": sample_sets_error}, status=status.HTTP_400_BAD_REQUEST)
+
     if getattr(equipment, "profile_type", None) == EquipmentProfileType.PRINT_3D:
         from .print_3d_views import (
             get_charge_estimate_guest_user,
@@ -3835,6 +3888,15 @@ def _book_equipment_impl(request, pk):
     numeric_limit_error = _validate_dynamic_numeric_input_limits(
         equipment, input_values, booking_user=booking_user
     )
+    if not numeric_limit_error:
+        from .calculators import SAMPLE_SETS_KEY
+
+        input_values, numeric_limit_error = _normalize_sample_sets_input(
+            equipment,
+            input_values,
+            (input_values_raw or {}).get(SAMPLE_SETS_KEY) if isinstance(input_values_raw, dict) else None,
+            booking_user=booking_user,
+        )
     if numeric_limit_error:
         _create_booking_attempt_log(
             request, equipment, BookingAttemptOutcome.FAILED,
@@ -5179,6 +5241,10 @@ def _book_equipment_impl(request, pk):
             # Skip lists, dicts, and other complex types
             else:
                 continue
+        from .calculators import SAMPLE_SETS_KEY
+
+        if isinstance(input_values.get(SAMPLE_SETS_KEY), list):
+            safe_input_values[SAMPLE_SETS_KEY] = input_values[SAMPLE_SETS_KEY]
 
         # Calculate time in minutes
         calculated_time_minutes = TimeCalculationEngine.calculate_time(
@@ -14409,7 +14475,10 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
         )
         if pending_amount is not None:
             if pending_amount < 0:
-                comment += f" Refund of ₹{abs(pending_amount):.2f} pending — click Refund to credit wallet."
+                comment += (
+                    f" Refund of ₹{abs(pending_amount):.2f} pending — the Officer In Charge will confirm "
+                    "the refund to the wallet."
+                )
             else:
                 comment += f" Extra ₹{pending_amount:.2f} to pay — click Pay Now to debit wallet."
         else:
@@ -14463,30 +14532,19 @@ def update_booking_input_values(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # For internal/external users: allow editing only when booking is BOOKED and not yet processed
-    latest_trace = (
-        BookingSampleTrace.objects.filter(booking=booking).order_by("-created_at").first()
+    # Users (and lab staff) edit until the booking is completed; the OIC of the equipment and
+    # admins may edit at any stage, including after completion.
+    is_charge_manager = _user_can_act_as_oic_for_equipment(request.user, booking.equipment) or _is_admin_user(
+        request.user
     )
 
-    if not is_staff_editor:
-        if booking.status != BookingStatus.BOOKED:
-            return Response(
-                {"error": "User input editing is only available for bookings in Booked status."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if latest_trace and latest_trace.status == SampleTraceStatus.COMPLETED:
-            return Response(
-                {"error": "User input editing is not allowed once the sample is marked as analyzed."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-    if latest_trace and latest_trace.status == SampleTraceStatus.COMPLETED:
+    if not is_staff_editor and booking.status != BookingStatus.BOOKED:
         return Response(
-            {"error": "Cannot edit user inputs after the sample is analyzed."},
+            {"error": "User input editing is only available for bookings in Booked status."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if booking.status == BookingStatus.COMPLETED:
+    if booking.status == BookingStatus.COMPLETED and not is_charge_manager:
         return Response(
             {"error": "Cannot edit user inputs after the booking is completed."},
             status=status.HTTP_400_BAD_REQUEST,
@@ -14503,7 +14561,10 @@ def update_booking_input_values(request, booking_id):
         )
 
     equipment = booking.equipment
-    enable_recalc = getattr(equipment, "enable_charge_recalculation", False) and booking.status == BookingStatus.BOOKED
+    enable_recalc = getattr(equipment, "enable_charge_recalculation", False) and (
+        booking.status == BookingStatus.BOOKED
+        or (booking.status == BookingStatus.COMPLETED and is_charge_manager)
+    )
 
     ut = str(getattr(request.user, "user_type", None) or "").strip().lower()
     is_admin_or_oic = ut in (UserType.ADMIN, UserType.MANAGER)
@@ -14539,6 +14600,12 @@ def update_booking_input_values(request, booking_id):
 
     current = dict(booking.input_values) if booking.input_values else {}
 
+    from .calculators import SAMPLE_SETS_KEY
+
+    raw = dict(raw)
+    sample_sets_submitted = SAMPLE_SETS_KEY in raw
+    raw_sample_sets = raw.pop(SAMPLE_SETS_KEY, None)
+
     # Clients often send the full input_values object; only block changes to non-editable keys.
     disallowed_keys = []
     for key, value in raw.items():
@@ -14571,6 +14638,13 @@ def update_booking_input_values(request, booking_id):
     from .calculators import normalize_periodic_table_billable_counts
     current = normalize_periodic_table_billable_counts(equipment, current)
 
+    if sample_sets_submitted:
+        current, sample_sets_error = _normalize_sample_sets_input(
+            equipment, current, raw_sample_sets, booking_user=booking.user
+        )
+        if sample_sets_error:
+            return Response({"error": sample_sets_error}, status=status.HTTP_400_BAD_REQUEST)
+
     # Same numeric limits as at booking creation (incl. formula max such as A <= 4*B).
     # Skipped when no field value changed, so a comments-only edit on a legacy booking still saves.
     original = dict(booking.input_values) if booking.input_values else {}
@@ -14592,8 +14666,8 @@ def update_booking_input_values(request, booking_id):
     booking.input_values = current
     booking.save(update_fields=["input_values"])
 
-    # Charge recalculation: when enabled and booking is BOOKED, recalc and set pending (no auto debit/credit)
-    if enable_recalc and booking.status == BookingStatus.BOOKED:
+    # Charge recalculation: recalc and set pending (no auto debit/credit)
+    if enable_recalc:
         try:
             summary = _recalculate_booking_charge_and_adjust_wallet(request, booking)
             booking.refresh_from_db()
@@ -14964,9 +15038,9 @@ def process_charge_recalculation_refund(request, booking_id):
             {"error": "Booking not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
-    if booking.user != request.user and not check_operator_permission(request.user):
+    if not (_user_can_act_as_oic_for_equipment(request.user, booking.equipment) or _is_admin_user(request.user)):
         return Response(
-            {"error": "You don't have permission to process this refund."},
+            {"error": "Refunds after an input change must be confirmed by the Officer In Charge."},
             status=status.HTTP_403_FORBIDDEN,
         )
     if booking.source_booking_id is not None:
@@ -16547,6 +16621,11 @@ def _oic_equipment_settings_row(eq) -> dict:
             "weekly_view_time_to": _t(eq.weekly_view_time_to),
             **{name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_INT_FIELDS},
             "important_instruction": eq.important_instruction or "",
+            "important_instruction_by_user_type": {
+                k: v
+                for k, v in (eq.important_instruction_by_user_type or {}).items()
+                if isinstance(v, str) and v.strip()
+            },
         },
     }
 
@@ -16560,11 +16639,16 @@ def oic_equipment_settings_list(request):
             {"error": "Only Admin or Officer In Charge can manage equipment settings."},
             status=status.HTTP_403_FORBIDDEN,
         )
+    from .rich_text import instruction_user_type_choices
+
     rows = [_oic_equipment_settings_row(eq) for eq in _oic_manageable_equipment_qs(request.user)]
     return Response(
         {
             "equipments": rows,
             "has_print_3d_equipment": any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows),
+            "instruction_user_types": [
+                {"value": code, "label": label} for code, label in instruction_user_type_choices()
+            ],
         }
     )
 
@@ -16630,16 +16714,44 @@ def oic_equipment_settings_update(request, equipment_id):
         setattr(eq, name, value)
         changed.append(name)
 
+    from .rich_text import instruction_user_type_choices, rich_text_to_plain, sanitize_rich_text
+
+    def _clean_instruction(raw):
+        html = sanitize_rich_text(raw)
+        if not rich_text_to_plain(html):
+            return "", None
+        if len(html) > OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH:
+            return None, f"Keep the important instruction under {OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH} characters."
+        return html, None
+
     if "important_instruction" in data:
-        raw = data.get("important_instruction")
-        text = "" if raw is None else str(raw).replace("\r\n", "\n").strip()
-        if len(text) > OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH:
-            errors["important_instruction"] = (
-                f"Keep the important instruction under {OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH} characters."
-            )
+        text, error = _clean_instruction(data.get("important_instruction"))
+        if error:
+            errors["important_instruction"] = error
         else:
             eq.important_instruction = text or None
             changed.append("important_instruction")
+
+    if "important_instruction_by_user_type" in data:
+        raw_map = data.get("important_instruction_by_user_type") or {}
+        allowed = {code for code, _label in instruction_user_type_choices()}
+        if not isinstance(raw_map, dict):
+            errors["important_instruction_by_user_type"] = "Send an object keyed by user type."
+        else:
+            cleaned: dict[str, str] = {}
+            for user_type_code, raw in raw_map.items():
+                if user_type_code not in allowed:
+                    errors["important_instruction_by_user_type"] = f"Unknown user type: {user_type_code}."
+                    break
+                text, error = _clean_instruction(raw)
+                if error:
+                    errors["important_instruction_by_user_type"] = error
+                    break
+                if text:
+                    cleaned[user_type_code] = text
+            else:
+                eq.important_instruction_by_user_type = cleaned
+                changed.append("important_instruction_by_user_type")
 
     if (
         "weekly_view_time_from" not in errors

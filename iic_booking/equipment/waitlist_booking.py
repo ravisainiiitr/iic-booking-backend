@@ -242,10 +242,15 @@ def create_booking_for_waitlist_user(
     total_time_minutes_override: int | None = None,
     requirement_note: str | None = None,
     waitlist_joined_at: datetime | None = None,
+    staff_override: bool = False,
 ):
     """
     Create one booking for the given user with the given slot IDs (e.g. one slot for waitlist).
     Debits wallet, creates booking, assigns slots, sends waitlist confirmation (user + wallet owner).
+
+    staff_override: OIC manual confirmation. Any unbooked slot may be used (closed, holiday,
+    maintenance, disrupted); slot availability, home-department and quota rules are skipped.
+    Booking lock, department block and wallet balance still apply.
 
     Returns:
         (booking, None) on success
@@ -284,14 +289,21 @@ def create_booking_for_waitlist_user(
     base_filter = {
         "id__in": slot_ids,
         "slot_master__equipment": equipment,
-        "status": SlotStatus.AVAILABLE,
     }
+    if staff_override:
+        base_filter["booking__isnull"] = True
+    else:
+        base_filter["status"] = SlotStatus.AVAILABLE
 
-    checker = (
-        SlotAvailabilityChecker.is_slot_available_for_external
-        if is_external
-        else SlotAvailabilityChecker.is_slot_available
-    )
+    if staff_override:
+        def checker(slot):
+            return slot.status != SlotStatus.BOOKED
+    else:
+        checker = (
+            SlotAvailabilityChecker.is_slot_available_for_external
+            if is_external
+            else SlotAvailabilityChecker.is_slot_available
+        )
 
     # Pre-lock availability check (cheap early-exit). The select_for_update inside
     # transaction.atomic() is the authoritative anti-double-booking guard.
@@ -302,7 +314,7 @@ def create_booking_for_waitlist_user(
         daily_slots,
         user=booking_user,
         equipment=equipment,
-        is_admin=False,
+        is_admin=staff_override,
         is_external=is_external,
     )
     if daily_slots.count() != len(slot_ids):
@@ -313,7 +325,7 @@ def create_booking_for_waitlist_user(
     # Also reject restricted home-department-only slots explicitly
     from .slot_department_access import slot_allows_internal_user
 
-    if not is_external:
+    if not is_external and not staff_override:
         denied = [s.id for s in daily_slots if not slot_allows_internal_user(s, booking_user, equipment)]
         if denied:
             return None, (
@@ -358,7 +370,7 @@ def create_booking_for_waitlist_user(
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
 
-    if not booking_quota_should_skip(equipment):
+    if not staff_override and not booking_quota_should_skip(equipment):
         quota_allowed, quota_error = QuotaService.validate_booking_quota(
             user=booking_user,
             equipment=equipment,
@@ -378,7 +390,7 @@ def create_booking_for_waitlist_user(
         equipment,
         slot_dates=[s.date for s in _slots_for_ext if getattr(s, "date", None)],
         slots_requested=len(_slots_for_ext),
-        bypass=False,
+        bypass=staff_override,
     )
     if not ext_quota.allowed:
         return None, ext_quota.message or "External weekly slot quota exceeded."
@@ -395,11 +407,19 @@ def create_booking_for_waitlist_user(
     if not ok_w:
         return None, w_err or "Insufficient wallet balance"
 
-    notes = "Auto-booked from waitlist (slots became available)."
+    if staff_override:
+        staff_label = (
+            getattr(created_by, "name", None) or getattr(created_by, "email", None) or "Officer In Charge"
+        )
+        notes = f"Confirmed manually from waitlist by {staff_label}."
+    else:
+        notes = "Auto-booked from waitlist (slots became available)."
     extra = (requirement_note or "").strip()
     if extra:
         notes = f"{notes}\n{extra}".strip()
     event_metadata = {"from_waitlist": True}
+    if staff_override:
+        event_metadata["manual_waitlist_confirmation"] = True
     if waitlist_queue_position is not None:
         event_metadata["waitlist_position"] = f"WL{int(waitlist_queue_position)}"
     if waitlist_joined_at is not None:
@@ -489,7 +509,10 @@ def create_booking_for_waitlist_user(
                 booking=booking,
                 event_type=BookingEventType.CREATED,
                 created_by=created_by,
-                comment=f"Booking created from waitlist for {equipment.name} ({total_time_minutes} minutes, ₹{total_charge:.2f}).",
+                comment=(
+                    f"Booking {'confirmed manually' if staff_override else 'created'} from waitlist for "
+                    f"{equipment.name} ({total_time_minutes} minutes, ₹{total_charge:.2f})."
+                ),
                 new_status=booking.status,
                 send_notification=True,
                 metadata=event_metadata,
