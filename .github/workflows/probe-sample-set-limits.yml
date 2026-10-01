@@ -220,3 +220,142 @@ jobs:
               transaction.set_rollback(True)
           print("\nDONE (read-only, rolled back)")
           PY
+
+      - name: Equipment weekly/monthly slot quota columns and who would be blocked (SELECT only, counts only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          from collections import Counter, defaultdict
+          from datetime import timedelta
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.conf import settings
+          from django.db import connection, transaction
+          from django.utils import timezone
+
+          from iic_booking.equipment.models import BookingStatus, DailySlot, Equipment, EquipmentStatus
+          from iic_booking.users.models.user_type import UserType
+
+          COLS = ("internal_weekly_quota", "internal_monthly_quota", "external_weekly_quota", "external_monthly_quota")
+          GROUP_STATUSES = (BookingStatus.BOOKED, BookingStatus.COMPLETED)
+          BROAD_STATUSES = GROUP_STATUSES + (
+              BookingStatus.PROCESSING, BookingStatus.PENDING_PAYMENT, BookingStatus.PENDING,
+              BookingStatus.HOLD, BookingStatus.DISRUPTION_PENDING,
+          )
+
+          def week_bounds(ref):
+              start = (ref - timedelta(days=ref.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+              return start, start + timedelta(days=7)
+
+          def month_bounds(ref):
+              start = ref.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+              nxt = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+              return start, nxt
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              print(f"TIME_ZONE={settings.TIME_ZONE} SKIP_BOOKING_QUOTA_CHECK={getattr(settings, 'SKIP_BOOKING_QUOTA_CHECK', None)}")
+              print("column definitions:")
+              for c in COLS:
+                  f = Equipment._meta.get_field(c)
+                  print(f"  {c}: {type(f).__name__} null={f.null} blank={f.blank} default={f.default!r}")
+
+              active = list(Equipment.objects.filter(status=EquipmentStatus.ACTIVE).order_by("equipment_id"))
+              all_eq = Equipment.objects.count()
+              print(f"\nequipment: total={all_eq} active={len(active)} active_with_skip_quota_check={sum(1 for e in active if e.skip_quota_check)}")
+              print(f"active with an equipment group: {sum(1 for e in active if e.equipment_group_id)}")
+              for c in COLS:
+                  vals = [getattr(e, c) for e in active]
+                  print(f"  {c}: null={sum(v is None for v in vals)} zero={sum(v == 0 for v in vals)} "
+                        f"positive={sum(1 for v in vals if v and v > 0)} distribution={dict(Counter(vals).most_common(12))}")
+              all_vals = Counter(tuple(getattr(e, c) for c in COLS) for e in Equipment.objects.all())
+              print(f"  all equipment (any status) 4-tuple distribution: {dict(all_vals.most_common(8))}")
+              non_default = [e for e in active if any(getattr(e, c) != 10 for c in COLS)]
+              print(f"active equipment with any value != 10: {len(non_default)}")
+              for e in non_default[:40]:
+                  print(f"  {e.equipment_id}:{(e.name or '')[:50]} {[getattr(e, c) for c in COLS]} slot={e.slot_duration_minutes}min x {e.slots_per_day}/day")
+              print("slot shape of active equipment (slot_minutes, slots_per_day): "
+                    f"{dict(Counter((e.slot_duration_minutes, e.slots_per_day) for e in active).most_common(10))}")
+              print(f"active equipment whose slots_per_day*7 <= internal_weekly_quota (limit can never bind for one user): "
+                    f"{sum(1 for e in active if e.internal_weekly_quota and e.slots_per_day * 7 <= e.internal_weekly_quota)}")
+
+              eq_by_id = {e.equipment_id: e for e in active}
+              now = timezone.localtime(timezone.now())
+
+              def usage(start, end, statuses):
+                  """{(equipment_id, user_id): [slots, is_external]} for slots starting in [start, end)."""
+                  rows = (
+                      DailySlot.objects.filter(
+                          booking__isnull=False,
+                          booking__status__in=statuses,
+                          booking__source_booking__isnull=True,
+                          booking__equipment_id__in=list(eq_by_id),
+                          start_datetime__gte=start,
+                          start_datetime__lt=end,
+                      ).values_list("booking__equipment_id", "booking__user_id", "booking__user_type_snapshot")
+                  )
+                  out = defaultdict(lambda: [0, False])
+                  for eq_id, uid, ut in rows:
+                      cell = out[(eq_id, uid)]
+                      cell[0] += 1
+                      cell[1] = cell[1] or UserType.is_external_user(ut or "")
+                  return out
+
+              def report(label, start, end, kind):
+                  for sname, statuses in (("BOOKED+COMPLETED (group-quota statuses)", GROUP_STATUSES), ("broad active statuses", BROAD_STATUSES)):
+                      u = usage(start, end, statuses)
+                      at_or_over = over = 0
+                      eqs_hit = set()
+                      dist = Counter()
+                      for (eq_id, _uid), (slots, ext) in u.items():
+                          eq = eq_by_id[eq_id]
+                          limit = getattr(eq, f"{'external' if ext else 'internal'}_{kind}_quota")
+                          dist[slots] += 1
+                          if not limit or limit <= 0:
+                              continue
+                          if slots >= limit:
+                              at_or_over += 1
+                              eqs_hit.add(eq_id)
+                          if slots > limit:
+                              over += 1
+                      print(f"  {label} [{start:%Y-%m-%d}..{end:%Y-%m-%d}) {sname}: user-equipment pairs={len(u)} "
+                            f"at_or_over_limit={at_or_over} over_limit={over} equipment_affected={len(eqs_hit)} "
+                            f"slots-per-user distribution(top)={dict(sorted(dist.items())[-8:])}")
+                      if eqs_hit:
+                          per_eq = Counter(eq_id for (eq_id, _), (s, x) in u.items()
+                                           if s >= (getattr(eq_by_id[eq_id], f"{'external' if x else 'internal'}_{kind}_quota") or 10**9))
+                          print("    affected equipment (id: users at/over): " + ", ".join(f"{k}: {v}" for k, v in per_eq.most_common(15)))
+
+              print("\n== usage vs saved limits (slots whose start is in the period; repeat samples excluded; counts only) ==")
+              ws, we = week_bounds(now)
+              report("current week", ws, we, "weekly")
+              report("next week", we, we + timedelta(days=7), "weekly")
+              ms, me = month_bounds(now)
+              report("current month", ms, me, "monthly")
+              pms, pme = month_bounds(ms - timedelta(days=1))
+              report("previous month", pms, pme, "monthly")
+
+              print("\n== last 8 full weeks: user-weeks that would have been over the weekly limit (BOOKED+COMPLETED) ==")
+              total_over = total_pairs = 0
+              for i in range(1, 9):
+                  s = ws - timedelta(days=7 * i)
+                  u = usage(s, s + timedelta(days=7), GROUP_STATUSES)
+                  n_over = sum(1 for (eq_id, _), (sl, x) in u.items()
+                               if (lim := getattr(eq_by_id[eq_id], f"{'external' if x else 'internal'}_weekly_quota")) and lim > 0 and sl > lim)
+                  total_over += n_over
+                  total_pairs += len(u)
+                  print(f"  week of {s:%Y-%m-%d}: pairs={len(u)} over_limit={n_over}")
+              print(f"  total: pairs={total_pairs} over_limit={total_over}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
