@@ -6073,71 +6073,56 @@ def list_bookings(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def booking_stats(request):
-    """Return lightweight booking aggregates for reports page."""
-    from iic_booking.users.test_accounts import exclude_test_bookings
+    """Reports & Statistics cards and status breakdown, all from one scoped queryset.
 
-    queryset = exclude_test_bookings(Booking.objects.all())
-    is_operator_or_manager = check_operator_permission(request.user)
+    Optional query params: ``status`` (one booking status), ``date_from`` / ``date_to``
+    (YYYY-MM-DD, booking created date in IST). See ``booking_report_metrics`` for definitions.
+    """
+    from django.utils.dateparse import parse_date
 
-    if request.user.user_type == UserType.DEPT_ADMIN:
-        dept_id = getattr(request.user, "department_id", None)
-        if not dept_id:
-            queryset = queryset.none()
-        else:
-            queryset = queryset.filter(equipment__internal_department_id=dept_id)
-    elif not is_operator_or_manager:
-        from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
-
-        student_ids_using_my_wallet = list(
-            WalletJoinRequest.objects.filter(
-                faculty=request.user,
-                status=WalletJoinRequestStatus.APPROVED,
-            ).values_list("student_id", flat=True)
-        )
-        if student_ids_using_my_wallet:
-            queryset = queryset.filter(
-                Q(user=request.user) | Q(user_id__in=student_ids_using_my_wallet)
-            ).distinct()
-        else:
-            queryset = queryset.filter(user=request.user)
-    elif request.user.user_type == UserType.MANAGER:
-        oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-        if not oic_equipment_ids:
-            queryset = queryset.none()
-        else:
-            queryset = queryset.filter(equipment_id__in=oic_equipment_ids)
-    elif request.user.user_type == UserType.OPERATOR:
-        operator_equipment_ids = _get_equipment_ids_for_log_access(request.user) or []
-        if not operator_equipment_ids:
-            queryset = queryset.none()
-        else:
-            queryset = queryset.filter(equipment_id__in=operator_equipment_ids)
-
-    aggregates = queryset.aggregate(
-        total_bookings=Count("booking_id"),
-        total_spent=Sum("total_charge"),
-        total_hours=Sum("total_time_minutes"),
+    from .booking_report_metrics import (
+        filter_report_period,
+        report_bookings_scope,
+        summarize_report_bookings,
     )
-    status_counts_qs = queryset.values("status").annotate(count=Count("booking_id"))
-    status_counts = {
-        row["status"]: row["count"]
-        for row in status_counts_qs
-    }
 
-    total_hours = (
-        float(aggregates["total_hours"] or 0) / 60.0
-    )
-    total_spent = float(aggregates["total_spent"] or 0)
+    queryset, scope = report_bookings_scope(request.user)
 
-    return Response(
+    status_filter = (request.query_params.get("status") or "").strip().upper()
+    if status_filter:
+        if status_filter not in BookingStatus.values:
+            return Response(
+                {"error": f"Invalid status. Must be one of: {', '.join(BookingStatus.values)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = queryset.filter(status=status_filter)
+
+    dates = {}
+    for key in ("date_from", "date_to"):
+        raw = (request.query_params.get(key) or "").strip()
+        if raw:
+            try:
+                parsed = parse_date(raw)
+            except ValueError:
+                parsed = None
+            if parsed is None:
+                return Response(
+                    {"error": f"Invalid {key}. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            dates[key] = parsed
+    queryset = filter_report_period(queryset, dates.get("date_from"), dates.get("date_to"))
+
+    data = summarize_report_bookings(queryset)
+    data.update(
         {
-            "total_bookings": aggregates["total_bookings"] or 0,
-            "total_spent": total_spent,
-            "total_hours": total_hours,
-            "status_counts": status_counts,
-        },
-        status=status.HTTP_200_OK,
+            "scope": scope,
+            "status_filter": status_filter or None,
+            "date_from": dates["date_from"].isoformat() if "date_from" in dates else None,
+            "date_to": dates["date_to"].isoformat() if "date_to" in dates else None,
+        }
     )
+    return Response(data, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])

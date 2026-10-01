@@ -17,6 +17,7 @@ from django.db.models import Q, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from iic_booking.equipment.booking_report_metrics import CHARGED_STATUSES, REFUNDED_STATUSES
 from iic_booking.equipment.models import Booking, BookingStatus
 from iic_booking.users.models.payment import PaymentGatewayStatus, PaymentGatewayTransaction
 from iic_booking.users.models.user_type import UserType
@@ -26,9 +27,10 @@ from iic_booking.users.models.wallet import (
     WalletRechargeRequestStatus,
 )
 
-# Bookings that represent recognised revenue for the finance dashboard.
-_REVENUE_STATUSES = (BookingStatus.COMPLETED, BookingStatus.BOOKED)
-_NON_DUE_STATUSES = (BookingStatus.CANCELLED, BookingStatus.REFUNDED)
+# Recognised revenue = charges still held (same "charged" definition as the Reports page), so
+# bookings in progress / processing / not utilised count and fully refunded ones do not.
+_REVENUE_STATUSES = tuple(CHARGED_STATUSES)
+_NON_DUE_STATUSES = (BookingStatus.CANCELLED, *REFUNDED_STATUSES)
 
 _ORG_CATEGORY_LABELS: dict[str, str] = {code: str(label) for code, label in UserType.get_choices()}
 
@@ -271,7 +273,7 @@ def build_finance_report(*, user: Any, date_from: date, date_to: date) -> dict[s
     avg_booking_value = (total_revenue / booking_count) if booking_count else Decimal("0.00")
 
     refunded_amount = abs(
-        _dec(bookings_qs.filter(status=BookingStatus.REFUNDED).aggregate(total=Sum("total_charge"))["total"])
+        _dec(bookings_qs.filter(status__in=REFUNDED_STATUSES).aggregate(total=Sum("total_charge"))["total"])
     )
 
     pending_payments = _dec(

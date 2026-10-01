@@ -11,24 +11,14 @@ from typing import Any, Optional
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
-from iic_booking.equipment.models import Booking, BookingStatus
+from iic_booking.equipment.booking_report_metrics import CHARGED_STATUSES
+from iic_booking.equipment.models import Booking
 from iic_booking.users.models import User, Wallet, WalletJoinRequest, WalletJoinRequestStatus
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import (
     SubWalletTransaction,
     WalletRechargeRequest,
     WalletRechargeRequestStatus,
-)
-
-
-# Bookings that should not count toward "spend" (refunded / not confirmed).
-_EXCLUDED_EXPENSE_STATUSES = frozenset(
-    {
-        BookingStatus.REFUNDED,
-        BookingStatus.CANCELLED,
-        BookingStatus.PENDING,
-        BookingStatus.WAITLISTED,
-    }
 )
 
 
@@ -123,8 +113,9 @@ def build_faculty_wallet_expense_report(
     """
     Build JSON-serializable report for the faculty-owned wallet and approved linked members.
 
-    Spend is derived from Booking rows (created in range), excluding refunded/cancelled/pending/waitlisted.
-    Wallet movements summarise debits/credits in the same date range.
+    Spend is derived from charged Booking rows created in range (``CHARGED_STATUSES``), so the
+    total, per-member and per-equipment splits all add up. Wallet movements summarise
+    debits/credits in the same date range.
     """
     start, end = _parse_report_dates(date_from, date_to)
 
@@ -154,6 +145,7 @@ def build_faculty_wallet_expense_report(
             "period_booking_spend": {
                 "total": "0.00",
                 "booking_count": 0,
+                "uncharged_booking_count": 0,
             },
             "by_member": [],
             "by_equipment": [],
@@ -227,20 +219,21 @@ def build_faculty_wallet_expense_report(
             else:
                 recharge_sum += a
 
-    bq = exclude_test_bookings(
+    period_bookings = exclude_test_bookings(
         Booking.objects.filter(
             user_id__in=member_ids,
             created_at__date__gte=start,
             created_at__date__lte=end,
-        ).exclude(status__in=_EXCLUDED_EXPENSE_STATUSES)
-    )
-
+        )
+    ).order_by()
     if equipment_id is not None:
-        bq = bq.filter(equipment_id=int(equipment_id))
+        period_bookings = period_bookings.filter(equipment_id=int(equipment_id))
+    bq = period_bookings.filter(status__in=CHARGED_STATUSES)
 
     agg = bq.aggregate(total=Sum("total_charge"), n=Count("booking_id"))
     booking_total = Decimal(str(agg["total"] or 0))
     booking_n = int(agg["n"] or 0)
+    all_period_n = period_bookings.count()
 
     # Per-member totals
     by_user_rows = list(
@@ -335,6 +328,7 @@ def build_faculty_wallet_expense_report(
         "period_booking_spend": {
             "total": str(booking_total),
             "booking_count": booking_n,
+            "uncharged_booking_count": all_period_n - booking_n,
         },
         "by_member": by_member,
         "by_equipment": by_equipment_out,

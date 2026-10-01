@@ -115,13 +115,17 @@ def _is_weekend_or_institute_holiday_day(d: date, institute_holidays: set[date])
     return d.weekday() >= 5 or d in institute_holidays
 
 
-# Bookings counted as "served" for user/sample/hour stats (had slots in period).
+# Bookings counted as "served" for user/sample/hour stats (had slots in period). Fully refunded
+# outcomes (operator unavailable, maintenance / disruption cancellations) served nobody.
 _SERVED_EXCLUDE_STATUSES = frozenset(
     {
         BookingStatus.CANCELLED,
         BookingStatus.REFUNDED,
         BookingStatus.WAITLISTED,
         BookingStatus.PENDING,
+        BookingStatus.ABSENT,
+        BookingStatus.UNDER_MAINTENANCE,
+        BookingStatus.OTHER_DISRUPTION,
     }
 )
 
@@ -516,13 +520,23 @@ def get_equipment_report_data(
 
     from iic_booking.users.test_accounts import exclude_test_bookings
 
+    # Subquery instead of a daily_slots join: a join yields one row per slot, which inflates the
+    # grouped Count/Sum below (and DISTINCT + Meta.ordering splits GROUP BY per booking).
+    # Cancelled / refunded bookings lose their slots, so fall back to the released slot range.
+    slot_booking_ids = DailySlot.objects.filter(
+        date__gte=start,
+        date__lte=end,
+        booking__isnull=False,
+    ).values("booking_id")
     bookings_in_range = exclude_test_bookings(
-        Booking.objects.filter(
-            equipment_id__in=eq_ids,
-            daily_slots__date__gte=start,
-            daily_slots__date__lte=end,
-        ).distinct()
-    )
+        Booking.objects.filter(equipment_id__in=eq_ids).filter(
+            Q(booking_id__in=slot_booking_ids)
+            | Q(
+                released_slot_range__start_datetime__date__lte=end,
+                released_slot_range__end_datetime__date__gte=start,
+            )
+        )
+    ).order_by()
     bookings_served = bookings_in_range.exclude(status__in=_SERVED_EXCLUDE_STATUSES)
 
     completed_in_range = bookings_in_range.filter(status=BookingStatus.COMPLETED)
