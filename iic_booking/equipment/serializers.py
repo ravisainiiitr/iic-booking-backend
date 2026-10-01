@@ -2814,6 +2814,7 @@ class BookingSerializer(serializers.ModelSerializer):
     input_fields = serializers.SerializerMethodField()
     editable_input_fields = serializers.SerializerMethodField()
     all_input_fields = serializers.SerializerMethodField()
+    viewer_can_change_sample_sets = serializers.SerializerMethodField()
     user_type_snapshot_display = serializers.SerializerMethodField()
     wallet_owner_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
@@ -2944,6 +2945,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'input_fields',
             'editable_input_fields',
             'all_input_fields',
+            'viewer_can_change_sample_sets',
             'selected_parameters',
             'charge_breakdown',
             'status',
@@ -3329,6 +3331,25 @@ class BookingSerializer(serializers.ModelSerializer):
         if not obj.equipment_id:
             return [_comments_input_field_schema()]
         return list(self.get_input_fields(obj))
+
+    def get_viewer_can_change_sample_sets(self, obj):
+        """Whether the requesting user may add / remove sample sets on this booking (its equipment's OIC,
+        incl. a current temporary OIC, or a main administrator). None when serialized without a request."""
+        request = self.context.get("request")
+        if request is None:
+            return None
+        user = getattr(request, "user", None)
+        if not user or not getattr(user, "is_authenticated", False):
+            return False
+        if getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == UserType.ADMIN:
+            return True
+        if getattr(user, "user_type", None) != UserType.MANAGER:
+            return False
+        if "_viewer_oic_equipment_ids" not in self.context:
+            from .reports import get_equipment_ids_managed_by_oic
+
+            self.context["_viewer_oic_equipment_ids"] = set(get_equipment_ids_managed_by_oic(user.id))
+        return obj.equipment_id in self.context["_viewer_oic_equipment_ids"]
 
     def get_start_time(self, obj):
         """Earliest daily slot start; after the slots were released, the stored original start."""

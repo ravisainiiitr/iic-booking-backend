@@ -157,13 +157,19 @@ def _clean_name(raw):
     return name, None
 
 
-def _clean_input_values(raw):
+def _clean_input_values(raw, equipment=None, user=None):
     if raw is None:
         return {}, None
     if not isinstance(raw, dict):
         return None, "input_values must be an object."
     if len(json.dumps(raw)) > MAX_INPUT_VALUES_BYTES:
         return None, "The template's inputs are too large to save."
+    if equipment is not None:
+        from .sample_set_limits import combined_max_error
+
+        error = combined_max_error(equipment, raw, booking_user=user)
+        if error:
+            return None, error
     return raw, None
 
 
@@ -285,7 +291,7 @@ def booking_templates(request):
     name, error = _clean_name(data.get("name"))
     if error:
         return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
-    input_values, error = _clean_input_values(data.get("input_values"))
+    input_values, error = _clean_input_values(data.get("input_values"), equipment, user)
     if error:
         return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
     options, error = _clean_options(data.get("options"))
@@ -335,7 +341,7 @@ def booking_template_detail(request, template_id):
         template.name = name
         update_fields.append("name")
     if "input_values" in data or request.method == "PUT":
-        input_values, error = _clean_input_values(data.get("input_values"))
+        input_values, error = _clean_input_values(data.get("input_values"), template.equipment, request.user)
         if error:
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
         template.input_values = input_values

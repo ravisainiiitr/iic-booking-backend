@@ -407,6 +407,15 @@ def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
     ).exists()
 
 
+def _can_change_sample_sets_after_booking(user, equipment) -> bool:
+    """Adding / removing sample sets on an existing booking: the equipment's OIC (incl. a current
+    temporary OIC) and main administrators only. Dept admins, lab staff and the booking user may
+    still edit the values inside the existing sets."""
+    if getattr(user, "is_authenticated", False) and getattr(user, "is_superuser", False):
+        return True
+    return _user_can_act_as_oic_for_equipment(user, equipment)
+
+
 def _oic_booking_scope_denied(user, booking):
     """403 response when an OIC acts on a booking of equipment they are not (temporary) OIC of."""
     if getattr(user, "user_type", None) != UserType.MANAGER:
@@ -583,11 +592,12 @@ def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user
     return None
 
 
-def _normalize_sample_sets_input(equipment, input_values, raw_sets, booking_user=None):
+def _normalize_sample_sets_input(equipment, input_values, raw_sets, booking_user=None, check_combined_max=True):
     """Clean additional sample parameter sets into ``input_values['_sample_sets']``.
 
     ``raw_sets`` is a list of input dicts (or its JSON string, for query params). Each set is
-    cleaned and validated like the primary inputs. Returns (input_values, error_message).
+    cleaned and validated like the primary inputs, and the A/B totals across all sets must stay
+    within the equipment maximum (``check_combined_max``). Returns (input_values, error_message).
     """
     import json as _json
 
@@ -627,6 +637,12 @@ def _normalize_sample_sets_input(equipment, input_values, raw_sets, booking_user
         cleaned_sets.append(cleaned)
     if cleaned_sets:
         out[SAMPLE_SETS_KEY] = cleaned_sets
+    if check_combined_max:
+        from .sample_set_limits import combined_max_error
+
+        error = combined_max_error(equipment, out, booking_user=booking_user)
+        if error:
+            return out, error
     return out, None
 
 # Pricing profile selector for booking/charge calculation.
@@ -14808,16 +14824,28 @@ def update_booking_input_values(request, booking_id):
     from .calculators import normalize_periodic_table_billable_counts
     current = normalize_periodic_table_billable_counts(equipment, current)
 
+    from .sample_set_limits import booking_field_user_type, combined_max_error, sample_set_count
+
+    original = dict(booking.input_values) if booking.input_values else {}
     if sample_sets_submitted:
         current, sample_sets_error = _normalize_sample_sets_input(
-            equipment, current, raw_sample_sets, booking_user=booking.user
+            equipment, current, raw_sample_sets, booking_user=booking.user, check_combined_max=False
         )
         if sample_sets_error:
             return Response({"error": sample_sets_error}, status=status.HTTP_400_BAD_REQUEST)
+        if sample_set_count(current) != sample_set_count(original) and not _can_change_sample_sets_after_booking(
+            request.user, equipment
+        ):
+            return Response(
+                {
+                    "error": "Only the Officer In-Charge or administrator can add or remove sample sets after booking.",
+                    "code": "sample_sets_locked",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
     # Same numeric limits as at booking creation (incl. formula max such as A <= 4*B).
     # Skipped when no field value changed, so a comments-only edit on a legacy booking still saves.
-    original = dict(booking.input_values) if booking.input_values else {}
     values_changed = any(
         current.get(k) != original.get(k)
         for k in (set(current) | set(original))
@@ -14826,6 +14854,8 @@ def update_booking_input_values(request, booking_id):
     if values_changed:
         numeric_limit_error = _validate_dynamic_numeric_input_limits(
             equipment, current, booking_user=booking.user
+        ) or combined_max_error(
+            equipment, current, user_type=booking_field_user_type(booking), baseline=original
         )
         if numeric_limit_error:
             return Response(
@@ -14855,7 +14885,7 @@ def update_booking_input_values(request, booking_id):
             return Response(
                 {
                     "message": "User inputs updated. Charges recalculated.",
-                    "booking": BookingSerializer(booking).data,
+                    "booking": BookingSerializer(booking, context={"request": request}).data,
                     "charge_recalculation_summary": summary,
                 },
                 status=status.HTTP_200_OK,
@@ -14868,7 +14898,7 @@ def update_booking_input_values(request, booking_id):
             )
 
     return Response(
-        {"message": "User inputs updated.", "booking": BookingSerializer(booking).data},
+        {"message": "User inputs updated.", "booking": BookingSerializer(booking, context={"request": request}).data},
         status=status.HTTP_200_OK,
     )
 

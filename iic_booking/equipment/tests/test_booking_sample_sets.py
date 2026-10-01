@@ -13,7 +13,16 @@ from iic_booking.equipment.calculators import (
     TimeCalculationEngine,
     build_safe_input_values_for_charge_calculation,
 )
-from iic_booking.equipment.models import ChargeProfile, DynamicInputField, DynamicInputFieldType
+from iic_booking.equipment.models import ChargeProfile, DynamicInputField, DynamicInputFieldType, EquipmentManager
+from iic_booking.users.models.user_type import UserType
+from iic_booking.users.tests.factories import UserFactory
+
+
+def _oic(egs_factory, eq):
+    """Adding sample sets after booking is limited to the equipment's OIC and main administrators."""
+    oic = UserFactory(user_type=UserType.MANAGER, department=egs_factory.department, admin_approved=True)
+    EquipmentManager.objects.create(equipment=eq, manager=oic)
+    return oic
 
 
 def _equipment(egs_factory, **kwargs):
@@ -116,7 +125,7 @@ def test_sample_set_has_its_own_elements_and_sample_table(egs_factory):
     assert int(estimate.data["total_time_minutes"]) == (30 + 10) + (30 + 20)
 
     booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values=primary, total_charge="10.00")
-    resp = client.patch(
+    resp = egs_factory.client_for(_oic(egs_factory, eq)).patch(
         f"/api/bookings/{booking.pk}/input-values/",
         {"input_values": {**primary, SAMPLE_SETS_KEY: [second]}},
         format="json",
@@ -131,12 +140,12 @@ def test_sample_set_has_its_own_elements_and_sample_table(egs_factory):
 
 
 @pytest.mark.django_db
-def test_user_can_add_sample_set_when_editing_inputs(egs_factory):
+def test_oic_can_add_sample_set_when_editing_inputs(egs_factory):
     eq = _equipment(egs_factory, enable_charge_recalculation=True)
     owner = egs_factory.student()
     booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values={"A": 2}, total_charge="10.00")
 
-    resp = egs_factory.client_for(owner).patch(
+    resp = egs_factory.client_for(_oic(egs_factory, eq)).patch(
         f"/api/bookings/{booking.pk}/input-values/",
         {"input_values": {"A": 2, SAMPLE_SETS_KEY: [{"A": 2}]}},
         format="json",
@@ -173,7 +182,7 @@ def test_sample_set_keeps_its_own_elements_and_table_rows(egs_factory):
     )
     extra = {"A": 2, "B": 2, "B_elements": "Fe,Co", "C": [["1", "alloy-1"], ["2", "alloy-2"]]}
 
-    resp = egs_factory.client_for(owner).patch(
+    resp = egs_factory.client_for(_oic(egs_factory, eq)).patch(
         f"/api/bookings/{booking.pk}/input-values/",
         {"input_values": {"A": 1, "B": 1, "B_elements": "C", SAMPLE_SETS_KEY: [extra]}},
         format="json",
