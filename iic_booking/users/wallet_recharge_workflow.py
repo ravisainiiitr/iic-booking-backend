@@ -21,7 +21,8 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from django.conf import settings
-from django.core.mail import EmailMultiAlternatives, send_mail
+from django.core import signing
+from django.core.mail import EmailMultiAlternatives, get_connection, send_mail
 from django.db import transaction
 from django.utils import timezone
 from django.utils.html import escape
@@ -179,11 +180,32 @@ def populate_request_snapshots(recharge_request: WalletRechargeRequest) -> None:
     )
 
 
-def build_action_urls(recharge_request: WalletRechargeRequest) -> tuple[str, str]:
+_APPROVER_LINK_SALT = "wallet-recharge-approver-link"
+
+
+def build_action_urls(recharge_request: WalletRechargeRequest, approver_email: str = "") -> tuple[str, str]:
+    """Approve / Decline links. With approver_email the links carry a signed reference to that address,
+    so the approval (or decline) is recorded against the mailbox the link was sent to."""
     token = recharge_request.action_token or ""
+    email = (approver_email or "").strip().lower()
+    if token and email:
+        # "." never occurs in token_urlsafe output or in a signing.dumps value.
+        token = f"{token}.{signing.dumps(email, salt=f'{_APPROVER_LINK_SALT}:{token}')}"
     approve = get_frontend_absolute_url(f"/wallet/recharge-action/{token}/approve")
     reject = get_frontend_absolute_url(f"/wallet/recharge-action/{token}/reject")
     return approve, reject
+
+
+def resolve_action_token(raw_token: str) -> tuple[str, str]:
+    """Split an email-link token into (action_token, approver email from the signed reference or "")."""
+    token, _, ref = (raw_token or "").partition(".")
+    if not ref:
+        return token, ""
+    try:
+        email = signing.loads(ref, salt=f"{_APPROVER_LINK_SALT}:{token}")
+    except signing.BadSignature:
+        return token, ""
+    return token, email if isinstance(email, str) and "@" in email else ""
 
 
 def get_sric_recipient_emails() -> list[str]:
@@ -851,6 +873,101 @@ def get_recharge_copy_recipients(recharge_request: WalletRechargeRequest, *, exc
     return _unique_emails(defaults + get_recharge_cc_emails(mode), exclude=exclude)
 
 
+def get_recharge_approver_emails(recharge_request: WalletRechargeRequest) -> list[str]:
+    """The office that receives the Approve / Decline links: Bill Section (cash) or SRIC Office (project grant)."""
+    return get_sric_bill_section_emails() if _is_cash_mode(recharge_request) else get_sric_recipient_emails()
+
+
+def _requester_supervisor(recharge_request: WalletRechargeRequest):
+    """Faculty owner of the joined wallet, else the user's recorded supervisor."""
+    user = recharge_request.user
+    owner = getattr(getattr(recharge_request, "wallet", None), "user", None)
+    if owner is not None and owner.pk != user.pk:
+        return owner
+    return getattr(user, "supervisor", None)
+
+
+def requester_is_supervisor(user) -> bool:
+    if getattr(user, "user_type", "") == UserType.FACULTY:
+        return True
+    return bool(getattr(user, "pk", None)) and user.supervised_users.exists()
+
+
+def requester_detail_rows(recharge_request: WalletRechargeRequest) -> list[tuple[str, str]]:
+    """User Name, Enrollment Number, Department, Supervisor Name / Employee ID (faculty: own Employee ID,
+    designation, and "Self" as supervisor)."""
+    user = recharge_request.user
+    name = (user.name or user.email or "").strip() or "—"
+    own_id = (recharge_request.employee_number or user.emp_id or "").strip() or "—"
+    dept = (
+        recharge_request.user_department_name
+        or (user.department.name if user.department_id else "")
+        or ""
+    ).strip() or "—"
+    if requester_is_supervisor(user):
+        return [
+            ("User Name", name),
+            ("Employee ID", own_id),
+            ("Designation", (user.designation or "").strip() or "—"),
+            ("Department", dept),
+            ("Supervisor", "Self (the requester is the supervisor)"),
+        ]
+    supervisor = _requester_supervisor(recharge_request)
+    id_label = "Enrollment Number" if user.user_type == UserType.STUDENT else "Enrollment / Employee ID"
+    return [
+        ("User Name", name),
+        (id_label, own_id),
+        ("Department", dept),
+        ("Supervisor Name", (supervisor.name or supervisor.email or "—") if supervisor else "—"),
+        ("Supervisor Employee ID", ((supervisor.emp_id or "").strip() or "—") if supervisor else "—"),
+    ]
+
+
+def requester_details_text(recharge_request: WalletRechargeRequest) -> str:
+    return "\n".join(f"{label}: {value}" for label, value in requester_detail_rows(recharge_request))
+
+
+def requester_details_html(recharge_request: WalletRechargeRequest) -> str:
+    rows = "".join(
+        f'<div style="margin:4px 0"><span style="font-weight:bold;color:#555">{escape(label)}:</span> '
+        f"{escape(value)}</div>"
+        for label, value in requester_detail_rows(recharge_request)
+    )
+    return (
+        '<div style="margin:12px 0;padding:12px 14px;border:1px solid #cfd8dc;border-radius:8px;'
+        'background:#f8fafc"><div style="font-weight:700;margin-bottom:6px">Requester details</div>'
+        f"{rows}</div>"
+    )
+
+
+def decision_actor_display(recharge_request: WalletRechargeRequest) -> str:
+    """Email address that approved / declined the request, with the channel it came through."""
+    raw = (recharge_request.approved_by_email or "").strip()
+    email = raw if "@" in raw else ""
+    office = "SRIC Bill Section" if _is_cash_mode(recharge_request) else "SRIC Office"
+    cashbook = raw.startswith("sric-cashbook") or (recharge_request.response_message or "").startswith(
+        "Approved against SRIC cash-book receipt"
+    )
+    if cashbook:
+        receipt = (recharge_request.cashbook_receipt_no or "").strip()
+        via = "SRIC cash-book receipt" + (f" {receipt}" if receipt else "")
+        if recharge_request.processed_by_id:
+            via += ", matched on the IIC portal"
+        else:
+            via += ", matched automatically from the SRIC cash-book email"
+    elif recharge_request.processed_by_id:
+        via = "signed in to the IIC portal"
+    elif raw.startswith("sric-email") or email:
+        via = f"{office} email link"
+    else:
+        via = "approval link"
+    if email:
+        return f"{email} ({via})"
+    if raw.startswith("sric-email"):
+        return f"{office} email link (sent to {', '.join(get_recharge_approver_emails(recharge_request)) or '—'})"
+    return via
+
+
 _RECHARGE_EMAIL_CSS = """
 body{font-family:Arial,sans-serif;line-height:1.6;color:#333}
 .box{max-width:640px;margin:0 auto;padding:24px;border:1px solid #ddd;border-radius:8px}
@@ -882,9 +999,7 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
     is_cash = mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
 
-    recipients = route_for_test_requester(
-        recharge_request, get_sric_bill_section_emails() if is_cash else get_sric_recipient_emails()
-    )
+    recipients = route_for_test_requester(recharge_request, get_recharge_approver_emails(recharge_request))
     if not recipients:
         logger.warning(
             "No %s recipients configured for recharge request %s",
@@ -905,7 +1020,6 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     user_dept = recharge_request.user_department_name or "—"
     credit_grant = recharge_request.department_grant_code or "—"
     debit_grant = recharge_request.project_grant_code or "—"
-    approve_url, reject_url = build_action_urls(recharge_request)
     mode_label = "Direct Cash Deposit / Bank Transfer" if is_cash else "Recharge via Project Grant"
     txn = getattr(recharge_request, "transaction_number", None) or recharge_request.request_id_display
     phone = (getattr(user, "phone_number", None) or "—").strip() or "—"
@@ -938,28 +1052,41 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
             f'<span class="grant-code">{escape(debit_grant)}</span></div>'
         )
 
+    if is_cash:
+        person_text = f"""{requester_details_text(recharge_request)}
+Email: {email}
+Phone: {phone}
+User type: {user_type}"""
+        person_html = f"""{requester_details_html(recharge_request)}
+<div class="row"><span class="label">Email:</span> {escape(email)}</div>
+<div class="row"><span class="label">Phone:</span> {escape(phone)}</div>
+<div class="row"><span class="label">User type:</span> {escape(user_type)}</div>"""
+    else:
+        person_text = f"""Name: {name}
+Email: {email}
+Phone: {phone}
+Employee / ID: {emp}
+User type: {user_type}
+User department: {user_dept}"""
+        person_html = f"""<div class="row"><span class="label">Name:</span> {escape(name)}</div>
+<div class="row"><span class="label">Email:</span> {escape(email)}</div>
+<div class="row"><span class="label">Phone:</span> {escape(phone)}</div>
+<div class="row"><span class="label">Employee / ID:</span> {escape(emp)}</div>
+<div class="row"><span class="label">User type:</span> {escape(user_type)}</div>
+<div class="row"><span class="label">User department:</span> {escape(user_dept)}</div>"""
+
     details_text = f"""INTERNAL TRANSACTION NUMBER: {txn}
 TOTAL AMOUNT: ₹{amount_str}
 
 {grant_lines_text}
 
-Name: {name}
-Email: {email}
-Phone: {phone}
-Employee / ID: {emp}
-User type: {user_type}
-User department: {user_dept}
+{person_text}
 Credit department: {dept_name}"""
 
     details_html = f"""<div class="txn">Transaction ID: {escape(txn)}</div>
 {grant_rows_html}
 <div class="amount">Total amount: ₹{amount_str}</div>
-<div class="row"><span class="label">Name:</span> {escape(name)}</div>
-<div class="row"><span class="label">Email:</span> {escape(email)}</div>
-<div class="row"><span class="label">Phone:</span> {escape(phone)}</div>
-<div class="row"><span class="label">Employee / ID:</span> {escape(emp)}</div>
-<div class="row"><span class="label">User type:</span> {escape(user_type)}</div>
-<div class="row"><span class="label">User department:</span> {escape(user_dept)}</div>
+{person_html}
 <div class="row"><span class="label">Credit department:</span> {escape(dept_name)}</div>
 <div class="row"><span class="label">Request ref:</span> {escape(recharge_request.request_id_display)}</div>"""
 
@@ -1001,7 +1128,10 @@ Credit department: {dept_name}"""
         "so the portal can confirm it automatically."
     )
 
-    text_body = f"""Wallet Recharge Request — {txn}
+    approval_messages = []
+    for recipient in recipients:
+        approve_url, reject_url = build_action_urls(recharge_request, approver_email=recipient)
+        text_body = f"""Wallet Recharge Request — {txn}
 
 {details_text}
 Copy sent to (without action links): {cc_text}
@@ -1009,12 +1139,15 @@ Copy sent to (without action links): {cc_text}
 Approve (credits wallet immediately): {approve_url}
 Decline: {reject_url}
 
+These links are personal to {recipient}: an approval or decline made from them is recorded and
+reported as made by {recipient}.
+
 {guidance_text}
 {format_text}
 If you Decline, you must provide a reason on the linked page.
 Once approved, the request cannot be re-approved.
 """
-    html_body = f"""<!DOCTYPE html>
+        html_body = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
 <h2>Wallet Recharge Request</h2>
 {details_html}
@@ -1023,18 +1156,17 @@ Once approved, the request cannot be re-approved.
   <a class="btn ok" href="{approve_url}">Approve</a>
   <a class="btn bad" href="{reject_url}">Decline</a>
 </p>
+<div class="note">These links are personal to <strong>{escape(recipient)}</strong>: an approval or decline
+made from them is recorded and reported as made by {escape(recipient)}.</div>
 <div class="note">{guidance_html}</div>
 <div class="note">{format_html}</div>
 </div></body></html>"""
-
-    send_mail(
-        subject=subject,
-        message=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=recipients,
-        html_message=html_body,
-        fail_silently=False,
-    )
+        message = EmailMultiAlternatives(
+            subject=subject, body=text_body, from_email=settings.DEFAULT_FROM_EMAIL, to=[recipient]
+        )
+        message.attach_alternative(html_body, "text/html")
+        approval_messages.append(message)
+    get_connection(fail_silently=False).send_messages(approval_messages)
 
     if copy_recipients:
         sent_to = ", ".join(recipients)
@@ -1476,6 +1608,10 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
                 if u.email:
                     recipients.append(u.email)
         try:
+            # Approvals and plain declines also go back to the office that received the action links
+            # (SRIC-declined credits already copy the SRIC Office on the faculty email).
+            if status_key in (WalletRechargeRequestStatus.APPROVED, WalletRechargeRequestStatus.REJECTED):
+                recipients.extend(get_recharge_approver_emails(recharge_request))
             recipients.extend(
                 get_recharge_cc_emails(
                     getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
@@ -1549,26 +1685,53 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
                 dept_name = recharge_request.department.name
         except Exception:
             dept_name = "—"
+        if status_key == WalletRechargeRequestStatus.APPROVED:
+            actor_label = "Approved by"
+        elif status_key == WalletRechargeRequestStatus.REJECTED or declined_to_credit:
+            actor_label = "Declined by"
+        else:
+            actor_label = "Processed by"
+        actor_value = decision_actor_display(recharge_request)
+        user_name = getattr(recharge_request.user, "name", None) or getattr(recharge_request.user, "email", "")
+        rows: list[tuple[str, str]] = [("Transaction ID", txn), ("TOTAL AMOUNT", f"₹{amount_str}")]
+        if _is_cash_mode(recharge_request):
+            rows += requester_detail_rows(recharge_request)
+            rows.append(("Recharge Mode", "Direct Cash Deposit / Bank Transfer"))
+        else:
+            rows += [("User", user_name), ("Employee Number", recharge_request.employee_number or "—")]
+        rows += [
+            ("Department (credit)", dept_name),
+            ("Department Grant Code", recharge_request.department_grant_code or "—"),
+            ("Project Grant Code", recharge_request.project_grant_code or "—"),
+        ]
+        rows_text = "\n".join(f"{label}: {value}" for label, value in rows)
         body = f"""Wallet recharge request {txn} is now {status_label}.
 
-Transaction ID: {txn}
-TOTAL AMOUNT: ₹{amount_str}
-User: {getattr(recharge_request.user, 'name', None) or getattr(recharge_request.user, 'email', '')}
-Employee Number: {recharge_request.employee_number or '—'}
-Department (credit): {dept_name}
-Department Grant Code: {recharge_request.department_grant_code or '—'}
-Project Grant Code: {recharge_request.project_grant_code or '—'}
-Processed by: {recharge_request.approved_by_email or '—'}
+{actor_label}: {actor_value}
+
+{rows_text}
 {reason}
 """
+        rows_html = "".join(
+            f'<div class="row"><span class="label">{escape(label)}:</span> {escape(value)}</div>'
+            for label, value in rows
+        )
+        reason_html = "".join(f"<p>{escape(line)}</p>" for line in reason.strip().splitlines() if line.strip())
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"/><style>{_RECHARGE_EMAIL_CSS}</style></head><body><div class="box">
+<h2>Wallet Recharge {escape(status_label)}</h2>
+<div class="txn">Transaction ID: {escape(txn)}</div>
+<div class="grant-highlight">{escape(actor_label)}
+<span class="grant-code" style="font-size:18px">{escape(actor_value)}</span></div>
+{rows_html}
+{reason_html}
+</div></body></html>"""
         try:
-            send_mail(
-                subject=subject,
-                message=body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=unique,
-                fail_silently=True,
+            message = EmailMultiAlternatives(
+                subject=subject, body=body, from_email=settings.DEFAULT_FROM_EMAIL, to=unique
             )
+            message.attach_alternative(html, "text/html")
+            message.send(fail_silently=True)
         except Exception:
             logger.exception("Failed CC emails for recharge %s", recharge_request.id)
     except Exception:

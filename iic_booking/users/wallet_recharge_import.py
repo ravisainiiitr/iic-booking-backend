@@ -515,12 +515,15 @@ def link_cashbook_entry_to_request(
             receipt_no = (entry.receipt_no or "").strip()
             outcome = "verified"
             if locked.status == WalletRechargeRequestStatus.PENDING:
+                approver_email = email
+                if not getattr(actor, "pk", None) and email == "sric-cashbook-auto":
+                    approver_email = _cashbook_sender_email(entry) or email
                 try:
                     locked = approve_request(
                         locked,
                         response_message=f"Approved against SRIC cash-book receipt {receipt_no}.",
                         actor=actor,
-                        actor_email=email,
+                        actor_email=approver_email,
                     )
                 except RechargeAlreadyProcessed as exc:
                     raise CashbookMatchError(f"{locked.request_id_display} was already processed ({exc}).")
@@ -597,6 +600,20 @@ def link_cashbook_entry_to_request(
         credited_req = locked
         transaction.on_commit(lambda: send_deferred_credit_applied_notification(credited_req))
     return locked, outcome
+
+
+def _cashbook_sender_email(entry: WalletRechargeParseEntry) -> str:
+    """From-address of the SRIC cash-book email the entry was read from (mailbox reader only)."""
+    from email.utils import parseaddr
+
+    from .models.wallet_sric_settings import WalletCashbookMailboxMessage
+
+    uid = (entry.source_imap_uid or "").strip()
+    if not uid:
+        return ""
+    message = WalletCashbookMailboxMessage.objects.filter(uid=uid).order_by("-processed_at").first()
+    address = parseaddr(message.from_addr or "")[1] if message else ""
+    return address if "@" in address else ""
 
 
 TXN_REFERENCE_RE = re.compile(r"IIC\s*-?\s*TXN\s*-?\s*0*(\d+)", re.IGNORECASE)

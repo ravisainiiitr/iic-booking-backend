@@ -289,7 +289,15 @@ def send_wallet_recharge_request_notifications(
     
     # Absolute link for emails and in-app
     link = get_frontend_absolute_url(f"/wallet/recharge-requests/{recharge_request.id}")
-    
+
+    from iic_booking.users.models.wallet import WalletRechargeMode
+    from iic_booking.users.wallet_recharge_workflow import (
+        decision_actor_display,
+        requester_details_html,
+        requester_details_text,
+    )
+
+    is_direct_transfer = recharge_request.recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
     context = {
         "user_name": user_display_name(user),
         "user_email": user.email,
@@ -300,9 +308,13 @@ def send_wallet_recharge_request_notifications(
         "project_details": recharge_request.project_details or "",
         "status": status,
         "response_message": recharge_request.response_message or "",
-        "approved_by_email": recharge_request.approved_by_email or "",
+        "approved_by_email": (
+            decision_actor_display(recharge_request) if recharge_request.approved_by_email else ""
+        ),
         "department_name": department_name,
         "department_code": department_code,
+        "requester_details_html": requester_details_html(recharge_request) if is_direct_transfer else "",
+        "requester_details_text": requester_details_text(recharge_request) if is_direct_transfer else "",
         "link": link,
     }
     
@@ -377,6 +389,7 @@ Request Details:
 {f"- Project Details: {context['project_details']}" if context.get('project_details') else ""}
 {f"- Response: {context['response_message']}" if context.get('response_message') else ""}
 {f"- Approved By: {context['approved_by_email']}" if context.get('approved_by_email') else ""}
+{context['requester_details_text']}
 
 Thank you for using IIT Roorkee!
             """.strip()

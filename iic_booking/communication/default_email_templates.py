@@ -216,6 +216,8 @@ def _wallet_email(
     name_var: str = "user_name",
     extra_html: str = "",
     extra_detail_rows: Optional[Sequence[str]] = None,
+    post_details_html: str = "",
+    post_details_text: str = "",
 ) -> dict[str, Any]:
     rows = _wallet_detail_rows(include_booking=include_booking)
     if extra_detail_rows:
@@ -227,6 +229,8 @@ def _wallet_email(
         detail_rows=rows,
         details_heading="Transaction details",
         note_vars=note_vars or (),
+        post_details_html=post_details_html,
+        post_details_text=post_details_text,
         cta_label=cta_label,
         extra_html=extra_html,
         name_var=name_var,
@@ -863,6 +867,15 @@ def _urgent_templates() -> list[dict[str, Any]]:
     ]
 
 
+_REQUESTER_DETAILS_HTML = "{% if requester_details_html %}{{ requester_details_html }}{% endif %}"
+_REQUESTER_DETAILS_TEXT = "{% if requester_details_text %}Requester details:\n{{ requester_details_text }}\n{% endif %}"
+_REQUESTER_DETAILS_HELP = (
+    "{{ requester_details_html }} / {{ requester_details_text }} (Direct Cash Deposit / Bank Transfer "
+    "requests only: User Name, Enrollment Number, Department, Supervisor Name and Supervisor Employee ID; "
+    "for a faculty requester: Employee ID, Designation, Department and Supervisor: Self)"
+)
+
+
 def _wallet_templates() -> list[dict[str, Any]]:
     return [
         _wallet_email(
@@ -901,10 +914,13 @@ def _wallet_templates() -> list[dict[str, Any]]:
                 ("project_details", "Project details"),
                 ("response_message", "Response"),
             ),
+            post_details_html=_REQUESTER_DETAILS_HTML,
+            post_details_text=_REQUESTER_DETAILS_TEXT,
             variable_help=(
                 "{{ user_name }}, {{ user_email }}, {{ amount }}, {{ balance }}, {{ request_id }}, "
                 "{{ request_date }}, {{ project_details }}, {{ status }}, {{ response_message }}, "
-                "{{ approved_by_email }}, {{ department_name }}, {{ department_code }}, {{ link }}"
+                "{{ approved_by_email }} (email address the request was approved from, with the channel), "
+                "{{ department_name }}, {{ department_code }}, {{ link }}, " + _REQUESTER_DETAILS_HELP
             ),
         ),
         _wallet_email(
@@ -918,10 +934,12 @@ def _wallet_templates() -> list[dict[str, Any]]:
                 ("project_details", "Project details"),
                 ("response_message", "Reason"),
             ),
+            post_details_html=_REQUESTER_DETAILS_HTML,
+            post_details_text=_REQUESTER_DETAILS_TEXT,
             variable_help=(
                 "{{ user_name }}, {{ user_email }}, {{ amount }}, {{ request_id }}, {{ request_date }}, "
-                "{{ project_details }}, {{ status }}, {{ response_message }}, "
-                "{{ department_name }}, {{ department_code }}, {{ link }}"
+                "{{ project_details }}, {{ status }}, {{ response_message }}, {{ approved_by_email }}, "
+                "{{ department_name }}, {{ department_code }}, {{ link }}, " + _REQUESTER_DETAILS_HELP
             ),
         ),
         _wallet_email(
@@ -935,10 +953,13 @@ def _wallet_templates() -> list[dict[str, Any]]:
             description="Email sent when a wallet recharge request is created/pending.",
             include_booking=False,
             note_vars=(("project_details", "Project details"),),
+            post_details_html=_REQUESTER_DETAILS_HTML,
+            post_details_text=_REQUESTER_DETAILS_TEXT,
             cta_label="View request status",
             variable_help=(
                 "{{ user_name }}, {{ user_email }}, {{ amount }}, {{ request_id }}, {{ request_date }}, "
-                "{{ project_details }}, {{ status }}, {{ department_name }}, {{ department_code }}, {{ link }}"
+                "{{ project_details }}, {{ status }}, {{ department_name }}, {{ department_code }}, {{ link }}, "
+                + _REQUESTER_DETAILS_HELP
             ),
         ),
         _wallet_email(
@@ -974,6 +995,8 @@ def _wallet_templates() -> list[dict[str, Any]]:
                 optional_detail_row("Agency", "project_agency"),
                 optional_detail_row("Project details", "project_details"),
             ],
+            post_details_html=_REQUESTER_DETAILS_HTML,
+            post_details_text=_REQUESTER_DETAILS_TEXT,
             extra_html=(
                 optional_cta_block("approve_url", label="Approve request")
                 + optional_cta_block("reject_url", label="Reject request")
@@ -983,7 +1006,8 @@ def _wallet_templates() -> list[dict[str, Any]]:
             variable_help=(
                 "{{ user_name }}, {{ user_email }}, {{ amount }}, {{ request_id }}, {{ request_date }}, "
                 "{{ department_name }}, {{ department_code }}, {{ project_name }}, {{ project_code }}, "
-                "{{ project_agency }}, {{ project_details }}, {{ approve_url }}, {{ reject_url }}, {{ link }}"
+                "{{ project_agency }}, {{ project_details }}, {{ approve_url }}, {{ reject_url }}, {{ link }}, "
+                + _REQUESTER_DETAILS_HELP
             ),
         ),
         _custom_branded_email(

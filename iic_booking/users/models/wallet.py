@@ -450,6 +450,7 @@ class WalletRechargeRejectionReason(models.TextChoices):
 
     WRONG_PROJECT_GRANT = "wrong_project_grant", _("Wrong Project Code")
     INSUFFICIENT_BALANCE = "insufficient_balance", _("Insufficient Funds in the Project")
+    PROJECT_CLOSED = "project_closed", _("Project Already Closed")
     MISMATCH_USER_INFO = "mismatch_user_info", _("Mismatch in User Information")
     OTHER = "other", _("Other")
 
@@ -457,6 +458,7 @@ class WalletRechargeRejectionReason(models.TextChoices):
 PROJECT_GRANT_DECLINE_REASONS = (
     WalletRechargeRejectionReason.WRONG_PROJECT_GRANT,
     WalletRechargeRejectionReason.INSUFFICIENT_BALANCE,
+    WalletRechargeRejectionReason.PROJECT_CLOSED,
     WalletRechargeRejectionReason.OTHER,
 )
 CASH_DEPOSIT_DECLINE_REASONS = (

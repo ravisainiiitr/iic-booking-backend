@@ -179,7 +179,7 @@ class DeclineToCreditTests(TestCase):
         choices = serialize_request_public(self._request())["rejection_reason_choices"]
         self.assertEqual(
             [c["label"] for c in choices],
-            ["Wrong Project Code", "Insufficient Funds in the Project", "Other"],
+            ["Wrong Project Code", "Insufficient Funds in the Project", "Project Already Closed", "Other"],
         )
 
     def test_ar_and_dean_copies(self):

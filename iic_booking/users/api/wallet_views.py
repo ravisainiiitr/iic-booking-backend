@@ -2248,12 +2248,13 @@ def create_wallet_recharge_request(request):
 @permission_classes([AllowAny])
 def wallet_recharge_action_detail(request, token):
     """Public status payload for email Approve/Reject pages (token-bound)."""
-    from iic_booking.users.wallet_recharge_workflow import serialize_request_public
+    from iic_booking.users.wallet_recharge_workflow import resolve_action_token, serialize_request_public
 
+    action_token, _link_email = resolve_action_token(token)
     try:
         recharge_request = WalletRechargeRequest.objects.select_related(
             "user", "department", "project", "user__department"
-        ).get(action_token=token)
+        ).get(action_token=action_token)
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
     return Response(serialize_request_public(recharge_request), status=status.HTTP_200_OK)
@@ -2269,11 +2270,13 @@ def wallet_recharge_action_approve(request, token):
         approval_result_message,
         approve_request,
         notify_stakeholders_of_decision,
+        resolve_action_token,
         serialize_request_public,
     )
 
+    action_token, link_email = resolve_action_token(token)
     try:
-        recharge_request = WalletRechargeRequest.objects.get(action_token=token)
+        recharge_request = WalletRechargeRequest.objects.get(action_token=action_token)
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2290,7 +2293,7 @@ def wallet_recharge_action_approve(request, token):
         approved = approve_request(
             recharge_request,
             response_message=(request.data.get("response_message") or "").strip(),
-            actor_email=(request.data.get("actor_email") or "sric-email-approval").strip(),
+            actor_email=link_email or "sric-email-approval",
         )
         notify_stakeholders_of_decision(approved)
         return Response(
@@ -2321,11 +2324,13 @@ def wallet_recharge_action_reject(request, token):
         decline_result_message,
         notify_stakeholders_of_decision,
         reject_request,
+        resolve_action_token,
         serialize_request_public,
     )
 
+    action_token, link_email = resolve_action_token(token)
     try:
-        recharge_request = WalletRechargeRequest.objects.get(action_token=token)
+        recharge_request = WalletRechargeRequest.objects.get(action_token=action_token)
     except WalletRechargeRequest.DoesNotExist:
         return Response({"error": "Invalid or expired approval link."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2351,7 +2356,7 @@ def wallet_recharge_action_reject(request, token):
             recharge_request,
             reason_code=reason_code,
             reason_text=reason_text,
-            actor_email=(request.data.get("actor_email") or "sric-email-rejection").strip(),
+            actor_email=link_email or "sric-email-rejection",
         )
         notify_stakeholders_of_decision(rejected)
         return Response(
