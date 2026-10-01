@@ -1,0 +1,222 @@
+# Booking Assistant production configuration (keys live in .envs/.production/.django).
+#   status        : read-only. Prints the assistant/booking flags, which LLM-related key NAMES exist on the
+#                   host and whether an OpenAI key is set (yes/no). No env or container changes.
+#   e2e-allowlist : in-chat booking only for test.student@iic-booking.test (is_test_account) via
+#                   COPILOT_BOOKING_E2E_TEST_MODE + COPILOT_BOOKING_TEST_USER_IDS. Global flag stays off.
+#   enable        : in-chat booking for every signed-in user: COPILOT_BOOKING_CREATE=True and
+#                   RESEARCH_COPILOT_ACTIONS_ENABLED=True; the E2E allowlist is removed.
+#                   Copilot cancel/reschedule/wallet execution flags are left as they are.
+#   disable       : rollback: COPILOT_BOOKING_CREATE=False, RESEARCH_COPILOT_ACTIONS_ENABLED=False, allowlist removed.
+#   planner       : BOOKING_ASSISTANT_LLM_PLANNER=auto. Uses repo secret OPENAI_API_KEY when present (written to
+#                   the env file, never printed); otherwise an OpenAI key already on the host. Fails if neither.
+#                   COPILOT_PROVIDER is not changed: Copilot chat stays on its current provider.
+# Note: apply-research-copilot-config modes open/global reset COPILOT_BOOKING_CREATE and
+# RESEARCH_COPILOT_ACTIONS_ENABLED to False; run mode=enable here again after using them.
+name: Apply Booking Assistant Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | e2e-allowlist | enable | disable | planner"
+        required: true
+        default: status
+        type: choice
+        options: [status, e2e-allowlist, enable, disable, planner]
+      confirm:
+        description: "Type ASSISTANT to change config (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Require confirmation
+        if: github.event.inputs.mode != 'status'
+        run: test "${{ github.event.inputs.confirm }}" = "ASSISTANT"
+
+      - name: Show host key names (no values)
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          for f in "$DEPLOY/.env" "$DEPLOY/.envs/.production/.django"; do
+            [ -f "$f" ] || continue
+            echo "=== key names in ${f#$DEPLOY/} matching OPENAI|LLM|PROVIDER|COPILOT|ASSISTANT ==="
+            grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$f" | cut -d= -f1 | grep -E 'OPENAI|LLM|PROVIDER|COPILOT|ASSISTANT' | sort -u || true
+            if grep -qE '^OPENAI_API_KEY=.+' "$f"; then echo "OPENAI_API_KEY non-empty: yes"; else echo "OPENAI_API_KEY non-empty: no"; fi
+          done
+
+      - name: Resolve test student
+        if: github.event.inputs.mode == 'e2e-allowlist'
+        id: student
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          SID="$(docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import django
+          django.setup()
+          from iic_booking.users.models import User
+          u = User.objects.filter(email__iexact="test.student@iic-booking.test", is_test_account=True, is_active=True).first()
+          print(u.pk if u else "")
+          PY
+          )"
+          SID="$(echo "$SID" | tail -n 1 | tr -dc '0-9')"
+          test -n "$SID" || { echo "test student (is_test_account) not found"; exit 1; }
+          echo "test student id: $SID"
+          echo "id=$SID" >> "$GITHUB_OUTPUT"
+
+      - name: Update env file
+        if: github.event.inputs.mode != 'status'
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          STUDENT_ID: ${{ steps.student.outputs.id }}
+          OPENAI_KEY_INPUT: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ubuntu/iic-booking-backend
+          DJANGO_ENV="$DEPLOY/.envs/.production/.django"
+          test -f "$DJANGO_ENV"
+          cp -p "$DJANGO_ENV" "$DJANGO_ENV.bak-assistant-$(date -u +%Y%m%dT%H%M%SZ)"
+          export DJANGO_ENV
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          path = Path(os.environ["DJANGO_ENV"])
+          lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+          def current(key):
+              for line in lines:
+                  if not line.lstrip().startswith("#") and line.split("=", 1)[0].strip() == key and "=" in line:
+                      return line.split("=", 1)[1].strip()
+              return ""
+
+          upsert, remove = {}, set()
+          if mode == "e2e-allowlist":
+              sid = os.environ.get("STUDENT_ID", "").strip()
+              assert sid.isdigit(), "missing test student id"
+              upsert = {"COPILOT_BOOKING_E2E_TEST_MODE": "True", "COPILOT_BOOKING_TEST_USER_IDS": sid,
+                        "COPILOT_BOOKING_CREATE": "False"}
+          elif mode == "enable":
+              upsert = {"COPILOT_BOOKING_CREATE": "True", "RESEARCH_COPILOT_ACTIONS_ENABLED": "True",
+                        "COPILOT_BOOKING_E2E_TEST_MODE": "False", "BOOKING_ASSISTANT_ENABLED": "True"}
+              remove = {"COPILOT_BOOKING_TEST_USER_IDS"}
+          elif mode == "disable":
+              upsert = {"COPILOT_BOOKING_CREATE": "False", "RESEARCH_COPILOT_ACTIONS_ENABLED": "False",
+                        "COPILOT_BOOKING_E2E_TEST_MODE": "False"}
+              remove = {"COPILOT_BOOKING_TEST_USER_IDS"}
+          elif mode == "planner":
+              key = (os.environ.get("OPENAI_KEY_INPUT") or "").strip()
+              if not key and not current("OPENAI_API_KEY"):
+                  raise SystemExit(
+                      "No OpenAI key: add repo secret OPENAI_API_KEY "
+                      "(gh secret set OPENAI_API_KEY -R ravisainiiitr/iic-booking-backend), then rerun mode=planner."
+                  )
+              upsert = {"BOOKING_ASSISTANT_LLM_PLANNER": "auto"}
+              if key:
+                  upsert["OPENAI_API_KEY"] = key
+          else:
+              raise SystemExit("unknown mode")
+
+          out, seen = [], set()
+          for line in lines:
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in remove:
+                  continue
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          out += [f"{k}={v}" for k, v in upsert.items() if k not in seen]
+          path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+          print("mode=", mode, "set=", sorted(upsert), "removed=", sorted(remove))
+          PY
+          echo "=== .django assistant/booking keys (secrets hidden) ==="
+          grep -E '^(COPILOT_BOOKING_|RESEARCH_COPILOT_ACTIONS_ENABLED|BOOKING_ASSISTANT_)' "$DJANGO_ENV" || true
+
+      - name: Recreate django and celeryworker
+        if: github.event.inputs.mode != 'status'
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
+            [ "$code" = "200" ] && { echo "health=200"; break; }
+            sleep 3
+          done
+          test "$code" = "200"
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery'
+
+      - name: Verify runtime state
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          docker exec -i -w /app -e MODE="$MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" python - <<'PY'
+          import os
+          import django
+          django.setup()
+          from django.conf import settings
+          from iic_booking.research_copilot.services.assistant.engine import assistant_enabled
+          from iic_booking.research_copilot.services.assistant.planner import plan, planner_enabled
+          from iic_booking.research_copilot.services.conversation import feature_enabled
+          from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
+          from iic_booking.research_copilot.services.v2.mutations import booking_mutation_allowed, parse_booking_test_user_ids
+          from iic_booking.users.models import User
+
+          mode = os.environ["MODE"]
+          for k in ("BOOKING_ASSISTANT_ENABLED", "COPILOT_BOOKING_CREATE", "RESEARCH_COPILOT_ACTIONS_ENABLED",
+                    "COPILOT_BOOKING_CANCEL", "COPILOT_BOOKING_RESCHEDULE", "COPILOT_WALLET_RECHARGE",
+                    "COPILOT_WALLET_CREDIT", "COPILOT_BOOKING_E2E_TEST_MODE"):
+              print(f"{k}=", bool(getattr(settings, k, False)))
+          allow = sorted(parse_booking_test_user_ids())
+          print("COPILOT_BOOKING_TEST_USER_IDS=", allow)
+          print("BOOKING_ASSISTANT_LLM_PLANNER=", getattr(settings, "BOOKING_ASSISTANT_LLM_PLANNER", None))
+          print("COPILOT_PROVIDER=", configured_provider_name())
+          print("OPENAI_API_KEY set=", bool(str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()))
+          print("assistant_enabled=", assistant_enabled(), "planner_enabled=", planner_enabled())
+
+          student = User.objects.filter(email__iexact="test.student@iic-booking.test").first()
+          s_ok = bool(student) and booking_mutation_allowed(student, "COPILOT_BOOKING_CREATE")
+          print("test student can confirm in chat=", s_ok)
+          active = User.objects.filter(is_active=True)
+          real = active.filter(is_test_account=False)
+          real_ok = sum(1 for u in real.iterator() if booking_mutation_allowed(u, "COPILOT_BOOKING_CREATE"))
+          copilot = sum(1 for u in real.iterator() if feature_enabled(user=u))
+          print(f"real active users={real.count()} can_confirm_in_chat={real_ok} copilot_enabled={copilot}")
+
+          if mode == "e2e-allowlist":
+              assert settings.COPILOT_BOOKING_CREATE is False
+              assert settings.COPILOT_BOOKING_E2E_TEST_MODE is True and allow == [student.pk]
+              assert s_ok, "test student not allowed"
+              assert real_ok == 0, "real users must not be able to book in chat yet"
+          if mode == "enable":
+              assert settings.COPILOT_BOOKING_CREATE is True and settings.RESEARCH_COPILOT_ACTIONS_ENABLED is True
+              assert settings.COPILOT_BOOKING_E2E_TEST_MODE is False
+              assert assistant_enabled() is True
+              assert real_ok == real.count(), "some active users cannot book in chat"
+          if mode == "disable":
+              assert settings.COPILOT_BOOKING_CREATE is False and settings.RESEARCH_COPILOT_ACTIONS_ENABLED is False
+              assert real_ok == 0 and not s_ok
+          if mode == "planner":
+              assert planner_enabled() is True, "planner not enabled"
+              out = plan("could I grab the x-ray diffraction machine sometime next week")
+              print("planner sample: intent=", (out or {}).get("intent"), "equipment=", (out or {}).get("equipment"),
+                    "when=", (out or {}).get("when"))
+              assert out and out["intent"] == "availability", "planner call failed (check the key / outbound access)"
+          PY
+          echo "=== public site ==="
+          curl -s -o /dev/null -w 'https://equip.iitr.ac.in/ -> %{http_code}\n' --max-time 15 https://equip.iitr.ac.in/ || true

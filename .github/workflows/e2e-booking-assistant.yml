@@ -1,0 +1,37 @@
+# End-to-end check of Booking Assistant in-chat booking as the test student, against production.
+#   full     : chat -> slot chip -> form -> summary -> Confirm booking, replay checks, then the booking is
+#              cancelled through the normal user-cancel endpoint with refund, and the refund is verified.
+#   readonly : stops at the summary card; nothing is booked.
+# Needs in-chat booking allowed for the test student (apply-booking-assistant-config mode e2e-allowlist or enable).
+name: E2E Booking Assistant
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full | readonly"
+        required: true
+        default: readonly
+        type: choice
+        options: [readonly, full]
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Run end-to-end test in the django container
+        env:
+          E2E_MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e E2E_MODE="$E2E_MODE" -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/e2e_booking_assistant.py

@@ -120,6 +120,53 @@ class TestActionParsing:
             A.parse(raw)
 
 
+# =============================================================================== LLM planner (pure)
+
+
+class PlannerTests(SimpleTestCase):
+    def _result(self, text):
+        return SimpleNamespace(text=text)
+
+    @override_settings(BOOKING_ASSISTANT_LLM_PLANNER="auto", OPENAI_API_KEY="", COPILOT_PROVIDER="ollama")
+    def test_auto_without_key_is_off(self):
+        from iic_booking.research_copilot.services.assistant import planner
+
+        self.assertFalse(planner.planner_enabled())
+        self.assertIsNone(planner.plan("could I grab the electron microscope sometime next week"))
+
+    @override_settings(BOOKING_ASSISTANT_LLM_PLANNER="auto", OPENAI_API_KEY="sk-test", COPILOT_PROVIDER="ollama")
+    def test_auto_with_key_uses_openai_even_when_chat_runs_on_ollama(self):
+        from iic_booking.research_copilot.services.assistant import planner
+        from iic_booking.research_copilot.services.llm_gateway import OpenAIGateway
+
+        self.assertTrue(planner.planner_enabled())
+        self.assertIsInstance(planner._planner_gateway(), OpenAIGateway)
+        reply = '{"intent": "availability", "equipment": "electron microscope", "when": "next week", "topic": ""}'
+        with patch.object(OpenAIGateway, "complete", return_value=self._result(reply)) as complete:
+            out = planner.plan("could I grab the electron microscope sometime next week")
+        self.assertEqual(out, {"intent": "availability", "equipment": "electron microscope", "when": "next week", "topic": None})
+        self.assertLessEqual(len(complete.call_args.args[0][1]["content"]), 400)
+
+    @override_settings(BOOKING_ASSISTANT_LLM_PLANNER="auto", OPENAI_API_KEY="sk-test")
+    def test_invented_words_are_dropped_and_failures_fall_back(self):
+        from iic_booking.research_copilot.services.assistant import planner
+        from iic_booking.research_copilot.services.llm_gateway import OpenAIGateway
+
+        reply = '{"intent": "info", "equipment": "TEM", "when": "", "topic": "location"}'
+        with patch.object(OpenAIGateway, "complete", return_value=self._result(reply)):
+            self.assertEqual(planner.plan("where can I find the scope")["equipment"], "")
+        with patch.object(OpenAIGateway, "complete", side_effect=RuntimeError("down")):
+            self.assertIsNone(planner.plan("where can I find the scope"))
+        with patch.object(OpenAIGateway, "complete", return_value=self._result("not json")):
+            self.assertIsNone(planner.plan("where can I find the scope"))
+
+    @override_settings(BOOKING_ASSISTANT_LLM_PLANNER="off", OPENAI_API_KEY="sk-test")
+    def test_off_wins_over_key(self):
+        from iic_booking.research_copilot.services.assistant import planner
+
+        self.assertFalse(planner.planner_enabled())
+
+
 # =============================================================================== proposal token binding (pure)
 
 

@@ -7,8 +7,9 @@ the same deterministic resolvers (visible-equipment matching, IST date parsing, 
 so the model never sees other users' data, never chooses ids and can never book: bookings still need
 the summary card's Confirm button and a server-side proposal token.
 
-BOOKING_ASSISTANT_LLM_PLANNER: "off", "on", or "auto" (default; on only for OpenAI with a key set,
-because the small local model is too slow to add to every unrecognised message).
+BOOKING_ASSISTANT_LLM_PLANNER: "off", "on", or "auto" (default; on only when OPENAI_API_KEY is set,
+because the small local model is too slow to add to every unrecognised message). With a key the planner
+calls OpenAI directly, whatever COPILOT_PROVIDER the rest of the Copilot uses.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 PLANNER_INTENTS = ("availability", "info", "policy", "capability", "upcoming", "booking_status", "none")
 _TOPICS = ("overview", "location", "contacts", "charges", "instructions", "inputs", "rules")
+PLANNER_TIMEOUT_SECONDS = 8.0
 
 _SYSTEM = (
     "You classify messages sent to a laboratory equipment booking assistant. Reply with one JSON object only, "
@@ -34,24 +36,34 @@ _SYSTEM = (
 )
 
 
+def _openai_key() -> str:
+    return str(getattr(settings, "OPENAI_API_KEY", "") or "").strip()
+
+
 def planner_enabled() -> bool:
     mode = str(getattr(settings, "BOOKING_ASSISTANT_LLM_PLANNER", "auto") or "auto").strip().lower()
     if mode in {"off", "false", "0", "no"}:
         return False
     if mode in {"on", "true", "1", "yes"}:
         return True
-    from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
+    return bool(_openai_key())
 
-    return configured_provider_name() == "openai" and bool(getattr(settings, "OPENAI_API_KEY", ""))
+
+def _planner_gateway():
+    from iic_booking.research_copilot.services.llm_gateway import OpenAIGateway, get_gateway
+
+    key = _openai_key()
+    if key:
+        model = str(getattr(settings, "OPENAI_CHAT_MODEL", "") or "gpt-4o-mini").strip()
+        return OpenAIGateway(api_key=key, model=model, timeout_seconds=PLANNER_TIMEOUT_SECONDS)
+    return get_gateway()
 
 
 def plan(text: str) -> dict[str, Any] | None:
     if not planner_enabled() or not text or len(text) > 400:
         return None
     try:
-        from iic_booking.research_copilot.services.llm_gateway import get_gateway
-
-        result = get_gateway().generate(
+        result = _planner_gateway().generate(
             [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": text[:400]}], max_tokens=120
         )
     except Exception:  # noqa: BLE001
