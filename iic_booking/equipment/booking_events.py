@@ -500,6 +500,12 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     if not event or not event.booking or not event.booking.user:
         logger.warning("Invalid event, booking, or user for notification")
         return
+
+    from .booking_lab_messages import is_user_lab_message, send_lab_message_notifications
+
+    if is_user_lab_message(event):
+        send_lab_message_notifications(event)
+        return
     
     user = event.booking.user
     booking = event.booking

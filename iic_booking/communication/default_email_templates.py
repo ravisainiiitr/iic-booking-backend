@@ -37,6 +37,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_absent_email",
     "booking_status_changed_email",
     "booking_comment_email",
+    "booking_lab_message_email",
     "booking_reminder_email",
     "booking_charge_recalculated_email",
     "booking_not_utilized_email",
@@ -484,6 +485,39 @@ def _booking_templates() -> list[dict[str, Any]]:
             include_duration=False,
             include_charges=False,
             note_vars=(("comment", "Comment"),),
+        ),
+        _booking_email(
+            code="booking_lab_message_email",
+            title="Message from Booking User",
+            subject="Message about booking {{ booking_id }} – {{ equipment_name }}",
+            intro=(
+                "<strong>{{ sender_name }}</strong> has sent a message to the Lab Operator and "
+                "Officer In-Charge about booking <strong>{{ booking_id }}</strong>."
+            ),
+            description=(
+                "Sent to the Lab Operator(s) and Officer In-Charge(s) of the equipment when the booking "
+                "user (or their supervisor) uses Message the lab on the booking details page."
+            ),
+            include_duration=False,
+            include_charges=False,
+            extra_detail_rows=[
+                optional_detail_row("Booking status", "booking_status"),
+                optional_detail_row("Message from", "sender_display"),
+                optional_detail_row("Sent at", "sent_at"),
+                optional_detail_row("Reason", "message_reason"),
+            ],
+            note_vars=(),
+            post_details_html=optional_note_block("lab_message_html", label="Message"),
+            post_details_text=(
+                "{% if message_reason %}Reason: {{ message_reason }}\n{% endif %}"
+                "Message:\n{{ lab_message }}\n"
+            ),
+            cta_label="Open booking",
+            variable_help=(
+                _BOOKING_COMMON_HELP
+                + ", {{ booking_status }}, {{ sender_name }}, {{ sender_display }}, {{ sent_at }}, "
+                "{{ message_reason }}, {{ lab_message }}, {{ lab_message_html }}"
+            ),
         ),
         _booking_email(
             code="booking_reminder_email",

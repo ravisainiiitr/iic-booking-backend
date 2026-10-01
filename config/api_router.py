@@ -245,6 +245,7 @@ from iic_booking.equipment.print_3d_views import (
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
+from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
 from iic_booking.equipment.booking_templates import (
     booking_template_detail,
     booking_template_preferred_slot,
@@ -1372,6 +1373,12 @@ urlpatterns = router.urls + [
     # Booking event history endpoints
     path("bookings/<int:booking_id>/events/", list_booking_events, name="list-booking-events"),
     path("bookings/<int:booking_id>/events/comment/", create_booking_event_comment, name="create-booking-event-comment"),
+    path("bookings/<int:booking_id>/lab-messages/", booking_lab_messages, name="booking-lab-messages"),
+    path(
+        "bookings/<int:booking_id>/lab-messages/reply/",
+        booking_lab_message_reply,
+        name="booking-lab-message-reply",
+    ),
     path("bookings/<int:booking_id>/sample-trace/", booking_sample_trace, name="booking-sample-trace"),
     path("bookings/<int:booking_id>/sample-trace/set/", set_booking_sample_status, name="set-booking-sample-status"),
     path("bookings/<int:booking_id>/ensure-results-folder/", ensure_booking_results_folder, name="ensure-booking-results-folder"),
