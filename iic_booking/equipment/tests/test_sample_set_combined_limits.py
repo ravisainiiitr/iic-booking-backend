@@ -173,6 +173,99 @@ def test_formula_max_and_unconfigured_max_are_not_summed(egs_factory):
     assert combined_max_error(eq, values) is None
 
 
+# --- FE-SEM APREO field shape -----------------------------------------------------------------------
+
+
+def _apreo(egs_factory, b_help_text="", **kwargs):
+    """Production APREO rows (typed per user type): A max_formula B*4, B options [] with no help text.
+    The equipment form only offers help-text line 2 for a NUMERIC maximum, so "1\\n2\\n1" is how B max 2 is set."""
+    eq = egs_factory.equipment(time_formula="B*90", **kwargs)
+    DynamicInputField.objects.create(
+        equipment=eq, user_type=UserType.STUDENT, field_key="A", field_label="No. of Samples",
+        field_type=DynamicInputFieldType.NUMERIC, options={"min": 1, "max_formula": "B*4"},
+        default_value="1", is_required=True, editing_required=True,
+    )
+    DynamicInputField.objects.create(
+        equipment=eq, user_type=UserType.STUDENT, field_key="B",
+        field_label="Number of Slots ( Slot Duration: 1.5 Hours )", field_type=DynamicInputFieldType.NUMERIC,
+        options=[], help_text=b_help_text, default_value="1", is_required=True,
+    )
+    return eq
+
+
+APREO_B_TOTAL_ERROR = (
+    "Total Number of Slots ( Slot Duration: 1.5 Hours ) across all sample sets (4) exceeds the maximum allowed (2) "
+    "for this equipment."
+)
+
+
+@pytest.mark.django_db
+def test_apreo_as_configured_has_no_b_maximum_to_sum(egs_factory):
+    eq = _apreo(egs_factory)
+    student = egs_factory.student()
+
+    assert combined_max_error(eq, {"A": 4, "B": 2, SAMPLE_SETS_KEY: [{"A": 4, "B": 2}]}, booking_user=student) is None
+
+
+@pytest.mark.django_db
+def test_apreo_b_max_2_combined_across_sets_on_create(egs_factory, no_portal_lock):
+    eq = _apreo(egs_factory, b_help_text="1\n2\n1")
+    student = _student_with_wallet(egs_factory)
+    client = egs_factory.client_for(student)
+
+    over = client.get(
+        f"/api/equipments/{eq.pk}/calculate/", {"A": 2, "B": 2, "sample_sets": json.dumps([{"A": 2, "B": 2}])}
+    )
+    assert over.status_code == 400
+    assert over.data["error"] == APREO_B_TOTAL_ERROR
+
+    slot = egs_factory.slot(eq, egs_factory.future())
+    rejected = _book(egs_factory, student, eq, slot, {"A": 2, "B": 2, SAMPLE_SETS_KEY: [{"A": 2, "B": 2}]})
+    assert rejected.status_code == 400
+    assert rejected.data["error"] == APREO_B_TOTAL_ERROR
+    assert not Booking.objects.filter(user=student).exists()
+
+    ok = client.get(
+        f"/api/equipments/{eq.pk}/calculate/", {"A": 4, "B": 1, "sample_sets": json.dumps([{"A": 4, "B": 1}])}
+    )
+    assert ok.status_code == 200, ok.data
+    assert ok.data["total_time_minutes"] == 180
+
+
+@pytest.mark.django_db
+def test_apreo_field_a_formula_still_checked_per_set(egs_factory):
+    eq = _apreo(egs_factory, b_help_text="1\n2\n1")
+    client = egs_factory.client_for(egs_factory.student())
+
+    resp = client.get(
+        f"/api/equipments/{eq.pk}/calculate/", {"A": 4, "B": 1, "sample_sets": json.dumps([{"A": 5, "B": 1}])}
+    )
+
+    assert resp.status_code == 400
+    assert resp.data["error"].startswith("Sample set 2: No. of Samples cannot be greater than 4")
+
+
+@pytest.mark.django_db
+def test_apreo_b_max_2_combined_across_sets_on_edit(egs_factory):
+    eq = _apreo(egs_factory, b_help_text="1\n2\n1", enable_charge_recalculation=True)
+    owner = egs_factory.student()
+    one_plus_one = {"A": 1, "B": 1, SAMPLE_SETS_KEY: [{"A": 1, "B": 1}]}
+    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values=one_plus_one)
+
+    raised = _patch(egs_factory, owner, booking, {"A": 1, "B": 2, SAMPLE_SETS_KEY: [{"A": 1, "B": 1}]})
+    assert raised.status_code == 400, raised.data
+    assert "across all sample sets (3) exceeds the maximum allowed (2)" in raised.data["error"]
+
+    added = _patch(egs_factory, _oic(egs_factory, eq), booking, {**one_plus_one, SAMPLE_SETS_KEY: [{"A": 1, "B": 1}] * 2})
+    assert added.status_code == 400, added.data
+    assert "across all sample sets (3) exceeds the maximum allowed (2)" in added.data["error"]
+
+    within = _patch(egs_factory, owner, booking, {"A": 4, "B": 1, SAMPLE_SETS_KEY: [{"A": 3, "B": 1}]})
+    assert within.status_code == 200, within.data
+    booking.refresh_from_db()
+    assert booking.input_values[SAMPLE_SETS_KEY] == [{"A": 3, "B": 1}]
+
+
 # --- editing booked parameters ----------------------------------------------------------------------
 
 
