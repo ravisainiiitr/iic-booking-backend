@@ -175,6 +175,17 @@ def _quota_error(user, eq, minutes: int, total: Decimal | None, start) -> str | 
     return None if allowed else str(err or "This booking would exceed your booking quota.")
 
 
+def _slot_limit_error(user, eq, slots: list) -> str | None:
+    from iic_booking.equipment.equipment_slot_quota import slot_limit_error
+
+    try:
+        return slot_limit_error(
+            user, eq, slots_requested=len(slots), reference=slots[0].start_datetime if slots else None
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def account_problems(user, eq) -> list[str]:
     """Rules that block booking this equipment at all, before any slot is picked."""
     from iic_booking.equipment.api_views import user_can_see_equipment
@@ -216,6 +227,9 @@ def run(user, eq, input_values: dict[str, Any], slots: list) -> dict[str, Any]:
     quota_error = _quota_error(user, eq, minutes, total, slots[0].start_datetime if slots else None)
     if quota_error:
         problems.append(quota_error)
+    slot_limit_error = _slot_limit_error(user, eq, slots)
+    if slot_limit_error:
+        problems.append(slot_limit_error)
     after = None
     if wallet.get("balance") is not None and total is not None:
         after = float(Decimal(str(wallet["balance"])) - total)

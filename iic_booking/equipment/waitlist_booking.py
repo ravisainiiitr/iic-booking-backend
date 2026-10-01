@@ -458,6 +458,15 @@ def create_booking_for_waitlist_user(
                 limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
                 if limit_err:
                     return None, limit_err
+            from .equipment_slot_quota import slot_limit_error
+
+            slot_limit_err = slot_limit_error(
+                booking_user, equipment,
+                slots_requested=len(locked), reference=locked[0].start_datetime,
+                bypass=staff_override, lock=True,
+            )
+            if slot_limit_err:
+                return None, slot_limit_err
 
             if total_charge > 0:
                 from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit

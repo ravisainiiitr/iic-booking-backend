@@ -58,6 +58,10 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # When True, weekly/monthly quota checks are skipped in book-equipment and related flows.
 # Default False; enable only for local benchmarking via env or local.py override.
 SKIP_BOOKING_QUOTA_CHECK = env.bool("SKIP_BOOKING_QUOTA_CHECK", default=False)
+# Per-user weekly / monthly slot limits saved on each equipment (internal_/external_ weekly_/monthly_quota,
+# iic_booking/equipment/equipment_slot_quota.py). Off by default: every equipment still carries the
+# column default of 10, so review the values before switching this on.
+ENFORCE_EQUIPMENT_SLOT_QUOTA = env.bool("ENFORCE_EQUIPMENT_SLOT_QUOTA", default=False)
 # Expose X-Booking-Perf on book-equipment responses; log slow bookings when True or DEBUG.
 BOOKING_PERFORMANCE_TIMINGS = env.bool("BOOKING_PERFORMANCE_TIMINGS", default=DEBUG)
 # Equipment Group alternatives (docs/equipment_group_alternatives.md). Master kill switches:

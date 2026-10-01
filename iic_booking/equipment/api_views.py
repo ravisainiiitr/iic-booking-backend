@@ -4525,6 +4525,13 @@ def _book_equipment_impl(request, pk):
                     additional_info=_get_additional_info_from_request(request, equipment),
                 )
                 return Response({"error": quota_error}, status=status.HTTP_400_BAD_REQUEST)
+        slot_limit_resp = _equipment_slot_limit_response(
+            request, equipment, booking_user,
+            slots_requested=daily_slots.count(), booking_date=booking_date,
+            bypass=bool(create_as_hold), duration_minutes=total_time_minutes,
+        )
+        if slot_limit_resp is not None:
+            return slot_limit_resp
         perf.mark("quota_checks_done")
         status_map = {'booked': BookingStatus.BOOKED, 'hold': BookingStatus.HOLD}
         booking_status_enum = BookingStatus.HOLD if create_as_hold else status_map.get(booking_status.lower(), BookingStatus.BOOKED)
@@ -4799,6 +4806,16 @@ def _book_equipment_impl(request, pk):
                         )
                         if not quota_ok:
                             raise ValueError(quota_err or "Quota check failed.")
+                from iic_booking.equipment.equipment_slot_quota import slot_limit_error
+
+                slot_limit_err = slot_limit_error(
+                    booking_user, equipment,
+                    slots_requested=len(locked_slots),
+                    reference=locked_slots[0].start_datetime if locked_slots else None,
+                    actor=request.user, bypass=bool(create_as_hold), lock=True,
+                )
+                if slot_limit_err:
+                    raise ValueError(slot_limit_err)
                 if not is_admin:
                     from iic_booking.users.student_spending_limits import spending_limit_error
 
@@ -5447,6 +5464,13 @@ def _book_equipment_impl(request, pk):
                 {"error": quota_error},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+    slot_limit_resp = _equipment_slot_limit_response(
+        request, equipment, booking_user,
+        slots_requested=daily_slots.count(), booking_date=booking_date,
+        bypass=bool(create_as_hold), duration_minutes=total_time_minutes,
+    )
+    if slot_limit_resp is not None:
+        return slot_limit_resp
 
     # Map status string to BookingStatus enum
     status_map = {
@@ -5536,6 +5560,16 @@ def _book_equipment_impl(request, pk):
                 )
                 if not ext_quota.allowed:
                     raise ValueError(ext_quota.message or "External weekly slot quota exceeded.")
+            from iic_booking.equipment.equipment_slot_quota import slot_limit_error
+
+            slot_limit_err = slot_limit_error(
+                booking_user, equipment,
+                slots_requested=len(locked_slots_list),
+                reference=locked_slots_list[0].start_datetime,
+                actor=request.user, bypass=bool(create_as_hold), lock=True,
+            )
+            if slot_limit_err:
+                raise ValueError(slot_limit_err)
             if not is_admin:
                 from iic_booking.users.student_spending_limits import spending_limit_error
 
@@ -10402,6 +10436,63 @@ def _student_spending_limit_response(
         status=status.HTTP_400_BAD_REQUEST,
     )
 
+
+def _equipment_slot_limit_response(
+    request, equipment, booking_user, *, slots_requested, booking_date, bypass=False, duration_minutes=None
+):
+    """400 response when the booking would pass the equipment's weekly / monthly slot limit for this user."""
+    from iic_booking.equipment.equipment_slot_quota import SLOT_LIMIT_ERROR_CODE, slot_limit_error
+
+    err = slot_limit_error(
+        booking_user, equipment,
+        slots_requested=slots_requested, reference=booking_date, actor=request.user, bypass=bypass,
+    )
+    if not err:
+        return None
+    _create_booking_attempt_log(
+        request, equipment, BookingAttemptOutcome.FAILED,
+        failure_reason=err,
+        slots_requested=slots_requested,
+        number_of_samples=request.data.get("number_of_samples") or 1,
+        duration_minutes=duration_minutes,
+        additional_info=_get_additional_info_from_request(request, equipment),
+    )
+    return Response({"error": err, "code": SLOT_LIMIT_ERROR_CODE}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def equipment_slot_limits(request, pk):
+    """
+    The signed-in user's weekly / monthly slot limits on this equipment and how many are left.
+
+    Query: date=YYYY-MM-DD picks the week / month (default today, IST). `limits` is empty when the
+    limits are switched off, skipped for this equipment, or the user is staff.
+    """
+    from django.utils.dateparse import parse_date
+
+    from iic_booking.equipment.equipment_slot_quota import limits_apply, usage_summary
+
+    equipment = Equipment.objects.filter(pk=pk).first()
+    if equipment is None or not user_can_see_equipment(request.user, equipment):
+        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+    reference = None
+    raw_date = (request.query_params.get("date") or "").strip()
+    if raw_date:
+        day = parse_date(raw_date)
+        if day is None:
+            return Response({"error": "date must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        reference = timezone.make_aware(datetime(day.year, day.month, day.day, 12))
+    if not limits_apply(equipment, request.user):
+        return Response({"equipment_id": equipment.pk, "limits": []})
+    return Response(
+        {
+            "equipment_id": equipment.pk,
+            "limits": [u.as_dict() for u in usage_summary(equipment, request.user, reference)],
+        }
+    )
+
+
 def _get_slots_duration_minutes(slot_ids):
     """Return total duration in minutes for the given slot IDs (from DailySlot start/end). Used to know required duration when finding alternatives."""
     if not slot_ids:
@@ -12947,6 +13038,16 @@ def user_reschedule_booking(request, booking_id):
     except Exception:
         logger.exception("Quota check failed during user reschedule for booking %s", booking.booking_id)
         return Response({"error": "Quota check failed. Please try again or contact admin."}, status=status.HTTP_400_BAD_REQUEST)
+
+    from iic_booking.equipment.equipment_slot_quota import SLOT_LIMIT_ERROR_CODE, slot_limit_error
+
+    slot_limit_err = slot_limit_error(
+        booking.user, equipment,
+        slots_requested=available_slots.count(), reference=quota_date, actor=request.user,
+        exclude_booking_id=booking.booking_id, action="reschedule", lock=True,
+    )
+    if slot_limit_err:
+        return Response({"error": slot_limit_err, "code": SLOT_LIMIT_ERROR_CODE}, status=status.HTTP_400_BAD_REQUEST)
 
     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
