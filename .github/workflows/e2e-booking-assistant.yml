@@ -2,6 +2,8 @@
 #   full     : chat -> slot chip -> form -> summary -> Confirm booking, replay checks, then the booking is
 #              cancelled through the normal user-cancel endpoint with refund, and the refund is verified.
 #   readonly : stops at the summary card; nothing is booked.
+#   guided   : like full, but through the step-by-step flow (Book equipment -> department -> equipment ->
+#              inputs -> slot -> summary, with Change slot), then checks the virtual booking ID and workspace gate.
 # Needs in-chat booking allowed for the test student (apply-booking-assistant-config mode e2e-allowlist or enable).
 name: E2E Booking Assistant
 
@@ -9,11 +11,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "full | readonly"
+        description: "full | readonly | guided"
         required: true
         default: readonly
         type: choice
-        options: [readonly, full]
+        options: [readonly, full, guided]
 
 concurrency:
   group: backend-deploy-ec2

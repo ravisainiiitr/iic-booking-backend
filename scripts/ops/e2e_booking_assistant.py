@@ -148,6 +148,8 @@ def _fill_inputs(fields):
             values[key] = str(int(f.get("min") or 1))
         elif ftype == "TOGGLE":
             values[key] = "No"
+        elif ftype == "PERIODIC_TABLE":
+            values[f"{key}_elements"] = str((f.get("allowed") or ["C"])[0])
         else:
             values[key] = "Booking Assistant E2E test"
     return values
@@ -195,6 +197,198 @@ def run():
     if not check("conversation created", res.status_code in (200, 201) and conv, f"http {res.status_code}"):
         return
 
+    got = (_guided_to_summary if MODE == "guided" else _chat_to_summary)(client, conv, eq, earliest, target_start)
+    if got is None:
+        return
+    slot_ids, summary, confirm = got
+    print("summary", {k: summary.get(k) for k in ("equipment_name", "when_label", "sample_count", "total_amount",
+                                                  "gst_amount", "wallet_label", "executable", "expires_at")})
+    if MODE == "readonly":
+        check("readonly: nothing booked", not Booking.objects.filter(user=student, daily_slots__in=slot_ids,
+                                                                    status__in=ACTIVE).exists())
+        print("summary executable =", summary.get("executable"), "confirm button present =", bool(confirm))
+        return
+    if not check("summary is executable with exactly one Confirm booking button",
+                 summary.get("executable") is True and len(confirm) == 1, f"buttons {len(confirm)}"):
+        return
+    confirm = confirm[0]
+
+    code, msg, _ = _send(client, conv, "confirm")
+    check("typing 'confirm' does not book",
+          not Booking.objects.filter(user=student, daily_slots__in=slot_ids, status__in=ACTIVE).exists())
+    check("typing 'confirm' points to the Confirm booking button",
+          (msg.get("metadata") or {}).get("typed_confirm_blocked") is True,
+          f"intent {(msg.get('metadata') or {}).get('intent')} | {str(msg.get('content') or '')[:140]}")
+
+    txn_start = SubWalletTransaction.objects.aggregate(m=Max("id"))["m"] or 0
+    created_after = timezone.now()
+    first_key = f"ba-e2e-{uuid.uuid4().hex}"
+    booking = None
+    before = {}
+    debit_total = Decimal("0")
+    try:
+        code, data = _confirm(client, confirm, first_key)
+        result = data.get("data") or {}
+        ok = check("Confirm booking creates the booking", code == 200 and data.get("ok") is True,
+                   f"http {code} error {data.get('error')} | {str(data.get('message') or '')[:160]}")
+        booking = (
+            Booking.objects.filter(user=student, daily_slots__in=slot_ids, created_at__gte=created_after)
+            .order_by("-booking_id").first()
+        )
+        if not ok and booking is None:
+            return
+        check("booking row exists for the test student on the chosen slot", booking is not None)
+        if booking is None:
+            return
+        print("BOOKING_CREATED", booking.booking_id, getattr(booking, "virtual_booking_id", ""), booking.status,
+              "| response booking id", result.get("real_booking_id") or result.get("booking_id"))
+        _check_success_reply(booking, data)
+        booked_slots = sorted(booking.daily_slots.values_list("id", flat=True))
+        check("booking made through the normal service (status, equipment, slots)",
+              booking.status in ACTIVE and int(booking.equipment_id) == int(eq.pk)
+              and booked_slots == sorted(slot_ids),
+              f"status {booking.status} slots {booked_slots}")
+        try:
+            from iic_booking.research_copilot.models import CopilotAuditEvent
+
+            audited = CopilotAuditEvent.objects.filter(user=student, created_at__gte=created_after,
+                                                       message="create_booking").exists()
+            check("Copilot audit event recorded", audited)
+        except Exception as exc:  # noqa: BLE001
+            check("Copilot audit event recorded", False, type(exc).__name__)
+
+        code2, data2 = _confirm(client, confirm, f"ba-e2e-{uuid.uuid4().hex}")
+        check("second Confirm with the same token is rejected", data2.get("ok") is not True,
+              f"http {code2} error {data2.get('error')}")
+        code3, data3 = _confirm(client, confirm, first_key)
+        check("retrying the same click is refused or replayed, never booked again",
+              data3.get("ok") is not True or data3.get("idempotent_replay") is True,
+              f"http {code3} error {data3.get('error')} replay {data3.get('idempotent_replay')}")
+        count = Booking.objects.filter(user=student, daily_slots__in=slot_ids, status__in=ACTIVE).distinct().count()
+        check("still exactly one booking on that slot", count == 1, f"{count}")
+
+        debits = list(_student_txns(student, txn_start).filter(transaction_type="debit"))
+        debit_total = sum((t.amount for t in debits), Decimal("0"))
+        for sub_id in {t.sub_wallet_id for t in debits}:
+            sub = SubWallet.objects.get(pk=sub_id)
+            moved = sum(
+                (t.amount if t.transaction_type == "debit" else -t.amount)
+                for t in SubWalletTransaction.objects.filter(sub_wallet_id=sub_id, id__gt=txn_start)
+            )
+            before[sub_id] = sub.balance + moved
+        print("wallet debit at booking", str(debit_total), "on sub-wallets", sorted(before),
+              "| summary total", summary.get("total_amount"))
+    finally:
+        if booking is not None:
+            _cancel_and_verify(client, student, booking, slot_ids, txn_start, before, debit_total)
+
+
+def _check_success_reply(booking, data):
+    """The chat must show the virtual booking ID, never the database id, and offer the workspace only when enabled."""
+    vid = str(getattr(booking, "virtual_booking_id", "") or "")
+    envelope = data.get("response") or {}
+    text = " ".join(str(x or "") for x in (data.get("message"), envelope.get("content")))
+    card = next((c for c in envelope.get("cards") or [] if c.get("type") == "booking_success"), {})
+    if vid:
+        check("confirmation message shows the virtual booking ID", vid in text, text[:200])
+        check("booking card carries the virtual booking ID", card.get("booking_ref") == vid, str(card.get("booking_ref")))
+    check("confirmation message does not show the database id", f"#{booking.booking_id}" not in text, text[:200])
+    labels = [a.get("label") for a in envelope.get("actions") or envelope.get("suggested_actions") or []]
+    enabled = bool(getattr(booking.equipment, "enable_remote_analysis", False))
+    check("Open Analysis Workspace offered only when Remote Analysis is enabled",
+          ("Open Analysis Workspace" in labels) == enabled, f"remote analysis {enabled} | actions {labels}")
+
+
+def _flow(client, conv, label, step, **payload):
+    return _send(client, conv, label, {"type": "ba_flow", "payload": {"step": step, **payload}})
+
+
+def _step_index(card):
+    return ((card or {}).get("step") or {}).get("index")
+
+
+def _cancellable_chip(slots, earliest):
+    chips = [c for d in (slots or {}).get("days") or [] for c in d.get("slots") or []]
+    chips = [c for c in chips if c.get("start") and parse_datetime(c["start"]) >= earliest]
+    chips.sort(key=lambda c: c.get("start"))
+    return chips[0] if chips else None
+
+
+def _guided_to_summary(client, conv, eq, earliest, target_start):
+    """Book equipment -> department -> equipment -> inputs -> slot -> summary, with Change slot on the way."""
+    dept_id = int(eq.internal_department_id or 0)
+    code, msg, cards = _flow(client, conv, "Book equipment", "start")
+    depts, equipment = _card(cards, "ba_flow_departments"), _card(cards, "ba_flow_equipment")
+    if depts:
+        items = depts.get("items") or []
+        check("step 1 of 5 asks for the department", _step_index(depts) == 1 and bool(items), [d.get("name") for d in items])
+        check("every listed department has bookable equipment", all(int(d.get("count") or 0) > 0 for d in items),
+              [(d.get("name"), d.get("count")) for d in items])
+        item = next((d for d in items if int(d.get("department_id") or 0) == dept_id), None)
+        if not check("the target equipment's department is listed", item is not None, f"department {dept_id}"):
+            return None
+        code, msg, cards = _flow(client, conv, item["name"], "department", department_id=dept_id)
+        equipment = _card(cards, "ba_flow_equipment")
+    if not check("step 2 of 5 lists that department's equipment",
+                 equipment is not None and _step_index(equipment) == 2 and int(equipment.get("department_id") or 0) == dept_id,
+                 f"http {code} cards {_types(cards)} | {str(msg.get('content') or '')[:160]}"):
+        return None
+    rows = equipment.get("items") or []
+    ids = {r["equipment_id"] for r in rows} | {m["equipment_id"] for r in rows for m in r.get("modes") or []}
+    check("the target equipment is offered (or the list says there are more)", eq.pk in ids or bool(equipment.get("more")),
+          f"{len(rows)} rows, more {equipment.get('more')}")
+    labels = [a.get("label") for a in msg.get("suggested_actions") or []]
+    check("Back to departments and Cancel offered", {"Back to departments", "Cancel"} <= set(labels), labels)
+
+    code, msg, cards = _flow(client, conv, eq.name, "equipment", equipment_id=eq.pk)
+    form = _card(cards, "ba_booking_form")
+    if not check("step 3 of 5 asks for samples and inputs before any slot",
+                 form is not None and form.get("flow") is True and _step_index(form) == 3 and not form.get("slot_ids"),
+                 f"cards {_types(cards)} | {str(msg.get('content') or '')[:200]}"):
+        return None
+    samples = int(((form.get("samples") or {}).get("min") or 1)) if form.get("samples") else 1
+    inputs = _fill_inputs(form.get("fields"))
+    print("form fields", [(f.get("key"), f.get("type"), f.get("required")) for f in form.get("fields") or []],
+          "| samples", samples, "| inputs", inputs, "| instruction", bool(form.get("instruction")))
+
+    code, msg, cards = _flow(client, conv, "Choose a slot", "inputs", equipment_id=eq.pk,
+                             number_of_samples=samples, input_values=inputs)
+    slots = _card(cards, "ba_slots")
+    if not check("step 4 of 5 shows slots sized for the inputs",
+                 slots is not None and slots.get("flow") is True and _step_index(slots) == 4,
+                 f"cards {_types(cards)} | {str(msg.get('content') or '')[:200]}"):
+        return None
+    print("required minutes", slots.get("required_minutes"), "slots needed", slots.get("slots_needed"))
+    day = {"start": target_start.date().isoformat(), "end": (target_start.date() + timedelta(days=6)).isoformat()}
+    code, msg, cards = _flow(client, conv, "Later", "slots", equipment_id=eq.pk, when=day)
+    chip = _cancellable_chip(_card(cards, "ba_slots"), earliest)
+    if not check("a cancellable slot is offered in the guided window", chip is not None,
+                 f"cards {_types(cards)} | {str(msg.get('content') or '')[:160]}"):
+        return None
+    print("chip", chip.get("label"), chip.get("date"), "slots", chip.get("slot_ids"))
+
+    code, msg, cards = _flow(client, conv, chip["label"], "slot", equipment_id=eq.pk, slot_ids=chip["slot_ids"])
+    summary = _card(cards, "ba_booking_summary")
+    if not check("step 5 of 5 shows the booking summary", summary is not None and _step_index(summary) == 5,
+                 f"cards {_types(cards)} | {str(msg.get('content') or '')[:200]}"):
+        return None
+    labels = [a.get("label") for a in msg.get("suggested_actions") or []]
+    check("summary offers Change slot / Change samples/inputs / Change equipment / Cancel",
+          {"Change slot", "Change samples/inputs", "Change equipment", "Cancel"} <= set(labels), labels)
+
+    code, msg, cards = _flow(client, conv, "Change slot", "change_slot", equipment_id=eq.pk, when=day)
+    check("Change slot goes back to the slot step", _card(cards, "ba_slots") is not None, _types(cards))
+    code, msg, cards = _flow(client, conv, chip["label"], "slot", equipment_id=eq.pk, slot_ids=chip["slot_ids"])
+    summary = _card(cards, "ba_booking_summary")
+    if not check("picking the slot again keeps the inputs and returns to the summary",
+                 summary is not None and int(summary.get("sample_count") or 0) == samples,
+                 f"cards {_types(cards)} | {str(msg.get('content') or '')[:200]}"):
+        return None
+    confirm = [a for a in msg.get("suggested_actions") or [] if a.get("confirmation_token")]
+    return list(chip["slot_ids"]), summary, confirm
+
+
+def _chat_to_summary(client, conv, eq, earliest, target_start):
     code, msg, cards = _send(client, conv, f"I need {eq.name} tomorrow — what are my options?")
     check("'tomorrow — what are my options?' answered with live availability or equipment choices",
           code == 200 and bool({"ba_slots", "ba_equipment_options"} & set(_types(cards))),
@@ -240,86 +434,8 @@ def run():
     if not check("review shows the booking summary", summary is not None,
                  f"cards {_types(cards)} | {str(msg.get('content') or '')[:200]}"):
         return
-    print("summary", {k: summary.get(k) for k in ("equipment_name", "when_label", "sample_count", "total_amount",
-                                                  "gst_amount", "wallet_label", "executable", "expires_at")})
     confirm = [a for a in msg.get("suggested_actions") or [] if a.get("confirmation_token")]
-    if MODE == "readonly":
-        check("readonly: nothing booked", not Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"],
-                                                                    status__in=ACTIVE).exists())
-        print("summary executable =", summary.get("executable"), "confirm button present =", bool(confirm))
-        return
-    if not check("summary is executable with exactly one Confirm booking button",
-                 summary.get("executable") is True and len(confirm) == 1, f"buttons {len(confirm)}"):
-        return
-    confirm = confirm[0]
-
-    code, msg, _ = _send(client, conv, "confirm")
-    check("typing 'confirm' does not book",
-          not Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"], status__in=ACTIVE).exists())
-    check("typing 'confirm' points to the Confirm booking button",
-          (msg.get("metadata") or {}).get("typed_confirm_blocked") is True,
-          f"intent {(msg.get('metadata') or {}).get('intent')} | {str(msg.get('content') or '')[:140]}")
-
-    txn_start = SubWalletTransaction.objects.aggregate(m=Max("id"))["m"] or 0
-    created_after = timezone.now()
-    first_key = f"ba-e2e-{uuid.uuid4().hex}"
-    booking = None
-    before = {}
-    debit_total = Decimal("0")
-    try:
-        code, data = _confirm(client, confirm, first_key)
-        result = data.get("data") or {}
-        ok = check("Confirm booking creates the booking", code == 200 and data.get("ok") is True,
-                   f"http {code} error {data.get('error')} | {str(data.get('message') or '')[:160]}")
-        booking = (
-            Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"], created_at__gte=created_after)
-            .order_by("-booking_id").first()
-        )
-        if not ok and booking is None:
-            return
-        check("booking row exists for the test student on the chosen slot", booking is not None)
-        if booking is None:
-            return
-        print("BOOKING_CREATED", booking.booking_id, getattr(booking, "virtual_booking_id", ""), booking.status,
-              "| response booking id", result.get("real_booking_id") or result.get("booking_id"))
-        booked_slots = sorted(booking.daily_slots.values_list("id", flat=True))
-        check("booking made through the normal service (status, equipment, slots)",
-              booking.status in ACTIVE and int(booking.equipment_id) == int(eq.pk)
-              and booked_slots == sorted(form["slot_ids"]),
-              f"status {booking.status} slots {booked_slots}")
-        try:
-            from iic_booking.research_copilot.models import CopilotAuditEvent
-
-            audited = CopilotAuditEvent.objects.filter(user=student, created_at__gte=created_after,
-                                                       message="create_booking").exists()
-            check("Copilot audit event recorded", audited)
-        except Exception as exc:  # noqa: BLE001
-            check("Copilot audit event recorded", False, type(exc).__name__)
-
-        code2, data2 = _confirm(client, confirm, f"ba-e2e-{uuid.uuid4().hex}")
-        check("second Confirm with the same token is rejected", data2.get("ok") is not True,
-              f"http {code2} error {data2.get('error')}")
-        code3, data3 = _confirm(client, confirm, first_key)
-        check("retrying the same click is refused or replayed, never booked again",
-              data3.get("ok") is not True or data3.get("idempotent_replay") is True,
-              f"http {code3} error {data3.get('error')} replay {data3.get('idempotent_replay')}")
-        count = Booking.objects.filter(user=student, daily_slots__in=form["slot_ids"], status__in=ACTIVE).distinct().count()
-        check("still exactly one booking on that slot", count == 1, f"{count}")
-
-        debits = list(_student_txns(student, txn_start).filter(transaction_type="debit"))
-        debit_total = sum((t.amount for t in debits), Decimal("0"))
-        for sub_id in {t.sub_wallet_id for t in debits}:
-            sub = SubWallet.objects.get(pk=sub_id)
-            moved = sum(
-                (t.amount if t.transaction_type == "debit" else -t.amount)
-                for t in SubWalletTransaction.objects.filter(sub_wallet_id=sub_id, id__gt=txn_start)
-            )
-            before[sub_id] = sub.balance + moved
-        print("wallet debit at booking", str(debit_total), "on sub-wallets", sorted(before),
-              "| summary total", summary.get("total_amount"))
-    finally:
-        if booking is not None:
-            _cancel_and_verify(client, student, booking, form["slot_ids"], txn_start, before, debit_total)
+    return list(form["slot_ids"]), summary, confirm
 
 
 def _cancel_and_verify(client, student, booking, slot_ids, txn_start, before, debit_total):
