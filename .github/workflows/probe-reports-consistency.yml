@@ -1,0 +1,253 @@
+name: Probe Reports Consistency (read-only)
+
+# Cross-checks Reports & Statistics outputs (booking stats, faculty wallet report, equipment
+# performance report, finance dashboard) against direct DB aggregates for a sample of users of
+# every type. Runs inside a READ ONLY transaction that is rolled back; prints only ids, counts
+# and sums (no names, emails or secrets).
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_size:
+        description: Users sampled per user type
+        required: false
+        default: '12'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Compare report endpoints with direct aggregates (SELECT only)
+        env:
+          SAMPLE_SIZE: ${{ github.event.inputs.sample_size }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e SAMPLE_SIZE="${SAMPLE_SIZE:-12}" -w /app "$CID" python - <<'PY'
+          import os
+          from collections import Counter, defaultdict
+          from datetime import date
+          from decimal import Decimal
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.db.models import Count, Q
+          from django.utils import timezone
+          from rest_framework.test import APIRequestFactory, force_authenticate
+
+          from iic_booking.equipment.models import Booking, DailySlot, EquipmentManager
+          from iic_booking.users.models import User, WalletJoinRequest, WalletJoinRequestStatus
+          from iic_booking.users.models.user_type import UserType
+
+          N = max(1, int(os.environ.get("SAMPLE_SIZE") or 12))
+          CHARGED = {"BOOKED", "COMPLETED", "PROCESSING", "HOLD", "DISRUPTION_PENDING", "BOOKING_NOT_UTILIZED"}
+          today = timezone.localdate()
+          ytd_from, ytd_to = date(today.year, 1, 1), today
+          problems = Counter()
+
+          def dec(v):
+              return Decimal(str(v or 0)).quantize(Decimal("0.01"))
+
+          def flag(kind, ok, detail):
+              if not ok:
+                  problems[kind] += 1
+              print(("  OK  " if ok else "  MISMATCH ") + kind + " | " + detail)
+
+          def direct_rows(qs):
+              return list(qs.order_by().values_list("booking_id", "status", "total_charge", "total_time_minutes"))
+
+          def summarize(rows):
+              statuses = Counter(r[1] for r in rows)
+              charged = [r for r in rows if r[1] in CHARGED]
+              return {
+                  "n": len(rows),
+                  "status": dict(statuses),
+                  "spent_all": sum((dec(r[2]) for r in rows), Decimal("0.00")),
+                  "spent_charged": sum((dec(r[2]) for r in charged), Decimal("0.00")),
+                  "charged_n": len(charged),
+                  "hours_all": round(sum(float(r[3] or 0) for r in rows) / 60.0, 2),
+                  "hours_charged": round(sum(float(r[3] or 0) for r in charged) / 60.0, 2),
+              }
+
+          def not_test(qs):
+              return qs.exclude(user__is_test_account=True)
+
+          def linked_ids(faculty):
+              return list(WalletJoinRequest.objects.filter(
+                  faculty=faculty, status=WalletJoinRequestStatus.APPROVED).values_list("student_id", flat=True))
+
+          def call_stats(user):
+              from iic_booking.equipment.api_views import booking_stats
+              req = APIRequestFactory().get("/api/bookings/stats/")
+              force_authenticate(req, user=user)
+              resp = booking_stats(req)
+              return resp.status_code, resp.data
+
+          def check_stats(user, label, direct_qs):
+              code, data = call_stats(user)
+              if code != 200:
+                  flag("stats_http", False, f"user={user.pk} type={label} http={code}")
+                  return
+              d = summarize(direct_rows(direct_qs))
+              sc = {k: int(v) for k, v in (data.get("status_counts") or {}).items()}
+              total = int(data.get("total_bookings") or 0)
+              spent = dec(data.get("total_spent"))
+              print(f"user={user.pk} type={label} api_total={total} api_status_sum={sum(sc.values())} "
+                    f"api_status={sc} api_spent={spent} api_hours={round(float(data.get('total_hours') or 0), 2)} "
+                    f"api_charged_n={data.get('charged_bookings', '-')} | db_total={d['n']} db_status={d['status']} "
+                    f"db_spent_all={d['spent_all']} db_spent_charged={d['spent_charged']} db_charged_n={d['charged_n']} "
+                    f"db_hours_all={d['hours_all']} db_hours_charged={d['hours_charged']}")
+              flag("stats_status_sum_eq_total", sum(sc.values()) == total, f"user={user.pk} {sum(sc.values())} vs {total}")
+              flag("stats_total_eq_db", total == d["n"], f"user={user.pk} {total} vs {d['n']}")
+              flag("stats_status_eq_db", sc == d["status"], f"user={user.pk}")
+              flag("stats_spent_eq_db_charged", spent == d["spent_charged"],
+                   f"user={user.pk} api={spent} db_charged={d['spent_charged']} db_all={d['spent_all']}")
+
+          def sample(qs):
+              return list(qs.order_by("pk")[:N])
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              print(f"PROBE date={today} ytd={ytd_from}..{ytd_to} sample={N}")
+
+              # ---------- personal scopes: student / external / faculty (own + linked) ----------
+              print("\n== booking stats: faculty with linked students ==")
+              fac_with_links = User.objects.filter(
+                  user_type=UserType.FACULTY,
+                  pk__in=WalletJoinRequest.objects.filter(status=WalletJoinRequestStatus.APPROVED).values("faculty_id"),
+              ).annotate(nb=Count("bookings")).order_by("-nb", "pk")
+              faculties = list(fac_with_links[:N])
+              for u in faculties:
+                  ids = [u.pk] + linked_ids(u)
+                  qs = Booking.objects.filter(user_id__in=ids)
+                  check_stats(u, "faculty+linked", qs if u.is_test_account else not_test(qs))
+
+              print("\n== booking stats: students ==")
+              for u in sample(User.objects.filter(user_type=UserType.STUDENT, bookings__isnull=False).distinct()):
+                  ids = [u.pk] + linked_ids(u)
+                  qs = Booking.objects.filter(user_id__in=ids)
+                  check_stats(u, "student", qs if u.is_test_account else not_test(qs))
+
+              print("\n== booking stats: external users ==")
+              ext_codes = list(UserType.get_external_user_codes())
+              for u in sample(User.objects.filter(user_type__in=ext_codes, bookings__isnull=False).distinct()):
+                  qs = Booking.objects.filter(user=u)
+                  check_stats(u, f"external:{u.user_type}", qs if u.is_test_account else not_test(qs))
+
+              # ---------- staff scopes ----------
+              from iic_booking.equipment.api_views import check_operator_permission, _get_equipment_ids_for_log_access
+              from iic_booking.equipment.reports import get_equipment_ids_managed_by_oic
+
+              print("\n== booking stats: OIC (manager) ==")
+              for u in sample(User.objects.filter(user_type=UserType.MANAGER, is_active=True)):
+                  if not check_operator_permission(u):
+                      print(f"user={u.pk} type=manager (no bookings.manage -> personal scope; skipped)")
+                      continue
+                  ids = get_equipment_ids_managed_by_oic(u.pk)
+                  check_stats(u, "manager", not_test(Booking.objects.filter(equipment_id__in=ids)))
+
+              print("\n== booking stats: lab operators ==")
+              for u in sample(User.objects.filter(user_type=UserType.OPERATOR, is_active=True)):
+                  if not check_operator_permission(u):
+                      print(f"user={u.pk} type=operator (no bookings.manage -> personal scope; skipped)")
+                      continue
+                  ids = _get_equipment_ids_for_log_access(u) or []
+                  check_stats(u, "operator", not_test(Booking.objects.filter(equipment_id__in=ids)))
+
+              print("\n== booking stats: department admins ==")
+              for u in sample(User.objects.filter(user_type=UserType.DEPT_ADMIN, is_active=True)):
+                  qs = Booking.objects.filter(equipment__internal_department_id=u.department_id) if u.department_id else Booking.objects.none()
+                  check_stats(u, "dept_admin", not_test(qs))
+
+              print("\n== booking stats: admins ==")
+              for u in list(User.objects.filter(user_type=UserType.ADMIN, is_active=True).order_by("pk")[:2]):
+                  check_stats(u, "admin", not_test(Booking.objects.all()))
+
+              # ---------- faculty wallet report ----------
+              print("\n== faculty wallet expense report (YTD) ==")
+              from iic_booking.users.faculty_wallet_report import build_faculty_wallet_expense_report
+              for u in faculties:
+                  rep = build_faculty_wallet_expense_report(u, ytd_from.isoformat(), ytd_to.isoformat())
+                  if rep.get("error"):
+                      continue
+                  total = dec(rep["period_booking_spend"]["total"])
+                  n = int(rep["period_booking_spend"]["booking_count"])
+                  m_sum = sum((dec(m["total_spend"]) for m in rep["by_member"]), Decimal("0.00"))
+                  m_n = sum(int(m["booking_count"]) for m in rep["by_member"])
+                  e_sum = sum((dec(e["total_spend"]) for e in rep["by_equipment"]), Decimal("0.00"))
+                  e_n = sum(int(e["booking_count"]) for e in rep["by_equipment"])
+                  ids = rep["member_user_ids"]
+                  qs = not_test(Booking.objects.filter(user_id__in=ids, created_at__date__gte=ytd_from, created_at__date__lte=ytd_to))
+                  d = summarize(direct_rows(qs))
+                  print(f"faculty={u.pk} members={len(ids)} api_total={total} api_n={n} member_sum={m_sum}/{m_n} "
+                        f"equip_sum={e_sum}/{e_n} | db_spent_charged={d['spent_charged']} db_charged_n={d['charged_n']} "
+                        f"db_all_n={d['n']} db_status={d['status']}")
+                  flag("faculty_members_sum", m_sum == total and m_n == n, f"faculty={u.pk}")
+                  flag("faculty_equipment_sum", e_sum == total and e_n == n, f"faculty={u.pk}")
+                  flag("faculty_total_eq_db_charged", total == d["spent_charged"] and n == d["charged_n"],
+                       f"faculty={u.pk} api={total}/{n} db={d['spent_charged']}/{d['charged_n']}")
+
+              # ---------- equipment performance report ----------
+              print("\n== equipment performance report (YTD, top equipment) ==")
+              from iic_booking.equipment.reports import get_equipment_report_data
+              from iic_booking.equipment.mode_utils import expand_equipment_ids_for_mode_rollup
+              top_eq = [
+                  r["equipment_id"] for r in
+                  Booking.objects.filter(daily_slots__date__gte=ytd_from, daily_slots__date__lte=ytd_to)
+                  .order_by().values("equipment_id").annotate(c=Count("booking_id", distinct=True))
+                  .order_by("-c")[:N]
+              ]
+              for eid in top_eq:
+                  rep = get_equipment_report_data(ytd_from.isoformat(), ytd_to.isoformat(), [eid])
+                  rows = rep.get("equipment") or []
+                  if not rows:
+                      continue
+                  row = rows[0]
+                  fam, _ = expand_equipment_ids_for_mode_rollup([row["equipment_id"]])
+                  slot_ids = set(DailySlot.objects.filter(
+                      date__gte=ytd_from, date__lte=ytd_to, booking__equipment_id__in=fam,
+                  ).values_list("booking_id", flat=True))
+                  linked = list(not_test(Booking.objects.filter(booking_id__in=slot_ids)).values_list("booking_id", "status", "total_charge"))
+                  db_in_range = len(linked)
+                  db_completed = sum(1 for r in linked if r[1] == "COMPLETED")
+                  db_rev = sum((dec(r[2]) for r in linked if r[1] == "COMPLETED"), Decimal("0.00"))
+                  fin = rep.get("financial") or {}
+                  rev_total = dec(rep["summary"]["revenue_total"])
+                  by_type = sum((dec(r["total"]) for r in fin.get("revenue_by_user_type") or []), Decimal("0.00"))
+                  by_eq = sum((dec(r["total"]) for r in fin.get("revenue_by_equipment") or []), Decimal("0.00"))
+                  print(f"equipment={row['equipment_id']} api_in_period={row['total_bookings_in_period']} "
+                        f"api_completed={row['completed_in_period']} api_rev={rev_total} rev_by_type={by_type} rev_by_eq={by_eq} "
+                        f"| db_in_period(slot-linked)={db_in_range} db_completed={db_completed} db_rev={db_rev}")
+                  flag("equip_in_period_ge_slot_linked", int(row["total_bookings_in_period"]) >= db_in_range,
+                       f"equipment={row['equipment_id']} {row['total_bookings_in_period']} vs {db_in_range}")
+                  flag("equip_completed_eq_db", int(row["completed_in_period"]) == db_completed,
+                       f"equipment={row['equipment_id']} {row['completed_in_period']} vs {db_completed}")
+                  flag("equip_revenue_eq_db", rev_total == db_rev, f"equipment={row['equipment_id']} {rev_total} vs {db_rev}")
+                  flag("equip_rev_by_type_sum", by_type == rev_total, f"equipment={row['equipment_id']} {by_type} vs {rev_total}")
+                  flag("equip_rev_by_equipment_sum", by_eq == rev_total, f"equipment={row['equipment_id']} {by_eq} vs {rev_total}")
+
+              # ---------- finance dashboard ----------
+              print("\n== finance dashboard (YTD) ==")
+              from iic_booking.users.finance_reports import build_finance_report
+              for u in sample(User.objects.filter(user_type=UserType.FINANCE, is_active=True)):
+                  rep = build_finance_report(user=u, date_from=ytd_from, date_to=ytd_to)
+                  s = rep["summary"]
+                  tot = dec(s["total_revenue"])
+                  ie = dec(s["internal_revenue"]) + dec(s["external_revenue"])
+                  org = sum((dec(r["revenue"]) for r in rep["charts"]["revenue_by_org_category"]), Decimal("0.00"))
+                  org_n = sum(int(r["bookings"]) for r in rep["charts"]["revenue_by_org_category"])
+                  print(f"finance={u.pk} dept={u.department_id} total={tot} int+ext={ie} org_sum={org}/{org_n} "
+                        f"bookings={s['booking_count']} refunded={s['refunded_amount']}")
+                  flag("finance_int_ext_sum", ie == tot, f"finance={u.pk}")
+                  flag("finance_org_sum", abs(org - tot) <= Decimal("0.05") and org_n == int(s["booking_count"]), f"finance={u.pk}")
+
+              transaction.set_rollback(True)
+
+          print("\nSUMMARY mismatches:", dict(problems) if problems else "none")
+          PY
