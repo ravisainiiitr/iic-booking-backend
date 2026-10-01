@@ -2797,6 +2797,7 @@ class BookingSerializer(serializers.ModelSerializer):
     lab_in_charge = serializers.SerializerMethodField()
     oic_contacts = serializers.SerializerMethodField()
     charge_breakdown = serializers.SerializerMethodField()
+    charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
     istem_fbr_status_display = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
@@ -2943,6 +2944,8 @@ class BookingSerializer(serializers.ModelSerializer):
             'sample_trace',
             'repeat_sample_request_status',
             'charge_recalculation_pending_amount',
+            'charge_recalculation_pay_deadline',
+            'charge_recalculation_pay_seconds_remaining',
             'created_at',
             'updated_at',
             'completed_at',
@@ -2982,6 +2985,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'booking_id',
             'real_booking_id',
             'virtual_booking_id',
+            'charge_recalculation_pay_deadline',
             'created_at',
             'updated_at',
             'completed_at',
@@ -3023,10 +3027,19 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_booking_id(self, obj):
         return booking_display_id_for_email(obj)
     
+    def get_charge_recalculation_pay_seconds_remaining(self, obj):
+        from .input_edit_payment_window import payment_seconds_remaining
+
+        return payment_seconds_remaining(obj)
+
     def get_charge_breakdown(self, obj):
         """
         Re-run the charge engine for display so breakdown text stays in sync with calculators
         (stored JSON is a snapshot at booking time). GST / discount / repeat lines are kept from storage.
+
+        The refreshed lines are only used when they add up to the stored lines: otherwise the inputs
+        were edited without re-pricing and the stored lines are what was actually charged (showing the
+        refreshed lines would make the gap to total_charge look like a discount).
         """
         stored = obj.charge_breakdown or []
         if not stored:
@@ -3055,6 +3068,10 @@ class BookingSerializer(serializers.ModelSerializer):
                 {"description": line["description"], "amount": float(line["amount"])}
                 for line in fresh_core
             ]
+            stored_core_total = sum(float(line.get("amount") or 0) for line in stored[:idx] if isinstance(line, dict))
+            refreshed_total = sum(line["amount"] for line in refreshed)
+            if abs(refreshed_total - stored_core_total) > 0.005:
+                return stored
             return refreshed + suffix
         except Exception:
             logger.exception("Failed to refresh charge_breakdown for booking %s", getattr(obj, "booking_id", obj))
@@ -3278,23 +3295,13 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_editable_input_fields(self, obj):
         """Return editable input fields for Edit User Inputs popup.
 
-        End users: only fields marked editing_required (plus comments).
-        Admin / OIC (manager): all equipment input fields until booking is COMPLETED
-        (completion is enforced by the update endpoint).
+        Sample set 1 offers the same fields as the additional sample sets: every equipment input
+        field (plus comments). When editing is allowed is enforced by the update endpoint;
+        ``editing_required`` marks the fields the user is asked to complete.
         """
         if not obj.equipment_id:
             return [_comments_input_field_schema()]
-        all_fields = self.get_input_fields(obj)[:-1]
-        request = self.context.get("request") if hasattr(self, "context") else None
-        user = getattr(request, "user", None) if request else None
-        ut = str(getattr(user, "user_type", None) or "").strip().lower()
-        is_admin_or_oic = ut in (UserType.ADMIN, UserType.MANAGER)
-        if is_admin_or_oic:
-            result = list(all_fields)
-        else:
-            result = [f for f in all_fields if f.get("editing_required")]
-        result.append(_comments_input_field_schema())
-        return result
+        return list(self.get_input_fields(obj))
 
     def get_start_time(self, obj):
         """Get start time from the earliest daily slot."""
@@ -3396,6 +3403,13 @@ class BookingListSerializer(serializers.ModelSerializer):
     istem_fbr_status_url = serializers.SerializerMethodField()
     require_istem_fbr = serializers.SerializerMethodField()
     oic_contacts = serializers.SerializerMethodField()
+    charge_recalculation_pay_deadline = serializers.DateTimeField(read_only=True, allow_null=True)
+    charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+
+    def get_charge_recalculation_pay_seconds_remaining(self, obj):
+        from .input_edit_payment_window import payment_seconds_remaining
+
+        return payment_seconds_remaining(obj)
 
     class Meta:
         model = Booking
@@ -3409,7 +3423,8 @@ class BookingListSerializer(serializers.ModelSerializer):
             'total_charge', 'status', 'status_display', 'start_time', 'end_time', 'equipment_weekly_view_display',
             'user_type_snapshot_display', 'wallet_owner_name', 'created_by_name', 'repeat_sample_request_status',
             'has_results',
-            'charge_recalculation_pending_amount', 'created_at', 'updated_at', 'completed_at',
+            'charge_recalculation_pending_amount', 'charge_recalculation_pay_deadline',
+            'charge_recalculation_pay_seconds_remaining', 'created_at', 'updated_at', 'completed_at',
             'rating_on_time_operator_availability',
             'rating_laboratory_cleanliness_organization',
             'rating_sample_handling_care',

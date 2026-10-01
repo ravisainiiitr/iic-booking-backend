@@ -5756,6 +5756,9 @@ def list_bookings(request):
             queryset = queryset.filter(booking_id=int(booking_id_filter))
         except (ValueError, TypeError):
             pass
+
+    from .input_edit_payment_window import expire_unpaid_input_edits
+    expire_unpaid_input_edits(queryset)
     
     # Filter by status if provided
     status_filter = request.query_params.get('status')
@@ -14390,13 +14393,54 @@ def _clean_single_input_value(value):
             return value
     return value
 
-def _recalculate_booking_charge_and_adjust_wallet(request, booking):
+def _calculate_input_values_charge(booking, input_values):
+    """Engine charge (before GST) for ``input_values`` on this booking's equipment and charge profile."""
+    equipment = booking.equipment
+    charge_profile = booking.charge_profile
+    safe_input_values = build_safe_input_values_for_charge_calculation(input_values, equipment=equipment)
+    from .print_3d_views import apply_print_analysis_to_input_values
+    safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
+    minutes = TimeCalculationEngine.calculate_time(
+        charge_profile,
+        safe_input_values,
+        slot_duration_minutes=equipment.slot_duration_minutes,
+    )
+    charge, _ = ChargeCalculationEngine.calculate_charge(
+        charge_profile,
+        safe_input_values,
+        minutes,
+        selected_parameters=booking.selected_parameters,
+    )
+    return quantize_money(charge)
+
+
+def _input_edit_changes_charge(booking, old_input_values, new_input_values) -> bool:
+    if not booking.charge_profile_id or not booking.equipment_id:
+        return False
+    try:
+        return _calculate_input_values_charge(booking, old_input_values) != _calculate_input_values_charge(
+            booking, new_input_values
+        )
+    except Exception:
+        logger.exception("Could not compare charges for input edit on booking %s", booking.pk)
+        return False
+
+
+def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_window_snapshot=None):
     """Recalculate charge for a BOOKED booking after input_values update. Saves old charge, updates
     booking with new charge and sets charge_recalculation_pending_amount (negative=refund, positive=extra to pay).
     Does NOT debit/credit wallet here; user/admin must click Refund or Pay Now. Sends email to user and
     Supervisor with summary and breakup. Returns dict with charge_recalculation_summary for API response.
+
+    ``payment_window_snapshot`` (the booking state before the edit) is given for the booking user's own
+    edits: an extra amount must then be paid within the payment window, otherwise the edit is reverted.
     """
     from iic_booking.users.repositories.wallet_repository import WalletRepository
+    from .input_edit_payment_window import (
+        INPUT_EDIT_PAYMENT_WINDOW_SECONDS,
+        clear_payment_window,
+        new_payment_deadline,
+    )
 
     equipment = booking.equipment
     charge_profile = booking.charge_profile
@@ -14441,15 +14485,25 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
 
     diff = new_charge - previous_charge
     pending_amount = diff if diff != 0 else None  # negative = refund, positive = extra to pay
+    timed_payment = payment_window_snapshot is not None and pending_amount is not None and pending_amount > 0
 
     with transaction.atomic():
         booking.total_time_minutes = calculated_time_minutes
         booking.total_charge = new_charge
         booking.charge_breakdown = charge_breakdown
         booking.charge_recalculation_pending_amount = pending_amount
-        booking.save(update_fields=[
+        update_fields = [
             "total_time_minutes", "total_charge", "charge_breakdown", "charge_recalculation_pending_amount"
-        ])
+        ]
+        if timed_payment:
+            # Keep the oldest snapshot so a revert restores the values from before the first unpaid edit.
+            if not booking.charge_recalculation_revert_snapshot:
+                booking.charge_recalculation_revert_snapshot = payment_window_snapshot
+            booking.charge_recalculation_pay_deadline = new_payment_deadline()
+            update_fields += ["charge_recalculation_pay_deadline", "charge_recalculation_revert_snapshot"]
+        else:
+            update_fields += clear_payment_window(booking)
+        booking.save(update_fields=update_fields)
 
         wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
             booking.user, getattr(equipment, "internal_department", None)
@@ -14479,6 +14533,11 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
                     f" Refund of ₹{abs(pending_amount):.2f} pending — the Officer In Charge will confirm "
                     "the refund to the wallet."
                 )
+            elif timed_payment:
+                comment += (
+                    f" Extra ₹{pending_amount:.2f} to pay within {INPUT_EDIT_PAYMENT_WINDOW_SECONDS} seconds — "
+                    "otherwise the edit is cancelled and the previous values are restored."
+                )
             else:
                 comment += f" Extra ₹{pending_amount:.2f} to pay — click Pay Now to debit wallet."
         else:
@@ -14498,18 +14557,25 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking):
         "new_charge": str(new_charge),
         "refund_amount": str(abs(pending_amount)) if pending_amount is not None and pending_amount < 0 else None,
         "extra_amount": str(pending_amount) if pending_amount is not None and pending_amount > 0 else None,
+        "pay_deadline": booking.charge_recalculation_pay_deadline.isoformat() if timed_payment else None,
+        "pay_window_seconds": INPUT_EDIT_PAYMENT_WINDOW_SECONDS if timed_payment else None,
     }
     return summary
 
 @api_view(["PATCH", "PUT"])
 @permission_classes([IsAuthenticated])
 def update_booking_input_values(request, booking_id):
-    """Update input_values for a booking. When equipment has 'enable_charge_recalculation' and booking
-    is BOOKED, only fields marked as 'editing_required' can be
-    updated (plus universal 'comments'). Only until the booking status is Complete. On save with charge recalculation enabled,
-    charges are recalculated and wallet is debited/credited for the difference; user is notified by email.
+    """Update input_values for a booking (users until Complete; OIC/admin at any stage).
+
+    Every equipment input field can be edited (plus universal 'comments'), the same set of fields the
+    additional sample sets offer. Charges are recalculated when the equipment has
+    'enable_charge_recalculation' or when the edit changes the calculated charge. A lower charge
+    becomes an OIC-confirmed refund; a higher charge an extra amount to pay. For the booking user's
+    own edit the extra amount must be paid within the payment window, otherwise the edit is reverted.
     Request body: { "input_values": { "A": 1, "B": "text", ... } }
     """
+    from .input_edit_payment_window import expire_unpaid_input_edit, snapshot_booking_charge_state
+
     try:
         booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
     except Booking.DoesNotExist:
@@ -14517,6 +14583,8 @@ def update_booking_input_values(request, booking_id):
             {"error": "Booking not found."},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+    expire_unpaid_input_edit(booking)
 
     is_staff_editor = check_operator_permission(request.user)
 
@@ -14561,28 +14629,16 @@ def update_booking_input_values(request, booking_id):
         )
 
     equipment = booking.equipment
-    enable_recalc = getattr(equipment, "enable_charge_recalculation", False) and (
-        booking.status == BookingStatus.BOOKED
-        or (booking.status == BookingStatus.COMPLETED and is_charge_manager)
+    recalc_status_ok = booking.status == BookingStatus.BOOKED or (
+        booking.status == BookingStatus.COMPLETED and is_charge_manager
     )
 
-    ut = str(getattr(request.user, "user_type", None) or "").strip().lower()
-    is_admin_or_oic = ut in (UserType.ADMIN, UserType.MANAGER)
-
-    # Admin / OIC may edit all input fields until COMPLETED; others only editing_required.
-    if is_admin_or_oic:
-        editable_keys = set(
-            DynamicInputField.objects.filter(
-                equipment_id=booking.equipment_id,
-            ).values_list("field_key", flat=True)
-        )
-    else:
-        editable_keys = set(
-            DynamicInputField.objects.filter(
-                equipment_id=booking.equipment_id,
-                editing_required=True,
-            ).values_list("field_key", flat=True)
-        )
+    # Sample set 1 offers the same fields as the additional sample sets: every equipment input field.
+    editable_keys = set(
+        DynamicInputField.objects.filter(
+            equipment_id=booking.equipment_id,
+        ).values_list("field_key", flat=True)
+    )
 
     # Allow field_key and field_key_elements (e.g. for PERIODIC_TABLE)
     allowed_keys = set(editable_keys)
@@ -14663,13 +14719,24 @@ def update_booking_input_values(request, booking_id):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+    # Price-changing edits are always re-priced so the stored charge matches the edited inputs.
+    enable_recalc = recalc_status_ok and (
+        getattr(equipment, "enable_charge_recalculation", False)
+        or (values_changed and _input_edit_changes_charge(booking, original, current))
+    )
+    payment_window_snapshot = None
+    if enable_recalc and request.user.pk == booking.user_id and not is_charge_manager:
+        payment_window_snapshot = snapshot_booking_charge_state(booking)
+
     booking.input_values = current
     booking.save(update_fields=["input_values"])
 
     # Charge recalculation: recalc and set pending (no auto debit/credit)
     if enable_recalc:
         try:
-            summary = _recalculate_booking_charge_and_adjust_wallet(request, booking)
+            summary = _recalculate_booking_charge_and_adjust_wallet(
+                request, booking, payment_window_snapshot=payment_window_snapshot
+            )
             booking.refresh_from_db()
             return Response(
                 {
@@ -15085,6 +15152,7 @@ def process_charge_recalculation_pay_now(request, booking_id):
     """
     from iic_booking.users.repositories.wallet_repository import WalletRepository
     from iic_booking.communication.wallet_notifications import send_sub_wallet_transaction_notifications
+    from .input_edit_payment_window import clear_payment_window, expire_unpaid_input_edit, payment_window_expired
 
     try:
         booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
@@ -15101,6 +15169,15 @@ def process_charge_recalculation_pay_now(request, booking_id):
     if booking.source_booking_id is not None:
         return Response(
             {"error": "Charge adjustments do not apply to repeat sample bookings."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if expire_unpaid_input_edit(booking):
+        return Response(
+            {
+                "error": "The time to pay the additional amount has passed. Your edit was cancelled and the "
+                "previous values and charge have been restored.",
+                "code": "INPUT_EDIT_REVERTED",
+            },
             status=status.HTTP_400_BAD_REQUEST,
         )
     pending = booking.charge_recalculation_pending_amount
@@ -15131,6 +15208,9 @@ def process_charge_recalculation_pay_now(request, booking_id):
         with transaction.atomic():
             from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit
 
+            locked = Booking.objects.select_for_update().get(pk=booking.pk)
+            if locked.charge_recalculation_pending_amount != amount or payment_window_expired(locked):
+                raise ValueError("The amount to pay has changed or the time to pay has passed. Please refresh the booking.")
             txn = wallet_target.debit(
                 amount=amount,
                 description=description,
@@ -15138,7 +15218,7 @@ def process_charge_recalculation_pay_now(request, booking_id):
                 minimum_balance_after=subwallet_minimum_balance_after_debit(wallet_target),
             )
             booking.charge_recalculation_pending_amount = None
-            booking.save(update_fields=["charge_recalculation_pending_amount"])
+            booking.save(update_fields=["charge_recalculation_pending_amount"] + clear_payment_window(booking))
             send_sub_wallet_transaction_notifications(transaction=txn, booking=booking)
     except ValueError as e:
         return Response(
@@ -15147,6 +15227,42 @@ def process_charge_recalculation_pay_now(request, booking_id):
         )
     return Response(
         {"message": "Payment processed. Amount debited from wallet.", "booking": BookingSerializer(booking).data},
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def cancel_unpaid_input_edit(request, booking_id):
+    """Cancel an input edit whose extra charge has not been paid: restore the previous inputs and charge.
+
+    Allowed for the booking user and lab staff. Also used by the client when the payment countdown ends.
+    """
+    from .input_edit_payment_window import has_payment_window, revert_unpaid_input_edit
+
+    try:
+        booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    if booking.user != request.user and not check_operator_permission(request.user):
+        return Response(
+            {"error": "You don't have permission to cancel this edit."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    reverted = revert_unpaid_input_edit(booking.pk, actor=request.user, reason="cancelled") if has_payment_window(
+        booking
+    ) else None
+    if reverted is None:
+        return Response(
+            {"error": "There is no unpaid edit to cancel for this booking.", "code": "NO_UNPAID_INPUT_EDIT"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    booking.refresh_from_db()
+    return Response(
+        {
+            "message": "Edit cancelled. The previous values and charge have been restored.",
+            "booking": BookingSerializer(booking).data,
+        },
         status=status.HTTP_200_OK,
     )
 

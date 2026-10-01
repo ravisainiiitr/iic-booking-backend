@@ -2996,6 +2996,19 @@ class Booking(models.Model):
         verbose_name=_('Charge recalculation pending amount'),
         help_text=_('After charge recalculation: negative = refund to process, positive = extra amount to pay. Cleared when Refund or Pay Now is completed.'),
     )
+    charge_recalculation_pay_deadline = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Pay deadline for an input edit'),
+        help_text=_('When the booking user\'s own input edit raised the charge: the extra amount must be paid before this time, otherwise the edit is reverted.'),
+    )
+    charge_recalculation_revert_snapshot = models.JSONField(
+        null=True,
+        blank=True,
+        verbose_name=_('Pre-edit inputs and charge'),
+        help_text=_('Input values and charge before an unpaid input edit; restored if the extra amount is not paid in time.'),
+    )
     reward_points_used = models.DecimalField(
         max_digits=10,
         decimal_places=2,

@@ -145,6 +145,23 @@ def send_booking_completion_reminders() -> int:
     return sent
 
 
+@shared_task(name="equipment.expire_unpaid_input_edits")
+def expire_unpaid_input_edits() -> int:
+    """
+    Every minute: revert booking input edits whose extra charge was not paid within the
+    one-minute payment window (inputs and charge go back to their pre-edit values).
+
+    Returns:
+        Number of bookings reverted.
+    """
+    from .input_edit_payment_window import expire_unpaid_input_edits as expire_edits
+
+    reverted = expire_edits()
+    if reverted:
+        logger.info("expire_unpaid_input_edits: reverted=%d", reverted)
+    return reverted
+
+
 def _generate_week_slots_for_operational_equipment(week_starts, *, allow_holiday: bool, log_label: str) -> int:
     """Only operational equipment that already has active slot masters (no default masters are created)."""
     from .models import Equipment, EquipmentStatus, SlotMaster
