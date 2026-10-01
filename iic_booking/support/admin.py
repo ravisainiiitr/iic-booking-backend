@@ -1,7 +1,19 @@
 """Admin configuration for support app."""
 
 from django.contrib import admin
-from .models import Ticket, TicketComment
+from .models import SupportNotificationSettings, Ticket, TicketComment
+
+
+@admin.register(SupportNotificationSettings)
+class SupportNotificationSettingsAdmin(admin.ModelAdmin):
+    list_display = ["__str__", "ticket_alert_enabled", "ticket_alert_emails", "updated_at", "updated_by"]
+    readonly_fields = ["updated_at", "updated_by"]
+
+    def has_add_permission(self, request):
+        return not SupportNotificationSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 class TicketCommentInline(admin.TabularInline):

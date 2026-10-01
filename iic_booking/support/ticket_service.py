@@ -234,7 +234,7 @@ def notify_ticket_assignee(ticket: Ticket, *, assigned_by=None, previous_assigne
 def apply_create_routing_and_events(ticket: Ticket, *, actor=None) -> Ticket:
     """
     On create: auto-assign equipment OIC when related_equipment is set and unassigned;
-    record created (+ assigned) events; notify assignee.
+    record created (+ assigned) events; notify assignee; copy the configured alert recipients.
     """
     raised_by = ticket.get_user_name() or "User"
     record_ticket_event(
@@ -260,5 +260,12 @@ def apply_create_routing_and_events(ticket: Ticket, *, actor=None) -> Ticket:
                 metadata={"auto": True, "reason": "equipment_oic"},
             )
             notify_ticket_assignee(ticket, assigned_by=actor, previous_assignee=None)
+
+    try:
+        from .ticket_alerts import schedule_new_ticket_alert
+
+        schedule_new_ticket_alert(ticket)
+    except Exception:
+        logger.exception("Failed to queue new ticket alert for ticket #%s", ticket.ticket_id)
 
     return ticket

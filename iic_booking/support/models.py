@@ -392,3 +392,48 @@ class PortalFeedback(models.Model):
             self.equipment_booking_experience,
         ]
         return round(sum(vals) / len(vals), 2)
+
+
+DEFAULT_TICKET_ALERT_EMAILS = "ravisaini.15@gmail.com"
+
+
+class SupportNotificationSettings(models.Model):
+    """Single-row settings for support desk notifications (edited by the Main Administrator)."""
+
+    ticket_alert_enabled = BooleanField(
+        _("Email a copy of every new support ticket"),
+        default=True,
+    )
+    ticket_alert_emails = TextField(
+        _("New ticket alert recipients"),
+        blank=True,
+        default=DEFAULT_TICKET_ALERT_EMAILS,
+        help_text=_(
+            "Comma, semicolon or one-per-line list. Every listed address receives a copy of each new "
+            "support ticket, in addition to the OIC / assignee notifications."
+        ),
+    )
+    updated_at = DateTimeField(_("Updated at"), auto_now=True)
+    updated_by = ForeignKey(
+        User,
+        on_delete=SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name=_("Updated by"),
+    )
+
+    class Meta:
+        verbose_name = _("Support notification settings")
+        verbose_name_plural = _("Support notification settings")
+
+    def __str__(self) -> str:
+        return "Support notification settings"
+
+    @classmethod
+    def get_singleton(cls) -> "SupportNotificationSettings":
+        obj, _created = cls.objects.get_or_create(
+            pk=1,
+            defaults={"ticket_alert_emails": DEFAULT_TICKET_ALERT_EMAILS, "ticket_alert_enabled": True},
+        )
+        return obj

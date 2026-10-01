@@ -1,6 +1,10 @@
 """Portal UX feedback API (user submit/update + admin list/stats)."""
 
+import csv
+
 from django.db.models import Avg, Count, Q
+from django.http import HttpResponse
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -14,6 +18,22 @@ from .serializers import PortalFeedbackSerializer
 
 def _is_admin(user) -> bool:
     return bool(user and getattr(user, "user_type", None) == UserType.ADMIN)
+
+
+FEEDBACK_ORDERING = {
+    "updated_at",
+    "-updated_at",
+    "created_at",
+    "-created_at",
+    "overall_rating",
+    "-overall_rating",
+    "user__name",
+    "-user__name",
+    "user__user_type",
+    "-user__user_type",
+}
+
+CSV_EXPORT_LIMIT = 10000
 
 
 def _validate_star(value, field: str):
@@ -61,6 +81,60 @@ def portal_feedback_mine(request):
     )
 
 
+def _csv_cell(value) -> str:
+    text = "" if value is None else str(value)
+    if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + text
+    return text
+
+
+def _feedback_csv_response(rows) -> HttpResponse:
+    stamp = timezone.localtime().strftime("%Y%m%d-%H%M")
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="portal-feedback-{stamp}.csv"'
+    response.write("\ufeff")
+    writer = csv.writer(response)
+    writer.writerow(
+        [
+            "Feedback ID",
+            "Name",
+            "Email",
+            "User type",
+            "Department",
+            "Overall rating",
+            "Ease of booking",
+            "Website usability",
+            "Equipment booking experience",
+            "Average rating",
+            "Suggestions",
+            "Comments",
+            "First submitted",
+            "Last updated",
+        ]
+    )
+    for fb in rows:
+        user = fb.user
+        writer.writerow(
+            [
+                fb.feedback_id,
+                _csv_cell(user.get_display_name() if user else ""),
+                _csv_cell(user.email if user else ""),
+                _csv_cell((user.get_user_type_display_label() or user.user_type) if user else ""),
+                _csv_cell(user.department.name if user and user.department_id else ""),
+                fb.overall_rating,
+                fb.ease_of_booking,
+                fb.website_usability,
+                fb.equipment_booking_experience,
+                fb.average_rating,
+                _csv_cell(fb.suggestions),
+                _csv_cell(fb.comments),
+                timezone.localtime(fb.created_at).strftime("%Y-%m-%d %H:%M") if fb.created_at else "",
+                timezone.localtime(fb.updated_at).strftime("%Y-%m-%d %H:%M") if fb.updated_at else "",
+            ]
+        )
+    return response
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def portal_feedback_admin_list(request):
@@ -80,6 +154,13 @@ def portal_feedback_admin_list(request):
             qs = qs.filter(user__department_id=int(department_id))
         except (TypeError, ValueError):
             return Response({"error": "Invalid department_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+    rating = request.query_params.get("rating")
+    if rating:
+        try:
+            qs = qs.filter(overall_rating=int(rating))
+        except (TypeError, ValueError):
+            return Response({"error": "Invalid rating"}, status=status.HTTP_400_BAD_REQUEST)
 
     min_rating = request.query_params.get("min_rating")
     if min_rating:
@@ -112,9 +193,18 @@ def portal_feedback_admin_list(request):
         qs = qs.filter(
             Q(user__name__icontains=search)
             | Q(user__email__icontains=search)
+            | Q(user__department__name__icontains=search)
             | Q(suggestions__icontains=search)
             | Q(comments__icontains=search)
         )
+
+    ordering = (request.query_params.get("ordering") or "-updated_at").strip()
+    if ordering not in FEEDBACK_ORDERING:
+        ordering = "-updated_at"
+    qs = qs.order_by(ordering, "-feedback_id")
+
+    if (request.query_params.get("export") or "").strip().lower() == "csv":
+        return _feedback_csv_response(qs[:CSV_EXPORT_LIMIT])
 
     try:
         limit = min(int(request.query_params.get("limit") or 50), 200)

@@ -248,7 +248,7 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
     },
     {
         "key": "admin_settings.feedback",
-        "label": "Portal Feedback",
+        "label": "Experience Ratings",
         "path": "/admin-settings/feedback",
         "main_admin_only": True,
     },

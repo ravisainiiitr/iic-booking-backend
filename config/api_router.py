@@ -245,7 +245,11 @@ from iic_booking.equipment.print_3d_views import (
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
-from iic_booking.equipment.booking_templates import booking_template_detail, booking_templates
+from iic_booking.equipment.booking_templates import (
+    booking_template_detail,
+    booking_template_preferred_slot,
+    booking_templates,
+)
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
@@ -483,6 +487,7 @@ from iic_booking.support.portal_feedback_views import (
     portal_feedback_mine,
     portal_feedback_admin_list,
 )
+from iic_booking.support.notification_settings_views import support_notification_settings
 from iic_booking.cms.views import menu_list, home_page_content, hero_slides, page_by_slug, site_stats, analysis_charges_document, public_publications
 
 router = DefaultRouter() if settings.DEBUG else SimpleRouter()
@@ -1358,6 +1363,11 @@ urlpatterns = router.urls + [
     path("server-time/", server_time, name="server-time"),
     path("booking-templates/", booking_templates, name="booking-templates"),
     path("booking-templates/<int:template_id>/", booking_template_detail, name="booking-template-detail"),
+    path(
+        "booking-templates/<int:template_id>/preferred-slot/",
+        booking_template_preferred_slot,
+        name="booking-template-preferred-slot",
+    ),
 
     # Booking event history endpoints
     path("bookings/<int:booking_id>/events/", list_booking_events, name="list-booking-events"),
@@ -1537,6 +1547,11 @@ urlpatterns = router.urls + [
     # Support Ticket endpoints
     path("tickets/", ticket_list, name="ticket-list"),  # GET and POST (public can POST)
     path("tickets/assignees/", ticket_assignees_search, name="ticket-assignees-search"),
+    path(
+        "support/notification-settings/",
+        support_notification_settings,
+        name="support-notification-settings",
+    ),
     path("tickets/<int:ticket_id>/", ticket_detail, name="ticket-detail"),
     path("tickets/<int:ticket_id>/attachment/", ticket_attachment, name="ticket-attachment"),
     path("tickets/<int:ticket_id>/comments/", ticket_comments_list, name="ticket-comments-list"),
