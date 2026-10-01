@@ -211,7 +211,7 @@ def test_identity_card_is_staff_only_and_scoped(setup):
     assert card["name"] == student.name
     assert card["email"] == student.email
     assert card["phone_number"] == "9999900000"
-    assert card["programme"] == "Ph.D. — Chemistry"
+    assert card["programme"] == "Ph.D. Chemistry"
     assert "supervisor_name" in card and "department_name" in card and "profile_picture_url" in card
 
     assert _client_for(outsider).get(url).status_code == 404

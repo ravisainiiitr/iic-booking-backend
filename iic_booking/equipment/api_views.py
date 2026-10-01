@@ -15926,11 +15926,29 @@ def list_repeat_sample_requests(request):
     serializer = RepeatSampleRequestSerializer(qs, many=True)
     return Response({"repeat_sample_requests": serializer.data}, status=status.HTTP_200_OK)
 
+def _programme_label(degree: str, branch: str) -> str:
+    """
+    "Ph.D. - Doctor of Philosophy" + "Ph.D. Physics" -> "Ph.D. Physics"; "M.Tech" + "Chemical" -> "M.Tech Chemical".
+    The degree's long expansion after " - " is dropped, and so is the degree when the branch already names it.
+    """
+    degree_short = re.split(r"\s+[-–—]\s+", (degree or "").strip(), maxsplit=1)[0].strip()
+    branch = (branch or "").strip()
+    if not branch:
+        return degree_short
+    if not degree_short:
+        return branch
+    token = re.sub(r"[.\s]", "", degree_short).lower()
+    branch_plain = branch.replace(".", "").lower()
+    if token and re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", branch_plain):
+        return branch
+    return f"{degree_short} {branch}"
+
+
 def _identity_programme_label(target) -> str:
     degree = (getattr(target, "degree_name", None) or "").strip()
     branch = (getattr(target, "branch_name", None) or "").strip()
     if degree or branch:
-        return " — ".join(part for part in (degree, branch) if part)
+        return _programme_label(degree, branch)
     designation = (getattr(target, "designation", None) or "").strip()
     if designation:
         return designation
