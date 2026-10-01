@@ -6501,6 +6501,39 @@ class BookingInputTemplate(models.Model):
         blank=True,
         help_text=_("Booking options (e.g. auto-select slots, book any available slots, waitlist, alternate equipment)."),
     )
+    preferred_weekday = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text=_("Preferred slot weekday (0 = Monday … 6 = Sunday); pre-selected when the template is loaded."),
+    )
+    preferred_start_time = models.TimeField(null=True, blank=True, help_text=_("Preferred slot start time (local)."))
+    preferred_slot_count = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text=_("Number of consecutive slots in the preferred slot.")
+    )
+    preferred_slot_master = models.ForeignKey(
+        "SlotMaster",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=_("Optional slot definition the preferred slot was picked from."),
+    )
+    if_slot_taken = models.CharField(
+        max_length=32,
+        default="ask",
+        db_default="ask",
+        choices=[
+            ("ask", _("Ask me")),
+            ("next_available_same_day", _("Book the next available slot the same day")),
+            ("next_available_any", _("Book the next available slot in the open booking window")),
+        ],
+        help_text=_("What to do at submit time when the preferred slot has just been taken."),
+    )
+    if_slot_taken_consented_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("When the user agreed to automatic booking of the next available slot."),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

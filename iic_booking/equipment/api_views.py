@@ -3653,8 +3653,11 @@ def book_equipment(request, pk):
 
     try:
         from .equipment_group_service import run_booking_with_group_alternatives
+        from .template_slot_preference import attach_slot_taken_alternatives
 
-        return run_booking_with_group_alternatives(request, pk, _book_equipment_impl)
+        response = run_booking_with_group_alternatives(request, pk, _book_equipment_impl)
+        attach_slot_taken_alternatives(request, pk, response)
+        return response
     except Exception as exc:
         # Never re-raise: with ATOMIC_REQUESTS + ASGI, a bare raise becomes a plain-text
         # uvicorn "Internal Server Error" instead of a useful JSON body for the UI.
@@ -4020,6 +4023,28 @@ def _book_equipment_impl(request, pk):
             if ws and we:
                 visible_week_start = parse_date(ws) if isinstance(ws, str) else ws
                 visible_week_end = parse_date(we) if isinstance(we, str) else we
+        # Opt-in "if my slot is taken" from the user's own booking template: (mode, requested run shape).
+        template_fallback = None
+        slot_fallback = None
+        if not book_any_available_slots and not create_as_hold and not rush_relief:
+            from .template_slot_preference import requested_run_shape, template_fallback_mode
+
+            fallback_mode = template_fallback_mode(request, equipment, booking_user)
+            fallback_shape = requested_run_shape(slot_ids, equipment) if fallback_mode else None
+            if fallback_shape:
+                template_fallback = (fallback_mode, fallback_shape)
+        if template_fallback and daily_slots.count() != len(slot_ids):
+            from .template_slot_preference import describe_fallback, find_equivalent_runs
+
+            fb_mode, fb_shape = template_fallback
+            fb_runs = find_equivalent_runs(
+                equipment, booking_user, anchor_start=fb_shape[0], slot_count=fb_shape[2],
+                total_minutes=fb_shape[3], mode=fb_mode,
+            )
+            if fb_runs:
+                slot_ids = [s.id for s in fb_runs[0]]
+                daily_slots = DailySlot.objects.filter(id__in=slot_ids).order_by("start_datetime")
+                slot_fallback = describe_fallback(fb_shape, fb_runs[0], fb_mode)
         if daily_slots.count() != len(slot_ids):
             from iic_booking.users.legacy_ledger.booking_bridge import (
                 LEGACY_BLOCK_MESSAGE,
@@ -4558,7 +4583,21 @@ def _book_equipment_impl(request, pk):
                 locked_slots = list(locked_slots_qs)
                 perf.mark("select_for_update_slots")
                 if len(locked_slots) != len(slot_ids):
-                    if book_any_available_slots:
+                    fallback_locked = None
+                    if template_fallback:
+                        from .template_slot_preference import describe_fallback, lock_equivalent_run
+
+                        fallback_locked = lock_equivalent_run(
+                            equipment, booking_user, shape=template_fallback[1], mode=template_fallback[0]
+                        )
+                    if fallback_locked:
+                        # Same slot count and total minutes as requested, so the charge is unchanged.
+                        slot_fallback = describe_fallback(template_fallback[1], fallback_locked, template_fallback[0])
+                        slot_ids = [s.id for s in fallback_locked]
+                        locked_slots = fallback_locked
+                        start_time = locked_slots[0].start_datetime
+                        end_time = locked_slots[-1].end_datetime
+                    elif book_any_available_slots:
                         # Try to allocate any other available slots (distributed OK) from the visible week only
                         alt_filter = {"slot_master__equipment": equipment, "status": SlotStatus.AVAILABLE}
                         if visible_week_start is not None:
@@ -4970,6 +5009,8 @@ def _book_equipment_impl(request, pk):
             if input_values_adjusted_for_single_slot[0]:
                 resp_data["input_values_adjusted"] = True
                 resp_data["input_values"] = booking.input_values
+            if slot_fallback:
+                resp_data["slot_fallback"] = slot_fallback
             perf.mark("response_payload_ready")
             ok_response = Response(resp_data, status=status.HTTP_201_CREATED)
             attach_booking_performance_headers(ok_response, perf, equipment_id=equipment.equipment_id)

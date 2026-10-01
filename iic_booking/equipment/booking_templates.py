@@ -9,6 +9,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import BookingInputTemplate, Equipment
+from .template_slot_preference import (
+    MAX_PREFERRED_SLOT_COUNT,
+    apply_preference_fields,
+    clean_if_slot_taken,
+    clean_preferred_slot,
+    resolve_preferred_slot,
+    serialize_preference,
+)
 
 MAX_TEMPLATES_PER_EQUIPMENT = 25
 MAX_NAME_LENGTH = 80
@@ -37,6 +45,7 @@ def _serialize(template):
         "name": template.name,
         "input_values": template.input_values or {},
         "options": template.options or {},
+        **serialize_preference(template),
         "created_at": template.created_at.isoformat() if template.created_at else None,
         "updated_at": template.updated_at.isoformat() if template.updated_at else None,
     }
@@ -77,6 +86,45 @@ def _clean_options(raw):
         else:
             return None, "research_workspace must be a workspace id."
     return options, None
+
+
+def _apply_preference(template, data, *, partial):
+    """Apply preferred_slot / if_slot_taken from the payload; return an error string or None."""
+    if partial and "preferred_slot" not in data and "if_slot_taken" not in data:
+        return None
+    if "preferred_slot" in data or not partial:
+        preferred, error = clean_preferred_slot(data.get("preferred_slot"), template.equipment)
+        if error:
+            return error
+    elif template.preferred_weekday is not None and template.preferred_start_time is not None:
+        preferred = {
+            "weekday": template.preferred_weekday,
+            "start_time": template.preferred_start_time,
+            "slot_count": template.preferred_slot_count or 1,
+            "slot_master_id": template.preferred_slot_master_id,
+        }
+    else:
+        preferred = None
+    if "if_slot_taken" in data or not partial:
+        if_slot_taken, error = clean_if_slot_taken(data.get("if_slot_taken"))
+        if error:
+            return error
+    else:
+        if_slot_taken = template.if_slot_taken
+    if preferred is None:
+        # Without a preferred slot there is nothing to fall back from.
+        if_slot_taken = "ask"
+    return apply_preference_fields(template, preferred, if_slot_taken, data.get("auto_book_consent"))
+
+
+_PREFERENCE_FIELDS = [
+    "preferred_weekday",
+    "preferred_start_time",
+    "preferred_slot_count",
+    "preferred_slot_master",
+    "if_slot_taken",
+    "if_slot_taken_consented_at",
+]
 
 
 def _name_taken(user, equipment_id, name, exclude_pk=None):
@@ -129,15 +177,13 @@ def booking_templates(request):
         )
     if _name_taken(user, equipment.pk, name):
         return _name_taken_response(name)
+    template = BookingInputTemplate(user=user, equipment=equipment, name=name, input_values=input_values, options=options)
+    error = _apply_preference(template, data, partial=False)
+    if error:
+        return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
     try:
         with transaction.atomic():
-            template = BookingInputTemplate.objects.create(
-                user=user,
-                equipment=equipment,
-                name=name,
-                input_values=input_values,
-                options=options,
-            )
+            template.save()
     except IntegrityError:
         return _name_taken_response(name)
     return Response(_serialize(template), status=status.HTTP_201_CREATED)
@@ -181,6 +227,11 @@ def booking_template_detail(request, template_id):
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
         template.options = options
         update_fields.append("options")
+    if "preferred_slot" in data or "if_slot_taken" in data or request.method == "PUT":
+        error = _apply_preference(template, data, partial=request.method != "PUT")
+        if error:
+            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+        update_fields.extend(_PREFERENCE_FIELDS)
     if update_fields:
         try:
             with transaction.atomic():
@@ -188,3 +239,28 @@ def booking_template_detail(request, template_id):
         except IntegrityError:
             return _name_taken_response(template.name)
     return Response(_serialize(template))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def booking_template_preferred_slot(request, template_id):
+    """Resolve the template's preferred weekday/time to slots in the user's open booking window.
+
+    Read-only: the booking page pre-selects the returned slots and the user still clicks Book.
+    ``?slot_count=N`` overrides the saved number of slots (the current inputs may need more or fewer).
+    """
+    template = (
+        BookingInputTemplate.objects.select_related("equipment").filter(pk=template_id, user=request.user).first()
+    )
+    if template is None:
+        return Response({"error": "Template not found."}, status=status.HTTP_404_NOT_FOUND)
+    slot_count = None
+    raw = request.query_params.get("slot_count")
+    if raw not in (None, ""):
+        if not str(raw).isdigit() or not 1 <= int(raw) <= MAX_PREFERRED_SLOT_COUNT:
+            return Response(
+                {"error": f"slot_count must be between 1 and {MAX_PREFERRED_SLOT_COUNT}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        slot_count = int(raw)
+    return Response(resolve_preferred_slot(template, request.user, slot_count=slot_count))
