@@ -241,25 +241,43 @@ def _minutes(slots) -> int:
     return int(sum((s.end_datetime - s.start_datetime).total_seconds() for s in slots) // 60)
 
 
-def _consecutive_runs(candidates, slot_count, total_minutes=None):
-    """Non-overlapping runs of ``slot_count`` back-to-back slots on one date (optionally same total minutes)."""
+def _day_successors(equipment, date_from, date_to) -> dict[int, int]:
+    """Slot id -> id of the next slot on the same date, whatever its status.
+
+    Consecutive means "next row of the day", as on the booking page: equipment whose slots have breaks
+    between them (09:30-11:00, 11:30-13:00, ...) still books runs across the break.
+    """
+    successors = {}
+    prev_id = prev_date = None
+    rows = (
+        DailySlot.objects.filter(slot_master__equipment=equipment, date__gte=date_from, date__lte=date_to)
+        .order_by("date", "start_datetime", "id")
+        .values_list("id", "date")
+    )
+    for slot_id, day in rows:
+        if day == prev_date:
+            successors[prev_id] = slot_id
+        prev_id, prev_date = slot_id, day
+    return successors
+
+
+def _consecutive_runs(candidates, slot_count, successors, total_minutes=None):
+    """Non-overlapping runs of ``slot_count`` adjacent free slots on one date (optionally same total minutes)."""
+    by_id = {s.id: s for s in candidates}
+    used = set()
     runs = []
-    i = 0
-    while i < len(candidates):
-        run = [candidates[i]]
-        j = i + 1
-        while len(run) < slot_count and j < len(candidates):
-            prev, nxt = run[-1], candidates[j]
-            if nxt.start_datetime == prev.end_datetime and nxt.date == prev.date:
-                run.append(nxt)
-            elif nxt.start_datetime > prev.end_datetime:
+    for first in candidates:
+        if first.id in used:
+            continue
+        run = [first]
+        while len(run) < slot_count:
+            nxt = by_id.get(successors.get(run[-1].id))
+            if nxt is None or nxt.id in used:
                 break
-            j += 1
+            run.append(nxt)
         if len(run) == slot_count and (total_minutes is None or _minutes(run) == total_minutes):
             runs.append(run)
-            i += len(run)
-        else:
-            i += 1
+            used.update(s.id for s in run)
     return runs
 
 
@@ -274,7 +292,10 @@ def find_equivalent_runs(equipment, user, *, anchor_start, slot_count, total_min
     candidates = _bookable_candidates(
         equipment, user, date_from=date_from, date_to=date_to, start_after=anchor_start
     )
-    return _consecutive_runs(candidates, slot_count, total_minutes)[:limit]
+    if not candidates:
+        return []
+    successors = _day_successors(equipment, date_from, date_to)
+    return _consecutive_runs(candidates, slot_count, successors, total_minutes)[:limit]
 
 
 def requested_run_shape(slot_ids, equipment):
@@ -363,7 +384,10 @@ def nearest_alternatives(equipment, user, *, anchor_start, slot_count, total_min
     """Equivalent free runs anywhere in the open window, nearest to the preferred start first."""
     window = booking_window(equipment, user, now=now)
     candidates = _bookable_candidates(equipment, user, date_from=window.min_date, date_to=window.max_date)
-    runs = _consecutive_runs(candidates, slot_count, total_minutes)
+    if not candidates:
+        return []
+    successors = _day_successors(equipment, window.min_date, window.max_date)
+    runs = _consecutive_runs(candidates, slot_count, successors, total_minutes)
     runs.sort(key=lambda r: (abs((r[0].start_datetime - anchor_start).total_seconds()), r[0].start_datetime))
     return [_run_payload(r) for r in runs[:limit]]
 
@@ -468,16 +492,7 @@ def resolve_preferred_slot(template, user, *, slot_count=None, now=None) -> dict
             ),
             None,
         )
-    run = []
-    if start_idx is not None:
-        run = [day_slots[start_idx]]
-        for s in day_slots[start_idx + 1:]:
-            if len(run) == count:
-                break
-            if s.start_datetime == run[-1].end_datetime:
-                run.append(s)
-            else:
-                break
+    run = day_slots[start_idx:start_idx + count] if start_idx is not None else []
     anchor_start = run[0].start_datetime if run else _combine_local(target, at)
     total_minutes = _minutes(run) if len(run) == count else None
     preferred_label = f"{WEEKDAY_NAMES[weekday]} {target.strftime('%d %b')} at {label_time}"

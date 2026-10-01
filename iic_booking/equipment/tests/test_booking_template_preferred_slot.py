@@ -308,6 +308,54 @@ def test_slot_master_wins_over_start_time_match(egs_factory):
     assert resolve_preferred_slot(template, user)["slot_ids"] == [shifted.pk]
 
 
+def _gapped_day(f, eq, *, days=3):
+    """09:30-11:00, 11:30-13:00, 14:00-15:30, 16:00-17:30: slots with breaks between them."""
+    day = f.future(days=days, hour=9)
+    return [
+        f.slot(eq, day + timedelta(minutes=offset), minutes=90)
+        for offset in (30, 150, 300, 420)
+    ]
+
+
+@pytest.mark.django_db
+def test_preferred_run_continues_across_breaks_between_slots(egs_factory):
+    eq = egs_factory.equipment(slot_duration_minutes=90)
+    user = egs_factory.student()
+    rows = _gapped_day(egs_factory, eq)
+    template = _template(user, eq, rows[1].start_datetime, slot_count=2)
+
+    data = resolve_preferred_slot(template, user)
+    assert data["status"] == "available"
+    assert data["slot_ids"] == [rows[1].pk, rows[2].pk]
+
+    last = _template(user, eq, rows[3].start_datetime, slot_count=2)
+    assert resolve_preferred_slot(last, user)["status"] == "no_matching_slot"
+    assert resolve_preferred_slot(template, user, slot_count=5)["status"] == "no_matching_slot"
+
+
+@pytest.mark.django_db
+def test_auto_next_and_alternatives_cross_breaks_but_not_booked_slots(egs_factory):
+    eq = egs_factory.equipment(slot_duration_minutes=90)
+    user = egs_factory.student()
+    rows = _gapped_day(egs_factory, eq)
+    rows[0].status = "BOOKED"
+    rows[0].save(update_fields=["status"])
+    template = _template(
+        user, eq, rows[0].start_datetime, slot_count=2, if_slot_taken="next_available_same_day", consented=True
+    )
+
+    data = resolve_preferred_slot(template, user)
+    assert data["status"] == "occupied"
+    assert data["auto_next"]["slot_ids"] == [rows[1].pk, rows[2].pk]
+    assert [a["slot_ids"] for a in data["alternatives"]] == [[rows[1].pk, rows[2].pk]]
+
+    rows[2].status = "BOOKED"
+    rows[2].save(update_fields=["status"])
+    data = resolve_preferred_slot(template, user)
+    assert data["auto_next"] is None
+    assert data["alternatives"] == []
+
+
 # --- submit: races and the opt-in fallback ---------------------------------------------------------
 
 
@@ -384,7 +432,8 @@ def test_fallback_keeps_the_run_length(egs_factory, no_portal_lock):
     eq = egs_factory.equipment(time_formula="120")
     start = egs_factory.future(days=3, hour=10)
     wanted = [egs_factory.slot(eq, start), egs_factory.slot(eq, start + timedelta(hours=1))]
-    egs_factory.slot(eq, start + timedelta(hours=3))  # lone free slot: too short
+    egs_factory.slot(eq, start + timedelta(hours=3))  # lone free slot: the next row is booked
+    egs_factory.booking(egs_factory.student(), eq, start + timedelta(hours=4))
     run = [egs_factory.slot(eq, start + timedelta(hours=5)), egs_factory.slot(eq, start + timedelta(hours=6))]
     winner, _ = _student_with_wallet(egs_factory)
     student, _ = _student_with_wallet(egs_factory)
