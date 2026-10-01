@@ -1574,19 +1574,6 @@ class EquipmentAdmin(admin.ModelAdmin):
             ),
             'classes': ('collapse',)
         }),
-        (_('Per-user slot limits'), {
-            'fields': (
-                'internal_weekly_quota', 'internal_monthly_quota',
-                'external_weekly_quota', 'external_monthly_quota',
-            ),
-            'description': _(
-                'Maximum slots one user may hold on this equipment per IST calendar week (Mon–Sun) and calendar '
-                'month, counting all sample sets. Internal limits apply to internal users, external limits to '
-                'external users. 0 = no limit. Enforced only while the site-wide ENFORCE_EQUIPMENT_SLOT_QUOTA '
-                'setting is on; skipped when "Skip quota check" is ticked. Staff bookings and urgent holds are exempt.'
-            ),
-            'classes': ('collapse',)
-        }),
         (_('Timestamps'), {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)

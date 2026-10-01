@@ -1241,19 +1241,6 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
             logger.exception("Quota check failed during cross-equipment reschedule for booking %s", booking.pk)
             return _error("Quota check failed. Please try again or contact admin.", "QUOTA_CHECK_FAILED")
 
-    from .equipment_slot_quota import SLOT_LIMIT_ERROR_CODE, slot_limit_error
-
-    slot_reference = start_time
-    if booking.status == BookingStatus.DISRUPTION_PENDING and getattr(booking, "quota_period_anchor_at", None):
-        slot_reference = booking.quota_period_anchor_at
-    slot_limit_err = slot_limit_error(
-        owner, target,
-        slots_requested=len(candidates), reference=slot_reference, actor=request.user,
-        exclude_booking_id=booking.booking_id, action="reschedule", lock=True,
-    )
-    if slot_limit_err:
-        return _error(slot_limit_err, SLOT_LIMIT_ERROR_CODE)
-
     ext_quota = ExternalSlotQuotaService.validate_external_booking(
         owner,
         target,
