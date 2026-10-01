@@ -1,0 +1,73 @@
+# Probe: charge-profile configuration for equipment mixing GENERIC and MULTI_PARAM
+# profiles (e.g. NMR). Read-only; prints rate configuration only (no user data).
+name: Probe Mixed Charge Profiles
+
+on:
+  workflow_dispatch:
+    inputs:
+      name_filter:
+        description: Equipment name substring to dump in full
+        required: true
+        default: "Nuclear Magnetic"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Dump charge profiles, Field B options and multi-parameter options
+        env:
+          PROBE_NAME: ${{ github.event.inputs.name_filter }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -i -e PROBE_NAME="$PROBE_NAME" -w /app "$CID" python - <<'PY'
+          import os, json, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from rest_framework.test import APIRequestFactory
+          from iic_booking.equipment import api_views
+          from iic_booking.equipment.models import (
+              ChargeProfile, ChargeProfilePricingProfile, DynamicInputField, Equipment,
+              MultiParamDefinition,
+          )
+
+          name = os.environ["PROBE_NAME"]
+          for eq in Equipment.objects.filter(name__icontains=name).order_by("equipment_id"):
+              print(f"== equipment_id={eq.equipment_id} code={eq.code} name={eq.name!r} "
+                    f"profile_type={eq.profile_type} status={eq.status} dept={eq.internal_department_id}")
+              for cp in ChargeProfile.objects.filter(equipment=eq).order_by("pricing_profile", "user_type"):
+                  print("  charge_profile", json.dumps({
+                      "user_type": cp.user_type, "pricing_profile": cp.pricing_profile,
+                      "profile_type": cp.profile_type, "effective": cp.effective_profile_type,
+                      "active": cp.is_active, "primary": str(cp.primary_unit_charge),
+                      "secondary": str(cp.secondary_unit_charge), "breakpoint": str(cp.breakpoint),
+                      "display_text": cp.display_text,
+                  }, ensure_ascii=False))
+              for f in DynamicInputField.objects.filter(equipment=eq, field_key="B").order_by("user_type"):
+                  print("  field_B", json.dumps({
+                      "user_type": f.user_type, "label": f.field_label, "options": f.options,
+                  }, ensure_ascii=False, default=str))
+              for p in MultiParamDefinition.objects.filter(equipment=eq).order_by("user_type", "param_code"):
+                  print("  param", json.dumps({
+                      "user_type": p.user_type, "code": p.param_code, "name": p.param_name,
+                      "charge": str(p.unit_charge), "minutes": p.unit_time_minutes,
+                      "display_text": p.display_text, "active": p.is_active,
+                  }, ensure_ascii=False))
+
+              req = APIRequestFactory().get("/api/equipments/analysis-charges/", {"equipment_ids": str(eq.equipment_id)})
+              resp = api_views.equipment_analysis_charges(req)
+              listed = (resp.data or {}).get("equipments") or []
+              print(f"  public_analysis_charges status={resp.status_code} listed={len(listed)}")
+              for e in listed:
+                  print("   public_user_types", [cp["user_type"] for cp in e.get("charge_profiles") or []])
+
+          print("== equipment mixing GENERIC with MULTI_PARAM (active STANDARD profiles)")
+          by_eq = {}
+          for cp in ChargeProfile.objects.filter(is_active=True, pricing_profile=ChargeProfilePricingProfile.STANDARD).select_related("equipment"):
+              by_eq.setdefault(cp.equipment_id, (cp.equipment, set()))[1].add(cp.effective_profile_type)
+          for eq_id, (eq, types) in sorted(by_eq.items()):
+              if "GENERIC" in types and "MULTI_PARAM" in types:
+                  print(f"  equipment_id={eq_id} name={eq.name!r} profile_type={eq.profile_type} types={sorted(types)}")
+          PY
