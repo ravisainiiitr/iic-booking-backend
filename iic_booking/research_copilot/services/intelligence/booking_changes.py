@@ -84,13 +84,28 @@ def _summary(booking) -> dict[str, Any]:
     }
 
 
-def cancellable_bookings(user) -> list[dict[str, Any]]:
+def reschedule_locked(user, booking) -> bool:
+    from iic_booking.equipment.reschedule_lock import reschedule_locked_for
+
+    return reschedule_locked_for(user, booking)
+
+
+def cancellable_bookings(user, *, for_reschedule: bool = False) -> list[dict[str, Any]]:
     now = timezone.now()
     out = []
+    candidates = []
     for b in _qs(user):
         slots = list(b.daily_slots.all())
         if not slots or not any(s.start_datetime and s.start_datetime > now for s in slots):
             continue
+        candidates.append(b)
+    if for_reschedule and candidates:
+        from iic_booking.equipment.reschedule_lock import bypasses_sample_reschedule_lock, sample_accepted_booking_ids
+
+        if not bypasses_sample_reschedule_lock(user):
+            locked = sample_accepted_booking_ids(b.pk for b in candidates)
+            candidates = [b for b in candidates if b.pk not in locked]
+    for b in candidates:
         out.append(_summary(b))
     out.sort(key=lambda r: r["start"] or "")
     return out[:MAX_BOOKINGS]
@@ -118,11 +133,19 @@ def _pick_booking(turn: Turn, *, workflow: str, kind: str, verb: str) -> dict[st
             return M.error("I couldn't find that booking among your active bookings.", intent=turn.intent,
                            actions=[M.link("my_bookings", "My Bookings", "/my-bookings")])
         return b
-    rows = cancellable_bookings(turn.user)
+    rows = cancellable_bookings(turn.user, for_reschedule=(workflow == "reschedule"))
     if ents.next_booking and rows:
         return _owned(turn.user, rows[0]["booking_id"])
     if not rows:
         st.restart(turn.state)
+        if workflow == "reschedule" and cancellable_bookings(turn.user):
+            from iic_booking.equipment.reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+
+            return turn.respond(
+                message_type=M.TEXT,
+                content=RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE.replace("This booking", "Your upcoming booking"),
+                actions=[M.link("my_bookings", "My Bookings", "/my-bookings")], source_label=M.SOURCE_PORTAL,
+            )
         return turn.respond(message_type=M.TEXT, content=f"You have no upcoming bookings to {verb}.",
                             actions=[M.link("my_bookings", "My Bookings", "/my-bookings")], source_label=M.SOURCE_PORTAL)
     if len(rows) == 1:
@@ -152,6 +175,19 @@ def _closed(turn: Turn, info: dict[str, Any], verb: str) -> dict[str, Any]:
                  M.link("my_bookings", "My Bookings", f"/my-bookings?booking={info['booking_id']}")],
         source_label=M.SOURCE_PORTAL,
         extra={"booking_id": info["booking_id"]},
+    )
+
+
+def _sample_accepted_locked(turn: Turn, info: dict[str, Any]) -> dict[str, Any]:
+    from iic_booking.equipment.reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+
+    st.restart(turn.state, booking_id=info["booking_id"])
+    return turn.respond(
+        message_type=M.TEXT,
+        content=f"Booking {info['ref']} ({info['equipment_name']}): {RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE}",
+        actions=[M.link("open_booking", "Open booking (Message the lab)", f"/my-bookings?booking={info['booking_id']}")],
+        source_label=M.SOURCE_PORTAL,
+        extra={"booking_id": info["booking_id"], "reschedule_block_reason": "reschedule_locked_sample_accepted"},
     )
 
 
@@ -412,6 +448,8 @@ def reschedule_selected(turn: Turn, booking) -> dict[str, Any]:
     s = turn.state
     s["booking_id"] = info["booking_id"]
     s["workflow"] = "reschedule"
+    if reschedule_locked(turn.user, booking):
+        return _sample_accepted_locked(turn, info)
     if not info["self_service_open"]:
         return _closed(turn, info, "reschedule")
     eq = booking.equipment
@@ -456,6 +494,8 @@ def reschedule_slot_chosen(turn: Turn, value: str) -> dict[str, Any]:
     if booking is None:
         st.restart(s)
         return M.error("That booking is no longer active.", intent=turn.intent)
+    if reschedule_locked(turn.user, booking):
+        return _sample_accepted_locked(turn, _summary(booking))
     prep = booking_mut.prepare_reschedule(user=turn.user, booking_id=int(booking.booking_id), slot_ids=_ids(value))
     if not prep.get("ok") or prep.get("status") != "READY_FOR_CONFIRMATION":
         resp = reschedule_selected(turn, booking)

@@ -107,6 +107,59 @@ def _booking_sample_trace_events(booking):
     return events
 
 
+def _viewer_reschedule_block(serializer, booking) -> str | None:
+    """Block code for the requesting user, or None (allowed, or viewer unknown)."""
+    from .reschedule_lock import (
+        RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
+        bypasses_sample_reschedule_lock,
+        sample_accepted_booking_ids,
+        sample_accepted_by_lab,
+    )
+
+    request = serializer.context.get("request")
+    user = getattr(request, "user", None)
+    if user is None or not getattr(user, "is_authenticated", False):
+        return None
+    ctx = serializer.context
+    if "_viewer_bypasses_reschedule_lock" not in ctx:
+        ctx["_viewer_bypasses_reschedule_lock"] = bypasses_sample_reschedule_lock(user)
+    if ctx["_viewer_bypasses_reschedule_lock"]:
+        return None
+    root = getattr(serializer, "root", None)
+    if root is not None and getattr(root, "child", None) is serializer:
+        if "_sample_accepted_booking_ids" not in ctx:
+            ctx["_sample_accepted_booking_ids"] = sample_accepted_booking_ids(
+                getattr(b, "pk", None) for b in (root.instance or [])
+            )
+        locked = booking.pk in ctx["_sample_accepted_booking_ids"]
+    else:
+        locked = sample_accepted_by_lab(booking)
+    return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED if locked else None
+
+
+class _RescheduleBlockFieldsMixin:
+    """can_reschedule is null when the viewer is unknown (no request in context); the endpoint still enforces."""
+
+    def _reschedule_block(self, obj):
+        cache = self.context.setdefault("_reschedule_block_cache", {})
+        if obj.pk not in cache:
+            cache[obj.pk] = _viewer_reschedule_block(self, obj)
+        return cache[obj.pk]
+
+    def get_can_reschedule(self, obj):
+        if getattr(getattr(self.context.get("request"), "user", None), "is_authenticated", False) is not True:
+            return None
+        return self._reschedule_block(obj) is None
+
+    def get_reschedule_block_reason(self, obj):
+        return self._reschedule_block(obj)
+
+    def get_reschedule_block_message(self, obj):
+        from .reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+
+        return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE if self._reschedule_block(obj) else None
+
+
 def compute_sample_collection_deadline(booking):
     """
     Absolute deadline for sample collection after booking completion.
@@ -2842,7 +2895,7 @@ def _booking_breakdown_suffix_start_index(stored: list) -> int:
     return len(stored)
 
 
-class BookingSerializer(serializers.ModelSerializer):
+class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Serializer for Booking model. Shows 'Booked' for PENDING (user-facing)."""
     
     booking_id = serializers.SerializerMethodField()
@@ -2899,6 +2952,9 @@ class BookingSerializer(serializers.ModelSerializer):
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
     input_edit_refund_deadline = serializers.SerializerMethodField()
     input_edit_instant_refund_open = serializers.SerializerMethodField()
+    can_reschedule = serializers.SerializerMethodField()
+    reschedule_block_reason = serializers.SerializerMethodField()
+    reschedule_block_message = serializers.SerializerMethodField()
     istem_fbr_status_display = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
@@ -3053,6 +3109,9 @@ class BookingSerializer(serializers.ModelSerializer):
             'charge_recalculation_pay_seconds_remaining',
             'input_edit_refund_deadline',
             'input_edit_instant_refund_open',
+            'can_reschedule',
+            'reschedule_block_reason',
+            'reschedule_block_message',
             'created_at',
             'updated_at',
             'completed_at',
@@ -3512,7 +3571,7 @@ class BookingSerializer(serializers.ModelSerializer):
         return BookingSampleTraceSerializer(events, many=True, context=self.context).data
 
 
-class BookingListSerializer(serializers.ModelSerializer):
+class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Lightweight serializer for list/table view. Excludes heavy fields (daily_slots, charge_breakdown, input_fields, sample_trace)."""
     booking_id = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
@@ -3552,6 +3611,9 @@ class BookingListSerializer(serializers.ModelSerializer):
     oic_contacts = serializers.SerializerMethodField()
     charge_recalculation_pay_deadline = serializers.DateTimeField(read_only=True, allow_null=True)
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+    can_reschedule = serializers.SerializerMethodField()
+    reschedule_block_reason = serializers.SerializerMethodField()
+    reschedule_block_message = serializers.SerializerMethodField()
 
     def get_charge_recalculation_pay_seconds_remaining(self, obj):
         from .input_edit_payment_window import payment_seconds_remaining
@@ -3571,7 +3633,8 @@ class BookingListSerializer(serializers.ModelSerializer):
             'user_type_snapshot_display', 'wallet_owner_name', 'created_by_name', 'repeat_sample_request_status',
             'has_results',
             'charge_recalculation_pending_amount', 'charge_recalculation_pay_deadline',
-            'charge_recalculation_pay_seconds_remaining', 'created_at', 'updated_at', 'completed_at',
+            'charge_recalculation_pay_seconds_remaining', 'can_reschedule', 'reschedule_block_reason',
+            'reschedule_block_message', 'created_at', 'updated_at', 'completed_at',
             'rating_on_time_operator_availability',
             'rating_laboratory_cleanliness_organization',
             'rating_sample_handling_care',

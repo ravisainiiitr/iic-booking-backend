@@ -948,6 +948,20 @@ def prepare_reschedule(
     if err:
         return _safe_error("BOOKING_FORBIDDEN", "Booking not found for your account.")
 
+    from iic_booking.equipment.reschedule_lock import (
+        RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
+        RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        reschedule_locked_for,
+    )
+
+    if reschedule_locked_for(user, booking):
+        return _safe_error(
+            RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
+            RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+            booking_id=int(booking.booking_id),
+            portal_href=f"/my-bookings?booking={booking.booking_id}",
+        )
+
     start = start_time
     end = end_time
     target_ids = [int(s) for s in (slot_ids or [])]

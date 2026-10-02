@@ -50,7 +50,7 @@ def booking_ref(text: str) -> str | None:
 def _base_qs(user):
     from iic_booking.equipment.models import Booking
 
-    return Booking.objects.filter(user=user).select_related("equipment").prefetch_related("daily_slots")
+    return Booking.objects.filter(user=user).select_related("equipment", "user").prefetch_related("daily_slots")
 
 
 def owned(user, booking_id):
@@ -109,13 +109,19 @@ def eligibility(b, *, now=None) -> dict[str, Any]:
         elif getattr(b, "istem_fbr_status", None) and str(b.istem_fbr_status) != "EXECUTED":
             results_blocked = "istem_fbr"
     message, message_reason = _lab_message_state(b, status, now)
+    reschedule_locked = False
+    if active:
+        from iic_booking.equipment.reschedule_lock import reschedule_locked_for
+
+        reschedule_locked = reschedule_locked_for(getattr(b, "user", None), b)
     return {
         "active": active,
         "future": future,
         "self_service_open": bool(open_),
         "cutoff": cutoff,
         "cancel": active and bool(open_),
-        "reschedule": active and bool(open_),
+        "reschedule": active and bool(open_) and not reschedule_locked,
+        "reschedule_locked": reschedule_locked,
         "edit": status == "BOOKED" and not repeat and bool(b.input_values),
         "message": message,
         "message_reason": message_reason,
@@ -322,7 +328,12 @@ def detail_reply(user, conversation, b) -> dict[str, Any]:
     if samples:
         lines.append(f"- Samples: {samples}")
     if elig["active"]:
-        if elig["self_service_open"]:
+        if elig["self_service_open"] and elig.get("reschedule_locked"):
+            if elig.get("cutoff"):
+                lines.append(f"- You can cancel until {elig['cutoff']}.")
+            lines.append("- Reschedule not available — sample accepted by the lab. Use Message the lab to contact "
+                         "the Officer in Charge.")
+        elif elig["self_service_open"]:
             if elig.get("cutoff"):
                 lines.append(f"- You can cancel or reschedule until {elig['cutoff']}.")
         else:
