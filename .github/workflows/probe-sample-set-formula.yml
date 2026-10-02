@@ -13,12 +13,17 @@ on:
         description: Equipment name fragment to print in detail
         required: false
         default: 'APREO'
+      scan_all:
+        description: Scan every equipment's formula / cross-field limits instead (true / false)
+        required: false
+        default: 'false'
 
 jobs:
   probe:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Numeric field limits and sample-set keys (SELECT only)
+        if: ${{ github.event.inputs.scan_all != 'true' }}
         env:
           NAME_FILTER: ${{ github.event.inputs.name_filter }}
         run: |
@@ -138,6 +143,244 @@ jobs:
                       seen[(f.equipment.equipment_id, (f.equipment.name or "")[:50], f.field_key, formula, type(f.options).__name__)] += 1
               for (eid, name, key, formula, kind), n in sorted(seen.items()):
                   print(f"  {eid}:{name} field {key} max_formula={formula!r} options_type={kind} rows={n}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
+
+      - name: All equipment - formula / cross-field limits and what the validator does with them (SELECT only, counts only)
+        if: ${{ github.event.inputs.scan_all == 'true' }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import inspect
+          import os
+          import re
+          from collections import Counter, defaultdict
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment import api_views
+          from iic_booking.equipment.calculators import split_sample_sets
+          from iic_booking.equipment.models import (
+              Booking, BookingInputTemplate, BookingStatus, DynamicInputField, DynamicInputFieldType, Equipment,
+              EquipmentStatus,
+          )
+          from iic_booking.equipment.numeric_field_limits import max_formula_error, numeric_constraints, numeric_max_formula
+          from iic_booking.users.models.user_type import UserType
+
+          ACTIVE_STATUSES = [
+              BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.WAITLISTED, BookingStatus.BOOKED,
+              BookingStatus.DISRUPTION_PENDING, BookingStatus.HOLD, BookingStatus.PROCESSING,
+          ]
+          TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z])(?![A-Za-z0-9_])")
+          FORMULA_LINE_RE = re.compile(r"^[A-Z0-9_.+\-*/()\s]+$")
+          num = api_views._to_float_or_none
+
+          def is_ext(ut):
+              return bool(ut) and UserType.is_external_user(ut)
+
+          def tokens(formula):
+              return list(dict.fromkeys(TOKEN_RE.findall(formula)))
+
+          def evaluate(formula, values, slot_minutes):
+              """Same substitution as api_views._resolve_numeric_max_for_field_a."""
+              expr = formula
+              for token in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+                  v = num(values.get(token))
+                  expr = re.sub(rf"(?<![a-zA-Z0-9_]){token}(?![a-zA-Z0-9_])", str(v if v is not None else 0), expr)
+              expr = re.sub(r"(?<![a-zA-Z0-9_])SLOT_DURATION_MINUTES(?![a-zA-Z0-9_])", str(slot_minutes or 0), expr)
+              if not re.fullmatch(r"[0-9\.\+\-\*\/\(\)\s]+", expr):
+                  return None
+              try:
+                  return float(eval(expr, {"__builtins__": {}}, {}))  # noqa: S307 - digits/operators only
+              except Exception:  # noqa: BLE001
+                  return None
+
+          def help_formulas(ht):
+              """[(kind, text)] for help-text limit lines 1-3 (min / max / step) that reference a field key."""
+              if not ht or not str(ht).strip():
+                  return []
+              lines = str(ht).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")
+              if len(lines) > 3:
+                  return []
+              if len(lines) == 1:
+                  parts = [p for p in re.split(r"[,;\s]+", lines[0].strip()) if p]
+                  lines = parts if len(parts) == 3 else lines
+              out = []
+              for kind, line in zip(("min", "max", "step"), lines):
+                  text = line.strip()
+                  if text and FORMULA_LINE_RE.fullmatch(text) and (TOKEN_RE.search(text) or "SLOT_DURATION_MINUTES" in text):
+                      out.append((kind, text))
+              return out
+
+          src_resolve = inspect.getsource(api_views._resolve_numeric_max_for_field_a)
+          src_validate = inspect.getsource(api_views._validate_dynamic_numeric_input_limits)
+          legacy_ok = "numeric_max_formula(raw_options)" in src_resolve
+          a_only = 'key == "A"' in src_validate and "not is_external" in src_validate
+          print(f"deployed validator: formulas only on field A for non-external users={a_only}; "
+                f"legacy text options ('B*4') read={legacy_ok}; help-text formulas evaluated=False (parser reads the first number)")
+
+          def category(row, kind, source, formula):
+              if source == "help_text":
+                  c = numeric_constraints(options=row.options, help_text=row.help_text)
+                  read = c.get(kind)
+                  how = f"options.{kind} {read:g} wins" if c["source"].get(kind) == "options" else (
+                      f"parser reads {read:g} as {kind}" if read is not None else f"no {kind} read")
+                  return f"ignored: help-text formula ({how})"
+              if max_formula_error(formula):
+                  return "ignored: unparseable formula"
+              if not isinstance(row.options, dict) and not legacy_ok:
+                  return "ignored: legacy text format not read"
+              if row.field_key != "A":
+                  return "ignored: not field A"
+              if is_ext(row.user_type):
+                  return "ignored: external user type"
+              if not row.user_type:
+                  return "applied (internal users; ignored when an external user books)"
+              return "applied"
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              equipment = {e.equipment_id: e for e in Equipment.objects.all()}
+              rows_by_eq = defaultdict(list)
+              for f in DynamicInputField.objects.all().order_by("equipment_id", "field_key", "user_type", "pk"):
+                  rows_by_eq[f.equipment_id].append(f)
+
+              def shown_rows(eq_id, ut):
+                  """Rows the booking form shows for user type ``ut``: typed rows if any, else shared rows."""
+                  rows = rows_by_eq[eq_id]
+                  typed = [r for r in rows if ut and r.user_type == ut]
+                  return typed or [r for r in rows if not r.user_type]
+
+              def row_for(eq_id, key, ut):
+                  for r in shown_rows(eq_id, ut):
+                      if r.field_key == key:
+                          return r
+                  return None
+
+              # (equipment, row) -> [(kind, source, formula, category)]
+              formula_rows = defaultdict(list)
+              for eq_id, rows in rows_by_eq.items():
+                  for r in rows:
+                      if r.field_type != DynamicInputFieldType.NUMERIC:
+                          continue
+                      f = numeric_max_formula(r.options)
+                      if f:
+                          formula_rows[eq_id].append((r, "max", "options", f, category(r, "max", "options", f)))
+                      for kind, text in help_formulas(r.help_text):
+                          formula_rows[eq_id].append((r, kind, "help_text", text, category(r, kind, "help_text", text)))
+              print(f"equipment total={len(equipment)} with a formula / cross-field limit={len(formula_rows)} "
+                    f"formula rows={sum(len(v) for v in formula_rows.values())}")
+
+              # Violations: counts per (row pk, kind, source) for active bookings and all templates.
+              viol = defaultdict(Counter)
+              checked = defaultdict(Counter)
+
+              def check(eq_id, values, ut, bucket):
+                  base, sets = split_sample_sets(values if isinstance(values, dict) else {})
+                  eq = equipment[eq_id]
+                  hit = set()
+                  sets_hit = Counter()
+                  seen_lines = set()
+                  for r, kind, source, formula, cat in formula_rows[eq_id]:
+                      picked = row_for(eq_id, r.field_key, ut)
+                      if picked is None or picked.pk != r.pk:
+                          continue
+                      line = (r.pk, kind, source)
+                      seen_lines.add(line)
+                      if kind == "step":
+                          continue
+                      for group in (base, *sets):
+                          value = num(group.get(r.field_key))
+                          limit = evaluate(formula, group, eq.slot_duration_minutes)
+                          if value is None or limit is None:
+                              continue
+                          if (kind == "max" and value > limit) or (kind == "min" and value < limit):
+                              hit.add(line)
+                              sets_hit[line] += 1
+                  for line in seen_lines:
+                      checked[line][bucket] += 1
+                  for line in hit:
+                      viol[line][bucket] += 1
+                      viol[line][bucket + "_sets"] += sets_hit[line]
+
+              eq_ids = list(formula_rows)
+              for eq_id, iv, snap, cp_ut, user_ut in Booking.objects.filter(
+                  equipment_id__in=eq_ids, status__in=ACTIVE_STATUSES
+              ).values_list("equipment_id", "input_values", "user_type_snapshot", "charge_profile__user_type", "user__user_type").iterator():
+                  check(eq_id, iv, (snap or "").strip() or (cp_ut or "").strip() or (user_ut or "").strip(), "bookings")
+              for eq_id, iv, user_ut in BookingInputTemplate.objects.filter(equipment_id__in=eq_ids).values_list(
+                  "equipment_id", "input_values", "user__user_type"
+              ).iterator():
+                  check(eq_id, iv, (user_ut or "").strip(), "templates")
+
+              print("\n== formula / cross-field limits (rows with the same formula and outcome merged; user types listed) ==")
+              print("status | equipment | field (A/B/other) | label | user types | source | kind | formula | validator | "
+                    "active bookings checked / violating (sets) | templates checked / violating (sets)")
+              by_cat = Counter()
+              ignored_impact = []
+              for eq_id in sorted(formula_rows, key=lambda i: (equipment[i].status != EquipmentStatus.ACTIVE, i)):
+                  eq = equipment[eq_id]
+                  merged = defaultdict(lambda: {"uts": [], "chk": Counter(), "vio": Counter()})
+                  for r, kind, source, formula, cat in formula_rows[eq_id]:
+                      m = merged[(r.field_key, r.field_label, source, kind, formula, cat)]
+                      m["uts"].append(r.user_type or "<shared>")
+                      m["chk"].update(checked[(r.pk, kind, source)])
+                      m["vio"].update(viol[(r.pk, kind, source)])
+                  for (key, label, source, kind, formula, cat), m in sorted(merged.items()):
+                      ab = key if key in ("A", "B") else "other"
+                      status = "ACTIVE" if eq.status == EquipmentStatus.ACTIVE else f"inactive({eq.status})"
+                      by_cat[(cat, status == "ACTIVE")] += 1
+                      line = (f"  {status} | {eq.equipment_id}:{eq.code} {(eq.name or '')[:55]!r} | {key} ({ab}) | {(label or '')[:45]!r} | "
+                              f"{','.join(m['uts'])} | {source} | {kind} | {formula!r} | {cat} | "
+                              f"{m['chk']['bookings']} / {m['vio']['bookings']} ({m['vio']['bookings_sets']}) | "
+                              f"{m['chk']['templates']} / {m['vio']['templates']} ({m['vio']['templates_sets']})")
+                      print(line)
+                      if cat.startswith("ignored") or "ignored when" in cat:
+                          ignored_impact.append(line)
+
+              print("\n== broken references (formula uses a field key the form does not show for that user type, or a non-numeric field) ==")
+              broken = 0
+              for eq_id in sorted(formula_rows):
+                  eq = equipment[eq_id]
+                  for r, kind, source, formula, cat in formula_rows[eq_id]:
+                      shown = {x.field_key: x for x in shown_rows(eq_id, r.user_type)}
+                      issues = []
+                      for t in tokens(formula):
+                          if t not in shown:
+                              issues.append(f"{t} missing (counts as 0)")
+                          elif shown[t].field_type != DynamicInputFieldType.NUMERIC:
+                              issues.append(f"{t} is {shown[t].field_type} (non-numeric, counts as 0 unless a number)")
+                      if not issues:
+                          continue
+                      broken += 1
+                      plain = []
+                      for k, x in sorted(shown.items()):
+                          if k == r.field_key or x.field_type != DynamicInputFieldType.NUMERIC:
+                              continue
+                          c = numeric_constraints(options=x.options, help_text=x.help_text)
+                          if c["min"] is not None or c["max"] is not None:
+                              plain.append(f"{k}: min={c['min']} max={c['max']}")
+                      status = "ACTIVE" if eq.status == EquipmentStatus.ACTIVE else f"inactive({eq.status})"
+                      print(f"  {status} | {eq.equipment_id}:{eq.code} {(eq.name or '')[:55]!r} | field {r.field_key} "
+                            f"user_type={r.user_type or '<shared>'} | {source} {kind} {formula!r} | {'; '.join(issues)} | "
+                            f"other fields' plain limits: {plain or 'none'}")
+              print(f"  broken reference rows: {broken}")
+
+              print("\n== summary: formula lines by validator outcome (active equipment / inactive) ==")
+              cats = sorted({c for c, _ in by_cat})
+              for c in cats:
+                  print(f"  {c}: active={by_cat[(c, True)]} inactive={by_cat[(c, False)]}")
 
               transaction.set_rollback(True)
           print("\nDONE (read-only, rolled back)")
