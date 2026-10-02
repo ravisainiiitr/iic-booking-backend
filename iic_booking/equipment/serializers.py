@@ -2848,6 +2848,8 @@ class BookingSerializer(serializers.ModelSerializer):
     oic_contacts = serializers.SerializerMethodField()
     charge_breakdown = serializers.SerializerMethodField()
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+    input_edit_refund_deadline = serializers.SerializerMethodField()
+    input_edit_instant_refund_open = serializers.SerializerMethodField()
     istem_fbr_status_display = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
@@ -2997,6 +2999,8 @@ class BookingSerializer(serializers.ModelSerializer):
             'charge_recalculation_pending_amount',
             'charge_recalculation_pay_deadline',
             'charge_recalculation_pay_seconds_remaining',
+            'input_edit_refund_deadline',
+            'input_edit_instant_refund_open',
             'created_at',
             'updated_at',
             'completed_at',
@@ -3082,6 +3086,23 @@ class BookingSerializer(serializers.ModelSerializer):
         from .input_edit_payment_window import payment_seconds_remaining
 
         return payment_seconds_remaining(obj)
+
+    def _input_edit_refund_window(self, obj):
+        cache = self.context.setdefault("_input_edit_refund_window_cache", {})
+        if obj.pk not in cache:
+            from .input_edit_refund_window import instant_refund_window
+
+            cache[obj.pk] = instant_refund_window(obj)
+        return cache[obj.pk]
+
+    def get_input_edit_refund_deadline(self, obj):
+        """Cancel / reschedule cut-off; a lower charge from the user's own edit before it is refunded at once."""
+        _open, cutoff = self._input_edit_refund_window(obj)
+        return cutoff.isoformat() if cutoff else None
+
+    def get_input_edit_instant_refund_open(self, obj):
+        is_open, _cutoff = self._input_edit_refund_window(obj)
+        return is_open
 
     def get_charge_breakdown(self, obj):
         """

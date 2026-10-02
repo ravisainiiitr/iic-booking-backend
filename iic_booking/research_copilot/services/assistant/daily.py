@@ -280,6 +280,26 @@ def _not_changeable(b, op: str) -> dict[str, Any]:
     )
 
 
+def _edit_refund_timing(b) -> str:
+    """How a lower charge from editing `b` now is refunded, with the actual cancellation deadline."""
+    from iic_booking.equipment.input_edit_refund_window import instant_refund_window
+
+    try:
+        is_open, cutoff = instant_refund_window(b)
+    except Exception:
+        logger.exception("Could not work out the edit refund window for booking %s", getattr(b, "pk", None))
+        is_open, cutoff = False, None
+    approval = "the refund needs the Officer In Charge's approval."
+    if is_open and cutoff:
+        return (f"the difference is refunded to your wallet straight away if you save before the cancellation "
+                f"deadline ({_local(cutoff, '%a %d %b %Y, %H:%M')}); after that, {approval}")
+    if is_open:
+        return "the difference is refunded to your wallet straight away."
+    if cutoff:
+        return f"the cancellation deadline ({_local(cutoff, '%a %d %b %Y, %H:%M')}) has passed, so {approval}"
+    return approval
+
+
 def booking_op(user, conversation, b, op: str) -> dict[str, Any]:
     """One per-booking action. `b` is already owned by `user`; eligibility is re-checked here."""
     from iic_booking.research_copilot.services.booking_refs import display_ref
@@ -300,8 +320,8 @@ def booking_op(user, conversation, b, op: str) -> dict[str, Any]:
             f"**Edit parameters — {ref}** ({b.equipment.name})\n\n"
             "1. Press **Edit parameters** below; the booking opens with the edit form.\n"
             "2. Change the inputs or sample sets and review the new charge the portal shows.\n"
-            "3. Save. If the charge goes up you have 1 minute to pay the difference, otherwise the edit is undone; "
-            "a lower charge is refunded after the Officer In Charge confirms it.\n\n"
+            "3. Save. If the charge goes up you have 1 minute to pay the difference, otherwise the edit is undone. "
+            f"If the new charge is lower, {_edit_refund_timing(b)}\n\n"
             "Nothing changes until you save on that page.",
             actions=[C.link("Edit parameters", f"{href}&edit_inputs=1", primary=True), B.chip(b, "details")],
             intent="edit",
@@ -419,8 +439,9 @@ def howto_edit(user, conversation, params, text):
         "**Edit booking parameters**\n\n"
         "1. Open the booking in My Bookings (or ask me \"show my upcoming bookings\" and press **Edit parameters**).\n"
         "2. Choose **Edit User Inputs**, change the values or sample sets and save.\n"
-        "3. A higher charge must be paid within 1 minute or the edit is undone; a lower charge is refunded after the "
-        "Officer In Charge confirms.\n\n"
+        "3. A higher charge must be paid within 1 minute or the edit is undone. If the new charge is lower, the "
+        "difference is refunded to your wallet straight away when you edit before the cancellation deadline; after "
+        "that deadline the refund needs the Officer In Charge's approval.\n\n"
         "You can edit **Booked** bookings until the analysis is completed.",
         actions=[C.prompt_action("Pick a booking to edit", "Edit my booking", primary=True), C.link("Open My Bookings", "/my-bookings")],
         intent="howto_edit",

@@ -21,9 +21,9 @@ from iic_booking.users.repositories.wallet_repository import SubWalletRepository
 from iic_booking.users.tests.factories import UserFactory
 
 
-def _setup(egs_factory, *, recalc_flag=False, wallet_balance="1000.00"):
+def _setup(egs_factory, *, recalc_flag=False, wallet_balance="1000.00", start=None, **equipment_fields):
     # HOUR profile, ₹10/hour, A hours: A=2 costs ₹20, A=5 costs ₹50.
-    eq = egs_factory.equipment(time_formula="A*60", enable_charge_recalculation=recalc_flag)
+    eq = egs_factory.equipment(time_formula="A*60", enable_charge_recalculation=recalc_flag, **equipment_fields)
     DynamicInputField.objects.create(
         equipment=eq,
         field_key="A",
@@ -33,7 +33,9 @@ def _setup(egs_factory, *, recalc_flag=False, wallet_balance="1000.00"):
         editing_required=False,
     )
     owner = egs_factory.student()
-    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values={"A": 2}, total_charge="20.00")
+    booking = egs_factory.booking(
+        owner, eq, start or egs_factory.future(), input_values={"A": 2}, total_charge="20.00"
+    )
     booking.total_time_minutes = 120
     booking.charge_breakdown = [{"description": "2 hours", "amount": 20.0}]
     booking.save(update_fields=["total_time_minutes", "charge_breakdown"])
@@ -188,8 +190,9 @@ def test_user_can_cancel_an_unpaid_edit(egs_factory):
 
 
 @pytest.mark.django_db
-def test_lower_charge_still_goes_to_oic_confirmed_refund_without_pay_window(egs_factory):
-    _eq, owner, oic, booking, sub = _setup(egs_factory)
+def test_lower_charge_after_cutoff_goes_to_oic_confirmed_refund_without_pay_window(egs_factory):
+    # Slot tomorrow: inside the default 48-hour cancel / reschedule cut-off.
+    _eq, owner, oic, booking, sub = _setup(egs_factory, start=egs_factory.future(days=1))
 
     resp = _patch(egs_factory, owner, booking, {"A": 1})
     assert resp.status_code == 200, resp.data

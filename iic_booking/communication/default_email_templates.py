@@ -554,7 +554,8 @@ def _booking_templates() -> list[dict[str, Any]]:
             subject="Booking Charges Updated – {{ equipment_name }}",
             intro=(
                 "Your booking details were updated and the charges have been recalculated. "
-                "If a refund is due, use Refund in the booking details. If an extra amount is due, use Pay Now."
+                "If the new charge is lower, the note below says whether the difference has already been refunded "
+                "to the wallet or is waiting for the Officer In Charge's approval. If an extra amount is due, use Pay Now."
             ),
             description="Sent when booking charges are recalculated after user input edit.",
             detail_rows=[

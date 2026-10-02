@@ -1,4 +1,5 @@
-"""User input edits: OIC may edit after completion; refunds of a lower recalculated charge need OIC confirmation."""
+"""User input edits: OIC may edit after completion; refunds of a lower recalculated charge after the cancel /
+reschedule cut-off need OIC confirmation."""
 
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from iic_booking.users.models.user_type import UserType
 from iic_booking.users.tests.factories import UserFactory
 
 
-def _setup(egs_factory, *, status=BookingStatus.BOOKED):
+def _setup(egs_factory, *, status=BookingStatus.BOOKED, start=None):
     eq = egs_factory.equipment(enable_charge_recalculation=True)
     DynamicInputField.objects.create(
         equipment=eq,
@@ -28,7 +29,9 @@ def _setup(egs_factory, *, status=BookingStatus.BOOKED):
         editing_required=True,
     )
     owner = egs_factory.student()
-    booking = egs_factory.booking(owner, eq, egs_factory.future(), input_values={"A": 2}, total_charge="50.00")
+    booking = egs_factory.booking(
+        owner, eq, start or egs_factory.future(), input_values={"A": 2}, total_charge="50.00"
+    )
     if status == BookingStatus.COMPLETED:
         booking.status = status
         booking.completed_at = timezone.now()
@@ -59,8 +62,8 @@ def test_user_cannot_edit_completed_booking_but_oic_can_and_charge_is_recalculat
 
 
 @pytest.mark.django_db
-def test_refund_after_input_edit_requires_oic(egs_factory):
-    _eq, owner, oic, booking = _setup(egs_factory)
+def test_refund_after_input_edit_past_cutoff_requires_oic(egs_factory):
+    _eq, owner, oic, booking = _setup(egs_factory, start=egs_factory.future(days=1))
 
     resp = _patch(egs_factory, owner, booking, {"A": 1})
     assert resp.status_code == 200, resp.data

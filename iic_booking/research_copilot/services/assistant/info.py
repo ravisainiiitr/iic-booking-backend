@@ -291,8 +291,10 @@ def _builtin_policy(topic: str, eq=None) -> list[str]:
         if topic == "edit":
             lines.append(
                 "To change the booking inputs, open the booking and choose **Edit User Inputs** (until the booking is "
-                "completed). If the charge goes up, pay the difference within 1 minute or the edit is cancelled; a lower "
-                "charge is refunded after the Officer In Charge confirms it."
+                "completed). If the charge goes up, pay the difference within 1 minute or the edit is cancelled. If the "
+                "new charge is lower, the difference is refunded to your wallet straight away when you edit before "
+                f"the cancellation deadline ({cutoff} before the slot starts); after that deadline the refund needs "
+                "the Officer In Charge's approval."
             )
         return lines
     if topic == "refund":

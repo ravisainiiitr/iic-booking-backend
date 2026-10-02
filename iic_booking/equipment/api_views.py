@@ -14549,16 +14549,52 @@ def _input_edit_changes_charge(booking, old_input_values, new_input_values) -> b
         return False
 
 
-def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_window_snapshot=None):
+def _credit_charge_recalculation_refund(booking_pk, *, expected_amount=None):
+    """Credit the pending refund of a booking (negative ``charge_recalculation_pending_amount``) to the
+    booking wallet and clear it. Locks the booking row so a refund is paid at most once.
+
+    Must run inside ``transaction.atomic()``. Returns ``(booking, transaction)``; raises ValueError when
+    there is nothing to refund, the amount changed (``expected_amount``) or the user has no wallet.
+    """
+    from iic_booking.users.repositories.wallet_repository import WalletRepository
+
+    booking = Booking.objects.select_for_update().select_related("equipment", "user").get(pk=booking_pk)
+    pending = booking.charge_recalculation_pending_amount
+    if pending is None or pending >= 0:
+        raise ValueError("No pending refund for this booking.")
+    amount = abs(pending)
+    if expected_amount is not None and amount != expected_amount:
+        raise ValueError("The refund amount has changed. Please refresh the booking.")
+    equipment = booking.equipment
+    wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
+        booking.user, getattr(equipment, "internal_department", None)
+    )
+    if not has_wallet or not wallet_target:
+        raise ValueError("No wallet associated with this booking for refund.")
+    description = f"Refund for {equipment.name} and Booking {booking_display_id_for_email(booking)}"
+    description += _student_booking_description_suffix(wallet_target, booking.user)
+    description += f" | Ref: {booking_display_id_for_email(booking)}"
+    txn = wallet_target.credit(amount=amount, description=description, related_user=booking.user)
+    booking.charge_recalculation_pending_amount = None
+    booking.save(update_fields=["charge_recalculation_pending_amount"])
+    return booking, txn
+
+
+def _recalculate_booking_charge_and_adjust_wallet(
+    request, booking, payment_window_snapshot=None, instant_refund_allowed=False
+):
     """Recalculate charge for a BOOKED booking after input_values update. Saves old charge, updates
     booking with new charge and sets charge_recalculation_pending_amount (negative=refund, positive=extra to pay).
-    Does NOT debit/credit wallet here; user/admin must click Refund or Pay Now. Sends email to user and
-    Supervisor with summary and breakup. Returns dict with charge_recalculation_summary for API response.
+    Does NOT debit the wallet here; the extra amount is paid with Pay Now / Deduct Money. A refund waits
+    for the OIC's Confirm refund unless ``instant_refund_allowed``, in which case it is credited at once.
+    Sends email to user and Supervisor with summary and breakup. Returns dict with
+    charge_recalculation_summary for API response.
 
     ``payment_window_snapshot`` (the booking state before the edit) is given for the booking user's own
     edits: an extra amount must then be paid within the payment window, otherwise the edit is reverted.
+    ``instant_refund_allowed`` is given for the booking user's own edit saved before the cancel /
+    reschedule cut-off (see ``input_edit_refund_window``).
     """
-    from iic_booking.users.repositories.wallet_repository import WalletRepository
     from .input_edit_payment_window import (
         INPUT_EDIT_PAYMENT_WINDOW_SECONDS,
         clear_payment_window,
@@ -14594,23 +14630,28 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_wind
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
-    # Keep a stable "previous charge" baseline while a recalculation is still pending.
-    # If there is already a pending delta from an earlier edit, baseline is:
-    #   baseline = current_total_charge - current_pending_delta
-    # This prevents "Previous charge" from shifting on every subsequent edit
-    # until Refund/Pay Now clears the pending amount.
-    current_total_charge = booking.total_charge
-    current_pending_delta = booking.charge_recalculation_pending_amount
-    if current_pending_delta is not None:
-        previous_charge = quantize_money(current_total_charge - current_pending_delta)
-    else:
-        previous_charge = current_total_charge
-
-    diff = new_charge - previous_charge
-    pending_amount = diff if diff != 0 else None  # negative = refund, positive = extra to pay
-    timed_payment = payment_window_snapshot is not None and pending_amount is not None and pending_amount > 0
-
+    refund_txn = None
     with transaction.atomic():
+        # Read the charge state under a row lock so concurrent edits net against the same baseline.
+        locked = Booking.objects.select_for_update().only(
+            "pk", "total_charge", "charge_recalculation_pending_amount", "amount_due"
+        ).get(pk=booking.pk)
+        # Keep a stable "previous charge" baseline while a recalculation is still pending.
+        # If there is already a pending delta from an earlier edit, baseline is:
+        #   baseline = current_total_charge - current_pending_delta
+        # This prevents "Previous charge" from shifting on every subsequent edit
+        # until Refund/Pay Now clears the pending amount.
+        current_total_charge = locked.total_charge
+        current_pending_delta = locked.charge_recalculation_pending_amount
+        if current_pending_delta is not None:
+            previous_charge = quantize_money(current_total_charge - current_pending_delta)
+        else:
+            previous_charge = Decimal(current_total_charge or 0).quantize(Decimal("0.01"))
+
+        diff = new_charge - previous_charge
+        pending_amount = diff if diff != 0 else None  # negative = refund, positive = extra to pay
+        timed_payment = payment_window_snapshot is not None and pending_amount is not None and pending_amount > 0
+
         booking.total_time_minutes = calculated_time_minutes
         booking.total_charge = new_charge
         booking.charge_breakdown = charge_breakdown
@@ -14628,10 +14669,19 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_wind
             update_fields += clear_payment_window(booking)
         booking.save(update_fields=update_fields)
 
-        wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
-            booking.user, getattr(equipment, "internal_department", None)
-        )
-        # No automatic debit/credit; user must click Refund or Pay Now
+        # An unpaid balance (amount_due) means the booking was not fully paid; its refund stays with the OIC.
+        if (
+            instant_refund_allowed
+            and pending_amount is not None
+            and pending_amount < 0
+            and (locked.amount_due or Decimal("0")) <= 0
+        ):
+            try:
+                with transaction.atomic():
+                    _, refund_txn = _credit_charge_recalculation_refund(booking.pk, expected_amount=abs(pending_amount))
+                booking.charge_recalculation_pending_amount = None
+            except ValueError:
+                logger.warning("Instant refund after input edit not possible for booking %s", booking.pk)
 
         metadata = {
             "previous_charge": str(previous_charge),
@@ -14643,6 +14693,9 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_wind
             if pending_amount < 0:
                 metadata["amount_credited"] = str(abs(pending_amount))
                 metadata["refund_amount"] = str(abs(pending_amount))
+                metadata["refund_status"] = "refunded" if refund_txn else "awaiting_oic_confirmation"
+                if refund_txn:
+                    metadata["wallet_transaction_id"] = getattr(refund_txn, "pk", None)
             else:
                 metadata["amount_debited"] = str(pending_amount)
                 metadata["extra_amount"] = str(pending_amount)
@@ -14651,10 +14704,15 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_wind
             f"Charges recalculated: previous ₹{previous_charge:.2f}, new ₹{new_charge:.2f}."
         )
         if pending_amount is not None:
-            if pending_amount < 0:
+            if pending_amount < 0 and refund_txn:
                 comment += (
-                    f" Refund of ₹{abs(pending_amount):.2f} pending — the Officer In Charge will confirm "
-                    "the refund to the wallet."
+                    f" The difference of ₹{abs(pending_amount):.2f} has been refunded to the wallet, because the "
+                    "change was made before the cancellation deadline."
+                )
+            elif pending_amount < 0:
+                comment += (
+                    f" Refund of ₹{abs(pending_amount):.2f} is waiting for the Officer In Charge's approval; "
+                    "it will be credited to the wallet once approved."
                 )
             elif timed_payment:
                 comment += (
@@ -14674,11 +14732,20 @@ def _recalculate_booking_charge_and_adjust_wallet(request, booking, payment_wind
             metadata=metadata,
             send_notification=True,
         )
+        if refund_txn:
+            from iic_booking.communication.wallet_notifications import send_sub_wallet_transaction_notifications
 
+            try:
+                send_sub_wallet_transaction_notifications(transaction=refund_txn, booking=booking)
+            except Exception:
+                logger.exception("Failed to send wallet notification for input edit refund on booking %s", booking.pk)
+
+    is_refund = pending_amount is not None and pending_amount < 0
     summary = {
         "previous_charge": str(previous_charge),
         "new_charge": str(new_charge),
-        "refund_amount": str(abs(pending_amount)) if pending_amount is not None and pending_amount < 0 else None,
+        "refund_amount": str(abs(pending_amount)) if is_refund else None,
+        "refund_status": ("refunded" if refund_txn else "awaiting_oic_confirmation") if is_refund else None,
         "extra_amount": str(pending_amount) if pending_amount is not None and pending_amount > 0 else None,
         "pay_deadline": booking.charge_recalculation_pay_deadline.isoformat() if timed_payment else None,
         "pay_window_seconds": INPUT_EDIT_PAYMENT_WINDOW_SECONDS if timed_payment else None,
@@ -14692,12 +14759,15 @@ def update_booking_input_values(request, booking_id):
 
     Every equipment input field can be edited (plus universal 'comments'), the same set of fields the
     additional sample sets offer. Charges are recalculated when the equipment has
-    'enable_charge_recalculation' or when the edit changes the calculated charge. A lower charge
-    becomes an OIC-confirmed refund; a higher charge an extra amount to pay. For the booking user's
-    own edit the extra amount must be paid within the payment window, otherwise the edit is reverted.
+    'enable_charge_recalculation' or when the edit changes the calculated charge. A higher charge is an
+    extra amount to pay; for the booking user's own edit it must be paid within the payment window,
+    otherwise the edit is reverted. A lower charge from the booking user's own edit saved before the
+    cancel / reschedule cut-off is refunded to the wallet at once; any other lower charge becomes a
+    refund the Officer In Charge confirms.
     Request body: { "input_values": { "A": 1, "B": "text", ... } }
     """
     from .input_edit_payment_window import expire_unpaid_input_edit, snapshot_booking_charge_state
+    from .input_edit_refund_window import instant_refund_window
 
     try:
         booking = Booking.objects.select_related("equipment", "charge_profile").get(booking_id=booking_id)
@@ -14862,22 +14932,38 @@ def update_booking_input_values(request, booking_id):
         or (values_changed and _input_edit_changes_charge(booking, original, current))
     )
     payment_window_snapshot = None
+    instant_refund_allowed = False
     if enable_recalc and request.user.pk == booking.user_id and not is_charge_manager:
         payment_window_snapshot = snapshot_booking_charge_state(booking)
+        instant_refund_allowed = booking.status == BookingStatus.BOOKED and instant_refund_window(booking)[0]
 
     booking.input_values = current
     booking.save(update_fields=["input_values"])
 
-    # Charge recalculation: recalc and set pending (no auto debit/credit)
+    # Charge recalculation: an extra amount is paid separately; a refund is instant or OIC-confirmed.
     if enable_recalc:
         try:
             summary = _recalculate_booking_charge_and_adjust_wallet(
-                request, booking, payment_window_snapshot=payment_window_snapshot
+                request,
+                booking,
+                payment_window_snapshot=payment_window_snapshot,
+                instant_refund_allowed=instant_refund_allowed,
             )
             booking.refresh_from_db()
+            message = "User inputs updated. Charges recalculated."
+            if summary.get("refund_status") == "refunded":
+                message = (
+                    f"Your changes are saved. The new charge is lower, so ₹{summary['refund_amount']} has been "
+                    "refunded to your wallet."
+                )
+            elif summary.get("refund_status") == "awaiting_oic_confirmation":
+                message = (
+                    f"Your changes are saved. The new charge is lower; the refund of ₹{summary['refund_amount']} "
+                    "will reach the wallet after the Officer In Charge approves it."
+                )
             return Response(
                 {
-                    "message": "User inputs updated. Charges recalculated.",
+                    "message": message,
                     "booking": BookingSerializer(booking, context={"request": request}).data,
                     "charge_recalculation_summary": summary,
                 },
@@ -15232,7 +15318,6 @@ def process_charge_recalculation_refund(request, booking_id):
     """Process pending refund after charge recalculation: credit the associated wallet with a clear
     description (Refund for equipment name and booking id). Sends email to user and Supervisor.
     """
-    from iic_booking.users.repositories.wallet_repository import WalletRepository
     from iic_booking.communication.wallet_notifications import send_sub_wallet_transaction_notifications
 
     try:
@@ -15252,30 +15337,12 @@ def process_charge_recalculation_refund(request, booking_id):
             {"error": "Charge adjustments do not apply to repeat sample bookings."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    pending = booking.charge_recalculation_pending_amount
-    if pending is None or pending >= 0:
-        return Response(
-            {"error": "No pending refund for this booking."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    amount = abs(pending)
-    equipment = booking.equipment
-    wallet_target, has_wallet = WalletRepository.get_booking_wallet_target(
-        booking.user, getattr(equipment, "internal_department", None)
-    )
-    if not has_wallet or not wallet_target:
-        return Response(
-            {"error": "No wallet associated with this booking for refund."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    description = f"Refund for {equipment.name} and Booking {booking_display_id_for_email(booking)}"
-    description += _student_booking_description_suffix(wallet_target, booking.user)
-    description += f" | Ref: {booking_display_id_for_email(booking)}"
-    with transaction.atomic():
-        txn = wallet_target.credit(amount=amount, description=description, related_user=booking.user)
-        booking.charge_recalculation_pending_amount = None
-        booking.save(update_fields=["charge_recalculation_pending_amount"])
-        send_sub_wallet_transaction_notifications(transaction=txn, booking=booking)
+    try:
+        with transaction.atomic():
+            booking, txn = _credit_charge_recalculation_refund(booking.pk)
+            send_sub_wallet_transaction_notifications(transaction=txn, booking=booking)
+    except ValueError as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(
         {"message": "Refund processed. Amount credited to wallet.", "booking": BookingSerializer(booking).data},
         status=status.HTTP_200_OK,

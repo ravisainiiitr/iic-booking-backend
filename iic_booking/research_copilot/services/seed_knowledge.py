@@ -158,8 +158,12 @@ to the same booking. Use Duplicate this sample set or Remove this sample set as 
 Editing inputs after booking: open the booking and choose Edit User Inputs. Values can be changed until the
 booking is completed (the Officer In Charge can also edit after completion). Field limits still apply.
 If the charge goes up, pay the difference (Pay now) within 1 minute or the edit is cancelled and the previous
-values are restored. A lower charge is refunded after the Officer In Charge confirms it (Confirm refund). OICs
-and admins can use Deduct Money to debit an unpaid difference from the user's wallet.
+values are restored. If the new charge is lower, the difference goes back to the same wallet straight away when
+you save the change before the cancellation deadline (the same deadline as for cancelling or rescheduling: 48
+hours before the slot unless the lab set another value). The edit form shows this deadline. After the deadline,
+the refund needs the Officer In Charge's approval (Confirm refund). Lower charges from edits made by the lab
+staff are also confirmed by the Officer In Charge. OICs and admins can use Deduct Money to debit an unpaid
+difference from the user's wallet.
 """,
     },
     {
@@ -270,7 +274,8 @@ Changes released in September–October 2026:
   Save these parameters as a template after any booking attempt; a Booking Templates dashboard page to create,
   edit, duplicate, delete and book with templates.
 - Samples with different parameters (sample sets) with element selection in every set.
-- Edit User Inputs after booking: 1 minute to pay a higher charge; lower charges refunded after OIC confirmation.
+- Edit User Inputs after booking: 1 minute to pay a higher charge; a lower charge is refunded to your wallet
+  straight away if you edit before the cancellation deadline, and after the Officer In Charge's approval if later.
 - Booking Assistant guided booking (Department -> Equipment -> inputs -> slot -> summary) with virtual booking IDs.
 - Wallet: Transfer, Credit Facility and Recharge Wallet buttons together; Project Grant (SRIC) and Direct Cash
   Deposit / Bank Transfer recharge with OTP; Project Already Closed decline reason; approver named in SRIC emails.
@@ -301,7 +306,8 @@ Open My Bookings (or ask the Booking Assistant "show my upcoming bookings") and 
   slot unless the lab set another value). The refund or new slot is shown before you confirm. Repeat bookings
   created by the lab can't be changed by you. After the cutoff, use Message the lab or raise a support ticket.
 - Edit parameters: choose Edit User Inputs on a Booked booking. A higher charge must be paid within 1 minute or
-  the edit is undone; a lower charge is refunded after the Officer In Charge confirms.
+  the edit is undone. If the new charge is lower, the difference is refunded to your wallet straight away when
+  you edit before the cancellation deadline; after that deadline the refund needs the Officer In Charge's approval.
 - Message the lab: every booking has a Message the lab thread at the bottom of its details; lab staff reply in
   the same thread and you get a notification.
 """,
