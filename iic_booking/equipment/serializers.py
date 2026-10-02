@@ -156,9 +156,16 @@ class _RescheduleBlockFieldsMixin:
         return cache[obj.pk]
 
     def _reschedule_block(self, obj):
-        from .reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
+        from .reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED, RESCHEDULE_OWNER_ONLY
 
-        return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED if self._sample_locked(obj) else None
+        user = _viewer_user(self)
+        if user is None:
+            return None
+        if self._sample_locked(obj):
+            return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
+        if obj.user_id != user.pk and not _viewer_bypasses_sample_lock(self):
+            return RESCHEDULE_OWNER_ONLY
+        return None
 
     def _cancel_block(self, obj):
         from .reschedule_lock import CANCEL_LOCKED_SAMPLE_ACCEPTED, CANCEL_OWNER_ONLY
@@ -181,9 +188,17 @@ class _RescheduleBlockFieldsMixin:
         return self._reschedule_block(obj)
 
     def get_reschedule_block_message(self, obj):
-        from .reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+        from .reschedule_lock import (
+            RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
+            RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+            RESCHEDULE_OWNER_ONLY,
+            RESCHEDULE_OWNER_ONLY_MESSAGE,
+        )
 
-        return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE if self._reschedule_block(obj) else None
+        return {
+            RESCHEDULE_LOCKED_SAMPLE_ACCEPTED: RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+            RESCHEDULE_OWNER_ONLY: RESCHEDULE_OWNER_ONLY_MESSAGE,
+        }.get(self._reschedule_block(obj))
 
     def get_can_cancel(self, obj):
         if _viewer_user(self) is None:
