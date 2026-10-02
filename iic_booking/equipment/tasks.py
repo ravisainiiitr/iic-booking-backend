@@ -12,6 +12,7 @@ from django.db import models
 from django.db.models import OuterRef, Subquery
 
 from .models import Booking, BookingStatus
+from .peak_window import defer_during_peak
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ def prepare_next_week_slots(week_start: Optional[str] = None) -> int:
 
 
 @shared_task(name="equipment.send_booking_completion_reminders")
+@defer_during_peak("equipment.send_booking_completion_reminders")
 def send_booking_completion_reminders() -> int:
     """
     Daily 09:00 IST: email each Officer in charge / Lab in-charge one digest of their bookings whose slot
@@ -187,6 +189,7 @@ def _generate_week_slots_for_operational_equipment(week_starts, *, allow_holiday
 
 
 @shared_task(name="equipment.send_oic_monthly_reports")
+@defer_during_peak("equipment.send_oic_monthly_reports")
 def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     """
     After month-end (or when invoked with target_month), generate one performance PDF per equipment
@@ -335,6 +338,7 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
 
 
 @shared_task(name="equipment.archive_expired_samples")
+@defer_during_peak("equipment.archive_expired_samples")
 def archive_expired_samples() -> int:
     """
     Daily task: auto-mark sample lifecycle as DISPOSED after retention period.
@@ -454,6 +458,7 @@ def archive_expired_samples() -> int:
 
 
 @shared_task(name="equipment.send_booking_reminders")
+@defer_during_peak("equipment.send_booking_reminders")
 def send_booking_reminders(target_date: Optional[str] = None) -> int:
     """
     Send reminder emails for all BOOKED bookings whose slot date is the given date.
@@ -507,6 +512,7 @@ def send_booking_reminders(target_date: Optional[str] = None) -> int:
 
 
 @shared_task(name="equipment.send_sample_submission_deadline_reminders")
+@defer_during_peak("equipment.send_sample_submission_deadline_reminders")
 def send_sample_submission_deadline_reminders() -> int:
     """
     Poll BOOKED bookings and send email + in-app notification once when the
@@ -918,6 +924,7 @@ def process_maintenance_booking_deadlines() -> int:
 
 
 @shared_task(name="equipment.daily_under_maintenance_sweep")
+@defer_during_peak("equipment.daily_under_maintenance_sweep")
 def daily_under_maintenance_sweep() -> dict:
     """
     Daily maintenance sweep (schedule at 08:15 local time):
@@ -937,6 +944,7 @@ def daily_under_maintenance_sweep() -> dict:
 
 
 @shared_task(name="equipment.daily_operator_on_leave_sweep")
+@defer_during_peak("equipment.daily_operator_on_leave_sweep")
 def daily_operator_on_leave_sweep() -> dict:
     """
     Daily operator-on-leave sweep (schedule at ~08:20 local time):

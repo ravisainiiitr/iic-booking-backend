@@ -203,6 +203,7 @@ from .waitlist import (
     waitlist_virtual_booking_id,
 )
 from .reports import get_equipment_ids_managed_by_oic
+from .request_memo import with_request_memo
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.equipment_supply_chain_role import (
@@ -2335,8 +2336,14 @@ def equipment_list(request):
     serializer_class = EquipmentListSerializer if include_ratings else EquipmentListLiteSerializer
     serializer = serializer_class(queryset, many=True, context={"request": request})
     rows = serializer.data
+    from .catalog_pricing import catalog_from_prices
+
+    from_prices = catalog_from_prices(request.user, [row.get("equipment_id") for row in rows])
     for row in rows:
         row["has_child_modes"] = row.get("equipment_id") in parents_with_child_modes
+        price = from_prices.get(row.get("equipment_id"))
+        row["from_price"] = price["from_price"] if price else None
+        row["from_price_unit"] = price["from_price_unit"] if price else None
     return Response(
         {
             "equipments": rows,
@@ -3600,14 +3607,14 @@ def equipment_daily_slots(request, pk):
         allow_holiday=authenticated_slots_viewer,
     )
 
-    # Get all daily slots with select_related to avoid N+1 in serializer
+    # Get all daily slots with select_related to avoid N+1 in serializer. The equipment row is
+    # already loaded, so it is attached below instead of joining its ~150 columns onto every slot.
     daily_slots = DailySlot.objects.filter(
         slot_master__equipment=equipment,
         date__gte=week_start,
         date__lte=week_end
     ).select_related(
         'slot_master',
-        'slot_master__equipment',
         'booking',
         'booking__user',
         'booking__user__department',
@@ -3620,10 +3627,10 @@ def equipment_daily_slots(request, pk):
     # bulk_updated to BLOCKED on every GET and other statuses on weekends were omitted from the payload — that hid
     # admin/OIC status changes and reverted AVAILABLE after refresh. Booking still enforces slot status;
     # external capacity is enforced via ExternalSlotQuotaService.
-    if for_external_user:
-        filtered_slots = list(daily_slots)
-    else:
-        filtered_slots = list(daily_slots)
+    filtered_slots = list(daily_slots)
+    for _slot in filtered_slots:
+        if _slot.slot_master_id is not None:
+            _slot.slot_master.equipment = equipment
 
     # Apply equipment slot window time filter: only slots fully within [time_from, time_to] (inclusive) are shown.
     time_from = getattr(equipment, 'weekly_view_time_from', None)
@@ -3749,6 +3756,7 @@ def equipment_daily_slots(request, pk):
 @transaction.non_atomic_requests
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@with_request_memo
 def book_equipment(request, pk):
     """Book equipment with selected time range.
     

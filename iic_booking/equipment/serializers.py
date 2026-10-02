@@ -981,6 +981,9 @@ class SlotMasterSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_at', 'updated_at']
 
 
+_SLOT_STATUS_LABELS = dict(SlotStatus.choices)
+
+
 class DailySlotSerializer(serializers.ModelSerializer):
     """Serializer for DailySlot model."""
 
@@ -988,8 +991,8 @@ class DailySlotSerializer(serializers.ModelSerializer):
     slot_name = serializers.SerializerMethodField()
     equipment_code = serializers.SerializerMethodField()
     booking_id = serializers.SerializerMethodField()
-    real_booking_id = serializers.IntegerField(source='booking.booking_id', read_only=True, allow_null=True)
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    real_booking_id = serializers.SerializerMethodField()
+    status_display = serializers.SerializerMethodField()
     booking_status = serializers.SerializerMethodField()
     booking_status_display = serializers.SerializerMethodField()
     booking_user_name = serializers.SerializerMethodField()
@@ -1047,6 +1050,13 @@ class DailySlotSerializer(serializers.ModelSerializer):
     def get_booking_id(self, obj):
         return booking_display_id_for_email(getattr(obj, "booking", None)) or None
 
+    def get_real_booking_id(self, obj):
+        return obj.booking_id
+
+    def get_status_display(self, obj):
+        # Model.get_status_display() re-hashes the whole choices list on every call (hot on weekly grids).
+        return str(_SLOT_STATUS_LABELS.get(obj.status, obj.status))
+
     def get_slot_open_time(self, obj):
         sm = getattr(obj, "slot_master", None)
         if sm is not None and getattr(sm, "open_time", None) is not None:
@@ -1065,7 +1075,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             # We only convert *AVAILABLE but outside the bookable window* slots to NOT_AVAILABLE.
             if instance.status != SlotStatus.AVAILABLE or getattr(instance, 'booking_id', None):
                 data['status'] = instance.status
-                data['status_display'] = instance.get_status_display()
+                data['status_display'] = self.get_status_display(instance)
                 data['available_for_external'] = False
                 return data
             out_of_ext_rolling_window = (
@@ -1783,6 +1793,12 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
 
     def get_viewer_profile_type(self, obj):
         """Calculation profile type for the requesting (or ?for_user_type=) user."""
+        cache = self.context.setdefault("_viewer_profile_type_by_eq", {})
+        if obj.pk not in cache:
+            cache[obj.pk] = self._compute_viewer_profile_type(obj)
+        return cache[obj.pk]
+
+    def _compute_viewer_profile_type(self, obj):
         request = self.context.get("request")
         user = getattr(request, "user", None) if request else None
         override_user_type = None

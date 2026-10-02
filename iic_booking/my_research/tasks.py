@@ -10,10 +10,13 @@ from django.conf import settings
 from django.db import close_old_connections
 from django.utils import timezone
 
+from iic_booking.equipment.peak_window import defer_during_peak
+
 logger = logging.getLogger(__name__)
 
 
 @shared_task(name="my_research.cleanup_stale_uploads")
+@defer_during_peak("my_research.cleanup_stale_uploads")
 def cleanup_stale_uploads(limit: int = 500) -> dict:
     """
     Resolve uploads left in PENDING_UPLOAD past the TTL (browser closed, network drop, confirm lost).
@@ -69,6 +72,7 @@ def cleanup_stale_uploads(limit: int = 500) -> dict:
 
 
 @shared_task(name="my_research.group_update_reminders")
+@defer_during_peak("my_research.group_update_reminders")
 def group_update_reminders(limit: int = 500) -> dict:
     """
     Daily Research Group reminders. Overdue status is also computed on read; this persists it and

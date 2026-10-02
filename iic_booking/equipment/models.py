@@ -3302,6 +3302,7 @@ class Booking(models.Model):
         does not scan every booking row on each insert (was causing multi-minute API delays).
         """
         prefix = cls._virtual_id_prefix(equipment_id, code, department_code=department_code)
+        year = timezone.now().year
         plen = len(prefix)
         target_len = plen + 5
         table = connection.ops.quote_name(cls._meta.db_table)
@@ -4860,6 +4861,62 @@ class InternalUserSlotWindowSetting(models.Model):
             days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
             return f'{days[self.reference_weekday]} at {self.reference_time.strftime("%H:%M")}'
         return 'Not set'
+
+
+class PeakWindowSetting(models.Model):
+    """
+    Peak booking window around the weekly slot opening (singleton, main administrator).
+
+    The window runs from (opening time - lead minutes) to (opening time + trail minutes) for
+    every slot-opening schedule of active equipment. During it external users are paused
+    (when enabled) and non-essential background work is deferred.
+    """
+    enabled = models.BooleanField(
+        default=True,
+        verbose_name=_('Peak window enabled'),
+        help_text=_('Turn the peak booking window on or off for the whole portal.'),
+    )
+    lead_minutes = models.PositiveSmallIntegerField(
+        default=5,
+        validators=[MaxValueValidator(120)],
+        verbose_name=_('Minutes before opening'),
+        help_text=_('The peak window starts this many minutes before the slot opening time.'),
+    )
+    trail_minutes = models.PositiveSmallIntegerField(
+        default=15,
+        validators=[MaxValueValidator(240)],
+        verbose_name=_('Minutes after opening'),
+        help_text=_('The peak window ends this many minutes after the slot opening time.'),
+    )
+    block_external_users = models.BooleanField(
+        default=True,
+        verbose_name=_('Pause external users during the window'),
+        help_text=_(
+            'External, Industry, R&D and other non-IITR users cannot sign in or use the portal '
+            'during the peak window. Admins, Officers in Charge and staff are never paused.'
+        ),
+    )
+    external_notice_minutes = models.PositiveSmallIntegerField(
+        default=30,
+        validators=[MaxValueValidator(240)],
+        verbose_name=_('External notice (minutes before the window)'),
+        help_text=_('Show external users an advance notice banner this many minutes before the window.'),
+    )
+    defer_background_tasks = models.BooleanField(
+        default=True,
+        verbose_name=_('Defer background work during the window'),
+        help_text=_('Delay reports, bulk emails, digests, re-indexing and housekeeping until the window ends.'),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Peak booking window setting')
+        verbose_name_plural = _('Peak booking window settings')
+
+    def __str__(self):
+        state = 'on' if self.enabled else 'off'
+        return f'Peak window {state} (-{self.lead_minutes} / +{self.trail_minutes} min)'
 
 
 class BookingBufferConfig(models.Model):

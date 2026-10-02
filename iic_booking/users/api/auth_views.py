@@ -1168,6 +1168,11 @@ def obtain_auth_token_single_session(request):
             {"non_field_errors": ["Unable to log in with provided credentials."]},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    from iic_booking.equipment.peak_window import peak_login_refusal
+
+    refusal = peak_login_refusal(user)
+    if refusal is not None:
+        return refusal
     try:
         token = _regenerate_auth_token(user)
     except RuntimeError as e:
@@ -1321,6 +1326,12 @@ def login(request):
     
     # Ensure authenticated user matches the user we found
     user = authenticated_user
+
+    from iic_booking.equipment.peak_window import peak_login_refusal
+
+    refusal = peak_login_refusal(user)
+    if refusal is not None:
+        return refusal
 
     # Create token for this session (regenerate so this session gets the token; any other session will get 401)
     try:
@@ -1486,6 +1497,11 @@ def request_login_otp(request):
         return _email_login_disabled_response()
     if _requires_channel_i_first_login(user):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+    from iic_booking.equipment.peak_window import peak_login_refusal
+
+    refusal = peak_login_refusal(user)
+    if refusal is not None:
+        return refusal
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     cache_key = f"{LOGIN_OTP_CACHE_PREFIX}{email_raw}"
     cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
@@ -1556,6 +1572,11 @@ def verify_login_otp(request):
         )
     if not user.is_email_login_allowed():
         return _email_login_disabled_response()
+    from iic_booking.equipment.peak_window import peak_login_refusal
+
+    refusal = peak_login_refusal(user)
+    if refusal is not None:
+        return refusal
     try:
         token = _regenerate_auth_token(user)
     except RuntimeError as e:

@@ -7,12 +7,10 @@ resolve the ChargeProfile pricing_profile via resolve_pricing_profile_for_user.
 from __future__ import annotations
 
 from .models import ChargeProfile, ChargeProfilePricingProfile, EquipmentPI, UserDiscountedChargeEquipment
+from .request_memo import memo_get_or_compute
 
 
-def wallet_owner_user(user):
-    """Return the wallet owner User for billing identity, or None."""
-    if not user:
-        return None
+def _wallet_owner_user_uncached(user):
     try:
         wallet = user.get_accessible_wallet()
     except Exception:
@@ -20,6 +18,19 @@ def wallet_owner_user(user):
     if wallet is None:
         return None
     return getattr(wallet, "user", None)
+
+
+def wallet_owner_user(user):
+    """Return the wallet owner User for billing identity, or None."""
+    if not user:
+        return None
+    user_id = getattr(user, "pk", None)
+    if user_id is None:
+        return _wallet_owner_user_uncached(user)
+    return memo_get_or_compute(
+        ("pi_pricing.wallet_owner_user", user_id),
+        lambda: _wallet_owner_user_uncached(user),
+    )
 
 
 def is_equipment_pi(user, equipment) -> bool:
@@ -30,11 +41,14 @@ def is_equipment_pi(user, equipment) -> bool:
     equipment_id = getattr(equipment, "pk", None) or getattr(equipment, "equipment_id", None)
     if not user_id or not equipment_id:
         return False
-    return EquipmentPI.objects.filter(
-        equipment_id=equipment_id,
-        faculty_id=user_id,
-        is_active=True,
-    ).exists()
+    return memo_get_or_compute(
+        ("pi_pricing.is_equipment_pi", user_id, equipment_id),
+        lambda: EquipmentPI.objects.filter(
+            equipment_id=equipment_id,
+            faculty_id=user_id,
+            is_active=True,
+        ).exists(),
+    )
 
 
 def billing_identity_is_equipment_pi(user, equipment) -> bool:
@@ -60,11 +74,14 @@ def equipment_has_pi_charge_profiles(equipment) -> bool:
     equipment_id = getattr(equipment, "pk", None) or getattr(equipment, "equipment_id", None)
     if not equipment_id:
         return False
-    return ChargeProfile.objects.filter(
-        equipment_id=equipment_id,
-        pricing_profile=ChargeProfilePricingProfile.PI,
-        is_active=True,
-    ).exists()
+    return memo_get_or_compute(
+        ("pi_pricing.equipment_has_pi_charge_profiles", equipment_id),
+        lambda: ChargeProfile.objects.filter(
+            equipment_id=equipment_id,
+            pricing_profile=ChargeProfilePricingProfile.PI,
+            is_active=True,
+        ).exists(),
+    )
 
 
 def standard_or_discounted_pricing_profile(user, equipment) -> str:
