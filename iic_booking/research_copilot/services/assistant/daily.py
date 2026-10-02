@@ -309,8 +309,11 @@ def booking_op(user, conversation, b, op: str) -> dict[str, Any]:
         )
     if op == "message":
         if not elig["message"]:
-            return C.reply("Waitlist entries don't have a lab thread yet. Contact the lab from the equipment page.",
-                           actions=[C.link("Equipment page", f"/equipment/{b.equipment_id}")], intent="message_lab")
+            from iic_booking.research_copilot.services.intelligence import messages as M
+
+            reason = elig.get("message_reason") or "Messages are not available for this booking."
+            return C.reply(reason, actions=[M.ticket_action("user_requested", "Raise a support ticket"),
+                                            C.link("Open booking", href)], intent="message_lab")
         return C.reply(
             f"Open booking **{ref}** and use **Message the lab** at the bottom of the details. "
             "The lab staff reply in the same thread and you get a notification.",
@@ -319,6 +322,20 @@ def booking_op(user, conversation, b, op: str) -> dict[str, Any]:
             title_hint=f"Message lab — {ref}",
         )
     if op == "results":
+        if elig["results"] and elig["results_blocked"] == "rating":
+            return C.reply(
+                f"Results for **{ref}** ({b.equipment.name}) are uploaded. Submit your rating for this booking first; "
+                "the download unlocks right after.",
+                actions=[*(([B.chip(b, "rate", primary=True)]) if elig["rate"] else []), C.link("Open booking", href)],
+                intent="results",
+            )
+        if elig["results"] and elig["results_blocked"] == "istem_fbr":
+            return C.reply(
+                f"Results for **{ref}** are uploaded but locked until your I-STEM FBR number is verified. Enter the FBR "
+                "number on the booking; the Officer In Charge verifies it and the download unlocks.",
+                actions=[C.link("Open booking", href, primary=True)],
+                intent="results",
+            )
         if elig["results"]:
             return C.reply(
                 f"Results for **{ref}** ({b.equipment.name}) are available. Open the booking to view and download them.",
@@ -329,7 +346,7 @@ def booking_op(user, conversation, b, op: str) -> dict[str, Any]:
         return C.reply(
             f"No results have been uploaded for **{ref}** yet (status: {b.get_status_display()}). "
             "You'll get an email and a notification when they are published.",
-            actions=[B.chip(b, "message"), C.link("Open booking", href)],
+            actions=[*(([B.chip(b, "message")]) if elig["message"] else []), C.link("Open booking", href)],
             intent="results",
         )
     if op == "invoice":

@@ -168,6 +168,41 @@ class TestBookingCards:
         assert "cancel" not in ops and "reschedule" not in ops
         assert "invoice" in ops or "rebook" in ops
 
+    def test_message_chip_follows_lab_message_window(self, lab):
+        b, _ = lab.booking(lab.student, lab.xrd, timezone.now() - timedelta(days=45))
+        b.status = "COMPLETED"
+        b.completed_at = timezone.now() - timedelta(days=40)
+        b.save(update_fields=["status", "completed_at"])
+        assert "message" not in _ops(_items(_body(_post(lab, _new_conv(lab), "show my past bookings")))[0])
+        conv = _new_conv(lab)
+        body = _body(_post(lab, conv, "m", action={"type": A.BOOKING, "payload": {"booking_id": b.pk, "op": "message"}}))
+        assert "Messages are closed" in body["message"]["content"]
+        b.completed_at = timezone.now() - timedelta(days=2)
+        b.save(update_fields=["completed_at"])
+        assert "message" in _ops(_items(_body(_post(lab, _new_conv(lab), "show my past bookings")))[0])
+
+    def test_results_need_completion_and_rating_first(self, lab, monkeypatch):
+        from iic_booking.equipment import booking_results_service
+
+        monkeypatch.setattr(booking_results_service, "has_material_result_files", lambda _b: True)
+        b, _ = lab.booking(lab.student, lab.xrd, timezone.now() - timedelta(days=3))
+        b.status = "PROCESSING"
+        b.save(update_fields=["status"])
+        assert B.eligibility(b)["results"] is False
+        b.status = "COMPLETED"
+        b.completed_at = timezone.now()
+        b.save(update_fields=["status", "completed_at"])
+        lab.xrd.user_rating_enabled = True
+        lab.xrd.save(update_fields=["user_rating_enabled"])
+        b.refresh_from_db()
+        elig = B.eligibility(b)
+        assert elig["results"] is True and elig["results_blocked"] == "rating"
+        conv = _new_conv(lab)
+        body = _body(_post(lab, conv, "r", action={"type": A.BOOKING, "payload": {"booking_id": b.pk, "op": "results"}}))
+        assert "rating" in body["message"]["content"]
+        ops = [a["payload"]["op"] for a in body["message"]["suggested_actions"] if a.get("action_type") == A.BOOKING]
+        assert ops[:1] == ["rate"]
+
     def test_cancel_the_second_one_goes_through_confirmation(self, lab):
         b1, _ = lab.booking(lab.student, lab.xrd, lab.future(days=6))
         b2, _ = lab.booking(lab.student, lab.tem, lab.future(days=8))

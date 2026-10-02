@@ -73,6 +73,15 @@ def _slots(b) -> list:
     return sorted(b.daily_slots.all(), key=lambda s: s.start_datetime or timezone.now())
 
 
+def _lab_message_state(b, status: str, now) -> tuple[bool, str]:
+    try:
+        from iic_booking.equipment.booking_lab_messages import lab_message_policy
+
+        return lab_message_policy(b, now=now)
+    except Exception:  # noqa: BLE001
+        return status != "WAITLISTED", ""
+
+
 def eligibility(b, *, now=None) -> dict[str, Any]:
     """Which next steps the portal allows for this booking right now (same rules as My Bookings)."""
     from iic_booking.research_copilot.services.intelligence.booking_changes import _window
@@ -84,15 +93,22 @@ def eligibility(b, *, now=None) -> dict[str, Any]:
     repeat = getattr(b, "source_booking_id", None) is not None
     active = status in ACTIVE_STATUSES and future and not repeat
     open_, cutoff = _window(b) if active else (False, None)
+    eq = b.equipment
     results = False
-    if status in RESULT_STATUSES:
+    results_blocked = ""
+    if status == "COMPLETED":
         try:
             from iic_booking.equipment.booking_results_service import has_material_result_files
 
             results = bool(has_material_result_files(b))
         except Exception:  # noqa: BLE001
             results = False
-    eq = b.equipment
+    if results:
+        if getattr(eq, "user_rating_enabled", True) and (b.rating is None or getattr(b, "rating_removed", False)):
+            results_blocked = "rating"
+        elif getattr(b, "istem_fbr_status", None) and str(b.istem_fbr_status) != "EXECUTED":
+            results_blocked = "istem_fbr"
+    message, message_reason = _lab_message_state(b, status, now)
     return {
         "active": active,
         "future": future,
@@ -101,13 +117,25 @@ def eligibility(b, *, now=None) -> dict[str, Any]:
         "cancel": active and bool(open_),
         "reschedule": active and bool(open_),
         "edit": status == "BOOKED" and not repeat and bool(b.input_values),
-        "message": status != "WAITLISTED",
+        "message": message,
+        "message_reason": message_reason,
         "results": results,
+        "results_blocked": results_blocked,
         "invoice": status == "COMPLETED",
         "rate": status == "COMPLETED" and getattr(b, "rating", None) is None and bool(getattr(eq, "user_rating_enabled", False)),
         "rebook": status in REBOOK_STATUSES or (not future and status not in ACTIVE_STATUSES),
         "template": status in ("COMPLETED", "BOOKED", "PROCESSING") and bool(b.input_values),
     }
+
+
+def _results_line(elig: dict[str, Any]) -> str:
+    if not elig["results"]:
+        return "not uploaded yet."
+    if elig["results_blocked"] == "rating":
+        return "uploaded — submit your rating first, then you can download them."
+    if elig["results_blocked"] == "istem_fbr":
+        return "uploaded — they unlock once your I-STEM FBR number is verified by the Officer In Charge."
+    return "available — open the booking to download them."
 
 
 def chip(b, op: str, *, primary: bool = False) -> dict[str, Any]:
@@ -300,8 +328,10 @@ def detail_reply(user, conversation, b) -> dict[str, Any]:
         else:
             lines.append("- The self-service cancel/reschedule window has closed; the lab or admin can still help "
                          "(use Message the lab or raise a support ticket).")
-    if str(b.status) in RESULT_STATUSES:
-        lines.append("- Results: " + ("available — open the booking to download them." if elig["results"] else "not uploaded yet."))
+    if str(b.status) == "PROCESSING":
+        lines.append("- Results: available after the analysis is completed.")
+    elif str(b.status) == "COMPLETED":
+        lines.append("- Results: " + _results_line(elig))
     lines += ["", NEXT_PROMPT]
     actions = chips_for(b, elig, include_details=False)
     if not elig["self_service_open"] and elig["active"]:
