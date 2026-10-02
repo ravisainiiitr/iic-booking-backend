@@ -39,7 +39,9 @@ def module_settings():
 
     try:
         with transaction.atomic():
-            return TrainingModuleSettings.current()
+            # Deferred so the switch and audience keep working before the column's migration has run.
+            row = TrainingModuleSettings.objects.defer("course_demos_free").filter(pk=TrainingModuleSettings.SINGLETON_PK).first()
+            return row or TrainingModuleSettings(pk=TrainingModuleSettings.SINGLETON_PK)
     except DatabaseError:
         logger.warning("training module settings unavailable; using defaults", exc_info=True)
         return TrainingModuleSettings(pk=TrainingModuleSettings.SINGLETON_PK)

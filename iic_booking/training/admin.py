@@ -120,8 +120,8 @@ class UserBadgeAdmin(admin.ModelAdmin):
 
 @admin.register(models.TrainingModuleSettings)
 class TrainingModuleSettingsAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "module_enabled", "audience", "updated_by", "updated_at")
-    fields = ("module_enabled", "audience", "updated_by", "updated_at")
+    list_display = ("__str__", "module_enabled", "audience", "course_demos_free", "updated_by", "updated_at")
+    fields = ("module_enabled", "audience", "course_demos_free", "updated_by", "updated_at")
     readonly_fields = ("updated_by", "updated_at")
 
     def has_add_permission(self, request):

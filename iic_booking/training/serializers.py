@@ -55,6 +55,12 @@ def equipment_brief(eq) -> dict | None:
     }
 
 
+def _demo_charge_text(req: DemoRequest) -> str:
+    from .demo import charge_text
+
+    return charge_text(req)
+
+
 def demo_out(req: DemoRequest, viewer, *, detail: bool = False) -> dict:
     is_owner = req.requester_id == viewer.id
     manage = access.can_manage_equipment(viewer, req.equipment_id)
@@ -92,6 +98,7 @@ def demo_out(req: DemoRequest, viewer, *, detail: bool = False) -> dict:
         "rate_per_hour": money(req.rate_per_hour),
         "charge_amount": money(req.charge_amount),
         "charged": bool(req.wallet_txn_id),
+        "charge_text": _demo_charge_text(req),
         "refund_amount": money(req.refund_amount),
         "cancelled_by_side": req.cancelled_by_side,
         "cancel_reason": req.cancel_reason,

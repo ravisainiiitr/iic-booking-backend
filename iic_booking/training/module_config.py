@@ -12,6 +12,7 @@ from django.db.models import Q
 from . import access
 from . import serializers as s
 from .audit import audit
+from . import charges
 from .errors import TrainingError
 from .models import TrainingAudience, TrainingEquipmentSetting, TrainingModuleSettings
 
@@ -49,6 +50,7 @@ def module_state() -> dict:
         "audience": row.audience,
         "audience_label": row.get_audience_display(),
         "audience_choices": [{"value": v, "label": str(label)} for v, label in TrainingAudience.choices],
+        "course_demos_free": charges.course_demos_free(),
         "env_pilot_equipment_codes": sorted(env_codes),
         "pilot_oic_count": len(access.pilot_oic_emails()),
         "all_equipment_in_scope": scope is None,
@@ -58,17 +60,26 @@ def module_state() -> dict:
     }
 
 
-def update_module(actor, *, module_enabled: bool | None = None, audience: str | None = None) -> TrainingModuleSettings:
+def update_module(
+    actor,
+    *,
+    module_enabled: bool | None = None,
+    audience: str | None = None,
+    course_demos_free: bool | None = None,
+) -> TrainingModuleSettings:
     if audience is not None and audience not in TrainingAudience.values:
         raise TrainingError(f"Audience must be one of {', '.join(TrainingAudience.values)}.")
     with transaction.atomic():
         row, _ = TrainingModuleSettings.objects.select_for_update().get_or_create(pk=TrainingModuleSettings.SINGLETON_PK)
-        before = {"module_enabled": row.module_enabled, "audience": row.audience}
+        fields = ("module_enabled", "audience", "course_demos_free")
+        before = {f: getattr(row, f) for f in fields}
         if module_enabled is not None:
             row.module_enabled = bool(module_enabled)
         if audience is not None:
             row.audience = audience
-        after = {"module_enabled": row.module_enabled, "audience": row.audience}
+        if course_demos_free is not None:
+            row.course_demos_free = bool(course_demos_free)
+        after = {f: getattr(row, f) for f in fields}
         if after != before or not row.updated_at:
             row.updated_by = _actor(actor)
             row.save()

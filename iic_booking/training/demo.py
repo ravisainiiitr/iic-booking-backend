@@ -9,9 +9,13 @@ SUBMITTED → UNDER_REVIEW (OIC opened it) → one of:
 APPROVED → SCHEDULED (slots reserved) → COMPLETED | NO_SHOW;  APPROVED/SCHEDULED → CANCELLED
 SUBMITTED/UNDER_REVIEW → WITHDRAWN (faculty)
 
-Charges: course/curricular demos are free. Otherwise the OIC may charge an hourly rate, debited from the
-faculty sub-wallet for the equipment's internal department when the request becomes APPROVED. Refund is
-100% when IIC cancels; faculty cancellations follow the policy windows (default 100% ≥7 days, 50% ≥2 days).
+Charges (see ``charges``): every demonstration is charged at the equipment's internal IITR rate for the
+approved duration (course/curricular ones are free only while the Main Admin's "Course/curricular
+demonstrations are free" switch is on). The amount is deducted from the wallet the faculty member's bookings
+use when the request becomes APPROVED (OIC approval, or the faculty accepting a proposed time); nothing is
+charged before that, so rejected, withdrawn or expired requests cost nothing and curtailment lowers the charge.
+Refund is 100% when IIC cancels; faculty cancellations follow the policy windows (default 100% ≥7 days,
+50% ≥2 days).
 """
 
 from __future__ import annotations
@@ -24,9 +28,10 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.communication.email_branding import format_inr
 from iic_booking.users.display import get_user_display_name
 
-from . import access, notify
+from . import access, charges, notify
 from .audit import audit
 from .errors import TrainingError
 from .models import (
@@ -124,14 +129,6 @@ def _parse_windows(raw) -> list[dict]:
     return windows
 
 
-def _hours(minutes: int) -> Decimal:
-    return (Decimal(int(minutes)) / Decimal(60)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
-def charge_for(rate: Decimal, minutes: int) -> Decimal:
-    return (Decimal(rate) * Decimal(int(minutes)) / Decimal(60)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-
 def _faculty_name(user) -> str:
     return get_user_display_name(user)
 
@@ -141,6 +138,20 @@ def _course_text(req: DemoRequest) -> str:
     if parts:
         return " ".join(parts)
     return dict(DemoPurpose.choices).get(req.purpose, "Demonstration")
+
+
+def charge_text(req: DemoRequest) -> str:
+    duration = req.approved_duration_minutes or req.requested_duration_minutes
+    if req.charge_mode != ChargeMode.WALLET or not req.charge_amount:
+        return "No charge"
+    basis = f"internal IITR rate, {notify.fmt_minutes(duration)}"
+    if req.wallet_txn_id:
+        text = f"{format_inr(req.charge_amount)} ({basis}) deducted from the faculty member's {charges.wallet_label(req.equipment)}"
+    else:
+        text = f"{format_inr(req.charge_amount)} ({basis}), deducted from the faculty member's wallet when approved"
+    if req.refund_amount:
+        text += f"; {format_inr(req.refund_amount)} refunded"
+    return text
 
 
 def _context(req: DemoRequest, **extra) -> dict:
@@ -155,7 +166,7 @@ def _context(req: DemoRequest, **extra) -> dict:
         "duration": notify.fmt_minutes(duration),
         "participants": str(participants),
         "status": req.get_status_display(),
-        "charge": f"₹{req.charge_amount}" if req.charge_amount else "No charge",
+        "charge": charge_text(req),
         "remarks": req.oic_remarks,
     }
     ctx.update(extra)
@@ -188,7 +199,9 @@ def create_request(faculty, data: dict) -> DemoRequest:
     if duration < 15:
         raise TrainingError("Requested duration must be at least 15 minutes.")
     if policy.demo_max_minutes and duration > policy.demo_max_minutes:
-        raise TrainingError(f"Demonstrations are limited to {notify.fmt_minutes(policy.demo_max_minutes)} by policy.")
+        raise TrainingError(
+            f"Demonstrations are limited to {notify.fmt_minutes(policy.demo_max_minutes)} by policy.", code="over_max_duration"
+        )
     if participants < 1:
         raise TrainingError("Number of students must be at least 1.")
     if purpose == DemoPurpose.COURSE and not (data.get("course_code") or data.get("course_name")):
@@ -196,9 +209,11 @@ def create_request(faculty, data: dict) -> DemoRequest:
     windows = _parse_windows(data.get("preferred_windows"))
     if not windows:
         raise TrainingError("Give at least one preferred window.")
-    chargeable = purpose != DemoPurpose.COURSE and policy.demo_rate_per_hour > 0
-    if chargeable and not data.get("charge_acknowledged"):
+    quote = charges.quote(equipment, faculty, purpose=purpose, minutes=duration)
+    if quote["chargeable"] and not data.get("charge_acknowledged"):
         raise TrainingError("Please acknowledge the demonstration charge.", code="charge_ack_required")
+    if quote["balance_error"]:
+        raise TrainingError(quote["balance_error"], code="insufficient_balance")
     participant_ids = [int(x) for x in (data.get("participant_user_ids") or []) if str(x).isdigit()]
     if participant_ids:
         allowed = access.faculty_group_student_ids(faculty)
@@ -217,6 +232,9 @@ def create_request(faculty, data: dict) -> DemoRequest:
             requested_duration_minutes=duration,
             notes=(data.get("notes") or "").strip(),
             charge_acknowledged=bool(data.get("charge_acknowledged")),
+            charge_mode=ChargeMode.WALLET if quote["chargeable"] else ChargeMode.FREE,
+            rate_per_hour=Decimal(quote["rate_per_hour"] or "0"),
+            charge_amount=Decimal(quote["amount"] or "0"),
             status=DemoStatus.SUBMITTED,
         )
         if participant_ids:
@@ -292,8 +310,9 @@ def respond(req: DemoRequest, faculty, *, response: str, windows=None, note: str
             req.status = DemoStatus.WITHDRAWN
             req.save()
             _revise(req, faculty, "declined_proposal", before, reason=note)
+    paid = f" ({format_inr(req.charge_amount)} deducted from their wallet)" if req.wallet_txn_id and response == "accept" else ""
     summary = {
-        "accept": "accepted the proposed time" + (" — please schedule it, the slots are no longer free" if schedule_error else ""),
+        "accept": "accepted the proposed time" + paid + (" — please schedule it, the slots are no longer free" if schedule_error else ""),
         "counter": "countered the proposed time with new windows",
         "decline": "declined the proposed time and withdrew the request",
     }[response]
@@ -359,7 +378,7 @@ def decide(req: DemoRequest, actor, data: dict) -> DemoRequest:
             req.curtailed = curtailed
             req.curtail_reason_code = reason_code if curtailed else ""
             req.oic_remarks = remarks
-            _apply_charge(req, data, policy, duration)
+            _apply_charge(req, data, duration)
             _stamp(req, actor)
             if action == "approve":
                 req.status = DemoStatus.APPROVED
@@ -428,7 +447,7 @@ def cancel(req: DemoRequest, actor, reason: str = "") -> DemoRequest:
                 status=EventStatus.CANCELLED, cancelled_at=timezone.now(), cancelled_reason=reason[:2000]
             )
         _revise(req, actor, "cancelled", before, reason=reason)
-    refund_text = f" ₹{req.refund_amount} refunded to the {req.sub_wallet.department.name} sub-wallet." if req.refund_amount and req.sub_wallet_id else ""
+    refund_text = _refund_sentence(req)
     recipients = [req.requester] + _oic_recipients(req.equipment)
     notify.send(
         "demo_request_cancelled_email",
@@ -602,49 +621,47 @@ def _approved_size(req: DemoRequest, data: dict) -> tuple[int, int, bool]:
     return duration, participants, curtailed
 
 
-def _apply_charge(req: DemoRequest, data: dict, policy, duration: int) -> None:
-    mode = (data.get("charge_mode") or "").upper() or (ChargeMode.FREE if req.is_curricular else ChargeMode.WALLET)
-    if req.is_curricular:
-        mode = ChargeMode.FREE
-    if mode not in ChargeMode.values:
-        raise TrainingError("Invalid charge mode.")
-    rate = policy.demo_rate_per_hour
-    if data.get("rate_per_hour") not in (None, ""):
+def _apply_charge(req: DemoRequest, data: dict, duration: int) -> None:
+    """Internal IITR rate × approved duration. The OIC enters an hourly rate only when the equipment has no
+    internal rate the portal can use; otherwise the rate cannot be changed or waived."""
+    if not charges.is_chargeable(req.purpose):
+        req.charge_mode, req.rate_per_hour, req.charge_amount = ChargeMode.FREE, Decimal("0.00"), Decimal("0.00")
+        return
+    rate = charges.internal_rate(req.equipment, req.requester).rate_per_hour
+    if rate is None:
+        raw = data.get("rate_per_hour")
+        if raw in (None, ""):
+            raise TrainingError(
+                "This equipment has no internal IITR rate the portal can convert to an hourly charge. "
+                "Enter the hourly rate to charge.",
+                code="rate_required",
+            )
         try:
-            rate = Decimal(str(data.get("rate_per_hour")))
+            rate = Decimal(str(raw))
         except Exception:
             raise TrainingError("Invalid hourly rate.") from None
-        if rate < 0:
-            raise TrainingError("Hourly rate cannot be negative.")
-    if mode == ChargeMode.FREE or rate <= 0:
+        if rate <= 0:
+            raise TrainingError("Hourly rate must be above zero.")
+    if rate <= 0:
         req.charge_mode, req.rate_per_hour, req.charge_amount = ChargeMode.FREE, Decimal("0.00"), Decimal("0.00")
         return
     req.charge_mode, req.rate_per_hour = ChargeMode.WALLET, rate
-    req.charge_amount = charge_for(rate, duration)
+    req.charge_amount = charges.amount_for(rate, duration)
+
+
+def _charge_date(req: DemoRequest) -> str:
+    when = req.approved_start_at or req.proposed_start_at
+    if when is None and req.preferred_windows:
+        when = parse_datetime(str(req.preferred_windows[0].get("start") or ""))
+    return timezone.localtime(when).strftime("%d %b %Y") if when else timezone.localdate().strftime("%d %b %Y")
 
 
 def _debit(req: DemoRequest) -> None:
     if req.charge_mode != ChargeMode.WALLET or req.charge_amount <= 0 or req.wallet_txn_id:
         return
-    from iic_booking.users.models.wallet import SubWallet, Wallet
-
-    department = req.equipment.internal_department
-    if department is None:
-        raise TrainingError("This equipment has no internal department to charge; approve without charge.", code="no_department")
-    wallet = Wallet.objects.filter(user=req.requester).first()
-    sub = SubWallet.objects.filter(wallet=wallet, department=department).first() if wallet else None
-    if sub is None:
-        raise TrainingError(
-            f"The faculty member has no {department.name} sub-wallet. Approve without charge or ask them to recharge.",
-            code="no_sub_wallet",
-        )
-    try:
-        txn = sub.debit(req.charge_amount, description=f"Demo {req.reference} – {req.equipment.code}", related_user=req.requester)
-    except ValueError:
-        raise TrainingError(
-            f"Insufficient balance in the faculty member's {department.name} sub-wallet (₹{req.charge_amount} needed).",
-            code="insufficient_balance",
-        ) from None
+    sub, txn = charges.debit(
+        req, description=f"Demonstration charge – {req.equipment.code} – {_charge_date(req)} ({req.reference})"
+    )
     req.sub_wallet = sub
     req.wallet_txn = txn
     req.save(update_fields=["sub_wallet", "wallet_txn", "updated_at"])
@@ -653,9 +670,23 @@ def _debit(req: DemoRequest) -> None:
 def _refund(req: DemoRequest, amount: Decimal) -> None:
     if amount <= 0 or not req.sub_wallet_id or req.refund_txn_id:
         return
-    txn = req.sub_wallet.credit(amount, description=f"Refund: demo {req.reference} – {req.equipment.code}", related_user=req.requester)
+    share = "full" if amount >= req.charge_amount else f"{(amount * 100 / req.charge_amount).quantize(Decimal('1'))}%"
+    txn = req.sub_wallet.credit(
+        amount,
+        description=f"Demonstration refund ({share}) – {req.equipment.code} – {_charge_date(req)} ({req.reference})",
+        related_user=req.requester,
+    )
     req.refund_txn = txn
     req.refund_amount = amount
+
+
+def _refund_sentence(req: DemoRequest) -> str:
+    if not req.wallet_txn_id:
+        return ""
+    label = charges.wallet_label(req.equipment)
+    if req.refund_amount:
+        return f" {format_inr(req.refund_amount)} of the {format_inr(req.charge_amount)} charge was refunded to the {label}."
+    return f" The {format_inr(req.charge_amount)} charge is not refunded (cancelled less than the policy's refund window ahead)."
 
 
 def _ensure_event(req: DemoRequest) -> TrainingEvent:
@@ -737,6 +768,12 @@ def _notify_decision(req: DemoRequest, actor, action: str) -> None:
         )
     else:
         summary = f"Your demonstration request {req.reference} on {req.equipment.name} was approved as requested."
+    if action != "reject" and req.charge_mode == ChargeMode.WALLET and req.charge_amount:
+        label = charges.wallet_label(req.equipment)
+        if req.wallet_txn_id:
+            summary += f" {format_inr(req.charge_amount)} (internal IITR rate) was deducted from your {label}."
+        else:
+            summary += f" If you accept, {format_inr(req.charge_amount)} (internal IITR rate) will be deducted from your {label}."
     notify.send(
         "demo_request_decision_faculty_email",
         [req.requester],

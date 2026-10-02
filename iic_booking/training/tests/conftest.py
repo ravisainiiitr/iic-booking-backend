@@ -47,8 +47,11 @@ def seed_levels(db):
     BadgeDefinition.objects.get_or_create(code="trained", defaults={"name": "Trained", "level": trained})
     if not TrainingPolicy.objects.filter(scope="GLOBAL").exists():
         TrainingPolicy.objects.create(scope="GLOBAL", version=1, is_active=True)
-    # Most tests use ordinary accounts; audience tests switch back to test accounts only.
-    TrainingModuleSettings.objects.update_or_create(pk=1, defaults={"audience": TrainingAudience.EVERYONE})
+    # Most tests use ordinary accounts; audience tests switch back to test accounts only. Workflow tests run with
+    # free course demonstrations; test_demo_charges switches that off (the shipped default).
+    TrainingModuleSettings.objects.update_or_create(
+        pk=1, defaults={"audience": TrainingAudience.EVERYONE, "course_demos_free": True}
+    )
     return trained
 
 
@@ -154,6 +157,19 @@ def fund_faculty(faculty, department, amount=Decimal("5000.00")):
         SubWallet.objects.filter(pk=sub.pk).update(balance=amount)
         sub.refresh_from_db()
     return sub
+
+
+def internal_rate_profile(equipment, rate="600.00", user_type=UserType.FACULTY, **kwargs):
+    from iic_booking.equipment.models import ChargeProfile
+
+    kwargs.setdefault("profile_type", "HOUR")
+    return ChargeProfile.objects.create(
+        equipment=equipment, user_type=user_type, primary_unit_charge=Decimal(rate), is_active=True, **kwargs
+    )
+
+
+def set_course_demos_free(value: bool):
+    TrainingModuleSettings.objects.filter(pk=1).update(course_demos_free=value)
 
 
 def join_wallet(student, faculty):
