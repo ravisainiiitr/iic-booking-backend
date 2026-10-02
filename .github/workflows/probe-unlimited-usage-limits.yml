@@ -1,0 +1,71 @@
+# List weekly/monthly usage limits that the booking page now treats as "no limit" (read-only)
+name: Probe Unlimited Usage Limits
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from iic_booking.equipment import quota_utils
+          from iic_booking.equipment.models import EquipmentGroupQuota, ExternalUserQuota, QuotaLimitType, UserTypeQuota
+
+          print("SKIP_BOOKING_QUOTA_CHECK=", getattr(settings, "SKIP_BOOKING_QUOTA_CHECK", None))
+          unlimited = getattr(quota_utils, "quota_limit_is_effectively_unlimited", None)
+          print("helper_deployed=", unlimited is not None, getattr(quota_utils, "EFFECTIVELY_UNLIMITED_QUOTA_MINUTES", None))
+          if unlimited is None:
+              raise SystemExit(0)
+
+          fields = (
+              "internal_individual_quota_minutes",
+              "internal_faculty_quota_minutes",
+              "external_individual_quota_minutes",
+              "external_faculty_quota_minutes",
+          )
+          print("== Equipment group quotas (enforced) ==")
+          n_hidden = n_total = 0
+          for q in EquipmentGroupQuota.objects.filter(is_enforced=True).select_related("equipment_group").order_by("equipment_group__name", "quota_type"):
+              vals = {f: getattr(q, f) for f in fields}
+              hidden = [f for f, v in vals.items() if unlimited(q.quota_type, v)]
+              shown = [f for f, v in vals.items() if v and v > 0 and not unlimited(q.quota_type, v)]
+              n_total += 1
+              if not hidden:
+                  continue
+              n_hidden += 1
+              eq = list(q.equipment_group.equipment.values_list("name", "code", "skip_quota_check"))
+              print(f"GROUP {q.equipment_group.name!r} {q.quota_type} now_no_limit={[(f, vals[f]) for f in hidden]} still_shown={[(f, vals[f]) for f in shown]}")
+              for name, code, skip in eq:
+                  print(f"    - {code} {name} skip_quota_check={skip}")
+          print(f"group quota rows with a no-limit value: {n_hidden} of {n_total}")
+
+          print("== Legacy equipment-level minute quotas (enforced, HOURS type) ==")
+          for model, label in ((UserTypeQuota, "user_type"), (ExternalUserQuota, "external")):
+              for q in model.objects.filter(is_enforced=True, limit_type=QuotaLimitType.HOURS).select_related("equipment"):
+                  if unlimited(q.quota_type, q.limit_value):
+                      who = getattr(q, "user_type", "external")
+                      print(f"LEGACY {label} {q.equipment.code} {q.equipment.name} {who} {q.quota_type} limit={q.limit_value}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
