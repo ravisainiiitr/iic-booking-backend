@@ -21,7 +21,7 @@ FLOW = "ba_flow"
 BOOKING = "ba_booking"
 HELP = "ba_help"
 
-HELP_CODES = ("slot_taken", "no_slots", "quota_exceeded", "no_wallet", "charge_error", "booking_failed")
+HELP_CODES = ("slot_taken", "no_slots", "quota_exceeded", "no_wallet", "insufficient_funds", "charge_error", "booking_failed")
 
 BOOKING_OPS = ("details", "cancel", "reschedule", "edit", "message", "results", "invoice", "rate", "rebook", "template")
 

@@ -125,6 +125,7 @@ class TestHelpAction:
         ("Individual Weekly quota exceeded: current usage 240 min + requested 120 min = 360 min; configured limit 300 min; "
          "remaining before this request 60 min.", "quota_exceeded"),
         ("You don't have access to any wallet. Please link to your supervisor's wallet.", "no_wallet"),
+        ("Insufficient wallet balance for this booking.", "insufficient_funds"),
         ("Something odd happened", "booking_failed"),
     ])
     def test_classify(self, message, code):
@@ -201,6 +202,13 @@ class TestFailureHelp:
         assert "Request to Join Wallet" in text and "Invite your supervisor" in text
         link = next(a for a in body["message"]["suggested_actions"] if a.get("label") == "Link my supervisor's wallet")
         assert link["href"] == "/wallet"
+
+    def test_insufficient_funds_student_asks_supervisor(self, lab):
+        conv = _new_conv(lab)
+        body = _body(_help(lab, conv, {"code": "insufficient_funds", "equipment_id": lab.xrd.pk}))
+        assert "supervisor" in body["message"]["content"]
+        assert {"Wallet balance", "How to recharge", "Back to booking form"} <= set(_labels(body))
+        assert _meta(body)["intent"] == "assistant:help_insufficient_funds"
 
     def test_charge_error_lists_missing_fields(self, lab):
         conv = _new_conv(lab)
