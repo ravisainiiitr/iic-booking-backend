@@ -401,11 +401,117 @@ Always confirm sample preparation requirements and charges on the equipment page
         "tags": ["remote analysis", "raa", "software"],
         "external_url": "/remote-analysis",
         "content_text": """
-Remote Analysis lets users launch an analysis workstation session from a booking.
-- Check installed software inventory on the workstation page.
-- Session time remaining is shown in the Remote Analysis UI.
-- Upload processed results back through the portal workflow.
+Remote Analysis lets you analyse your data on a reserved Analysis PC from a booking.
+- Open the booking in My Bookings and press Open Analysis Workspace (shown when remote analysis is set up for
+  that instrument).
+- Choose your data: Current Booking Data, Previous Booking Data, or Upload additional files. They appear in the
+  Input Data folder on the Analysis PC.
+- Pick the software (the list is set by the lab for each instrument) and press Open Analysis Environment.
+- Save outputs in the session workspace (Output folder). End Session uploads them to Booking Details → Analyzed
+  Data; you get an email when they are ready (files are not emailed).
+- Session time remaining is shown in the workspace. Analysis time is charged separately (Analysis charges).
 - If connection fails, verify agent heartbeat and portal reachability; escalate with diagnostics if needed.
+""",
+    },
+    {
+        "title": "Your Data, Results Files and Analysis Software",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["data", "files", "results", "raw data", "analyzed data", "software", "imagej", "dm4", "pxrd",
+                 "remote analysis", "download"],
+        "external_url": "/my-results",
+        "content_text": """
+Where are my files? Raw Data and Analyzed Data for each booking are on its Booking Details page in My Bookings;
+View results lists everything uploaded for you, newest first. The lab uploads results after the measurement and
+you get an email (download from the portal; files are not emailed). Files created in a remote-analysis session
+are uploaded to Booking Details → Analyzed Data when you press End Session. Data a colleague shared with you is
+under Shared with me / My Research.
+Which software can I use? The Analysis Workspace of your booking lists the software the lab set up for that
+instrument (ask the Booking Assistant "what software can I use for <instrument>?"). In general, TEM .dm3/.dm4
+files open in Gatan DigitalMicrograph or the free ImageJ/Fiji; XRD patterns are analysed with the vendor
+software (for example HighScore or DIFFRAC.EVA) and free tools such as Profex, GSAS-II or FullProf for Rietveld
+refinement.
+""",
+    },
+    {
+        "title": "Characterisation Terms — FWHM, Bragg's Law, XRD, PXRD, SEM, TEM",
+        "category": DocumentCategory.EQUIPMENT,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["fwhm", "bragg", "scherrer", "xrd", "pxrd", "sem", "fesem", "tem", "eds", "glossary", "thin film"],
+        "content_text": """
+FWHM (full width at half maximum): the width of a peak at half its height. Broader XRD peaks mean smaller
+crystallites and/or more strain; the Scherrer equation D = Kλ/(β cos θ) (β = FWHM in radians, K ≈ 0.9) estimates
+crystallite size.
+Bragg's law: nλ = 2d sin θ — each XRD peak angle gives the spacing d between crystal planes.
+XRD: identifies crystal phases, lattice parameters, crystallite size, strain and texture. PXRD is XRD on a finely
+ground powder, matched against reference databases (ICDD PDF, COD). Thin films are measured in grazing-incidence
+mode (GIXRD) where the instrument supports it.
+SEM / FESEM: images surface morphology; FESEM gives higher resolution at low voltage. Non-conductive samples
+usually need a thin gold or carbon coating. EDS adds elemental composition and maps.
+TEM: electrons pass through a very thin sample (< ~100 nm) to show internal structure, lattice fringes and
+diffraction patterns.
+XRD vs SEM: XRD tells you what crystal structure/phases are present (averaged over the sample); SEM shows what the
+surface looks like (shape, size, texture) at a chosen spot.
+""",
+    },
+    {
+        "title": "Lab Access Hours and Sample Drop-off",
+        "category": DocumentCategory.POLICY,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["lab hours", "access hours", "timings", "opening hours", "sample drop-off"],
+        "external_url": "/availability",
+        "content_text": """
+There is no single set of opening hours for all labs: each instrument has its own slot timings set by its lab.
+You can use an instrument during your booked slot; the booking page and the Availability page show its free
+slots. Weekends, institute holidays and maintenance days are blocked automatically. Sample drop-off and
+collection follow the instrument's sample-submission deadline (24 hours before the slot unless the lab set another
+value; the previous working day if it falls on a weekend or holiday) and collection rules shown in its booking
+rules. For access outside your slot, contact the instrument's operator or Officer in Charge (equipment page →
+Contacts).
+""",
+    },
+    {
+        "title": "Preparing for Your Booking",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["prepare", "preparation", "sample preparation", "before booking", "checklist", "submission"],
+        "content_text": """
+Before your slot: read the instrument's sample instructions on its equipment page (the Booking Assistant shows them
+with "what should I prepare before my <instrument> booking?"), have the required booking inputs ready, submit
+your sample before the submission deadline shown in My Bookings, label samples clearly and declare anything
+hazardous, air-sensitive or magnetic.
+General tips (the lab's instructions take priority): XRD — fine, lump-free powder or a film on a flat substrate;
+SEM/FESEM — completely dry, vacuum-safe, conductive coating for non-conductive samples; TEM — dispersed on a grid,
+thinner than about 100 nm; XPS — dry, clean surface; BET — dry powder of known mass and its safe degassing
+temperature.
+""",
+    },
+    {
+        "title": "Charges, Cost Estimates and PI Pricing",
+        "category": DocumentCategory.POLICY,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["charges", "cost", "estimate", "price", "pi pricing", "wallet owner", "who pays", "gst"],
+        "external_url": "/analysis-charges",
+        "content_text": """
+Charges come from the instrument's charge profile for the account category of the person making the booking; the
+booking page shows the exact amount before you confirm, and the Booking Assistant can estimate N samples ("how
+much do 5 XRD samples cost?"). PI rates apply when you, or the owner of the wallet you book from, are registered
+as a PI of that instrument and the lab has set PI rates; otherwise the standard rate for your category applies (or
+a discounted rate if your account was approved for one). Students' bookings are debited from the supervisor's
+wallet. GST applies to external users only. The Analysis Charges page lists rates by instrument.
+""",
+    },
+    {
+        "title": "Linking to Your Supervisor's Wallet (Students)",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["link wallet", "join wallet", "supervisor", "faculty wallet", "join request", "student"],
+        "external_url": "/wallet",
+        "content_text": """
+Students book from their supervisor's wallet. Open Wallet → Request to Join Wallet, search for your supervisor and
+press Send Request; once they approve it (Student management), your bookings are charged to their wallet and any
+spending limit they set applies. If your supervisor's name is not in the list, they need to sign in to the portal
+once (via Channel I) first. Faculty can see and approve join requests under Student management.
 """,
     },
     {

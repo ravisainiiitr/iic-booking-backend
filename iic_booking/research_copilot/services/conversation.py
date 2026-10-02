@@ -277,6 +277,10 @@ def _reply_deterministic(*, user, conversation: Conversation, text: str, det: di
     title_hint = meta.pop("title_hint", None)
     title_defer = bool(meta.pop("title_defer", False))
     replace_title = meta.pop("replace_title", None)
+    if not enrich:
+        from iic_booking.research_copilot.services.assistant.next_steps import ensure_next_steps
+
+        actions = ensure_next_steps(user, actions, metadata=meta, cards=cards, response_kind=str(det.get("response_kind") or ""))
     with transaction.atomic():
         assistant = Message.objects.create(
             conversation=conversation,
@@ -533,7 +537,9 @@ def send_message(
     elif contextual:
         from iic_booking.research_copilot.services.intelligence import messages as intel_messages
 
-        reply_actions = [a for a in (grounding.get("actions") or []) if a.get("id")][:3]
+        from iic_booking.research_copilot.services.assistant.next_steps import ensure_next_steps
+
+        reply_actions = ensure_next_steps(user, [a for a in (grounding.get("actions") or []) if a.get("id")][:3])
         if escalate:
             reply_actions.append(intel_messages.ticket_action("no_verified_answer", "Raise Support Ticket"))
     else:
@@ -623,9 +629,25 @@ def stream_message_deltas(*, user, conversation: Conversation, content: str):
 
 
 def add_feedback(
-    *, user, conversation: Conversation, rating: str, comment: str = "", message_id=None, reason: str = ""
+    *, user, conversation: Conversation, rating: str, comment: str = "", message_id=None, reason: str = "",
+    feedback_id=None,
 ) -> MessageFeedback:
     from iic_booking.research_copilot.models import AuditAction, CopilotKnowledgeArticle, FeedbackReason
+
+    if feedback_id:
+        # "What were you looking for?" after a thumbs-down: add the note to the row already saved.
+        existing = MessageFeedback.objects.filter(id=feedback_id, user=user, conversation=conversation).first()
+        if existing is not None:
+            fields = []
+            if comment:
+                existing.comment = str(comment)[:2000]
+                fields.append("comment")
+            if reason in FeedbackReason.values and reason != existing.reason:
+                existing.reason = reason
+                fields.append("reason")
+            if fields:
+                existing.save(update_fields=fields)
+            return existing
 
     msg = None
     if message_id:
@@ -705,6 +727,8 @@ def bootstrap_payload(*, user) -> dict:
 
     from iic_booking.research_copilot.services.llm_gateway import configured_provider_name
 
+    from iic_booking.research_copilot.services.assistant.next_steps import starter_actions
+
     ctx = build_context(user)
     # Ordinary users see provider family only — no base URL / secrets.
     return {
@@ -741,6 +765,7 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
             {"id": "research_help", "label": "Research Help", "prompt": "How do I prepare a sample for FESEM?"},
         ],
+        "starter_actions": starter_actions(user),
         "intelligence": _intelligence_flags(user),
         "booking_assistant": {"enabled": _booking_assistant_enabled()},
         "command_groups": _command_groups(user),

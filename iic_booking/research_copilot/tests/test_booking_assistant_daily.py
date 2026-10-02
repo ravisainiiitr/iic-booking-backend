@@ -66,7 +66,6 @@ NOT_DAILY = [
     "I need FESEM tomorrow - what are my options?",
     "fesem",
     "How do I book equipment on the portal?",
-    "How do I prepare a sample for FESEM?",
     "Estimate the cost of booking FESEM for 2 hours.",
     "Which technique should I use for elemental composition?",
     "Is XRD free next monday",

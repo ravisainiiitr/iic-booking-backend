@@ -227,13 +227,21 @@ def conversation_feedback(request, conversation_id):
             uuid.UUID(str(message_id))
         except ValueError:
             message_id = None
+    feedback_id = request.data.get("feedback_id")
+    if feedback_id:
+        try:
+            uuid.UUID(str(feedback_id))
+        except ValueError:
+            feedback_id = None
+    comment = request.data.get("comment") or ""
     fb = conv_svc.add_feedback(
         user=request.user,
         conversation=conv,
         rating=rating,
-        comment=request.data.get("comment") or "",
+        comment=comment if isinstance(comment, str) else "",
         message_id=message_id,
         reason=str(request.data.get("reason") or "").strip().lower(),
+        feedback_id=feedback_id,
     )
     return Response({"id": str(fb.id), "rating": fb.rating, "reason": fb.reason}, status=status.HTTP_201_CREATED)
 

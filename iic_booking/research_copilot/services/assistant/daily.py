@@ -820,8 +820,11 @@ def students(user, conversation, params, text):
         lines = [head, "", "**Link to your supervisor**",
                  "1. Open **Wallet** → **Request to Join Wallet**.",
                  "2. Find your faculty and press **Send Request**.",
-                 "3. Once they approve, your bookings are charged to their wallet."]
-        return C.reply("\n".join(lines), actions=[C.link("Open Wallet", "/wallet", primary=True),
+                 "3. Once they approve, your bookings are charged to their wallet.",
+                 "",
+                 "Can't find your supervisor's name? Faculty appear in the list only after they have signed in to "
+                 "the portal once (via Channel I), so ask them to sign in, then search again."]
+        return C.reply("\n".join(lines), actions=[C.link("Link my supervisor's wallet", "/wallet", primary=True),
                                                   C.prompt_action("Wallet balance", "What is my wallet balance?")],
                        intent="students", title_hint="Faculty wallet")
     return C.reply("Student management is for faculty accounts; students link to a faculty wallet from the Wallet page.",
@@ -862,6 +865,12 @@ def reports(user, conversation, params, text):
 
 
 def charges_generic(user, conversation, params, text):
+    from iic_booking.research_copilot.services.assistant import engine
+    from iic_booking.research_copilot.services.assistant import state as ba_state
+
+    eq = engine._context_equipment(user, conversation, ba_state.load(conversation)) if conversation is not None else None
+    if eq is not None:
+        return engine._for_equipment(user, conversation, eq, "info", None, "charges")
     return C.reply(
         "Charges depend on the equipment and your user type. Tell me the equipment (for example \"charges for XRD\"), "
         "or open the Analysis Charges list.",
@@ -1031,3 +1040,7 @@ _HANDLERS = {
     "staff_waitlist": staff_waitlist,
     "staff_urgent": staff_urgent,
 }
+
+from iic_booking.research_copilot.services.assistant import answers as _answers  # noqa: E402
+
+_HANDLERS.update(_answers.HANDLERS)
