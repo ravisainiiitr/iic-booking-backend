@@ -73,6 +73,8 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "wallet_join_request_rejected_email",
     "wallet_join_request_cancelled_email",
     "wallet_join_request_removed_email",
+    "supervisor_invite_email",
+    "supervisor_invite_accepted_student_email",
     "registration_self_verification_email",
     "registration_verification_otp_email",
     "registration_approval_confirmation_email",
@@ -1257,6 +1259,73 @@ def _wallet_templates() -> list[dict[str, Any]]:
                 optional_detail_row("Faculty", "faculty_name"),
             ],
             variable_help="{{ student_name }}, {{ faculty_name }}, {{ link }}",
+        ),
+        *_supervisor_invite_templates(),
+    ]
+
+
+def _supervisor_invite_templates() -> list[dict[str, Any]]:
+    return [
+        _simple_email(
+            code="supervisor_invite_email",
+            title="Wallet Link Request",
+            subject="{{ student_name }} asks to link their equipment bookings to your wallet",
+            intro=(
+                "<strong>{{ student_name }}</strong> has asked to be linked to your wallet on the IIT Roorkee "
+                "Institute Equipment Booking Portal, so that their equipment bookings can be charged to your wallet."
+            ),
+            description=(
+                "Sent to a supervisor who is not on the portal yet when a student invites them by email. "
+                "The button opens the normal portal sign-in; it never signs anyone in by itself."
+            ),
+            name_var="recipient_name",
+            details_heading="Student details",
+            detail_rows=[
+                optional_detail_row("Student", "student_name"),
+                optional_detail_row("Email", "student_email"),
+                optional_detail_row("Programme", "student_programme"),
+                optional_detail_row("Department", "student_department"),
+            ],
+            post_details_html=(
+                paragraph_html(
+                    "Sign in with your usual IIT Roorkee login to review the request. It will be waiting for you "
+                    "under Pending actions and in Wallet. Nothing is linked until you approve it, and you can "
+                    "reject it."
+                )
+                + paragraph_html("This invitation expires on {{ expires_on }}. If you do not know this student, you can ignore this email.")
+            ),
+            post_details_text=(
+                "{% if student_name %}- Student: {{ student_name }}\n{% endif %}"
+                "{% if student_email %}- Email: {{ student_email }}\n{% endif %}"
+                "{% if student_programme %}- Programme: {{ student_programme }}\n{% endif %}"
+                "{% if student_department %}- Department: {{ student_department }}\n{% endif %}"
+                "\nSign in with your usual IIT Roorkee login to review the request. It will be waiting for you under "
+                "Pending actions and in Wallet. Nothing is linked until you approve it, and you can reject it.\n"
+                "This invitation expires on {{ expires_on }}. If you do not know this student, you can ignore this email.\n"
+            ),
+            note_vars=(("message", "Message from the student"),),
+            cta_label="Sign in to review",
+            variable_help=(
+                "{{ recipient_name }}, {{ student_name }}, {{ student_email }}, {{ student_programme }}, "
+                "{{ student_department }}, {{ message }}, {{ expires_on }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="supervisor_invite_accepted_student_email",
+            title="Request With Your Supervisor",
+            subject="Your wallet link request is now with {{ faculty_name }}",
+            intro=(
+                "{{ faculty_name }} has signed in to the portal. Your invitation is now a wallet link request "
+                "waiting for their approval. You will get an email when they approve or reject it."
+            ),
+            description="Sent to a student when the supervisor they invited by email signs in and the invite becomes a wallet link request.",
+            name_var="student_name",
+            detail_rows=[
+                optional_detail_row("Supervisor", "faculty_name"),
+                optional_detail_row("Supervisor email", "faculty_email"),
+            ],
+            cta_label="Open Wallet",
+            variable_help="{{ student_name }}, {{ faculty_name }}, {{ faculty_email }}, {{ link }}",
         ),
     ]
 

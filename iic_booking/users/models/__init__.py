@@ -52,6 +52,7 @@ from .channel_i_identity import (
     StudentValiditySource,
     AffiliationKind,
 )
+from .supervisor_invite import SupervisorInvite, SupervisorInviteEvent, SupervisorInviteStatus
 from .wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .department_faculty_credit_facility import (
     DepartmentFacultyCreditFacilitySettings,
@@ -112,6 +113,9 @@ from .portal_migration import (
 
 __all__ = [
     "UserManager",
+    "SupervisorInvite",
+    "SupervisorInviteEvent",
+    "SupervisorInviteStatus",
     "Department",
     "DepartmentType",
     "OrganizationRequest",

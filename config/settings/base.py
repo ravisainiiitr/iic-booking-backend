@@ -417,6 +417,11 @@ IMAP_USER = env("IMAP_USER", default="")
 IMAP_PASSWORD = env("IMAP_PASSWORD", default="")
 IMAP_MAILBOX = env("IMAP_MAILBOX", default="INBOX")
 
+# Supervisor invites: institute email domains a student may invite (subdomains such as ch.iitr.ac.in
+# are accepted too) and how many invite emails one address may receive per 24 hours across all students.
+SUPERVISOR_INVITE_EMAIL_DOMAINS = env.list("SUPERVISOR_INVITE_EMAIL_DOMAINS", default=["iitr.ac.in"])
+SUPERVISOR_INVITE_EMAIL_DAILY_CAP = env.int("SUPERVISOR_INVITE_EMAIL_DAILY_CAP", default=5)
+
 # Legacy IIC booking MySQL (read-only wallet lookup: user + user_wallet)
 # ------------------------------------------------------------------------------
 # On the legacy AWS host use 127.0.0.1; from dev use the server IP if the security group allows.

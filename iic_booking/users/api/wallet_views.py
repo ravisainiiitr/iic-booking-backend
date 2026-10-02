@@ -1064,6 +1064,9 @@ def get_my_wallet_requests(request):
         # Student or 'Other' user viewing their sent requests
         queryset = WalletJoinRequest.objects.filter(student=request.user)
     elif request.user.user_type == UserType.FACULTY:
+        from iic_booking.users.supervisor_invites import convert_invites_on_login
+
+        convert_invites_on_login(request.user)
         # Faculty viewing received requests (include student + department for program details)
         queryset = WalletJoinRequest.objects.filter(faculty=request.user).select_related(
             'student', 'student__department'

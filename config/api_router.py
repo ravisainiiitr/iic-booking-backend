@@ -71,6 +71,7 @@ from iic_booking.users.api.student_spending_limit_views import (
     my_student_spending_limit,
     student_spending_limit_detail,
 )
+from iic_booking.users.api import supervisor_invite_views
 from iic_booking.users.api.wallet_views import (
     get_wallet,
     get_wallet_balance,
@@ -1012,6 +1013,10 @@ urlpatterns = router.urls + [
     path("wallet/join-requests/<int:request_id>/resend-notification/", resend_wallet_join_request_notification, name="wallet-join-request-resend-notification"),
     path("wallet/join-requests/<int:request_id>/spending-limit/", student_spending_limit_detail, name="wallet-join-request-spending-limit"),
     path("wallet/student-spending-limits/", faculty_student_spending_limits, name="wallet-student-spending-limits"),
+    path("wallet/supervisor-invites/", supervisor_invite_views.supervisor_invites, name="wallet-supervisor-invites"),
+    path("wallet/supervisor-invites/resolve/", supervisor_invite_views.resolve_supervisor_invite, name="wallet-supervisor-invite-resolve"),
+    path("wallet/supervisor-invites/<int:invite_id>/resend/", supervisor_invite_views.resend_supervisor_invite, name="wallet-supervisor-invite-resend"),
+    path("wallet/supervisor-invites/<int:invite_id>/cancel/", supervisor_invite_views.cancel_supervisor_invite, name="wallet-supervisor-invite-cancel"),
     path("wallet/my-spending-limit/", my_student_spending_limit, name="wallet-my-spending-limit"),
     
     # Wallet recharge request endpoints
