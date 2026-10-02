@@ -442,6 +442,7 @@ from iic_booking.equipment.equipment_addition_requests import (
     equipment_addition_request_reject,
 )
 from iic_booking.equipment.completion_reminders import bookings_awaiting_completion_view
+from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.pending_actions import pending_actions
 from iic_booking.equipment.publication_claim_views import (
     my_publication_claims,
@@ -1541,6 +1542,7 @@ urlpatterns = router.urls + [
     path("notifications/<int:notification_id>/mark-read/", mark_notification_as_read, name="notification-mark-read"),
     path("notifications/mark-all-read/", mark_all_notifications_as_read, name="notifications-mark-all-read"),
     path("notifications/pending-actions/", pending_actions, name="notifications-pending-actions"),
+    path("admin/dashboard-summary/", admin_dashboard_summary, name="admin-dashboard-summary"),
     path("notifications/<int:notification_id>/", delete_notification, name="notification-delete"),
     
     # Notice Board endpoints
