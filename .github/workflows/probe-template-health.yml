@@ -1,0 +1,532 @@
+name: Probe Template Health (read-only)
+
+# For every saved booking template of an active user: would it apply and book cleanly right now?
+# Checks equipment status and access, removed / required / no-longer-offered inputs, numeric min / max /
+# formula limits per sample set, sample-set settings, slots needed against the day's slots, the preferred
+# slot (weekend, timing, length, holiday, mode), weekly / monthly quota, wallet balance (counts only),
+# research workspace, legacy slot-option combinations, duplicates and last use. Prints aggregate counts per
+# issue and per equipment with a few template ids; no names, emails or amounts per user. When the deployed
+# code has iic_booking.equipment.template_health it also runs those checks and reports where they agree.
+# Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: Template ids to print per issue
+        required: false
+        default: '5'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Template health (SELECT only, aggregate counts)
+        env:
+          SAMPLES: ${{ github.event.inputs.samples }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e SAMPLES="${SAMPLES:-5}" -w /app "$CID" python - <<'PY'
+          import copy
+          import json
+          import logging
+          import os
+          import re
+          from collections import Counter, defaultdict
+          from datetime import timedelta
+          from decimal import Decimal
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          logging.disable(logging.WARNING)
+
+          from django.db import connection, transaction
+          from django.utils import timezone
+
+          from iic_booking.equipment import api_views
+          from iic_booking.equipment.booking_quota_summary import build_booking_quota_summary
+          from iic_booking.equipment.booking_templates import _normalise_template, template_booking_block
+          from iic_booking.equipment.calculators import (
+              MAX_SAMPLE_SETS, SAMPLE_SETS_KEY, ChargeCalculationEngine, TimeCalculationEngine,
+              build_safe_input_values_for_charge_calculation, normalize_periodic_table_billable_counts,
+              quantize_money, split_sample_sets,
+          )
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, BookingInputTemplate, ChargeProfile, DynamicInputField, DynamicInputFieldType,
+              EquipmentProfileType, EquipmentStatus, Holiday, SlotMaster,
+          )
+          from iic_booking.equipment.mode_utils import equipment_bookable_on_date
+          from iic_booking.equipment.pi_pricing import get_active_charge_profile
+          from iic_booking.equipment.sample_set_limits import combined_max_error, sample_sets_allowed
+          from iic_booking.equipment.slot_allocation import slots_needed_for_equipment
+          from iic_booking.users.models import SubWallet
+          from iic_booking.users.models.user_type import UserType
+          from iic_booking.equipment.booking_payment_service import compute_booking_payment_split
+
+          try:
+              from iic_booking.equipment import template_health as TH
+          except ImportError:
+              TH = None
+          try:
+              from iic_booking.equipment.peak_window import get_peak_settings, is_peak_blockable_user
+          except ImportError:
+              get_peak_settings = is_peak_blockable_user = None
+          try:
+              from iic_booking.my_research.models import ResearchWorkspace
+          except ImportError:
+              ResearchWorkspace = None
+
+          N = max(1, int(os.environ.get("SAMPLES") or 5))
+          UNLIMITED = {"WEEKLY": 9000, "MONTHLY": 40000}
+          NOW = timezone.now()
+          TODAY = timezone.localtime(NOW).date()
+          NEXT_MONDAY = TODAY - timedelta(days=TODAY.weekday()) + timedelta(days=7)
+          ADMIN_CODES = set(UserType.get_admin_panel_codes())
+          CHOICE_TYPES = (DynamicInputFieldType.RADIO, DynamicInputFieldType.COMBO, DynamicInputFieldType.MULTI_SELECT)
+          LESS = re.compile(r"^(?P<label>.+?) cannot be less than (?P<limit>-?[\d.]+)\.$", re.S)
+          MORE = re.compile(r"^(?P<label>.+?) cannot be greater than (?P<limit>-?[\d.]+)(?P<formula> \(.*\))?\.$", re.S)
+
+          # Booking outcome on Wednesday if the user applies the template and books without changing anything.
+          FAILS = {
+              "equipment_not_operational", "not_allowed", "required_missing", "numeric_min", "numeric_max",
+              "numeric_formula_max", "too_many_sample_sets", "combined_max", "no_charge_profile", "quota_over_limit",
+          }
+          LIKELY_FAILS = {"quota_low", "wallet_low", "no_wallet"}
+          DEGRADED = {
+              "sample_sets_disabled", "option_invalid", "preferred_weekend", "preferred_slot_missing",
+              "preferred_slot_too_short", "preferred_holiday", "preferred_mode_unavailable", "slots_exceed_day",
+          }
+          # Codes the template_health module also reports, for the agreement check.
+          SHARED = FAILS | LIKELY_FAILS | DEGRADED - {"slots_exceed_day"} | {
+              "field_removed", "option_not_offered", "workspace_unavailable", "peak_window_paused",
+          }
+
+          issues = defaultdict(set)
+          per_eq = defaultdict(Counter)
+          samples = defaultdict(list)
+          eq_names = {}
+          reasons = Counter()
+          errors = Counter()
+
+          def eq_label(eq):
+              return f"{eq.pk}:{eq.code or '-'} {(eq.name or '')[:45]}"
+
+          def add(code, t):
+              if t.pk in issues[code]:
+                  return
+              issues[code].add(t.pk)
+              per_eq[eq_label(t.equipment)][code] += 1
+              if len(samples[code]) < N:
+                  samples[code].append(t.pk)
+
+          def blank(v):
+              if v is None:
+                  return True
+              if isinstance(v, (list, tuple)):
+                  return not v
+              if isinstance(v, bool):
+                  return False
+              return str(v).strip() == ""
+
+          def choices(field):
+              out = []
+              for i, o in enumerate(field.options if isinstance(field.options, list) else []):
+                  if isinstance(o, dict):
+                      v = o.get("value", o.get("label", o.get("id", o.get("name"))))
+                      lab = o.get("label", o.get("value", o.get("name", o.get("id"))))
+                      v = str(v) if isinstance(v, (str, int, float, bool)) else str(i + 1)
+                      out += [v, str(lab) if isinstance(lab, (str, int, float, bool)) else v]
+                  elif o is None:
+                      out.append(str(i + 1))
+                  else:
+                      out.append(str(o))
+              return out
+
+          def norm(values):
+              base, sets = split_sample_sets(values if isinstance(values, dict) else {})
+              def one(g):
+                  out = {}
+                  for k, v in g.items():
+                      if str(k).startswith("_") or blank(v):
+                          continue
+                      if isinstance(v, list):
+                          v = ",".join(sorted(str(x) for x in v))
+                      try:
+                          v = format(float(v), "g")
+                      except (TypeError, ValueError):
+                          v = str(v).strip()
+                      out[str(k)] = v
+                  return out
+              return json.dumps([one(base)] + [one(s) for s in sets], sort_keys=True)
+
+          def clean_group(eq, g):
+              out = {}
+              for k, v in (g or {}).items():
+                  if str(k).startswith("_"):
+                      continue
+                  v = api_views._clean_single_input_value(v)
+                  if v is None or v == []:
+                      continue
+                  out[k] = v
+              return normalize_periodic_table_billable_counts(eq, out)
+
+          def estimate(eq, user, base, sets):
+              try:
+                  profile = get_active_charge_profile(
+                      eq, user.user_type or UserType.STUDENT,
+                      api_views._get_charge_profile_pricing_profile_for_user(user, eq), user,
+                  )
+              except ChargeProfile.DoesNotExist:
+                  return None
+              values = clean_group(eq, base)
+              extra = [c for c in (clean_group(eq, s) for s in sets) if c]
+              if extra:
+                  values[SAMPLE_SETS_KEY] = extra
+              safe = build_safe_input_values_for_charge_calculation(values, equipment=eq)
+              analysis = int(TimeCalculationEngine.calculate_time(profile, safe, slot_duration_minutes=eq.slot_duration_minutes) or 0)
+              slots = slots_needed_for_equipment(eq, analysis)
+              booked = slots * int(eq.slot_duration_minutes or 0)
+              charge, _ = ChargeCalculationEngine.calculate_charge(profile, safe, booked or analysis, selected_parameters=None)
+              charge = quantize_money(charge)
+              if UserType.is_external_user(user.user_type or ""):
+                  gst = api_views.get_external_gst_percent()
+                  if gst > 0:
+                      charge = quantize_money(charge + quantize_money(charge * gst / Decimal("100")))
+              return slots, booked, charge
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              all_templates = list(BookingInputTemplate.objects.select_related(
+                  "user", "equipment__internal_department", "equipment__equipment_group"
+              ).order_by("pk"))
+              templates = [t for t in all_templates if t.user.is_active and t.equipment_id]
+              eq_ids = {t.equipment_id for t in templates}
+              rows_by_eq = defaultdict(list)
+              for f in DynamicInputField.objects.filter(equipment_id__in=eq_ids).order_by("field_key", "pk"):
+                  rows_by_eq[f.equipment_id].append(f)
+              day_starts = defaultdict(dict)
+              slot_len = {t.equipment_id: int(t.equipment.slot_duration_minutes or 60) for t in templates}
+              for e, o, c in SlotMaster.objects.filter(equipment_id__in=eq_ids, is_active=True).values_list("equipment_id", "open_time", "close_time"):
+                  if o is not None:
+                      s = o.hour * 60 + o.minute
+                      end = c.hour * 60 + c.minute if c is not None else s + slot_len.get(e, 60)
+                      day_starts[e].setdefault(s, end + 1440 if end <= s else end)
+              holidays = set(Holiday.objects.filter(is_active=True, date__gte=NEXT_MONDAY, date__lt=NEXT_MONDAY + timedelta(days=7)).values_list("date", flat=True))
+              peak = None
+              if get_peak_settings is not None:
+                  try:
+                      peak = get_peak_settings()
+                  except Exception:
+                      peak = None
+              print(f"templates total={len(all_templates)} of active users={len(templates)} "
+                    f"(inactive users={sum(1 for t in all_templates if not t.user.is_active)}) "
+                    f"users={len({t.user_id for t in templates})} equipment={len(eq_ids)} week checked={NEXT_MONDAY}")
+
+              estimates = {}
+              for t in templates:
+                  eq, user = t.equipment, t.user
+                  ut = str(user.user_type or "")
+                  staff = ut in ADMIN_CODES
+                  is_3d = eq.profile_type == EquipmentProfileType.PRINT_3D
+                  values = t.input_values if isinstance(t.input_values, dict) else {}
+                  options = t.options if isinstance(t.options, dict) else {}
+                  base, sets = split_sample_sets(values)
+                  try:
+                      if (eq.status or "").strip() != EquipmentStatus.ACTIVE:
+                          add("equipment_not_operational", t)
+                      block = template_booking_block(user, eq)
+                      if block:
+                          add("not_allowed", t)
+                          reasons[re.sub(r"\d+", "#", block)[:90]] += 1
+                      elif peak is not None and peak.enabled and peak.block_external_users and is_peak_blockable_user(user):
+                          add("peak_window_paused", t)
+
+                      rows = rows_by_eq[eq.pk]
+                      typed = [f for f in rows if ut and f.user_type == ut]
+                      fields = {}
+                      for f in (typed or [f for f in rows if not f.user_type]):
+                          fields.setdefault(f.field_key, f)
+                      present = dict(base)
+                      for k, v in base.items():
+                          if k.startswith("_") or k == "comments" or blank(v):
+                              continue
+                          if k.endswith("_elements"):
+                              parent = fields.get(k[: -len("_elements")])
+                              if parent is None or parent.field_type != DynamicInputFieldType.PERIODIC_TABLE:
+                                  add("field_removed", t)
+                              continue
+                          f = fields.get(k)
+                          if f is None:
+                              add("field_removed", t)
+                              present.pop(k, None)
+                              continue
+                          if f.field_type in CHOICE_TYPES and choices(f):
+                              ch = choices(f)
+                              if f.field_type == DynamicInputFieldType.MULTI_SELECT:
+                                  picked = [str(x).strip() for x in (v if isinstance(v, list) else str(v).split(",")) if str(x).strip()]
+                                  gone = [x for x in picked if x not in ch]
+                                  if gone:
+                                      add("option_invalid", t)
+                                      if len(gone) == len(picked):
+                                          present.pop(k, None)
+                              elif str(v) not in ch:
+                                  add("option_invalid", t)
+                                  present.pop(k, None)
+                      for k, f in fields.items():
+                          if not f.is_required or f.field_type in (DynamicInputFieldType.TOGGLE, DynamicInputFieldType.ICPMS_STANDARD_COVERAGE):
+                              continue
+                          if is_3d and k in ("A", "B", "C"):
+                              continue
+                          if blank(present.get(k)) and blank(f.default_value):
+                              add("required_missing", t)
+
+                      if sets and not sample_sets_allowed(eq):
+                          add("sample_sets_disabled", t)
+                          sets = []
+                      else:
+                          if len(sets) > MAX_SAMPLE_SETS:
+                              add("too_many_sample_sets", t)
+                          if combined_max_error(eq, values, booking_user=user):
+                              add("combined_max", t)
+
+                      label_keys = {(f.field_label or f.field_key): f.field_key for f in fields.values()}
+                      for group in [base, *sets]:
+                          g = dict(group)
+                          for _ in range(8):
+                              msg = api_views._validate_dynamic_numeric_input_limits(eq, g, booking_user=user, check_max=True)
+                              if not msg:
+                                  break
+                              m_less, m_more = LESS.match(msg), MORE.match(msg)
+                              m = m_less or m_more
+                              label = m.group("label") if m else None
+                              key = label_keys.get(label)
+                              if key is None:
+                                  key = next((f.field_key for f in rows if (f.field_label or f.field_key) == label), None)
+                                  add("numeric_on_hidden_field", t)
+                              elif not (is_3d and key in ("A", "B", "C")):
+                                  add("numeric_min" if m_less else "numeric_formula_max" if (m_more and m_more.group("formula")) else "numeric_max", t)
+                              if key is None or key not in g:
+                                  break
+                              g.pop(key)
+
+                      est = None
+                      if not staff and not is_3d and not (issues["required_missing"] | issues["too_many_sample_sets"]) & {t.pk}:
+                          try:
+                              est = estimate(eq, user, base, sets)
+                          except Exception as exc:  # noqa: BLE001
+                              errors[f"estimate:{type(exc).__name__}"] += 1
+                          else:
+                              if est is None:
+                                  add("no_charge_profile", t)
+                      if est:
+                          estimates[t.pk] = est
+                          slots, booked, charge = est
+                          starts = sorted(day_starts[eq.pk])
+                          if starts and slots > len(starts):
+                              add("slots_exceed_day", t)
+
+                      if t.preferred_weekday is not None and t.preferred_start_time is not None:
+                          wd, st = t.preferred_weekday, t.preferred_start_time
+                          starts = sorted(day_starts[eq.pk])
+                          if not UserType.is_external_user(ut):
+                              lo, hi = getattr(eq, "weekly_view_time_from", None), getattr(eq, "weekly_view_time_to", None)
+                              lo = lo.hour * 60 + lo.minute if lo else None
+                              hi = hi.hour * 60 + hi.minute if hi else None
+                              ends = day_starts[eq.pk]
+                              starts = [s for s in starts if (lo is None or s >= lo) and (hi is None or ends[s] % 1440 <= hi)]
+                          minute = st.hour * 60 + st.minute
+                          if est and (t.preferred_slot_count or 1) != est[0]:
+                              add("preferred_count_differs", t)
+                          if wd >= 5:
+                              add("preferred_weekend", t)
+                          elif starts and minute not in starts:
+                              add("preferred_slot_missing", t)
+                          else:
+                              if starts and est and est[0] > len(starts) - starts.index(minute):
+                                  add("preferred_slot_too_short", t)
+                              target = NEXT_MONDAY + timedelta(days=wd)
+                              if target in holidays:
+                                  add("preferred_holiday", t)
+                              elif not staff:
+                                  try:
+                                      ok, _ = equipment_bookable_on_date(eq, target, st)
+                                  except Exception:  # noqa: BLE001
+                                      ok = True
+                                  if not ok:
+                                      add("preferred_mode_unavailable", t)
+
+                      if est and not staff:
+                          booked = est[1]
+                          try:
+                              summary = build_booking_quota_summary(user, eq, NEXT_MONDAY)
+                              if summary.get("applies") and booked:
+                                  periods = [p for p in summary.get("periods") or [] if int(p["limit_minutes"]) < UNLIMITED.get(p["period"], 10**9)]
+                                  if any(booked > int(p["limit_minutes"]) for p in periods):
+                                      add("quota_over_limit", t)
+                                  elif summary.get("remaining_minutes") is not None and booked > summary["remaining_minutes"]:
+                                      add("quota_low", t)
+                          except Exception as exc:  # noqa: BLE001
+                              errors[f"quota:{type(exc).__name__}"] += 1
+                          charge = est[2]
+                          if charge and charge > 0 and not UserType.is_external_user(ut):
+                              try:
+                                  wallet = user.get_accessible_wallet()
+                                  if wallet is None:
+                                      add("no_wallet", t)
+                                  else:
+                                      dept = eq.internal_department
+                                      subs = SubWallet.objects.filter(wallet=wallet)
+                                      sub = subs.filter(department=dept).first() if dept else subs.filter(department__name="General").first()
+                                      if sub is None:
+                                          add("wallet_low", t)
+                                      else:
+                                          _a, _d, msg = compute_booking_payment_split(sub, charge, user_type=user.user_type, create_as_hold=False)
+                                          if msg:
+                                              add("wallet_low", t)
+                              except Exception as exc:  # noqa: BLE001
+                                  errors[f"wallet:{type(exc).__name__}"] += 1
+
+                      if options.get("atmosphere_sensitive_sample") is True and not getattr(eq, "atmosphere_sensitive_sample_enabled", False):
+                          add("option_not_offered", t)
+                      ws = options.get("research_workspace")
+                      if ws and ResearchWorkspace is not None:
+                          try:
+                              with transaction.atomic():
+                                  w = ResearchWorkspace.objects.filter(pk=ws).first()
+                                  usable = w is not None and not w.is_archived and (
+                                      w.owner_id == user.pk or w.members.filter(user=user, revoked_at__isnull=True).exists())
+                          except Exception:  # noqa: BLE001
+                              usable = False
+                          if not usable:
+                              add("workspace_unavailable", t)
+
+                      probe_copy = copy.copy(t)
+                      probe_copy.options = dict(options)
+                      if _normalise_template(probe_copy):
+                          add("legacy_slot_options_normalised", t)
+                  except Exception as exc:  # noqa: BLE001
+                      errors[f"template:{type(exc).__name__}"] += 1
+
+              # Duplicates: same user, equipment, inputs, options and preferred slot.
+              dup = defaultdict(list)
+              for t in templates:
+                  dup[(t.user_id, t.equipment_id, norm(t.input_values), json.dumps(t.options or {}, sort_keys=True),
+                       t.preferred_weekday, str(t.preferred_start_time))].append(t)
+              for group in dup.values():
+                  for t in group[1:]:
+                      add("duplicate", t)
+
+              # Last use: a booking by the owner on the same equipment with the same inputs after the template
+              # was saved, or (once deployed) a booking whose CREATED event names the template.
+              pairs = {(t.user_id, t.equipment_id) for t in templates}
+              last_exact, last_any = {}, {}
+              qs = Booking.objects.filter(user_id__in={u for u, _ in pairs}, equipment_id__in=eq_ids).values_list(
+                  "user_id", "equipment_id", "input_values", "created_at")
+              for u, e, iv, created in qs.iterator(chunk_size=2000):
+                  if (u, e) not in pairs or created is None:
+                      continue
+                  k = (u, e, norm(iv))
+                  last_exact[k] = max(last_exact.get(k, created), created)
+                  last_any[(u, e)] = max(last_any.get((u, e), created), created)
+              by_event = {}
+              try:
+                  with transaction.atomic():
+                      for meta, created in BookingEvent.objects.filter(metadata__has_key="booking_template_id").values_list("metadata", "created_at"):
+                          tid = (meta or {}).get("booking_template_id")
+                          if isinstance(tid, int):
+                              by_event[tid] = max(by_event.get(tid, created), created)
+              except Exception as exc:  # noqa: BLE001
+                  errors[f"events:{type(exc).__name__}"] += 1
+              usage = Counter()
+              for t in templates:
+                  seen = [d for d in (by_event.get(t.pk), last_exact.get((t.user_id, t.equipment_id, norm(t.input_values)))) if d and d >= t.created_at]
+                  last = max(seen) if seen else None
+                  if last is None:
+                      add("never_used", t)
+                      any_after = last_any.get((t.user_id, t.equipment_id))
+                      usage["never (same inputs); booked this equipment since saving" if any_after and any_after >= t.created_at else "never (same inputs); no booking on this equipment since saving"] += 1
+                  else:
+                      age = (NOW - last).days
+                      usage["used <=30 days ago" if age <= 30 else "used 31-90 days ago" if age <= 90 else "used >90 days ago"] += 1
+              print(f"bookings recording the template used (CREATED event): {len(by_event)} templates")
+
+              print("\n== issues: templates per issue (sample template ids) ==")
+              def show(title, codes):
+                  print(f"-- {title}")
+                  for code in sorted(codes, key=lambda c: -len(issues.get(c, ()))):
+                      if issues.get(code):
+                          print(f"  {code}: {len(issues[code])}  e.g. {samples[code]}")
+              show("booking fails as saved", FAILS)
+              show("booking likely fails (quota left / wallet next week)", LIKELY_FAILS)
+              show("books, but not as saved", DEGRADED)
+              show("information", set(issues) - FAILS - LIKELY_FAILS - DEGRADED)
+
+              fail_ids = set().union(*(issues[c] for c in FAILS)) if any(issues[c] for c in FAILS) else set()
+              likely_ids = set().union(*(issues[c] for c in LIKELY_FAILS)) - fail_ids if any(issues[c] for c in LIKELY_FAILS) else set()
+              degraded_ids = (set().union(*(issues[c] for c in DEGRADED)) if any(issues[c] for c in DEGRADED) else set()) - fail_ids - likely_ids
+              clean = len(templates) - len(fail_ids | likely_ids | degraded_ids)
+              fixable = set().union(*(issues[c] for c in FAILS - {"equipment_not_operational", "not_allowed", "no_charge_profile"})) if templates else set()
+              print(f"\n== Wednesday outcome (templates of active users) ==\n  fails as saved: {len(fail_ids)} "
+                    f"(fixable by editing the template: {len(fixable)}; users: {len({t.user_id for t in templates if t.pk in fail_ids})})\n"
+                    f"  likely fails (quota / wallet): {len(likely_ids)}\n  books but not as saved: {len(degraded_ids)}\n  clean: {clean}")
+              print(f"  templates of active equipment that fail as saved: {sum(1 for t in templates if t.pk in fail_ids and t.pk not in issues['equipment_not_operational'])}")
+
+              print("\n== not allowed: reasons (digits masked) ==")
+              for r, n in reasons.most_common(10):
+                  print(f"  {n}  {r}")
+
+              print("\n== most affected equipment (templates failing as saved / any issue) ==")
+              eq_fail = Counter()
+              eq_any = Counter()
+              for t in templates:
+                  lab = eq_label(t.equipment)
+                  if t.pk in fail_ids:
+                      eq_fail[lab] += 1
+                  if any(t.pk in s for c, s in issues.items() if c not in ("never_used", "duplicate", "legacy_slot_options_normalised")):
+                      eq_any[lab] += 1
+              for lab, n in eq_fail.most_common(15):
+                  top = ", ".join(f"{c}={k}" for c, k in per_eq[lab].most_common(4) if c in FAILS)
+                  print(f"  {n:4d} fail / {eq_any[lab]:4d} any | {lab} | {top}")
+
+              print("\n== last use ==")
+              for k, n in usage.most_common():
+                  print(f"  {k}: {n}")
+              print(f"  duplicate templates (extra copies): {len(issues['duplicate'])}")
+              print(f"  legacy slot-option combinations the current code normalises: {len(issues['legacy_slot_options_normalised'])}")
+              print("\n== not checked ==\n  project / grant references: templates do not store them (only a research workspace, checked above)\n"
+                    "  accessories: not saved in templates; equipment modes are checked via choice inputs and the preferred slot")
+              if errors:
+                  print(f"\n== check errors (counted, not fatal) ==\n  {dict(errors)}")
+
+              if TH is not None:
+                  print("\n== agreement with deployed template_health ==")
+                  mod = defaultdict(set)
+                  for t in templates:
+                      try:
+                          h = TH.check_template(t, t.user, use_cache=False, now=NOW)
+                      except TypeError:
+                          h = TH.check_template(t, t.user, use_cache=False)
+                      for i in h.get("issues") or []:
+                          mod[i["code"]].add(t.pk)
+                  agree = True
+                  for code in sorted(SHARED | set(mod)):
+                      p, m = issues.get(code, set()), mod.get(code, set())
+                      if not p and not m:
+                          continue
+                      same = p == m
+                      agree &= same or code not in SHARED
+                      print(f"  {'OK  ' if same else 'DIFF'} {code}: probe={len(p)} module={len(m)} both={len(p & m)}"
+                            + ("" if same else f" probe-only e.g. {sorted(p - m)[:N]} module-only e.g. {sorted(m - p)[:N]}"))
+                  print(f"  overall: {'AGREE' if agree else 'DIFFERENCES ABOVE'}")
+              else:
+                  print("\n(template_health not deployed yet: agreement check skipped)")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
