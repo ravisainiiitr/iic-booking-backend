@@ -581,6 +581,22 @@ def _validate_dynamic_numeric_input_limits(
     existed (e.g. 0) is kept rather than blocking the edit. ``check_max=False`` checks only the minimum,
     plus a formula maximum when ``check_formula_max`` is True (it defaults to ``check_max``).
     """
+    problem = next(
+        _numeric_limit_problems(
+            equipment, input_values, booking_user, user_type=user_type, baseline=baseline,
+            check_max=check_max, check_formula_max=check_formula_max,
+        ),
+        None,
+    )
+    return problem["message"] if problem else None
+
+
+def _numeric_limit_problems(
+    equipment, input_values, booking_user=None, *, user_type=None, baseline=None, check_max=True,
+    check_formula_max=None,
+):
+    """Yield each NUMERIC value out of range, in the order _validate_dynamic_numeric_input_limits checks them:
+    {key, label, kind ("min" / "max" / "formula_max"), value, limit, message}."""
     from .numeric_field_limits import formula_fallback_value, numeric_max_formula, resolve_numeric_field_bounds
 
     if check_formula_max is None:
@@ -593,7 +609,7 @@ def _validate_dynamic_numeric_input_limits(
     )
     fields = [f for f in all_fields if f.field_type == DynamicInputFieldType.NUMERIC]
     if not fields:
-        return None
+        return
     effective_user_type = str(user_type or getattr(booking_user, "user_type", "") or "")
     floor_keys = _numeric_min_floor_keys(equipment, all_fields, effective_user_type)
     labels = {}
@@ -639,20 +655,26 @@ def _validate_dynamic_numeric_input_limits(
             if unchanged_legacy:
                 continue
             pretty = int(min_v) if float(min_v).is_integer() else round(min_v, 6)
-            return f"{label} cannot be less than {pretty}."
+            yield {
+                "key": key, "label": label, "kind": "min", "value": value, "limit": pretty,
+                "message": f"{label} cannot be less than {pretty}.",
+            }
+            continue
         if value <= max_v:
             continue
         formula = numeric_max_formula(field.options) if formula_max is not None else ""
         if not (check_max or (check_formula_max and formula)):
             continue
         pretty = int(max_v) if float(max_v).is_integer() else round(max_v, 6)
+        problem = {"key": key, "label": label, "kind": "formula_max" if formula else "max", "value": value, "limit": pretty}
         if formula and re.search(r"[A-Z]", formula):
-            return (
+            problem["message"] = (
                 f"{label} cannot be greater than {pretty} "
                 f"({_formula_limit_note(formula, input_values, labels, fallbacks)})."
             )
-        return f"{label} cannot be greater than {pretty}."
-    return None
+        else:
+            problem["message"] = f"{label} cannot be greater than {pretty}."
+        yield problem
 
 
 def _sample_set_groups_limit_error(
@@ -3845,6 +3867,18 @@ def _booking_created_event_metadata(request, equipment, *, atmosphere_sensitive_
                     "equipment_group_id": equipment.equipment_group_id,
                 }
             )
+    from .models import BookingInputTemplate
+
+    template_id = request.data.get("booking_template_id")
+    user = getattr(request, "user", None)
+    if (
+        template_id not in (None, "")
+        and not isinstance(template_id, bool)
+        and str(template_id).isdigit()
+        and getattr(user, "pk", None) is not None
+        and BookingInputTemplate.objects.filter(pk=int(template_id), user_id=user.pk).exists()
+    ):
+        metadata["booking_template_id"] = int(template_id)
     return metadata or None
 
 

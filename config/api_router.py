@@ -258,6 +258,8 @@ from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
 from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
 from iic_booking.equipment.booking_templates import (
+    booking_template_attention,
+    booking_template_check,
     booking_template_detail,
     booking_template_preferred_slot,
     booking_templates,
@@ -1391,6 +1393,8 @@ urlpatterns = router.urls + [
     ),
     path("server-time/", server_time, name="server-time"),
     path("booking-templates/", booking_templates, name="booking-templates"),
+    path("booking-templates/check/", booking_template_check, name="booking-template-check"),
+    path("booking-templates/attention/", booking_template_attention, name="booking-template-attention"),
     path("booking-templates/<int:template_id>/", booking_template_detail, name="booking-template-detail"),
     path(
         "booking-templates/<int:template_id>/preferred-slot/",

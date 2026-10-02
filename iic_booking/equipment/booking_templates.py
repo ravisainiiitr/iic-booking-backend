@@ -143,8 +143,9 @@ def _sample_set_count(input_values):
     return 1 + (sum(1 for s in extra if isinstance(s, dict)) if isinstance(extra, list) else 0)
 
 
-def _serialize(template, *, labels=None, booking_block=False):
-    """``booking_block`` is the template_booking_block() result, or False when it was not computed."""
+def _serialize(template, *, labels=None, booking_block=False, health=None):
+    """``booking_block`` is the template_booking_block() result, or False when it was not computed;
+    ``health`` is the template_health.check_template() result when asked for."""
     equipment = template.equipment
     department = getattr(equipment, "internal_department", None) if equipment is not None else None
     input_values = template.input_values or {}
@@ -174,6 +175,8 @@ def _serialize(template, *, labels=None, booking_block=False):
         data["booking_block_reason"] = booking_block or (
             None if operational else "This equipment is not operational right now."
         )
+    if health is not None:
+        data["health"] = health
     return data
 
 
@@ -293,22 +296,32 @@ def _name_taken_response(name):
 
 
 def _serialize_one(user, template):
+    from .template_health import check_template, peak_light
+
     return _serialize(
         template,
         labels=_field_labels(user, [template.equipment_id]),
         booking_block=template_booking_block(user, template.equipment),
+        health=check_template(template, user, light=peak_light()),
     )
 
 
+def _wants_health(request) -> bool:
+    return str(request.query_params.get("health") or "").strip().lower() in ("1", "true", "yes")
+
+
 def _owned_templates(user):
-    return BookingInputTemplate.objects.filter(user=user).select_related("equipment__internal_department")
+    return BookingInputTemplate.objects.filter(user=user).select_related(
+        "equipment__internal_department", "equipment__equipment_group"
+    )
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def booking_templates(request):
     """GET: all of the user's templates (``?equipment=<id>`` for one equipment, ``?department=<id>`` for one
-    department). POST: create a template from just an equipment id, a name and the booking inputs."""
+    department; ``?health=1`` adds whether each would book cleanly now). POST: create a template from just an
+    equipment id, a name and the booking inputs."""
     user = request.user
     if request.method == "GET":
         qs = _owned_templates(user)
@@ -322,8 +335,20 @@ def booking_templates(request):
         equipment_by_id = {t.equipment_id: t.equipment for t in templates}
         labels = _field_labels(user, equipment_by_id.keys())
         blocks = {pk: template_booking_block(user, eq) for pk, eq in equipment_by_id.items()}
+        if _wants_health(request):
+            from .template_health import check_template, peak_light
+
+            light = peak_light()
+            health = {t.pk: check_template(t, user, light=light) for t in templates}
+        else:
+            health = {}
         return Response(
-            {"templates": [_serialize(t, labels=labels, booking_block=blocks[t.equipment_id]) for t in templates]}
+            {
+                "templates": [
+                    _serialize(t, labels=labels, booking_block=blocks[t.equipment_id], health=health.get(t.pk))
+                    for t in templates
+                ]
+            }
         )
 
     data = request.data if isinstance(request.data, dict) else {}
@@ -416,6 +441,80 @@ def booking_template_detail(request, template_id):
         except IntegrityError:
             return _name_taken_response(template.name)
     return Response(_serialize_one(request.user, template))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def booking_template_check(request):
+    """Advice for a template being created or edited: the checks of a saved template, run on the draft.
+
+    Body: ``equipment``, ``input_values``, ``options``, ``preferred_slot`` ({weekday, start_time, slot_count}).
+    Nothing is saved.
+    """
+    from .template_health import check_values, parse_preferred
+
+    data = request.data if isinstance(request.data, dict) else {}
+    equipment_id = data.get("equipment")
+    if not str(equipment_id or "").isdigit():
+        return Response({"error": "Choose the equipment for this template."}, status=status.HTTP_400_BAD_REQUEST)
+    equipment = (
+        Equipment.objects.select_related("internal_department", "equipment_group").filter(pk=int(equipment_id)).first()
+    )
+    if equipment is None:
+        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+    input_values = data.get("input_values") or {}
+    if not isinstance(input_values, dict):
+        return Response({"error": "input_values must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+    if len(json.dumps(input_values)) > MAX_INPUT_VALUES_BYTES:
+        return Response({"error": "The template's inputs are too large to check."}, status=status.HTTP_400_BAD_REQUEST)
+    options, error = _clean_options(data.get("options"))
+    if error:
+        return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+    preferred = parse_preferred(data.get("preferred_slot"))
+    return Response(check_values(request.user, equipment, input_values, options, preferred))
+
+
+ATTENTION_CACHE_SECONDS = 600
+ATTENTION_LIST_LIMIT = 10
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def booking_template_attention(request):
+    """How many of the user's templates would fail at booking time for a reason they can fix (dashboard notice)."""
+    from django.core.cache import cache
+
+    from .template_health import ERROR, UNFIXABLE_CODES, check_template, peak_light
+
+    user = request.user
+    light = peak_light()
+    templates = list(_owned_templates(user))
+    if not templates:
+        return Response({"total": 0, "needs_attention": 0, "templates": []})
+    stamp = max((t.updated_at.timestamp() if t.updated_at else 0) for t in templates)
+    key = f"tplattention:v1:{user.pk}:{len(templates)}:{stamp}"
+    cached = cache.get(key)
+    if cached is not None:
+        return Response(cached)
+    items = []
+    for template in templates:
+        health = check_template(template, user, light=light)
+        if not health.get("fixable_error_count"):
+            continue
+        first = next(i for i in health["issues"] if i["severity"] == ERROR and i["code"] not in UNFIXABLE_CODES)
+        items.append({
+            "id": template.pk,
+            "name": template.name,
+            "equipment": template.equipment_id,
+            "equipment_name": getattr(template.equipment, "name", None),
+            "equipment_code": getattr(template.equipment, "code", None),
+            "issue": first["message"],
+            "field": first.get("field"),
+            "error_count": health["fixable_error_count"],
+        })
+    result = {"total": len(templates), "needs_attention": len(items), "templates": items[:ATTENTION_LIST_LIMIT]}
+    cache.set(key, result, 60 if light else ATTENTION_CACHE_SECONDS)
+    return Response(result)
 
 
 @api_view(["GET"])
