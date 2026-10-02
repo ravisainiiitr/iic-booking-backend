@@ -74,6 +74,7 @@ from .models import (
     UserGroupMember,
     Project,
     AuthSettings,
+    MobileDeviceSession,
     UserTypeInactivityTimeout,
     UserEquipmentSupplyChainRole,
     PortalMigrationState,
@@ -491,18 +492,15 @@ class UserAdmin(auth_admin.UserAdmin):
         return redirect("admin:users_user_changelist")
 
     def force_logout_view(self, request, user_id):
-        """Invalidate auth token for this user so they must sign in again."""
+        """Invalidate auth token and mobile device sessions so the user must sign in again."""
         from django.shortcuts import redirect, get_object_or_404
         from django.contrib import messages
-        from django.core.cache import cache
-        from iic_booking.users.api.token_auth import CACHE_KEY_PREFIX
+        from iic_booking.users.mobile_sessions import REASON_ADMIN_FORCE_LOGOUT, revoke_user_sessions
 
         user = get_object_or_404(User, pk=user_id)
-        tokens = list(Token.objects.filter(user=user).values_list("key", flat=True))
-        if tokens:
-            for key in tokens:
-                cache.delete(f"{CACHE_KEY_PREFIX}{key}")
-            Token.objects.filter(user=user).delete()
+        deleted, _ = Token.objects.filter(user=user).delete()
+        revoked = revoke_user_sessions(user, REASON_ADMIN_FORCE_LOGOUT)
+        if deleted or revoked:
             messages.success(request, f"User {user.email} has been signed out. They must sign in again.")
         else:
             messages.info(request, f"User {user.email} had no active session.")
@@ -643,17 +641,14 @@ class UserAdmin(auth_admin.UserAdmin):
 
     @admin.action(description="Force logout selected users")
     def force_logout_users(self, request, queryset):
-        """Invalidate all auth tokens for selected users so they must sign in again."""
-        from django.core.cache import cache
-        from iic_booking.users.api.token_auth import CACHE_KEY_PREFIX
+        """Invalidate all auth tokens and mobile device sessions for selected users."""
+        from iic_booking.users.mobile_sessions import REASON_ADMIN_FORCE_LOGOUT, revoke_user_sessions
 
         count = 0
         for user in queryset:
-            tokens = list(Token.objects.filter(user=user).values_list("key", flat=True))
-            if tokens:
-                for key in tokens:
-                    cache.delete(f"{CACHE_KEY_PREFIX}{key}")
-                Token.objects.filter(user=user).delete()
+            deleted, _ = Token.objects.filter(user=user).delete()
+            revoked = revoke_user_sessions(user, REASON_ADMIN_FORCE_LOGOUT)
+            if deleted or revoked:
                 count += 1
         if count > 0:
             self.message_user(
@@ -674,6 +669,62 @@ class UserAdmin(auth_admin.UserAdmin):
         pending_count = User.objects.filter(email_verified=True, admin_approved=False).count()
         extra_context["pending_count"] = pending_count
         return super().changelist_view(request, extra_context)
+
+
+@admin.register(MobileDeviceSession)
+class MobileDeviceSessionAdmin(admin.ModelAdmin):
+    """Mobile app device sessions. Token hashes are never shown."""
+
+    list_display = [
+        "user",
+        "device_name",
+        "platform",
+        "app_version",
+        "created_at",
+        "last_used_at",
+        "refresh_expires_at",
+        "revoked_at",
+        "revoke_reason",
+    ]
+    list_filter = ["platform", "require_biometric", ("revoked_at", admin.EmptyFieldListFilter)]
+    search_fields = ["user__email", "user__name", "device_name", "device_id"]
+    list_select_related = ["user"]
+    ordering = ["-created_at"]
+    fields = [
+        "user",
+        "device_id",
+        "device_name",
+        "platform",
+        "app_version",
+        "require_biometric",
+        "created_at",
+        "last_used_at",
+        "last_ip",
+        "access_expires_at",
+        "refreshed_at",
+        "refresh_expires_at",
+        "absolute_expires_at",
+        "revoked_at",
+        "revoke_reason",
+    ]
+    readonly_fields = fields
+    actions = ["revoke_selected_sessions"]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_revoke_permission(self, request):
+        return request.user.has_perm("users.change_mobiledevicesession")
+
+    @admin.action(description="Revoke selected sessions", permissions=["revoke"])
+    def revoke_selected_sessions(self, request, queryset):
+        from iic_booking.users.mobile_sessions import REASON_ADMIN_REVOKED, revoke_session
+
+        count = sum(1 for session in queryset.filter(revoked_at__isnull=True) if revoke_session(session, REASON_ADMIN_REVOKED))
+        self.message_user(request, f"Revoked {count} mobile session(s).")
 
 
 @admin.register(AuthSettings)

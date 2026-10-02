@@ -1732,6 +1732,9 @@ def verify_forgot_password_otp_and_set_password(request):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
     user.set_password(new_password)
     user.save(update_fields=["password"])
+    from iic_booking.users.mobile_sessions import REASON_PASSWORD_CHANGED, revoke_user_sessions
+
+    revoke_user_sessions(user, REASON_PASSWORD_CHANGED)
     return Response(
         {"message": "Password has been reset successfully. You can now sign in with your new password."},
         status=status.HTTP_200_OK,
@@ -1813,6 +1816,13 @@ def account_password(request):
 
     user.set_password(new_password)
     user.save(update_fields=["password"])
+    from iic_booking.users.mobile_sessions import REASON_PASSWORD_CHANGED, is_mobile_session, revoke_user_sessions
+
+    revoke_user_sessions(
+        user,
+        REASON_PASSWORD_CHANGED,
+        exclude_session_id=request.auth.pk if is_mobile_session(request.auth) else None,
+    )
     _send_password_changed_notice(user, was_set=not has_password)
     return Response(
         {
@@ -2748,8 +2758,13 @@ def logout(request):
             omniport_logout_url = f"{settings.OMNIPORT_LOGOUT_URL}?{urlencode(logout_params)}"
             logger.info(f"User {user.email} logged in via Omniport, providing logout URL: {omniport_logout_url}")
         
-        # Delete the token for the current user
-        Token.objects.filter(user=user).delete()
+        from iic_booking.users.mobile_sessions import REASON_LOGOUT, is_mobile_session, revoke_session
+
+        if is_mobile_session(request.auth):
+            # App sign-out ends only this device session; the web Token stays valid.
+            revoke_session(request.auth, REASON_LOGOUT)
+        else:
+            Token.objects.filter(user=user).delete()
         
         response_data = {
             "message": "Successfully logged out",

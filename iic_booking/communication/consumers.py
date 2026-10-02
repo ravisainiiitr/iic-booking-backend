@@ -44,7 +44,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             # Authenticate user
             user = await self.authenticate_user(token)
             if not user:
-                logger.warning(f"WebSocket connection rejected: Invalid token (token: {token[:10]}...)")
+                logger.warning("WebSocket connection rejected: Invalid token")
                 await self.close(code=4002)  # Custom close code for invalid token
                 return
             
@@ -117,7 +117,12 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def authenticate_user(self, token_key):
-        """Authenticate user from token."""
+        """Authenticate user from a web Token key or a mobile ``iicm_`` access key."""
+        from iic_booking.users.mobile_sessions import ACCESS_PREFIX, authenticate_mobile_access_key
+
+        if token_key and token_key.startswith(ACCESS_PREFIX):
+            result = authenticate_mobile_access_key(token_key)
+            return result[0] if result else None
         try:
             token = Token.objects.select_related("user").get(key=token_key)
             user = token.user
