@@ -6628,9 +6628,11 @@ def lab_operator_dashboard(request):
             )
             m = getattr(mgr, "manager", None) if mgr else None
             if m and getattr(m, "email", None):
+                from iic_booking.users.display import name_with_honorific
+
                 current_oic = {
                     "id": m.id,
-                    "name": getattr(m, "name", None) or m.email,
+                    "name": name_with_honorific(m, mgr.honorific, default=getattr(m, "name", None) or m.email),
                     "email": m.email,
                 }
     except Exception:
@@ -8191,6 +8193,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
 
         # Accounts in charge (finance) + Lab Operator + OIC contacts for "undersigned" sections.
         try:
+            from iic_booking.users.display import name_with_honorific
             from iic_booking.users.models.user import User as UserModel
             from iic_booking.users.models.user_type import UserType as UserTypeEnum
             from .models import EquipmentManager, EquipmentOperator
@@ -8219,7 +8222,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
             if op_user:
                 lab_in_charge = {
                     "user_id": op_user.id,
-                    "name": op_user.name or op_user.email,
+                    "name": name_with_honorific(op_user, op_link.honorific, default=op_user.name or op_user.email),
                     "email": op_user.email,
                     "phone": op_user.phone_number,
                     "user_type": "operator",
@@ -8237,7 +8240,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
                 oic_contacts.append(
                     {
                         "user_id": m.id,
-                        "name": m.name or m.email,
+                        "name": name_with_honorific(m, link.honorific, default=m.name or m.email),
                         "email": m.email,
                         "phone": m.phone_number,
                         "user_type": "manager",

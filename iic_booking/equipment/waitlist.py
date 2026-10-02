@@ -371,6 +371,7 @@ def _resolve_equipment_contacts_for_short_notice_email(equipment: Equipment) -> 
     """
     try:
         from .models import EquipmentOperator, EquipmentManager
+        from iic_booking.users.display import name_with_honorific
 
         eq_id = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
         parts: list[str] = []
@@ -384,6 +385,7 @@ def _resolve_equipment_contacts_for_short_notice_email(equipment: Equipment) -> 
         op_user = getattr(op_link, "operator", None) if op_link else None
         if op_user:
             name = (getattr(op_user, "name", "") or getattr(op_user, "email", "") or "Lab operator").strip()
+            name = name_with_honorific(op_user, op_link.honorific, default=name)
             phone = (getattr(op_user, "phone_number", "") or "").strip()
             parts.append(f"Lab operator: {name}" + (f" ({phone})" if phone else ""))
 
@@ -397,6 +399,7 @@ def _resolve_equipment_contacts_for_short_notice_email(equipment: Equipment) -> 
             if not m:
                 continue
             name = (getattr(m, "name", "") or getattr(m, "email", "") or "OIC").strip()
+            name = name_with_honorific(m, link.honorific, default=name)
             phone = (getattr(m, "phone_number", "") or "").strip()
             parts.append(f"OIC: {name}" + (f" ({phone})" if phone else ""))
 

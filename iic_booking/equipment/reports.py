@@ -13,6 +13,7 @@ from typing import Any, Optional
 from django.db.models import Count, Prefetch, Q, Sum
 from django.utils import timezone
 
+from iic_booking.users.display import name_with_honorific
 from iic_booking.users.models.user_type import UserType
 
 from .models import (
@@ -694,6 +695,7 @@ def get_equipment_report_data(
                 disp = (getattr(u, "name", None) or "").strip()
                 if not disp and callable(getattr(u, "get_full_name", None)):
                     disp = (u.get_full_name() or "").strip()
+                disp = name_with_honorific(u, em.honorific, default=disp)
                 managers_payload.append(
                     {
                         "id": u.id,
@@ -708,6 +710,7 @@ def get_equipment_report_data(
                 disp = (getattr(u, "name", None) or "").strip()
                 if not disp and callable(getattr(u, "get_full_name", None)):
                     disp = (u.get_full_name() or "").strip()
+                disp = name_with_honorific(u, eo.honorific, default=disp)
                 operators_payload.append(
                     {
                         "id": u.id,

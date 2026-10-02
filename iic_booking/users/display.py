@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+# Titles that may already be part of a stored name ("Dr. Shriniwas Yadav", "Prof Dr X", "MRS. Y").
+_LEADING_TITLES_RE = re.compile(
+    r"^(?:(?:prof(?:essor)?|dr|mrs|mr|ms|miss)\b\.?[\s.,]*)+",
+    re.IGNORECASE,
+)
 
 
 def _is_faculty_user_type(user_type: Any) -> bool:
@@ -39,3 +46,32 @@ def get_user_display_name(user: Any, *, fallback_to_email: bool = True) -> str:
     if fallback_to_email:
         return (getattr(user, "email", None) or "").strip()
     return ""
+
+
+def strip_name_honorifics(name: str | None) -> str:
+    """Name without any leading titles (Mr, Mrs, Ms, Miss, Dr, Prof, Professor; dots and case optional)."""
+    cleaned = " ".join((name or "").split())
+    return _LEADING_TITLES_RE.sub("", cleaned).strip()
+
+
+def compose_honorific_name(name: str | None, honorific: str | None) -> str:
+    """
+    "<honorific> <name without its own titles>", e.g. ("Dr. Shriniwas Yadav", "Prof.") -> "Prof. Shriniwas Yadav".
+    Returns "" when the honorific is blank or the name has nothing left after removing titles.
+    """
+    title = (honorific or "").strip()
+    bare = strip_name_honorifics(name)
+    if not title or not bare:
+        return ""
+    return f"{title} {bare}"
+
+
+def name_with_honorific(user: Any, honorific: str | None, *, default: str = "") -> str:
+    """
+    Name of an equipment contact (OIC / Lab Operator) using the honorific chosen for that equipment.
+    The explicit honorific replaces any title in the stored name and the automatic faculty "Prof.";
+    a blank honorific (or a user without a real name) returns ``default`` unchanged.
+    """
+    if user is None:
+        return default
+    return compose_honorific_name(getattr(user, "name", None), honorific) or default

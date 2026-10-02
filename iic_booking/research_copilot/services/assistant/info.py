@@ -43,13 +43,15 @@ def _user_type_label(user) -> str:
 
 
 def contacts(eq) -> list[dict[str, Any]]:
+    from iic_booking.users.display import name_with_honorific
+
     out: list[dict[str, Any]] = []
     try:
         for m in eq.equipment_managers.select_related("manager").all()[:4]:
             u = m.manager
             out.append({
                 "role": "Officer in Charge",
-                "name": getattr(u, "name", "") or getattr(u, "email", ""),
+                "name": name_with_honorific(u, m.honorific, default=getattr(u, "name", "") or getattr(u, "email", "")),
                 "email": getattr(u, "email", "") or "",
                 "phone": " / ".join(p for p in (str(getattr(u, "phone_number", "") or "").strip(), (m.alternate_phone_number or "").strip()) if p),
                 "office": (m.office_address or "").strip(),
@@ -61,7 +63,7 @@ def contacts(eq) -> list[dict[str, Any]]:
             u = o.operator
             out.append({
                 "role": o.get_role_display() if hasattr(o, "get_role_display") else "Lab operator",
-                "name": getattr(u, "name", "") or getattr(u, "email", ""),
+                "name": name_with_honorific(u, o.honorific, default=getattr(u, "name", "") or getattr(u, "email", "")),
                 "email": getattr(u, "email", "") or "",
                 "phone": " / ".join(p for p in (str(getattr(u, "phone_number", "") or "").strip(), (o.alternate_phone_number or "").strip()) if p),
                 "office": (o.office_address or "").strip(),

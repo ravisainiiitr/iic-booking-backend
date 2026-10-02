@@ -20,6 +20,7 @@ from iic_booking.communication.email_branding import (
     trims_booking_note,
     user_display_name,
 )
+from iic_booking.users.display import name_with_honorific
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -239,7 +240,11 @@ def apply_lab_visit_details_to_context(context: dict, equipment) -> dict:
         else None
     )
     operator = getattr(operator_link, "operator", None)
-    operator_name = user_display_name(operator, fallback="") if operator else ""
+    operator_name = (
+        name_with_honorific(operator, operator_link.honorific, default=user_display_name(operator, fallback=""))
+        if operator
+        else ""
+    )
     operator_email = str(getattr(operator, "email", "") or "").strip() if operator else ""
     operator_phone = str(getattr(operator, "phone_number", "") or "").strip() if operator else ""
     lab_contact = _format_contact_block(operator_name, operator_email, operator_phone)
@@ -252,7 +257,11 @@ def apply_lab_visit_details_to_context(context: dict, equipment) -> dict:
         else None
     )
     manager = getattr(manager_link, "manager", None)
-    manager_name = user_display_name(manager, fallback="") if manager else ""
+    manager_name = (
+        name_with_honorific(manager, manager_link.honorific, default=user_display_name(manager, fallback=""))
+        if manager
+        else ""
+    )
     manager_email = str(getattr(manager, "email", "") or "").strip() if manager else ""
     manager_phone = str(getattr(manager, "phone_number", "") or "").strip() if manager else ""
     oic_contact = _format_contact_block(manager_name, manager_email, manager_phone)

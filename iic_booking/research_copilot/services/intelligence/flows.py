@@ -340,7 +340,13 @@ def equipment_card(turn: Turn, eq) -> dict[str, Any]:
         desc = desc[:597] + "..."
     oic = []
     try:
-        oic = [m.manager.name or m.manager.email for m in eq.equipment_managers.select_related("manager")[:3] if m.manager]
+        from iic_booking.users.display import name_with_honorific
+
+        oic = [
+            name_with_honorific(m.manager, m.honorific, default=m.manager.name or m.manager.email)
+            for m in eq.equipment_managers.select_related("manager")[:3]
+            if m.manager
+        ]
     except Exception:  # noqa: BLE001
         oic = []
     lines = [f"**{r['name']}**" + (f" ({r['code']})" if r["code"] else ""), ""]

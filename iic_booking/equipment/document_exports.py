@@ -450,7 +450,10 @@ def build_shipping_label_pdf(*, booking, billing_profile) -> bytes:
         if mgrs:
             m = getattr(mgrs[0], "manager", None)
             if m:
+                from iic_booking.users.display import name_with_honorific
+
                 oic_name = _safe_str(getattr(m, "name", None) or getattr(m, "email", "")).strip()
+                oic_name = name_with_honorific(m, getattr(mgrs[0], "honorific", ""), default=oic_name)
     except Exception:
         pass
 

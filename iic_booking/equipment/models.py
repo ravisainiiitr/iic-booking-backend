@@ -1107,6 +1107,23 @@ class EquipmentUserGroup(models.Model):
     def __str__(self):
         return f"{self.equipment.code} - {self.purpose} - {self.user_group.code}"
 
+
+class ContactHonorific(models.TextChoices):
+    """Title shown before an Officer in Charge / Lab Operator name for one equipment."""
+    AUTOMATIC = "", _("Automatic / none")
+    MR = "Mr.", _("Mr.")
+    MRS = "Mrs.", _("Mrs.")
+    MS = "Ms.", _("Ms.")
+    MISS = "Miss", _("Miss")
+    DR = "Dr.", _("Dr.")
+    PROF = "Prof.", _("Prof.")
+
+
+CONTACT_HONORIFIC_HELP_TEXT = _(
+    "Title shown before this person's name for this equipment. Leave blank to use the automatic title."
+)
+
+
 class EquipmentManager(models.Model):
     equipment_manager_id = models.AutoField(primary_key=True)
     equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name='equipment_managers')
@@ -1117,6 +1134,15 @@ class EquipmentManager(models.Model):
         verbose_name=_('Officer in Charge'),
         help_text=_('Officer in Charge for this equipment'),
         limit_choices_to={'user_type': UserType.MANAGER},
+    )
+    honorific = models.CharField(
+        max_length=8,
+        choices=ContactHonorific.choices,
+        blank=True,
+        default="",
+        db_default="",
+        verbose_name=_("Honorific"),
+        help_text=CONTACT_HONORIFIC_HELP_TEXT,
     )
     disable_booking_confirmation_email = models.BooleanField(
         default=False,
@@ -1143,7 +1169,10 @@ class EquipmentManager(models.Model):
         verbose_name_plural = _('Equipment Office in Charge')
 
     def __str__(self):
-        return f"{self.equipment.code} - {self.manager.name or self.manager.email}"
+        from iic_booking.users.display import name_with_honorific
+
+        name = name_with_honorific(self.manager, self.honorific, default=self.manager.name or self.manager.email)
+        return f"{self.equipment.code} - {name}"
 
 
 class EquipmentPI(models.Model):
@@ -1253,6 +1282,15 @@ class EquipmentOperator(models.Model):
     equipment_operator_id = models.AutoField(primary_key=True)
     equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name='equipment_operators')
     operator = models.ForeignKey(User, on_delete=models.PROTECT, related_name='equipment_operator', help_text='Operator of the equipment', limit_choices_to={'user_type': UserType.OPERATOR})
+    honorific = models.CharField(
+        max_length=8,
+        choices=ContactHonorific.choices,
+        blank=True,
+        default="",
+        db_default="",
+        verbose_name=_("Honorific"),
+        help_text=CONTACT_HONORIFIC_HELP_TEXT,
+    )
     role = models.CharField(
         max_length=16,
         choices=Role.choices,
@@ -1280,8 +1318,11 @@ class EquipmentOperator(models.Model):
     updated_at = models.DateTimeField(auto_now=True, help_text='Date and time the equipment operator was updated')
 
     def __str__(self):
+        from iic_booking.users.display import name_with_honorific
+
         r = (self.role or "").lower()
-        return f"{self.equipment.code} - {self.operator.name or self.operator.email} ({r})"
+        name = name_with_honorific(self.operator, self.honorific, default=self.operator.name or self.operator.email)
+        return f"{self.equipment.code} - {name} ({r})"
 
     class Meta:
         constraints = [

@@ -67,7 +67,9 @@ from .models import (
     PrintMaterial,
     PrintAnalysis,
     PrintAnalysisBatch,
+    ContactHonorific,
 )
+from iic_booking.users.display import name_with_honorific
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.department import Department, DepartmentType
@@ -464,6 +466,7 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
         fields = [
             'equipment_operator_id', 
             'operator', 
+            'honorific',
             'role',
             'role_display',
             'operator_name',
@@ -537,7 +540,7 @@ class EquipmentOperatorSerializer(serializers.ModelSerializer):
         if acting:
             return acting.get_display_name()
         if obj.operator:
-            return obj.operator.get_display_name()
+            return name_with_honorific(obj.operator, obj.honorific, default=obj.operator.get_display_name())
         return None
     
     def get_operator_email(self, obj):
@@ -577,6 +580,7 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
         fields = [
             'equipment_manager_id', 
             'manager', 
+            'honorific',
             'manager_name',
             'manager_email',
             'manager_phone',
@@ -598,9 +602,9 @@ class EquipmentManagerSerializer(serializers.ModelSerializer):
         ]
     
     def get_manager_name(self, obj):
-        """Return manager's display name (Prof. for faculty) or email."""
+        """Return manager's display name (equipment honorific, else Prof. for faculty) or email."""
         if obj.manager:
-            return obj.manager.get_display_name()
+            return name_with_honorific(obj.manager, obj.honorific, default=obj.manager.get_display_name())
         return None
     
     def get_manager_email(self, obj):
@@ -1865,6 +1869,7 @@ class EquipmentManagerWriteSerializer(serializers.Serializer):
         ).order_by('name', 'email'),
         required=True,
     )
+    honorific = serializers.ChoiceField(choices=ContactHonorific.choices, required=False, allow_blank=True)
     disable_booking_confirmation_email = serializers.BooleanField(required=False, default=False)
     office_address = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
     alternate_phone_number = serializers.CharField(required=False, allow_blank=True, max_length=40, trim_whitespace=True)
@@ -1884,6 +1889,7 @@ class EquipmentOperatorWriteSerializer(serializers.Serializer):
         required=False,
         default=getattr(EquipmentOperator, "Role").PRIMARY,
     )
+    honorific = serializers.ChoiceField(choices=ContactHonorific.choices, required=False, allow_blank=True)
     disable_booking_confirmation_email = serializers.BooleanField(required=False, default=False)
     office_address = serializers.CharField(required=False, allow_blank=True, trim_whitespace=True)
     alternate_phone_number = serializers.CharField(required=False, allow_blank=True, max_length=40, trim_whitespace=True)
@@ -2239,12 +2245,12 @@ def _charge_profile_breakpoint(item, cp_type):
 
 def _assignment_contact_fields(item, previous=None):
     """
-    Office address / additional phone for an OIC or Lab Operator row.
+    Honorific / office address / additional phone for an OIC or Lab Operator row.
     OIC and operator rows are deleted and recreated on every save, so a client that
     does not send these keys keeps the values already stored for that person.
     """
     out = {}
-    for field in ("office_address", "alternate_phone_number"):
+    for field in ("honorific", "office_address", "alternate_phone_number"):
         if field in item:
             out[field] = (item.get(field) or "").strip()
         elif previous is not None:
@@ -3218,14 +3224,16 @@ class BookingSerializer(serializers.ModelSerializer):
             prefetched_ops = getattr(equipment, "_prefetched_objects_cache", {}).get("equipment_operators")
             if prefetched_ops is not None:
                 first_link = min(prefetched_ops, key=lambda l: l.equipment_operator_id) if prefetched_ops else None
-                operator = getattr(first_link, "operator", None) if first_link is not None else None
             else:
                 op_link = getattr(equipment, "equipment_operators", None)
-                operator = op_link.select_related("operator").order_by("equipment_operator_id").first().operator if op_link is not None else None
+                first_link = op_link.select_related("operator").order_by("equipment_operator_id").first() if op_link is not None else None
+            operator = getattr(first_link, "operator", None) if first_link is not None else None
             if operator:
                 payload = {
                     "user_id": operator.id,
-                    "name": operator.name or operator.email,
+                    "name": name_with_honorific(
+                        operator, first_link.honorific, default=operator.name or operator.email
+                    ),
                     "email": operator.email,
                     "phone": operator.phone_number,
                     "user_type": "operator",
@@ -3264,7 +3272,7 @@ class BookingSerializer(serializers.ModelSerializer):
                 out.append(
                     {
                         "user_id": m.id,
-                        "name": m.name or m.email,
+                        "name": name_with_honorific(m, link.honorific, default=m.name or m.email),
                         "email": m.email,
                         "phone": m.phone_number,
                         "user_type": "manager",

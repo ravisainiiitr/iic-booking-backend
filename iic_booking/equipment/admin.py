@@ -163,6 +163,7 @@ class EquipmentManagerInline(admin.TabularInline):
     extra = 0
     fields = [
         'manager',
+        'honorific',
         'office_address',
         'alternate_phone_number',
         'disable_booking_confirmation_email',
@@ -278,6 +279,7 @@ class EquipmentOperatorInline(admin.TabularInline):
     extra = 0
     fields = [
         'operator',
+        'honorific',
         'role',
         'office_address',
         'alternate_phone_number',
