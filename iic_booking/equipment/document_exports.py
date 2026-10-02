@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Any, Dict, Tuple
 
 from django.conf import settings
+from iic_booking.users.display import get_user_display_name
 
 
 def _safe_str(v: Any) -> str:
@@ -326,7 +327,7 @@ def build_booking_invoice_pdf(*, booking, billing_profile) -> bytes:
 
     base, gst, total = _get_invoice_breakdown(booking)
 
-    bill_name = (getattr(billing_profile, "billing_name", "") or "").strip() or getattr(booking.user, "name", "") or booking.user.email
+    bill_name = (getattr(billing_profile, "billing_name", "") or "").strip() or get_user_display_name(booking.user)
     gstin = (getattr(billing_profile, "gstin", "") or "").strip()
     addr_lines = [
         getattr(billing_profile, "billing_address_line1", ""),
@@ -452,7 +453,7 @@ def build_shipping_label_pdf(*, booking, billing_profile) -> bytes:
             if m:
                 from iic_booking.users.display import name_with_honorific
 
-                oic_name = _safe_str(getattr(m, "name", None) or getattr(m, "email", "")).strip()
+                oic_name = _safe_str(get_user_display_name(m)).strip()
                 oic_name = name_with_honorific(m, getattr(mgrs[0], "honorific", ""), default=oic_name)
     except Exception:
         pass
@@ -470,7 +471,7 @@ def build_shipping_label_pdf(*, booking, billing_profile) -> bytes:
     # FROM address: user profile shipping address (or billing if same-as-billing)
     to_same = bool(getattr(billing_profile, "shipping_same_as_billing", True))
     if to_same:
-        from_name = (getattr(billing_profile, "billing_name", "") or "").strip() or getattr(booking.user, "name", "") or booking.user.email
+        from_name = (getattr(billing_profile, "billing_name", "") or "").strip() or get_user_display_name(booking.user)
         from_lines = [
             getattr(billing_profile, "billing_address_line1", ""),
             getattr(billing_profile, "billing_address_line2", ""),
@@ -479,7 +480,7 @@ def build_shipping_label_pdf(*, booking, billing_profile) -> bytes:
         ]
         from_phone = getattr(booking.user, "phone_number", "") or ""
     else:
-        from_name = (getattr(billing_profile, "shipping_name", "") or "").strip() or getattr(booking.user, "name", "") or booking.user.email
+        from_name = (getattr(billing_profile, "shipping_name", "") or "").strip() or get_user_display_name(booking.user)
         from_lines = [
             getattr(billing_profile, "shipping_address_line1", ""),
             getattr(billing_profile, "shipping_address_line2", ""),
@@ -651,7 +652,7 @@ def build_return_shipping_label_pdf(*, booking, billing_profile) -> bytes:
     # TO: user shipping address (use billing vs shipping based on profile flag)
     to_same = bool(getattr(billing_profile, "shipping_same_as_billing", True))
     if to_same:
-        to_name = (getattr(billing_profile, "billing_name", "") or "").strip() or getattr(booking.user, "name", "") or booking.user.email
+        to_name = (getattr(billing_profile, "billing_name", "") or "").strip() or get_user_display_name(booking.user)
         to_lines = [
             getattr(billing_profile, "billing_address_line1", ""),
             getattr(billing_profile, "billing_address_line2", ""),
@@ -660,7 +661,7 @@ def build_return_shipping_label_pdf(*, booking, billing_profile) -> bytes:
         ]
         to_phone = getattr(booking.user, "phone_number", "") or ""
     else:
-        to_name = (getattr(billing_profile, "shipping_name", "") or "").strip() or getattr(booking.user, "name", "") or booking.user.email
+        to_name = (getattr(billing_profile, "shipping_name", "") or "").strip() or get_user_display_name(booking.user)
         to_lines = [
             getattr(billing_profile, "shipping_address_line1", ""),
             getattr(billing_profile, "shipping_address_line2", ""),
@@ -745,7 +746,7 @@ def build_proforma_invoice_pdf(*, data: Dict[str, Any], billing_profile) -> byte
     h1 = ParagraphStyle("h1", parent=styles["Heading1"], fontSize=16, spaceAfter=8)
     small = ParagraphStyle("small", parent=styles["Normal"], fontSize=9, leading=12)
 
-    bill_name = (getattr(billing_profile, "billing_name", "") or "").strip() or getattr(getattr(billing_profile, "user", None), "name", "") or getattr(getattr(billing_profile, "user", None), "email", "") or "—"
+    bill_name = (getattr(billing_profile, "billing_name", "") or "").strip() or get_user_display_name(getattr(billing_profile, "user", None)) or "—"
     gstin = (getattr(billing_profile, "gstin", "") or "").strip()
 
     story = []
@@ -847,7 +848,7 @@ def build_proforma_invoice_multi_pdf(
     disclaimer_style = ParagraphStyle("disclaimer", parent=small, fontSize=8, alignment=TA_CENTER, textColor=colors.grey, spaceBefore=8)
 
     # User requesting
-    user_name = getattr(user, "name", "") or getattr(user, "get_full_name", lambda: "")() or "Guest"
+    user_name = get_user_display_name(user, fallback_to_email=False) or getattr(user, "get_full_name", lambda: "")() or "Guest"
     user_email = getattr(user, "email", "") or "—"
     user_dept = getattr(user, "department_name", "") or getattr(user, "department", None)
     if user_dept and hasattr(user_dept, "name"):

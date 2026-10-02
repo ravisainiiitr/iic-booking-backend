@@ -11,6 +11,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from iic_booking.users.display import get_user_display_name
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet_credit_facility import (
     WalletCreditFacility,
@@ -58,7 +59,7 @@ def _serialize_facility(facility: WalletCreditFacility, *, include_profile: bool
         "public_reference": facility.public_reference,
         "user_id": facility.user_id,
         "user_email": facility.user.email if facility.user_id else "",
-        "user_name": facility.user.name if facility.user_id else "",
+        "user_name": get_user_display_name(facility.user, fallback_to_email=False) if facility.user_id else "",
         "department_id": facility.department_id,
         "department_name": facility.department.name if facility.department_id else "",
         "requested_amount": str(money(facility.requested_amount)),

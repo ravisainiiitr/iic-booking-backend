@@ -418,12 +418,13 @@ def archive_expired_samples() -> int:
                 created_by=None,
             )
             try:
+                from iic_booking.communication.email_branding import user_display_name
                 from iic_booking.communication.service import CommunicationService
                 from iic_booking.communication.utils import booking_display_id_for_email
 
                 equipment = getattr(b, "equipment", None)
                 ctx = {
-                    "user_name": getattr(b.user, "name", None) or getattr(b.user, "email", None) or "User",
+                    "user_name": user_display_name(b.user),
                     "user_email": getattr(b.user, "email", "") or "",
                     "equipment_name": (
                         (getattr(equipment, "name", None) or getattr(equipment, "code", None) or "Equipment")

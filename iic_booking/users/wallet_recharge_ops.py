@@ -17,6 +17,7 @@ from iic_booking.communication.models import CommunicationLog, CommunicationTemp
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url
 
+from .display import get_user_display_name
 from .models.user_type import UserType
 from .models.wallet import (
     WalletRechargeRequest,
@@ -70,11 +71,8 @@ def sric_faculty_recharge_email_context(
     project_code = recharge_request.project.project_code if recharge_request.project else ""
     project_agency = recharge_request.project.agency if recharge_request.project else ""
 
-    faculty_name = (user.name or user.email or "").strip()
-    if faculty_name and not faculty_name.lower().startswith("prof"):
-        faculty_display_name = f"Prof. {faculty_name}"
-    else:
-        faculty_display_name = faculty_name or "Faculty"
+    faculty_name = get_user_display_name(user)
+    faculty_display_name = faculty_name or "Faculty"
     emp_id = (getattr(user, "emp_id", None) or "").strip() or "N/A"
 
     approve_url = http_request.build_absolute_uri(
@@ -309,7 +307,7 @@ def notify_admin_finance_new_wallet_recharge_request(
         "A wallet recharge request was submitted (user OTP verified).",
         "",
         f"Request ID: {recharge_request.id}",
-        f"Requester: {u.name or u.email} <{u.email}>",
+        f"Requester: {get_user_display_name(u)} <{u.email}>",
         f"Employee No.: {emp}",
         f"Amount: ₹{recharge_request.amount}",
         f"Department (sub-wallet): {dept}",

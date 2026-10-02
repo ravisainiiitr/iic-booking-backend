@@ -38,6 +38,7 @@ from .models import (
     EquipmentAdditionRequestStatus,
     EquipmentStatus,
 )
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -475,7 +476,7 @@ class EquipmentAdditionRequestSerializer(serializers.ModelSerializer):
         if not obj.reviewed_by_id:
             return None
         u = obj.reviewed_by
-        return (u.name or u.email or "").strip() or None
+        return get_user_display_name(u) or None
 
     def get_created_equipment_id(self, obj):
         if not obj.created_equipment_id:

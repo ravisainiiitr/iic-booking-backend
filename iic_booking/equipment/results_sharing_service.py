@@ -11,6 +11,7 @@ from django.utils.html import escape
 from iic_booking.equipment.models import Booking, BookingDataShare, BookingResultView, DynamicInputField
 from iic_booking.users.models.department import DepartmentType
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,7 @@ def user_share_summary(user) -> dict[str, Any]:
     department = getattr(user, "department", None)
     return {
         "id": user.pk,
-        "name": user.name or user.email,
+        "name": get_user_display_name(user),
         "email": user.email,
         "department": department.name if department else None,
     }

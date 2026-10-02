@@ -13,7 +13,7 @@ from typing import Any, Optional
 from django.db.models import Count, Prefetch, Q, Sum
 from django.utils import timezone
 
-from iic_booking.users.display import name_with_honorific
+from iic_booking.users.display import apply_faculty_name_prefix, get_user_display_name, name_with_honorific
 from iic_booking.users.models.user_type import UserType
 
 from .models import (
@@ -639,10 +639,12 @@ def get_equipment_report_data(
         .order_by("-total")
     )
     revenue_by_user = list(
-        completed_revenue_qs.values("user_id", "user__name", "user__email")
+        completed_revenue_qs.values("user_id", "user__name", "user__email", "user__user_type")
         .annotate(total=Sum("total_charge"), count=Count("booking_id"))
         .order_by("-total")[:200]
     )
+    for row in revenue_by_user:
+        row["user__name"] = apply_faculty_name_prefix(row.get("user__name"), row.pop("user__user_type", None))
     # Roll revenue by equipment up to parent for multi-mode families
     revenue_by_equipment_raw = list(
         completed_revenue_qs.values("equipment_id", "equipment__code", "equipment__name")
@@ -692,7 +694,7 @@ def get_equipment_report_data(
         for em in eq.equipment_managers.all():
             u = em.manager
             if u:
-                disp = (getattr(u, "name", None) or "").strip()
+                disp = get_user_display_name(u, fallback_to_email=False)
                 if not disp and callable(getattr(u, "get_full_name", None)):
                     disp = (u.get_full_name() or "").strip()
                 disp = name_with_honorific(u, em.honorific, default=disp)
@@ -707,7 +709,7 @@ def get_equipment_report_data(
         for eo in eq.equipment_operators.all():
             u = eo.operator
             if u:
-                disp = (getattr(u, "name", None) or "").strip()
+                disp = get_user_display_name(u, fallback_to_email=False)
                 if not disp and callable(getattr(u, "get_full_name", None)):
                     disp = (u.get_full_name() or "").strip()
                 disp = name_with_honorific(u, eo.honorific, default=disp)

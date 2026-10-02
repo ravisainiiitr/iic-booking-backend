@@ -6,6 +6,8 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from iic_booking.users.display import get_user_display_name
+
 from . import access
 from .models import (
     CallStatus,
@@ -35,7 +37,7 @@ def user_brief(user) -> dict | None:
         return None
     return {
         "id": user.id,
-        "name": (user.name or "").strip() or user.email,
+        "name": get_user_display_name(user),
         "email": user.email,
         "department": getattr(getattr(user, "department", None), "name", "") or "",
         "user_type": user.user_type,

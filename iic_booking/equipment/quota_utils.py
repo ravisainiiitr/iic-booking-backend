@@ -29,6 +29,7 @@ from .models import (
     QuotaType,
     UserTypeQuota,
 )
+from iic_booking.users.display import get_user_display_name
 
 # Only bookings that represent actual quota consumption.
 # Cancelled / refunded / disruption / hold never count.
@@ -933,7 +934,7 @@ def get_quota_breakdown(user, equipment, quota_type: str, reference_date: dateti
                     "display_booking_id": (b.virtual_booking_id or "").strip()
                     or (f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)),
                     "total_time_minutes": booking_effective_quota_minutes(b),
-                    "user_name": (b.user.name or b.user.email) if b.user else "",
+                    "user_name": get_user_display_name(b.user) if b.user else "",
                 }
             )
     else:
@@ -1001,7 +1002,7 @@ def get_quota_breakdown(user, equipment, quota_type: str, reference_date: dateti
                     "display_booking_id": (b.virtual_booking_id or "").strip()
                     or (f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)),
                     "total_time_minutes": booking_effective_quota_minutes(b),
-                    "user_name": (b.user.name or b.user.email) if b.user else "",
+                    "user_name": get_user_display_name(b.user) if b.user else "",
                 }
             )
 

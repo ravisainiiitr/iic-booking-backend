@@ -18,6 +18,7 @@ from iic_booking.communication.utils import (
     get_backend_absolute_url,
     booking_display_id_for_email,
 )
+from iic_booking.users.display import get_user_display_name
 
 
 def _shell(title: str, subtitle: str, body_html: str) -> str:
@@ -89,13 +90,13 @@ def send_wallet_join_request_submitted_emails(join_request) -> None:
         CommunicationService.send_push_notification(
             recipient=faculty,
             title="Wallet join request",
-            message=f"{student.name or student.email} requested to join your wallet.",
+            message=f"{get_user_display_name(student)} requested to join your wallet.",
             metadata={"wallet_join_request_id": join_request.id, "link": wallet_link},
         )
         CommunicationService.send_push_notification(
             recipient=student,
             title="Wallet join request submitted",
-            message=f"Your request to join {faculty.name or faculty.email}'s wallet was submitted.",
+            message=f"Your request to join {get_user_display_name(faculty)}'s wallet was submitted.",
             metadata={"wallet_join_request_id": join_request.id, "link": wallet_link},
         )
     except Exception:
@@ -195,7 +196,7 @@ def send_wallet_join_request_decision_email(join_request, action: str) -> None:
         CommunicationService.send_push_notification(
             recipient=student,
             title=f"Wallet request {pretty.lower()}",
-            message=f"Your wallet join request was {pretty.lower()} by {faculty.name or faculty.email}.",
+            message=f"Your wallet join request was {pretty.lower()} by {get_user_display_name(faculty)}.",
             metadata={"wallet_join_request_id": join_request.id, "link": wallet_link},
         )
     except Exception:
@@ -263,14 +264,14 @@ def send_wallet_recharge_approved_faculty_email(recharge_request) -> None:
     link = get_frontend_absolute_url(f"/wallet/recharge-requests/{recharge_request.id}")
     body = (
         f"<p style='margin:0 0 12px 0;'>A recharge request linked to your wallet has been approved.</p>"
-        f"<p style='margin:0 0 8px 0;'><b>Requested by:</b> {escape(requester.name or requester.email)} ({escape(requester.email)})</p>"
+        f"<p style='margin:0 0 8px 0;'><b>Requested by:</b> {escape(get_user_display_name(requester))} ({escape(requester.email)})</p>"
         f"<p style='margin:0 0 8px 0;'><b>Amount:</b> Rs {escape(str(recharge_request.amount))}</p>"
         f"<p style='margin:0 0 8px 0;'><b>Department:</b> {escape(recharge_request.department.name if recharge_request.department else 'N/A')}</p>"
         f"<p style='margin:16px 0 0 0;'><a href='{escape(link)}' style='background:#2563eb;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;font-weight:700;'>Open Recharge Request</a></p>"
     )
     html = _shell("Recharge Approved", "Faculty wallet notification", body)
     text = (
-        f"Recharge approved for your wallet.\nRequested by: {requester.name or requester.email} ({requester.email})\n"
+        f"Recharge approved for your wallet.\nRequested by: {get_user_display_name(requester)} ({requester.email})\n"
         f"Amount: Rs {recharge_request.amount}\nDepartment: {recharge_request.department.name if recharge_request.department else 'N/A'}\n"
         f"Link: {link}"
     )
@@ -283,7 +284,7 @@ def send_wallet_recharge_approved_faculty_email(recharge_request) -> None:
             title="Wallet recharge approved",
             message=(
                 f"Recharge of Rs {recharge_request.amount} by "
-                f"{requester.name or requester.email} was approved."
+                f"{get_user_display_name(requester)} was approved."
             ),
             metadata={"wallet_recharge_request_id": recharge_request.id, "link": link},
         )

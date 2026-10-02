@@ -107,7 +107,9 @@ def _wallet(user, eq, total: Decimal | None) -> dict[str, Any]:
     owner = getattr(wallet, "user", None)
     dept = getattr(target, "department", None)
     if owner is not None and int(getattr(owner, "pk", 0) or 0) != int(user.pk):
-        out["label"] = f"{getattr(owner, 'name', '') or getattr(owner, 'email', 'Supervisor')}'s wallet"
+        from iic_booking.users.display import get_user_display_name
+
+        out["label"] = f"{get_user_display_name(owner) or 'Supervisor'}'s wallet"
     else:
         out["label"] = "Your wallet"
     if dept is not None:

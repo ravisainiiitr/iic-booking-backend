@@ -16,6 +16,7 @@ from iic_booking.equipment.booking_events import (
     apply_equipment_booking_email_extra_to_context,
     apply_user_sample_preparation_notice_to_context,
 )
+from iic_booking.users.display import get_user_display_name
 
 if TYPE_CHECKING:
     from .models import Booking
@@ -186,7 +187,7 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
     )
 
     template_context = {
-        "user_name": user.name or user.email,
+        "user_name": get_user_display_name(user),
         "user_email": user.email,
         "booking_id": display_booking_ref,
         "equipment_name": equipment.name,

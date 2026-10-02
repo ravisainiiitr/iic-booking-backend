@@ -15,6 +15,7 @@ from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.user_group import UserGroup
 from iic_booking.users.models.department import Department, DepartmentType, InternalDepartmentSubcategory
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -1182,7 +1183,7 @@ class EquipmentManager(models.Model):
     def __str__(self):
         from iic_booking.users.display import name_with_honorific
 
-        name = name_with_honorific(self.manager, self.honorific, default=self.manager.name or self.manager.email)
+        name = name_with_honorific(self.manager, self.honorific, default=get_user_display_name(self.manager))
         return f"{self.equipment.code} - {name}"
 
 
@@ -1239,7 +1240,7 @@ class EquipmentPI(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.equipment.code} - {self.faculty.name or self.faculty.email}"
+        return f"{self.equipment.code} - {get_user_display_name(self.faculty)}"
 
 
 class EquipmentPIAuditLog(models.Model):
@@ -1332,7 +1333,7 @@ class EquipmentOperator(models.Model):
         from iic_booking.users.display import name_with_honorific
 
         r = (self.role or "").lower()
-        name = name_with_honorific(self.operator, self.honorific, default=self.operator.name or self.operator.email)
+        name = name_with_honorific(self.operator, self.honorific, default=get_user_display_name(self.operator))
         return f"{self.equipment.code} - {name} ({r})"
 
     class Meta:

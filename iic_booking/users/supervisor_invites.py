@@ -34,6 +34,7 @@ from .models import (
     WalletJoinRequestStatus,
 )
 from .models.user_type import UserType
+from iic_booking.users.display import apply_faculty_name_prefix, get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -231,10 +232,11 @@ def send_invite_email(invite: SupervisorInvite, token: str) -> bool:
         audit(SupervisorInviteEvent.Action.EMAIL_FAILED, invite=invite, reason="template_missing")
         return False
     student = invite.student
-    name = (invite.supervisor_name or "").strip()
+    # Only IITR faculty can be invited, so the typed name is shown the way faculty names are.
+    name = apply_faculty_name_prefix(invite.supervisor_name, UserType.FACULTY)
     context = {
         "recipient_name": name or "Professor",
-        "student_name": (student.name or "").strip() or student.email,
+        "student_name": get_user_display_name(student),
         "student_email": student.email,
         "student_programme": _student_programme(student),
         "student_department": _student_department(student),
@@ -324,7 +326,7 @@ def validate_invite(student, data: InviteInput) -> tuple[str, Optional[Departmen
             )
         if existing.is_active:
             raise InviteError(
-                f"{existing.name or existing.email} is already on the portal. "
+                f"{get_user_display_name(existing)} is already on the portal. "
                 "Select them in the search above and send a link request instead.",
                 "faculty_on_portal",
                 status=409,
@@ -441,6 +443,7 @@ def serialize_invite(invite: SupervisorInvite) -> dict:
         "id": invite.id,
         "email": invite.email,
         "supervisor_name": invite.supervisor_name,
+        "supervisor_display_name": apply_faculty_name_prefix(invite.supervisor_name, UserType.FACULTY),
         "department_id": invite.department_id,
         "department_name": invite.department.name if invite.department_id else "",
         "message": invite.message,
@@ -461,7 +464,7 @@ def _notify_student_accepted(invite: SupervisorInvite, faculty) -> None:
     from iic_booking.communication.utils import get_frontend_absolute_url
 
     student = invite.student
-    faculty_label = faculty.get_display_name() if hasattr(faculty, "get_display_name") else (faculty.name or faculty.email)
+    faculty_label = get_user_display_name(faculty)
     try:
         from iic_booking.communication.in_app import notify_in_app
 
@@ -480,7 +483,7 @@ def _notify_student_accepted(invite: SupervisorInvite, faculty) -> None:
         if template is None:
             return
         context = {
-            "student_name": (student.name or "").strip() or student.email,
+            "student_name": get_user_display_name(student),
             "faculty_name": faculty_label,
             "faculty_email": faculty.email,
             "link": get_frontend_absolute_url("/wallet"),
@@ -606,5 +609,5 @@ def resolve_token_for_faculty(faculty, token: str) -> dict:
         "status": invite.status,
         "join_request_id": invite.join_request_id,
         "join_request_status": invite.join_request.status if invite.join_request_id else None,
-        "student_name": (student.name or "").strip() or student.email,
+        "student_name": get_user_display_name(student),
     }

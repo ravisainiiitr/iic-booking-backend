@@ -52,6 +52,7 @@ from iic_booking.users.legacy_ledger.channel_i_identity import (
     resolve_employee_id_for_omniport,
 )
 import logging
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -2170,7 +2171,7 @@ def register(request):
             recipient=user,
             template="registration_self_verification_email",
             template_context={
-                "name": user.name or user.email,
+                "name": get_user_display_name(user),
                 "verification_url": verification_url,
             },
         )
@@ -2180,7 +2181,7 @@ def register(request):
         try:
             subject = "Verify your IIT Roorkee registration"
             body_plain = (
-                f"Hello {user.name or user.email},\n\n"
+                f"Hello {get_user_display_name(user)},\n\n"
                 "Thank you for registering with IIT Roorkee.\n\n"
                 "To complete your registration, please verify your email by clicking the link below:\n\n"
                 f"{verification_url}\n\n"
@@ -2677,7 +2678,7 @@ def resend_verification_email(request):
             recipient=user,
             template="registration_self_verification_email",
             template_context={
-                "name": user.name or user.email,
+                "name": get_user_display_name(user),
                 "verification_url": verification_url,
             },
         )
@@ -2691,7 +2692,7 @@ def resend_verification_email(request):
         try:
             subject = "Verify your IIT Roorkee registration"
             body_plain = (
-                f"Hello {user.name or user.email},\n\n"
+                f"Hello {get_user_display_name(user)},\n\n"
                 "To complete your registration, please verify your email by clicking the link below:\n\n"
                 f"{verification_url}\n\n"
                 "This verification link is valid for 10 minutes. If no action is taken, the registration will be cancelled and your entry will be deleted.\n\n"
@@ -2875,7 +2876,7 @@ def search_faculty_for_signup(request):
     results = [
         {
             "id": f.id,
-            "name": f.name or f.email,
+            "name": get_user_display_name(f),
             "email": f.email,
             "department": f.department.name if f.department else None,
         }

@@ -36,8 +36,11 @@ def _validate_attachment(file):
 class TicketCommentSerializer(serializers.ModelSerializer):
     """Serializer for TicketComment model."""
 
-    user_name = serializers.CharField(source="user.name", read_only=True)
+    user_name = serializers.SerializerMethodField()
     user_email = serializers.CharField(source="user.email", read_only=True)
+
+    def get_user_name(self, obj):
+        return obj.user.get_display_name() if obj.user_id else None
 
     class Meta:
         model = TicketComment

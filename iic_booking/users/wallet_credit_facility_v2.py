@@ -26,6 +26,7 @@ from iic_booking.users.models.wallet_credit_facility import (
     WalletCreditPayment,
     WalletCreditPolicy,
 )
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 TWO = Decimal("0.01")
@@ -438,7 +439,7 @@ def notify_user_credit_approved(facility: WalletCreditFacility) -> None:
         user = facility.user
         dept_name = facility.department.name if facility.department_id else ""
         ctx = {
-            "user_name": getattr(user, "name", None) or getattr(user, "email", "") or "User",
+            "user_name": get_user_display_name(user) or "User",
             "user_email": getattr(user, "email", "") or "",
             "public_reference": facility.public_reference,
             "requested_amount": str(money(facility.requested_amount)),

@@ -7,14 +7,14 @@ from .models import Notice
 class NoticeSerializer(serializers.ModelSerializer):
     """Serializer for Notice model (public + full request details)."""
 
-    created_by_name = serializers.CharField(source="created_by.name", read_only=True, allow_null=True)
+    created_by_name = serializers.CharField(source="created_by.get_display_name", read_only=True, allow_null=True)
     notice_type_display = serializers.CharField(source="get_notice_type_display", read_only=True)
     approval_status_display = serializers.CharField(
         source="get_approval_status_display", read_only=True
     )
     source_display = serializers.CharField(source="get_source_display", read_only=True)
     requested_by_name = serializers.CharField(
-        source="requested_by.name", read_only=True, allow_null=True
+        source="requested_by.get_display_name", read_only=True, allow_null=True
     )
     requested_by_email = serializers.EmailField(
         source="requested_by.email", read_only=True, allow_null=True

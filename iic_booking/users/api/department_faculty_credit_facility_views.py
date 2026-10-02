@@ -26,6 +26,7 @@ from iic_booking.users.models.department_faculty_credit_facility import (
     FacultyDepartmentCreditFacilityAuditLog,
 )
 from iic_booking.users.models.wallet import SubWallet, Wallet
+from iic_booking.users.display import get_user_display_name
 
 User = get_user_model()
 
@@ -212,7 +213,7 @@ def department_faculty_credit_facility_audit_list_view(request):
             "metadata": log.metadata or {},
             "faculty_user_id": log.faculty_user_id,
             "faculty_email": log.faculty_user.email if log.faculty_user_id else None,
-            "faculty_name": (log.faculty_user.name or log.faculty_user.email) if log.faculty_user_id else None,
+            "faculty_name": get_user_display_name(log.faculty_user) if log.faculty_user_id else None,
             "actor_email": log.actor.email if log.actor_id else None,
             "facility_id": log.facility_id,
             "created_at": log.created_at.isoformat() if log.created_at else None,

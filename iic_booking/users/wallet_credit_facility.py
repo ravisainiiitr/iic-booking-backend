@@ -22,6 +22,7 @@ from .models.wallet import (
     WalletRechargeRequestStatus,
 )
 from .models.wallet_credit_facility_settings import WalletCreditFacilitySettings
+from iic_booking.users.display import get_user_display_name
 
 if TYPE_CHECKING:
     pass
@@ -363,7 +364,7 @@ def _send_credit_expired_hold_email(req: WalletRechargeRequest) -> None:
     dept = req.department.name if req.department else "your department"
     link = get_frontend_absolute_url("/wallet")
     context = {
-        "user_name": user.name or user.email,
+        "user_name": get_user_display_name(user),
         "user_email": user.email,
         "request_id": str(req.id),
         "department_name": dept,
@@ -390,7 +391,7 @@ def _send_credit_expired_hold_email(req: WalletRechargeRequest) -> None:
         )
     subject = "[IIC] Wallet recharge credit window ended — bookings on hold"
     body = (
-        f"Dear {user.name or user.email},\n\n"
+        f"Dear {get_user_display_name(user)},\n\n"
         f"The temporary credit facility linked to wallet recharge request #{req.id} ({dept}) has ended "
         f"because the recharge was not credited via the accounts parse process within the allowed window.\n\n"
         f"Further equipment bookings against that department wallet are on hold until the recharge is "

@@ -215,6 +215,7 @@ from iic_booking.communication.utils import get_frontend_absolute_url, booking_d
 from iic_booking.equipment.results_sharing_service import is_active_share_recipient, mark_results_viewed
 from iic_booking.communication.styled_transactional_emails import send_return_shipping_tracking_email
 from iic_booking.communication.email_branding import build_booking_created_event_comment
+from iic_booking.users.display import apply_faculty_name_prefix, get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +331,7 @@ def equipment_book_for_user_info(request, pk: int):
             if wallet.user_id != target.id:
                 owner = getattr(wallet, "user", None)
                 wallet_faculty_owner = {
-                    "name": (getattr(owner, "name", None) or getattr(owner, "email", None) or "") if owner else "",
+                    "name": (get_user_display_name(owner) or "") if owner else "",
                     "email": (getattr(owner, "email", None) or "") if owner else "",
                 }
             else:
@@ -342,7 +343,7 @@ def equipment_book_for_user_info(request, pk: int):
     return Response(
         {
             "id": target.id,
-            "name": target.name or "",
+            "name": get_user_display_name(target, fallback_to_email=False),
             "email": target.email or "",
             "department_name": department_name or "",
             "phone_number": getattr(target, "phone_number", None) or "",
@@ -1685,7 +1686,7 @@ def equipment_form_choices(request):
         "managers": [
             {
                 "id": u.id,
-                "name": u.name or u.email or "",
+                "name": get_user_display_name(u) or "",
                 "email": u.email or "",
                 "department_id": u.department_id,
                 "department_name": (u.department.name if u.department_id else None),
@@ -1696,7 +1697,7 @@ def equipment_form_choices(request):
         "operators": [
             {
                 "id": u.id,
-                "name": u.name or u.email or "",
+                "name": get_user_display_name(u) or "",
                 "email": u.email or "",
                 "department_id": u.department_id,
                 "department_name": (u.department.name if u.department_id else None),
@@ -1707,7 +1708,7 @@ def equipment_form_choices(request):
         "faculty": [
             {
                 "id": u.id,
-                "name": u.name or u.email or "",
+                "name": get_user_display_name(u) or "",
                 "email": u.email or "",
                 "department_id": u.department_id,
                 "department_name": (u.department.name if u.department_id else None),
@@ -1756,7 +1757,7 @@ def temporary_oic_list_oic_users(request):
         )
     return Response({
         "oic_users": [
-            {"id": u.id, "name": u.name or u.email or "", "email": u.email or ""}
+            {"id": u.id, "name": get_user_display_name(u) or "", "email": u.email or ""}
             for u in queryset
         ],
     }, status=status.HTTP_200_OK)
@@ -1853,7 +1854,7 @@ def temporary_oic_create(request):
         "equipment_id": equipment.equipment_id,
         "equipment_code": equipment.code,
         "temporary_oic_id": temp_oic.id,
-        "temporary_oic_name": temp_oic.name or temp_oic.email,
+        "temporary_oic_name": get_user_display_name(temp_oic),
         "resume_at": resume_at.isoformat(),
         "message": "Temporary OIC assigned. They can manage this equipment until the resume date and time.",
     }, status=status.HTTP_201_CREATED)
@@ -1883,7 +1884,7 @@ def temporary_oic_list_mine(request):
                 "equipment_code": d.equipment.code,
                 "equipment_name": d.equipment.name,
                 "temporary_oic_id": d.temporary_oic_id,
-                "temporary_oic_name": d.temporary_oic.name or d.temporary_oic.email,
+                "temporary_oic_name": get_user_display_name(d.temporary_oic),
                 "temporary_oic_email": d.temporary_oic.email,
                 "resume_at": d.resume_at.isoformat(),
                 "created_at": d.created_at.isoformat(),
@@ -1952,7 +1953,7 @@ def temporary_oic_update(request, delegation_id):
         "id": delegation.id,
         "resume_at": delegation.resume_at.isoformat(),
         "equipment_code": delegation.equipment.code,
-        "temporary_oic_name": delegation.temporary_oic.name or delegation.temporary_oic.email,
+        "temporary_oic_name": get_user_display_name(delegation.temporary_oic),
     }, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
@@ -2423,11 +2424,14 @@ def equipment_ratings(request, equipment_id: int):
             "user_id",
             "user__name",
             "user__email",
+            "user__user_type",
         )
     )
     reviews = []
     for item in page:
-        user_name = item.get("user__name") or item.get("user__email")
+        user_name = apply_faculty_name_prefix(item.get("user__name"), item.get("user__user_type")) or item.get(
+            "user__email"
+        )
         reviews.append(
             {
                 "booking_id": item.get("booking_id"),
@@ -6639,7 +6643,7 @@ def lab_operator_dashboard(request):
             "virtual_booking_id": ref,
             "equipment_code": b.equipment.code,
             "equipment_name": b.equipment.name or "",
-            "user_name": (b.user.name if b.user else "") or "",
+            "user_name": get_user_display_name(b.user, fallback_to_email=False),
             "status": b.status,
             "status_display": b.get_status_display(),
             "start_time": first.start_datetime.isoformat() if first and first.start_datetime else None,
@@ -6801,13 +6805,13 @@ def _leave_request_email_context(req: OperatorLeaveRequest, *, reviewer=None) ->
     return {
         "app_name": app_name,
         "leave_id": req.id,
-        "operator_name": getattr(req.operator, "name", "") or getattr(req.operator, "email", "") or "Operator",
+        "operator_name": get_user_display_name(req.operator) or "Operator",
         "start_date": req.start_date.isoformat(),
         "start_session": req.start_session,
         "end_date": req.end_date.isoformat(),
         "end_session": req.end_session,
         "reason": req.reason or "",
-        "reviewer_name": (getattr(reviewer, "name", "") or getattr(reviewer, "email", "") or "").strip(),
+        "reviewer_name": (get_user_display_name(reviewer) or "").strip(),
         "rejection_reason": (req.rejection_reason or "").strip(),
         "leave_management_url": get_frontend_absolute_url("/leave-management"),
         "oic_leave_management_url": get_frontend_absolute_url("/oic-leave-management"),
@@ -6871,7 +6875,7 @@ def _send_leave_intimation_emails(req: OperatorLeaveRequest):
                 template="operator_unavailability_intimation_oic_email",
                 template_context={
                     **_leave_request_email_context(req),
-                    "oic_name": getattr(oic, "name", "") or getattr(oic, "email", "") or "OIC",
+                    "oic_name": get_user_display_name(oic) or "OIC",
                 },
                 metadata={"leave_request_id": req.id, "event": "leave_intimation_submitted"},
                 created_by=req.operator,
@@ -7088,7 +7092,7 @@ def _send_leave_oic_self_leave_intimations(req: OperatorLeaveRequest):
                 template="operator_leave_submitted_oic_email",
                 template_context={
                     **_leave_request_email_context(req),
-                    "oic_name": getattr(oic, "name", "") or getattr(oic, "email", "") or "OIC",
+                    "oic_name": get_user_display_name(oic) or "OIC",
                 },
                 metadata={"leave_request_id": req.id, "event": "leave_oic_intimation"},
                 created_by=req.operator,
@@ -7417,7 +7421,7 @@ def oic_leave_requests_pending(request):
                 "id": r.id,
                 "operator": {
                     "id": r.operator_id,
-                    "name": getattr(r.operator, "name", None),
+                    "name": get_user_display_name(r.operator, fallback_to_email=False) or None,
                     "email": getattr(r.operator, "email", None),
                 },
                 "start_date": r.start_date.isoformat(),
@@ -7466,7 +7470,7 @@ def oic_leave_requests_approved(request):
                 "id": r.id,
                 "operator": {
                     "id": r.operator_id,
-                    "name": getattr(r.operator, "name", None),
+                    "name": get_user_display_name(r.operator, fallback_to_email=False) or None,
                     "email": getattr(r.operator, "email", None),
                 },
                 "start_date": r.start_date.isoformat(),
@@ -7596,7 +7600,7 @@ def oic_leave_request_coverage_options(request, leave_id: int):
             "leave": {
                 "id": req.id,
                 "operator_id": req.operator_id,
-                "operator_name": getattr(req.operator, "name", None),
+                "operator_name": get_user_display_name(req.operator, fallback_to_email=False) or None,
                 "operator_email": getattr(req.operator, "email", None),
                 "start_date": req.start_date.isoformat(),
                 "start_session": req.start_session,
@@ -7964,7 +7968,7 @@ def team_calendar_department_leaves(request):
     members = [
         {
             "id": m.id,
-            "name": m.name or "",
+            "name": get_user_display_name(m, fallback_to_email=False),
             "email": m.email or "",
             "user_type": m.user_type or "",
             "department_id": getattr(m.department, "id", None),
@@ -8018,7 +8022,7 @@ def team_calendar_department_leaves(request):
             {
                 "id": r.id,
                 "operator_id": r.operator_id,
-                "operator_name": getattr(r.operator, "name", None) or getattr(r.operator, "email", ""),
+                "operator_name": get_user_display_name(r.operator),
                 "start_date": r.start_date.isoformat(),
                 "start_session": r.start_session,
                 "end_date": r.end_date.isoformat(),
@@ -8027,7 +8031,7 @@ def team_calendar_department_leaves(request):
                 "reason": r.reason,
                 "rejection_reason": r.rejection_reason,
                 "reviewed_by_name": (
-                    (getattr(reviewer, "name", None) or getattr(reviewer, "email", "") or "").strip()
+                    (get_user_display_name(reviewer) or "").strip()
                     if reviewer
                     else ""
                 ),
@@ -8275,7 +8279,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
             if u_fin:
                 accounts_in_charge = {
                     "user_id": u_fin.id,
-                    "name": u_fin.name or u_fin.email,
+                    "name": get_user_display_name(u_fin),
                     "email": u_fin.email,
                     "phone": u_fin.phone_number,
                     "user_type": "finance",
@@ -8291,7 +8295,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
             if op_user:
                 lab_in_charge = {
                     "user_id": op_user.id,
-                    "name": name_with_honorific(op_user, op_link.honorific, default=op_user.name or op_user.email),
+                    "name": name_with_honorific(op_user, op_link.honorific, default=get_user_display_name(op_user)),
                     "email": op_user.email,
                     "phone": op_user.phone_number,
                     "user_type": "operator",
@@ -8309,7 +8313,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
                 oic_contacts.append(
                     {
                         "user_id": m.id,
-                        "name": name_with_honorific(m, link.honorific, default=m.name or m.email),
+                        "name": name_with_honorific(m, link.honorific, default=get_user_display_name(m)),
                         "email": m.email,
                         "phone": m.phone_number,
                         "user_type": "manager",
@@ -8332,7 +8336,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
         "virtual_booking_id": wl_vid,
         "user": getattr(user, "id", None),
         "user_email": getattr(user, "email", "") or "",
-        "user_name": getattr(user, "name", "") or getattr(user, "email", ""),
+        "user_name": get_user_display_name(user),
         "user_phone": user_phone,
         "user_department": user_department,
         "wallet_owner_name": wallet_owner_name,
@@ -8899,7 +8903,7 @@ def create_urgent_booking_request(request):
             next_steps = "Your held slots have been confirmed automatically (Type A rush relief). The rush-relief attempt window resets from this booking."
         elif req.pending_supervisor_approval:
             next_steps = (
-                f"Your Type B request has been sent to your supervisor ({req.supervisor.name or req.supervisor.email}) "
+                f"Your Type B request has been sent to your supervisor ({get_user_display_name(req.supervisor)}) "
                 "for approval. After the supervisor approves, the Officer in charge will review and allocate slots. "
                 "Your wallet is charged only after the Officer in charge gives final approval."
             )
@@ -8918,7 +8922,7 @@ def create_urgent_booking_request(request):
             recipient=request.user,
             template="urgent_booking_request_submitted_user_email",
             template_context={
-                "user_name": request.user.name or request.user.email,
+                "user_name": get_user_display_name(request.user),
                 "request_id": req.id,
                 "equipment_name": equip.name,
                 "equipment_code": equip.code,
@@ -9167,7 +9171,7 @@ def list_urgent_booking_requests(request):
             "request_type": req.request_type,
             "waive_urgent_surcharge": req.waive_urgent_surcharge,
             "user_id": req.user_id,
-            "user_name": req.user.name or req.user.email,
+            "user_name": get_user_display_name(req.user),
             "user_email": req.user.email,
             "equipment_id": req.equipment_id,
             "equipment_code": req.equipment.code,
@@ -9181,16 +9185,16 @@ def list_urgent_booking_requests(request):
             "evidence_original_name": req.evidence_original_name or "",
             "reviewer_comment": req.reviewer_comment or "",
             "wallet_approved_at": req.wallet_approved_at.isoformat() if req.wallet_approved_at else None,
-            "wallet_approved_by_name": (req.wallet_approved_by.name or req.wallet_approved_by.email) if req.wallet_approved_by else None,
+            "wallet_approved_by_name": get_user_display_name(req.wallet_approved_by) if req.wallet_approved_by else None,
             "wallet_notes": req.wallet_notes or "",
             "pending_wallet_approval": pending_wallet,
             "supervisor_approval_required": req.supervisor_approval_required,
             "supervisor_decision": req.supervisor_decision or "",
-            "supervisor_name": (req.supervisor.name or req.supervisor.email) if req.supervisor_id and req.supervisor else None,
+            "supervisor_name": get_user_display_name(req.supervisor) if req.supervisor_id and req.supervisor else None,
             "status": req.status,
             "admin_notes": req.admin_notes or "",
             "decided_at": req.decided_at.isoformat() if req.decided_at else None,
-            "decided_by_name": (req.decided_by.name or req.decided_by.email) if req.decided_by else None,
+            "decided_by_name": get_user_display_name(req.decided_by) if req.decided_by else None,
             "expiry_at": expiry_at.isoformat() if expiry_at else None,
             "requester_approved_urgent_last_6_months": _format_approved_urgent_6m(approved_6m),
             "no_slot_log_count": log_count,
@@ -9281,7 +9285,7 @@ def get_urgent_request_detail(request, request_id):
         "request_type": urg.request_type,
         "waive_urgent_surcharge": urg.waive_urgent_surcharge,
         "user_id": urg.user_id,
-        "user_name": urg.user.name or urg.user.email,
+        "user_name": get_user_display_name(urg.user),
         "user_email": urg.user.email,
         "equipment_id": urg.equipment_id,
         "equipment_code": urg.equipment.code,
@@ -9295,16 +9299,16 @@ def get_urgent_request_detail(request, request_id):
         "evidence_original_name": urg.evidence_original_name or "",
         "reviewer_comment": urg.reviewer_comment or "",
         "wallet_approved_at": urg.wallet_approved_at.isoformat() if urg.wallet_approved_at else None,
-        "wallet_approved_by_name": (urg.wallet_approved_by.name or urg.wallet_approved_by.email) if urg.wallet_approved_by else None,
+        "wallet_approved_by_name": get_user_display_name(urg.wallet_approved_by) if urg.wallet_approved_by else None,
         "wallet_notes": urg.wallet_notes or "",
         "pending_wallet_approval": pending_wallet,
         "supervisor_approval_required": urg.supervisor_approval_required,
         "supervisor_decision": urg.supervisor_decision or "",
-        "supervisor_name": (urg.supervisor.name or urg.supervisor.email) if urg.supervisor_id and urg.supervisor else None,
+        "supervisor_name": get_user_display_name(urg.supervisor) if urg.supervisor_id and urg.supervisor else None,
         "status": urg.status,
         "admin_notes": urg.admin_notes or "",
         "decided_at": urg.decided_at.isoformat() if urg.decided_at else None,
-        "decided_by_name": (urg.decided_by.name or urg.decided_by.email) if urg.decided_by else None,
+        "decided_by_name": get_user_display_name(urg.decided_by) if urg.decided_by else None,
         "expiry_at": expiry_at_detail.isoformat() if expiry_at_detail else None,
         "requester_approved_urgent_last_6_months": _format_approved_urgent_6m(approved_6m_detail),
         "no_slot_log_count": log_count,
@@ -9342,7 +9346,7 @@ def get_no_slot_log_for_user(request, user_id):
         if e.get("requested_at"):
             e["requested_at"] = e["requested_at"].isoformat()
     return Response(
-        {"user_id": target_user.id, "user_name": target_user.name or target_user.email, "entries": entries},
+        {"user_id": target_user.id, "user_name": get_user_display_name(target_user), "entries": entries},
         status=status.HTTP_200_OK,
     )
 
@@ -9436,7 +9440,7 @@ def list_booking_attempt_logs(request):
         results.append({
             "id": log.id,
             "user_id": log.user_id,
-            "user_name": log.user.name or log.user.email,
+            "user_name": get_user_display_name(log.user),
             "user_email": log.user.email,
             "equipment_id": log.equipment_id,
             "equipment_code": log.equipment.code,
@@ -9780,7 +9784,7 @@ def update_urgent_booking_request(request, request_id):
                 recipient=urg.user,
                 template="urgent_booking_admin_decision_user_email",
                 template_context={
-                    "user_name": urg.user.name or urg.user.email,
+                    "user_name": get_user_display_name(urg.user),
                     "decision_headline": "Urgent Booking Request Approved by Admin",
                     "decision_body": (
                         "Your urgent booking request has been approved by the administrator. "
@@ -9800,7 +9804,7 @@ def update_urgent_booking_request(request, request_id):
                 recipient=urg.user,
                 template="urgent_booking_admin_decision_user_email",
                 template_context={
-                    "user_name": urg.user.name or urg.user.email,
+                    "user_name": get_user_display_name(urg.user),
                     "decision_headline": "Urgent Booking Request Rejected by Admin",
                     "decision_body": "Your urgent booking request has been rejected by the administrator.",
                     "request_id": urg.id,
@@ -9990,7 +9994,7 @@ def _notify_urgent_supervisor_decision(urg, actor) -> None:
             recipient=urg.user,
             template="urgent_booking_supervisor_decision_user_email",
             template_context={
-                "user_name": urg.user.name or urg.user.email,
+                "user_name": get_user_display_name(urg.user),
                 "request_id": urg.id,
                 "equipment_name": equipment.name,
                 "equipment_code": equipment.code,
@@ -10045,7 +10049,7 @@ def _urgent_supervisor_row(req) -> dict:
         "id": req.id,
         "request_type": req.request_type,
         "user_id": req.user_id,
-        "user_name": req.user.name or req.user.email,
+        "user_name": get_user_display_name(req.user),
         "user_email": req.user.email,
         "equipment_id": req.equipment_id,
         "equipment_name": req.equipment.name,
@@ -10055,7 +10059,7 @@ def _urgent_supervisor_row(req) -> dict:
         "wallet_status": wallet_status,
         "pending_wallet_approval": req.pending_supervisor_approval,
         "wallet_approved_at": req.wallet_approved_at.isoformat() if req.wallet_approved_at else None,
-        "wallet_approved_by_name": (req.wallet_approved_by.name or req.wallet_approved_by.email) if req.wallet_approved_by else None,
+        "wallet_approved_by_name": get_user_display_name(req.wallet_approved_by) if req.wallet_approved_by else None,
         "wallet_notes": req.wallet_notes or "",
         "reviewer_comment": req.reviewer_comment or "",
         "number_of_samples": req.number_of_samples,
@@ -10316,7 +10320,7 @@ def urgent_supervisor_email_action(request, request_id, action):
         charge = f"₹{hb.total_charge}" if hb is not None and hb.total_charge is not None else "—"
         color = "#16a34a" if action == "approve" else "#dc2626"
         body = (
-            f"<p style='margin:0 0 8px 0;'><b>Requester:</b> {escape(urg.user.name or urg.user.email)} ({escape(urg.user.email)})</p>"
+            f"<p style='margin:0 0 8px 0;'><b>Requester:</b> {escape(get_user_display_name(urg.user))} ({escape(urg.user.email)})</p>"
             f"<p style='margin:0 0 8px 0;'><b>Equipment:</b> {escape(urg.equipment.name)} ({escape(urg.equipment.code)})</p>"
             f"<p style='margin:0 0 8px 0;'><b>Request ID:</b> {urg.id}</p>"
             f"<p style='margin:0 0 8px 0;'><b>Estimated charge (incl. 50% urgent surcharge):</b> {escape(charge)}</p>"
@@ -11101,7 +11105,7 @@ def bulk_email_recipients(request):
         seen.add(email)
         recipients.append({
             "email": email,
-            "name": slot.booking.user.name or slot.booking.user.email or email,
+            "name": get_user_display_name(slot.booking.user) or email,
         })
     return Response({"recipients": recipients}, status=status.HTTP_200_OK)
 
@@ -11206,7 +11210,7 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
 
     sample_notice_ctx = _build_sample_notice_context(booking)
     context = {
-        "user_name": user.name or user.email,
+        "user_name": get_user_display_name(user),
         "user_email": user.email,
         "booking_id": booking_display_id_for_email(booking),
         "equipment_name": equipment.name,
@@ -14383,7 +14387,7 @@ def set_booking_sample_status(request, booking_id):
             from iic_booking.communication.utils import booking_display_id_for_email
             equipment = getattr(booking, "equipment", None)
             ctx = {
-                "user_name": getattr(booking.user, "name", None) or getattr(booking.user, "email", None) or "User",
+                "user_name": get_user_display_name(booking.user) or "User",
                 "user_email": getattr(booking.user, "email", "") or "",
                 "equipment_name": (getattr(equipment, "name", None) or getattr(equipment, "code", None) or "Equipment") if equipment else "Equipment",
                 "booking_id": booking_display_id_for_email(booking),
@@ -16240,7 +16244,7 @@ def user_identity_card(request, user_id):
     from .serializers import _get_wallet_owner_display_name
 
     supervisor = getattr(target, "supervisor", None)
-    supervisor_name = (supervisor.name or supervisor.email) if supervisor else None
+    supervisor_name = get_user_display_name(supervisor) if supervisor else None
     if not supervisor_name:
         supervisor_name = _get_wallet_owner_display_name(target, {})
     try:
@@ -16255,7 +16259,7 @@ def user_identity_card(request, user_id):
     return Response(
         {
             "user_id": target.pk,
-            "name": target.name or "",
+            "name": get_user_display_name(target, fallback_to_email=False),
             "email": target.email or "",
             "phone_number": target.phone_number or "",
             "department_name": (department.name if department else "") or "",
@@ -16626,7 +16630,7 @@ def allocate_ta_assignment(request):
             expected_hours_display = "—"
 
         context = {
-            "student_name": nomination.student.name or nomination.student.email,
+            "student_name": get_user_display_name(nomination.student),
             "student_email": nomination.student.email,
             "instrument_name": nomination.equipment.name or nomination.equipment.code,
             "instrument_code": nomination.equipment.code,
@@ -16640,7 +16644,7 @@ def allocate_ta_assignment(request):
             "expected_hours": expected_hours_display,
             "allocation_notes": allocation_notes or "No additional notes.",
             "portal_url": portal_url,
-            "allocated_by_name": request.user.name or request.user.email,
+            "allocated_by_name": get_user_display_name(request.user),
         }
         CommunicationService.send_email(
             recipient=nomination.student,
@@ -18024,7 +18028,7 @@ def _nomination_to_dict(nom):
     approved_by_name = None
     outcome_summary = "Pending"
     if nom.approved_at and nom.approved_by_id:
-        approved_by_name = approved_by.name or approved_by.email if approved_by else None
+        approved_by_name = get_user_display_name(approved_by) if approved_by else None
         if nom.status == StudentEquipmentNominationStatus.APPROVED:
             outcome_summary = f"Approved by {approved_by_name or '—'} on {nom.approved_at.strftime('%d %b %Y')}"
         elif nom.status == StudentEquipmentNominationStatus.REJECTED:
@@ -18036,13 +18040,13 @@ def _nomination_to_dict(nom):
     return {
         "id": nom.id,
         "student_id": nom.student_id,
-        "student_name": student.name or student.email,
+        "student_name": get_user_display_name(student),
         "student_email": student.email,
         "student_branch_name": getattr(student, "branch_name", None) or "",
         "student_degree_name": getattr(student, "degree_name", None) or "",
         "student_department_name": student.department.name if getattr(student, "department", None) else "",
         "supervisor_id": nom.supervisor_id,
-        "supervisor_name": nom.supervisor.name or nom.supervisor.email,
+        "supervisor_name": get_user_display_name(nom.supervisor),
         "equipment_id": nom.equipment_id,
         "equipment_code": nom.equipment.code,
         "equipment_name": nom.equipment.name,
@@ -18216,13 +18220,13 @@ def create_equipment_nomination(request):
         nomination_requests_url = get_frontend_absolute_url("/my-nomination-requests") or get_frontend_absolute_url("/dashboard") or "IIC Booking Portal"
         academic_year_name = _academic_year_label_from_semester(semester)
         context = {
-            "student_name": student.name or student.email,
+            "student_name": get_user_display_name(student),
             "student_email": student.email,
             "instrument_name": equipment.name or equipment.code,
             "instrument_code": equipment.code,
             "semester_name": academic_year_name,
             "academic_year_name": academic_year_name,
-            "supervisor_name": request.user.name or request.user.email,
+            "supervisor_name": get_user_display_name(request.user),
             "nomination_requests_url": nomination_requests_url,
         }
         CommunicationService.send_email(
@@ -18466,7 +18470,7 @@ def approve_equipment_nomination(request, nomination_id):
         portal_url = get_frontend_absolute_url("/my-nomination-requests") or get_frontend_absolute_url("/dashboard") or "IIC Booking Portal"
         academic_year_name = _academic_year_label_from_semester(nom.semester)
         context = {
-            "student_name": nom.student.name or nom.student.email,
+            "student_name": get_user_display_name(nom.student),
             "student_email": nom.student.email,
             "instrument_name": nom.equipment.name or nom.equipment.code,
             "instrument_code": nom.equipment.code,
@@ -18512,7 +18516,7 @@ def reject_equipment_nomination(request, nomination_id):
         portal_url = get_frontend_absolute_url("/my-nomination-requests") or get_frontend_absolute_url("/dashboard") or "IIC Booking Portal"
         academic_year_name = _academic_year_label_from_semester(nom.semester)
         context = {
-            "student_name": nom.student.name or nom.student.email,
+            "student_name": get_user_display_name(nom.student),
             "student_email": nom.student.email,
             "instrument_name": nom.equipment.name or nom.equipment.code,
             "instrument_code": nom.equipment.code,
@@ -18685,7 +18689,7 @@ def create_ta_nomination_call(request):
         try:
             context = {
                 **base_context,
-                "faculty_name": faculty.name or faculty.email,
+                "faculty_name": get_user_display_name(faculty),
                 "faculty_email": faculty.email,
             }
             CommunicationService.send_email(

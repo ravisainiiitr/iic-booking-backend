@@ -13,6 +13,7 @@ from rest_framework.viewsets import GenericViewSet
 from ..models import User
 from ..models.user_type import UserType
 from ..serializers import UserSerializer
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ class UserViewSet(RetrieveModelMixin, ListModelMixin, UpdateModelMixin, GenericV
                 recipient=user,
                 template="registration_approval_confirmation_email",
                 template_context={
-                    "name": user.name or user.email,
+                    "name": get_user_display_name(user),
                     "web_address": web_address,
                 },
             )

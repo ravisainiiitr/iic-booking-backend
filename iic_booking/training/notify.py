@@ -13,6 +13,8 @@ from typing import Any, Iterable
 from django.db import transaction
 from django.utils import timezone
 
+from iic_booking.users.display import get_user_display_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,7 +106,7 @@ def send(
                     template=template,
                     template_context={
                         **context,
-                        "user_name": (getattr(user, "name", "") or "").strip() or user.email,
+                        "user_name": get_user_display_name(user),
                         "link": link,
                     },
                     created_by=actor,

@@ -120,23 +120,10 @@ def apply_booking_party_to_context(context: dict, booking) -> dict:
     return context
 
 
-_EXISTING_TITLE_RE = re.compile(r"^(prof(essor)?|dr)\b", re.IGNORECASE)
-
-
-def _supervisor_salutation(person) -> str:
-    """'Prof. <name>' for the supervisor's greeting, keeping a title the name already carries."""
-    name = user_display_name(person, fallback="")
-    if not name:
-        return user_display_name(person)
-    if "@" in name or _EXISTING_TITLE_RE.match(name):
-        return name
-    return f"Prof. {name}"
-
-
 def _wallet_owner_context(context: dict, wallet_owner, booker) -> dict:
     """Wallet owner's copy of the booker's email: same content, with who booked in the details card."""
     ctx = context.copy()
-    ctx["user_name"] = _supervisor_salutation(wallet_owner)
+    ctx["user_name"] = user_display_name(wallet_owner)
     ctx["user_email"] = wallet_owner.email
     ctx["student_name"] = user_display_name(booker, fallback="your student")
     ctx["student_email"] = (getattr(booker, "email", "") or "").strip()

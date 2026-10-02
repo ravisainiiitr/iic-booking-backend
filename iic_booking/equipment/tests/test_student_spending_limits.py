@@ -306,7 +306,8 @@ def test_student_sees_own_limit_and_remaining(egs_factory):
     assert data["week_spent_inr"] == "30.00"
     assert data["weekly_remaining_inr"] == "70.00"
     assert data["monthly_remaining_inr"] is None
-    assert data["supervisor_name"] == (faculty.name or faculty.email)
+    assert faculty.name and not faculty.name.startswith(("Prof", "Dr"))
+    assert data["supervisor_name"] == f"Prof. {faculty.name}"
 
 
 # --- enforcement on charge paths -------------------------------------------------------------

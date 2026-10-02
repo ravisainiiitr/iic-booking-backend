@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import cached_property
 from typing import Any
+from iic_booking.users.display import get_user_display_name
 
 
 class Capabilities:
@@ -65,7 +66,7 @@ class Capabilities:
     @cached_property
     def wallet_owner_name(self) -> str:
         owner = getattr(self.wallet, "user", None) if self.wallet_is_shared else None
-        return (getattr(owner, "name", "") or getattr(owner, "email", "") or "") if owner else ""
+        return (get_user_display_name(owner) or "") if owner else ""
 
     @cached_property
     def can_recharge(self) -> bool:

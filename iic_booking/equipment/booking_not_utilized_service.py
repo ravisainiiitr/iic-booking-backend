@@ -79,18 +79,16 @@ def send_booking_not_utilized_emails(
             part += f" {s.start_datetime.strftime('%H:%M')}-{s.end_datetime.strftime('%H:%M')}"
         slot_parts.append(part)
     slot_details = "; ".join(slot_parts)
+    from iic_booking.communication.email_branding import user_display_name
+    from iic_booking.equipment.booking_events import _person_label, apply_booking_party_to_context
+
     ctx = {
-        "user_name": getattr(user, "name", None) or getattr(user, "email", None) or "User",
+        "user_name": user_display_name(user),
         "user_email": getattr(user, "email", "") or "",
         "equipment_name": equipment_name,
         "slot_details": slot_details,
         "booking_id": booking_display_id_for_email(booking),
     }
-    from iic_booking.equipment.booking_events import (
-        _person_label,
-        _supervisor_salutation,
-        apply_booking_party_to_context,
-    )
 
     apply_booking_party_to_context(ctx, booking)
     try:
@@ -111,9 +109,9 @@ def send_booking_not_utilized_emails(
             owner = wallet.user
             owner_ctx = {
                 **ctx,
-                "student_name": getattr(user, "name", None) or getattr(user, "email", None) or "Student",
+                "student_name": user_display_name(user, fallback="Student"),
                 "student_email": getattr(user, "email", "") or "",
-                "wallet_owner_name": _supervisor_salutation(owner),
+                "wallet_owner_name": user_display_name(owner),
                 "charged_to_display": _person_label(owner, "Supervisor"),
             }
             CommunicationService.send_email(
