@@ -61,6 +61,18 @@ def _demo_charge_text(req: DemoRequest) -> str:
     return charge_text(req)
 
 
+def _demo_waiver(req: DemoRequest) -> dict | None:
+    from .demo import waiver_info
+
+    return waiver_info(req)
+
+
+def _can_waive(req: DemoRequest, manage: bool) -> bool:
+    from .demo import WAIVABLE_STATUSES
+
+    return manage and req.status in WAIVABLE_STATUSES and req.charge_mode == "WALLET" and req.charge_amount > 0
+
+
 def demo_out(req: DemoRequest, viewer, *, detail: bool = False) -> dict:
     is_owner = req.requester_id == viewer.id
     manage = access.can_manage_equipment(viewer, req.equipment_id)
@@ -99,6 +111,7 @@ def demo_out(req: DemoRequest, viewer, *, detail: bool = False) -> dict:
         "charge_amount": money(req.charge_amount),
         "charged": bool(req.wallet_txn_id),
         "charge_text": _demo_charge_text(req),
+        "charge_waiver": _demo_waiver(req),
         "refund_amount": money(req.refund_amount),
         "cancelled_by_side": req.cancelled_by_side,
         "cancel_reason": req.cancel_reason,
@@ -119,6 +132,7 @@ def demo_out(req: DemoRequest, viewer, *, detail: bool = False) -> dict:
             "cancel": (is_owner or manage) and req.status in (DemoStatus.APPROVED, DemoStatus.SCHEDULED, DemoStatus.PROPOSED_ALTERNATIVE),
             "attendance": attend and req.status in (DemoStatus.SCHEDULED, DemoStatus.COMPLETED),
             "complete": attend and req.status == DemoStatus.SCHEDULED,
+            "waive": _can_waive(req, manage),
         },
     }
     if detail:

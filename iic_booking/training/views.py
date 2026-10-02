@@ -280,6 +280,8 @@ def demo_request_action(request, pk: int, action: str):
         req = demo.cancel(req, user, d.get("reason") or "")
     elif action == "withdraw":
         req = demo.withdraw(req, user, d.get("reason") or "")
+    elif action == "waive":
+        req = demo.waive(req, user, d.get("reason") or "")
     elif action == "attendance":
         req = demo.record_attendance(req, user, attended_count=d.get("attended_count"), present_user_ids=d.get("present_user_ids"))
     elif action == "complete":
