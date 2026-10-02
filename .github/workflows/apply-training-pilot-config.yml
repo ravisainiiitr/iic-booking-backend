@@ -1,0 +1,303 @@
+# Training & Certification pilot switch (keys live in .envs/.production/.django on the EC2 host).
+#   status       : read-only. Module on/off, pilot equipment codes, pilot OIC email count (masked), training
+#                  migrations, the training-housekeeping periodic task and a /api/v1/training/bootstrap/ probe.
+#   enable-pilot : TRAINING_MODULE_ENABLED=True, TRAINING_PILOT_EQUIPMENT_CODES=<equipment_codes>,
+#                  TRAINING_PILOT_OIC_EMAILS=<oic_emails> (empty = every OIC of the pilot equipment).
+#                  Codes must exist in production; each email must be an active user (warning if not an OIC).
+#   disable      : TRAINING_MODULE_ENABLED=False. Pilot lists are kept so re-enabling is one run.
+# enable-pilot / disable back up the env file, recreate django, celeryworker and celerybeat, then show status.
+# The env file is gitignored on the host and Deploy Backend never rewrites it, so the setting survives deploys.
+name: Apply Training Pilot Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | enable-pilot | disable"
+        required: true
+        default: status
+        type: choice
+        options: [status, enable-pilot, disable]
+      equipment_codes:
+        description: "Pilot equipment codes, comma-separated (e.g. APREO,GEM560). Required for enable-pilot"
+        required: false
+        default: ""
+      oic_emails:
+        description: "Optional pilot OIC emails, comma-separated (enable-pilot only)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type TRAINING to change config (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 20
+    env:
+      MODE: ${{ github.event.inputs.mode }}
+      DJANGO_ENV: /home/ubuntu/iic-booking-backend/.envs/.production/.django
+      COMPOSE_DIR: /home/ubuntu/iic-booking-backend
+    steps:
+      # Inputs are read from the event file (not step env) so OIC emails never appear in the log header.
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          inputs = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("inputs") or {}
+          mode = os.environ["MODE"]
+          emails = []
+          for part in (inputs.get("oic_emails") or "").split(","):
+              part = part.strip().lower()
+              if part and part not in emails:
+                  emails.append(part)
+          for email in emails:
+              print(f"::add-mask::{email}")
+          codes = []
+          for part in (inputs.get("equipment_codes") or "").split(","):
+              part = part.strip()
+              if part and part not in codes:
+                  codes.append(part)
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          if mode != "status" and (inputs.get("confirm") or "").strip() != "TRAINING":
+              fail(f"Type TRAINING in the confirm box to run mode={mode}.")
+          if mode == "enable-pilot":
+              if not codes:
+                  fail("equipment_codes is required for enable-pilot (e.g. APREO).")
+              bad = [c for c in codes if not re.fullmatch(r"[A-Z0-9_-]+", c)]
+              if bad:
+                  fail(f"Invalid equipment code(s) {', '.join(bad)}: use uppercase letters, digits, '-' or '_'.")
+              bad = [e for e in emails if not re.fullmatch(r"[^@\s,]+@[^@\s,]+\.[^@\s,]+", e)]
+              if bad:
+                  fail(f"{len(bad)} OIC email(s) are not valid email addresses.")
+          elif codes or emails:
+              print(f"::notice::equipment_codes / oic_emails are ignored for mode={mode}.")
+              codes, emails = [], []
+
+          tmp = os.environ["RUNNER_TEMP"]
+          open(os.path.join(tmp, "training-pilot-codes"), "w").write(",".join(codes))
+          open(os.path.join(tmp, "training-pilot-emails"), "w").write(",".join(emails))
+          print(f"mode={mode} codes={','.join(codes) or '-'} oic_email_count={len(emails)}")
+          PY
+
+      - name: Check pilot values against production
+        if: env.MODE == 'enable-pilot'
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          CODES="$(cat "$RUNNER_TEMP/training-pilot-codes")"
+          EMAILS="$(cat "$RUNNER_TEMP/training-pilot-emails")"
+          set +e
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py training_pilot_status --json --codes "$CODES" --oic-emails "$EMAILS" \
+            > "$RUNNER_TEMP/training-pilot-check.json"
+          rc=$?
+          set -e
+          python3 - "$RUNNER_TEMP/training-pilot-check.json" <<'PY'
+          import json
+          import sys
+
+          try:
+              report = json.load(open(sys.argv[1], encoding="utf-8"))
+          except ValueError:
+              print("::error::training_pilot_status did not return a report (is the command deployed?)")
+              sys.exit(0)
+          for eq in report["pilot_equipment"]:
+              print(f"{eq['code']}: " + (f"found ({eq['name']}, {eq['status']})" if eq["found"] else "NOT FOUND"))
+          for oic in report["pilot_oics"]:
+              print(f"{oic['email']}: active_user={oic['active_user']} is_pilot_oic={oic['is_pilot_oic']}")
+          for w in report["warnings"]:
+              print(f"::warning::{w}")
+          for e in report["errors"]:
+              print(f"::error::{e}")
+          PY
+          if [ "$rc" -ne 0 ]; then
+            echo "Pilot values rejected; the env file was not changed." >> "$GITHUB_STEP_SUMMARY"
+            exit "$rc"
+          fi
+
+      - name: Update env file
+        if: env.MODE != 'status'
+        run: |
+          set -euo pipefail
+          test -f "$DJANGO_ENV"
+          export BACKUP="$DJANGO_ENV.bak-training-$(date -u +%Y%m%dT%H%M%SZ)"
+          python3 <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          tmp = os.environ["RUNNER_TEMP"]
+          path = Path(os.environ["DJANGO_ENV"])
+          if mode == "enable-pilot":
+              upsert = {
+                  "TRAINING_MODULE_ENABLED": "True",
+                  "TRAINING_PILOT_EQUIPMENT_CODES": Path(tmp, "training-pilot-codes").read_text().strip(),
+                  "TRAINING_PILOT_OIC_EMAILS": Path(tmp, "training-pilot-emails").read_text().strip(),
+              }
+          elif mode == "disable":
+              upsert = {"TRAINING_MODULE_ENABLED": "False"}
+          else:
+              raise SystemExit("unknown mode")
+
+          old = path.read_text(encoding="utf-8", errors="replace")
+          out, seen = [], set()
+          for line in old.splitlines():
+              key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+              if key in upsert:
+                  if key not in seen:
+                      out.append(f"{key}={upsert[key]}")
+                      seen.add(key)
+                  continue
+              out.append(line)
+          out += [f"{k}={v}" for k, v in upsert.items() if k not in seen]
+          new = "\n".join(out).rstrip() + "\n"
+
+          summary = open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8")
+          if new == old:
+              print("env file already has these values; not edited")
+              summary.write("The env file already had these values, so it was not edited.\n\n")
+          else:
+              backup = os.environ["BACKUP"]
+              shutil.copy2(path, backup)
+              path.write_text(new, encoding="utf-8")
+              print(f"set {sorted(upsert)}; backup {os.path.basename(backup)}")
+              summary.write(f"Updated the production env file (backup: `{os.path.basename(backup)}`).\n\n")
+          PY
+
+      - name: Recreate django, celeryworker and celerybeat
+        if: env.MODE != 'status'
+        run: |
+          set -euo pipefail
+          cd "$COMPOSE_DIR"
+          docker compose -f docker-compose.production.yml up -d --force-recreate --no-deps django celeryworker celerybeat
+          code=""
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8080/api/v1/analysis/health/ready/ || true)"
+            [ "$code" = "200" ] && { echo "health=200"; break; }
+            sleep 3
+          done
+          test "$code" = "200"
+          docker ps --format '{{.Names}} {{.Status}}' | grep -E 'django|celery'
+          for svc in celeryworker celerybeat; do
+            docker ps --format '{{.Names}} {{.Status}}' | grep -E "${svc}[^ ]* Up" > /dev/null \
+              || { echo "::error::$svc is not running"; exit 1; }
+          done
+          echo "Restarted django, celeryworker and celerybeat; the site health check passed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Status
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py training_pilot_status --json > "$RUNNER_TEMP/training-pilot-status.json"
+          export LOCAL_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8080/api/v1/training/bootstrap/ || true)"
+          export PUBLIC_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://equip.iitr.ac.in/api/v1/training/bootstrap/ || true)"
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          mode = os.environ["MODE"]
+          tmp = os.environ["RUNNER_TEMP"]
+          report = json.load(open(Path(tmp, "training-pilot-status.json"), encoding="utf-8"))
+
+          file_vals = {}
+          env_path = Path(os.environ["DJANGO_ENV"])
+          if env_path.exists():
+              for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                  s = line.strip()
+                  if s.startswith("TRAINING_") and "=" in s:
+                      k, v = s.split("=", 1)
+                      file_vals[k.strip()] = v.strip().strip("'\"")
+          csv = lambda raw: {p.strip() for p in (raw or "").split(",") if p.strip()}
+          file_enabled = file_vals.get("TRAINING_MODULE_ENABLED", "").lower() in {"true", "on", "ok", "y", "yes", "1"}
+          file_codes = {c.upper() for c in csv(file_vals.get("TRAINING_PILOT_EQUIPMENT_CODES"))}
+          file_email_count = len({e.lower() for e in csv(file_vals.get("TRAINING_PILOT_OIC_EMAILS"))})
+
+          enabled = report["module_enabled"]
+          codes = [e["code"] for e in report["pilot_equipment"]]
+          mig = report["migrations"]
+          task = report["housekeeping_task"]
+          local, public = os.environ.get("LOCAL_CODE", ""), os.environ.get("PUBLIC_CODE", "")
+          api_ok = local in {"200", "401", "403"} or public in {"200", "401", "403"}
+          in_sync = (file_enabled, file_codes, file_email_count) == (enabled, set(codes), report["pilot_oic_email_count"])
+
+          problems = []
+          if mig["pending"]:
+              problems.append(f"Training migrations not applied: {', '.join(mig['pending'])}. Run Migrate Production.")
+          if not api_ok:
+              problems.append(f"Training API did not respond as expected (server {local or 'none'}, public {public or 'none'}).")
+          if mode == "enable-pilot":
+              want_codes = csv(Path(tmp, "training-pilot-codes").read_text())
+              want_emails = len(csv(Path(tmp, "training-pilot-emails").read_text()))
+              if not enabled:
+                  problems.append("The running app still reports the module as OFF.")
+              if set(codes) != want_codes or report["pilot_oic_email_count"] != want_emails:
+                  problems.append("The running app's pilot lists do not match what was requested.")
+          if mode == "disable" and enabled:
+              problems.append("The running app still reports the module as ON.")
+          if not in_sync:
+              problems.append("The env file and the running app disagree; services need a restart.")
+
+          lines = [f"## Training pilot: {mode}", ""]
+          if enabled:
+              lines.append("- **Training module: ON.** Users in the pilot can see the Training menus.")
+          else:
+              lines.append("- **Training module: OFF.** Nobody sees the Training menus.")
+          if report["pilot_equipment"]:
+              parts = [f"`{e['code']}` ({e['name']}, {e['status']})" if e["found"] else f"`{e['code']}` (NOT FOUND)"
+                       for e in report["pilot_equipment"]]
+              lines.append(f"- Pilot equipment: {', '.join(parts)}")
+          else:
+              lines.append("- Pilot equipment: none listed, so every equipment is in scope while the module is on.")
+          if report["pilot_oics"]:
+              masked = ", ".join(o["email"] + ("" if o["is_pilot_oic"] else " (not an OIC of the pilot equipment)")
+                                 for o in report["pilot_oics"])
+              lines.append(f"- Pilot OIC emails: {report['pilot_oic_email_count']} ({masked})")
+          else:
+              lines.append("- Pilot OIC emails: none listed, so every OIC of the pilot equipment can manage training.")
+          if mig["pending"]:
+              lines.append(f"- Database migrations: **pending** {', '.join(mig['pending'])}")
+          else:
+              lines.append(f"- Database migrations: all applied ({', '.join(mig['applied']) or 'none found'})")
+          if task["exists"]:
+              lines.append(f"- Housekeeping task `{task['name']}`: present, {'enabled' if task['enabled'] else '**disabled**'}")
+          else:
+              lines.append(f"- Housekeeping task `{task['name']}`: **missing**")
+          lines.append(f"- Training API `/api/v1/training/bootstrap/`: {'responds' if api_ok else '**not responding**'} "
+                       f"(server {local or 'none'}, public {public or 'none'}; 401 when not signed in is expected)")
+          lines.append("- Env file and running app: " + ("match" if in_sync else "**differ** (restart needed)"))
+          lines += [f"- Warning: {w}" for w in report["warnings"]]
+          lines.append("")
+          lines.append("**Problems:**\n" + "\n".join(f"- {p}" for p in problems) if problems else "**All checks passed.**")
+
+          text = "\n".join(lines) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write(text)
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          PY
