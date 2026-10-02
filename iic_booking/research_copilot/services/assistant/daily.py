@@ -823,7 +823,7 @@ def students(user, conversation, params, text):
                  "3. Once they approve, your bookings are charged to their wallet.",
                  "",
                  "Can't find your supervisor's name? Faculty appear in the list only after they have signed in to "
-                 "the portal once (via Channel I). Use **Invite your supervisor** on the Wallet page to email them "
+                 "the portal once. Use **Invite your supervisor** on the Wallet page to email them "
                  "an invitation — when they sign in it becomes a normal link request for them to approve."]
         return C.reply("\n".join(lines), actions=[C.link("Link my supervisor's wallet", "/wallet", primary=True),
                                                   C.prompt_action("Wallet balance", "What is my wallet balance?")],

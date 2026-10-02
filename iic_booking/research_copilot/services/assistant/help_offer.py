@@ -177,8 +177,8 @@ def _no_wallet(user, conversation, eq, payload: dict[str, Any]) -> dict[str, Any
             "2. Search for your supervisor and press **Send Request**.",
             "3. When they approve it, come back and book — your booking is charged to their wallet.",
             "",
-            "Can't find your supervisor? Faculty appear in the list only after they have signed in to the portal once "
-            "(via Channel I). Use **Invite your supervisor** on the Wallet page to email them an invitation — when "
+            "Can't find your supervisor? Faculty appear in the list only after they have signed in to the portal once. "
+            "Use **Invite your supervisor** on the Wallet page to email them an invitation — when "
             "they sign in it becomes a normal link request for them to approve.",
         ]
     elif t == "faculty":

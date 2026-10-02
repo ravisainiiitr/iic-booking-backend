@@ -511,7 +511,7 @@ wallet. GST applies to external users only. The Analysis Charges page lists rate
 Students book from their supervisor's wallet. Open Wallet → Request to Join Wallet, search for your supervisor and
 press Send Request; once they approve it (Student management), your bookings are charged to their wallet and any
 spending limit they set applies. If your supervisor's name is not in the list, they have not signed in to the
-portal yet (via Channel I): click Invite your supervisor on the Wallet page and enter their IIT Roorkee email;
+portal yet: click Invite your supervisor on the Wallet page and enter their IIT Roorkee email;
 when they sign in, the invitation becomes a normal link request they approve. Faculty can see and approve join
 requests under Student management.
 """,
