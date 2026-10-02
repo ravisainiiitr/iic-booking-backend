@@ -158,26 +158,18 @@ def _clean_name(raw):
 
 
 def _numeric_minimum_error(equipment, values, user, baseline=None):
-    """First numeric input below its minimum (at least 1) in sample set 1 or an extra set, else None.
+    """First numeric input below its minimum (at least 1), or above a formula maximum worked out from its
+    own sample set (e.g. A <= B*4), in sample set 1 or an extra set, else None.
 
-    Maximums are checked when the booking is made. Unchanged values of the stored template (``baseline``)
-    saved before the minimum of 1 existed are kept.
+    Fixed maximums are checked when the booking is made. Unchanged values of the stored template
+    (``baseline``) saved before the minimum of 1 existed are kept, as is a set left exactly as stored.
     """
-    from .api_views import _validate_dynamic_numeric_input_limits
-    from .calculators import split_sample_sets
+    from .api_views import _sample_set_groups_limit_error
 
-    base, sets = split_sample_sets(values)
-    old_base, old_sets = split_sample_sets(baseline if isinstance(baseline, dict) else {})
-    groups = [(base, old_base, "")] + [
-        (s, old_sets[i] if i < len(old_sets) else None, f"Sample set {i + 2}: ") for i, s in enumerate(sets)
-    ]
-    for group, old, prefix in groups:
-        error = _validate_dynamic_numeric_input_limits(
-            equipment, group, booking_user=user, baseline=old, check_max=False
-        )
-        if error:
-            return f"{prefix}{error}"
-    return None
+    return _sample_set_groups_limit_error(
+        equipment, values, booking_user=user, baseline=baseline if isinstance(baseline, dict) else {},
+        check_max=False, check_formula_max=True,
+    )
 
 
 def _clean_input_values(raw, equipment=None, user=None, baseline=None):

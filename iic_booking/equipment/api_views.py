@@ -506,7 +506,7 @@ def _resolve_numeric_max_for_field_a(field, input_values, equipment):
 
     raw_options = field.options
     opts = raw_options if isinstance(raw_options, dict) else {}
-    formula = numeric_max_formula(opts)
+    formula = numeric_max_formula(raw_options)
     if formula:
         expr = formula
         for token in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
@@ -532,6 +532,25 @@ def _resolve_numeric_max_for_field_a(field, input_values, equipment):
         return _to_float_or_none(opts.get("max"))
     return None
 
+
+_FORMULA_FIELD_KEY_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z])(?![A-Za-z0-9_])")
+
+
+def _formula_limit_note(formula, input_values, labels):
+    """How a formula maximum was worked out, e.g. "B × 4, where B is Number of Slots = 2"."""
+    def pretty(v):
+        return int(v) if float(v).is_integer() else round(v, 6)
+
+    refs = []
+    for key in dict.fromkeys(_FORMULA_FIELD_KEY_RE.findall(formula)):
+        value = _to_float_or_none(input_values.get(key))
+        shown = pretty(value) if value is not None else "not set"
+        label = labels.get(key)
+        refs.append(f"{key} is {label} = {shown}" if label and label != key else f"{key} = {shown}")
+    note = re.sub(r"\s*\*\s*", " × ", formula.strip())
+    return f"{note}, where {' and '.join(refs)}" if refs else note
+
+
 def _numeric_min_floor_keys(equipment, fields, user_type):
     """Field keys whose minimum of 1 applies: the field the booking form shows for ``user_type`` is NUMERIC.
 
@@ -554,7 +573,8 @@ def _numeric_min_floor_keys(equipment, fields, user_type):
 
 
 def _validate_dynamic_numeric_input_limits(
-    equipment, input_values, booking_user=None, *, user_type=None, baseline=None, check_max=True
+    equipment, input_values, booking_user=None, *, user_type=None, baseline=None, check_max=True,
+    check_formula_max=None,
 ):
     """
     Validate NUMERIC dynamic fields against options / help_text limits.
@@ -564,12 +584,17 @@ def _validate_dynamic_numeric_input_limits(
 
     Field A may also use options.max_formula / options.max. External booking users
     skip formula/static options.max for A only; help_text / default range still apply.
+    A formula is worked out from ``input_values`` only, so pass one sample set's values at a time.
 
     Numeric user inputs must be at least 1 (see ``resolve_numeric_field_bounds``). ``baseline`` is the
     booking's / template's stored values when editing: an unchanged value saved before that minimum
-    existed (e.g. 0) is kept rather than blocking the edit. ``check_max=False`` checks only the minimum.
+    existed (e.g. 0) is kept rather than blocking the edit. ``check_max=False`` checks only the minimum,
+    plus a formula maximum when ``check_formula_max`` is True (it defaults to ``check_max``).
     """
-    from .numeric_field_limits import resolve_numeric_field_bounds
+    from .numeric_field_limits import numeric_max_formula, resolve_numeric_field_bounds
+
+    if check_formula_max is None:
+        check_formula_max = check_max
 
     is_external = booking_user is not None and UserType.is_external_user(
         getattr(booking_user, "user_type", None) or ""
@@ -583,9 +608,11 @@ def _validate_dynamic_numeric_input_limits(
     fields = [f for f in all_fields if f.field_type == DynamicInputFieldType.NUMERIC]
     if not fields:
         return None
-    floor_keys = _numeric_min_floor_keys(
-        equipment, all_fields, str(user_type or getattr(booking_user, "user_type", "") or "")
-    )
+    effective_user_type = str(user_type or getattr(booking_user, "user_type", "") or "")
+    floor_keys = _numeric_min_floor_keys(equipment, all_fields, effective_user_type)
+    labels = {}
+    for f in sorted(all_fields, key=lambda f: f.user_type != effective_user_type):
+        labels.setdefault(f.field_key, f.field_label or f.field_key)
     baseline = baseline if isinstance(baseline, dict) else None
 
     for field in fields:
@@ -622,9 +649,45 @@ def _validate_dynamic_numeric_input_limits(
                 continue
             pretty = int(min_v) if float(min_v).is_integer() else round(min_v, 6)
             return f"{label} cannot be less than {pretty}."
-        if check_max and value > max_v:
-            pretty = int(max_v) if float(max_v).is_integer() else round(max_v, 6)
-            return f"{label} cannot be greater than {pretty}."
+        if value <= max_v:
+            continue
+        formula = numeric_max_formula(field.options) if formula_max is not None else ""
+        if not (check_max or (check_formula_max and formula)):
+            continue
+        pretty = int(max_v) if float(max_v).is_integer() else round(max_v, 6)
+        if formula:
+            return f"{label} cannot be greater than {pretty} ({_formula_limit_note(formula, input_values, labels)})."
+        return f"{label} cannot be greater than {pretty}."
+    return None
+
+
+def _sample_set_groups_limit_error(
+    equipment, input_values, booking_user=None, *, user_type=None, baseline=None, check_max=True,
+    check_formula_max=None,
+):
+    """First numeric-limit error in sample set 1 or an extra sample set, else None.
+
+    Each set is checked on its own values, so a formula maximum such as A <= B*4 uses that set's B; an
+    error in an extra set names it ("Sample set 2: ..."). ``baseline`` holds the stored values when
+    editing: a set left exactly as stored is not held to a formula maximum it was saved before.
+    """
+    from .calculators import split_sample_sets
+
+    base, sets = split_sample_sets(input_values if isinstance(input_values, dict) else {})
+    old_base, old_sets = split_sample_sets(baseline if isinstance(baseline, dict) else {})
+    has_baseline = isinstance(baseline, dict)
+    groups = [(base, old_base if has_baseline else None, "")] + [
+        (s, old_sets[i] if i < len(old_sets) else None, f"Sample set {i + 2}: ") for i, s in enumerate(sets)
+    ]
+    if check_formula_max is None:
+        check_formula_max = check_max
+    for group, old, prefix in groups:
+        error = _validate_dynamic_numeric_input_limits(
+            equipment, group, booking_user=booking_user, user_type=user_type, baseline=old,
+            check_max=check_max, check_formula_max=check_formula_max and group != old,
+        )
+        if error:
+            return f"{prefix}{error}"
     return None
 
 
@@ -3304,8 +3367,9 @@ def proforma_invoice_calculate(request):
                 except (ValueError, TypeError):
                     input_values[k] = v
 
-        minimum_error = _validate_dynamic_numeric_input_limits(
-            equipment, input_values, booking_user=request.user, user_type=user_type, check_max=False
+        minimum_error = _sample_set_groups_limit_error(
+            equipment, input_values, booking_user=request.user, user_type=user_type, check_max=False,
+            check_formula_max=True,
         )
         if minimum_error:
             return Response(
