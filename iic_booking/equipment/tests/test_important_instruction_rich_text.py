@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from iic_booking.equipment.admin import EquipmentAdminForm
 from iic_booking.equipment.models import EquipmentManager
 from iic_booking.equipment.rich_text import clean_important_instruction
+from iic_booking.equipment.rich_text import font_size_token
 from iic_booking.equipment.rich_text import font_token
 from iic_booking.equipment.rich_text import palette_color
 from iic_booking.equipment.rich_text import rich_text_to_plain
@@ -39,7 +40,7 @@ def test_sanitizer_keeps_editor_formatting():
 
 def test_sanitizer_drops_scripts_handlers_and_arbitrary_styles():
     dirty = (
-        '<p style="color: rgb(185, 28, 28); font-family: Comic Sans MS; position: fixed; font-size: 40px">'
+        '<p style="color: rgb(185, 28, 28); font-family: Comic Sans MS; position: fixed; font-size: 40vw">'
         '<b onclick="steal()">Dry</b> <i onmouseover="x()">samples</i></p>'
         "<script>alert(1)</script><img src=x onerror=alert(1)><svg><script>alert(2)</script></svg>"
         '<iframe src="https://evil"></iframe><style>p{color:red}</style><!-- c -->'
@@ -102,7 +103,7 @@ def test_font_families_are_limited_to_allowed_tokens():
         '<span style="font-family: x; background-image: url(javascript:alert(1))">b</span>'
         '<span style="font-family: var(--rt-font-serif), url(https://evil/x.woff)">c</span>'
         '<span style="font-family: Papyrus">d</span>'
-        '<span style="font-family: \'Arial\'; font-size: 30px">e</span>'
+        '<span style="font-family: \'Arial\'; font-size: 30vw">e</span>'
     )
     assert sanitize_rich_text(dirty) == 'abcd<span style="font-family: var(--rt-font-sans)">e</span>'
     assert palette_color("var(--rt-font-serif)", "text") is None
@@ -113,6 +114,58 @@ def test_font_families_are_limited_to_allowed_tokens():
         '<span style="font-family: var(--rt-font-courier)">code</span> body</span></p>'
     )
     assert rich_text_to_plain(pasted) == "code body"
+
+
+def test_font_sizes_are_limited_to_allowed_point_sizes():
+    kept = (
+        '<p><span style="font-size: var(--rt-size-8)">small</span> '
+        '<span style="color: var(--rt-red); font-family: var(--rt-font-serif); font-size: var(--rt-size-36)">big</span></p>'
+        '<h3><span style="font-size: var(--rt-size-20)">Old heading, resized</span></h3><h4>Old large</h4>'
+    )
+    assert sanitize_rich_text(kept) == kept
+
+    assert font_size_token("var(--rt-size-14)") == "var(--rt-size-14)"
+    assert font_size_token("var(--rt-size-13)") is None
+    assert font_size_token("var(--rt-size-100)") is None
+    assert font_size_token("14pt") == "var(--rt-size-14)"
+    assert font_size_token("13.0pt") == "var(--rt-size-12)"
+    assert font_size_token("15pt") == "var(--rt-size-14)"
+    assert font_size_token("24px") == "var(--rt-size-18)"
+    assert font_size_token("x-large") == "var(--rt-size-18)"
+    assert font_size_token("50pt") == "var(--rt-size-36)"
+    for absurd in ("400pt", "2px", "0", "-5pt", "calc(100vh)", "expression(alert(1))", "var(--rt-size-14), 1px", "14"):
+        assert font_size_token(absurd) is None, absurd
+
+    dirty = (
+        '<span style="font-size: 900px">a</span><span style="font-size: calc(10px + 90vw)">b</span>'
+        '<span style="font-size: var(--x)">c</span><span style="font-size:14pt; position: fixed">d</span>'
+    )
+    assert sanitize_rich_text(dirty) == 'abc<span style="font-size: var(--rt-size-14)">d</span>'
+
+    word = '<h1 style="font-size: 20pt">Title</h1><p class=MsoNormal style="font-size:11.0pt">Body</p>'
+    assert sanitize_rich_text(word) == (
+        '<h3><span style="font-size: var(--rt-size-20)">Title</span></h3>'
+        '<p><span style="font-size: var(--rt-size-11)">Body</span></p>'
+    )
+
+
+def test_subscript_and_superscript_are_kept_and_pasted():
+    html = "<p>H<sub>2</sub>O, cm<sup>-1</sup>, 10<sup>5</sup>, x<sub>max</sub>, E = mc<sup>2</sup></p>"
+    assert sanitize_rich_text(html) == html
+    assert rich_text_to_plain(html) == "H₂O, cm⁻¹, 10⁵, xₘₐₓ, E = mc²"
+    assert rich_text_to_plain("<p>10<sup>th</sup> CO<sub>2 (g)</sub></p>") == "10^(th) CO_(2 (g))"
+
+    docs = (
+        '<span style="font-size:11pt">H</span><span style="font-size:0.6em;vertical-align:sub">2</span>'
+        '<span style="font-size:11pt">O and m</span><span style="font-size:0.6em;vertical-align:super">2</span>'
+    )
+    assert sanitize_rich_text(docs) == (
+        '<span style="font-size: var(--rt-size-11)">H</span><sub>2</sub>'
+        '<span style="font-size: var(--rt-size-11)">O and m</span><sup>2</sup>'
+    )
+    word = "<p class=MsoNormal>cm<sup>-1</sup><o:p></o:p></p>"
+    assert sanitize_rich_text(word) == "<p>cm<sup>-1</sup></p>"
+    assert sanitize_rich_text('<sup onclick="x()" style="color: red">2</sup>') == "<sup>2</sup>"
 
 
 def test_legacy_editor_markup_is_converted():

@@ -19,8 +19,12 @@ from html.parser import HTMLParser
 import nh3
 
 ALLOWED_TAGS = {
-    "p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "h3", "h4", "span", "a", "mark",
+    "p", "br", "strong", "b", "em", "i", "u", "s", "ul", "ol", "li", "h3", "h4", "span", "a", "mark", "sub", "sup",
 }
+# Point sizes offered by the editor; 11 is the note's normal text size (``--rt-size-*`` in index.css).
+FONT_SIZES = (8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36)
+_NORMAL_SIZE_PT = 11
+_SIZE_KEYWORDS = {"xx-small": 7, "x-small": 7.5, "small": 10, "medium": 12, "large": 13.5, "x-large": 18, "xx-large": 24}
 TEXT_COLORS = ("red", "orange", "amber", "green", "blue", "purple", "pink", "gray")
 HIGHLIGHT_COLORS = ("yellow", "orange", "green", "blue", "pink")
 TEXT_ALIGNS = ("center", "right")
@@ -50,7 +54,7 @@ PLAIN_TEXT_MAX_LENGTH = 5000
 HTML_MAX_LENGTH = 20000
 
 _STYLE_PROPS_BY_TAG = {
-    "span": ("color", "font-family"),
+    "span": ("color", "font-family", "font-size"),
     "mark": ("background-color",),
     "p": ("text-align",),
     "h3": ("text-align",),
@@ -64,6 +68,8 @@ _VOID_TAGS = {"br", "img", "hr", "input", "meta", "link", "wbr", "col", "area", 
 _ANY_TAG = re.compile(r"</?[a-zA-Z][\w:-]*(\s[^<>]*)?/?>")
 _VAR_TOKEN = re.compile(r"^var\(\s*--rt-(hl-)?([a-z]+)\s*(,[^)]*)?\)$")
 _FONT_TOKEN = re.compile(r"^var\(\s*--rt-font-([a-z]+)\s*\)$")
+_SIZE_TOKEN = re.compile(r"^var\(\s*--rt-size-(\d{1,2})\s*\)$")
+_SIZE_VALUE = re.compile(r"^(\d{1,3}(?:\.\d+)?)\s*(pt|px|em|rem|%)$")
 _HEX = re.compile(r"^#([0-9a-f]{3}|[0-9a-f]{6})$")
 _RGB = re.compile(r"^rgba?\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})(?:[\s,/]+([\d.]+%?))?\s*\)$")
 _NAMED = {
@@ -153,6 +159,26 @@ def font_token(value: str) -> str | None:
     return None
 
 
+def font_size_token(value: str) -> str | None:
+    """``var(--rt-size-N)`` for an allowed size token, or a pasted size snapped to the nearest allowed point size."""
+    v = (value or "").strip().lower().replace("!important", "").strip()
+    m = _SIZE_TOKEN.match(v)
+    if m:
+        return f"var(--rt-size-{int(m.group(1))})" if int(m.group(1)) in FONT_SIZES else None
+    if v in _SIZE_KEYWORDS:
+        points = _SIZE_KEYWORDS[v]
+    else:
+        m = _SIZE_VALUE.match(v)
+        if not m:
+            return None
+        number, unit = float(m.group(1)), m.group(2)
+        points = {"pt": number, "px": number * 0.75, "rem": number * 12, "em": number * _NORMAL_SIZE_PT,
+                  "%": number / 100 * _NORMAL_SIZE_PT}[unit]
+    if not 6 <= points <= 72:
+        return None
+    return f"var(--rt-size-{min(FONT_SIZES, key=lambda size: (abs(size - points), size))})"
+
+
 def _style_decls(raw: str) -> list[tuple[str, str]]:
     out = []
     for decl in (raw or "").split(";"):
@@ -163,7 +189,7 @@ def _style_decls(raw: str) -> list[tuple[str, str]]:
 
 
 def clean_style(tag: str, raw: str) -> str:
-    """Keep only palette colours and allowed fonts (span/mark) and centre/right alignment (blocks)."""
+    """Keep only palette colours, allowed fonts and sizes (span/mark) and centre/right alignment (blocks)."""
     allowed = _STYLE_PROPS_BY_TAG.get(tag, ())
     kept: dict[str, str] = {}
     for raw_prop, value in _style_decls(raw):
@@ -174,6 +200,8 @@ def clean_style(tag: str, raw: str) -> str:
             token = palette_color(value, "text")
         elif prop == "font-family":
             token = font_token(value)
+        elif prop == "font-size":
+            token = font_size_token(value)
         elif prop == "background-color":
             token = palette_color(value, "highlight")
         else:
@@ -204,6 +232,8 @@ def _inline_marks_from_style(raw: str) -> list[str]:
                 marks.append("u")
             if "line-through" in v:
                 marks.append("s")
+        elif prop == "vertical-align" and v in ("super", "sub"):
+            marks.append("sup" if v == "super" else "sub")
     return list(dict.fromkeys(marks))
 
 
@@ -236,6 +266,9 @@ class _Normalizer(HTMLParser):
         target = _TAG_RENAMES.get(tag, tag)
         if target == "strong" and re.search(r"font-weight\s*:\s*(normal|[1-5]00)\b", style, re.I):
             target = "span"
+        if target in ("sub", "sup") or re.search(r"vertical-align\s*:\s*(super|sub)\b", style, re.I):
+            # Sub/superscript already shrink the text; Docs adds its own smaller size.
+            style = "; ".join(f"{p}: {v}" for p, v in _style_decls(style) if p != "font-size")
         opened: list[str] = []
 
         def _open(name: str, extra: str = "") -> None:
@@ -260,7 +293,10 @@ class _Normalizer(HTMLParser):
             if target == "ol" and attr.get("start", "").isdigit():
                 extra += f' start="{attr["start"][:4]}"'
             _open(target, extra)
-            block_font = clean_style("span", f"font-family: {_style_value(style, 'font-family')}")
+            block_font = clean_style(
+                "span",
+                f"font-family: {_style_value(style, 'font-family')}; font-size: {_style_value(style, 'font-size')}",
+            )
             if target in ("p", "h3", "h4", "li") and block_font:
                 _open("span", f' style="{escape(block_font, quote=True)}"')
         for mark in _inline_marks_from_style(style):
@@ -331,7 +367,7 @@ def _nh3_clean(html: str) -> str:
     )
 
 
-_EMPTY_WRAPPER = re.compile(r"<(span|strong|em|u|s|mark|a)(\s[^>]*)?>\s*</\1>")
+_EMPTY_WRAPPER = re.compile(r"<(span|strong|em|u|s|mark|a|sub|sup)(\s[^>]*)?>\s*</\1>")
 _LINK_WITHOUT_HREF = re.compile(r"<a(?![^>]*\shref=)[^>]*>(.*?)</a>", re.S)
 
 
@@ -386,6 +422,20 @@ def resolve_important_instruction(equipment, user_type: str | None) -> str:
     return default
 
 
+_SCRIPT_CHARS = {
+    "sup": dict(zip("0123456789+-−=()ni", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁻⁼⁽⁾ⁿⁱ", strict=True)),
+    "sub": dict(zip("0123456789+-−=()aehklmnopstx", "₀₁₂₃₄₅₆₇₈₉₊₋₋₌₍₎ₐₑₕₖₗₘₙₒₚₛₜₓ", strict=True)),
+}
+
+
+def _script_text(text: str, kind: str) -> str:
+    """H₂O / cm⁻¹ when every character has a Unicode sub/superscript form, otherwise ``x^(…)`` / ``x_(…)``."""
+    chars = _SCRIPT_CHARS[kind]
+    if text and all(c in chars for c in text):
+        return "".join(chars[c] for c in text)
+    return f"{'^' if kind == 'sup' else '_'}({text})" if text.strip() else text
+
+
 class _PlainText(HTMLParser):
     _BLOCKS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"}
 
@@ -393,6 +443,7 @@ class _PlainText(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.out: list[str] = []
         self.lists: list[list] = []
+        self.scripts: list[tuple[str, int]] = []
         self.skip_depth = 0
 
     def _newline(self):
@@ -416,12 +467,17 @@ class _PlainText(HTMLParser):
             self.out.append("  " * depth + marker + " ")
         elif tag == "br":
             self.out.append("\n")
+        elif tag in ("sub", "sup"):
+            self.scripts.append((tag, len(self.out)))
         elif tag in self._BLOCKS and not (self.out and self.out[-1].endswith(" ") and self.lists):
             self._newline()
 
     def handle_endtag(self, tag):
         if tag in _DROP_CONTENT_TAGS:
             self.skip_depth = max(0, self.skip_depth - 1)
+        elif tag in ("sub", "sup") and self.scripts and self.scripts[-1][0] == tag:
+            _, start = self.scripts.pop()
+            self.out[start:] = [_script_text("".join(self.out[start:]), tag)]
         elif tag in ("ul", "ol"):
             if self.lists:
                 self.lists.pop()
