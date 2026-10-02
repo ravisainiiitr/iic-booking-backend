@@ -775,6 +775,13 @@ class TrainingModuleSettings(models.Model):
         default=TrainingAudience.TEST_ACCOUNTS,
         help_text=_("Test accounts only: only flagged test faculty/students see Training. OICs, operators and admins of enabled equipment always can."),
     )
+    course_demos_free = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Course/curricular demonstrations are free. Off: every demonstration is charged at the equipment's "
+            "internal IITR rate and deducted from the faculty member's wallet."
+        ),
+    )
     updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     updated_at = models.DateTimeField(auto_now=True)
 

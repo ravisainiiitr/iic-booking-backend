@@ -9,10 +9,10 @@ from django.utils import timezone
 from iic_booking.equipment.models import DailySlot, SlotStatus
 from iic_booking.training import demo, notify
 from iic_booking.training.errors import TrainingError
-from iic_booking.training.models import DemoRequestRevision, DemoStatus, TrainingPolicy
+from iic_booking.training.models import DemoRequestRevision, DemoStatus
 from iic_booking.users.models.wallet import SubWallet
 
-from .conftest import API, at, client_for, fund_faculty, future_day, make_slots
+from .conftest import API, at, client_for, fund_faculty, future_day, internal_rate_profile, make_slots
 
 
 @pytest.fixture
@@ -40,13 +40,13 @@ def _payload(world, day, **extra):
     return data
 
 
-def _set_rate(rate):
-    TrainingPolicy.objects.filter(scope="GLOBAL").update(demo_rate_per_hour=Decimal(rate))
+def _set_rate(world, rate):
+    internal_rate_profile(world.equipment, rate)
 
 
 @pytest.mark.django_db
 def test_course_demo_full_flow_free_and_slots_labelled(world, sent):
-    _set_rate("600")
+    _set_rate(world, "600")
     day = future_day()
     make_slots(world.equipment, day)
     resp = client_for(world.faculty).post(f"{API}/demo-requests/", _payload(world, day), format="json")
@@ -131,7 +131,7 @@ def test_proposal_expires_after_working_days(world, sent):
 
 @pytest.mark.django_db
 def test_research_demo_charge_debit_and_refunds(world, sent):
-    _set_rate("600")
+    _set_rate(world, "600")
     sub = fund_faculty(world.faculty, world.dept, Decimal("1000.00"))
     day = future_day(10)
     data = _payload(world, day, purpose="RESEARCH_INDUCTION", requested_duration_minutes=90)
@@ -154,7 +154,7 @@ def test_research_demo_charge_debit_and_refunds(world, sent):
 
 @pytest.mark.django_db
 def test_faculty_cancellation_refund_windows(world, sent):
-    _set_rate("600")
+    _set_rate(world, "600")
     sub = fund_faculty(world.faculty, world.dept, Decimal("2000.00"))
     day = future_day(3)
     make_slots(world.equipment, day)
@@ -172,22 +172,30 @@ def test_faculty_cancellation_refund_windows(world, sent):
 
 
 @pytest.mark.django_db
-def test_insufficient_balance_blocks_approval_and_oic_can_waive(world, sent):
-    _set_rate("600")
-    fund_faculty(world.faculty, world.dept, Decimal("50.00"))
-    req = demo.create_request(world.faculty, _payload(world, future_day(), purpose="OTHER", charge_acknowledged=True))
+def test_insufficient_balance_blocks_submission_and_approval_without_waiver(world, sent):
+    _set_rate(world, "600")
+    sub = fund_faculty(world.faculty, world.dept, Decimal("50.00"))
+    payload = _payload(world, future_day(), purpose="OTHER", charge_acknowledged=True)
+    with pytest.raises(TrainingError) as exc:
+        demo.create_request(world.faculty, payload)
+    assert exc.value.code == "insufficient_balance"
+    SubWallet.objects.filter(pk=sub.pk).update(balance=Decimal("5000.00"))
+    req = demo.create_request(world.faculty, payload)
+    SubWallet.objects.filter(pk=sub.pk).update(balance=Decimal("50.00"))
     with pytest.raises(TrainingError) as exc:
         demo.decide(req, world.oic, {"action": "approve"})
     assert exc.value.code == "insufficient_balance"
     req.refresh_from_db()
     assert req.status in (DemoStatus.SUBMITTED, DemoStatus.UNDER_REVIEW)
-    req = demo.decide(req, world.oic, {"action": "approve", "charge_mode": "FREE"})
-    assert req.status == DemoStatus.APPROVED and req.charge_amount == 0
+    # The OIC can no longer waive the internal-rate charge.
+    with pytest.raises(TrainingError) as exc:
+        demo.decide(req, world.oic, {"action": "approve", "charge_mode": "FREE"})
+    assert exc.value.code == "insufficient_balance"
 
 
 @pytest.mark.django_db
-def test_course_demo_never_charged_even_if_oic_sets_rate(world, sent):
-    _set_rate("600")
+def test_course_demo_never_charged_while_course_demos_are_free(world, sent):
+    _set_rate(world, "600")
     req = demo.create_request(world.faculty, _payload(world, future_day()))
     req = demo.decide(req, world.oic, {"action": "approve", "charge_mode": "WALLET", "rate_per_hour": "900"})
     assert req.charge_mode == "FREE" and req.charge_amount == 0 and not req.wallet_txn_id

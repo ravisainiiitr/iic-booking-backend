@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import timedelta
 from functools import wraps
 
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -103,16 +103,46 @@ def bootstrap(request):
     return Response(access.availability(request.user))
 
 
+def _demo_terms(policy) -> dict:
+    from .charges import course_demos_free
+
+    return {
+        "demo_max_minutes": policy.demo_max_minutes,
+        "demo_refund_full_days": policy.demo_refund_full_days,
+        "demo_refund_half_days": policy.demo_refund_half_days,
+        "course_demos_free": course_demos_free(),
+        "charged_at_internal_rate": True,
+    }
+
+
 @training_api(["GET"])
 def equipment_list(request):
     qs = access.pilot_equipment_queryset().select_related("internal_department").order_by("name")
     if request.query_params.get("managed") == "1":
         ids = access.managed_equipment_ids(request.user)
         qs = _scoped(qs, ids)
+    departments = [
+        {"id": row["internal_department_id"], "name": row["internal_department__name"], "equipment_count": row["n"]}
+        for row in qs.filter(internal_department__isnull=False)
+        .values("internal_department_id", "internal_department__name")
+        .annotate(n=Count("equipment_id"))
+        .order_by("internal_department__name")
+    ]
+    dept = (request.query_params.get("department_id") or "").strip()
+    if dept and dept != "all":
+        if not dept.isdigit():
+            raise TrainingError("department_id must be a department id or 'all'.")
+        qs = qs.filter(internal_department_id=int(dept))
     search = (request.query_params.get("q") or "").strip()
     if search:
         qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
-    return Response({"results": [s.equipment_brief(e) for e in qs[:MAX_LIST]]})
+    return Response(
+        {
+            "results": [s.equipment_brief(e) for e in qs[:MAX_LIST]],
+            "departments": departments,
+            "demo_terms": _demo_terms(effective_policy()),
+        }
+    )
 
 
 @training_api(["GET"])
@@ -122,17 +152,56 @@ def equipment_detail(request, equipment_id: int):
     eq = _get(Equipment, equipment_id)
     if not access.equipment_in_pilot(eq):
         raise TrainingError("Training is not enabled for this equipment.", code="not_in_pilot")
-    p = effective_policy(eq)
     return Response(
         {
             **s.equipment_brief(eq),
-            "demo_rate_per_hour": s.money(p.demo_rate_per_hour),
-            "demo_max_minutes": p.demo_max_minutes,
-            "demo_refund_full_days": p.demo_refund_full_days,
-            "demo_refund_half_days": p.demo_refund_half_days,
+            **_demo_terms(effective_policy(eq)),
             "can_manage": access.can_manage_equipment(request.user, eq.equipment_id),
         }
     )
+
+
+@training_api(["GET"])
+def demo_quote(request, equipment_id: int):
+    """Estimated charge for a demonstration of ``minutes`` on this equipment for the signed-in faculty member,
+    or for ``request_id``'s requester when an OIC is deciding it."""
+    from iic_booking.equipment.models import Equipment
+
+    from .charges import quote
+    from .models import DemoPurpose
+
+    eq = _get(Equipment, equipment_id)
+    if not access.equipment_in_pilot(eq):
+        raise TrainingError("Training is not enabled for this equipment.", code="not_in_pilot")
+    payer = request.user
+    request_id = (request.query_params.get("request_id") or "").strip()
+    if request_id and not request_id.isdigit():
+        raise TrainingError("request_id must be a number.")
+    if request_id:
+        req = _get(DemoRequest, request_id, equipment_id=eq.equipment_id)
+        if not access.can_view_equipment(request.user, eq.equipment_id) and req.requester_id != request.user.id:
+            _forbid()
+        payer = req.requester
+    elif not access.is_faculty(request.user):
+        _forbid("Only faculty can request a demonstration.")
+    purpose = request.query_params.get("purpose") or DemoPurpose.COURSE
+    if purpose not in DemoPurpose.values:
+        raise TrainingError("Invalid purpose.")
+    try:
+        minutes = int(request.query_params.get("minutes") or 60)
+    except ValueError:
+        raise TrainingError("minutes must be a whole number.") from None
+    if minutes < 1 or minutes > 24 * 60:
+        raise TrainingError("minutes must be between 1 and 1440.")
+    data = quote(eq, payer, purpose=purpose, minutes=minutes)
+    policy = effective_policy(eq)
+    data["demo_max_minutes"] = policy.demo_max_minutes
+    data["over_max"] = bool(policy.demo_max_minutes and minutes > policy.demo_max_minutes)
+    if payer.pk != request.user.pk:
+        data.pop("wallet_balance", None)
+        if data.get("balance_error"):
+            data["balance_error"] = "The faculty member's wallet balance is not enough for this charge."
+    return Response(data)
 
 
 @training_api(["GET"])
@@ -791,6 +860,7 @@ def module_settings(request):
             request.user,
             module_enabled=_bool_input(d["module_enabled"], "module_enabled") if "module_enabled" in d else None,
             audience=d.get("audience") if "audience" in d else None,
+            course_demos_free=_bool_input(d["course_demos_free"], "course_demos_free") if "course_demos_free" in d else None,
         )
     return Response(module_state())
 
