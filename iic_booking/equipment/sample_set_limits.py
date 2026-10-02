@@ -72,6 +72,30 @@ def sample_set_count(input_values) -> int:
     return len(sets)
 
 
+SAMPLE_SETS_DISABLED_MESSAGE = (
+    "This equipment does not accept samples with different parameters. Book all samples with the same "
+    "parameters, or make a separate booking for samples that need different settings."
+)
+
+
+def sample_sets_allowed(equipment) -> bool:
+    """The equipment's "Allow samples with different parameters" switch (on unless turned off)."""
+    return getattr(equipment, "allow_multiple_sample_sets", True) is not False
+
+
+def sample_sets_disabled_error(equipment, input_values, baseline=None) -> Optional[str]:
+    """Error when the switch is off and ``input_values`` hold more extra sample sets than ``baseline``.
+
+    Bookings and templates saved before the switch was turned off keep their sets: those may be edited
+    or removed, but no set may be added.
+    """
+    if sample_sets_allowed(equipment):
+        return None
+    if sample_set_count(input_values) > sample_set_count(baseline):
+        return SAMPLE_SETS_DISABLED_MESSAGE
+    return None
+
+
 def combined_total(input_values, key: str) -> float:
     base, sets = split_sample_sets(input_values if isinstance(input_values, dict) else {})
     total = 0.0

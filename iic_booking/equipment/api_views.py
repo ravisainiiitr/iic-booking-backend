@@ -657,7 +657,7 @@ def _normalize_sample_sets_input(
         return out, "Sample sets must be a list."
     if len(raw_sets) > MAX_SAMPLE_SETS:
         return out, f"At most {MAX_SAMPLE_SETS + 1} sample sets are allowed in one booking."
-    cleaned_sets = []
+    candidates = []
     for index, raw in enumerate(raw_sets, start=2):
         if not isinstance(raw, dict):
             return out, f"Sample set {index} is invalid."
@@ -670,8 +670,18 @@ def _normalize_sample_sets_input(
             if value is None or value == []:
                 continue
             cleaned[key] = value
-        if not cleaned:
-            continue
+        if cleaned:
+            candidates.append((index, cleaned))
+    if candidates:
+        from .sample_set_limits import sample_sets_disabled_error
+
+        error = sample_sets_disabled_error(
+            equipment, {SAMPLE_SETS_KEY: [c for _i, c in candidates]}, baseline=baseline
+        )
+        if error:
+            return out, error
+    cleaned_sets = []
+    for index, cleaned in candidates:
         cleaned = normalize_periodic_table_billable_counts(equipment, cleaned)
         set_baseline = baseline_sets[index - 2] if index - 2 < len(baseline_sets) else None
         error = _validate_dynamic_numeric_input_limits(

@@ -188,10 +188,12 @@ def _clean_input_values(raw, equipment=None, user=None, baseline=None):
     if len(json.dumps(raw)) > MAX_INPUT_VALUES_BYTES:
         return None, "The template's inputs are too large to save."
     if equipment is not None:
-        from .sample_set_limits import combined_max_error
+        from .sample_set_limits import combined_max_error, sample_sets_disabled_error
 
-        error = _numeric_minimum_error(equipment, raw, user, baseline) or combined_max_error(
-            equipment, raw, booking_user=user
+        error = (
+            sample_sets_disabled_error(equipment, raw, baseline)
+            or _numeric_minimum_error(equipment, raw, user, baseline)
+            or combined_max_error(equipment, raw, booking_user=user)
         )
         if error:
             return None, error

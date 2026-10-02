@@ -334,6 +334,17 @@ class Equipment(models.Model):
         verbose_name=_('Enable charge recalculation'),
     )
 
+    allow_multiple_sample_sets = models.BooleanField(
+        default=True,
+        help_text=_(
+            'When checked, users can add samples with different parameters (extra sample sets) to one booking; '
+            'each set is charged and timed separately. When unchecked, the option is hidden and new bookings and '
+            'templates may hold only one sample set. Existing bookings keep their sets. Only the main administrator '
+            'can change this.'
+        ),
+        verbose_name=_('Allow samples with different parameters'),
+    )
+
     user_rating_enabled = models.BooleanField(
         default=True,
         help_text=_('When unchecked, users cannot submit a star rating or feedback for completed bookings of this equipment. Only admin and OIC can change this setting.'),

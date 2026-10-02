@@ -219,7 +219,9 @@ def form_reply(
         "fields": fields,
         "instruction": instruction,
         "sample_sets": {
-            "allowed": getattr(eq, "profile_type", None) != EquipmentProfileType.PRINT_3D and bool(fields or samples_spec),
+            "allowed": getattr(eq, "profile_type", None) != EquipmentProfileType.PRINT_3D
+            and getattr(eq, "allow_multiple_sample_sets", True) is not False
+            and bool(fields or samples_spec),
             "max": MAX_SAMPLE_SETS,
         },
         "values": {**(values or {}), **({"_samples": samples} if samples else {})} or None,

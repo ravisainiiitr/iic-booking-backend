@@ -1344,6 +1344,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
             'atmosphere_sensitive_sample_enabled',
+            'allow_multiple_sample_sets',
             'sample_collect_deadline_hours',
             'make',
             'show_make_on_card',
@@ -1596,6 +1597,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
             'atmosphere_sensitive_sample_enabled',
+            'allow_multiple_sample_sets',
             'sample_collect_deadline_hours',
             'print_materials',
             'skip_quota_check',
@@ -2040,6 +2042,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'operator_absent_disruption_after_booking_end_hours',
             'skip_quota_check',
             'enable_charge_recalculation',
+            'allow_multiple_sample_sets',
             'user_rating_enabled',
             'sample_preparation_by_user',
             'show_lifecycle_countdowns',
@@ -2171,9 +2174,30 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                         )
                     })
         self._validate_group_department(attrs, instance)
+        self._validate_sample_sets_switch(attrs, instance)
         # Portal-wide: Remote Analysis stays off for every equipment.
         attrs["enable_remote_analysis"] = False
         return attrs
+
+    def _validate_sample_sets_switch(self, attrs, instance):
+        """Only the main administrator (or a superuser) may change "Allow samples with different parameters".
+        Others may resubmit the current value (the form sends every field); it is then left unchanged."""
+        if "allow_multiple_sample_sets" not in attrs:
+            return
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == UserType.ADMIN:
+            return
+        current = instance.allow_multiple_sample_sets if instance is not None and instance.pk else True
+        if bool(attrs["allow_multiple_sample_sets"]) != current:
+            raise serializers.ValidationError(
+                {
+                    "allow_multiple_sample_sets": (
+                        "Only the main administrator can change Allow samples with different parameters."
+                    )
+                }
+            )
+        attrs.pop("allow_multiple_sample_sets")
 
     def _validate_group_department(self, attrs, instance):
         from .equipment_group_service import GROUP_DEPARTMENT_MISMATCH_MESSAGE, group_membership_spans_departments
@@ -2826,6 +2850,9 @@ class BookingSerializer(serializers.ModelSerializer):
     equipment_atmosphere_sensitive_sample_enabled = serializers.BooleanField(
         source='equipment.atmosphere_sensitive_sample_enabled', read_only=True, default=False
     )
+    equipment_allow_multiple_sample_sets = serializers.BooleanField(
+        source='equipment.allow_multiple_sample_sets', read_only=True, default=True
+    )
     equipment_profile_type = serializers.SerializerMethodField()
     equipment_profile_type_display = serializers.SerializerMethodField()
     user_email = serializers.CharField(source='user.email', read_only=True)
@@ -2986,6 +3013,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'operator_absent_hold_until',
             'atmosphere_sensitive_sample',
             'equipment_atmosphere_sensitive_sample_enabled',
+            'equipment_allow_multiple_sample_sets',
             'lifecycle_countdown',
             'completion_countdown',
             'sample_collection_deadline_at',

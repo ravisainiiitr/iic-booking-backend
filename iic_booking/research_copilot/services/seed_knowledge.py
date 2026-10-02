@@ -18,8 +18,8 @@ To book equipment on the IIC Equipment Booking Portal:
 2. Select the instrument matching your measurement need and open it.
 3. Review specifications, Calculate charges and the Important instruction. A lab can show a different
    important instruction to each user type, so read the one shown to you.
-4. Fill the booking inputs, or pick a saved template under Booking template. Add sample sets under
-   Samples with different parameters if your samples need different settings.
+4. Fill the booking inputs, or pick a saved template under Booking template. If some samples need different
+   settings, click Add sample with different parameters below the inputs (offered when the lab allows it).
 5. Choose free slots and submit the booking. Your wallet (or your supervisor's wallet) is charged when the
    booking is created; wallet balance, quotas and supervisor spending limits are checked at that moment.
 6. Track the booking from View Booking on the dashboard.
@@ -151,10 +151,14 @@ time to remember the slot.
         "tags": ["sample set", "element", "periodic table", "edit inputs", "pay difference", "refund"],
         "external_url": "/my-bookings",
         "content_text": """
-Sample sets: the details at the top of the booking form are sample set 1. Under Samples with different
-parameters click Add sample with different parameters to add more sets. Every set has the same fields as set 1,
-including Select elements (periodic table) and sample tables. Each set is charged and timed separately and added
-to the same booking. Use Duplicate this sample set or Remove this sample set as needed.
+Sample sets: the details in Step 1 of the booking form are sample set 1. If some samples need different
+settings, click Add sample with different parameters at the bottom of Step 1. Each new set starts with the
+equipment's default values (not a copy of set 1); use Copy set 1 values on a set to start from set 1 instead.
+Every set has the same fields as set 1, including Select elements (periodic table) and sample tables. Each set
+is charged and timed separately and added to the same booking; Step 2 shows the charge of each set. Use
+Duplicate, Remove or Collapse on a set as needed. The lab decides per equipment whether sample sets are offered;
+when they are not, the button is not shown and a separate booking is needed for samples with other settings.
+Bookings made earlier keep their sample sets.
 Editing inputs after booking: open the booking and choose Edit User Inputs. Values can be changed until the
 booking is completed (the Officer In Charge can also edit after completion). Field limits still apply.
 If the charge goes up, pay the difference (Pay now) within 1 minute or the edit is cancelled and the previous

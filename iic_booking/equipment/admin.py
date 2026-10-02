@@ -1507,6 +1507,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'skip_quota_check',
                 'auto_slot_selection_default',
                 'enable_charge_recalculation', 'user_rating_enabled',
+                'allow_multiple_sample_sets',
                 'sample_preparation_by_user',
                 'weekly_view_display',
             )
