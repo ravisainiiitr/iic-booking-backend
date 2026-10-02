@@ -262,10 +262,11 @@ def view_bookings(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
             ref = b.get("ref") or b["booking_id"]
             actions.append(A.make(A.BOOKING_DETAILS, f"Details {ref}", payload={"booking_id": b["booking_id"]},
                                   utterance=f"Show booking {ref}"))
-        actions += [
-            A.make(A.RESCHEDULE_BOOKING, "Reschedule", utterance="Reschedule my booking"),
-            A.make(A.CANCEL_BOOKING, "Cancel", utterance="Cancel my booking"),
-        ]
+        if caps.has_self_changeable_bookings:
+            actions += [
+                A.make(A.RESCHEDULE_BOOKING, "Reschedule", utterance="Reschedule my booking"),
+                A.make(A.CANCEL_BOOKING, "Cancel", utterance="Cancel my booking"),
+            ]
         cards = [{"type": "bookings", "items": upcoming[:MAX_ROWS]}]
     else:
         recent = list(Booking.objects.filter(user=turn.user).select_related("equipment").order_by("-created_at")[:5])
@@ -303,13 +304,15 @@ def booking_details(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
     now = timezone.now()
     active = b.status in _ACTIVE_STATUSES and any(s.start_datetime and s.start_datetime > now for s in b.daily_slots.all())
     actions: list[dict[str, Any]] = []
-    if active and info["self_service_open"]:
+    if active and changes.reschedule_locked(turn.user, b):
+        lines.append(
+            "- Sample accepted by the lab — rescheduling and cancellation are no longer available. "
+            "Use Message the lab if something has changed."
+        )
+    elif active and info["self_service_open"]:
         lines.append(f"- Self-service changes open until {info['cutoff']}" if info.get("cutoff") else "")
-        if changes.reschedule_locked(turn.user, b):
-            lines.append("- Reschedule not available — sample accepted by the lab.")
-        else:
-            actions.append(A.make(A.RESCHEDULE_BOOKING, "Reschedule", payload={"booking_id": b.booking_id},
-                                  utterance=f"Reschedule booking {info['ref']}"))
+        actions.append(A.make(A.RESCHEDULE_BOOKING, "Reschedule", payload={"booking_id": b.booking_id},
+                              utterance=f"Reschedule booking {info['ref']}"))
         actions.append(
             A.make(A.CANCEL_BOOKING, "Cancel", payload={"booking_id": b.booking_id}, utterance=f"Cancel booking {info['ref']}")
         )

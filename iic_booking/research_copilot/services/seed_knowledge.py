@@ -341,8 +341,9 @@ Open My Bookings (or ask the Booking Assistant "show my upcoming bookings") and 
 - Cancel / Reschedule: allowed for Pending or Booked bookings until the equipment's cutoff (48 hours before the
   slot unless the lab set another value). The refund or new slot is shown before you confirm. Repeat bookings
   created by the lab can't be changed by you. After the cutoff, use Message the lab or raise a support ticket.
-- Once the lab has accepted your sample, Reschedule is no longer available to you or your supervisor; use Message
-  the lab to contact the Officer in Charge.
+- Once the lab has accepted your sample, Reschedule and Cancel are no longer available to you or your supervisor;
+  use Message the lab to contact the Officer in Charge. (If the lab flags a disruption, you still get the
+  cancel / reschedule choice it offers.)
 - Edit parameters: choose Edit User Inputs on a Booked booking. A higher charge must be paid within 1 minute or
   the edit is undone. If the new charge is lower, the difference is refunded to your wallet straight away when
   you edit before the cancellation deadline; after that deadline the refund needs the Officer In Charge's approval.
@@ -579,6 +580,7 @@ Full operator manuals may be department-specific and higher security.
         "content_text": """
 Cancellation: cancel or reschedule from View Booking (My Bookings) until the equipment's cutoff (48 hours unless
 the lab set another value) before the slot; partial cancellation of multi-slot bookings is allowed where enabled.
+Once the lab has accepted your sample you can no longer cancel or reschedule yourself; use Message the lab.
 Refunds follow the cancellation policy and are shown before you confirm.
 Urgent booking: on the booking page click Request urgent booking (students can also use Urgent booking request on
 the dashboard) and choose a type:

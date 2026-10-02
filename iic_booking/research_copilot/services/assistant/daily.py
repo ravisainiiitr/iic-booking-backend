@@ -253,11 +253,15 @@ def _not_changeable(b, op: str) -> dict[str, Any]:
     elig = B.eligibility(b)
     ref = display_ref(b)
     verb = {"cancel": "cancelled", "reschedule": "rescheduled", "edit": "edited"}[op]
-    if op == "reschedule" and elig.get("reschedule_locked"):
-        from iic_booking.equipment.reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+    if op in ("reschedule", "cancel") and elig.get(f"{op}_locked"):
+        from iic_booking.equipment.reschedule_lock import (
+            CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+            RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        )
 
+        msg = CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE if op == "cancel" else RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
         return C.reply(
-            f"Booking **{ref}**: {RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE}",
+            f"Booking **{ref}**: {msg}",
             actions=[B.chip(b, "message", primary=True), C.link("Open booking", f"/my-bookings?booking={b.pk}")],
             intent=op,
         )

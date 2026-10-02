@@ -821,6 +821,14 @@ def _prepare_cancel_booking(*, arguments: dict, user) -> dict:
         booking = Booking.objects.select_related("equipment").get(pk=int(booking_id), user=user)
     except Booking.DoesNotExist:
         return _err("booking_not_found", "Booking not found for this user")
+    from iic_booking.equipment.reschedule_lock import (
+        CANCEL_LOCKED_SAMPLE_ACCEPTED,
+        CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        cancel_locked_for,
+    )
+
+    if cancel_locked_for(user, booking):
+        return _err(CANCEL_LOCKED_SAMPLE_ACCEPTED, CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE)
     return _ok(
         {
             "requires_confirmation": True,

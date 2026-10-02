@@ -117,8 +117,8 @@ TOPICS: dict[str, Topic] = {
         (
             Entry(A.VIEW_BOOKINGS, "View my bookings", "Show my bookings", primary=True),
             Entry(A.BOOK_EQUIPMENT, "Book equipment", "I want to book equipment"),
-            Entry(A.CANCEL_BOOKING, "Cancel a booking", "Cancel my booking", "has_upcoming_bookings"),
-            Entry(A.RESCHEDULE_BOOKING, "Reschedule a booking", "Reschedule my booking", "has_upcoming_bookings"),
+            Entry(A.CANCEL_BOOKING, "Cancel a booking", "Cancel my booking", "has_self_changeable_bookings"),
+            Entry(A.RESCHEDULE_BOOKING, "Reschedule a booking", "Reschedule my booking", "has_self_changeable_bookings"),
             Entry(A.CHECK_AVAILABILITY, "Check availability", "Check equipment availability"),
             _else("bookings", "my bookings"),
         ),
