@@ -224,7 +224,7 @@ def test_assistant_does_not_offer_reschedule_after_acceptance(egs_factory):
     elig = B.eligibility(b)
     assert elig["reschedule"] is False
     assert elig["reschedule_locked"] is True
-    assert elig["cancel"] is True
+    assert elig["cancel"] is False
     ops = [a.get("payload", {}).get("op") for a in B.chips_for(b, elig)]
     assert "reschedule" not in ops
 

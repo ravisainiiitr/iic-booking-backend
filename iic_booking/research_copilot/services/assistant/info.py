@@ -110,6 +110,7 @@ def rules(eq) -> list[str]:
         out.append(f"Each slot is {minutes} minutes; longer runs book back-to-back slots.")
     hours = int(getattr(eq, "reschedule_hours_threshold", None) or 48)
     out.append(f"You can cancel or reschedule yourself up to {hours} hours before the slot starts; after that only an admin can.")
+    out.append("Once the lab accepts your sample, cancelling or rescheduling is no longer available to you; use Message the lab.")
     lead = getattr(eq, "sample_submission_lead_hours", None)
     if lead:
         out.append(
@@ -288,6 +289,8 @@ def _builtin_policy(topic: str, eq=None) -> list[str]:
         lines = [
             f"You can cancel or reschedule a booking yourself from **My Bookings** until {cutoff} before the slot starts.",
             "Inside that window only an admin can change it; raise a support ticket if you need help.",
+            "Once the lab has accepted your sample, you (and your supervisor) can no longer cancel or reschedule the "
+            "booking; use Message the lab on the booking to contact the Officer in Charge.",
             "You can also release part of a multi-slot booking (partial cancellation) or move it to another free slot (reschedule).",
             "I can start a cancellation or reschedule for you here: just say \"cancel my next booking\" or \"reschedule my next booking\".",
         ]

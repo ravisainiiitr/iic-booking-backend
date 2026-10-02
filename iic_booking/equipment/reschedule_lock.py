@@ -1,10 +1,11 @@
 """
-Reschedule lock after the lab accepts the sample.
+Reschedule / cancel lock after the lab accepts the sample.
 
 Once a booking's sample lifecycle reaches Sample Accepted (or any later stage), the booking user
-and their supervisor can no longer reschedule it themselves. Staff who could reschedule before
+and their supervisor can no longer reschedule or cancel it themselves. Staff who could before
 (Admin, Officer In Charge incl. temporary OIC, Lab Operator, Department Admin with bookings.manage)
-keep that ability.
+keep that ability. A lab-flagged disruption (awaiting the user's choice, or under the maintenance
+disruption policy) keeps the user's cancel / reschedule choice.
 """
 
 from __future__ import annotations
@@ -16,6 +17,13 @@ RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE = (
     "This booking can't be rescheduled because the lab has already accepted your sample. "
     "Please use 'Message the lab' to contact the Officer in Charge."
 )
+CANCEL_LOCKED_SAMPLE_ACCEPTED = "cancel_locked_sample_accepted"
+CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE = (
+    "This booking can't be cancelled because the lab has already accepted your sample. "
+    "Please use 'Message the lab' to contact the Officer in Charge."
+)
+CANCEL_OWNER_ONLY = "cancel_owner_only"
+CANCEL_OWNER_ONLY_MESSAGE = "Only the booking user can cancel this booking."
 
 SAMPLE_ACCEPTED_OR_LATER_STATUSES = frozenset(
     {
@@ -51,6 +59,14 @@ def sample_accepted_booking_ids(booking_ids) -> set[int]:
     )
 
 
+def lab_disruption_active(booking) -> bool:
+    from .models import BookingStatus
+
+    return booking.status == BookingStatus.DISRUPTION_PENDING or bool(
+        getattr(booking, "maintenance_disruption_flag", False)
+    )
+
+
 def bypasses_sample_reschedule_lock(user) -> bool:
     if user is None or not getattr(user, "is_authenticated", False):
         return False
@@ -61,12 +77,33 @@ def bypasses_sample_reschedule_lock(user) -> bool:
     return bool(check_operator_permission(user))
 
 
+bypasses_sample_accepted_lock = bypasses_sample_reschedule_lock
+
+
+def user_changes_locked_for(user, booking, *, accepted: bool | None = None) -> bool:
+    """True when `user` may no longer reschedule or cancel `booking` because the lab accepted the sample."""
+    if bypasses_sample_accepted_lock(user) or lab_disruption_active(booking):
+        return False
+    return sample_accepted_by_lab(booking) if accepted is None else accepted
+
+
 def reschedule_locked_for(user, booking) -> bool:
-    return not bypasses_sample_reschedule_lock(user) and sample_accepted_by_lab(booking)
+    return user_changes_locked_for(user, booking)
+
+
+def cancel_locked_for(user, booking) -> bool:
+    return user_changes_locked_for(user, booking)
 
 
 def reschedule_locked_payload() -> dict:
     return {
         "error": RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
         "code": RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
+    }
+
+
+def cancel_locked_payload() -> dict:
+    return {
+        "error": CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        "code": CANCEL_LOCKED_SAMPLE_ACCEPTED,
     }

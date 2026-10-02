@@ -109,19 +109,20 @@ def eligibility(b, *, now=None) -> dict[str, Any]:
         elif getattr(b, "istem_fbr_status", None) and str(b.istem_fbr_status) != "EXECUTED":
             results_blocked = "istem_fbr"
     message, message_reason = _lab_message_state(b, status, now)
-    reschedule_locked = False
+    sample_locked = False
     if active:
-        from iic_booking.equipment.reschedule_lock import reschedule_locked_for
+        from iic_booking.equipment.reschedule_lock import user_changes_locked_for
 
-        reschedule_locked = reschedule_locked_for(getattr(b, "user", None), b)
+        sample_locked = user_changes_locked_for(getattr(b, "user", None), b)
     return {
         "active": active,
         "future": future,
         "self_service_open": bool(open_),
         "cutoff": cutoff,
-        "cancel": active and bool(open_),
-        "reschedule": active and bool(open_) and not reschedule_locked,
-        "reschedule_locked": reschedule_locked,
+        "cancel": active and bool(open_) and not sample_locked,
+        "reschedule": active and bool(open_) and not sample_locked,
+        "reschedule_locked": sample_locked,
+        "cancel_locked": sample_locked,
         "edit": status == "BOOKED" and not repeat and bool(b.input_values),
         "message": message,
         "message_reason": message_reason,
@@ -188,7 +189,9 @@ def _row(b, elig: dict[str, Any] | None = None, *, with_actions: bool = False) -
     if with_actions:
         elig = elig or eligibility(b)
         row["actions"] = chips_for(b, elig, limit=4)
-        row["self_service_open"] = elig["self_service_open"]
+        row["self_service_open"] = elig["self_service_open"] and not elig.get("cancel_locked")
+        if elig.get("cancel_locked"):
+            row["sample_locked"] = True
         if elig.get("cutoff"):
             row["cutoff"] = elig["cutoff"]
     return row
@@ -328,11 +331,9 @@ def detail_reply(user, conversation, b) -> dict[str, Any]:
     if samples:
         lines.append(f"- Samples: {samples}")
     if elig["active"]:
-        if elig["self_service_open"] and elig.get("reschedule_locked"):
-            if elig.get("cutoff"):
-                lines.append(f"- You can cancel until {elig['cutoff']}.")
-            lines.append("- Reschedule not available — sample accepted by the lab. Use Message the lab to contact "
-                         "the Officer in Charge.")
+        if elig.get("cancel_locked"):
+            lines.append("- Sample accepted by the lab — rescheduling and cancellation are no longer available. "
+                         "Use Message the lab if something has changed.")
         elif elig["self_service_open"]:
             if elig.get("cutoff"):
                 lines.append(f"- You can cancel or reschedule until {elig['cutoff']}.")
@@ -345,7 +346,7 @@ def detail_reply(user, conversation, b) -> dict[str, Any]:
         lines.append("- Results: " + _results_line(elig))
     lines += ["", NEXT_PROMPT]
     actions = chips_for(b, elig, include_details=False)
-    if not elig["self_service_open"] and elig["active"]:
+    if not elig["self_service_open"] and elig["active"] and not elig.get("cancel_locked"):
         from iic_booking.research_copilot.services.intelligence import messages as M
 
         actions.append(M.ticket_action("user_requested", "Ask the admin (support ticket)"))

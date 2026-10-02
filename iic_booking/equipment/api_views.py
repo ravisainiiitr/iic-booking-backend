@@ -12567,6 +12567,11 @@ def partial_cancel_preview(request, booking_id):
                 {"error": scope_err},
                 status=status.HTTP_403_FORBIDDEN,
             )
+    else:
+        from .reschedule_lock import cancel_locked_for, cancel_locked_payload
+
+        if cancel_locked_for(request.user, booking):
+            return Response(cancel_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
 
     reduced = request.data.get("reduced_input_values")
     raw_slot_ids = request.data.get("slot_ids")
@@ -12676,6 +12681,11 @@ def user_cancel_booking(request, booking_id):
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    from .reschedule_lock import cancel_locked_for, cancel_locked_payload
+
+    if cancel_locked_for(request.user, booking):
+        return Response(cancel_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
 
     # Enforce reschedule-hours threshold for user actions (normal case).
     # If now is strictly inside the threshold window before the allocated slot start time,
@@ -12824,6 +12834,11 @@ def request_booking_cancellation(request, booking_id):
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    from .reschedule_lock import cancel_locked_for, cancel_locked_payload
+
+    if cancel_locked_for(request.user, booking):
+        return Response(cancel_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
 
     # Enforce reschedule-hours threshold for user actions (normal case).
     # In the normal case, block cancellation requests when now is strictly inside the threshold window.

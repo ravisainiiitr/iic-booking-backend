@@ -108,47 +108,72 @@ def _booking_sample_trace_events(booking):
     return events
 
 
-def _viewer_reschedule_block(serializer, booking) -> str | None:
-    """Block code for the requesting user, or None (allowed, or viewer unknown)."""
-    from .reschedule_lock import (
-        RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
-        bypasses_sample_reschedule_lock,
-        sample_accepted_booking_ids,
-        sample_accepted_by_lab,
-    )
+def _viewer_user(serializer):
+    user = getattr(serializer.context.get("request"), "user", None)
+    return user if getattr(user, "is_authenticated", False) is True else None
 
-    request = serializer.context.get("request")
-    user = getattr(request, "user", None)
-    if user is None or not getattr(user, "is_authenticated", False):
-        return None
+
+def _viewer_bypasses_sample_lock(serializer) -> bool:
+    from .reschedule_lock import bypasses_sample_accepted_lock
+
     ctx = serializer.context
     if "_viewer_bypasses_reschedule_lock" not in ctx:
-        ctx["_viewer_bypasses_reschedule_lock"] = bypasses_sample_reschedule_lock(user)
-    if ctx["_viewer_bypasses_reschedule_lock"]:
-        return None
+        ctx["_viewer_bypasses_reschedule_lock"] = bypasses_sample_accepted_lock(_viewer_user(serializer))
+    return ctx["_viewer_bypasses_reschedule_lock"]
+
+
+def _viewer_sample_locked(serializer, booking) -> bool:
+    """True when the requesting (non-staff) viewer may no longer reschedule or cancel this booking."""
+    from .reschedule_lock import (
+        sample_accepted_booking_ids,
+        sample_accepted_by_lab,
+        user_changes_locked_for,
+    )
+
+    user = _viewer_user(serializer)
+    if user is None or _viewer_bypasses_sample_lock(serializer):
+        return False
+    ctx = serializer.context
     root = getattr(serializer, "root", None)
     if root is not None and getattr(root, "child", None) is serializer:
         if "_sample_accepted_booking_ids" not in ctx:
             ctx["_sample_accepted_booking_ids"] = sample_accepted_booking_ids(
                 getattr(b, "pk", None) for b in (root.instance or [])
             )
-        locked = booking.pk in ctx["_sample_accepted_booking_ids"]
+        accepted = booking.pk in ctx["_sample_accepted_booking_ids"]
     else:
-        locked = sample_accepted_by_lab(booking)
-    return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED if locked else None
+        accepted = sample_accepted_by_lab(booking)
+    return user_changes_locked_for(user, booking, accepted=accepted)
 
 
 class _RescheduleBlockFieldsMixin:
-    """can_reschedule is null when the viewer is unknown (no request in context); the endpoint still enforces."""
+    """can_reschedule / can_cancel are null when the viewer is unknown (no request in context); the endpoints still enforce."""
 
-    def _reschedule_block(self, obj):
+    def _sample_locked(self, obj) -> bool:
         cache = self.context.setdefault("_reschedule_block_cache", {})
         if obj.pk not in cache:
-            cache[obj.pk] = _viewer_reschedule_block(self, obj)
+            cache[obj.pk] = _viewer_sample_locked(self, obj)
         return cache[obj.pk]
 
+    def _reschedule_block(self, obj):
+        from .reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
+
+        return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED if self._sample_locked(obj) else None
+
+    def _cancel_block(self, obj):
+        from .reschedule_lock import CANCEL_LOCKED_SAMPLE_ACCEPTED, CANCEL_OWNER_ONLY
+
+        user = _viewer_user(self)
+        if user is None:
+            return None
+        if self._sample_locked(obj):
+            return CANCEL_LOCKED_SAMPLE_ACCEPTED
+        if obj.user_id != user.pk and not _viewer_bypasses_sample_lock(self):
+            return CANCEL_OWNER_ONLY
+        return None
+
     def get_can_reschedule(self, obj):
-        if getattr(getattr(self.context.get("request"), "user", None), "is_authenticated", False) is not True:
+        if _viewer_user(self) is None:
             return None
         return self._reschedule_block(obj) is None
 
@@ -159,6 +184,27 @@ class _RescheduleBlockFieldsMixin:
         from .reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
 
         return RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE if self._reschedule_block(obj) else None
+
+    def get_can_cancel(self, obj):
+        if _viewer_user(self) is None:
+            return None
+        return self._cancel_block(obj) is None
+
+    def get_cancel_block_reason(self, obj):
+        return self._cancel_block(obj)
+
+    def get_cancel_block_message(self, obj):
+        from .reschedule_lock import (
+            CANCEL_LOCKED_SAMPLE_ACCEPTED,
+            CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+            CANCEL_OWNER_ONLY,
+            CANCEL_OWNER_ONLY_MESSAGE,
+        )
+
+        return {
+            CANCEL_LOCKED_SAMPLE_ACCEPTED: CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+            CANCEL_OWNER_ONLY: CANCEL_OWNER_ONLY_MESSAGE,
+        }.get(self._cancel_block(obj))
 
 
 def compute_sample_collection_deadline(booking):
@@ -2957,6 +3003,9 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
     can_reschedule = serializers.SerializerMethodField()
     reschedule_block_reason = serializers.SerializerMethodField()
     reschedule_block_message = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
+    cancel_block_reason = serializers.SerializerMethodField()
+    cancel_block_message = serializers.SerializerMethodField()
     istem_fbr_status_display = serializers.SerializerMethodField()
     istem_portal_url = serializers.SerializerMethodField()
     istem_fbr_status_url = serializers.SerializerMethodField()
@@ -3114,6 +3163,9 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
             'can_reschedule',
             'reschedule_block_reason',
             'reschedule_block_message',
+            'can_cancel',
+            'cancel_block_reason',
+            'cancel_block_message',
             'created_at',
             'updated_at',
             'completed_at',
@@ -3616,6 +3668,9 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
     can_reschedule = serializers.SerializerMethodField()
     reschedule_block_reason = serializers.SerializerMethodField()
     reschedule_block_message = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
+    cancel_block_reason = serializers.SerializerMethodField()
+    cancel_block_message = serializers.SerializerMethodField()
 
     def get_charge_recalculation_pay_seconds_remaining(self, obj):
         from .input_edit_payment_window import payment_seconds_remaining
@@ -3636,7 +3691,8 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
             'has_results',
             'charge_recalculation_pending_amount', 'charge_recalculation_pay_deadline',
             'charge_recalculation_pay_seconds_remaining', 'can_reschedule', 'reschedule_block_reason',
-            'reschedule_block_message', 'created_at', 'updated_at', 'completed_at',
+            'reschedule_block_message', 'can_cancel', 'cancel_block_reason', 'cancel_block_message',
+            'created_at', 'updated_at', 'completed_at',
             'rating_on_time_operator_availability',
             'rating_laboratory_cleanliness_organization',
             'rating_sample_handling_care',

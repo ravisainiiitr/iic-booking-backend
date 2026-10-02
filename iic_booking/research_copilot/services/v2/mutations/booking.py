@@ -751,6 +751,24 @@ def _execute_claimed_booking_create(*, user, proposal_id: str, prop: dict[str, A
     return result
 
 
+def _cancel_locked_error(user, booking, **extra) -> dict[str, Any] | None:
+    from iic_booking.equipment.reschedule_lock import (
+        CANCEL_LOCKED_SAMPLE_ACCEPTED,
+        CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        cancel_locked_for,
+    )
+
+    if not cancel_locked_for(user, booking):
+        return None
+    return _safe_error(
+        CANCEL_LOCKED_SAMPLE_ACCEPTED,
+        CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        booking_id=int(booking.booking_id),
+        portal_href=f"/my-bookings?booking={booking.booking_id}",
+        **extra,
+    )
+
+
 def prepare_cancellation(
     *,
     user,
@@ -781,6 +799,9 @@ def prepare_cancellation(
     booking, err = _booking_owned(user=user, booking_id=int(bid))
     if err:
         return _safe_error("BOOKING_FORBIDDEN", "Booking not found for your account.")
+    locked = _cancel_locked_error(user, booking)
+    if locked:
+        return locked
 
     slots = sorted(booking.daily_slots.all(), key=lambda s: s.start_datetime or timezone.now())
     start = slots[0].start_datetime if slots else None
@@ -880,6 +901,10 @@ def execute_booking_cancel(
     booking, berr = _booking_owned(user=user, booking_id=booking_id)
     if berr:
         return _safe_error("BOOKING_FORBIDDEN", "Booking not found for your account.")
+    locked = _cancel_locked_error(user, booking, proposal_id=proposal_id)
+    if locked:
+        prop_store.invalidate_proposal(proposal_id)
+        return locked
 
     body: dict[str, Any] = {
         "refund": bool(payload.get("refund", True)),

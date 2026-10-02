@@ -90,7 +90,26 @@ def reschedule_locked(user, booking) -> bool:
     return reschedule_locked_for(user, booking)
 
 
-def cancellable_bookings(user, *, for_reschedule: bool = False) -> list[dict[str, Any]]:
+def cancel_locked(user, booking) -> bool:
+    from iic_booking.equipment.reschedule_lock import cancel_locked_for
+
+    return cancel_locked_for(user, booking)
+
+
+def _drop_sample_locked(user, bookings: list) -> list:
+    from iic_booking.equipment.reschedule_lock import (
+        bypasses_sample_accepted_lock,
+        sample_accepted_booking_ids,
+        user_changes_locked_for,
+    )
+
+    if not bookings or bypasses_sample_accepted_lock(user):
+        return bookings
+    accepted = sample_accepted_booking_ids(b.pk for b in bookings)
+    return [b for b in bookings if not user_changes_locked_for(user, b, accepted=b.pk in accepted)]
+
+
+def cancellable_bookings(user, *, for_reschedule: bool = False, for_cancel: bool = False) -> list[dict[str, Any]]:
     now = timezone.now()
     out = []
     candidates = []
@@ -99,12 +118,8 @@ def cancellable_bookings(user, *, for_reschedule: bool = False) -> list[dict[str
         if not slots or not any(s.start_datetime and s.start_datetime > now for s in slots):
             continue
         candidates.append(b)
-    if for_reschedule and candidates:
-        from iic_booking.equipment.reschedule_lock import bypasses_sample_reschedule_lock, sample_accepted_booking_ids
-
-        if not bypasses_sample_reschedule_lock(user):
-            locked = sample_accepted_booking_ids(b.pk for b in candidates)
-            candidates = [b for b in candidates if b.pk not in locked]
+    if for_reschedule or for_cancel:
+        candidates = _drop_sample_locked(user, candidates)
     for b in candidates:
         out.append(_summary(b))
     out.sort(key=lambda r: r["start"] or "")
@@ -133,17 +148,17 @@ def _pick_booking(turn: Turn, *, workflow: str, kind: str, verb: str) -> dict[st
             return M.error("I couldn't find that booking among your active bookings.", intent=turn.intent,
                            actions=[M.link("my_bookings", "My Bookings", "/my-bookings")])
         return b
-    rows = cancellable_bookings(turn.user, for_reschedule=(workflow == "reschedule"))
+    rows = cancellable_bookings(
+        turn.user, for_reschedule=(workflow == "reschedule"), for_cancel=(workflow == "cancel")
+    )
     if ents.next_booking and rows:
         return _owned(turn.user, rows[0]["booking_id"])
     if not rows:
         st.restart(turn.state)
-        if workflow == "reschedule" and cancellable_bookings(turn.user):
-            from iic_booking.equipment.reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
-
+        if workflow in ("reschedule", "cancel") and cancellable_bookings(turn.user):
             return turn.respond(
                 message_type=M.TEXT,
-                content=RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE.replace("This booking", "Your upcoming booking"),
+                content=_lock_message(workflow).replace("This booking", "Your upcoming booking"),
                 actions=[M.link("my_bookings", "My Bookings", "/my-bookings")], source_label=M.SOURCE_PORTAL,
             )
         return turn.respond(message_type=M.TEXT, content=f"You have no upcoming bookings to {verb}.",
@@ -178,16 +193,30 @@ def _closed(turn: Turn, info: dict[str, Any], verb: str) -> dict[str, Any]:
     )
 
 
-def _sample_accepted_locked(turn: Turn, info: dict[str, Any]) -> dict[str, Any]:
-    from iic_booking.equipment.reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+def _lock_message(workflow: str) -> str:
+    from iic_booking.equipment.reschedule_lock import (
+        CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+        RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+    )
+
+    return CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE if workflow == "cancel" else RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+
+
+def _sample_accepted_locked(turn: Turn, info: dict[str, Any], workflow: str = "reschedule") -> dict[str, Any]:
+    from iic_booking.equipment.reschedule_lock import CANCEL_LOCKED_SAMPLE_ACCEPTED, RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
 
     st.restart(turn.state, booking_id=info["booking_id"])
+    extra = {"booking_id": info["booking_id"]}
+    if workflow == "cancel":
+        extra["cancel_block_reason"] = CANCEL_LOCKED_SAMPLE_ACCEPTED
+    else:
+        extra["reschedule_block_reason"] = RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
     return turn.respond(
         message_type=M.TEXT,
-        content=f"Booking {info['ref']} ({info['equipment_name']}): {RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE}",
+        content=f"Booking {info['ref']} ({info['equipment_name']}): {_lock_message(workflow)}",
         actions=[M.link("open_booking", "Open booking (Message the lab)", f"/my-bookings?booking={info['booking_id']}")],
         source_label=M.SOURCE_PORTAL,
-        extra={"booking_id": info["booking_id"], "reschedule_block_reason": "reschedule_locked_sample_accepted"},
+        extra=extra,
     )
 
 
@@ -218,6 +247,8 @@ def cancel_selected(turn: Turn, booking) -> dict[str, Any]:
     s = turn.state
     s["booking_id"] = info["booking_id"]
     s["workflow"] = "cancel"
+    if cancel_locked(turn.user, booking):
+        return _sample_accepted_locked(turn, info, "cancel")
     if not info["self_service_open"]:
         return _closed(turn, info, "cancellation")
     mode = _partial_mode(booking)
@@ -268,6 +299,8 @@ def cancel_mode(turn: Turn, mode: str) -> dict[str, Any]:
         st.restart(s)
         return turn.respond(message_type=M.TEXT, content=f"OK, booking {info['ref']} stays as it is.",
                             source_label=M.SOURCE_COPILOT)
+    if cancel_locked(turn.user, booking):
+        return _sample_accepted_locked(turn, info, "cancel")
     if mode == "portal":
         st.restart(s)
         return turn.respond(message_type=M.TEXT, content="Choose the print files to cancel on My Bookings.",
@@ -346,6 +379,8 @@ def cancel_reduce_chosen(turn: Turn, keep: int) -> dict[str, Any]:
 def _preview_and_prepare(turn: Turn, booking, *, body: dict[str, Any]) -> dict[str, Any]:
     from iic_booking.research_copilot.services.v2.mutations import domain_bridge
 
+    if cancel_locked(turn.user, booking):
+        return _sample_accepted_locked(turn, _summary(booking), "cancel")
     code, preview = domain_bridge.call_partial_cancel_preview(user=turn.user, booking_id=int(booking.booking_id), body=body)
     if code >= 400:
         return M.error((preview or {}).get("error") or "The partial cancellation could not be previewed.", intent=turn.intent,
@@ -360,6 +395,8 @@ def _prepare_cancel(turn: Turn, booking, *, slot_ids=None, reduced=None, preview
     from iic_booking.research_copilot.services.v2.orchestrator import _proposal_card, _store_context
 
     s = turn.state
+    if cancel_locked(turn.user, booking):
+        return _sample_accepted_locked(turn, _summary(booking), "cancel")
     prep = booking_mut.prepare_cancellation(
         user=turn.user, booking_id=int(booking.booking_id), slot_ids=slot_ids, reduced_input_values=reduced, preview=preview
     )

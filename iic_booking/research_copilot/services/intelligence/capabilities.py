@@ -124,6 +124,18 @@ class Capabilities:
     def has_upcoming_bookings(self) -> bool:
         return bool(self.upcoming_bookings)
 
+    @cached_property
+    def has_self_changeable_bookings(self) -> bool:
+        """Upcoming bookings the user may still cancel / reschedule themselves (lab has not accepted the sample)."""
+        from iic_booking.research_copilot.services.intelligence import booking_changes
+
+        if not self.upcoming_bookings:
+            return False
+        try:
+            return bool(booking_changes.cancellable_bookings(self.user, for_cancel=True))
+        except Exception:  # noqa: BLE001
+            return self.has_upcoming_bookings
+
     # ------------------------------------------------------------------ My Research
     @cached_property
     def my_research_available(self) -> bool:

@@ -1,0 +1,79 @@
+# How many active bookings are locked for user cancel / reschedule because the lab accepted the sample
+# (read-only, rolled back). Prints counts only, plus the lifecycle status labels of one booking.
+# No names, emails or other personal data.
+
+name: Probe Sample Accepted Lock (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      virtual_booking_id:
+        description: "Booking ID shown to users (e.g. IICPPMS202600004)"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Lock counts (SELECT only, counts only)
+        env:
+          VBID: ${{ inputs.virtual_booking_id }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e VBID="$VBID" -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.db.models import Max, Q
+          from django.utils import timezone
+
+          from iic_booking.equipment.models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
+
+          ACCEPTED_OR_LATER = [
+              SampleTraceStatus.SAMPLE_ACCEPTED, SampleTraceStatus.PROCESSING, SampleTraceStatus.COMPLETED,
+              SampleTraceStatus.RETURNED, SampleTraceStatus.ARCHIVED, SampleTraceStatus.DISPOSED,
+          ]
+          ACTIVE = [BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.DISRUPTION_PENDING]
+          labels = dict(SampleTraceStatus.choices)
+
+          vbid = os.environ["VBID"].strip()
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              now = timezone.now()
+              accepted_ids = BookingSampleTrace.objects.filter(status__in=ACCEPTED_OR_LATER).values("booking_id")
+              active = Booking.objects.filter(status__in=ACTIVE)
+              upcoming = active.annotate(last_end=Max("daily_slots__end_datetime")).filter(last_end__gte=now)
+              disruption = Q(status=BookingStatus.DISRUPTION_PENDING) | Q(maintenance_disruption_flag=True)
+              acc = active.filter(pk__in=accepted_ids)
+              acc_up = upcoming.filter(pk__in=accepted_ids)
+              print(f"active bookings (Pending/Booked/Disruption pending)={active.count()}")
+              print(f"active bookings whose sample was accepted (ever)={acc.count()}")
+              print(f"  of which lab-flagged disruption (exempt, user keeps choice)={acc.filter(disruption).count()}")
+              print(f"  locked for user cancel/reschedule={acc.exclude(disruption).count()}")
+              print(f"active upcoming bookings locked for user cancel/reschedule={acc_up.exclude(disruption).count()}")
+
+              b = Booking.objects.filter(virtual_booking_id=vbid).first()
+              if b is None:
+                  print("booking not found")
+              else:
+                  events = list(BookingSampleTrace.objects.filter(booking_id=b.pk).order_by("created_at", "id")
+                                .values_list("status", flat=True))
+                  print(f"booking status={b.status}")
+                  print("lifecycle states (oldest first)=" + (" > ".join(labels.get(s, s) for s in events) or "none"))
+                  reached = any(s in ACCEPTED_OR_LATER for s in events)
+                  exempt = b.status == BookingStatus.DISRUPTION_PENDING or bool(b.maintenance_disruption_flag)
+                  print(f"counts as accepted={'yes' if reached else 'no'}")
+                  print(f"lab-flagged disruption={'yes' if exempt else 'no'}")
+              transaction.set_rollback(True)
+          print("DONE (read-only, rolled back)")
+          PY
