@@ -15,12 +15,17 @@ on:
         description: Look-back window in days for the behaviour counts and per-booking ratings
         required: false
         default: '180'
+      followup_only:
+        description: Run only the follow-up step (wallet linking, past bookings still Booked, waitlist, slot-window settings) (true / false)
+        required: false
+        default: 'false'
 
 jobs:
   probe:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Feedback and booking funnel (SELECT only, aggregates only)
+        if: ${{ github.event.inputs.followup_only != 'true' }}
         env:
           DAYS: ${{ github.event.inputs.days }}
         run: |
@@ -527,6 +532,147 @@ jobs:
                         f"with preferred weekday/time={qs.filter(preferred_weekday__isnull=False).count()}")
 
               print(f"\nredactions applied: {dict(REDACTIONS)}")
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
+
+      - name: Follow-up - wallet linking, past bookings still Booked, waitlist, slot-window settings (SELECT only, counts only)
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e DAYS="${DAYS:-180}" -w /app "$CID" python - <<'PY'
+          import os
+          from collections import Counter, defaultdict
+          from datetime import timedelta
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.db.models import Max
+          from django.utils import timezone
+
+          DAYS = int((os.environ.get("DAYS") or "180").strip() or 180)
+          NOW = timezone.now()
+          SINCE = NOW - timedelta(days=DAYS)
+          WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+          def pct(vals, p):
+              if not vals:
+                  return None
+              s = sorted(vals)
+              return s[min(len(s) - 1, int(round(p / 100 * (len(s) - 1))))]
+
+          def hours(v):
+              return "-" if v is None else f"{v:.1f}h"
+
+          def section(title):
+              def deco(fn):
+                  print(f"\n== {title} ==")
+                  try:
+                      with transaction.atomic():
+                          fn()
+                  except Exception as exc:  # noqa: BLE001
+                      print(f"  skipped: {type(exc).__name__}: {str(exc)[:160]}")
+                  return fn
+              return deco
+
+          from iic_booking.equipment.models import Booking, BookingAttemptLog, BookingEvent, Equipment, WaitlistEntry
+          from iic_booking.users.models import User
+          from iic_booking.users.models.wallet import WalletJoinRequest
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              @section("13. Wallet linking (students joining a supervisor's wallet)")
+              def _wallet_link():
+                  qs = WalletJoinRequest.objects.filter(created_at__gte=SINCE)
+                  print(f"  join requests in window={qs.count()} by status={dict(Counter(qs.values_list('status', flat=True)))}")
+                  waits = [(r - c).total_seconds() / 3600 for c, r in qs.filter(responded_at__isnull=False).values_list("created_at", "responded_at")]
+                  print(f"  time to supervisor response: median={hours(pct(waits, 50))} p75={hours(pct(waits, 75))} p90={hours(pct(waits, 90))} n={len(waits)}")
+                  pend = WalletJoinRequest.objects.filter(status="PENDING")
+                  ages = [(NOW - c).total_seconds() / 86400 for c in pend.values_list("created_at", flat=True)]
+                  print(f"  pending now={len(ages)} older than 2 days={sum(1 for a in ages if a > 2)} older than 7 days={sum(1 for a in ages if a > 7)}")
+                  active = User.objects.filter(is_active=True)
+                  print(f"  active users by type: {dict(Counter(active.values_list('user_type', flat=True)).most_common(12))}")
+                  faculty_with_students = WalletJoinRequest.objects.filter(status="APPROVED").values("faculty_id").distinct().count()
+                  print(f"  faculty with at least one approved student={faculty_with_students}")
+                  students = set(active.filter(user_type__in=["student", "individual_student"]).values_list("id", flat=True))
+                  linked = set(WalletJoinRequest.objects.filter(status="APPROVED", student_id__in=students).values_list("student_id", flat=True))
+                  print(f"  active students={len(students)} linked to a supervisor wallet={len(linked)} not linked={len(students - linked)}")
+                  no_wallet = set(BookingAttemptLog.objects.filter(requested_at__gte=SINCE, failure_reason__icontains="access to any wallet")
+                                  .values_list("user_id", flat=True))
+                  later_ok = set(BookingAttemptLog.objects.filter(requested_at__gte=SINCE, outcome="SUCCESS", user_id__in=no_wallet)
+                                 .values_list("user_id", flat=True))
+                  had_req = set(WalletJoinRequest.objects.filter(student_id__in=no_wallet).values_list("student_id", flat=True))
+                  print(f"  users who hit 'no wallet' at submit={len(no_wallet)} later booked successfully={len(later_ok)} "
+                        f"had raised a join request (any time)={len(had_req)}")
+
+              @section("14. Bookings whose slots are over but which are still shown as Booked")
+              def _stale_booked():
+                  qs = (Booking.objects.filter(status="BOOKED").annotate(last_end=Max("daily_slots__end_datetime")))
+                  rows = list(qs.values_list("last_end", "equipment__code", "equipment__name"))
+                  over2 = [r for r in rows if r[0] and r[0] < NOW - timedelta(days=2)]
+                  over7 = [r for r in rows if r[0] and r[0] < NOW - timedelta(days=7)]
+                  print(f"  status Booked now={len(rows)} slot ended >2 days ago={len(over2)} >7 days ago={len(over7)} "
+                        f"no slot linked={sum(1 for r in rows if r[0] is None)} upcoming/in progress={sum(1 for r in rows if r[0] and r[0] >= NOW)}")
+                  for (code, name), n in Counter((r[1], (r[2] or "")[:40]) for r in over2).most_common(10):
+                      print(f"    {code} {name!r}: {n}")
+                  done = Booking.objects.filter(status__in=["COMPLETED", "PROCESSING"]).count()
+                  print(f"  Completed/Processing all time={done}; bookings with results notified={Booking.objects.filter(results_available_notified_at__isnull=False).count()}")
+                  print(f"  equipment with per-booking rating enabled={Equipment.objects.filter(user_rating_enabled=True).count()} "
+                        f"of active={Equipment.objects.filter(status='ACTIVE').count()}")
+
+              @section("15. Waitlist outcomes")
+              def _waitlist():
+                  promoted = BookingEvent.objects.filter(previous_status="WAITLISTED", new_status="BOOKED").count()
+                  wl_bookings = Booking.objects.filter(status="WAITLISTED").count()
+                  print(f"  WAITLISTED -> BOOKED events (all time)={promoted} bookings currently WAITLISTED={wl_bookings}")
+                  qs = WaitlistEntry.objects.all()
+                  ages = [(NOW - c).total_seconds() / 86400 for c in qs.filter(status="ACTIVE").values_list("created_at", flat=True)]
+                  print(f"  waitlist entries all time by status={dict(Counter(qs.values_list('status', flat=True)))} "
+                        f"active older than 7 days={sum(1 for a in ages if a > 7)} median active age={pct(ages, 50) and round(pct(ages, 50), 1)}d")
+                  for (code, depth), n in Counter(qs.values_list("equipment__code", "equipment__waitlist_queue_depth")).most_common(10):
+                      print(f"    {code} queue depth={depth}: entries={n}")
+
+              @section(f"16. Slot-window settings of equipment with booking attempts in the last {DAYS} days")
+              def _windows():
+                  ids = set(BookingAttemptLog.objects.filter(requested_at__gte=SINCE).values_list("equipment_id", flat=True))
+                  fails = Counter(BookingAttemptLog.objects.filter(requested_at__gte=SINCE, outcome="FAILED").values_list("equipment_id", flat=True))
+                  hour21 = Counter(
+                      e for e, t in BookingAttemptLog.objects.filter(requested_at__gte=SINCE).values_list("equipment_id", "requested_at")
+                      if timezone.localtime(t).hour in (21, 22) and timezone.localtime(t).weekday() == 2
+                  )
+                  print("  code | window opens (weekday time) | days shown | internal weekly quota (min) | waitlist depth | "
+                        "auto-select default | attempts Wed 21-23h | failed attempts")
+                  for eq in Equipment.objects.filter(equipment_id__in=ids).order_by("code"):
+                      wd = eq.slot_window_reference_weekday
+                      wd_s = WEEKDAYS[wd] if isinstance(wd, int) and 0 <= wd < 7 else wd
+                      print(f"  {eq.code} | {wd_s} {eq.slot_window_reference_time} | {eq.weekly_view_default_days} | "
+                            f"{eq.internal_weekly_quota} | {eq.waitlist_queue_depth} | {eq.auto_slot_selection_default} | "
+                            f"{hour21[eq.equipment_id]} | {fails[eq.equipment_id]}")
+                  try:
+                      from iic_booking.equipment.models import InternalUserSlotWindowSetting
+                      for s in InternalUserSlotWindowSetting.objects.all()[:5]:
+                          vals = {fld.name: getattr(s, fld.name) for fld in s._meta.concrete_fields
+                                  if not fld.is_relation and fld.name != "id"}
+                          print(f"  internal slot window setting: {vals}")
+                  except Exception as exc:  # noqa: BLE001
+                      print(f"  internal slot window setting: skipped ({type(exc).__name__})")
+
+              @section(f"17. Quota-exceeded failures (last {DAYS} days)")
+              def _quota():
+                  rows = BookingAttemptLog.objects.filter(requested_at__gte=SINCE, failure_reason__icontains="quota").values_list(
+                      "equipment__code", "user__user_type")
+                  print(f"  quota failures={rows.count()} by equipment={dict(Counter(r[0] for r in rows).most_common(10))} "
+                        f"by user type={dict(Counter(r[1] for r in rows))}")
+
               transaction.set_rollback(True)
           print("\nDONE (read-only, rolled back)")
           PY
