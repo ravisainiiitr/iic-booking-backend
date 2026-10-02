@@ -246,6 +246,7 @@ from iic_booking.equipment.print_3d_views import (
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
+from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
 from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
 from iic_booking.equipment.booking_templates import (
     booking_template_detail,
@@ -1230,6 +1231,11 @@ urlpatterns = router.urls + [
     path("equipment-categories/", equipment_category_list, name="equipment-category-list"),
     path("equipments/<int:pk>/image/", equipment_image_proxy, name="equipment-image-proxy"),
     path("equipments/<int:pk>/calculate/", equipment_calculate, name="equipment-calculate"),
+    path(
+        "equipments/<int:pk>/my-booking-quota/",
+        equipment_my_booking_quota,
+        name="equipment-my-booking-quota",
+    ),
     path("equipments/<int:pk>/print-materials/", equipment_print_materials, name="equipment-print-materials"),
     path("equipments/<int:pk>/analyze-stl/", equipment_analyze_stl, name="equipment-analyze-stl"),
     path("print-analyses/<uuid:analysis_id>/", print_analysis_detail, name="print-analysis-detail"),

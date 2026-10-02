@@ -435,6 +435,31 @@ def equipment_department_wallet_balance(request):
         target_user,
         equipment.internal_department,
     )
+
+    pending_request = (
+        WalletJoinRequest.objects.filter(
+            student=target_user,
+            status=WalletJoinRequestStatus.PENDING,
+        )
+        .select_related("wallet__user", "faculty")
+        .order_by("-created_at")
+        .first()
+    )
+    pending_supervisor_name = None
+    if pending_request is not None:
+        owner = (
+            pending_request.wallet.user
+            if pending_request.wallet_id and pending_request.wallet
+            else pending_request.faculty
+        )
+        if owner is not None:
+            pending_supervisor_name = (owner.name or "").strip() or owner.email
+    link_fields = {
+        "pending_link_request": pending_request is not None,
+        "pending_link_supervisor_name": pending_supervisor_name,
+        "pays_remainder_separately": UserType.is_external_user(target_user.user_type),
+    }
+
     if not booking_target:
         dept = equipment.internal_department
         return Response(
@@ -445,12 +470,22 @@ def equipment_department_wallet_balance(request):
                 "department_name": (dept.name if dept else "General"),
                 "department_code": (dept.code if dept else "GENERAL"),
                 "is_zero": True,
+                "needs_wallet_link": target_user.user_type in {UserType.STUDENT, UserType.OTHER},
+                "spendable": "0.00",
+                "booking_block_message": None,
+                **link_fields,
             },
             status=status.HTTP_200_OK,
         )
 
+    from ..wallet_credit_facility import (
+        wallet_booking_block_message,
+        wallet_max_spendable_on_subwallet,
+    )
+
     dept = getattr(booking_target, "department", None) or equipment.internal_department
     bal = Decimal(str(booking_target.balance)).quantize(Decimal("0.01"))
+    spendable = wallet_max_spendable_on_subwallet(booking_target).quantize(Decimal("0.01"))
     return Response(
         {
             "balance": str(bal),
@@ -459,6 +494,10 @@ def equipment_department_wallet_balance(request):
             "department_name": (dept.name if dept else "General"),
             "department_code": (dept.code if dept else "GENERAL"),
             "is_zero": bal <= 0,
+            "needs_wallet_link": False,
+            "spendable": str(spendable),
+            "booking_block_message": wallet_booking_block_message(booking_target),
+            **link_fields,
         },
         status=status.HTTP_200_OK,
     )
