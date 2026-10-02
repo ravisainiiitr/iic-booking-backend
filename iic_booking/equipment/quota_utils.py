@@ -13,7 +13,8 @@ from decimal import Decimal
 from typing import Optional
 
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q, QuerySet
+from django.db.models import OuterRef, QuerySet, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from iic_booking.users.models.user import User
@@ -23,6 +24,7 @@ from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequest
 from .models import (
     Booking,
     BookingStatus,
+    DailySlot,
     EquipmentGroupQuota,
     ExternalUserQuota,
     QuotaLimitType,
@@ -31,20 +33,31 @@ from .models import (
 )
 from iic_booking.users.display import get_user_display_name
 
-# Only bookings that represent actual quota consumption.
-# Cancelled / refunded / disruption / hold never count.
+# Bookings that hold (or held) the user's slots count toward quota:
+# - awaiting payment / pending: the slots are reserved for the user;
+# - awaiting the user's disruption choice: the user chose (or may choose) to wait and reschedule,
+#   so the booking keeps its place in its original period until it is refunded;
+# - Booking Not Utilized (no-show): the slots were consumed, no refund.
+# Freed or facility-side outcomes never count: cancelled (with or without refund), refunded,
+# operator unavailable, under maintenance / analysis not possible (refunded), waitlisted, urgent hold.
 QUOTA_COUNTING_STATUSES = (
+    BookingStatus.PENDING,
+    BookingStatus.PENDING_PAYMENT,
     BookingStatus.BOOKED,
+    BookingStatus.DISRUPTION_PENDING,
+    BookingStatus.PROCESSING,
     BookingStatus.COMPLETED,
+    BookingStatus.BOOKING_NOT_UTILIZED,
 )
 
 QUOTA_EXCLUDED_STATUSES = (
+    BookingStatus.WAITLISTED,
+    BookingStatus.HOLD,
     BookingStatus.CANCELLED,
     BookingStatus.REFUNDED,
-    BookingStatus.DISRUPTION_PENDING,
+    BookingStatus.ABSENT,
     BookingStatus.UNDER_MAINTENANCE,
     BookingStatus.OTHER_DISRUPTION,
-    BookingStatus.HOLD,
 )
 
 
@@ -146,6 +159,75 @@ def booking_quota_should_skip(equipment) -> bool:
     if equipment is not None and getattr(equipment, "skip_quota_check", False):
         return True
     return False
+
+
+def booking_first_slot_start(booking):
+    return (
+        DailySlot.objects.filter(booking_id=booking.pk)
+        .order_by("start_datetime")
+        .values_list("start_datetime", flat=True)
+        .first()
+    )
+
+
+def booking_quota_reference_datetime(booking):
+    """
+    The instant that decides which week / month a booking counts in: its quota anchor when set
+    (disruption or staff moves keep the original period), otherwise its first slot start.
+    A booking counts in exactly one week and one month, even when its slots cross a boundary.
+    """
+    return getattr(booking, "quota_period_anchor_at", None) or booking_first_slot_start(booking)
+
+
+def booking_is_quota_exempt(booking) -> bool:
+    """Repeat samples never consume quota (they re-run an already counted booking)."""
+    return getattr(booking, "source_booking_id", None) is not None
+
+
+def booking_counts_toward_quota(booking) -> bool:
+    return not booking_is_quota_exempt(booking) and booking.status in QUOTA_COUNTING_STATUSES
+
+
+def keep_quota_in_original_period(booking) -> None:
+    """
+    Before a disruption or staff reschedule moves the slots: pin the booking to the period it
+    currently counts in, so the move neither frees the old period nor uses the new one.
+    Call while the booking still holds its old slots; the caller saves the booking.
+    """
+    if getattr(booking, "quota_period_anchor_at", None) is None:
+        booking.quota_period_anchor_at = booking_first_slot_start(booking)
+
+
+def check_booking_minutes_change(booking, new_total_time_minutes: int) -> tuple[bool, Optional[str]]:
+    """
+    Quota check for an existing booking whose analysis minutes change (e.g. edited inputs).
+    Only increases are checked, against the period the booking counts in; decreases always pass
+    and free the difference because usage is derived from the stored minutes.
+    """
+    if not booking_counts_toward_quota(booking) or booking_quota_should_skip(booking.equipment):
+        return True, None
+    slot_mins = remaining_slot_minutes_for_booking(booking)
+    old_effective = booking_effective_quota_minutes(booking)
+    new_effective = max(0, int(new_total_time_minutes or 0))
+    if slot_mins > 0:
+        new_effective = min(new_effective, slot_mins)
+    if new_effective <= old_effective:
+        return True, None
+    ok, err = QuotaService.validate_booking_quota(
+        user=booking.user,
+        equipment=booking.equipment,
+        additional_time_minutes=new_effective,
+        additional_bookings=1,
+        additional_charge=Decimal(str(booking.total_charge or "0")),
+        booking_date=booking_quota_reference_datetime(booking),
+        exclude_booking_id=booking.pk,
+    )
+    if ok:
+        return True, None
+    return False, (
+        f"This change needs {new_effective - old_effective} more minute(s) of instrument time "
+        f"({old_effective} → {new_effective} min), which is over your booking limit. {err}"
+    )
 
 
 # A week has 10,080 minutes and a 31-day month 44,640. Limits at ~90% of that (e.g. 10,075/week) can't
@@ -479,6 +561,18 @@ class QuotaService:
             source_booking__isnull=True,  # exclude Repeat Sample
         )
 
+    @staticmethod
+    def _in_quota_period(qs: QuerySet, start_date: datetime, end_date: datetime) -> QuerySet:
+        """Keep bookings whose quota reference (anchor, else first slot start) is in the period."""
+        first_slot_start = (
+            DailySlot.objects.filter(booking_id=OuterRef("pk"))
+            .order_by("start_datetime")
+            .values("start_datetime")[:1]
+        )
+        return qs.annotate(
+            quota_reference_at=Coalesce("quota_period_anchor_at", Subquery(first_slot_start))
+        ).filter(quota_reference_at__gte=start_date, quota_reference_at__lte=end_date)
+
     @classmethod
     def _bookings_in_period(
         cls,
@@ -489,25 +583,13 @@ class QuotaService:
         end_date: datetime,
         exclude_booking_id: Optional[int],
     ) -> QuerySet:
-        bookings_with_slots_in_period = Booking.objects.filter(
-            pk=OuterRef("pk"),
-            daily_slots__start_datetime__gte=start_date,
-            daily_slots__start_datetime__lte=end_date,
-        )
-        qs = (
-            cls._base_quota_bookings_qs()
-            .filter(
+        qs = cls._in_quota_period(
+            cls._base_quota_bookings_qs().filter(
                 user__in=users,
                 equipment_id__in=group_equipment_ids,
-            )
-            .filter(
-                Q(
-                    quota_period_anchor_at__isnull=False,
-                    quota_period_anchor_at__gte=start_date,
-                    quota_period_anchor_at__lte=end_date,
-                )
-                | (Q(quota_period_anchor_at__isnull=True) & Exists(bookings_with_slots_in_period))
-            )
+            ),
+            start_date,
+            end_date,
         )
         if exclude_booking_id is not None:
             qs = qs.exclude(booking_id=exclude_booking_id)
@@ -661,22 +743,10 @@ class QuotaService:
         exclude_booking_id: Optional[int] = None,
     ) -> QuerySet:
         """Quota-consuming bookings on one equipment for a user-type snapshot within a period."""
-        bookings_with_slots_in_period = Booking.objects.filter(
-            pk=OuterRef("pk"),
-            daily_slots__start_datetime__gte=start_date,
-            daily_slots__start_datetime__lte=end_date,
-        )
-        qs = (
-            cls._base_quota_bookings_qs()
-            .filter(equipment=equipment, **snapshot_filter)
-            .filter(
-                Q(
-                    quota_period_anchor_at__isnull=False,
-                    quota_period_anchor_at__gte=start_date,
-                    quota_period_anchor_at__lte=end_date,
-                )
-                | (Q(quota_period_anchor_at__isnull=True) & Exists(bookings_with_slots_in_period))
-            )
+        qs = cls._in_quota_period(
+            cls._base_quota_bookings_qs().filter(equipment=equipment, **snapshot_filter),
+            start_date,
+            end_date,
         )
         if exclude_booking_id is not None:
             qs = qs.exclude(booking_id=exclude_booking_id)
@@ -855,6 +925,33 @@ class QuotaChecker(QuotaService):
     pass
 
 
+def _breakdown_events(existing_bookings) -> tuple[int, list[dict]]:
+    bookings = list(
+        existing_bookings.select_related("equipment", "user")
+        .prefetch_related("daily_slots")
+        .order_by("booking_id")
+    )
+    events = []
+    for b in bookings:
+        ref = getattr(b, "quota_reference_at", None)
+        display_id = (b.virtual_booking_id or "").strip() or (
+            f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)
+        )
+        events.append(
+            {
+                "date": timezone.localtime(ref).strftime("%Y-%m-%d") if ref else "",
+                "booking_id": display_id,
+                "real_booking_id": b.booking_id,
+                "equipment_name": b.equipment.name if b.equipment else "",
+                "equipment_code": b.equipment.code if b.equipment else "",
+                "display_booking_id": display_id,
+                "total_time_minutes": booking_effective_quota_minutes(b),
+                "user_name": get_user_display_name(b.user) if b.user else "",
+            }
+        )
+    return sum(e["total_time_minutes"] for e in events), events
+
+
 def get_quota_breakdown(user, equipment, quota_type: str, reference_date: datetime, failure_reason: str = ""):
     """
     Return date-wise breakdown of quota usage for display (admin/OIC).
@@ -862,16 +959,8 @@ def get_quota_breakdown(user, equipment, quota_type: str, reference_date: dateti
     """
     start_date, end_date = QuotaService._get_quota_period(quota_type, reference_date)
     equipment.refresh_from_db(fields=["equipment_group"])
-    events = []
     limit_minutes = 0
-    total_minutes = 0
     quota_scope = "individual"
-
-    bookings_with_slots_in_period = Booking.objects.filter(
-        pk=OuterRef("pk"),
-        daily_slots__start_datetime__gte=start_date,
-        daily_slots__start_datetime__lte=end_date,
-    )
 
     if equipment.equipment_group:
         try:
@@ -926,33 +1015,6 @@ def get_quota_breakdown(user, equipment, quota_type: str, reference_date: dateti
                 end_date=end_date,
                 exclude_booking_id=None,
             )
-
-        total_minutes = QuotaService._sum_booking_quota_minutes(existing_bookings)
-        for b in existing_bookings.select_related("equipment", "user").order_by("booking_id"):
-            slot_date = (
-                b.daily_slots.filter(
-                    start_datetime__gte=start_date,
-                    start_datetime__lte=end_date,
-                )
-                .order_by("date")
-                .values_list("date", flat=True)
-                .first()
-            )
-            date_str = slot_date.strftime("%Y-%m-%d") if slot_date else ""
-            events.append(
-                {
-                    "date": date_str,
-                    "booking_id": (b.virtual_booking_id or "").strip()
-                    or (f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)),
-                    "real_booking_id": b.booking_id,
-                    "equipment_name": b.equipment.name if b.equipment else "",
-                    "equipment_code": b.equipment.code if b.equipment else "",
-                    "display_booking_id": (b.virtual_booking_id or "").strip()
-                    or (f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)),
-                    "total_time_minutes": booking_effective_quota_minutes(b),
-                    "user_name": get_user_display_name(b.user) if b.user else "",
-                }
-            )
     else:
         if user.is_external():
             quotas = ExternalUserQuota.objects.filter(
@@ -960,32 +1022,23 @@ def get_quota_breakdown(user, equipment, quota_type: str, reference_date: dateti
                 quota_type=quota_type,
                 is_enforced=True,
             )
-            existing_bookings = (
-                QuotaService._base_quota_bookings_qs()
-                .filter(
-                    equipment=equipment,
-                    user_type_snapshot__in=["external", "EXTERNAL"],
-                )
-                .filter(Exists(bookings_with_slots_in_period))
-            )
+            snapshot_filter = QuotaService.LEGACY_EXTERNAL_SNAPSHOT_FILTER
             quota_scope = "external"
         else:
-            user_type = user.user_type
             quotas = UserTypeQuota.objects.filter(
                 equipment=equipment,
-                user_type=user_type,
+                user_type=user.user_type,
                 quota_type=quota_type,
                 is_enforced=True,
             )
-            existing_bookings = (
-                QuotaService._base_quota_bookings_qs()
-                .filter(
-                    equipment=equipment,
-                    user_type_snapshot=user_type,
-                )
-                .filter(Exists(bookings_with_slots_in_period))
-            )
+            snapshot_filter = {"user_type_snapshot": user.user_type}
             quota_scope = "user_type"
+        existing_bookings = QuotaService._legacy_bookings_in_period(
+            equipment=equipment,
+            snapshot_filter=snapshot_filter,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
         for q in quotas:
             if getattr(q, "limit_type", None) == QuotaLimitType.HOURS:
@@ -995,33 +1048,7 @@ def get_quota_breakdown(user, equipment, quota_type: str, reference_date: dateti
                 limit_minutes = int(q.limit_value)
                 break
 
-        total_minutes = QuotaService._sum_booking_quota_minutes(existing_bookings)
-        for b in existing_bookings.select_related("equipment", "user").order_by("booking_id"):
-            slot_date = (
-                b.daily_slots.filter(
-                    start_datetime__gte=start_date,
-                    start_datetime__lte=end_date,
-                )
-                .order_by("date")
-                .values_list("date", flat=True)
-                .first()
-            )
-            date_str = slot_date.strftime("%Y-%m-%d") if slot_date else ""
-            events.append(
-                {
-                    "date": date_str,
-                    "booking_id": (b.virtual_booking_id or "").strip()
-                    or (f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)),
-                    "real_booking_id": b.booking_id,
-                    "equipment_name": b.equipment.name if b.equipment else "",
-                    "equipment_code": b.equipment.code if b.equipment else "",
-                    "display_booking_id": (b.virtual_booking_id or "").strip()
-                    or (f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)),
-                    "total_time_minutes": booking_effective_quota_minutes(b),
-                    "user_name": get_user_display_name(b.user) if b.user else "",
-                }
-            )
-
+    total_minutes, events = _breakdown_events(existing_bookings)
     events.sort(key=lambda e: (e["date"], e["real_booking_id"]))
     summary_message = (
         f"{total_minutes} minutes used out of {limit_minutes} minutes limit "

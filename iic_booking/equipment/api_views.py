@@ -178,7 +178,14 @@ from .slot_department_access import (
     filter_queryset_for_home_department,
     slot_allows_internal_user,
 )
-from .quota_utils import QuotaService, get_quota_breakdown, booking_quota_should_skip
+from .quota_utils import (
+    QuotaService,
+    booking_is_quota_exempt,
+    booking_quota_should_skip,
+    check_booking_minutes_change,
+    get_quota_breakdown,
+    keep_quota_in_original_period,
+)
 from .booking_timing import BookingRequestTimer, attach_booking_performance_headers
 from .booking_events import create_booking_event
 from .booking_cancellation import (
@@ -12376,6 +12383,8 @@ def reschedule_booking(request, booking_id):
         from django.db import transaction
 
         with transaction.atomic():
+            # Staff moves are not quota-checked and keep the booking in its original quota period.
+            keep_quota_in_original_period(booking)
             # Free up old slots
             old_slots = booking.daily_slots.all()
             free_status = (
@@ -12402,7 +12411,7 @@ def reschedule_booking(request, booking_id):
             previous_status = booking.status
             booking.status = BookingStatus.BOOKED
             if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
-                clear_disruption_policy_fields(booking)
+                clear_disruption_policy_fields(booking, keep_quota_anchor=True)
             booking.save()
             
             # Create booking event for reschedule
@@ -13102,23 +13111,26 @@ def user_reschedule_booking(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Reschedule: original booking already consumed quota. Treat as MOVE (exclude self),
-    # not a second consumption — same pipeline order as create (Faculty Mon→Week→Individual).
+    # A disruption or staff move keeps the booking in its original quota period, so the user's
+    # quota is unchanged. The user's own reschedule moves the usage to the new period (MOVE:
+    # exclude self, same pipeline order as create) and is checked there. Repeat samples never count.
+    is_disruption_move = booking.status == BookingStatus.DISRUPTION_PENDING or getattr(
+        booking, "maintenance_disruption_flag", False
+    )
+    keeps_original_quota_period = is_disruption_move or is_staff_rescheduler
     try:
-        additional_minutes = int(getattr(booking, "total_time_minutes", 0) or 0)
-        additional_charge = Decimal(str(getattr(booking, "total_charge", 0) or "0"))
-        quota_date = start_time
-        # Disruption reschedule: keep quota against the ORIGINAL period anchor.
-        if booking.status == BookingStatus.DISRUPTION_PENDING and getattr(booking, "quota_period_anchor_at", None) is not None:
-            quota_date = booking.quota_period_anchor_at
-        if not booking_quota_should_skip(equipment):
+        if (
+            not keeps_original_quota_period
+            and not booking_is_quota_exempt(booking)
+            and not booking_quota_should_skip(equipment)
+        ):
             quota_allowed, quota_error = QuotaService.validate_booking_quota(
                 user=booking.user,
                 equipment=equipment,
-                additional_time_minutes=additional_minutes,
+                additional_time_minutes=int(getattr(booking, "total_time_minutes", 0) or 0),
                 additional_bookings=1,
-                additional_charge=additional_charge,
-                booking_date=quota_date,
+                additional_charge=Decimal(str(getattr(booking, "total_charge", 0) or "0")),
+                booking_date=start_time,
                 exclude_booking_id=booking.booking_id,
             )
             if not quota_allowed:
@@ -13149,6 +13161,10 @@ def user_reschedule_booking(request, booking_id):
         from django.db import transaction
 
         with transaction.atomic():
+            if keeps_original_quota_period:
+                keep_quota_in_original_period(booking)
+            else:
+                booking.quota_period_anchor_at = None
             # Free up old slots
             old_slots = booking.daily_slots.all()
             free_status = (
@@ -13175,7 +13191,7 @@ def user_reschedule_booking(request, booking_id):
             previous_status = booking.status
             booking.status = BookingStatus.BOOKED
             if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
-                clear_disruption_policy_fields(booking)
+                clear_disruption_policy_fields(booking, keep_quota_anchor=True)
             booking.save()
 
             # Create booking event for reschedule
@@ -14695,6 +14711,35 @@ def _clean_single_input_value(value):
             return value
     return value
 
+def _calculate_input_values_minutes(booking, input_values) -> int:
+    """Analysis minutes for ``input_values`` (same engine call as the charge recalculation)."""
+    equipment = booking.equipment
+    safe_input_values = build_safe_input_values_for_charge_calculation(input_values, equipment=equipment)
+    from .print_3d_views import apply_print_analysis_to_input_values
+    safe_input_values = apply_print_analysis_to_input_values(booking, safe_input_values)
+    return int(
+        TimeCalculationEngine.calculate_time(
+            booking.charge_profile,
+            safe_input_values,
+            slot_duration_minutes=equipment.slot_duration_minutes,
+        )
+        or 0
+    )
+
+
+def _input_edit_new_total_minutes(booking, original, current, *, enable_recalc: bool, values_changed: bool):
+    """Stored minutes after an input edit, or None when the edit leaves them unchanged."""
+    if not booking.charge_profile_id or not booking.equipment_id or not (enable_recalc or values_changed):
+        return None
+    try:
+        new_minutes = _calculate_input_values_minutes(booking, current)
+        if enable_recalc or new_minutes != _calculate_input_values_minutes(booking, original):
+            return new_minutes
+    except Exception:
+        logger.exception("Could not compute minutes for input edit on booking %s", booking.pk)
+    return None
+
+
 def _calculate_input_values_charge(booking, input_values):
     """Engine charge (before GST) for ``input_values`` on this booking's equipment and charge profile."""
     equipment = booking.equipment
@@ -15116,6 +15161,19 @@ def update_booking_input_values(request, booking_id):
         getattr(equipment, "enable_charge_recalculation", False)
         or (values_changed and _input_edit_changes_charge(booking, original, current))
     )
+    # Weekly / monthly usage follows the stored minutes: a longer analysis must fit the booking
+    # limit (staff edits override it), a shorter one frees the difference.
+    new_total_time_minutes = _input_edit_new_total_minutes(
+        booking, original, current, enable_recalc=enable_recalc, values_changed=values_changed
+    )
+    if new_total_time_minutes is not None and not is_staff_editor:
+        quota_ok, quota_error = check_booking_minutes_change(booking, new_total_time_minutes)
+        if not quota_ok:
+            return Response(
+                {"error": quota_error, "code": "QUOTA_EXCEEDED"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
     payment_window_snapshot = None
     instant_refund_allowed = False
     if enable_recalc and request.user.pk == booking.user_id and not is_charge_manager:
@@ -15123,7 +15181,16 @@ def update_booking_input_values(request, booking_id):
         instant_refund_allowed = booking.status == BookingStatus.BOOKED and instant_refund_window(booking)[0]
 
     booking.input_values = current
-    booking.save(update_fields=["input_values"])
+    update_fields = ["input_values"]
+    if (
+        not enable_recalc
+        and recalc_status_ok
+        and new_total_time_minutes is not None
+        and new_total_time_minutes != booking.total_time_minutes
+    ):
+        booking.total_time_minutes = new_total_time_minutes
+        update_fields.append("total_time_minutes")
+    booking.save(update_fields=update_fields)
 
     # Charge recalculation: an extra amount is paid separately; a refund is instant or OIC-confirmed.
     if enable_recalc:

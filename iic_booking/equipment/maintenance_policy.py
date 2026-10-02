@@ -69,7 +69,9 @@ def resolve_disruption_decision_deadline(equipment, triggered_at, booking_first_
     return compute_maintenance_decision_deadline(equipment, triggered_at, booking_first_start_aware)
 
 
-def clear_disruption_policy_fields(booking) -> None:
+def clear_disruption_policy_fields(booking, *, keep_quota_anchor: bool = False) -> None:
+    """``keep_quota_anchor``: the booking was rescheduled after a disruption and keeps counting
+    in its original quota period (the user's quota is unchanged by the move)."""
     booking.maintenance_disruption_flag = False
     booking.maintenance_decision_deadline_at = None
     booking.maintenance_reschedule_extra_week = False
@@ -77,7 +79,13 @@ def clear_disruption_policy_fields(booking) -> None:
     booking.disruption_kind = None
     booking.disruption_reason = None
     booking.disruption_release_slot_status = None
-    booking.quota_period_anchor_at = None
+    if not keep_quota_anchor:
+        booking.quota_period_anchor_at = None
+
+
+def _disruption_quota_anchor(booking, first_start):
+    """An earlier anchor (booking already moved by a disruption or staff) wins over the current slots."""
+    return getattr(booking, "quota_period_anchor_at", None) or first_start
 
 
 def _booking_first_slot_start(booking) -> timezone.datetime | None:
@@ -352,7 +360,7 @@ def apply_maintenance_disruption_for_booking_manually(booking, *, notes: str = "
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
     booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
-    booking.quota_period_anchor_at = first_start
+    booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
     booking.maintenance_decision_deadline_at = deadline
     # Allow one additional week navigation immediately while awaiting the user's choice.
@@ -394,6 +402,7 @@ def apply_operator_absent_disruption_for_booking(booking, *, triggered_at=None) 
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.OPERATOR_ABSENT
     booking.disruption_release_slot_status = SlotStatus.OPERATOR_ABSENT
+    booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
     booking.maintenance_decision_deadline_at = deadline
     booking.maintenance_reschedule_extra_week = True
@@ -463,7 +472,7 @@ def apply_operator_disruption_pending_from_staff(booking, *, notes: str = "") ->
     booking.status = BookingStatus.DISRUPTION_PENDING
     booking.disruption_kind = BookingDisruptionKind.OPERATOR_ABSENT
     booking.disruption_release_slot_status = SlotStatus.OPERATOR_ABSENT
-    booking.quota_period_anchor_at = first_start
+    booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
     booking.maintenance_decision_deadline_at = deadline
     booking.maintenance_reschedule_extra_week = True
@@ -512,7 +521,7 @@ def apply_other_disruption_for_booking_manually(booking, *, reason: str) -> None
     booking.disruption_kind = BookingDisruptionKind.OTHER_DISRUPTION
     booking.disruption_reason = reason_clean
     booking.disruption_release_slot_status = SlotStatus.OPERATOR_ABSENT
-    booking.quota_period_anchor_at = first_start
+    booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
     booking.maintenance_disruption_flag = True
     booking.maintenance_decision_deadline_at = deadline
     booking.maintenance_reschedule_extra_week = True
@@ -581,6 +590,7 @@ def apply_when_equipment_marked_under_maintenance(equipment) -> int:
         booking.status = BookingStatus.DISRUPTION_PENDING
         booking.disruption_kind = BookingDisruptionKind.MAINTENANCE
         booking.disruption_release_slot_status = SlotStatus.UNDER_MAINTENANCE
+        booking.quota_period_anchor_at = _disruption_quota_anchor(booking, first_start)
         booking.maintenance_disruption_flag = True
         booking.maintenance_decision_deadline_at = deadline
         # Allow one additional week navigation immediately while awaiting the user's choice.

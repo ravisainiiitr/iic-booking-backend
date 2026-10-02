@@ -21,8 +21,15 @@ from rest_framework.response import Response
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 
-from .models import Equipment, ExternalUserQuota, QuotaLimitType, QuotaType, UserTypeQuota
-from .quota_utils import QuotaService, booking_quota_should_skip, quota_limit_is_effectively_unlimited
+from .models import Booking, Equipment, ExternalUserQuota, QuotaLimitType, QuotaType, UserTypeQuota
+from .quota_utils import (
+    QuotaService,
+    booking_counts_toward_quota,
+    booking_effective_quota_minutes,
+    booking_quota_reference_datetime,
+    booking_quota_should_skip,
+    quota_limit_is_effectively_unlimited,
+)
 
 
 def _period_item(*, quota_type: str, scope: str, shared: bool, limit_minutes: int, used_minutes: int, reference_dt: datetime) -> dict:
@@ -237,6 +244,37 @@ def _resolve_target_user(request, equipment) -> tuple[Optional[User], Optional[R
         return None, Response({"error": "Invalid user_id."}, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _booking_quota_response(request, equipment, booking_id_raw: str) -> Response:
+    try:
+        booking = (
+            Booking.objects.select_related("user")
+            .prefetch_related("daily_slots")
+            .get(pk=int(booking_id_raw), equipment_id=equipment.pk)
+        )
+    except (TypeError, ValueError, Booking.DoesNotExist):
+        return Response({"error": "Invalid booking_id."}, status=status.HTTP_400_BAD_REQUEST)
+    if booking.user_id != request.user.pk:
+        actor_type = str(getattr(request.user, "user_type", None) or "").strip().lower()
+        dept_ok = actor_type != UserType.DEPT_ADMIN or (
+            getattr(request.user, "department_id", None)
+            and getattr(equipment, "internal_department_id", None) == request.user.department_id
+        )
+        if actor_type not in {UserType.ADMIN, UserType.MANAGER, UserType.DEPT_ADMIN} or not dept_ok:
+            return Response(
+                {"error": "You can only view the quota of your own bookings."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    reference_dt = booking_quota_reference_datetime(booking) or timezone.now()
+    summary = build_booking_quota_summary(booking.user, equipment, timezone.localtime(reference_dt).date())
+    counts = booking_counts_toward_quota(booking)
+    summary["booking"] = {
+        "id": booking.pk,
+        "counts_toward_quota": counts,
+        "minutes": booking_effective_quota_minutes(booking) if counts else 0,
+    }
+    return Response(summary, status=status.HTTP_200_OK)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def equipment_my_booking_quota(request, pk):
@@ -244,11 +282,17 @@ def equipment_my_booking_quota(request, pk):
     Remaining weekly/monthly booking minutes for the current user (or ``user_id`` for staff).
 
     Query params: ``date`` (YYYY-MM-DD, any day in the week being viewed; default today).
+    ``booking_id``: summary for that booking's owner and quota period instead, plus the
+    minutes the booking itself counts (used by the Edit inputs dialog).
     """
     equipment = get_object_or_404(
         Equipment.objects.select_related("equipment_group"),
         pk=pk,
     )
+
+    booking_id_raw = (request.query_params.get("booking_id") or "").strip()
+    if booking_id_raw:
+        return _booking_quota_response(request, equipment, booking_id_raw)
 
     date_raw = (request.query_params.get("date") or "").strip()
     if date_raw:

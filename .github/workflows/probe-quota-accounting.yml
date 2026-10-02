@@ -1,0 +1,125 @@
+# Weekly/monthly quota accounting after the lifecycle fix (read-only): past disruption reschedules
+# that lost their original period, bookings whose usage changes under the new status rules, and
+# users now at or over a group limit in the current / next weeks. Nothing is written.
+name: Probe Quota Accounting
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from datetime import timedelta
+          from django.conf import settings
+          from django.db.models import Min
+          from django.utils import timezone
+          from iic_booking.equipment import quota_utils
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, BookingEventType, BookingStatus, EquipmentGroupQuota, QuotaType,
+          )
+
+          print("SKIP_BOOKING_QUOTA_CHECK=", getattr(settings, "SKIP_BOOKING_QUOTA_CHECK", None))
+          print("counting_statuses=", list(quota_utils.QUOTA_COUNTING_STATUSES))
+          deployed = hasattr(quota_utils, "booking_quota_reference_datetime")
+          print("lifecycle_fix_deployed=", deployed)
+
+          now = timezone.now()
+          month_start, _ = quota_utils.QuotaService._get_quota_period(QuotaType.MONTHLY, now)
+
+          print("== 1. Disruption reschedules without an original-period anchor (current month onward) ==")
+          ids = set(
+              BookingEvent.objects.filter(
+                  event_type=BookingEventType.RESCHEDULED,
+                  previous_status=BookingStatus.DISRUPTION_PENDING,
+              ).values_list("booking_id", flat=True)
+          )
+          rows = (
+              Booking.objects.filter(pk__in=ids, quota_period_anchor_at__isnull=True, source_booking__isnull=True)
+              .filter(status__in=quota_utils.QUOTA_COUNTING_STATUSES)
+              .annotate(first_start=Min("daily_slots__start_datetime"))
+              .filter(first_start__gte=month_start)
+              .select_related("equipment")
+              .order_by("first_start")
+          )
+          print(f"all-time disruption-rescheduled bookings: {len(ids)}; still affecting current/future periods: {rows.count()}")
+          for b in rows[:200]:
+              ev = (
+                  BookingEvent.objects.filter(booking=b, event_type=BookingEventType.RESCHEDULED,
+                                              previous_status=BookingStatus.DISRUPTION_PENDING)
+                  .order_by("-created_at").first()
+              )
+              print(f"  booking={b.pk} {b.virtual_booking_id} user={b.user_id} eq={b.equipment.code} status={b.status} "
+                    f"counts_in_week_of={timezone.localtime(b.first_start):%Y-%m-%d} rescheduled_at={timezone.localtime(ev.created_at):%Y-%m-%d %H:%M} "
+                    f"group={b.equipment.equipment_group_id}")
+
+          print("== 2. Bookings now counted (newly counting statuses, current month onward, non-repeat) ==")
+          newly = [BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.DISRUPTION_PENDING,
+                   BookingStatus.PROCESSING, BookingStatus.BOOKING_NOT_UTILIZED]
+          qs = (
+              Booking.objects.filter(status__in=newly, source_booking__isnull=True)
+              .annotate(first_start=Min("daily_slots__start_datetime"))
+              .filter(first_start__gte=month_start)
+          )
+          print("by status:", dict(Counter(qs.values_list("status", flat=True))))
+
+          print("== 3. Bookings whose slots cross a week boundary (now counted once, in their first week) ==")
+          crossing = 0
+          for b in Booking.objects.filter(status__in=quota_utils.QUOTA_COUNTING_STATUSES, source_booking__isnull=True,
+                                          daily_slots__start_datetime__gte=month_start).distinct().prefetch_related("daily_slots"):
+              weeks = {timezone.localtime(s.start_datetime).isocalendar()[:2] for s in b.daily_slots.all() if s.start_datetime}
+              if len(weeks) > 1:
+                  crossing += 1
+          print("crossing bookings (current month onward):", crossing)
+
+          if deployed:
+              print("== 4. Users at/over a group weekly limit this week or next (deployed rules) ==")
+              group_ids = list(EquipmentGroupQuota.objects.filter(is_enforced=True).values_list("equipment_group_id", flat=True).distinct())
+              for week_offset in (0, 1):
+                  ref = now + timedelta(days=7 * week_offset)
+                  start, end = quota_utils.QuotaService._get_quota_period(QuotaType.WEEKLY, ref)
+                  pairs = set(
+                      quota_utils.QuotaService._in_quota_period(
+                          quota_utils.QuotaService._base_quota_bookings_qs().filter(equipment__equipment_group_id__in=group_ids),
+                          start, end,
+                      ).values_list("user_id", "equipment__equipment_group_id")
+                  )
+                  over = 0
+                  for user_id, gid in sorted(pairs):
+                      q = EquipmentGroupQuota.objects.filter(equipment_group_id=gid, quota_type=QuotaType.WEEKLY, is_enforced=True).first()
+                      if not q or not q.internal_individual_quota_minutes:
+                          continue
+                      eq_ids = list(q.equipment_group.equipment.values_list("equipment_id", flat=True))
+                      used = quota_utils.QuotaService._sum_booking_quota_minutes(
+                          quota_utils.QuotaService._bookings_in_period(users=[user_id], group_equipment_ids=eq_ids,
+                                                                       start_date=start, end_date=end, exclude_booking_id=None)
+                      )
+                      limit = q.internal_individual_quota_minutes
+                      if used >= limit and not quota_utils.quota_limit_is_effectively_unlimited(QuotaType.WEEKLY, limit):
+                          over += 1
+                          print(f"  week_of={start:%Y-%m-%d} user={user_id} group={gid} used={used} individual_limit={limit}")
+                  print(f"week_of={start:%Y-%m-%d}: user/group pairs with usage={len(pairs)} at_or_over_individual_limit={over}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
