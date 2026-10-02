@@ -1,0 +1,532 @@
+name: Probe UX Feedback and Booking Funnel (read-only)
+
+# Prints the portal "Rate your experience" feedback (rating distribution per category, averages by user
+# group where n >= 3, monthly trend, and the free-text suggestions / comments with names, emails, phone
+# numbers, booking IDs and roll numbers redacted, shown only with user group + month + scores), the
+# per-booking ratings, and aggregate booking-funnel counts for the last N days (attempts and failure
+# reasons, no-slot / waitlist / urgent requests, status transitions, time to confirmation, payments,
+# support tickets, Booking Assistant intents, email delivery). Counts only; no personal data.
+# Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Look-back window in days for the behaviour counts and per-booking ratings
+        required: false
+        default: '180'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Feedback and booking funnel (SELECT only, aggregates only)
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e DAYS="${DAYS:-180}" -w /app "$CID" python - <<'PY'
+          import os
+          import re
+          from collections import Counter, defaultdict
+          from datetime import timedelta
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.db.models import F
+          from django.utils import timezone
+
+          DAYS = int((os.environ.get("DAYS") or "180").strip() or 180)
+          NOW = timezone.now()
+          SINCE = NOW - timedelta(days=DAYS)
+          print(f"window: last {DAYS} days")
+
+          STAFF = {"admin", "dept_admin", "manager", "operator", "finance", "org_admin", "external_relations"}
+          STUDENT = {"student", "individual_student"}
+          EXTERNAL = {"external", "RND", "Industry", "startup_incubated_iitr", "external_startup_msme", "other"}
+
+          def group(ut):
+              ut = (ut or "").strip()
+              if ut == "faculty":
+                  return "faculty"
+              if ut in STUDENT:
+                  return "student"
+              if ut in STAFF:
+                  return "staff/operator"
+              if ut in EXTERNAL:
+                  return "external/industry"
+              return "unknown"
+
+          def month(dt):
+              return timezone.localtime(dt).strftime("%Y-%m") if dt else "?"
+
+          def pct(vals, p):
+              if not vals:
+                  return None
+              s = sorted(vals)
+              return s[min(len(s) - 1, int(round(p / 100 * (len(s) - 1))))]
+
+          def avg(vals):
+              vals = [v for v in vals if v is not None]
+              return round(sum(vals) / len(vals), 2) if vals else None
+
+          def fmt_minutes(m):
+              if m is None:
+                  return "-"
+              if m < 60:
+                  return f"{m:.0f}m"
+              if m < 60 * 48:
+                  return f"{m / 60:.1f}h"
+              return f"{m / 1440:.1f}d"
+
+          COMMON = set("""
+          the and for are but not you all any can had her was one our out day get has him his how man new now old see
+          two way who boy did its let put say she too use yes also very good nice great best better well much many more
+          most some such than that this then them they there their these those what when where which while with within
+          without would could should shall will have from into onto your yours about above after again against below
+          between both down during each few further here just like only other over same so under until upon why booking
+          bookings book booked slot slots sample samples equipment instrument instruments lab labs laboratory portal
+          website site page pages user users time times date dates week weeks month months year years payment payments
+          wallet charge charges amount fee fees money price prices rate rates rating ratings process system easy easier
+          hard difficult simple quick fast slow please thank thanks sir madam mam team staff operator operators office
+          officer charge incharge faculty student students research researcher scholar scholars project projects
+          department departments institute institution technology technical science sciences engineering university
+          college centre center indian india national private limited pvt ltd industry industries company services
+          service solutions analysis analytical result results data report reports email emails mail phone call
+          number name names id url num login logout account register registration form forms field fields option
+          options select selection calendar schedule available availability open opening opened close closed cancel
+          cancelled cancellation reschedule refund refunds approval approve approved pending confirm confirmed
+          confirmation status message messages notification notifications support ticket tickets issue issues problem
+          problems error errors help helpful useful experience overall interface design layout mobile app application
+          button buttons menu dashboard search filter list view details detail information info instructions
+          instruction important guide guidelines policy policies rule rules limit limits quota quotas waitlist queue
+          urgent priority early late delay delayed wait waiting response respond quickly properly correctly clear
+          clearly proper correct wrong right left need needs needed want wants make made making give given take taken
+          keep provide provided improve improvement improved suggestion suggestions comment comments feedback work
+          working works worked smooth smoothly friendly user-friendly access accessible facility facilities sem fesem
+          tem xrd xps nmr ftir raman icp afm bet tga dsc uv vis hplc gcms lcms sem-eds edx maintenance down working
+          hours hour minute minutes morning evening night today tomorrow yesterday monday tuesday wednesday thursday
+          friday saturday sunday january february march april june july august september october november december
+          new old first last next previous same different another every always never sometimes often more less
+          high low full empty free paid unpaid extra total less little big small large long short whole part
+          """.split())
+
+          from iic_booking.users.models import User
+
+          NAME_TOKENS = set()
+          for nm in User.objects.exclude(name__isnull=True).exclude(name="").values_list("name", flat=True).iterator():
+              for t in re.findall(r"[A-Za-z]{3,}", nm or ""):
+                  NAME_TOKENS.add(t.lower())
+          NAME_TOKENS -= COMMON
+          REDACTIONS = Counter()
+
+          PATTERNS = [
+              ("EMAIL", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")),
+              ("URL", re.compile(r"(?:https?://|www\.)\S+", re.I)),
+              ("ID", re.compile(r"\b(?:booking|bkg|order|ticket|roll|enrol\w*|enroll\w*|id)\s*(?:no\.?|number|id)?\s*[:#-]?\s*[A-Za-z0-9-]*\d[A-Za-z0-9-]*", re.I)),
+              ("ID", re.compile(r"\b[A-Z]{2,}[A-Z0-9]*\d{4,}\b")),
+              ("PHONE", re.compile(r"(?<!\w)\+?\d[\d\s().-]{8,}\d(?!\w)")),
+              ("NUM", re.compile(r"#\s*\d+|\b\d{5,}\b")),
+              ("NAME", re.compile(r"\b(?:Dr|Prof|Mr|Mrs|Ms|Miss|Shri|Smt|Er|Sir|Madam|Mam)\.?\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?")),
+          ]
+
+          def _name_sub(m):
+              w = m.group(0)
+              if w.lower() in NAME_TOKENS:
+                  REDACTIONS["NAME"] += 1
+                  return "[NAME]"
+              return w
+
+          def redact(text, limit=400):
+              text = " ".join(str(text or "").split())
+              for label, rx in PATTERNS:
+                  text, n = rx.subn(f"[{label}]", text)
+                  REDACTIONS[label] += n
+              text = re.sub(r"(?<!\[)\b[A-Za-z]{3,}\b(?!\])", _name_sub, text)
+              return text[:limit] + ("..." if len(text) > limit else "")
+
+          def normalise_reason(text):
+              t = redact(text, limit=1000)
+              t = re.sub(r"\d+(?:\.\d+)?", "N", t)
+              return t[:120]
+
+          def section(title):
+              def deco(fn):
+                  print(f"\n== {title} ==")
+                  try:
+                      with transaction.atomic():
+                          fn()
+                  except Exception as exc:  # noqa: BLE001
+                      print(f"  skipped: {type(exc).__name__}: {str(exc)[:160]}")
+                  return fn
+              return deco
+
+          from iic_booking.equipment.models import (
+              Booking, BookingAttemptLog, BookingCancellationRequest, BookingEvent, BookingInputTemplate,
+              EquipmentManager, NoSlotAllocationLog, UrgentBookingRequest, WaitlistEntry,
+          )
+          from iic_booking.support.models import PortalFeedback, Ticket
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              OIC_IDS = set(EquipmentManager.objects.values_list("manager_id", flat=True))
+              CATS = [
+                  ("overall", "overall_rating"),
+                  ("ease_of_booking", "ease_of_booking"),
+                  ("website_usability", "website_usability"),
+                  ("equipment_booking", "equipment_booking_experience"),
+              ]
+
+              @section("1. Portal feedback - rating distribution per category (all time)")
+              def _fb_dist():
+                  rows = list(PortalFeedback.objects.select_related("user").order_by("created_at"))
+                  print(f"  responses={len(rows)} first={month(rows[0].created_at) if rows else '-'} "
+                        f"last={month(rows[-1].created_at) if rows else '-'} "
+                        f"edited_after_submit={sum(1 for r in rows if (r.updated_at - r.created_at).total_seconds() > 60)}")
+                  for label, f in CATS:
+                      vals = [getattr(r, f) for r in rows]
+                      d = Counter(vals)
+                      print(f"  {label:18s} 1:{d[1]:3d} 2:{d[2]:3d} 3:{d[3]:3d} 4:{d[4]:3d} 5:{d[5]:3d}  avg={avg(vals)}  "
+                            f"<=3: {sum(1 for v in vals if v <= 3)}")
+                  with_text = sum(1 for r in rows if (r.suggestions or "").strip() or (r.comments or "").strip())
+                  print(f"  responses with any free text={with_text}")
+
+                  print("\n  -- averages by user group (n >= 3 only) --")
+                  buckets = defaultdict(list)
+                  for r in rows:
+                      buckets[group(r.user.user_type)].append(r)
+                      if r.user_id in OIC_IDS:
+                          buckets["OIC (any user type)"].append(r)
+                      buckets[f"raw:{(r.user.user_type or '').strip() or '?'}"].append(r)
+                  for key in sorted(buckets):
+                      rs = buckets[key]
+                      if len(rs) < 3:
+                          print(f"  {key:28s} n={len(rs)} (hidden, n<3)")
+                          continue
+                      print(f"  {key:28s} n={len(rs)} " + " ".join(f"{lab}={avg([getattr(r, f) for r in rs])}" for lab, f in CATS))
+
+                  print("\n  -- averages by the respondent's own booking count in the window (n >= 3 only) --")
+                  counts = Counter(
+                      Booking.objects.filter(user_id__in=[r.user_id for r in rows], created_at__gte=SINCE)
+                      .values_list("user_id", flat=True)
+                  )
+                  def bucket(n):
+                      return "0" if n == 0 else "1-3" if n <= 3 else "4-10" if n <= 10 else ">10"
+                  bb = defaultdict(list)
+                  for r in rows:
+                      bb[bucket(counts.get(r.user_id, 0))].append(r)
+                  for key in ("0", "1-3", "4-10", ">10"):
+                      rs = bb.get(key, [])
+                      if len(rs) < 3:
+                          print(f"  bookings {key:5s} n={len(rs)} (hidden, n<3)")
+                          continue
+                      print(f"  bookings {key:5s} n={len(rs)} " + " ".join(f"{lab}={avg([getattr(r, f) for r in rs])}" for lab, f in CATS))
+
+                  print("\n  -- trend by month of first submission --")
+                  bm = defaultdict(list)
+                  for r in rows:
+                      bm[month(r.created_at)].append(r)
+                  for key in sorted(bm):
+                      rs = bm[key]
+                      print(f"  {key} n={len(rs)} " + " ".join(f"{lab}={avg([getattr(r, f) for r in rs])}" for lab, f in CATS))
+
+                  print("\n  -- free text (redacted; user group | month | overall/ease/usability/equipment) --")
+                  for r in sorted(rows, key=lambda x: (x.ease_of_booking, x.website_usability, x.created_at)):
+                      s = (r.suggestions or "").strip()
+                      c = (r.comments or "").strip()
+                      if not s and not c:
+                          continue
+                      g = group(r.user.user_type) + (" +OIC" if r.user_id in OIC_IDS else "")
+                      print(f"  [{g} | {month(r.created_at)} | O{r.overall_rating} E{r.ease_of_booking} "
+                            f"W{r.website_usability} B{r.equipment_booking_experience}]")
+                      if s:
+                          print(f"     suggestion: {redact(s)}")
+                      if c:
+                          print(f"     comment:    {redact(c)}")
+
+              @section(f"2. Per-booking ratings (rated in the last {DAYS} days)")
+              def _booking_ratings():
+                  qs = (Booking.objects.filter(rated_at__gte=SINCE).exclude(rating_removed=True)
+                        .select_related("equipment__category"))
+                  rows = list(qs.only(
+                      "rating", "rating_feedback", "rated_at", "equipment__code", "equipment__name", "equipment__category__name",
+                      "rating_on_time_operator_availability", "rating_laboratory_cleanliness_organization",
+                      "rating_sample_handling_care", "rating_operator_behaviour_professionalism",
+                      "rating_compliance_booking_request_parameters",
+                  ))
+                  d = Counter(r.rating for r in rows)
+                  print(f"  rated bookings={len(rows)} distribution " + " ".join(f"{k}:{d[k]}" for k in range(0, 6))
+                        + f" avg={avg([r.rating for r in rows])}")
+                  crit = [
+                      ("on-time/operator available", "rating_on_time_operator_availability"),
+                      ("lab clean/organised", "rating_laboratory_cleanliness_organization"),
+                      ("sample handling", "rating_sample_handling_care"),
+                      ("operator behaviour", "rating_operator_behaviour_professionalism"),
+                      ("followed request parameters", "rating_compliance_booking_request_parameters"),
+                  ]
+                  for lab, f in crit:
+                      c = Counter(getattr(r, f) for r in rows)
+                      print(f"  {lab:30s} yes={c[True]} no={c[False]} blank={c[None]}")
+                  by_eq = defaultdict(list)
+                  for r in rows:
+                      by_eq[(r.equipment.code, (r.equipment.name or "")[:45])].append(r.rating)
+                  ranked = sorted(((avg(v), len(v), k) for k, v in by_eq.items() if len(v) >= 5), key=lambda x: x[0])
+                  print(f"  equipment with >=5 ratings: {len(ranked)}; lowest 10:")
+                  for a, n, (code, name) in ranked[:10]:
+                      print(f"    {code} {name!r} n={n} avg={a}")
+                  texts = [r for r in rows if (r.rating_feedback or "").strip()]
+                  print(f"  ratings with text={len(texts)} (printing all with rating <= 3, then up to 40 recent others)")
+                  low = [r for r in texts if (r.rating or 0) <= 3]
+                  high = sorted([r for r in texts if (r.rating or 0) > 3], key=lambda r: r.rated_at, reverse=True)[:40]
+                  for r in sorted(low, key=lambda r: r.rating or 0) + high:
+                      cat = getattr(r.equipment.category, "name", None) or "-"
+                      failed = [lab for lab, f in crit if getattr(r, f) is False]
+                      print(f"  [{cat[:30]} | {month(r.rated_at)} | {r.rating}/5 | no: {', '.join(failed) or '-'}] "
+                            f"{redact(r.rating_feedback, limit=300)}")
+
+              @section(f"3. Bookings created in the last {DAYS} days")
+              def _bookings():
+                  qs = Booking.objects.filter(created_at__gte=SINCE)
+                  print(f"  total={qs.count()} distinct bookers={qs.values('user_id').distinct().count()}")
+                  for st, n in Counter(qs.values_list("status", flat=True)).most_common():
+                      print(f"    status {st}: {n}")
+                  g = Counter(group(s or u) for s, u in qs.values_list("user_type_snapshot", "user__user_type"))
+                  print(f"  by user group: {dict(g.most_common())}")
+                  self_made = qs.filter(created_by_id=F("user_id")).count()
+                  for_user = qs.exclude(created_by_id=F("user_id")).exclude(created_by__isnull=True).count()
+                  print(f"  made by the user themselves={self_made} made by someone else (book-for-user)={for_user} "
+                        f"created_by blank={qs.filter(created_by__isnull=True).count()}")
+
+              @section(f"4. Booking submit attempts (BookingAttemptLog, last {DAYS} days)")
+              def _attempts():
+                  rows = list(BookingAttemptLog.objects.filter(requested_at__gte=SINCE)
+                              .values_list("user_id", "equipment_id", "equipment__code", "equipment__name",
+                                           "outcome", "failure_reason", "requested_at").order_by("requested_at"))
+                  oc = Counter(r[4] for r in rows)
+                  print(f"  attempts={len(rows)} outcomes={dict(oc)} "
+                        f"failed per successful booking={round(oc['FAILED'] / oc['SUCCESS'], 2) if oc['SUCCESS'] else '-'}")
+                  print(f"  distinct users attempting={len({r[0] for r in rows})} "
+                        f"distinct users with >=1 failure={len({r[0] for r in rows if r[4] == 'FAILED'})}")
+                  reasons = Counter(normalise_reason(r[5]) for r in rows if r[4] == "FAILED")
+                  print("  top failure reasons (normalised):")
+                  for reason, n in reasons.most_common(40):
+                      print(f"    {n:5d}  {reason}")
+                  per_eq = defaultdict(Counter)
+                  for r in rows:
+                      per_eq[(r[2], (r[3] or "")[:40])][r[4]] += 1
+                  print("  equipment with most failed attempts (top 15): code name failed success fail%")
+                  for (code, name), c in sorted(per_eq.items(), key=lambda kv: -kv[1]["FAILED"])[:15]:
+                      tot = c["FAILED"] + c["SUCCESS"]
+                      print(f"    {code} {name!r} failed={c['FAILED']} success={c['SUCCESS']} fail%={round(100 * c['FAILED'] / tot) if tot else 0}")
+                  seq = defaultdict(list)
+                  for r in rows:
+                      seq[(r[0], r[1])].append((r[6], r[4]))
+                  before_success = Counter()
+                  recovered = gave_up = 0
+                  for events in seq.values():
+                      fails = 0
+                      first_fail = None
+                      done = False
+                      for ts, outcome in events:
+                          if outcome == "FAILED":
+                              fails += 1
+                              first_fail = first_fail or ts
+                          elif outcome == "SUCCESS":
+                              before_success["0" if fails == 0 else "1" if fails == 1 else "2-3" if fails <= 3 else "4-10" if fails <= 10 else ">10"] += 1
+                              if fails:
+                                  recovered += 1
+                              done = True
+                              break
+                      if fails and not done:
+                          gave_up += 1
+                  print(f"  (user, equipment) pairs: failed attempts before first success {dict(before_success)}")
+                  print(f"  pairs that failed then later succeeded={recovered}; failed and never succeeded in window={gave_up}")
+                  hours = Counter(timezone.localtime(r[6]).hour for r in rows if r[4] == "FAILED")
+                  wdays = Counter(timezone.localtime(r[6]).strftime("%a") for r in rows if r[4] == "FAILED")
+                  print(f"  failed attempts by local hour: {dict(sorted(hours.items()))}")
+                  print(f"  failed attempts by weekday: {dict(wdays.most_common())}")
+
+              @section(f"5. No-slot, waitlist and urgent requests (last {DAYS} days)")
+              def _noslot():
+                  ns = NoSlotAllocationLog.objects.filter(requested_at__gte=SINCE)
+                  print(f"  no-slot log entries={ns.count()} distinct users={ns.values('user_id').distinct().count()}")
+                  for (code, name), n in Counter(ns.values_list("equipment__code", "equipment__name")).most_common(10):
+                      print(f"    {code} {(name or '')[:40]!r}: {n}")
+                  wl = WaitlistEntry.objects.filter(created_at__gte=SINCE)
+                  print(f"  waitlist entries={wl.count()} by status={dict(Counter(wl.values_list('status', flat=True)))} "
+                        f"sample submitted while waitlisted={wl.filter(sample_submitted=True).count()}")
+                  ur = UrgentBookingRequest.objects.filter(requested_at__gte=SINCE)
+                  print(f"  urgent requests={ur.count()} by type/status="
+                        f"{dict(Counter(ur.values_list('request_type', 'status')))}")
+
+              @section(f"6. Booking events (last {DAYS} days)")
+              def _events():
+                  rows = list(BookingEvent.objects.filter(created_at__gte=SINCE).values_list(
+                      "event_type", "previous_status", "new_status", "metadata", "created_by_id", "booking__user_id"))
+                  print(f"  events={len(rows)}")
+                  print(f"  by type: {dict(Counter(r[0] for r in rows).most_common())}")
+                  print("  status transitions (top 40):")
+                  for (a, b), n in Counter((r[1], r[2]) for r in rows if r[1] or r[2]).most_common(40):
+                      print(f"    {a or '-'} -> {b or '-'}: {n}")
+                  who = defaultdict(Counter)
+                  for r in rows:
+                      who[r[0]]["by booking user" if r[4] and r[4] == r[5] else "by staff/other" if r[4] else "system"] += 1
+                  print("  who triggered each event type:")
+                  for et in sorted(who):
+                      print(f"    {et}: {dict(who[et])}")
+                  keys = defaultdict(Counter)
+                  vals = defaultdict(Counter)
+                  token = re.compile(r"^[A-Za-z_][A-Za-z0-9_ -]{1,40}$")
+                  for r in rows:
+                      md = r[3] if isinstance(r[3], dict) else {}
+                      keys[r[0]].update(md.keys())
+                      for k in ("action", "kind", "source", "reason_code", "type", "trigger", "via", "event", "change"):
+                          v = md.get(k)
+                          if isinstance(v, str) and token.match(v):
+                              vals[r[0]][f"{k}={v}"] += 1
+                  for et in sorted(keys):
+                      print(f"  metadata keys for {et}: {dict(keys[et].most_common(15))}")
+                      if vals[et]:
+                          print(f"    short metadata values: {dict(vals[et].most_common(15))}")
+
+              @section(f"7. Bookings created in the last {DAYS} days - time to confirmation and lapses")
+              def _confirm():
+                  created = dict(Booking.objects.filter(created_at__gte=SINCE).values_list("booking_id", "created_at"))
+                  status_now = dict(Booking.objects.filter(created_at__gte=SINCE).values_list("booking_id", "status"))
+                  ev = defaultdict(list)
+                  for bid, et, prev, new, ts in BookingEvent.objects.filter(booking_id__in=list(created)).values_list(
+                      "booking_id", "event_type", "previous_status", "new_status", "created_at"
+                  ).order_by("created_at"):
+                      ev[bid].append((et, prev, new, ts))
+                  deltas = []
+                  first_status = Counter()
+                  buckets = Counter()
+                  for bid, c_at in created.items():
+                      events = ev.get(bid, [])
+                      first = next((e for e in events if e[2]), None)
+                      first_status[first[2] if first else f"(no status event; now {status_now.get(bid)})"] += 1
+                      hit = next((e for e in events if e[2] == "BOOKED" or e[0] == "CONFIRMED"), None)
+                      if hit is None:
+                          if status_now.get(bid) in ("BOOKED", "COMPLETED", "PROCESSING"):
+                              buckets["booked with no confirm event (assumed instant)"] += 1
+                          else:
+                              buckets[f"never confirmed (now {status_now.get(bid)})"] += 1
+                          continue
+                      m = max(0.0, (hit[3] - c_at).total_seconds() / 60)
+                      deltas.append(m)
+                      buckets["<=1 min" if m <= 1 else "1-60 min" if m <= 60 else "1-24 h" if m <= 1440 else "1-7 d" if m <= 10080 else ">7 d"] += 1
+                  print(f"  bookings={len(created)} first recorded status: {dict(first_status.most_common(12))}")
+                  print(f"  time from creation to BOOKED/CONFIRMED: {dict(buckets.most_common())}")
+                  print(f"  minutes (where an event exists): median={fmt_minutes(pct(deltas, 50))} p75={fmt_minutes(pct(deltas, 75))} "
+                        f"p90={fmt_minutes(pct(deltas, 90))} n={len(deltas)}")
+                  lapses = defaultdict(Counter)
+                  for events in ev.values():
+                      for et, prev, new, ts in events:
+                          if prev in ("PENDING_PAYMENT", "HOLD", "WAITLISTED", "PENDING") and new:
+                              lapses[prev][new] += 1
+                  for prev in sorted(lapses):
+                      print(f"  from {prev}: {dict(lapses[prev].most_common())}")
+                  stale = Booking.objects.filter(status="PENDING_PAYMENT", created_at__lte=NOW - timedelta(days=1)).count()
+                  print(f"  bookings still 'Awaiting payment' after more than 1 day (all time)={stale}")
+                  cancel_h = []
+                  for bid, events in ev.items():
+                      ce = next((e for e in events if e[2] == "CANCELLED" or e[0] == "CANCELLED"), None)
+                      if ce:
+                          cancel_h.append((ce[3] - created[bid]).total_seconds() / 3600)
+                  cb = Counter("<1 h" if h < 1 else "1-24 h" if h < 24 else "1-7 d" if h < 168 else ">7 d" for h in cancel_h)
+                  print(f"  cancellations of these bookings={len(cancel_h)} time after creation: {dict(cb.most_common())}")
+                  cr = BookingCancellationRequest.objects.filter(requested_at__gte=SINCE)
+                  print(f"  cancellation requests (needing approval)={cr.count()} by status={dict(Counter(cr.values_list('status', flat=True)))}")
+
+              @section(f"8. Online payments (last {DAYS} days)")
+              def _payments():
+                  from iic_booking.payments.models import PaymentOrder
+                  rows = list(PaymentOrder.objects.filter(created_at__gte=SINCE).values_list("purpose", "status", "created_at", "updated_at"))
+                  c = Counter((p, s) for p, s, _a, _b in rows)
+                  for (p, s), n in sorted(c.items()):
+                      print(f"  {p} {s}: {n}")
+                  for p in sorted({r[0] for r in rows}):
+                      mins = [(b - a).total_seconds() / 60 for pp, s, a, b in rows if pp == p and s == "PAID"]
+                      print(f"  {p}: median minutes from order to paid={fmt_minutes(pct(mins, 50))} p90={fmt_minutes(pct(mins, 90))}")
+
+              @section(f"9. Support tickets (last {DAYS} days)")
+              def _tickets():
+                  qs = Ticket.objects.filter(created_at__gte=SINCE)
+                  print(f"  tickets={qs.count()} from logged-in users={qs.filter(user__isnull=False).count()} "
+                        f"public={qs.filter(user__isnull=True).count()} linked to a booking={qs.filter(related_booking__isnull=False).count()} "
+                        f"linked to equipment={qs.filter(related_equipment__isnull=False).count()}")
+                  for (t, s), n in sorted(Counter(qs.values_list("ticket_type", "status")).items()):
+                      print(f"    {t} / {s}: {n}")
+                  res = defaultdict(list)
+                  for t, a, r in qs.filter(resolved_at__isnull=False).values_list("ticket_type", "created_at", "resolved_at"):
+                      res[t].append((r - a).total_seconds() / 60)
+                  for t in sorted(res):
+                      print(f"  {t}: median time to resolve={fmt_minutes(pct(res[t], 50))} p90={fmt_minutes(pct(res[t], 90))} n={len(res[t])}")
+                  print(f"  user groups: {dict(Counter(group(u) if u else 'public' for u in qs.values_list('user__user_type', flat=True)).most_common())}")
+                  for (code, name), n in Counter(qs.filter(related_equipment__isnull=False).values_list(
+                      "related_equipment__code", "related_equipment__name")).most_common(10):
+                      print(f"    equipment {code} {(name or '')[:40]!r}: {n}")
+
+              @section(f"10. Booking Assistant usage (last {DAYS} days)")
+              def _assistant():
+                  from iic_booking.research_copilot.models import (
+                      Conversation, CopilotAuditEvent, KnowledgeGap, Message, MessageFeedback,
+                  )
+                  conv = Conversation.objects.filter(created_at__gte=SINCE)
+                  print(f"  conversations={conv.count()} distinct users={conv.values('user_id').distinct().count()} "
+                        f"by access mode={dict(Counter(conv.values_list('access_mode', flat=True)))}")
+                  print(f"  conversations by user group={dict(Counter(group(u) for u in conv.values_list('user__user_type', flat=True)).most_common())}")
+                  msgs = Message.objects.filter(created_at__gte=SINCE)
+                  print(f"  messages by role={dict(Counter(msgs.values_list('role', flat=True)))}")
+                  per_conv = Counter(msgs.filter(role="user").values_list("conversation_id", flat=True))
+                  pc = Counter("1" if n == 1 else "2-3" if n <= 3 else "4-10" if n <= 10 else ">10" for n in per_conv.values())
+                  print(f"  user messages per conversation: {dict(pc)}")
+                  intents = Counter()
+                  llm = Counter()
+                  for md in msgs.filter(role="assistant").values_list("metadata", flat=True).iterator():
+                      md = md if isinstance(md, dict) else {}
+                      intents[str(md.get("intent") or "-")[:60]] += 1
+                      llm["llm_used" if md.get("llm_used") else "deterministic/other"] += 1
+                  print(f"  assistant replies: {dict(llm)}")
+                  print("  assistant reply intents (top 40):")
+                  for k, n in intents.most_common(40):
+                      print(f"    {n:5d}  {k}")
+                  fb = MessageFeedback.objects.filter(created_at__gte=SINCE)
+                  print(f"  thumbs feedback={dict(Counter(fb.values_list('rating', flat=True)))} "
+                        f"down reasons={dict(Counter(fb.filter(rating='down').values_list('reason', flat=True)))}")
+                  print(f"  thumbs-down intents={dict(Counter(fb.filter(rating='down').values_list('intent', flat=True)).most_common(15))}")
+                  kg = KnowledgeGap.objects.filter(created_at__gte=SINCE)
+                  print(f"  knowledge gaps={kg.count()} by reason={dict(Counter(kg.values_list('reason', flat=True)).most_common(10))} "
+                        f"by intent={dict(Counter(kg.values_list('intent', flat=True)).most_common(10))}")
+                  print(f"  audit actions={dict(Counter(CopilotAuditEvent.objects.filter(created_at__gte=SINCE).values_list('action', flat=True)).most_common())}")
+
+              @section(f"11. Emails and notifications (last {DAYS} days)")
+              def _comms():
+                  from iic_booking.communication.models import CommunicationLog
+                  qs = CommunicationLog.objects.filter(created_at__gte=SINCE)
+                  for (t, s), n in sorted(Counter(qs.values_list("communication_type", "status")).items()):
+                      print(f"  {t} / {s}: {n}")
+                  bad = qs.filter(status__in=["failed", "bounced", "rejected"])
+                  print("  failed/bounced by template (top 10):")
+                  for name, n in Counter(bad.values_list("template__name", flat=True)).most_common(10):
+                      print(f"    {name or '(no template)'}: {n}")
+
+              @section("12. Booking templates")
+              def _templates():
+                  qs = BookingInputTemplate.objects.all()
+                  print(f"  templates={qs.count()} distinct users={qs.values('user_id').distinct().count()} "
+                        f"created in window={qs.filter(created_at__gte=SINCE).count()} "
+                        f"with preferred weekday/time={qs.filter(preferred_weekday__isnull=False).count()}")
+
+              print(f"\nredactions applied: {dict(REDACTIONS)}")
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
