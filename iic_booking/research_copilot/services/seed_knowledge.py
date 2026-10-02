@@ -141,20 +141,26 @@ grouped by equipment with key inputs, sample sets, booking options and preferred
 department or equipment, and sort by Group by equipment, Recently updated or Name (A–Z).
 Create: on the Booking Templates page click New template, choose a Department, pick the equipment (Find
 equipment) and click Continue. You can also start from the booking page (Booking template picker -> Create
-template) or Booking templates on the equipment page -> Create template. Fill the form, choose Booking options (Auto-select all required slots,
-Add to the waitlist if the booking cannot be completed, Book any available slots, Book even if single slot is
-available, and where offered Automatically search and allocate alternate equipment), enter a Template name and
-click Save template.
-Preferred slot (optional): pick the Day, Start time and Number of slots. Opening the booking page with the
-template pre-selects that slot when it is free. Next week's slots open Wednesday at 9:00 PM.
-If this slot is already taken when I click Book: Ask me (recommended), Book the next free slot later the same
-day, or Book the next free slot on any day I can book. The automatic options need the consent tick: the portal
-may book the next free slot of the same length and charge the wallet; wallet balance, spending limits and quotas
-are still checked. With Ask me, the page shows Nearest free slots of the same length.
+template) or Booking templates on the equipment page -> Create template. Fill the form, answer the two slot
+questions below, tick the extras you want (Join the waitlist if nothing is booked; where offered, Try alternate
+equipment), enter a Template name and click Save template.
+Choose slots (one choice): I'll pick (you tap the slots), Auto-select (the required slots are selected for you) or
+My preferred slot (pick a green cell in the Monday–Friday calendar; the number of slots comes from the sample
+details). Auto-select and a preferred slot cannot both be on. Using the template pre-selects the preferred slot in
+the next week you can book when it is free. Next week's slots open Wednesday at 9:00 PM.
+If your slots are taken (one choice): Let me choose again (nothing is booked; the page suggests the nearest free
+slots of the same length), Any free slots this week (other free slots in the week shown, possibly not
+back-to-back, until the required time is covered), or Any free slots, or just one (if not enough are free, one
+slot is booked and the samples are reduced to fit). With a preferred slot there are also Next free time, same day
+and Next free time, any day; these need the consent tick because the portal may book the next free slots of the
+same length and charge the wallet. Wallet balance, spending limits and quotas are still checked.
+On the booking page the template's choices are already selected and can be changed for that booking only.
+Older templates that had both auto-select and a preferred slot use the preferred slot; ones that had both Book
+any available slots and an automatic preferred-slot option use Any free slots.
 Use: pick a template under Booking template (Choose a template to fill the form). The first template is applied
 automatically; choose No template (default form) to start blank.
 Manage: on the Booking Templates page use Book now (opens the booking page with the template filled in), Edit
-(Update template), and the card menu's Duplicate (the copy's slot-taken choice is reset to Ask me) or Delete
+(Update template), and the card menu's Duplicate (an automatic next-free-time choice is reset to Let me choose again) or Delete
 (bookings are not affected). Manage templates on the booking page and Booking templates on the equipment page
 offer Edit, Book with this template and delete.
 After any booking attempt, Save these parameters as a template saves the inputs; tick Pre-select this slot next
@@ -296,9 +302,11 @@ Not Utilized happens.
         "tags": ["what's new", "release notes", "october 2026"],
         "content_text": """
 Changes released in September–October 2026:
-- Booking templates with an optional preferred weekly slot and "If this slot is already taken" options;
-  Save these parameters as a template after any booking attempt; a Booking Templates dashboard page to create,
-  edit, duplicate, delete and book with templates.
+- Booking templates with an optional preferred weekly slot; Save these parameters as a template after any
+  booking attempt; a Booking Templates dashboard page to create, edit, duplicate, delete and book with templates.
+- Simpler slot options on the booking page and in templates: one Choose slots choice (I'll pick, Auto-select or
+  My preferred slot) and one If your slots are taken choice (Let me choose again, Any free slots this week, Any
+  free slots, or just one; with a preferred slot also Next free time, same day / any day).
 - Samples with different parameters (sample sets) with element selection in every set.
 - Edit User Inputs after booking: 1 minute to pay a higher charge; a lower charge is refunded to your wallet
   straight away if you edit before the cancellation deadline, and after the Officer In Charge's approval if later.

@@ -10,10 +10,13 @@ from rest_framework.response import Response
 
 from .models import BookingInputTemplate, DynamicInputField, DynamicInputFieldType, Equipment, EquipmentStatus
 from .template_slot_preference import (
+    AUTO_NEXT_MODES,
+    IF_SLOT_TAKEN_ASK,
     MAX_PREFERRED_SLOT_COUNT,
     apply_preference_fields,
     clean_if_slot_taken,
     clean_preferred_slot,
+    has_preferred_slot,
     resolve_preferred_slot,
     serialize_preference,
 )
@@ -36,6 +39,32 @@ OPTION_KEYS = (
     "sample_return_after_analysis",
     "atmosphere_sensitive_sample",
 )
+
+
+def normalise_slot_options(options, *, has_preferred):
+    """Slots are chosen one way (yourself, auto-select or the preferred slot) and "a single slot is fine"
+    only extends "book any free slots"; contradictory flags from older templates or clients are dropped."""
+    options = dict(options) if isinstance(options, dict) else {}
+    if has_preferred and options.get("auto_slot_selection") is True:
+        options["auto_slot_selection"] = False
+    if options.get("book_even_if_single_slot_available") is True and options.get("book_any_available_slots") is not True:
+        options["book_even_if_single_slot_available"] = False
+    return options
+
+
+def _normalise_template(template):
+    """Make the saved choices consistent before saving; return the extra fields that changed."""
+    changed = []
+    current = template.options if isinstance(template.options, dict) else {}
+    options = normalise_slot_options(current, has_preferred=has_preferred_slot(template))
+    if options != current:
+        template.options = options
+        changed.append("options")
+    if options.get("book_any_available_slots") is True and template.if_slot_taken in AUTO_NEXT_MODES:
+        template.if_slot_taken = IF_SLOT_TAKEN_ASK
+        template.if_slot_taken_consented_at = None
+        changed.extend(["if_slot_taken", "if_slot_taken_consented_at"])
+    return changed
 
 
 def template_booking_block(user, equipment):
@@ -131,7 +160,7 @@ def _serialize(template, *, labels=None, booking_block=False):
         "department_code": getattr(department, "code", None),
         "name": template.name,
         "input_values": input_values,
-        "options": template.options or {},
+        "options": normalise_slot_options(template.options, has_preferred=has_preferred_slot(template)),
         "sample_set_count": _sample_set_count(input_values),
         **serialize_preference(template),
         "created_at": template.created_at.isoformat() if template.created_at else None,
@@ -327,6 +356,7 @@ def booking_templates(request):
     error = _apply_preference(template, data, partial=False)
     if error:
         return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+    _normalise_template(template)
     try:
         with transaction.atomic():
             template.save()
@@ -379,6 +409,7 @@ def booking_template_detail(request, template_id):
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
         update_fields.extend(_PREFERENCE_FIELDS)
     if update_fields:
+        update_fields.extend(f for f in _normalise_template(template) if f not in update_fields)
         try:
             with transaction.atomic():
                 template.save(update_fields=[*update_fields, "updated_at"])
