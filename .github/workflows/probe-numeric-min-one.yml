@@ -1,0 +1,170 @@
+name: Probe Numeric Min One (read-only)
+
+# Before numeric user inputs get a floor of 1: which NUMERIC input fields currently allow 0 (or less),
+# where 0 looks like a meaningful choice, and how many open bookings / saved templates / urgent requests
+# hold 0 (or a value below 1). Runs inside a READ ONLY transaction that is rolled back; prints equipment
+# codes, field config and counts only (no booking ids, users or contact data).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Numeric fields below 1 and stored values below 1 (SELECT only, counts only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          import re
+          from collections import Counter, defaultdict
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment.calculators import split_sample_sets
+          from iic_booking.equipment.models import (
+              Booking, BookingInputTemplate, BookingStatus, DynamicInputField, DynamicInputFieldType,
+              Equipment, EquipmentStatus, UrgentBookingRequest,
+          )
+          from iic_booking.equipment.numeric_field_limits import _to_float, numeric_constraints, resolve_numeric_field_bounds
+
+          TERMINAL = {BookingStatus.COMPLETED, BookingStatus.CANCELLED, BookingStatus.REFUNDED,
+                      BookingStatus.BOOKING_NOT_UTILIZED, BookingStatus.ABSENT}
+          MEANINGFUL_ZERO = re.compile(r"standard|extra|additional|addition|optional|hour|repeat|blank|element|spike|replicate|calibration|duplicate|reference|more|other", re.I)
+
+          def num(v):
+              if isinstance(v, bool):
+                  return None
+              return _to_float(v) if isinstance(v, (int, float, str)) else None
+
+          def short_field(f):
+              eq = f.equipment
+              return f"{getattr(eq, 'code', None) or '-'}#{getattr(eq, 'equipment_id', None)} {f.field_key} [{f.user_type or '*'}] {f.field_label!r}"
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              fields = list(DynamicInputField.objects.filter(field_type=DynamicInputFieldType.NUMERIC).select_related("equipment"))
+              active_ids = set(Equipment.objects.filter(status=EquipmentStatus.ACTIVE).values_list("equipment_id", flat=True))
+              print(f"NUMERIC input-field rows: total={len(fields)} on_active_equipment={sum(1 for f in fields if f.equipment_id in active_ids)}")
+
+              by_cat = Counter()
+              by_cat_active = Counter()
+              below_one = []
+              for f in fields:
+                  c = numeric_constraints(options=f.options, help_text=f.help_text)
+                  lo, hi, step = resolve_numeric_field_bounds(options=f.options, help_text=f.help_text)
+                  cmin = c["min"]
+                  if cmin is None:
+                      cat = "min_not_set(defaults_to_0)"
+                  elif cmin < 0:
+                      cat = "min<0"
+                  elif cmin == 0:
+                      cat = "min=0"
+                  elif cmin < 1:
+                      cat = "0<min<1"
+                  else:
+                      cat = "min>=1"
+                  if lo < 0 and (cmin is None or cmin >= 0):
+                      cat += "+allow_negative"
+                  by_cat[cat] += 1
+                  if f.equipment_id in active_ids:
+                      by_cat_active[cat] += 1
+                  if lo < 1:
+                      below_one.append((f, c, lo, hi, step))
+              print(f"configured min categories (all rows): {dict(by_cat)}")
+              print(f"configured min categories (active equipment): {dict(by_cat_active)}")
+              print(f"rows whose resolved min < 1 today: {len(below_one)} (active equipment: {sum(1 for t in below_one if t[0].equipment_id in active_ids)})")
+              print(f"rows with fractional step (<1): {sum(1 for t in below_one if t[4] < 1)}")
+              dv = Counter()
+              for f, *_ in below_one:
+                  d = num(f.default_value)
+                  dv["blank" if d is None else ("0" if d == 0 else ("<0" if d < 0 else ("0<d<1" if d < 1 else ">=1")))] += 1
+              print(f"default_value of those rows: {dict(dv)}")
+
+              print("\n== active equipment rows with resolved min < 1 (field config only) ==")
+              for f, c, lo, hi, step in sorted(below_one, key=lambda t: (getattr(t[0].equipment, "code", "") or "", t[0].field_key, t[0].user_type)):
+                  if f.equipment_id not in active_ids:
+                      continue
+                  flag = " MEANINGFUL-0?" if MEANINGFUL_ZERO.search(f.field_label or "") else ""
+                  print(f"  {short_field(f)} min={c['min']} max={c['max']} step={c['step']} formula={c['max_formula']!r} "
+                        f"resolved=({lo:g},{hi:g},{step:g}) default={f.default_value!r} required={f.is_required} "
+                        f"editable_after_booking={f.editing_required}{flag}")
+
+              # Which stored values are below 1, per field. A booking's fields are the rows for its user type, else shared rows.
+              rows_by_eq = defaultdict(list)
+              for f in fields:
+                  rows_by_eq[f.equipment_id].append(f)
+
+              def numeric_keys(eq_id, user_type):
+                  rows = rows_by_eq.get(eq_id, [])
+                  typed = [f for f in rows if f.user_type == (user_type or "")] if user_type else []
+                  use = typed or [f for f in rows if f.user_type == ""]
+                  return {f.field_key: f for f in use}
+
+              def scan(values, keys):
+                  """[(field_key, bucket)] for numeric keys holding a value < 1 in sample set 1 or any extra set."""
+                  out = []
+                  base, sets = split_sample_sets(values if isinstance(values, dict) else {})
+                  for group in (base, *sets):
+                      for k in keys:
+                          v = num(group.get(k))
+                          if v is None:
+                              continue
+                          if v == 0:
+                              out.append((k, "0"))
+                          elif v < 0:
+                              out.append((k, "<0"))
+                          elif v < 1:
+                              out.append((k, "0<v<1"))
+                  return out
+
+              def report(title, items):
+                  """items: iterable of (equipment_id, user_type, status, input_values)."""
+                  total = 0
+                  holders = Counter()
+                  per_field = Counter()
+                  per_status = Counter()
+                  for eq_id, ut, st, vals in items:
+                      total += 1
+                      keys = numeric_keys(eq_id, ut)
+                      hits = scan(vals, keys)
+                      if not hits:
+                          continue
+                      buckets = {b for _, b in hits}
+                      for b in buckets:
+                          holders[b] += 1
+                      per_status[st] += 1
+                      for k, b in set(hits):
+                          per_field[(short_field(keys[k]), b)] += 1
+                  print(f"\n== {title}: scanned={total} holding a value <1 by bucket={dict(holders)} by_status={dict(per_status)} ==")
+                  for (label, b), n in per_field.most_common(60):
+                      print(f"  x{n} value {b}: {label}")
+
+              open_bookings = Booking.objects.exclude(status__in=TERMINAL).values_list("equipment_id", "user_type_snapshot", "status", "input_values")
+              report("open bookings (not completed/cancelled/refunded/not-utilised/absent)", open_bookings.iterator())
+              all_bookings = Booking.objects.values_list("equipment_id", "user_type_snapshot", "status", "input_values")
+              report("all bookings, any status (how often users chose 0 historically)", all_bookings.iterator())
+              print(f"booking counts by status: {dict(Counter(Booking.objects.values_list('status', flat=True)))}")
+
+              tmpl = ((t.equipment_id, getattr(t.user, "user_type", "") or "", "template", t.input_values)
+                      for t in BookingInputTemplate.objects.select_related("user").only("equipment_id", "input_values", "user__user_type").iterator())
+              report("saved booking templates", tmpl)
+
+              print("\n== urgent booking requests ==")
+              ur = UrgentBookingRequest.objects.all()
+              print(f"  total={ur.count()} by_status={dict(Counter(ur.values_list('status', flat=True)))}")
+              print(f"  number_of_samples=0: {ur.filter(number_of_samples=0).count()} slots_requested=0: {ur.filter(slots_requested=0).count()} duration_minutes=0: {ur.filter(duration_minutes=0).count()}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
