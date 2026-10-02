@@ -253,6 +253,14 @@ def _not_changeable(b, op: str) -> dict[str, Any]:
     elig = B.eligibility(b)
     ref = display_ref(b)
     verb = {"cancel": "cancelled", "reschedule": "rescheduled", "edit": "edited"}[op]
+    if op == "reschedule" and elig.get("reschedule_locked"):
+        from iic_booking.equipment.reschedule_lock import RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+
+        return C.reply(
+            f"Booking **{ref}**: {RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE}",
+            actions=[B.chip(b, "message", primary=True), C.link("Open booking", f"/my-bookings?booking={b.pk}")],
+            intent=op,
+        )
     if elig["active"] and not elig["self_service_open"]:
         why = f"the self-service window closed on {elig['cutoff']}" if elig.get("cutoff") else "the self-service window has closed"
         from iic_booking.research_copilot.services.intelligence import messages as M

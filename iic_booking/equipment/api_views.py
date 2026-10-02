@@ -12919,6 +12919,14 @@ def user_reschedule_booking(request, booking_id):
     
     # Own bookings for normal users; Admin / OIC / Lab Operator may reschedule any booking.
     is_staff_rescheduler = check_operator_permission(request.user)
+    if not is_staff_rescheduler:
+        from .booking_lab_messages import is_booking_supervisor
+        from .reschedule_lock import reschedule_locked_for, reschedule_locked_payload
+
+        if (
+            booking.user_id == request.user.pk or is_booking_supervisor(request.user, booking)
+        ) and reschedule_locked_for(request.user, booking):
+            return Response(reschedule_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
     if booking.user != request.user and not is_staff_rescheduler:
         return Response(
             {"error": "You don't have permission to reschedule this booking. You can only reschedule your own bookings."},

@@ -305,11 +305,14 @@ def booking_details(turn: Turn, payload: dict[str, Any]) -> dict[str, Any]:
     actions: list[dict[str, Any]] = []
     if active and info["self_service_open"]:
         lines.append(f"- Self-service changes open until {info['cutoff']}" if info.get("cutoff") else "")
-        actions += [
-            A.make(A.RESCHEDULE_BOOKING, "Reschedule", payload={"booking_id": b.booking_id},
-                   utterance=f"Reschedule booking {info['ref']}"),
-            A.make(A.CANCEL_BOOKING, "Cancel", payload={"booking_id": b.booking_id}, utterance=f"Cancel booking {info['ref']}"),
-        ]
+        if changes.reschedule_locked(turn.user, b):
+            lines.append("- Reschedule not available — sample accepted by the lab.")
+        else:
+            actions.append(A.make(A.RESCHEDULE_BOOKING, "Reschedule", payload={"booking_id": b.booking_id},
+                                  utterance=f"Reschedule booking {info['ref']}"))
+        actions.append(
+            A.make(A.CANCEL_BOOKING, "Cancel", payload={"booking_id": b.booking_id}, utterance=f"Cancel booking {info['ref']}")
+        )
     elif active:
         lines.append("- The self-service change window has closed; an admin can still help.")
         actions.append(M.ticket_action("user_requested", "Ask the admin (support ticket)"))
