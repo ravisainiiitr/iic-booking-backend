@@ -6673,6 +6673,11 @@ def lab_operator_dashboard(request):
     external_booking_booked_total = external_qs.filter(status=BookingStatus.BOOKED).count()
     external_booking_completed = external_qs.filter(status=BookingStatus.COMPLETED).count()
 
+    from .booking_sample_summary import SampleCountFieldIndex, booking_sample_summary
+
+    sample_count_fields = SampleCountFieldIndex()
+    sample_count_fields.preload(equipment_ids)
+
     def _serialize_lab_row(b):
         slots = list(b.daily_slots.all())
         first = slots[0] if slots else None
@@ -6689,6 +6694,7 @@ def lab_operator_dashboard(request):
             "status_display": b.get_status_display(),
             "start_time": first.start_datetime.isoformat() if first and first.start_datetime else None,
             "end_time": last.end_datetime.isoformat() if last and last.end_datetime else None,
+            "sample_summary": booking_sample_summary(b, sample_count_fields),
         }
 
     by_date = defaultdict(set)

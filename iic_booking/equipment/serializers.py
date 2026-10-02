@@ -3686,11 +3686,25 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
     can_cancel = serializers.SerializerMethodField()
     cancel_block_reason = serializers.SerializerMethodField()
     cancel_block_message = serializers.SerializerMethodField()
+    sample_summary = serializers.SerializerMethodField()
 
     def get_charge_recalculation_pay_seconds_remaining(self, obj):
         from .input_edit_payment_window import payment_seconds_remaining
 
         return payment_seconds_remaining(obj)
+
+    def get_sample_summary(self, obj):
+        """{"sets", "samples"} for the list row; sample-count fields are loaded once for the whole page."""
+        from .booking_sample_summary import SampleCountFieldIndex, booking_sample_summary
+
+        index = self.context.get("_sample_count_field_index")
+        if index is None:
+            index = SampleCountFieldIndex()
+            self.context["_sample_count_field_index"] = index
+            rows = getattr(getattr(self, "parent", None), "instance", None)
+            if rows is not None and not isinstance(rows, Booking):
+                index.preload({getattr(b, "equipment_id", None) for b in rows})
+        return booking_sample_summary(obj, index)
 
     class Meta:
         model = Booking
@@ -3717,7 +3731,7 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
             'rated_at', 'repeat_sample_enabled', 'source_booking_id',
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
-            'oic_contacts',
+            'oic_contacts', 'sample_summary',
         ]
         read_only_fields = [
             'booking_id',
