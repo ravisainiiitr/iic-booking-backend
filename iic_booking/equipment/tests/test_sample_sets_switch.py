@@ -104,6 +104,42 @@ def test_others_cannot_change_the_switch_but_may_resubmit_it(egs_factory, role):
 
 
 @pytest.mark.django_db
+def test_superuser_of_another_user_type_can_change_the_switch(egs_factory):
+    eq = _equipment(egs_factory)
+    user = UserFactory(user_type=UserType.DEPT_ADMIN, department=egs_factory.department, is_superuser=True)
+
+    serializer = _write(user, eq, False)
+    assert serializer.is_valid(), serializer.errors
+    serializer.save()
+    eq.refresh_from_db()
+    assert eq.allow_multiple_sample_sets is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("user_type", "is_superuser", "expected"),
+    [
+        (UserType.ADMIN, False, True),
+        (UserType.DEPT_ADMIN, True, True),
+        (UserType.DEPT_ADMIN, False, False),
+        (UserType.MANAGER, False, False),
+    ],
+)
+def test_form_choices_expose_who_can_edit_the_switch(egs_factory, user_type, is_superuser, expected):
+    client = APIClient()
+    client.force_authenticate(
+        user=UserFactory(
+            user_type=user_type, department=egs_factory.department, is_superuser=is_superuser, admin_approved=True
+        )
+    )
+
+    resp = client.get("/api/admin/equipment-form-choices/")
+
+    assert resp.status_code == 200, getattr(resp, "data", resp.content[:500])
+    assert resp.data["can_edit_sample_sets_flag"] is expected
+
+
+@pytest.mark.django_db
 def test_main_admin_turns_the_switch_off_through_the_admin_api(egs_factory):
     eq = _equipment(egs_factory)
     client = APIClient()

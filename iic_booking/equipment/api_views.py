@@ -1618,6 +1618,7 @@ def equipment_form_choices(request):
     from iic_booking.users.models import Department, UserGroup
     from iic_booking.users.models.user import User
     from iic_booking.users.models.department import DepartmentType
+    from .sample_set_limits import can_edit_sample_sets_switch
 
     categories = EquipmentCategory.objects.all().order_by('name')
     equipment_groups = EquipmentGroup.objects.all().order_by('name')
@@ -1730,6 +1731,7 @@ def equipment_form_choices(request):
             {"value": c[0], "label": str(c[1])}
             for c in UserType.get_choices()
         ],
+        "can_edit_sample_sets_flag": can_edit_sample_sets_switch(request.user),
     }, status=status.HTTP_200_OK)
 
 @api_view(["GET"])
