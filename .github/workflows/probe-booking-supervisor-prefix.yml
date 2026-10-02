@@ -1,0 +1,92 @@
+# Why a booking's "Supervisor Name" shows without "Prof." (read-only, rolled back).
+# For the supervisor shown on one booking, prints only: user id, user_type code, is_faculty, whether the
+# stored name already starts with a title, and whether users/display.py and the booking serializer path
+# would show a "Prof." prefix (yes/no). No names, emails or other personal data.
+
+name: Probe Booking Supervisor Prefix (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      virtual_booking_id:
+        description: "Booking ID shown to users (e.g. IICPPMS202600004)"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Supervisor prefix flags (SELECT only, flags only)
+        env:
+          VBID: ${{ inputs.virtual_booking_id }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e VBID="$VBID" -w /app "$CID" python - <<'PY'
+          import os
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment.models import Booking
+          from iic_booking.equipment import serializers as eq_ser
+          from iic_booking.users import display
+          from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+          def yn(v):
+              return "yes" if v else "no"
+
+          def starts_with_title(name):
+              cleaned = " ".join((name or "").split())
+              strip = getattr(display, "strip_name_honorifics", None)
+              if strip is None:
+                  return cleaned.lower().startswith(("prof", "dr", "mr", "mrs", "ms"))
+              return bool(cleaned) and strip(cleaned) != cleaned
+
+          def has_prof(text):
+              return (text or "").strip().lower().startswith(("prof.", "professor"))
+
+          vbid = os.environ["VBID"].strip()
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              b = Booking.objects.select_related("user").filter(virtual_booking_id=vbid).first()
+              if b is None:
+                  print("booking not found")
+              else:
+                  u = b.user
+                  print(f"booking pk={b.pk} status={b.status} booking_user_type={getattr(u, 'user_type', None)}")
+                  approved = list(
+                      WalletJoinRequest.objects.filter(student_id=u.pk, status=WalletJoinRequestStatus.APPROVED)
+                      .select_related("wallet__user")
+                      .order_by("id")
+                  )
+                  print(f"approved wallet links for booking user={len(approved)}")
+                  first = approved[0] if approved else None
+                  owner = getattr(getattr(first, "wallet", None), "user", None) if first else None
+                  if owner is None:
+                      print("no supervisor resolved via the serializer path")
+                  else:
+                      raw = (owner.name or "").strip()
+                      helper = display.get_user_display_name(owner)
+                      shown = eq_ser._get_wallet_owner_display_name(u, {})
+                      is_fac = owner.is_faculty() if callable(getattr(owner, "is_faculty", None)) else None
+                      print(f"supervisor user_id={owner.pk}")
+                      print(f"supervisor user_type={owner.user_type!r}")
+                      print(f"supervisor is_faculty={is_fac}")
+                      print(f"supervisor stored name empty={yn(not raw)}")
+                      print(f"supervisor stored name starts with a title={yn(starts_with_title(raw))}")
+                      print(f"supervisor stored name starts with Prof={yn(has_prof(raw))}")
+                      print(f"display.get_user_display_name gives Prof. prefix={yn(has_prof(helper))}")
+                      print(f"booking serializer wallet_owner_name gives Prof. prefix={yn(has_prof(shown))}")
+                      print(f"booking serializer value equals stored name={yn((shown or '') == (raw or owner.email or ''))}")
+              transaction.set_rollback(True)
+          print("DONE (read-only, rolled back)")
+          PY
