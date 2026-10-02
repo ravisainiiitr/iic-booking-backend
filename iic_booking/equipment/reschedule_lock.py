@@ -24,6 +24,8 @@ CANCEL_LOCKED_SAMPLE_ACCEPTED_MESSAGE = (
 )
 CANCEL_OWNER_ONLY = "cancel_owner_only"
 CANCEL_OWNER_ONLY_MESSAGE = "Only the booking user can cancel this booking."
+RESCHEDULE_OWNER_ONLY = "reschedule_owner_only"
+RESCHEDULE_OWNER_ONLY_MESSAGE = "Only the booking user can reschedule this booking."
 
 SAMPLE_ACCEPTED_OR_LATER_STATUSES = frozenset(
     {

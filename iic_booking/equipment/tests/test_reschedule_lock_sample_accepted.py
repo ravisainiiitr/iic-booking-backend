@@ -8,10 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from iic_booking.equipment.models import BookingSampleTrace, EquipmentManager, SampleTraceStatus
+from iic_booking.equipment.models import Booking, BookingSampleTrace, EquipmentManager, SampleTraceStatus
 from iic_booking.equipment.reschedule_lock import (
     RESCHEDULE_LOCKED_SAMPLE_ACCEPTED,
     RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE,
+    RESCHEDULE_OWNER_ONLY,
+    RESCHEDULE_OWNER_ONLY_MESSAGE,
 )
 from iic_booking.equipment.serializers import BookingListSerializer, BookingSerializer
 from iic_booking.users.models.user_type import UserType
@@ -156,6 +158,56 @@ def test_serializer_blocks_owner_and_supervisor_after_acceptance(egs_factory):
         assert data["can_reschedule"] is False
         assert data["reschedule_block_reason"] == RESCHEDULE_LOCKED_SAMPLE_ACCEPTED
         assert data["reschedule_block_message"] == RESCHEDULE_LOCKED_SAMPLE_ACCEPTED_MESSAGE
+
+
+def test_serializer_supervisor_never_gets_reschedule(egs_factory, egs_quiet_side_effects):
+    w = _setup(egs_factory)
+    data = BookingSerializer(w.booking, context={"request": _request_for(w.faculty)}).data
+    assert data["can_reschedule"] is False
+    assert data["reschedule_block_reason"] == RESCHEDULE_OWNER_ONLY
+    assert data["reschedule_block_message"] == RESCHEDULE_OWNER_ONLY_MESSAGE
+    assert _user_reschedule(egs_factory, w.faculty, w).status_code == 403
+
+    Booking.objects.filter(pk=w.booking.pk).update(maintenance_disruption_flag=True)
+    w.booking.refresh_from_db()
+    data = BookingSerializer(w.booking, context={"request": _request_for(w.faculty)}).data
+    assert data["reschedule_block_reason"] == RESCHEDULE_OWNER_ONLY
+    data = BookingSerializer(w.booking, context={"request": _request_for(w.owner)}).data
+    assert data["can_reschedule"] is True
+
+
+def test_list_serializer_supervisor_gets_owner_only(egs_factory):
+    w = _setup(egs_factory)
+    qs = Booking.objects.filter(pk=w.booking.pk)
+    row = BookingListSerializer(qs, many=True, context={"request": _request_for(w.faculty)}).data[0]
+    assert row["can_reschedule"] is False
+    assert row["reschedule_block_reason"] == RESCHEDULE_OWNER_ONLY
+    row = BookingListSerializer(qs, many=True, context={"request": _request_for(w.owner)}).data[0]
+    assert row["can_reschedule"] is True
+    assert row["reschedule_block_reason"] is None
+
+
+def test_serializer_staff_viewing_others_keep_reschedule(egs_factory):
+    w = _setup(egs_factory)
+    with patch("iic_booking.users.rbac.user_has_permission", return_value=True):
+        data = BookingSerializer(w.booking, context={"request": _request_for(w.oic)}).data
+    assert data["can_reschedule"] is True
+    admin = UserFactory(user_type=UserType.ADMIN, is_staff=True)
+    data = BookingSerializer(w.booking, context={"request": _request_for(admin)}).data
+    assert data["can_reschedule"] is True
+
+
+def test_assistant_never_offers_supervisor_a_students_booking(egs_factory):
+    from iic_booking.research_copilot.services.assistant import bookings as B
+    from iic_booking.research_copilot.services.intelligence import booking_changes as changes
+    from iic_booking.research_copilot.services.v2.mutations import booking as booking_mut
+
+    w = _setup(egs_factory)
+    assert B.owned(w.faculty, w.booking.pk) is None
+    assert changes.cancellable_bookings(w.faculty, for_reschedule=True) == []
+    prep = booking_mut.prepare_reschedule(user=w.faculty, booking_id=w.booking.pk, slot_ids=[w.new_slot.pk])
+    assert prep["ok"] is False
+    assert prep["error"] == "BOOKING_FORBIDDEN"
 
 
 def test_serializer_allows_staff_after_acceptance(egs_factory):
