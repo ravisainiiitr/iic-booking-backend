@@ -2076,6 +2076,14 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                 data = {k: v for k, v in data.items() if k not in nulls}
         return super().to_internal_value(data)
 
+    def validate_important_instruction(self, value):
+        from .rich_text import clean_important_instruction
+
+        cleaned, error = clean_important_instruction(value)
+        if error:
+            raise serializers.ValidationError(error)
+        return cleaned or None
+
     def validate_internal_department(self, value):
         from iic_booking.users.models.department import DepartmentType
 

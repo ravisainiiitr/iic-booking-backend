@@ -16907,7 +16907,6 @@ OIC_EQUIPMENT_SETTINGS_TIME_FIELDS = (
     "weekly_view_time_from",
     "weekly_view_time_to",
 )
-OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH = 5000
 
 
 def _oic_equipment_settings_row(eq) -> dict:
@@ -17019,15 +17018,8 @@ def oic_equipment_settings_update(request, equipment_id):
         setattr(eq, name, value)
         changed.append(name)
 
-    from .rich_text import instruction_user_type_choices, rich_text_to_plain, sanitize_rich_text
-
-    def _clean_instruction(raw):
-        html = sanitize_rich_text(raw)
-        if not rich_text_to_plain(html):
-            return "", None
-        if len(html) > OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH:
-            return None, f"Keep the important instruction under {OIC_IMPORTANT_INSTRUCTION_MAX_LENGTH} characters."
-        return html, None
+    from .rich_text import clean_important_instruction as _clean_instruction
+    from .rich_text import instruction_user_type_choices
 
     if "important_instruction" in data:
         text, error = _clean_instruction(data.get("important_instruction"))

@@ -652,7 +652,9 @@ def _sources_block(citations: list[dict], used: set[int] | None = None) -> str:
 def _equipment_profile(eq) -> list[str]:
     lines: list[str] = []
     if getattr(eq, "important_instruction", None):
-        lines.append(f"**Important instructions:** {str(eq.important_instruction).strip()[:800]}")
+        from iic_booking.equipment.rich_text import rich_text_to_plain
+
+        lines.append(f"**Important instructions:** {rich_text_to_plain(eq.important_instruction)[:800]}")
     if getattr(eq, "description", None):
         lines.append(f"**Description:** {str(eq.description).strip()[:800]}")
     try:

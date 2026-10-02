@@ -95,6 +95,14 @@ class EquipmentAdminForm(forms.ModelForm):
                 "All equipment in an Equipment Group must belong to the same department."
             )
 
+    def clean_important_instruction(self):
+        from .rich_text import clean_important_instruction
+
+        cleaned, error = clean_important_instruction(self.cleaned_data.get("important_instruction"))
+        if error:
+            raise forms.ValidationError(error)
+        return cleaned or None
+
     def clean(self):
         from .equipment_group_service import GROUP_DEPARTMENT_MISMATCH_MESSAGE, group_membership_spans_departments
 
