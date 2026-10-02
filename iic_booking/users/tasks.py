@@ -6,6 +6,8 @@ from decimal import Decimal
 from celery import shared_task
 from django.conf import settings
 
+from iic_booking.equipment.peak_window import defer_during_peak
+
 logger = logging.getLogger(__name__)
 
 @shared_task(name="users.delete_unverified_user_after_verification_expiry")
@@ -62,6 +64,7 @@ def delete_unverified_user_after_verification_expiry(user_id: int, sent_at_iso: 
 
 
 @shared_task(name="users.send_wallet_low_balance_alerts")
+@defer_during_peak("users.send_wallet_low_balance_alerts")
 def send_wallet_low_balance_alerts() -> int:
     """
     Run daily at 11:00 AM. For each user who has wallet low balance alert enabled
@@ -135,6 +138,7 @@ def expire_wallet_credit_facilities() -> int:
 
 
 @shared_task(name="users.wallet_credit_facility_v2_overdue_and_reminders")
+@defer_during_peak("users.wallet_credit_facility_v2_overdue_and_reminders")
 def wallet_credit_facility_v2_overdue_and_reminders() -> dict:
     """Mark overdue invoices and emit reminder audit events for unpaid credit facilities.
 
@@ -183,6 +187,7 @@ def wallet_credit_facility_v2_overdue_and_reminders() -> dict:
     return {"overdue_marked": overdue_n, "reminders": reminded}
 
 @shared_task(name="users.sync_legacy_wallet_ledger")
+@defer_during_peak("users.sync_legacy_wallet_ledger")
 def sync_legacy_wallet_ledger() -> dict:
     """Incremental copy of old wallet_transactions into the immutable legacy ledger.
 
@@ -220,6 +225,7 @@ def sync_legacy_wallet_ledger() -> dict:
 
 
 @shared_task(name="users.read_sric_cashbook_mailbox")
+@defer_during_peak("users.read_sric_cashbook_mailbox")
 def read_sric_cashbook_mailbox() -> dict:
     """Read new SRIC cash-book emails and mark matching wallet recharges as fund-received."""
     from iic_booking.users.wallet_cashbook_mailbox import read_cashbook_mailbox
@@ -230,6 +236,7 @@ def read_sric_cashbook_mailbox() -> dict:
 
 
 @shared_task(name="users.expire_channel_i_students")
+@defer_during_peak("users.expire_channel_i_students")
 def expire_channel_i_students() -> int:
     """Idempotent student expiry. No-op unless STUDENT_LIFECYCLE_ENABLED."""
     from iic_booking.users.identity.lifecycle import expire_due_students

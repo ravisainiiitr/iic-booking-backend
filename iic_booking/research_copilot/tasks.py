@@ -6,10 +6,13 @@ import logging
 
 from celery import shared_task
 
+from iic_booking.equipment.peak_window import defer_during_peak
+
 logger = logging.getLogger(__name__)
 
 
 @shared_task(name="research_copilot.process_manual", acks_late=True, soft_time_limit=1800, time_limit=2100)
+@defer_during_peak("research_copilot.process_manual")
 def process_manual_task(document_id: str) -> dict:
     from iic_booking.research_copilot.services.manuals import process_manual
 
@@ -19,6 +22,7 @@ def process_manual_task(document_id: str) -> dict:
 
 
 @shared_task(name="research_copilot.index_document", acks_late=True, soft_time_limit=1800, time_limit=2100)
+@defer_during_peak("research_copilot.index_document")
 def index_document_task(document_id: str) -> dict:
     from iic_booking.research_copilot.models import KnowledgeDocument
     from iic_booking.research_copilot.services.ingestion import index_document
@@ -31,6 +35,7 @@ def index_document_task(document_id: str) -> dict:
 
 
 @shared_task(name="research_copilot.rebuild_all_indexes", acks_late=True, soft_time_limit=7200, time_limit=7500)
+@defer_during_peak("research_copilot.rebuild_all_indexes")
 def rebuild_all_indexes_task() -> dict:
     from iic_booking.research_copilot.services.ingestion import rebuild_all_indexes
 

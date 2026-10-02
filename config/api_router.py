@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.routers import SimpleRouter
 
+from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
     omniport_callback,
@@ -1609,6 +1610,8 @@ urlpatterns = router.urls + [
         __import__("config.admin_panel_access_api", fromlist=["AdminPanelRoleConfigViewSet"]).AdminPanelRoleConfigViewSet.as_view({"post": "upsert"}),
         name="admin-panel-access-upsert",
     ),
+    path("peak-window/status/", peak_window_status, name="peak-window-status"),
+    path("admin/peak-window-settings/", PeakWindowSettingView.as_view(), name="admin-peak-window-settings"),
     path("admin/", include(admin_api_router().urls)),
 ]
 

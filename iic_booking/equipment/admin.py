@@ -44,6 +44,7 @@ from .models import (
     QuotaType,
     BookingBufferConfig,
     InternalUserSlotWindowSetting,
+    PeakWindowSetting,
     ProformaInvoiceFormat,
     Semester,
     StudentEquipmentNomination,
@@ -2031,6 +2032,18 @@ class InternalUserSlotWindowSettingAdmin(admin.ModelAdmin):
         (_("Timestamps"), {"fields": ("created_at", "updated_at"), "classes": ("collapse",)}),
     )
     readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(PeakWindowSetting)
+class PeakWindowSettingAdmin(admin.ModelAdmin):
+    """Peak booking window around the weekly slot opening (singleton)."""
+
+    list_display = ["enabled", "lead_minutes", "trail_minutes", "block_external_users", "updated_at"]
+    ordering = ["pk"]
+    readonly_fields = ["created_at", "updated_at"]
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and not PeakWindowSetting.objects.exists()
 
 
 # ============================================================================

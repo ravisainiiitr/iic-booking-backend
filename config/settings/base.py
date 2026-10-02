@@ -193,6 +193,8 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "allauth.account.middleware.AccountMiddleware",
     "iic_booking.remote_analysis.middleware.RemoteAnalysisCorrelationMiddleware",
+    "iic_booking.equipment.request_memo.RequestMemoMiddleware",
+    "iic_booking.equipment.peak_window_middleware.PeakWindowExternalBlockMiddleware",
 ]
 
 # STATIC
