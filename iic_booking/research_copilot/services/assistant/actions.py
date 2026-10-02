@@ -19,6 +19,9 @@ INFO = "ba_info"
 UPCOMING = "ba_upcoming"
 FLOW = "ba_flow"
 BOOKING = "ba_booking"
+HELP = "ba_help"
+
+HELP_CODES = ("slot_taken", "no_slots", "quota_exceeded", "no_wallet", "charge_error", "booking_failed")
 
 BOOKING_OPS = ("details", "cancel", "reschedule", "edit", "message", "results", "invoice", "rate", "rebook", "template")
 
@@ -142,6 +145,41 @@ def _booking_op(value: Any) -> str:
     return value
 
 
+def _help_code(value: Any) -> str:
+    if value not in HELP_CODES:
+        raise InvalidAssistantAction("invalid_code")
+    return value
+
+
+def _short_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 400:
+        raise InvalidAssistantAction("invalid_text")
+    return " ".join(value.split()) or None
+
+
+def _labels(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 12:
+        raise InvalidAssistantAction("invalid_fields")
+    out = []
+    for v in value:
+        if not isinstance(v, str) or not v.strip() or len(v) > 80:
+            raise InvalidAssistantAction("invalid_fields")
+        out.append(" ".join(v.split()))
+    return out
+
+
+def _date(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _DATE_RE.match(value):
+        raise InvalidAssistantAction("invalid_date")
+    return value
+
+
 _SCHEMAS: dict[str, dict[str, Any]] = {
     PICK_EQUIPMENT: {"equipment_id": _int, "intent": "intent", "when": _when},
     AVAILABILITY: {"equipment_id": _int, "when": _when},
@@ -163,6 +201,7 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
         "when": _when,
     },
     BOOKING: {"booking_id": _int, "op": _booking_op},
+    HELP: {"code": _help_code, "equipment_id": _optional_int, "message": _short_text, "missing_fields": _labels, "date": _date},
 }
 _REQUIRED = {
     PICK_EQUIPMENT: {"equipment_id"},
@@ -173,6 +212,7 @@ _REQUIRED = {
     UPCOMING: set(),
     FLOW: {"step"},
     BOOKING: {"booking_id", "op"},
+    HELP: {"code"},
 }
 ACTION_TYPES = frozenset(_SCHEMAS)
 

@@ -172,6 +172,10 @@ def _dispatch_action(user, conversation, action: dict[str, Any]) -> dict[str, An
         return daily.dispatch_booking_action(user, conversation, p)
     if t == A.FLOW:
         return guided.handle(user, conversation, p)
+    if t == A.HELP:
+        from iic_booking.research_copilot.services.assistant import help_offer
+
+        return help_offer.reply(user, conversation, p)
     eq = _visible(user, p.get("equipment_id"))
     if eq is None:
         return _gone()

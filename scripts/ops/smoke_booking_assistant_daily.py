@@ -4,6 +4,8 @@ Read-only production smoke test of Booking Assistant day-to-day answers, as test
 Sends a few everyday questions through the same endpoint the chat panel uses and prints, per question, the
 latency, which layer answered, whether a bookings / wallet card came back, how many follow-up buttons there
 are and whether the reply contains raw "seed://" links or the old generic "To book equipment" paragraph.
+Also checks the welcome starter chips, a few formerly-unanswered themes and two "Need help?" (ba_help)
+replies, which must come back without the LLM and with next-step chips.
 Reply text, balances and booking details are never printed. Nothing is booked, cancelled or paid: the
 questions are reads only, and the conversation the script creates for the test account is deleted at the end.
 
@@ -33,6 +35,20 @@ QUESTIONS = [
     "Show my upcoming bookings",
     "help",
 ]
+# Themes that used to be logged as unanswered: must be answered without the LLM and offer next-step chips.
+THEME_QUESTIONS = [
+    "What is FWHM?",
+    "Lab access hours policy",
+    "What files are available?",
+    "What should I prepare before my XRD booking?",
+    "How much do 5 XRD samples cost?",
+]
+QUOTA_TEXT = ("Individual Weekly quota exceeded: current usage 240 min + requested 120 min = 360 min; "
+              "configured limit 300 min; remaining before this request 60 min.")
+HELP_ACTIONS = [
+    {"type": "ba_help", "payload": {"code": "quota_exceeded", "message": QUOTA_TEXT}},
+    {"type": "ba_help", "payload": {"code": "charge_error", "missing_fields": ["No. of samples"]}},
+]
 RESULTS = []
 
 
@@ -58,10 +74,16 @@ def main():
         print("STOP | could not open a conversation | status", created.status_code)
         return 1
     conv_id = created.json()["conversation"]["id"]
+    boot = client.get(f"{BASE}/bootstrap/")
+    starters = (boot.json().get("starter_actions") or []) if boot.status_code == 200 else []
+    check("bootstrap | 4-6 starter chips for the welcome message", 4 <= len(starters) <= 6, f"count={len(starters)}")
+    turns = [(q, {"content": q}, False) for q in QUESTIONS]
+    turns += [(q, {"content": q}, True) for q in THEME_QUESTIONS]
+    turns += [(f"ba_help {a['payload']['code']}", {"content": "Need help with my booking", "action": a}, True) for a in HELP_ACTIONS]
     try:
-        for q in QUESTIONS:
+        for q, payload, strict in turns:
             started = time.perf_counter()
-            res = client.post(f"{BASE}/conversations/{conv_id}/messages/", {"content": q}, format="json")
+            res = client.post(f"{BASE}/conversations/{conv_id}/messages/", payload, format="json")
             ms = int((time.perf_counter() - started) * 1000)
             if res.status_code != 200:
                 check(q, False, f"status={res.status_code} ms={ms}")
@@ -88,6 +110,10 @@ def main():
             check(f"{q} | no raw seed:// links", not seed)
             check(f"{q} | not the generic booking paragraph", not generic)
             check(f"{q} | answered in under 1.5 s", ms < 1500, f"ms={ms}")
+            if strict:
+                check(f"{q} | answered without the LLM", not meta.get("llm_used"),
+                      f"intent={meta.get('intent') or ''}")
+                check(f"{q} | offers next-step chips", len(msg.get("suggested_actions") or []) >= 2)
     finally:
         try:
             Conversation.objects.filter(pk=conv_id, user=user).delete()
