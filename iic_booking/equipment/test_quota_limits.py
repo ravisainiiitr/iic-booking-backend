@@ -268,24 +268,22 @@ class GroupQuotaLimitTests(TestCase):
         )
         self.assertTrue(ok, err)
 
-    def test_refunded_and_disruption_excluded(self):
+    def test_refunded_and_resolved_disruption_excluded(self):
         day = timezone.localdate()
-        self._book(
-            self.student,
-            minutes=90,
-            day=day,
-            user_type=UserType.STUDENT,
-            status=BookingStatus.REFUNDED,
-            create_slot=False,
-        )
-        self._book(
-            self.student,
-            minutes=90,
-            day=day,
-            user_type=UserType.STUDENT,
-            status=BookingStatus.DISRUPTION_PENDING,
-            create_slot=False,
-        )
+        for freed_status in (
+            BookingStatus.REFUNDED,
+            BookingStatus.ABSENT,
+            BookingStatus.UNDER_MAINTENANCE,
+            BookingStatus.OTHER_DISRUPTION,
+        ):
+            self._book(
+                self.student,
+                minutes=90,
+                day=day,
+                user_type=UserType.STUDENT,
+                status=freed_status,
+                create_slot=False,
+            )
         ok, err = QuotaService.validate_booking_quota(
             self.student,
             self.equipment,

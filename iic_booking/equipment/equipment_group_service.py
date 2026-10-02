@@ -1220,11 +1220,16 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
             if not ok:
                 return _error(err or "This equipment is not bookable at the selected time.", "SLOT_UNAVAILABLE")
 
-    if not staff_endpoint:
+    # Disruption and staff moves keep the original quota period (user's quota unchanged); the
+    # user's own move is checked in the new period. Repeat samples never count.
+    keeps_original_quota_period = (
+        staff_endpoint
+        or av.check_operator_permission(request.user)
+        or booking.status == BookingStatus.DISRUPTION_PENDING
+        or getattr(booking, "maintenance_disruption_flag", False)
+    )
+    if not keeps_original_quota_period and not av.booking_is_quota_exempt(booking):
         try:
-            quota_date = start_time
-            if booking.status == BookingStatus.DISRUPTION_PENDING and getattr(booking, "quota_period_anchor_at", None):
-                quota_date = booking.quota_period_anchor_at
             if not av.booking_quota_should_skip(target):
                 quota_allowed, quota_error = av.QuotaService.validate_booking_quota(
                     user=owner,
@@ -1232,7 +1237,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
                     additional_time_minutes=int(booking.total_time_minutes or 0),
                     additional_bookings=1,
                     additional_charge=Decimal(str(booking.total_charge or "0")),
-                    booking_date=quota_date,
+                    booking_date=start_time,
                     exclude_booking_id=booking.booking_id,
                 )
                 if not quota_allowed:
@@ -1287,6 +1292,10 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
             )
             if len(locked) != required_slots:
                 raise _SlotTaken()
+            if keeps_original_quota_period:
+                av.keep_quota_in_original_period(booking)
+            else:
+                booking.quota_period_anchor_at = None
             free_status = (
                 av.effective_slot_status_when_freeing_disruption_booking(booking)
                 if (
@@ -1305,7 +1314,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
             booking.input_values = info["input_values"]
             booking.status = BookingStatus.BOOKED
             if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
-                av.clear_disruption_policy_fields(booking)
+                av.clear_disruption_policy_fields(booking, keep_quota_anchor=True)
             booking.save()
 
             av.create_booking_event(
