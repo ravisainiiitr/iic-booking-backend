@@ -6,10 +6,9 @@ import re
 from typing import Any
 
 # Titles that may already be part of a stored name ("Dr. Shriniwas Yadav", "Prof Dr X", "MRS. Y").
-_LEADING_TITLES_RE = re.compile(
-    r"^(?:(?:prof(?:essor)?|dr|mrs|mr|ms|miss)\b\.?[\s.,]*)+",
-    re.IGNORECASE,
-)
+# Same list as stripHonorifics in the frontend src/lib/displayName.ts.
+_NAME_HONORIFIC = "(?:professor|prof|dr|mrs|mr|ms|miss|shri|smt|er|श्रीमती|श्री|सुश्री|डॉ|डा|प्रोफेसर|प्रो)"
+_LEADING_TITLES_RE = re.compile(rf"^(?:{_NAME_HONORIFIC}(?:\.\s*|,\s*|\s+|$))+", re.IGNORECASE)
 
 
 def _is_faculty_user_type(user_type: Any) -> bool:
@@ -49,7 +48,7 @@ def get_user_display_name(user: Any, *, fallback_to_email: bool = True) -> str:
 
 
 def strip_name_honorifics(name: str | None) -> str:
-    """Name without any leading titles (Mr, Mrs, Ms, Miss, Dr, Prof, Professor; dots and case optional)."""
+    """Name without leading titles (Mr, Mrs, Ms, Miss, Dr, Prof, Professor, Shri, Smt, Er; dots and case optional)."""
     cleaned = " ".join((name or "").split())
     return _LEADING_TITLES_RE.sub("", cleaned).strip()
 
