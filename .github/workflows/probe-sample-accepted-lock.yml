@@ -69,7 +69,7 @@ jobs:
                   events = list(BookingSampleTrace.objects.filter(booking_id=b.pk).order_by("created_at", "id")
                                 .values_list("status", flat=True))
                   print(f"booking status={b.status}")
-                  print("lifecycle states (oldest first)=" + (" > ".join(labels.get(s, s) for s in events) or "none"))
+                  print("lifecycle states (oldest first)=" + (" > ".join(str(labels.get(s, s)) for s in events) or "none"))
                   reached = any(s in ACCEPTED_OR_LATER for s in events)
                   exempt = b.status == BookingStatus.DISRUPTION_PENDING or bool(b.maintenance_disruption_flag)
                   print(f"counts as accepted={'yes' if reached else 'no'}")
