@@ -5,8 +5,10 @@ User Question → Intent → Permission → Structured + Vector + Keyword → Re
 
 from __future__ import annotations
 
+import copy
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -27,6 +29,32 @@ from iic_booking.research_copilot.services.vector_store import get_vector_store
 logger = logging.getLogger(__name__)
 
 _TOKEN_RE = re.compile(r"[a-z0-9]{3,}", re.I)
+
+# Words that appear in most portal articles; matching them says nothing about relevance.
+_KEYWORD_STOPWORDS = {
+    "the", "and", "for", "what", "how", "does", "can", "should", "with", "this", "that", "from", "are",
+    "you", "your", "about", "tell", "please", "there", "which", "when", "where", "who", "why", "have",
+    "has", "into", "its", "any", "per", "list", "show", "recent", "latest", "booking", "bookings",
+    "portal", "want", "need", "get", "give", "all", "mine", "now", "today", "help", "iic", "kindly",
+}
+_UNSAFE_URL_PREFIXES = ("/admin", "/api/", "/django-admin")
+
+
+def safe_citation_url(url: str | None) -> str:
+    """A link the chat may render: a portal path or http(s). Internal URIs (seed://, s3://, admin pages) are dropped."""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    low = u.lower()
+    if low.startswith(("https://", "http://")):
+        return u
+    if u.startswith("/") and not u.startswith("//") and not low.startswith(_UNSAFE_URL_PREFIXES):
+        return u
+    return ""
+
+
+def _query_tokens(query: str) -> list[str]:
+    return [t for t in _TOKEN_RE.findall((query or "").lower()) if t not in _KEYWORD_STOPWORDS]
 
 
 @dataclass
@@ -57,7 +85,7 @@ def _keyword_search(
     limit: int = 8,
     equipment_id: int | None = None,
 ) -> list[Citation]:
-    tokens = _TOKEN_RE.findall((query or "").lower())
+    tokens = _query_tokens(query)
     if not tokens:
         return []
     q_obj = Q()
@@ -85,14 +113,38 @@ def _keyword_search(
                 source_id=str(doc.id),
                 title=doc.title,
                 snippet=chunk.content[:400],
-                score=0.45 + 0.4 * score,
-                url=doc.external_url or doc.source_uri or f"/admin-settings/knowledge?doc={doc.id}",
+                score=0.3 + 0.5 * score,
+                url=safe_citation_url(doc.external_url) or safe_citation_url(doc.source_uri),
                 category=doc.category,
                 source_type="document",
             )
         )
     hits.sort(key=lambda c: c.score, reverse=True)
     return hits[:limit]
+
+
+def _role_adjust(candidates: list[Citation], role_bucket: str) -> None:
+    """Prefer articles tagged for the asker's role (tags like "role:faculty"); demote ones written for other roles."""
+    import uuid
+
+    ids = set()
+    for c in candidates:
+        try:
+            ids.add(uuid.UUID(str(c.source_id)))
+        except (ValueError, TypeError):
+            continue
+    if not ids:
+        return
+    try:
+        tag_map = {str(d["id"]): d["tags"] or [] for d in KnowledgeDocument.objects.filter(id__in=ids).values("id", "tags")}
+    except Exception:  # noqa: BLE001
+        return
+    mine = f"role:{role_bucket}"
+    for c in candidates:
+        roles = {t for t in tag_map.get(str(c.source_id), []) if isinstance(t, str) and t.startswith("role:")}
+        if not roles:
+            continue
+        c.score = min(1.0, c.score + 0.1) if mine in roles else max(0.0, c.score - 0.2)
 
 
 def _rerank(candidates: list[Citation], *, limit: int = 6) -> list[Citation]:
@@ -109,7 +161,37 @@ def _rerank(candidates: list[Citation], *, limit: int = 6) -> list[Citation]:
     return ranked[:limit]
 
 
+_MEMO = threading.local()
+_MEMO_TTL_SECONDS = 15.0
+
+
 def retrieve(
+    *,
+    query: str,
+    role_bucket: str,
+    department_id: int | None = None,
+    user=None,
+    conversation=None,
+    limit: int = 6,
+) -> RetrievalResult:
+    # One message can ask twice (the intelligence layer's "are the docs strong?" check, then RAG itself).
+    # Only chat turns are memoised, keyed by conversation, so admin search / indexing always see fresh data.
+    key = None
+    if conversation is not None and getattr(conversation, "pk", None):
+        key = (str(conversation.pk), query, role_bucket, department_id, getattr(user, "pk", None), limit)
+        memo = getattr(_MEMO, "last", None)
+        if memo and memo[0] == key and time.monotonic() - memo[1] < _MEMO_TTL_SECONDS:
+            return copy.deepcopy(memo[2])
+    result = _retrieve(
+        query=query, role_bucket=role_bucket, department_id=department_id, user=user,
+        conversation=conversation, limit=limit,
+    )
+    if key is not None:
+        _MEMO.last = (key, time.monotonic(), copy.deepcopy(result))
+    return result
+
+
+def _retrieve(
     *,
     query: str,
     role_bucket: str,
@@ -157,9 +239,8 @@ def retrieve(
                     title=hit.title,
                     snippet=hit.content[:400],
                     score=max(0.0, min(1.0, hit.score)),
-                    url=(hit.metadata or {}).get("external_url")
-                    or (hit.metadata or {}).get("source_uri")
-                    or "",
+                    url=safe_citation_url((hit.metadata or {}).get("external_url"))
+                    or safe_citation_url((hit.metadata or {}).get("source_uri")),
                     category=(hit.metadata or {}).get("category") or "",
                     source_type="document",
                 )
@@ -170,6 +251,7 @@ def retrieve(
     # Keyword
     candidates.extend(_keyword_search(query=query, allowed_levels=levels, department_id=department_id, limit=8))
 
+    _role_adjust(candidates, role_bucket)
     citations = _rerank(candidates, limit=limit)
     low = len(citations) == 0 or (citations and citations[0].score < 0.35)
     latency = int((time.perf_counter() - started) * 1000)
@@ -206,7 +288,7 @@ def retrieve(
 
 
 def citations_as_dicts(citations: list[Citation]) -> list[dict]:
-    return [asdict(c) for c in citations]
+    return [{**asdict(c), "url": safe_citation_url(c.url)} for c in citations]
 
 
 _PASSAGE_STOPWORDS = {

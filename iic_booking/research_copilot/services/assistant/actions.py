@@ -18,6 +18,9 @@ REVIEW = "ba_review"
 INFO = "ba_info"
 UPCOMING = "ba_upcoming"
 FLOW = "ba_flow"
+BOOKING = "ba_booking"
+
+BOOKING_OPS = ("details", "cancel", "reschedule", "edit", "message", "results", "invoice", "rate", "rebook", "template")
 
 FLOW_STEPS = (
     "start", "department", "equipment", "inputs", "slots", "slot",
@@ -133,6 +136,12 @@ def _step(value: Any) -> str:
     return value
 
 
+def _booking_op(value: Any) -> str:
+    if value not in BOOKING_OPS:
+        raise InvalidAssistantAction("invalid_op")
+    return value
+
+
 _SCHEMAS: dict[str, dict[str, Any]] = {
     PICK_EQUIPMENT: {"equipment_id": _int, "intent": "intent", "when": _when},
     AVAILABILITY: {"equipment_id": _int, "when": _when},
@@ -153,6 +162,7 @@ _SCHEMAS: dict[str, dict[str, Any]] = {
         "slot_ids": _slot_ids,
         "when": _when,
     },
+    BOOKING: {"booking_id": _int, "op": _booking_op},
 }
 _REQUIRED = {
     PICK_EQUIPMENT: {"equipment_id"},
@@ -162,6 +172,7 @@ _REQUIRED = {
     INFO: {"equipment_id"},
     UPCOMING: set(),
     FLOW: {"step"},
+    BOOKING: {"booking_id", "op"},
 }
 ACTION_TYPES = frozenset(_SCHEMAS)
 

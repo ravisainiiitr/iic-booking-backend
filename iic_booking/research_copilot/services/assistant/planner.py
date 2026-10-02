@@ -7,9 +7,10 @@ the same deterministic resolvers (visible-equipment matching, IST date parsing, 
 so the model never sees other users' data, never chooses ids and can never book: bookings still need
 the summary card's Confirm button and a server-side proposal token.
 
-BOOKING_ASSISTANT_LLM_PLANNER: "off", "on", or "auto" (default; on only when OPENAI_API_KEY is set,
-because the small local model is too slow to add to every unrecognised message). With a key the planner
-calls OpenAI directly, whatever COPILOT_PROVIDER the rest of the Copilot uses.
+BOOKING_ASSISTANT_LLM_PLANNER: "off", "auto"/"on" (default; active only when OPENAI_API_KEY is set,
+because the small local model is too slow to add to every unrecognised message), or "local" to opt into
+the configured local model anyway. With a key the planner calls OpenAI directly, whatever COPILOT_PROVIDER
+the rest of the Copilot uses.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ def planner_enabled() -> bool:
     mode = str(getattr(settings, "BOOKING_ASSISTANT_LLM_PLANNER", "auto") or "auto").strip().lower()
     if mode in {"off", "false", "0", "no"}:
         return False
-    if mode in {"on", "true", "1", "yes"}:
+    if mode == "local":
         return True
     return bool(_openai_key())
 

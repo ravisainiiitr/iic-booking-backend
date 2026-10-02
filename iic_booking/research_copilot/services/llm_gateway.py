@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -363,6 +364,7 @@ class FallbackGateway(LLMGateway):
                 user_text = (m.get("content") or "").strip()
                 break
         lower = user_text.lower()
+        words = set(re.findall(r"[a-z]+", lower))
         if any(k in lower for k in ("ticket", "human", "support", "talk to")):
             reply = (
                 "I can help you open a support ticket with the laboratory team. "
@@ -375,7 +377,7 @@ class FallbackGateway(LLMGateway):
                 "When Copilot tools are available I will summarize your accessible balance from portal data. "
                 "I will not invent balances or perform wallet mutations."
             )
-        elif any(k in lower for k in ("book", "slot", "fesem", "afm", "tem")):
+        elif words & {"book", "slot", "slots", "fesem", "afm", "tem"} and not words & {"bookings", "my"}:
             reply = (
                 "To book equipment: open **Equipments**, pick the instrument, review slots, and confirm. "
                 "Describe your sample and measurement need if you want advisory guidance "

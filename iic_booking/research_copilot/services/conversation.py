@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+import re
+import time
+
 from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
@@ -86,21 +90,93 @@ def _reply_from_llm_result(result, *, user_text: str = "") -> str:
     )
 
 
-def _append_sources_footer(reply: str, citations: list) -> str:
-    if not citations:
-        return reply
-    # Avoid duplicating if model already listed Sources
-    if "Sources" in reply and any(getattr(c, "title", "") in reply for c in citations[:2]):
-        return reply
-    lines = ["", "---", "**Sources**"]
+_SOURCES_TAIL_RE = re.compile(r"\n+(?:-{3,}\s*\n+)?\**\s*Sources\s*\**:?\s*\n(?:\s*[-*\d.]+\s.*\n?)+\s*$", re.IGNORECASE)
+DISPLAY_CITATION_MIN_SCORE = 0.55
+MAX_DISPLAY_CITATIONS = 3
+LLM_DOWN_CACHE_KEY = "research_copilot:llm_down"
+LLM_DOWN_SECONDS = 90
+
+logger = logging.getLogger(__name__)
+
+
+def _strip_sources_tail(reply: str) -> str:
+    """Sources are shown as clean links under the answer, never as raw markdown inside it."""
+    return _SOURCES_TAIL_RE.sub("", reply or "").rstrip()
+
+
+def _display_citations(citations: list) -> list:
+    """Only clearly relevant sources with a safe portal / https link (or none) are shown to the user."""
+    from iic_booking.research_copilot.services.rag import safe_citation_url
+
+    out, seen = [], set()
     for c in citations:
-        title = c.title
-        url = c.url or ""
-        if url:
-            lines.append(f"- [{title}]({url})")
-        else:
-            lines.append(f"- {title}")
-    return reply.rstrip() + "\n" + "\n".join(lines)
+        if getattr(c, "score", 0) < DISPLAY_CITATION_MIN_SCORE or c.title in seen:
+            continue
+        seen.add(c.title)
+        c.url = safe_citation_url(c.url)
+        out.append(c)
+        if len(out) >= MAX_DISPLAY_CITATIONS:
+            break
+    return out
+
+
+_OUTAGE_CATEGORIES = {"timeout", "network", "provider_5xx", "invalid_model_or_path"}
+
+
+def _llm_down_key(gateway) -> str:
+    return f"{LLM_DOWN_CACHE_KEY}:{getattr(gateway, 'provider_name', '')}:{getattr(gateway, 'model', '')}"
+
+
+def _llm_recently_down(gateway) -> bool:
+    from django.core.cache import cache
+
+    try:
+        return bool(cache.get(_llm_down_key(gateway)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _mark_llm_down(gateway, category: str) -> None:
+    """After an outage-type failure, skip this model for a short while so each message isn't another long wait."""
+    from django.core.cache import cache
+
+    if category not in _OUTAGE_CATEGORIES:
+        return
+    try:
+        cache.set(_llm_down_key(gateway), 1, LLM_DOWN_SECONDS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _chat_gateway():
+    """Gateway for the interactive chat path, with a shorter timeout than background jobs."""
+    gateway = get_gateway()
+    cap = float(getattr(settings, "RESEARCH_COPILOT_CHAT_LLM_TIMEOUT_SECONDS", 30) or 30)
+    if hasattr(gateway, "timeout_seconds") and gateway.timeout_seconds and gateway.timeout_seconds > cap:
+        gateway.timeout_seconds = cap
+    return gateway
+
+
+def _extractive_answer(citations: list) -> str:
+    """When the model is unavailable, quote the best matching portal guide instead of a canned paragraph."""
+    best = next((c for c in citations if getattr(c, "score", 0) >= DISPLAY_CITATION_MIN_SCORE and c.snippet), None)
+    if best is None:
+        return ""
+    snippet = " ".join(best.snippet.split())
+    if len(snippet) > 380:
+        cut = snippet[:380].rsplit(". ", 1)[0]
+        snippet = (cut if len(cut) > 120 else snippet[:380]).rstrip(".") + "…"
+    return f"Here's what the portal guide **{best.title}** says:\n\n{snippet}"
+
+
+def _log_turn(layer: str, started: float, **extra) -> None:
+    """Durations and routing only — never message text or personal data."""
+    logger.info(
+        "copilot_turn layer=%s ms=%d %s",
+        layer,
+        int((time.perf_counter() - started) * 1000),
+        " ".join(f"{k}={v}" for k, v in extra.items() if v not in (None, "")),
+    )
 
 
 def _estimate_confidence(*, escalate: bool, provider: str, text: str, retrieval_low: bool, hit_count: int) -> float:
@@ -291,6 +367,7 @@ def send_message(
     # --- Booking Assistant: availability, equipment Q&A, confirm-gated booking over live data ---
     from iic_booking.research_copilot.services.assistant.engine import try_assistant_turn
 
+    started = time.perf_counter()
     helper = try_assistant_turn(
         user=user,
         text=text,
@@ -300,6 +377,8 @@ def send_message(
         action=action,
     )
     if helper is not None:
+        meta = helper.get("metadata") if isinstance(helper.get("metadata"), dict) else {}
+        _log_turn("assistant", started, intent=meta.get("daily_intent") or helper.get("intent"))
         return _reply_deterministic(user=user, conversation=conversation, text=text, det=helper, ctx=ctx, enrich=False)
 
     # --- Intelligence layer (flagged): intents, choices, guided actions, verified knowledge ---
@@ -307,6 +386,7 @@ def send_message(
 
     smart = try_intelligent_turn(user=user, text=text, conversation=conversation, choice=choice, action=action)
     if smart is not None:
+        _log_turn("intelligence", started)
         return _reply_deterministic(user=user, conversation=conversation, text=text, det=smart, ctx=ctx, enrich=False)
 
     # --- Phase A: deterministic-first (no LLM) ---
@@ -314,6 +394,7 @@ def send_message(
 
     det = try_deterministic_turn(user=user, text=text, conversation=conversation, public=False)
     if det is not None:
+        _log_turn("deterministic", started)
         return _reply_deterministic(user=user, conversation=conversation, text=text, det=det, ctx=ctx, enrich=not contextual)
 
     history = [
@@ -379,30 +460,47 @@ def send_message(
         citations=citations,
     )
 
+    pre_llm_ms = int((time.perf_counter() - started) * 1000)
     llm_messages = build_messages_for_llm(system_prompt=system, history=prior, user_message=text)
-    gateway = get_gateway()
     result = None
     busy = False
-    try:
-        with acquire_generation_slot(wait=False):
-            # generate() preferred; complete() remains available on all gateways
-            result = gateway.generate(llm_messages, max_tokens=default_max_tokens())
-    except CopilotBusyError:
-        busy = True
-        audit_svc.write_audit(
-            action=AuditAction.BUSY,
-            message="COPILOT_BUSY",
-            user=user,
-            conversation=conversation,
-            detail={"code": "copilot_busy"},
-        )
-        result = type("R", (), {"text": BUSY_USER_MESSAGE + "\n" + ESCALATE_MARKER, "provider": "none", "model": "", "error_category": "busy", "latency_ms": 0, "prompt_tokens": None, "completion_tokens": None})()
+    gateway = _chat_gateway()
+    llm_skipped = _llm_recently_down(gateway)
+    if not llm_skipped:
+        try:
+            with acquire_generation_slot(wait=False):
+                # generate() preferred; complete() remains available on all gateways
+                result = gateway.generate(llm_messages, max_tokens=default_max_tokens())
+        except CopilotBusyError:
+            busy = True
+            audit_svc.write_audit(
+                action=AuditAction.BUSY,
+                message="COPILOT_BUSY",
+                user=user,
+                conversation=conversation,
+                detail={"code": "copilot_busy"},
+            )
+            result = type("R", (), {"text": BUSY_USER_MESSAGE + "\n" + ESCALATE_MARKER, "provider": "none", "model": "", "error_category": "busy", "latency_ms": 0, "prompt_tokens": None, "completion_tokens": None})()
+        if not busy and result is not None and getattr(result, "error_category", "") and not (result.text or "").strip():
+            _mark_llm_down(gateway, str(getattr(result, "error_category", "")))
 
-    raw = _reply_from_llm_result(result, user_text=text)
+    llm_failed = not busy and not ((getattr(result, "text", "") if result else "") or "").strip()
+    extractive = _extractive_answer(citations) if llm_failed else ""
+    raw = extractive or _reply_from_llm_result(result, user_text=text)
     reply, escalate = _strip_escalate(raw)
-    if not busy:
-        reply = _append_sources_footer(reply, citations)
+    reply = _strip_sources_tail(reply)
+    shown_citations = [] if busy else _display_citations(citations)
     provider = result.provider if result else "none"
+    _log_turn(
+        "rag",
+        started,
+        pre_llm_ms=pre_llm_ms,
+        retrieval_ms=retrieval.latency_ms,
+        llm_ms=getattr(result, "latency_ms", 0) if result else 0,
+        llm_skipped=int(llm_skipped),
+        fallback="extractive" if extractive else ("canned" if llm_failed else ""),
+        citations=len(shown_citations),
+    )
     confidence = _estimate_confidence(
         escalate=escalate,
         provider=provider,
@@ -418,7 +516,21 @@ def send_message(
         escalate = False
         confidence = 0.5
 
-    if contextual:
+    if llm_failed:
+        from iic_booking.research_copilot.services.assistant.daily import help_actions
+
+        if not extractive:
+            reply = (
+                "AI answers are temporarily unavailable, but I can still help with these right away — "
+                "or rephrase your question."
+                if llm_skipped or getattr(result, "error_category", "")
+                else "I couldn't find a confident answer to that. Here are some things I can do right away — "
+                "or rephrase your question."
+            )
+        reply_actions = help_actions(user)[:3] + [
+            {"id": "ticket", "label": "Raise a support ticket", "href": "/tickets", "enabled": True}
+        ]
+    elif contextual:
         from iic_booking.research_copilot.services.intelligence import messages as intel_messages
 
         reply_actions = [a for a in (grounding.get("actions") or []) if a.get("id")][:3]
@@ -437,10 +549,11 @@ def send_message(
             role=MessageRole.ASSISTANT,
             content=reply,
             confidence=confidence,
-            citations=rag_svc.citations_as_dicts(citations) if not busy else [],
+            citations=rag_svc.citations_as_dicts(shown_citations),
             suggested_actions=reply_actions,
             escalate_hint=escalate,
             metadata={
+                "llm_fallback": "extractive" if extractive else ("canned" if llm_failed else ""),
                 "provider": provider,
                 "model": getattr(result, "model", "") if result else "",
                 "intent": retrieval.intent,
@@ -617,7 +730,12 @@ def bootstrap_payload(*, user) -> dict:
             {"id": "cancel_booking", "label": "Cancel booking", "prompt": "Cancel my next booking."},
             {"id": "wallet", "label": "Wallet balance", "prompt": "What is my wallet balance?"},
             {"id": "wallet_tx", "label": "Wallet transactions", "prompt": "Show my recent wallet transactions."},
-            {"id": "recharge", "label": "Recharge wallet", "prompt": "I want to recharge my wallet."},
+            {"id": "recharge", "label": "How to recharge", "prompt": "How do I recharge my wallet?"},
+            *(
+                [{"id": "staff_today", "label": "Today's bookings on my equipment", "prompt": "Today's bookings on my equipment"}]
+                if str(getattr(user, "user_type", "") or "").lower() in {"manager", "operator", "admin", "dept_admin"}
+                else []
+            ),
             {"id": "credit", "label": "Credit status", "prompt": "What is my outstanding credit?"},
             {"id": "ra_status", "label": "Remote Analysis", "prompt": "What is my Remote Analysis status?"},
             {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
@@ -698,7 +816,9 @@ def _command_groups(user) -> list[dict]:
             "label": "Account",
             "actions": [
                 {"id": "wallet", "label": "Wallet balance", "prompt": "What is my wallet balance?"},
+                {"id": "recharge_help", "label": "How to recharge", "prompt": "How do I recharge my wallet?"},
                 {"id": "wallet_tx", "label": "Wallet transactions", "prompt": "Show my recent wallet transactions."},
+                {"id": "invoices", "label": "Invoices", "prompt": "Where are my invoices?"},
                 {"id": "credit", "label": "Credit status", "prompt": "What is my outstanding credit?"},
                 {"id": "pending", "label": "Pending actions", "prompt": "What are my pending actions?"},
             ],
@@ -707,12 +827,27 @@ def _command_groups(user) -> list[dict]:
             "id": "help",
             "label": "Help",
             "actions": [
-                {"id": "portal_help", "label": "Portal help", "prompt": "How do I cancel a booking?"},
+                {"id": "assistant_help", "label": "What can you do?", "prompt": "What can you do?"},
+                {"id": "portal_help", "label": "Cancellation rules", "prompt": "How do I cancel a booking?"},
                 {"id": "support", "label": "Contact support", "prompt": "I want to raise a support ticket."},
-                {"id": "tickets", "label": "My tickets", "href": "/tickets"},
+                {"id": "tickets", "label": "My tickets", "prompt": "Show my support tickets."},
             ],
         },
     ]
+    utype = str(getattr(user, "user_type", "") or "").lower()
+    if utype == "faculty":
+        groups[2]["actions"].insert(2, {"id": "students", "label": "My students", "prompt": "Manage my students and spending limits"})
+    if utype in {"manager", "operator", "admin", "dept_admin"}:
+        groups.insert(0, {
+            "id": "lab",
+            "label": "My equipment",
+            "actions": [
+                {"id": "staff_today", "label": "Today's bookings", "prompt": "Today's bookings on my equipment"},
+                {"id": "staff_approvals", "label": "Pending approvals", "prompt": "Pending approvals on my equipment"},
+                {"id": "staff_urgent", "label": "Urgent requests", "prompt": "Urgent requests queue on my equipment"},
+                {"id": "staff_waitlist", "label": "Waitlist queue", "prompt": "Waitlist queue on my equipment"},
+            ],
+        })
     return groups
 
 
@@ -866,8 +1001,8 @@ def public_ask(*, text: str) -> dict:
 
     raw = _reply_from_llm_result(result, user_text=text)
     reply, escalate = _strip_escalate(raw)
-    if not busy:
-        reply = _append_sources_footer(reply, citations)
+    reply = _strip_sources_tail(reply)
+    citations = [] if busy else _display_citations(citations)
 
     base_actions = list(grounding.get("actions") or [])
     # Always offer sign-in for privileged follow-ups

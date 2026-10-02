@@ -601,10 +601,7 @@ class TestAssistantTurns:
         assert try_assistant_turn(user=lab.student, text="fesem", conversation=conv) is None
         assert try_assistant_turn(user=lab.student, text="Book XRD", conversation=conv,
                                   choice={"kind": "samples", "value": "2"}) is None
-        assert try_assistant_turn(user=lab.student, text="cancel my booking", conversation=conv) is None
-        assert try_assistant_turn(user=lab.student, text="What is my wallet balance?", conversation=conv) is None
         assert try_assistant_turn(user=lab.student, text="How do I book equipment on the portal?", conversation=conv) is None
-        assert try_assistant_turn(user=lab.student, text="List my recent bookings.", conversation=conv) is None
         assert try_assistant_turn(user=lab.student, text="Estimate the cost of booking FESEM for 2 hours.", conversation=conv) is None
         assert try_assistant_turn(user=SimpleNamespace(is_authenticated=False), text="FESEM tomorrow", conversation=conv) is None
 

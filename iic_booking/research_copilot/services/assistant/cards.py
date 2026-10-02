@@ -18,6 +18,7 @@ def reply(
     kind: str = "LIVE_DATA",
     title_hint: str | None = None,
     extra: dict[str, Any] | None = None,
+    escalate: bool = False,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "booking_assistant": True,
@@ -30,12 +31,18 @@ def reply(
         meta["title_hint"] = title_hint[:80]
     if extra:
         meta.update(extra)
-    return build_response(kind=kind, content=content, cards=cards, actions=actions, metadata=meta)
+    return build_response(kind=kind, content=content, cards=cards, actions=actions, escalate=escalate, metadata=meta)
 
 
 def link(label: str, href: str, *, primary: bool = False) -> dict[str, Any]:
     slug = "".join(ch if ch.isalnum() else "_" for ch in label.lower())[:40]
     return {"id": f"ba_link:{slug}:{href}"[:120], "label": label, "href": href, "enabled": True, "primary": primary}
+
+
+def prompt_action(label: str, prompt: str, *, primary: bool = False) -> dict[str, Any]:
+    """A chip that sends `prompt` as the user's next message (read-only follow-ups such as "Wallet balance")."""
+    slug = "".join(ch if ch.isalnum() else "_" for ch in label.lower())[:40]
+    return {"id": f"ba_prompt:{slug}", "label": label, "prompt": prompt, "enabled": True, "primary": primary}
 
 
 def assistant_action(label: str, action_type: str, payload: dict[str, Any], *, primary: bool = False, utterance: str | None = None) -> dict[str, Any]:

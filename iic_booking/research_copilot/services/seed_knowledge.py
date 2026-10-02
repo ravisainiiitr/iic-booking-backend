@@ -80,9 +80,11 @@ credit is running, an approved Project Grant request is credited only when SRIC 
 (Approved · awaiting funds).
 Students: where student recharge is enabled for the account, Recharge Wallet offers Direct Cash Deposit /
 Bank Transfer (same OTP and SRIC Bill Section steps); once approved, the funds go to the supervisor's wallet.
-Uploading a payment receipt is no longer offered as a recharge method.
+Pay online (card / net banking) appears in the Recharge dialog but stays greyed out with "Awaiting Competent
+Authority Approval" until the Main Administrator switches it on.
+Uploading a payment receipt is no longer offered as a recharge method — you never need to upload a receipt.
 A method shown greyed out with "Awaiting Competent Authority Approval" is switched off by the Main
-Administrator. The Copilot will not invent balances; open Wallet for live figures.
+Administrator. The Booking Assistant will not invent balances: ask it "wallet balance" for your live figure.
 """,
     },
     {
@@ -165,6 +167,7 @@ and admins can use Deduct Money to debit an unpaid difference from the user's wa
         "category": DocumentCategory.USER_GUIDE,
         "security_level": SecurityLevel.AUTHENTICATED,
         "tags": ["booking assistant", "copilot", "guided booking", "virtual booking id", "confirm booking"],
+        "external_url": "/book-equipment",
         "content_text": """
 The Booking Assistant is the round button at the bottom-right of the portal. Choose Book equipment for a guided
 booking in five steps: Department -> Equipment -> booking inputs (sample sets, element selection and the
@@ -178,6 +181,13 @@ At any step use Change slot, Change samples/inputs or Change equipment; details 
 Cancel stops without booking.
 Free text still works, for example "I need FESEM tomorrow — what are my options?", "What are the TEM charges?"
 or "Show my upcoming bookings". Bookings can be referred to by their virtual booking ID.
+Day-to-day questions are answered instantly from live portal data: "my recent bookings", "status of
+<booking ID>", "wallet balance", "how do I recharge my wallet?", "my transactions", "results of my last
+booking", "my waitlist", "my tickets"; staff can ask "today's bookings on my equipment" or "pending approvals".
+After a list of bookings each booking has buttons for what the portal allows right now — View details,
+Reschedule, Cancel, Edit parameters, Message the lab, View results, Download invoice, Book again — and you can
+also type "cancel the second one". Cancel and reschedule always show a summary and need Confirm; edit,
+invoice and messages open the booking in My Bookings.
 The same checks as the booking page apply: slot length, input limits, wallet balance, quotas and spending limits.
 """,
     },
@@ -185,7 +195,8 @@ The same checks as the booking page apply: slot length, input limits, wallet bal
         "title": "Student Management and Spending Limits",
         "category": DocumentCategory.USER_GUIDE,
         "security_level": SecurityLevel.AUTHENTICATED,
-        "tags": ["student management", "spending limit", "identity card", "delink", "ta nomination", "supervisor"],
+        "tags": ["student management", "spending limit", "identity card", "delink", "ta nomination", "supervisor",
+                 "role:faculty"],
         "external_url": "/student-management",
         "content_text": """
 Faculty open Student management from the dashboard to see students linked to their wallet (students appear after
@@ -225,7 +236,8 @@ Booking Start Date and Duration — every column is sortable — and a hover box
         "title": "OIC Tools — Urgent Booking, Waitlist, Slot Status and Tickets",
         "category": DocumentCategory.SOP,
         "security_level": SecurityLevel.OPERATOR,
-        "tags": ["oic", "urgent booking", "waitlist", "confirm manually", "change slot status", "tickets", "important instruction"],
+        "tags": ["oic", "urgent booking", "waitlist", "confirm manually", "change slot status", "tickets", "important instruction",
+                 "role:operator", "role:admin", "role:dept_admin"],
         "content_text": """
 Urgent booking (dashboard, formerly Urgent Requests): Type B requests (urgent with reason, 50% surcharge) from
 students arrive after their supervisor approves; the OIC gives final approval and may reschedule, including
@@ -273,6 +285,82 @@ Changes released in September–October 2026:
 - Smaller: server clock on the booking page, Back button on every page, larger home icon on the sign-in page,
   Sign in with email option for Channel i users, Lab In-charge renamed Lab Operator, Support tickets on the Lab
   Operator dashboard.
+- Booking Assistant: instant answers for my bookings, wallet balance, recharge steps, transactions, results,
+  waitlist and tickets, with next-step buttons on every booking (cancel / reschedule always need Confirm).
+""",
+    },
+    {
+        "title": "Manage a Booking — Cancel, Reschedule, Edit, Message the Lab",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["cancel", "reschedule", "edit booking", "message the lab", "my bookings", "manage booking"],
+        "external_url": "/my-bookings",
+        "content_text": """
+Open My Bookings (or ask the Booking Assistant "show my upcoming bookings") and pick the booking.
+- Cancel / Reschedule: allowed for Pending or Booked bookings until the equipment's cutoff (48 hours before the
+  slot unless the lab set another value). The refund or new slot is shown before you confirm. Repeat bookings
+  created by the lab can't be changed by you. After the cutoff, use Message the lab or raise a support ticket.
+- Edit parameters: choose Edit User Inputs on a Booked booking. A higher charge must be paid within 1 minute or
+  the edit is undone; a lower charge is refunded after the Officer In Charge confirms.
+- Message the lab: every booking has a Message the lab thread at the bottom of its details; lab staff reply in
+  the same thread and you get a notification.
+""",
+    },
+    {
+        "title": "Results, Invoices and Ratings",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["results", "download results", "invoice", "proforma invoice", "rating", "feedback"],
+        "external_url": "/my-results",
+        "content_text": """
+Results: when the lab publishes results you get an email and a notification. Open the booking in My Bookings or
+My Results to view and download the files.
+Invoice: open a completed booking and press Invoice (PDF) in its documents row. For a quote before booking or
+payment use Proforma Invoice from the dashboard.
+Rating: completed bookings on equipment with ratings switched on ask you to Rate this booking (overall rating and
+a few yes/no questions); pending ratings are listed in My Bookings.
+""",
+    },
+    {
+        "title": "Waitlist and Urgent Requests (Users)",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["waitlist", "join waitlist", "leave waitlist", "urgent request", "my urgent requests"],
+        "external_url": "/my-bookings",
+        "content_text": """
+Waitlist: on the booking page tick "Add to the waitlist if the booking cannot be completed". Your waitlist
+entries appear in My Bookings; use Leave Waitlist on an entry to opt out (everyone behind you moves up). The OIC
+can place a waitlisted booking into a free slot; the charge is then debited from the wallet.
+Urgent requests: use Request urgent booking on the booking page (Type A rush relief or Type B urgent with reason,
+50% surcharge). Track them under My Urgent Requests; students' Type B requests need supervisor approval first.
+""",
+    },
+    {
+        "title": "Support Tickets",
+        "category": DocumentCategory.USER_GUIDE,
+        "security_level": SecurityLevel.AUTHENTICATED,
+        "tags": ["ticket", "support ticket", "raise ticket", "complaint", "help desk"],
+        "external_url": "/tickets",
+        "content_text": """
+Open Support Tickets from the user menu and press Create New Ticket (or Raise Support Request on an equipment
+page). Describe the problem, include the booking ID if it is about a booking, and submit. You get email updates
+and can reply in the ticket. The Booking
+Assistant can also raise a ticket with the conversation attached — it only does so when you press Raise a
+support ticket.
+""",
+    },
+    {
+        "title": "Staff Daily Queue — Today's Bookings, Approvals, Waitlist and Urgent Requests",
+        "category": DocumentCategory.SOP,
+        "security_level": SecurityLevel.OPERATOR,
+        "tags": ["today's bookings", "pending approvals", "waitlist queue", "urgent requests", "role:operator",
+                 "role:admin", "role:dept_admin"],
+        "external_url": "/booking-management",
+        "content_text": """
+Lab Operators and OICs: ask the Booking Assistant "today's bookings on my equipment", "pending approvals",
+"waitlist queue" or "urgent requests" for a live list scoped to the equipment you handle (department admins see
+their department, admins all equipment). Each row opens the booking in View Booking. Approvals, manual
+waitlist confirmation and urgent-request decisions are done on those pages, not in chat.
 """,
     },
     {

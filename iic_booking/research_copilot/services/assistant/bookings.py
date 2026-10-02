@@ -1,4 +1,10 @@
-"""The signed-in user's own bookings: upcoming list and status by booking ID (never anyone else's)."""
+"""
+The signed-in user's own bookings: lists, details by booking ID and per-booking next steps (never anyone else's).
+
+Each booking row carries the action chips the portal would allow right now (`eligibility`). The chips are
+`ba_booking` actions that are re-checked against ownership and the same rules when pressed; anything that
+changes a booking goes through the existing cancel / reschedule proposal flow and its Confirm button.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +17,24 @@ from iic_booking.research_copilot.services.assistant import cards as C
 
 _ACTIVE_EXCLUDED = ("CANCELLED", "REFUNDED", "COMPLETED", "ABSENT")
 _NUMERIC_REF = re.compile(r"(?:\bbooking\s*(?:id|no\.?|number|ref)?\s*[#:]?\s*|#\s*)(\d{1,9})\b", re.IGNORECASE)
+ACTIVE_STATUSES = ("PENDING", "BOOKED", "DISRUPTION_PENDING")
+RESULT_STATUSES = ("PROCESSING", "COMPLETED")
+REBOOK_STATUSES = ("COMPLETED", "CANCELLED", "REFUNDED", "BOOKING_NOT_UTILIZED", "ABSENT", "OTHER_DISRUPTION")
+MAX_LIST = 8
+NEXT_PROMPT = "What would you like to do next?"
+
+OP_LABELS = {
+    "details": "View details",
+    "cancel": "Cancel",
+    "reschedule": "Reschedule",
+    "edit": "Edit parameters",
+    "message": "Message the lab",
+    "results": "View results",
+    "invoice": "Download invoice",
+    "rate": "Rate experience",
+    "rebook": "Book again",
+    "template": "Save as template",
+}
 
 
 def booking_ref(text: str) -> str | None:
@@ -23,15 +47,99 @@ def booking_ref(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _row(b) -> dict[str, Any]:
+def _base_qs(user):
+    from iic_booking.equipment.models import Booking
+
+    return Booking.objects.filter(user=user).select_related("equipment").prefetch_related("daily_slots")
+
+
+def owned(user, booking_id):
+    try:
+        return _base_qs(user).filter(pk=int(booking_id)).first()
+    except (TypeError, ValueError):
+        return None
+
+
+def find_owned(user, ref: str):
+    from django.db.models import Q
+
+    filt = Q(virtual_booking_id__iexact=ref)
+    if ref.isdigit():
+        filt |= Q(booking_id=int(ref))
+    return _base_qs(user).filter(filt).first()
+
+
+def _slots(b) -> list:
+    return sorted(b.daily_slots.all(), key=lambda s: s.start_datetime or timezone.now())
+
+
+def eligibility(b, *, now=None) -> dict[str, Any]:
+    """Which next steps the portal allows for this booking right now (same rules as My Bookings)."""
+    from iic_booking.research_copilot.services.intelligence.booking_changes import _window
+
+    now = now or timezone.now()
+    slots = _slots(b)
+    future = any(s.start_datetime and s.start_datetime > now for s in slots)
+    status = str(b.status or "")
+    repeat = getattr(b, "source_booking_id", None) is not None
+    active = status in ACTIVE_STATUSES and future and not repeat
+    open_, cutoff = _window(b) if active else (False, None)
+    results = False
+    if status in RESULT_STATUSES:
+        try:
+            from iic_booking.equipment.booking_results_service import has_material_result_files
+
+            results = bool(has_material_result_files(b))
+        except Exception:  # noqa: BLE001
+            results = False
+    eq = b.equipment
+    return {
+        "active": active,
+        "future": future,
+        "self_service_open": bool(open_),
+        "cutoff": cutoff,
+        "cancel": active and bool(open_),
+        "reschedule": active and bool(open_),
+        "edit": status == "BOOKED" and not repeat and bool(b.input_values),
+        "message": status != "WAITLISTED",
+        "results": results,
+        "invoice": status == "COMPLETED",
+        "rate": status == "COMPLETED" and getattr(b, "rating", None) is None and bool(getattr(eq, "user_rating_enabled", False)),
+        "rebook": status in REBOOK_STATUSES or (not future and status not in ACTIVE_STATUSES),
+        "template": status in ("COMPLETED", "BOOKED", "PROCESSING") and bool(b.input_values),
+    }
+
+
+def chip(b, op: str, *, primary: bool = False) -> dict[str, Any]:
     from iic_booking.research_copilot.services.booking_refs import display_ref
 
-    slots = sorted(b.daily_slots.all(), key=lambda s: s.start_datetime or timezone.now())
+    ref = display_ref(b)
+    return C.assistant_action(
+        OP_LABELS[op], "ba_booking", {"booking_id": int(b.pk), "op": op}, primary=primary,
+        utterance=f"{OP_LABELS[op]} {ref}",
+    )
+
+
+def chips_for(b, elig: dict[str, Any], *, include_details: bool = True, limit: int | None = None) -> list[dict[str, Any]]:
+    order = ["details"] if include_details else []
+    if elig["active"]:
+        order += ["reschedule", "cancel", "edit", "message"]
+    else:
+        order += ["results", "invoice", "rate", "message", "edit", "rebook", "template"]
+    ops = [op for op in order if op == "details" or elig.get(op)]
+    out = [chip(b, op, primary=(i == 0 and op != "details")) for i, op in enumerate(ops)]
+    return out[:limit] if limit else out
+
+
+def _row(b, elig: dict[str, Any] | None = None, *, with_actions: bool = False) -> dict[str, Any]:
+    from iic_booking.research_copilot.services.booking_refs import display_ref
+
+    slots = _slots(b)
     start = slots[0].start_datetime if slots else None
     end = slots[-1].end_datetime if slots else None
     ls = timezone.localtime(start) if start else None
     le = timezone.localtime(end) if end else None
-    return {
+    row = {
         "booking_id": int(b.pk),
         "reference": display_ref(b),
         "equipment": getattr(b.equipment, "name", ""),
@@ -43,67 +151,181 @@ def _row(b) -> dict[str, Any]:
         "charge": float(b.total_charge) if getattr(b, "total_charge", None) is not None else None,
         "href": f"/my-bookings?booking={b.pk}",
     }
+    if with_actions:
+        elig = elig or eligibility(b)
+        row["actions"] = chips_for(b, elig, limit=4)
+        row["self_service_open"] = elig["self_service_open"]
+        if elig.get("cutoff"):
+            row["cutoff"] = elig["cutoff"]
+    return row
 
 
-def upcoming_reply(user, *, limit: int = 8) -> dict[str, Any]:
-    from iic_booking.equipment.models import Booking
+def _remember(conversation, rows: list[dict[str, Any]], *, focus: int | None = None) -> None:
+    from iic_booking.research_copilot.services.assistant import state as ba_state
+
+    values: dict[str, Any] = {"last_booking_ids": [r["booking_id"] for r in rows][:MAX_LIST]}
+    if focus is not None:
+        values["focus_booking_id"] = int(focus)
+    elif len(rows) == 1:
+        values["focus_booking_id"] = rows[0]["booking_id"]
+    ba_state.save(conversation, **values)
+
+
+# --------------------------------------------------------------------------- lists
+
+_SCOPE_TITLES = {
+    "upcoming": "Upcoming bookings",
+    "past": "Past bookings",
+    "recent": "Recent bookings",
+    "all": "Bookings",
+}
+
+
+def _filtered(user, scope: str, statuses: list[str] | None, equipment_words: list[str] | None):
+    from django.db.models import Max, Min, Q
 
     now = timezone.now()
-    qs = (
-        Booking.objects.filter(user=user, daily_slots__end_datetime__gte=now)
-        .exclude(status__in=_ACTIVE_EXCLUDED)
-        .select_related("equipment")
-        .prefetch_related("daily_slots")
-        .distinct()
-    )
-    rows = sorted((_row(b) for b in qs[:60]), key=lambda r: r["start"] or "")[:limit]
-    if not rows:
+    qs = _base_qs(user).annotate(first_start=Min("daily_slots__start_datetime"), last_end=Max("daily_slots__end_datetime"))
+    if statuses:
+        qs = qs.filter(status__in=statuses)
+    if scope == "upcoming":
+        qs = qs.filter(last_end__gte=now)
+        if not statuses:
+            qs = qs.exclude(status__in=_ACTIVE_EXCLUDED)
+        qs = qs.order_by("first_start")
+    elif scope == "past":
+        qs = qs.filter(Q(last_end__lt=now) | Q(status__in=("COMPLETED", "CANCELLED", "REFUNDED"))).order_by("-first_start")
+    else:
+        qs = qs.order_by("-created_at") if hasattr(qs.model, "created_at") else qs.order_by("-pk")
+    if equipment_words:
+        q = Q()
+        for w in equipment_words:
+            q |= Q(equipment__name__icontains=w) | Q(equipment__code__icontains=w)
+        narrowed = qs.filter(q)
+        if narrowed.exists():
+            return narrowed, True
+    return qs, False
+
+
+_LIST_STOP = {
+    "my", "mine", "show", "list", "view", "see", "display", "check", "get", "give", "all", "recent", "latest", "last",
+    "upcoming", "future", "next", "past", "previous", "old", "history", "pending", "completed", "cancelled", "canceled",
+    "confirmed", "booked", "refunded", "processing", "waitlisted", "current", "active", "scheduled", "bookings",
+    "booking", "reservations", "reservation", "sessions", "session", "slots", "slot", "please", "me", "the", "a", "an",
+    "of", "for", "on", "in", "what", "are", "is", "do", "i", "have", "did", "book", "tell", "about", "status", "and",
+    "can", "you", "your", "with", "this", "week", "month", "today", "earlier", "older", "finished", "done", "hold",
+    "unpaid", "disrupted", "appointments", "appointment", "requests", "request", "now", "when", "any", "which", "where",
+}
+
+
+def list_reply(user, conversation, *, scope: str = "recent", statuses: list[str] | None = None, limit: int = MAX_LIST,
+               text: str = "") -> dict[str, Any]:
+    from iic_booking.research_copilot.services.assistant.intents import normalize
+
+    words = [w for w in normalize(text).split() if len(w) >= 3 and w not in _LIST_STOP and not w.isdigit()]
+    qs, by_equipment = _filtered(user, scope, statuses, words[:3])
+    bookings = list(qs[:limit])
+    title = _SCOPE_TITLES.get(scope, "Bookings")
+    if statuses and len(statuses) == 1:
+        title = f"{bookings[0].get_status_display() if bookings else statuses[0].title()} bookings"
+    if by_equipment and bookings:
+        title = f"{bookings[0].equipment.name} bookings" if len({b.equipment_id for b in bookings}) == 1 else title
+    if not bookings:
+        empty = {
+            "upcoming": "You have no upcoming bookings.",
+            "past": "You have no past bookings yet.",
+        }.get(scope, "I couldn't find any bookings matching that.")
+        if scope == "upcoming" and limit == 1:
+            empty = "You have no upcoming bookings."
         return C.reply(
-            "You have no upcoming bookings. Tell me the equipment and a day (for example \"XRD next Monday\") and I'll find free slots.",
-            actions=[C.link("My Bookings", "/my-bookings")],
-            intent="upcoming",
-            title_hint="Upcoming bookings",
+            empty + " Tell me the equipment and a day (for example \"XRD next Monday\") and I'll find free slots.",
+            actions=[C.flow_action("Book equipment", "start", primary=True),
+                     C.prompt_action("Recent bookings", "Show my recent bookings"),
+                     C.link("Open My Bookings", "/my-bookings")],
+            intent="bookings",
+            title_hint=title,
         )
-    lines = [f"You have {len(rows)} upcoming booking{'s' if len(rows) != 1 else ''}:"]
-    for r in rows:
-        lines.append(f"- **{r['equipment']}** — {r['when']} · {r['status_label']} ({r['reference']})")
+    rows = [_row(b, with_actions=True) for b in bookings]
+    _remember(conversation, rows)
+    actions = _list_actions(scope)
+    if len(rows) == 1:
+        r = rows[0]
+        intro = (f"Your next booking is **{r['equipment']}** on {r['when']} ({r['reference']}, {r['status_label']})."
+                 if scope == "upcoming" and limit == 1
+                 else f"I found 1 booking: **{r['equipment']}** — {r['when']} ({r['reference']}, {r['status_label']}).")
+        hint = "Use the buttons on the booking."
+    else:
+        what = {"upcoming": "upcoming", "past": "past", "recent": "most recent"}.get(scope, "")
+        intro = f"Here are your {len(rows)} {what} bookings.".replace("  ", " ")
+        hint = "Use a booking's buttons, or say something like \"cancel the second one\"."
+    content = f"{intro}\n\n{NEXT_PROMPT} {hint}"
+    return C.reply(
+        content,
+        cards=[{"type": "ba_bookings", "title": title, "items": rows, "prompt": NEXT_PROMPT}],
+        actions=actions,
+        intent="bookings",
+        title_hint=title,
+        extra={"next_prompt": NEXT_PROMPT},
+    )
+
+
+def _list_actions(scope: str) -> list[dict[str, Any]]:
+    """List-level next steps; per-booking actions live on each booking in the card."""
+    other = (C.prompt_action("Past bookings", "Show my past bookings") if scope == "upcoming"
+             else C.prompt_action("Upcoming bookings", "Show my upcoming bookings"))
+    return [C.flow_action("Book equipment", "start"), other, C.link("Open My Bookings", "/my-bookings")]
+
+
+def upcoming_reply(user, *, limit: int = MAX_LIST, conversation=None) -> dict[str, Any]:
+    return list_reply(user, conversation, scope="upcoming", limit=limit)
+
+
+# --------------------------------------------------------------------------- details
+
+def detail_reply(user, conversation, b) -> dict[str, Any]:
+    elig = eligibility(b)
+    r = _row(b, elig)
+    lines = [f"**{r['reference']}** · {r['equipment']}", "", f"- Status: **{r['status_label']}**"]
+    if r["when"]:
+        lines.append(f"- Slot: {r['when']}")
+    if r["charge"] is not None:
+        lines.append(f"- Charge: ₹{r['charge']:,.2f}")
+    samples = (b.input_values or {}).get("A") if isinstance(b.input_values, dict) else None
+    if samples:
+        lines.append(f"- Samples: {samples}")
+    if elig["active"]:
+        if elig["self_service_open"]:
+            if elig.get("cutoff"):
+                lines.append(f"- You can cancel or reschedule until {elig['cutoff']}.")
+        else:
+            lines.append("- The self-service cancel/reschedule window has closed; the lab or admin can still help "
+                         "(use Message the lab or raise a support ticket).")
+    if str(b.status) in RESULT_STATUSES:
+        lines.append("- Results: " + ("available — open the booking to download them." if elig["results"] else "not uploaded yet."))
+    lines += ["", NEXT_PROMPT]
+    actions = chips_for(b, elig, include_details=False)
+    if not elig["self_service_open"] and elig["active"]:
+        from iic_booking.research_copilot.services.intelligence import messages as M
+
+        actions.append(M.ticket_action("user_requested", "Ask the admin (support ticket)"))
+    actions.append(C.link("Open in My Bookings", r["href"]))
+    _remember(conversation, [r], focus=int(b.pk))
     return C.reply(
         "\n".join(lines),
-        cards=[{"type": "ba_bookings", "title": "Upcoming bookings", "items": rows}],
-        actions=[C.link("My Bookings", "/my-bookings")],
-        intent="upcoming",
-        title_hint="Upcoming bookings",
+        cards=[{"type": "ba_bookings", "title": "Booking details", "items": [r]}],
+        actions=actions,
+        intent="booking_details",
+        title_hint=f"Booking {r['reference']}",
+        extra={"booking_id": int(b.pk), "next_prompt": NEXT_PROMPT},
     )
 
 
-def status_reply(user, ref: str) -> dict[str, Any]:
-    from django.db.models import Q
-
-    from iic_booking.equipment.models import Booking
-
-    filt = Q(virtual_booking_id__iexact=ref)
-    if ref.isdigit():
-        filt |= Q(booking_id=int(ref))
-    b = (
-        Booking.objects.filter(filt, user=user)
-        .select_related("equipment")
-        .prefetch_related("daily_slots")
-        .first()
-    )
+def status_reply(user, ref: str, *, conversation=None) -> dict[str, Any]:
+    b = find_owned(user, ref)
     if b is None:
         return C.reply(
             f"I couldn't find booking **{ref}** among your bookings. Check the ID in My Bookings.",
-            actions=[C.link("My Bookings", "/my-bookings")],
+            actions=[C.prompt_action("Show my bookings", "Show my recent bookings"), C.link("My Bookings", "/my-bookings")],
             intent="booking_status",
         )
-    r = _row(b)
-    content = f"Booking **{r['reference']}** for **{r['equipment']}** is **{r['status_label']}**."
-    if r["when"]:
-        content += f"\n\nSlot: {r['when']}."
-    return C.reply(
-        content,
-        cards=[{"type": "ba_bookings", "title": "Booking status", "items": [r]}],
-        actions=[C.link("Open booking", r["href"], primary=True)],
-        intent="booking_status",
-        title_hint=f"Booking {r['reference']}",
-    )
+    return detail_reply(user, conversation, b)

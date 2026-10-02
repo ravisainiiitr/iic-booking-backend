@@ -120,12 +120,11 @@ def recharge_guidance(*, user, amount=None, text: str = "", department_id: int |
         for s in (snap.get("sub_wallets") or [])
     ]
     href = recharge_href(department_id=dept_id, amount=amt)
+    from iic_booking.research_copilot.services.assistant.daily import recharge_steps_text
+
     lines = [
         f"Your wallet balance is **₹{snap.get('balance')}**." if snap.get("balance") is not None else "",
-        "To recharge, open **Wallet → Recharge** and choose one of:",
-        "- **Online payment (SBIePay)**: the balance updates once the payment gateway confirms.",
-        "- **Project grant**: raise a recharge request against your project; it is credited after approval.",
-        "- **Direct cash deposit**: submit the deposit details; it is credited after verification.",
+        recharge_steps_text(user),
     ]
     if amt is not None:
         lines.append(f"\nThe recharge form will open with **₹{amt}** filled in.")

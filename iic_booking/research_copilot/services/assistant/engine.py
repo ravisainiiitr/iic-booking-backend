@@ -1,10 +1,12 @@
 """
 Booking Assistant turn handling.
 
-Runs first in `send_message` for signed-in users. It answers availability ("I need FESEM tomorrow —
-what are my options?"), equipment questions, policy questions, "which equipment can do X", the user's
-upcoming bookings / a booking's status, and drives booking through clickable cards. Anything it does
-not recognise returns None so the existing intelligence, deterministic and RAG layers answer as before.
+Runs first in `send_message` for signed-in users. Day-to-day questions (my bookings, wallet, recharge,
+results, invoices, waitlist, tickets, staff queues, ...) are answered by the deterministic intent table in
+`intents` / `daily` with next-step chips. It also answers availability ("I need FESEM tomorrow — what
+are my options?"), equipment and policy questions, "which equipment can do X", and drives booking through
+clickable cards. Anything it does not recognise returns None so the existing intelligence, deterministic
+and RAG layers answer as before.
 """
 
 from __future__ import annotations
@@ -163,7 +165,11 @@ def _dispatch_action(user, conversation, action: dict[str, Any]) -> dict[str, An
     t = action["type"]
     p = action.get("payload") or {}
     if t == A.UPCOMING:
-        return bookings.upcoming_reply(user)
+        return bookings.upcoming_reply(user, conversation=conversation)
+    if t == A.BOOKING:
+        from iic_booking.research_copilot.services.assistant import daily
+
+        return daily.dispatch_booking_action(user, conversation, p)
     if t == A.FLOW:
         return guided.handle(user, conversation, p)
     eq = _visible(user, p.get("equipment_id"))
@@ -239,9 +245,9 @@ def _classify(user, conversation, text: str, ctx: dict[str, Any], intel_busy: bo
 
     ref = bookings.booking_ref(text)
     if ref and _STATUS_RE.search(lower) and not _CHANGE_RE.search(lower):
-        return bookings.status_reply(user, ref)
+        return bookings.status_reply(user, ref, conversation=conversation)
     if _UPCOMING_RE.search(lower) and not _CHANGE_RE.search(lower):
-        return bookings.upcoming_reply(user)
+        return bookings.upcoming_reply(user, conversation=conversation)
 
     when = parse_when(text)
     phrase = matching.equipment_phrase(strip_when(text, when))
@@ -305,10 +311,10 @@ def _planned(user, conversation, text: str, ctx: dict[str, Any]) -> dict[str, An
         return None
     intent = p["intent"]
     if intent == "upcoming":
-        return bookings.upcoming_reply(user)
+        return bookings.upcoming_reply(user, conversation=conversation)
     if intent == "booking_status":
         ref = bookings.booking_ref(text)
-        return bookings.status_reply(user, ref) if ref else None
+        return bookings.status_reply(user, ref, conversation=conversation) if ref else None
     if intent == "capability":
         return info.capability_reply(user, text)
     if intent == "policy":
@@ -347,6 +353,66 @@ def _typed_confirm_reply(conversation, text: str) -> dict[str, Any] | None:
     )
 
 
+def resolve_confirm(text: str) -> bool:
+    from iic_booking.research_copilot.services.v2.intent_resolver import resolve_intent
+
+    try:
+        return resolve_intent(text).intent == "confirm_proposal"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_CHANGE_CHOICE_KINDS = {"cancel_booking", "cancel_mode", "cancel_slots", "cancel_reduce", "reschedule_booking", "reschedule_slot"}
+
+
+def _change_choice(user, conversation, choice: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Cancel / reschedule buttons started from a booking chip keep working when the intelligence layer is off."""
+    from iic_booking.research_copilot.services.intelligence import intelligence_enabled
+
+    kind = str((choice or {}).get("kind") or "")
+    if kind not in _CHANGE_CHOICE_KINDS or intelligence_enabled():
+        return None
+    from iic_booking.research_copilot.services.intelligence import engine as intel_engine
+    from iic_booking.research_copilot.services.intelligence import messages as M
+    from iic_booking.research_copilot.services.intelligence import state as intel_state
+
+    value = str(choice.get("value") or "")
+    state = intel_state.load(conversation)
+    if kind == "cancel_slots":
+        valid = (state.get("pending_choice") or {}).get("kind") == kind
+    else:
+        valid = intel_state.match_choice(state, value=value, kind=kind) is not None
+    if not valid:
+        return M.error("That option has expired. Please ask again or pick from the latest options.", intent="CHOICE_EXPIRED")
+    from iic_booking.research_copilot.services.assistant.daily import _intel_turn
+
+    turn = _intel_turn(user, conversation, value, state.get("last_intent") or "")
+    turn.state = state
+    out = intel_engine.handle_choice(turn, kind, value)
+    intel_state.save(conversation, turn.state)
+    return out
+
+
+def _daily(user, conversation, text: str, intel_state_dict: dict[str, Any]) -> dict[str, Any] | None:
+    from iic_booking.research_copilot.services.assistant import daily, intents
+
+    pending = intel_state_dict.get("pending_choice")
+    if pending:
+        from iic_booking.research_copilot.services.intelligence import state as intel_state
+
+        if intel_state.match_choice(intel_state_dict, text=text) is not None:
+            return None
+    det = intents.detect(text)
+    if det is None or det.intent in ("howto_cancel", "howto_reschedule"):
+        return None
+    if pending and det.intent in ("booking_details",) and det.params.get("ordinal") is not None:
+        return None
+    out = daily.handle(user, conversation, det, text)
+    if out is not None:
+        out.setdefault("metadata", {})["daily_intent"] = det.intent
+    return out
+
+
 def try_assistant_turn(
     *,
     user,
@@ -360,6 +426,9 @@ def try_assistant_turn(
         return None
     try:
         if assistant_action is None and (choice or action):
+            changed = _change_choice(user, conversation, choice)
+            if changed is not None:
+                return changed
             return _start_choice(user, conversation, choice, action)
         if assistant_action is not None:
             out = _dispatch_action(user, conversation, assistant_action)
@@ -383,6 +452,7 @@ def try_assistant_turn(
             if typed is not None:
                 return typed
         intel_busy = False
+        st: dict[str, Any] = {}
         try:
             from iic_booking.research_copilot.services.intelligence import state as intel_state
 
@@ -390,6 +460,11 @@ def try_assistant_turn(
             intel_busy = bool(st.get("pending_choice") or st.get("step"))
         except Exception:  # noqa: BLE001
             intel_busy = False
+        if st.get("step") == "confirm" and resolve_confirm(text or ""):
+            return None
+        daily_out = _daily(user, conversation, text or "", st)
+        if daily_out is not None:
+            return daily_out
         return _classify(user, conversation, text or "", ba_state.load(conversation), intel_busy)
     except Exception:  # noqa: BLE001
         logger.exception("booking assistant turn failed")

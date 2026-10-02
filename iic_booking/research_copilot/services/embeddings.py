@@ -126,7 +126,52 @@ class OllamaEmbedding(EmbeddingProvider):
         return self._embed(texts, kind="document")
 
     def embed_query(self, text: str) -> list[float]:
-        return self._embed([text], kind="query")[0]
+        """
+        Chat-path embedding: cached per (model, text), with a short timeout and a brief circuit breaker so
+        a slow or unreachable Ollama costs one quick failure instead of a long stall on every message.
+        Bulk document indexing (embed_texts) keeps the long timeout.
+        """
+        from django.core.cache import cache
+
+        norm = " ".join((text or "").lower().split())
+        key = "rc_qemb:" + hashlib.sha256(f"{self.model}|{norm}".encode("utf-8")).hexdigest()
+        try:
+            cached = cache.get(key)
+        except Exception:  # noqa: BLE001
+            cached = None
+        if isinstance(cached, list) and cached:
+            return cached
+        try:
+            if cache.get(QUERY_EMBED_DOWN_KEY):
+                raise EmbeddingUnavailable("ollama_recently_unavailable")
+        except EmbeddingUnavailable:
+            raise
+        except Exception:  # noqa: BLE001
+            pass
+        long_timeout = self.timeout
+        self.timeout = min(long_timeout, query_timeout_seconds())
+        try:
+            vec = self._embed([text], kind="query")[0]
+        except EmbeddingUnavailable:
+            try:
+                cache.set(QUERY_EMBED_DOWN_KEY, 1, 60)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        finally:
+            self.timeout = long_timeout
+        try:
+            cache.set(key, vec, 24 * 60 * 60)
+        except Exception:  # noqa: BLE001
+            pass
+        return vec
+
+
+QUERY_EMBED_DOWN_KEY = "rc_qemb:down"
+
+
+def query_timeout_seconds() -> float:
+    return float(getattr(settings, "RESEARCH_COPILOT_QUERY_EMBEDDING_TIMEOUT_SECONDS", 8) or 8)
 
 
 def get_embedding_provider() -> EmbeddingProvider:
