@@ -22,7 +22,7 @@ from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 
 from .models import Equipment, ExternalUserQuota, QuotaLimitType, QuotaType, UserTypeQuota
-from .quota_utils import QuotaService, booking_quota_should_skip
+from .quota_utils import QuotaService, booking_quota_should_skip, quota_limit_is_effectively_unlimited
 
 
 def _period_item(*, quota_type: str, scope: str, shared: bool, limit_minutes: int, used_minutes: int, reference_dt: datetime) -> dict:
@@ -198,6 +198,7 @@ def build_booking_quota_summary(user: User, equipment, reference_day: date) -> d
         periods = _group_periods(user, equipment, reference_dt)
     else:
         periods = _legacy_periods(user, equipment, reference_dt)
+    periods = [p for p in periods if not quota_limit_is_effectively_unlimited(p["period"], p["limit_minutes"])]
 
     if not periods:
         summary["reason"] = "no_limits"
