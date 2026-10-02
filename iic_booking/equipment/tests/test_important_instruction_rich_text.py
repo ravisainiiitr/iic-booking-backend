@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 from iic_booking.equipment.admin import EquipmentAdminForm
 from iic_booking.equipment.models import EquipmentManager
 from iic_booking.equipment.rich_text import clean_important_instruction
+from iic_booking.equipment.rich_text import font_token
 from iic_booking.equipment.rich_text import palette_color
 from iic_booking.equipment.rich_text import rich_text_to_plain
 from iic_booking.equipment.rich_text import sanitize_rich_text
@@ -38,7 +39,7 @@ def test_sanitizer_keeps_editor_formatting():
 
 def test_sanitizer_drops_scripts_handlers_and_arbitrary_styles():
     dirty = (
-        '<p style="color: rgb(185, 28, 28); font-family: Georgia; position: fixed; font-size: 40px">'
+        '<p style="color: rgb(185, 28, 28); font-family: Comic Sans MS; position: fixed; font-size: 40px">'
         '<b onclick="steal()">Dry</b> <i onmouseover="x()">samples</i></p>'
         "<script>alert(1)</script><img src=x onerror=alert(1)><svg><script>alert(2)</script></svg>"
         '<iframe src="https://evil"></iframe><style>p{color:red}</style><!-- c -->'
@@ -77,6 +78,43 @@ def test_colours_snap_to_the_palette():
     assert palette_color("rgba(0, 0, 0, 0)", "highlight") is None
 
 
+def test_font_families_are_limited_to_allowed_tokens():
+    kept = (
+        '<p><span style="font-family: var(--rt-font-serif); color: var(--rt-red)">serif</span> '
+        '<span style="font-family: var(--rt-font-devanagari)">हिंदी</span></p>'
+    )
+    assert sanitize_rich_text(kept) == kept
+    for name in ("sans", "mono", "verdana", "tahoma", "trebuchet", "georgia", "garamond", "courier"):
+        assert font_token(f"var(--rt-font-{name})") == f"var(--rt-font-{name})"
+
+    assert font_token('"Times New Roman", serif') == "var(--rt-font-serif)"
+    assert font_token("Calibri, sans-serif") == "var(--rt-font-sans)"
+    assert font_token("Cambria") == "var(--rt-font-serif)"
+    assert font_token("'Courier New'") == "var(--rt-font-courier)"
+    assert font_token("Consolas") == "var(--rt-font-mono)"
+    assert font_token("Mangal") == "var(--rt-font-devanagari)"
+    assert font_token("Wingdings, Comic Sans MS") is None
+    assert font_token("var(--rt-font-evil)") is None
+    assert font_token("var(--rt-red)") is None
+
+    dirty = (
+        '<span style="font-family: expression(alert(1))">a</span>'
+        '<span style="font-family: x; background-image: url(javascript:alert(1))">b</span>'
+        '<span style="font-family: var(--rt-font-serif), url(https://evil/x.woff)">c</span>'
+        '<span style="font-family: Papyrus">d</span>'
+        '<span style="font-family: \'Arial\'; font-size: 30px">e</span>'
+    )
+    assert sanitize_rich_text(dirty) == 'abcd<span style="font-family: var(--rt-font-sans)">e</span>'
+    assert palette_color("var(--rt-font-serif)", "text") is None
+
+    pasted = '<p style="font-family: Cambria"><span style="font-family: &quot;Courier New&quot;">code</span> body</p>'
+    assert sanitize_rich_text(pasted) == (
+        '<p><span style="font-family: var(--rt-font-serif)">'
+        '<span style="font-family: var(--rt-font-courier)">code</span> body</span></p>'
+    )
+    assert rich_text_to_plain(pasted) == "code body"
+
+
 def test_legacy_editor_markup_is_converted():
     legacy = (
         '<div style="text-align: center; font-family: Arial">Centre</div>'
@@ -88,9 +126,10 @@ def test_legacy_editor_markup_is_converted():
         '<b style="font-weight: normal" id="docs-internal-guid-1"><span style="font-weight: 700">gdocs</span></b>'
     )
     assert sanitize_rich_text(legacy) == (
-        '<p style="text-align: center">Centre</p><h3>Big</h3><p>Quote</p>'
+        '<p style="text-align: center"><span style="font-family: var(--rt-font-sans)">Centre</span></p>'
+        "<h3>Big</h3><p>Quote</p>"
         "<strong><em><u><s>all</s></u></em></strong> "
-        '<span style="color: var(--rt-red)">red</span> '
+        '<span style="font-family: var(--rt-font-sans); color: var(--rt-red)">red</span> '
         '<mark style="background-color: var(--rt-hl-yellow)">hl</mark> '
         '<mark style="background-color: var(--rt-hl-green)"><span style="color: var(--rt-blue)">both</span></mark> '
         "<strong>gdocs</strong>"

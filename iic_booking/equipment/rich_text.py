@@ -24,12 +24,33 @@ ALLOWED_TAGS = {
 TEXT_COLORS = ("red", "orange", "amber", "green", "blue", "purple", "pink", "gray")
 HIGHLIGHT_COLORS = ("yellow", "orange", "green", "blue", "pink")
 TEXT_ALIGNS = ("center", "right")
+FONT_FAMILIES = (
+    "sans", "serif", "mono", "verdana", "tahoma", "trebuchet", "georgia", "garamond", "courier", "devanagari",
+)
+# Fonts commonly pasted from Word / Google Docs (or chosen in the older toolbar) → nearest allowed font.
+_FONT_ALIASES = {
+    **dict.fromkeys(("arial", "helvetica", "helvetica neue", "arial nova", "calibri", "carlito", "aptos",
+                     "segoe ui", "roboto", "open sans", "lato", "noto sans", "liberation sans", "sans-serif",
+                     "system-ui"), "sans"),
+    **dict.fromkeys(("times new roman", "times", "cambria", "caladea", "book antiqua", "palatino linotype",
+                     "palatino", "constantia", "noto serif", "liberation serif", "serif"), "serif"),
+    **dict.fromkeys(("consolas", "monaco", "menlo", "lucida console", "cascadia code", "roboto mono",
+                     "source code pro", "ui-monospace", "monospace"), "mono"),
+    **dict.fromkeys(("courier new", "courier", "liberation mono"), "courier"),
+    **dict.fromkeys(("verdana", "geneva"), "verdana"),
+    "tahoma": "tahoma",
+    **dict.fromkeys(("trebuchet ms", "trebuchet"), "trebuchet"),
+    "georgia": "georgia",
+    **dict.fromkeys(("garamond", "eb garamond", "adobe garamond pro"), "garamond"),
+    **dict.fromkeys(("mangal", "nirmala ui", "kokila", "aparajita", "utsaah", "noto sans devanagari",
+                     "kohinoor devanagari"), "devanagari"),
+}
 
 PLAIN_TEXT_MAX_LENGTH = 5000
 HTML_MAX_LENGTH = 20000
 
 _STYLE_PROPS_BY_TAG = {
-    "span": ("color",),
+    "span": ("color", "font-family"),
     "mark": ("background-color",),
     "p": ("text-align",),
     "h3": ("text-align",),
@@ -42,6 +63,7 @@ _DROP_CONTENT_TAGS = {"script", "style", "iframe", "object", "embed", "noscript"
 _VOID_TAGS = {"br", "img", "hr", "input", "meta", "link", "wbr", "col", "area", "source"}
 _ANY_TAG = re.compile(r"</?[a-zA-Z][\w:-]*(\s[^<>]*)?/?>")
 _VAR_TOKEN = re.compile(r"^var\(\s*--rt-(hl-)?([a-z]+)\s*(,[^)]*)?\)$")
+_FONT_TOKEN = re.compile(r"^var\(\s*--rt-font-([a-z]+)\s*\)$")
 _HEX = re.compile(r"^#([0-9a-f]{3}|[0-9a-f]{6})$")
 _RGB = re.compile(r"^rgba?\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})(?:[\s,/]+([\d.]+%?))?\s*\)$")
 _NAMED = {
@@ -118,6 +140,19 @@ def palette_color(value: str, kind: str) -> str | None:
     return f"var({prefix}{name})"
 
 
+def font_token(value: str) -> str | None:
+    """``var(--rt-font-…)`` for an allowed font token or a known font name in a stack; otherwise ``None``."""
+    v = (value or "").strip().lower().replace("!important", "").strip()
+    m = _FONT_TOKEN.match(v)
+    if m:
+        return f"var(--rt-font-{m.group(1)})" if m.group(1) in FONT_FAMILIES else None
+    for name in v.split(","):
+        alias = _FONT_ALIASES.get(name.strip().strip("'\"").strip())
+        if alias:
+            return f"var(--rt-font-{alias})"
+    return None
+
+
 def _style_decls(raw: str) -> list[tuple[str, str]]:
     out = []
     for decl in (raw or "").split(";"):
@@ -128,15 +163,17 @@ def _style_decls(raw: str) -> list[tuple[str, str]]:
 
 
 def clean_style(tag: str, raw: str) -> str:
-    """Keep only palette colours (span/mark) and centre/right alignment (blocks)."""
+    """Keep only palette colours and allowed fonts (span/mark) and centre/right alignment (blocks)."""
     allowed = _STYLE_PROPS_BY_TAG.get(tag, ())
     kept: dict[str, str] = {}
     for raw_prop, value in _style_decls(raw):
         prop = "background-color" if raw_prop == "background" else raw_prop
-        if prop not in allowed or len(value) > 120:
+        if prop not in allowed or len(value) > 200:
             continue
         if prop == "color":
             token = palette_color(value, "text")
+        elif prop == "font-family":
+            token = font_token(value)
         elif prop == "background-color":
             token = palette_color(value, "highlight")
         else:
@@ -194,6 +231,8 @@ class _Normalizer(HTMLParser):
         style = attr.get("style", "")
         if tag == "font" and attr.get("color"):
             style = f"color: {attr['color']}; {style}"
+        if tag == "font" and attr.get("face"):
+            style = f"font-family: {attr['face']}; {style}"
         target = _TAG_RENAMES.get(tag, tag)
         if target == "strong" and re.search(r"font-weight\s*:\s*(normal|[1-5]00)\b", style, re.I):
             target = "span"
@@ -204,13 +243,13 @@ class _Normalizer(HTMLParser):
             opened.append(name)
 
         if target == "span":
-            # Highlights are stored as <mark>; a coloured span may carry both.
-            color = clean_style("span", f"color: {_style_value(style, 'color')}")
+            # Highlights are stored as <mark>; colour and font stay on the span inside it.
+            span_style = clean_style("span", style)
             background = clean_style("mark", f"background-color: {_style_value(style, 'background-color', 'background')}")
             if background:
                 _open("mark", f' style="{escape(background, quote=True)}"')
-            if color:
-                _open("span", f' style="{escape(color, quote=True)}"')
+            if span_style:
+                _open("span", f' style="{escape(span_style, quote=True)}"')
         elif target in ALLOWED_TAGS:
             cleaned = clean_style(target, style)
             if target in ("p", "h3", "h4", "li") and not cleaned:
@@ -221,6 +260,9 @@ class _Normalizer(HTMLParser):
             if target == "ol" and attr.get("start", "").isdigit():
                 extra += f' start="{attr["start"][:4]}"'
             _open(target, extra)
+            block_font = clean_style("span", f"font-family: {_style_value(style, 'font-family')}")
+            if target in ("p", "h3", "h4", "li") and block_font:
+                _open("span", f' style="{escape(block_font, quote=True)}"')
         for mark in _inline_marks_from_style(style):
             if mark != target:
                 _open(mark)
