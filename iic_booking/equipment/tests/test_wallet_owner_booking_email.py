@@ -106,7 +106,7 @@ def test_faculty_gets_one_copy_of_the_student_email_with_booked_by(setup, sent):
     assert student_ctx["user_name"] == "Asha Verma"
     assert student_ctx["booked_by_display"] == faculty_ctx["booked_by_display"]
     assert student_ctx["charged_to_display"] == faculty_ctx["charged_to_display"] == (
-        "Ravi Kumar (ravi.kumar@example.com)"
+        "Prof. Ravi Kumar (ravi.kumar@example.com)"
     )
     assert sent.cc[setup.student] == []
 
@@ -216,14 +216,14 @@ def test_confirmation_to_oic_shows_booked_by_and_charged_to_rows(setup, sent):
     oic_ctx = _email_to(sent, setup.oic)
     assert oic_ctx["user_name"] == "Meena OIC"
     assert oic_ctx["booked_by_display"] == "Asha Verma (asha.verma@example.com)"
-    assert oic_ctx["charged_to_display"] == "Ravi Kumar (ravi.kumar@example.com)"
+    assert oic_ctx["charged_to_display"] == "Prof. Ravi Kumar (ravi.kumar@example.com)"
     assert "Booked by" not in oic_ctx["comment"]
     assert "Charged to the wallet of" not in oic_ctx["comment"]
 
     out = _render("booking_created_email", oic_ctx)
     assert "Charged to wallet of" in out["html_message"]
-    assert "Ravi Kumar (ravi.kumar@example.com)" in out["html_message"]
-    assert "- Charged to wallet of: Ravi Kumar (ravi.kumar@example.com)" in out["message"]
+    assert "Prof. Ravi Kumar (ravi.kumar@example.com)" in out["html_message"]
+    assert "- Charged to wallet of: Prof. Ravi Kumar (ravi.kumar@example.com)" in out["message"]
 
 
 def test_urgent_hold_confirmation_to_oic_names_the_student(setup, sent):
@@ -270,7 +270,7 @@ def test_every_recipient_sees_booked_by_and_charged_to_rows(setup, sent, event_k
             assert "Booked by" in body
             assert "Asha Verma (asha.verma@example.com)" in body
             assert "Charged to wallet of" in body
-            assert "Ravi Kumar (ravi.kumar@example.com)" in body
+            assert "Prof. Ravi Kumar (ravi.kumar@example.com)" in body
 
 
 def test_created_note_drops_summary_lines_and_keeps_instructions(setup, sent):
@@ -333,7 +333,7 @@ def test_reminder_and_not_utilized_emails_show_party_rows(setup, sent):
         ctx = next(c for r, t, c in sent.emails if r == setup.student and t == template)
         out = _render(template, ctx)
         assert "Asha Verma (asha.verma@example.com)" in out["html_message"]
-        assert "Ravi Kumar (ravi.kumar@example.com)" in out["html_message"]
+        assert "Prof. Ravi Kumar (ravi.kumar@example.com)" in out["html_message"]
 
 
 def test_comment_email_keeps_the_author_text_verbatim():

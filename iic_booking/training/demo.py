@@ -24,6 +24,8 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.users.display import get_user_display_name
+
 from . import access, notify
 from .audit import audit
 from .errors import TrainingError
@@ -131,7 +133,7 @@ def charge_for(rate: Decimal, minutes: int) -> Decimal:
 
 
 def _faculty_name(user) -> str:
-    return (getattr(user, "name", "") or "").strip() or user.email
+    return get_user_display_name(user)
 
 
 def _course_text(req: DemoRequest) -> str:

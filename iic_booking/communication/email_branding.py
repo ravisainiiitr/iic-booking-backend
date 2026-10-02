@@ -80,8 +80,11 @@ def user_display_name(user: Any, *, fallback: str = "User") -> str:
         if text and not text.isdigit():
             return text
         return fallback
-    name = (getattr(user, "name", None) or "").strip()
-    if name and not name.isdigit():
+    from iic_booking.users.display import apply_faculty_name_prefix
+
+    raw = (getattr(user, "name", None) or "").strip()
+    name = apply_faculty_name_prefix(raw, getattr(user, "user_type", None)) if not raw.isdigit() else ""
+    if name:
         return name
     email = (getattr(user, "email", None) or "").strip()
     if email:

@@ -13,6 +13,7 @@ from django.utils import timezone
 
 from iic_booking.equipment.booking_report_metrics import CHARGED_STATUSES
 from iic_booking.equipment.models import Booking
+from iic_booking.users.display import format_named_person
 from iic_booking.users.models import User, Wallet, WalletJoinRequest, WalletJoinRequestStatus
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import (
@@ -285,7 +286,7 @@ def build_faculty_wallet_expense_report(
         by_member.append(
             {
                 "user_id": uid,
-                "name": (row["user__name"] or "").strip() or (row["user__email"] or ""),
+                "name": format_named_person(row["user__name"], row["user__user_type"], row["user__email"]),
                 "email": row["user__email"] or "",
                 "user_type": row["user__user_type"] or "",
                 "is_wallet_owner": is_owner,

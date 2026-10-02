@@ -31,6 +31,7 @@ from .group_models import (
     UpdateRequestStatus,
 )
 from .services import serialize_publication, user_summary
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ def public_user(user) -> dict[str, Any] | None:
     if user is None:
         return None
     department = getattr(user, "department", None)
-    return {"id": user.pk, "name": user.name or user.email, "department": department.name if department else None}
+    return {"id": user.pk, "name": get_user_display_name(user), "department": department.name if department else None}
 
 
 def serialize_category(category) -> dict[str, Any] | None:

@@ -27,6 +27,7 @@ from iic_booking.users.wallet_recharge_workflow import (
     find_department_account_incharges,
     find_department_administrators,
 )
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,7 @@ def list_eligible_recipients(*, sender, department, query: str = "", limit: int 
         results.append(
             {
                 "id": user.id,
-                "name": user.name or user.email,
+                "name": get_user_display_name(user),
                 "email": user.email,
                 "emp_id": user.emp_id or "",
                 "department": user.department.name if user.department_id else "",
@@ -221,7 +222,7 @@ OTP: {otp}
 
 Transaction ID: {transfer.transaction_id}
 Amount: ₹{transfer.amount}
-Recipient: {transfer.recipient.name or transfer.recipient.email}
+Recipient: {get_user_display_name(transfer.recipient)}
 Department / Grant: {transfer.department.name} ({transfer.grant_code or '—'})
 Expires in 10 minutes.
 
@@ -362,16 +363,16 @@ def notify_peer_transfer_completed(transfer: WalletPeerTransfer) -> None:
     when = (transfer.completed_at or timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
     subject = (
         f"Wallet Transfer {transfer.transaction_id}: "
-        f"₹{transfer.amount} — {transfer.sender.name or transfer.sender.email} → "
-        f"{transfer.recipient.name or transfer.recipient.email}"
+        f"₹{transfer.amount} — {get_user_display_name(transfer.sender)} → "
+        f"{get_user_display_name(transfer.recipient)}"
     )
     common = f"""Wallet-to-Wallet Transfer Completed
 
 Transaction ID: {transfer.transaction_id}
 Date and Time: {when}
 Transfer Amount: ₹{transfer.amount}
-Sender: {transfer.sender.name or transfer.sender.email} ({transfer.sender.email})
-Recipient: {transfer.recipient.name or transfer.recipient.email} ({transfer.recipient.email})
+Sender: {get_user_display_name(transfer.sender)} ({transfer.sender.email})
+Recipient: {get_user_display_name(transfer.recipient)} ({transfer.recipient.email})
 Grant Code: {transfer.grant_code or '—'}
 Department: {transfer.department.name if transfer.department_id else '—'}
 Remarks: {transfer.remarks or '—'}

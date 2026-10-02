@@ -2015,7 +2015,7 @@ Wallet Recharge Request (Resent)
 You have received a wallet recharge request that requires your approval.
 
 Request Details:
-- User: {recharge_request.user.name or recharge_request.user.email}
+- User: {recharge_request.user.get_display_name()}
 - Email: {recharge_request.user.email}
 - Amount: ₹{amount}
 {department_info}- Request ID: #{recharge_request.id}
@@ -2091,7 +2091,7 @@ Wallet Recharge Request (Resent)
 You have received a wallet recharge request that requires your approval.
 
 Request Details:
-- User: {recharge_request.user.name or recharge_request.user.email}
+- User: {recharge_request.user.get_display_name()}
 - Email: {recharge_request.user.email}
 - Amount: ₹{amount}
 {department_info}- Request ID: #{recharge_request.id}

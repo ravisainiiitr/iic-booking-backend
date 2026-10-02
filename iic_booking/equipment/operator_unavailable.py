@@ -13,6 +13,7 @@ from .maintenance_policy import released_slot_status_after_booking_freed
 from .models import BookingEventType, BookingSampleTrace, BookingStatus, SampleTraceStatus
 from .waitlist import notify_waitlist_slots_available
 from .waitlist_booking import _student_booking_description_suffix
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
     equipment_name = getattr(booking.equipment, "name", None) or getattr(booking.equipment, "code", None) or "Equipment"
     user = booking.user
     ctx = {
-        "user_name": getattr(user, "name", None) or getattr(user, "email", None) or "User",
+        "user_name": get_user_display_name(user) or "User",
         "user_email": getattr(user, "email", "") or "",
         "booking_id": booking_display_id_for_email(booking),
         "equipment_name": equipment_name,

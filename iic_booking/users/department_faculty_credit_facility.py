@@ -22,6 +22,7 @@ from .models.department_faculty_credit_facility import (
 )
 from .models.user_type import UserType
 from .models.wallet import SubWallet
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -482,7 +483,7 @@ def serialize_facility_row(
     return {
         "id": facility.id,
         "faculty_user_id": facility.user_id,
-        "faculty_name": facility.user.name or facility.user.email,
+        "faculty_name": get_user_display_name(facility.user),
         "faculty_email": facility.user.email,
         "joining_date": facility.user.joining_date.isoformat() if facility.user.joining_date else None,
         "department_id": facility.department_id,
@@ -503,7 +504,7 @@ def serialize_available_row(user, department, settings: DepartmentFacultyCreditF
     return {
         "id": None,
         "faculty_user_id": user.id,
-        "faculty_name": user.name or user.email,
+        "faculty_name": get_user_display_name(user),
         "faculty_email": user.email,
         "joining_date": user.joining_date.isoformat() if user.joining_date else None,
         "department_id": department.id,

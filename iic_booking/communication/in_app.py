@@ -99,6 +99,9 @@ def admin_users() -> list:
 
 
 def person_label(user, fallback: str = "a user") -> str:
+    """Display name (Prof. for faculty), else email, else ``fallback``."""
     if user is None:
         return fallback
-    return (getattr(user, "name", "") or "").strip() or (getattr(user, "email", "") or "").strip() or fallback
+    from iic_booking.users.display import get_user_display_name
+
+    return get_user_display_name(user) or fallback

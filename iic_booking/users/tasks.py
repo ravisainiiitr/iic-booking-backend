@@ -7,6 +7,7 @@ from celery import shared_task
 from django.conf import settings
 
 from iic_booking.equipment.peak_window import defer_during_peak
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,7 @@ def send_wallet_low_balance_alerts() -> int:
                 continue
             link = f"{getattr(settings, 'FRONTEND_URL', '')}/wallet"
             context = {
-                "user_name": user.name or user.email or "User",
+                "user_name": get_user_display_name(user) or "User",
                 "user_email": user.email or "",
                 "balance": f"{balance:.2f}",
                 "threshold": f"{threshold:.2f}",

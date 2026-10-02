@@ -20,6 +20,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.users.display import get_user_display_name
 from iic_booking.users.models.user_type import UserType
 
 from . import access, notify, scoring
@@ -458,11 +459,11 @@ def build_candidates(call: NominationCall, policy_snap: dict) -> tuple[list[dict
             {
                 "nomination_id": n.id,
                 "student_id": s.id,
-                "student_name": _name(s),
+                "student_name": _snapshot_name(s),
                 "department_key": str(s.department_id),
                 "department_name": getattr(s.department, "name", "") or "—",
                 "faculty_id": n.nominator_id,
-                "faculty_name": _name(n.nominator),
+                "faculty_name": _snapshot_name(n.nominator),
                 "need_category": n.need_category,
                 "eligible": not reasons,
                 "ineligible_reasons": sorted(set(reasons)),
@@ -703,7 +704,7 @@ def accept_seat(nomination: TrainingNomination, student, *, sop_acknowledged: bo
                 "source": RegistrationSource.NOMINATION,
                 "nomination": nomination,
                 "status": RegistrationStatus.CONFIRMED,
-                "participant_snapshot": {"name": _name(student), "department": getattr(student.department, "name", "")},
+                "participant_snapshot": {"name": _snapshot_name(student), "department": getattr(student.department, "name", "")},
             },
         )
         if not created and reg.status in (RegistrationStatus.CANCELLED, RegistrationStatus.EXPIRED):
@@ -939,7 +940,8 @@ def export_csv(run: ShortlistRun) -> str:
         b = e.score_breakdown or {}
         writer.writerow(
             [e.rank or "", c.get("student_name") or _name(e.nomination.student), e.nomination.student.email,
-             c.get("department_name", ""), c.get("faculty_name", ""), e.nomination.need_category,
+             c.get("department_name", ""), _name(e.nomination.nominator) or c.get("faculty_name", ""),
+             e.nomination.need_category,
              e.score_total if e.outcome != EntryOutcome.INELIGIBLE else "", *[b.get(k, "") for k in BREAKDOWN_COLUMNS],
              e.outcome, e.seat_type, e.waitlist_position or "", e.tie_group or "", e.lottery_key, e.constraint_note,
              "yes" if e.overridden else "", e.override_reason, " | ".join(c.get("flags", []))]
@@ -958,6 +960,11 @@ def _require_manager(call: NominationCall, actor) -> None:
 
 
 def _name(user) -> str:
+    return get_user_display_name(user)
+
+
+def _snapshot_name(user) -> str:
+    """Stored name (no display prefix) for shortlist and participant snapshots."""
     return ((getattr(user, "name", "") or "").strip() or getattr(user, "email", "")) if user else ""
 
 

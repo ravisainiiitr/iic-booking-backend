@@ -16,6 +16,7 @@ from ..models import (
     UserType,
     DepartmentType,
 )
+from iic_booking.users.display import get_user_display_name
 
 
 class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransaction]):
@@ -61,7 +62,7 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
         u = getattr(obj, "related_user", None)
         if not u:
             return None
-        return (u.name or u.email or "").strip() or None
+        return get_user_display_name(u) or None
 
     def get_related_user_email(self, obj: SubWalletTransaction) -> str | None:
         u = getattr(obj, "related_user", None)
@@ -319,7 +320,7 @@ class AdminWalletSerializer(serializers.ModelSerializer[Wallet]):
         return obj.user.email if obj.user else "-"
 
     def get_user_name(self, obj: Wallet):
-        return obj.user.name if obj.user and obj.user.name else "-"
+        return get_user_display_name(obj.user, fallback_to_email=False) or "-"
 
     def get_user_type_display(self, obj: Wallet):
         if obj.user:
@@ -438,7 +439,7 @@ class WalletJoinRequestSerializer(serializers.ModelSerializer):
     def get_student_name(self, obj):
         """Return student's name or email."""
         if obj.student:
-            return obj.student.name or obj.student.email
+            return get_user_display_name(obj.student)
         return None
     
     def get_student_email(self, obj):
@@ -472,7 +473,7 @@ class WalletJoinRequestSerializer(serializers.ModelSerializer):
     def get_faculty_name(self, obj):
         """Return faculty's name or email."""
         if obj.faculty:
-            return obj.faculty.name or obj.faculty.email
+            return get_user_display_name(obj.faculty)
         return None
     
     def get_faculty_email(self, obj):
@@ -536,7 +537,7 @@ class WalletRechargeRequestAuditLogSerializer(serializers.ModelSerializer):
 
     def get_actor_name(self, obj):
         if obj.actor_id:
-            return obj.actor.name or obj.actor.email
+            return get_user_display_name(obj.actor)
         return obj.actor_email or ""
 
 
@@ -692,7 +693,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     def get_user_name(self, obj):
         """Return user's name or email."""
         if obj.user:
-            return obj.user.name or obj.user.email
+            return get_user_display_name(obj.user)
         return None
     
     def get_user_email(self, obj):
@@ -720,7 +721,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             user_type_display = getattr(u, "user_type", "") or ""
         return {
             "id": u.id,
-            "name": (u.name or "").strip() or (u.email or ""),
+            "name": get_user_display_name(u),
             "email": u.email or "",
             "emp_id": (u.emp_id or "").strip(),
             "phone_number": (u.phone_number or "").strip(),
@@ -824,7 +825,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
     def get_account_incharge_name(self, obj):
         try:
             if obj.account_incharge_id:
-                return obj.account_incharge.name or obj.account_incharge.email or ""
+                return get_user_display_name(obj.account_incharge) or ""
         except Exception:
             return ""
         return ""
@@ -834,7 +835,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             u = getattr(obj, "fund_receipt_verified_by", None)
             if not u:
                 return ""
-            return (u.name or "").strip() or (u.email or "")
+            return get_user_display_name(u)
         except Exception:
             return ""
 
@@ -871,7 +872,7 @@ class WalletRechargeRequestSerializer(serializers.ModelSerializer):
             fac = getattr(p, "faculty", None) if p else None
             if not fac:
                 return ""
-            return (fac.name or "").strip() or (fac.email or "")
+            return get_user_display_name(fac)
         except Exception:
             return ""
 

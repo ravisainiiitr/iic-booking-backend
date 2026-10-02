@@ -26,6 +26,7 @@ from iic_booking.research_copilot.services.intelligence import messages as M
 from iic_booking.research_copilot.services.intelligence import state as st
 from iic_booking.research_copilot.services.intelligence import terminology
 from iic_booking.research_copilot.services.intelligence.entities import Entities
+from iic_booking.users.display import get_user_display_name
 
 PAGE = 6
 MAX_SLOT_CHOICES = 6
@@ -343,7 +344,7 @@ def equipment_card(turn: Turn, eq) -> dict[str, Any]:
         from iic_booking.users.display import name_with_honorific
 
         oic = [
-            name_with_honorific(m.manager, m.honorific, default=m.manager.name or m.manager.email)
+            name_with_honorific(m.manager, m.honorific, default=get_user_display_name(m.manager))
             for m in eq.equipment_managers.select_related("manager")[:3]
             if m.manager
         ]

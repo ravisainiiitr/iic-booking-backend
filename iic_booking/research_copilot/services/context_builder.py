@@ -71,9 +71,15 @@ def build_context(user) -> CopilotContext:
     user_type = str(getattr(user, "user_type", "") or "")
     bucket = _role_bucket(user_type)
     dept = getattr(user, "department", None)
+    from iic_booking.users.display import get_user_display_name
+
     return CopilotContext(
         user_id=getattr(user, "id", None),
-        display_name=(getattr(user, "name", None) or getattr(user, "get_full_name", lambda: "")() or "")[:128],
+        display_name=(
+            get_user_display_name(user, fallback_to_email=False)
+            or getattr(user, "get_full_name", lambda: "")()
+            or ""
+        )[:128],
         email=(getattr(user, "email", None) or "")[:255],
         user_type=user_type,
         role_bucket=bucket,

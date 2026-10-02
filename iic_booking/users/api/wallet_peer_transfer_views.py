@@ -21,6 +21,7 @@ from iic_booking.users.wallet_peer_transfer import (
     send_transfer_otp_email,
 )
 from iic_booking.users.wallet_recharge_ops import resolve_department_grant_code
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -38,10 +39,10 @@ def _serialize_transfer(t: WalletPeerTransfer) -> dict:
         "department_id": t.department_id,
         "department_name": t.department.name if t.department_id else "",
         "sender_id": t.sender_id,
-        "sender_name": t.sender.name or t.sender.email,
+        "sender_name": get_user_display_name(t.sender),
         "sender_email": t.sender.email,
         "recipient_id": t.recipient_id,
-        "recipient_name": t.recipient.name or t.recipient.email,
+        "recipient_name": get_user_display_name(t.recipient),
         "recipient_email": t.recipient.email,
         "initiated_by_email": t.initiated_by.email if t.initiated_by_id else "",
         "otp_verified": t.otp_verified,
@@ -194,7 +195,7 @@ def wallet_peer_transfer_confirm(request):
         {
             "message": (
                 f"Transfer {transfer.transaction_id} completed. "
-                f"₹{transfer.amount} sent to {transfer.recipient.name or transfer.recipient.email}."
+                f"₹{transfer.amount} sent to {get_user_display_name(transfer.recipient)}."
             ),
             "transfer": _serialize_transfer(transfer),
         },

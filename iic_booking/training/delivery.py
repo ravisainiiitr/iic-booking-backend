@@ -15,6 +15,8 @@ from django.db.models import Max
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.users.display import get_user_display_name
+
 from . import access, notify
 from .audit import audit
 from .errors import TrainingError
@@ -248,7 +250,7 @@ def roster(session: TrainingSession) -> list[dict]:
             {
                 "registration_id": reg.id,
                 "user_id": reg.user_id,
-                "name": (reg.user.name or reg.user.email),
+                "name": get_user_display_name(reg.user),
                 "email": reg.user.email,
                 "department": getattr(reg.user.department, "name", "") or "",
                 "registration_status": reg.status,
@@ -369,12 +371,12 @@ def issue_award(user, event: TrainingEvent, registration: Registration | None, a
         recipients,
         context=_event_context(
             event,
-            summary=f"{user.name or user.email} is now {level.name} on {getattr(equipment, 'name', 'the instrument')}"
+            summary=f"{get_user_display_name(user)} is now {level.name} on {getattr(equipment, 'name', 'the instrument')}"
             + (f", valid until {notify.fmt_dt(award.valid_until)}." if award.valid_until else "."),
             status=level.name,
         ),
         title=f"{level.name}: {getattr(equipment, 'name', '')}",
-        message=f"{user.name or user.email} earned {level.name} on {getattr(equipment, 'name', '')}.",
+        message=f"{get_user_display_name(user)} earned {level.name} on {getattr(equipment, 'name', '')}.",
         path="/my-trainings?tab=certifications",
         actor=actor,
         event="training.award.issued",

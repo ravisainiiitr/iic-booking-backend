@@ -357,8 +357,10 @@ def welcome_email_kwargs_from_user(user) -> dict:
             dept_name = getattr(department, "name", None)
     except Exception:
         dept_name = None
+    from iic_booking.users.display import get_user_display_name
+
     return {
-        "recipient_name": getattr(user, "name", None),
+        "recipient_name": get_user_display_name(user, fallback_to_email=False) or None,
         "recipient_email": user.email,
         "user_type": getattr(user, "user_type", None),
         "user_type_alias": getattr(user, "user_type_alias", None),

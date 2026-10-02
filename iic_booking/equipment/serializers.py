@@ -74,6 +74,7 @@ from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.department import Department, DepartmentType
 from iic_booking.communication.utils import booking_display_id_for_email
+from iic_booking.users.display import get_user_display_name
 
 
 def _booking_slot_bounds(booking):
@@ -367,7 +368,7 @@ def _get_wallet_owner_display_name(user, cache: dict):
                 w = approved.wallet
                 owner = getattr(w, "user", None)
                 if owner and owner.id != uid:
-                    result = owner.name or owner.email
+                    result = get_user_display_name(owner)
         # Faculty / individual student / external: wallet is always their own — no supervisor label.
     except Exception:
         result = None
@@ -1239,7 +1240,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
         user = self._booking_user(obj)
         if not user:
             return None
-        return getattr(user, "name", None) or getattr(user, "email", None) or None
+        return get_user_display_name(user) or None
 
     def get_booking_user_department_code(self, obj):
         """Department code of the user who booked this slot (second line on dashboard, when available)."""
@@ -3303,7 +3304,7 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
                 return None
             payload = {
                 "user_id": u.id,
-                "name": u.name or u.email,
+                "name": get_user_display_name(u),
                 "email": u.email,
                 "phone": u.phone_number,
                 "user_type": "finance",
@@ -3336,7 +3337,7 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
                 payload = {
                     "user_id": operator.id,
                     "name": name_with_honorific(
-                        operator, first_link.honorific, default=operator.name or operator.email
+                        operator, first_link.honorific, default=get_user_display_name(operator)
                     ),
                     "email": operator.email,
                     "phone": operator.phone_number,
@@ -3376,7 +3377,7 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
                 out.append(
                     {
                         "user_id": m.id,
-                        "name": name_with_honorific(m, link.honorific, default=m.name or m.email),
+                        "name": name_with_honorific(m, link.honorific, default=get_user_display_name(m)),
                         "email": m.email,
                         "phone": m.phone_number,
                         "user_type": "manager",
@@ -3433,7 +3434,7 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
     def get_created_by_name(self, obj):
         """Return the name of the user who created this booking (admin, OIC, or booking user). Fallback to booking user for older records."""
         if obj.created_by:
-            return obj.created_by.name or obj.created_by.email
+            return get_user_display_name(obj.created_by)
         return self.get_user_name(obj)
     
     def get_status_display(self, obj):
@@ -3771,7 +3772,7 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
 
     def get_created_by_name(self, obj):
         if getattr(obj, 'created_by', None):
-            return obj.created_by.name or obj.created_by.email
+            return get_user_display_name(obj.created_by)
         return None
 
     def get_equipment_is_operational(self, obj):
@@ -3796,7 +3797,7 @@ class BookingSampleTraceSerializer(serializers.ModelSerializer):
 
     def get_created_by_name(self, obj):
         if obj.created_by:
-            return obj.created_by.name or obj.created_by.email
+            return get_user_display_name(obj.created_by)
         return None
 
     def get_reply_attachments(self, obj):
@@ -3855,7 +3856,7 @@ class BookingEventSerializer(serializers.ModelSerializer):
     def get_created_by_name(self, obj):
         """Return creator's name or email if name is not available."""
         if obj.created_by:
-            return obj.created_by.name or obj.created_by.email
+            return get_user_display_name(obj.created_by)
         return None
     
     def get_previous_status_display(self, obj):
@@ -3880,7 +3881,7 @@ class BookingCancellationRequestSerializer(serializers.ModelSerializer):
     equipment_code = serializers.CharField(source='booking.equipment.code', read_only=True)
     total_charge = serializers.DecimalField(source='booking.total_charge', max_digits=10, decimal_places=2, read_only=True)
     user_email = serializers.EmailField(source='user.email', read_only=True)
-    user_name = serializers.CharField(source='user.name', read_only=True)
+    user_name = serializers.CharField(source='user.get_display_name', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     
     class Meta:
@@ -3906,7 +3907,7 @@ class RepeatSampleRequestSerializer(serializers.ModelSerializer):
     equipment_code = serializers.CharField(source='booking.equipment.code', read_only=True)
     user_id = serializers.IntegerField(source='booking.user_id', read_only=True)
     user_email = serializers.EmailField(source='booking.user.email', read_only=True)
-    user_name = serializers.CharField(source='booking.user.name', read_only=True)
+    user_name = serializers.CharField(source='booking.user.get_display_name', read_only=True)
     completed_at = serializers.DateTimeField(source='booking.completed_at', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     responded_by_name = serializers.SerializerMethodField()
@@ -3933,7 +3934,7 @@ class RepeatSampleRequestSerializer(serializers.ModelSerializer):
         responder = getattr(obj, "responded_by", None)
         if not responder:
             return None
-        return responder.name or responder.email
+        return get_user_display_name(responder)
 
     def get_booking_id(self, obj):
         return booking_display_id_for_email(getattr(obj, "booking", None))
@@ -4140,7 +4141,7 @@ class TAAssignmentSerializer(serializers.ModelSerializer):
 class TARewardLedgerSerializer(serializers.ModelSerializer):
     student_name = serializers.CharField(source='student.name', read_only=True)
     student_email = serializers.CharField(source='student.email', read_only=True)
-    created_by_name = serializers.CharField(source='created_by.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_display_name', read_only=True)
 
     class Meta:
         model = TARewardLedger

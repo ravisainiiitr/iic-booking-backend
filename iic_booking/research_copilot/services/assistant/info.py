@@ -16,6 +16,7 @@ from django.utils.html import strip_tags
 
 from iic_booking.research_copilot.services.assistant import cards as C
 from iic_booking.research_copilot.services.assistant import matching
+from iic_booking.users.display import get_user_display_name
 
 TOPICS = ("overview", "location", "contacts", "charges", "instructions", "inputs", "rules")
 TOPIC_LABELS = {
@@ -51,7 +52,7 @@ def contacts(eq) -> list[dict[str, Any]]:
             u = m.manager
             out.append({
                 "role": "Officer in Charge",
-                "name": name_with_honorific(u, m.honorific, default=getattr(u, "name", "") or getattr(u, "email", "")),
+                "name": name_with_honorific(u, m.honorific, default=get_user_display_name(u)),
                 "email": getattr(u, "email", "") or "",
                 "phone": " / ".join(p for p in (str(getattr(u, "phone_number", "") or "").strip(), (m.alternate_phone_number or "").strip()) if p),
                 "office": (m.office_address or "").strip(),
@@ -63,7 +64,7 @@ def contacts(eq) -> list[dict[str, Any]]:
             u = o.operator
             out.append({
                 "role": o.get_role_display() if hasattr(o, "get_role_display") else "Lab operator",
-                "name": name_with_honorific(u, o.honorific, default=getattr(u, "name", "") or getattr(u, "email", "")),
+                "name": name_with_honorific(u, o.honorific, default=get_user_display_name(u)),
                 "email": getattr(u, "email", "") or "",
                 "phone": " / ".join(p for p in (str(getattr(u, "phone_number", "") or "").strip(), (o.alternate_phone_number or "").strip()) if p),
                 "office": (o.office_address or "").strip(),

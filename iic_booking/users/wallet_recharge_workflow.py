@@ -28,6 +28,7 @@ from django.utils import timezone
 from django.utils.html import escape
 
 from iic_booking.communication.utils import get_frontend_absolute_url
+from iic_booking.users.display import get_user_display_name
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import (
     CASH_DEPOSIT_DECLINE_REASONS,
@@ -341,7 +342,7 @@ def serialize_request_public(recharge_request: WalletRechargeRequest) -> dict[st
         ),
         "id": recharge_request.id,
         "amount": str(recharge_request.amount),
-        "user_name": recharge_request.user.name or recharge_request.user.email,
+        "user_name": get_user_display_name(recharge_request.user),
         "user_email": recharge_request.user.email,
         "employee_number": recharge_request.employee_number or (recharge_request.user.emp_id or ""),
         "user_department": recharge_request.user_department_name
@@ -897,7 +898,7 @@ def requester_detail_rows(recharge_request: WalletRechargeRequest) -> list[tuple
     """User Name, Enrollment Number, Department, Supervisor Name / Employee ID (faculty: own Employee ID,
     designation, and "Self" as supervisor)."""
     user = recharge_request.user
-    name = (user.name or user.email or "").strip() or "—"
+    name = get_user_display_name(user) or "—"
     own_id = (recharge_request.employee_number or user.emp_id or "").strip() or "—"
     dept = (
         recharge_request.user_department_name
@@ -918,7 +919,7 @@ def requester_detail_rows(recharge_request: WalletRechargeRequest) -> list[tuple
         ("User Name", name),
         (id_label, own_id),
         ("Department", dept),
-        ("Supervisor Name", (supervisor.name or supervisor.email or "—") if supervisor else "—"),
+        ("Supervisor Name", (get_user_display_name(supervisor) or "—") if supervisor else "—"),
         ("Supervisor Employee ID", ((supervisor.emp_id or "").strip() or "—") if supervisor else "—"),
     ]
 
@@ -1013,7 +1014,7 @@ def send_sric_approval_email(recharge_request: WalletRechargeRequest) -> int:
     )
 
     user = recharge_request.user
-    name = user.name or user.email
+    name = get_user_display_name(user)
     emp = recharge_request.employee_number or (user.emp_id or "—")
     amount = recharge_request.amount
     amount_str = f"{amount:,.2f}" if hasattr(amount, "__float__") else str(amount)
@@ -1324,7 +1325,7 @@ def send_decline_credit_notification(recharge_request: WalletRechargeRequest) ->
     """Tell the faculty member the request was declined and the amount is now an auto-approved credit."""
     txn = recharge_request.transaction_number
     user = recharge_request.user
-    name = user.name or user.email
+    name = get_user_display_name(user)
     amount_str = f"{recharge_request.amount:,.2f}"
     reason = recharge_request.response_message or REJECTION_REASON_LABELS.get(
         recharge_request.rejection_reason_code, "—"
@@ -1456,7 +1457,7 @@ def _send_faculty_html(recharge_request: WalletRechargeRequest, subject: str, he
     )
     if not to:
         return
-    name = recharge_request.user.name or recharge_request.user.email
+    name = get_user_display_name(recharge_request.user)
     txn = recharge_request.transaction_number
     text = "\n\n".join([f"Dear {name},", *paragraphs, amount_line, "Institute Instrumentation Centre, IIT Roorkee"])
     body_html = "".join(f"<p>{escape(p)}</p>" for p in paragraphs)

@@ -72,6 +72,7 @@ from iic_booking.communication.styled_transactional_emails import (
     send_wallet_join_request_decision_email,
     send_wallet_recharge_approved_faculty_email,
 )
+from iic_booking.users.display import get_user_display_name
 
 
 def _is_wallet_recharge_ops_staff(user) -> bool:
@@ -161,7 +162,7 @@ def get_wallet(request):
         response_data["wallet_owner"] = {
             "id": owner.id,
             "email": owner.email,
-            "name": owner.name or owner.email,
+            "name": get_user_display_name(owner),
             "phone": owner.phone_number,
             "profile_picture": owner_profile_picture,
         }
@@ -453,7 +454,7 @@ def equipment_department_wallet_balance(request):
             else pending_request.faculty
         )
         if owner is not None:
-            pending_supervisor_name = (owner.name or "").strip() or owner.email
+            pending_supervisor_name = get_user_display_name(owner)
     link_fields = {
         "pending_link_request": pending_request is not None,
         "pending_link_supervisor_name": pending_supervisor_name,
@@ -866,7 +867,7 @@ def search_faculty_by_name(request):
         if qlow in (hod_user.name or "").lower() or qlow in (hod_user.email or "").lower():
             results.append({
                 "id": hod_user.id,
-                "name": hod_user.name or hod_user.email,
+                "name": get_user_display_name(hod_user),
                 "email": hod_user.email,
                 "phone": hod_user.phone_number,
                 "profile_picture": hod_user.get_profile_picture_url_or_none(),
@@ -889,7 +890,7 @@ def search_faculty_by_name(request):
         
         results.append({
             "id": faculty.id,
-            "name": faculty.name or faculty.email,
+            "name": get_user_display_name(faculty),
             "email": faculty.email,
             "phone": faculty.phone_number,
             "profile_picture": profile_picture,
@@ -941,7 +942,7 @@ def get_faculty_by_email(request):
     return Response({
         "faculty": {
             "id": faculty.id,
-            "name": faculty.name or faculty.email,
+            "name": get_user_display_name(faculty),
             "email": faculty.email,
             "phone": faculty.phone_number,
             "profile_picture": profile_picture,
@@ -1993,7 +1994,7 @@ def send_user_otp_for_recharge(request):
                     <h1>Wallet Recharge Request OTP</h1>
                 </div>
                 <div class="content">
-                    <p>Hello {request.user.name or request.user.email},</p>
+                    <p>Hello {get_user_display_name(request.user)},</p>
                     
                     <p>You have requested to recharge your wallet with ₹{amount}.</p>
                     
@@ -2029,7 +2030,7 @@ def send_user_otp_for_recharge(request):
         message = f"""
 OTP for Wallet Recharge Request
 
-Hello {request.user.name or request.user.email},
+Hello {get_user_display_name(request.user)},
 
 You have requested to recharge your wallet with ₹{amount}.
 

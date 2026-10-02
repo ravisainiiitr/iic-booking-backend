@@ -168,10 +168,10 @@ def notify_ticket_assignee(ticket: Ticket, *, assigned_by=None, previous_assigne
 
     by_name = ""
     if assigned_by and getattr(assigned_by, "is_authenticated", False):
-        by_name = assigned_by.name or assigned_by.email or ""
+        by_name = assigned_by.get_display_name()
     prev = ""
     if previous_assignee:
-        prev = previous_assignee.name or previous_assignee.email or str(previous_assignee.pk)
+        prev = previous_assignee.get_display_name() or str(previous_assignee.pk)
 
     equip = ""
     if ticket.related_equipment_id:

@@ -15,6 +15,7 @@ from iic_booking.users.student_spending_limits import (
     apply_spending_limit_update,
     limit_summary,
 )
+from iic_booking.users.display import get_user_display_name
 
 
 @api_view(["GET"])
@@ -84,5 +85,5 @@ def my_student_spending_limit(request):
     if link is None or not link.spending_limit_enabled:
         return Response({"spending_limit_enabled": False}, status=status.HTTP_200_OK)
     payload = limit_summary(link)
-    payload["supervisor_name"] = (link.faculty.name or link.faculty.email) if link.faculty_id else None
+    payload["supervisor_name"] = get_user_display_name(link.faculty) if link.faculty_id else None
     return Response(payload, status=status.HTTP_200_OK)

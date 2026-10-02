@@ -33,6 +33,7 @@ from iic_booking.equipment.waitlist_booking import (
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url
 from iic_booking.users.models.user_type import UserType
+from iic_booking.users.display import get_user_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ def send_waitlist_opt_out_email(user, equipment: Equipment) -> None:
             recipient=user,
             template="waitlist_opt_out_email",
             template_context={
-                "user_name": getattr(user, "name", None) or getattr(user, "email", "User"),
+                "user_name": (get_user_display_name(user) or "User"),
                 "user_email": getattr(user, "email", ""),
                 "equipment_name": getattr(equipment, "name", None) or getattr(equipment, "code", "Equipment"),
                 "equipment_code": getattr(equipment, "code", ""),
@@ -315,7 +316,7 @@ def send_unsuccessful_booking_waitlist_email(user, equipment: Equipment, positio
             recipient=user,
             template="booking_unsuccessful_waitlist_email",
             template_context={
-                "user_name": getattr(user, "name", None) or getattr(user, "email", "User"),
+                "user_name": (get_user_display_name(user) or "User"),
                 "user_email": getattr(user, "email", ""),
                 "equipment_name": getattr(equipment, "name", None) or getattr(equipment, "code", "Equipment"),
                 "equipment_code": getattr(equipment, "code", ""),
@@ -340,7 +341,7 @@ def send_waitlist_unsuccessful_email(user, equipment: Equipment, position: int, 
             recipient=user,
             template="booking_unsuccessful_waitlist_email",
             template_context={
-                "user_name": getattr(user, "name", None) or getattr(user, "email", "User"),
+                "user_name": (get_user_display_name(user) or "User"),
                 "user_email": getattr(user, "email", ""),
                 "equipment_name": getattr(equipment, "name", None) or getattr(equipment, "code", "Equipment"),
                 "equipment_code": getattr(equipment, "code", ""),
@@ -384,7 +385,7 @@ def _resolve_equipment_contacts_for_short_notice_email(equipment: Equipment) -> 
         )
         op_user = getattr(op_link, "operator", None) if op_link else None
         if op_user:
-            name = (getattr(op_user, "name", "") or getattr(op_user, "email", "") or "Lab operator").strip()
+            name = (get_user_display_name(op_user) or "Lab operator").strip()
             name = name_with_honorific(op_user, op_link.honorific, default=name)
             phone = (getattr(op_user, "phone_number", "") or "").strip()
             parts.append(f"Lab operator: {name}" + (f" ({phone})" if phone else ""))
@@ -398,7 +399,7 @@ def _resolve_equipment_contacts_for_short_notice_email(equipment: Equipment) -> 
             m = getattr(link, "manager", None)
             if not m:
                 continue
-            name = (getattr(m, "name", "") or getattr(m, "email", "") or "OIC").strip()
+            name = (get_user_display_name(m) or "OIC").strip()
             name = name_with_honorific(m, link.honorific, default=name)
             phone = (getattr(m, "phone_number", "") or "").strip()
             parts.append(f"OIC: {name}" + (f" ({phone})" if phone else ""))
@@ -440,7 +441,7 @@ def _notify_waitlist_short_notice_slot_available(
                 recipient=user,
                 template="waitlist_short_notice_slot_available_email",
                 template_context={
-                    "user_name": getattr(user, "name", None) or getattr(user, "email", "User"),
+                    "user_name": (get_user_display_name(user) or "User"),
                     "user_email": getattr(user, "email", ""),
                     "equipment_name": equipment_name,
                     "lead_hours": lead_hours_str,
