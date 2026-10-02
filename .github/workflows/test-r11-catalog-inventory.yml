@@ -1,5 +1,7 @@
 name: Test R11 Catalog Inventory
 
+# Runs on a throwaway GitHub-hosted runner with its own Postgres.
+# Never run these tests inside the production containers on the EC2 runner.
 on:
   workflow_dispatch:
   push:
@@ -7,26 +9,47 @@ on:
       - "iic_booking/remote_analysis/services/inventory.py"
       - "iic_booking/remote_analysis/services/catalog_sync.py"
       - "iic_booking/remote_analysis/installer/services.py"
+      - "iic_booking/remote_analysis/catalog_admin_views.py"
+      - "iic_booking/remote_analysis/urls.py"
+      - "iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py"
       - "iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py"
+      - ".github/workflows/test-r11-catalog-inventory.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-r11-catalog-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: iic
+          POSTGRES_PASSWORD: iic
+          POSTGRES_DB: iic_booking
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iic"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://iic:iic@localhost:5432/iic_booking
+      DJANGO_SETTINGS_MODULE: config.settings.test
+      DJANGO_READ_DOT_ENV_FILE: "False"
     steps:
-      - uses: actions/checkout@v4
-      - name: Pytest R11 catalog inventory in django container
-        run: |
-          set -euo pipefail
-          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
-          test -n "$CID"
-          # Copy changed modules into the running container and run tests against a throwaway sqlite
-          docker cp iic_booking/remote_analysis/services/inventory.py "$CID":/app/iic_booking/remote_analysis/services/inventory.py
-          docker cp iic_booking/remote_analysis/services/catalog_sync.py "$CID":/app/iic_booking/remote_analysis/services/catalog_sync.py
-          docker cp iic_booking/remote_analysis/installer/services.py "$CID":/app/iic_booking/remote_analysis/installer/services.py
-          docker cp iic_booking/remote_analysis/catalog_admin_views.py "$CID":/app/iic_booking/remote_analysis/catalog_admin_views.py
-          docker cp iic_booking/remote_analysis/urls.py "$CID":/app/iic_booking/remote_analysis/urls.py
-          docker cp iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py "$CID":/app/iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py
-          docker exec -w /app "$CID" mkdir -p /app/iic_booking/remote_analysis/management/commands
-          docker cp iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py "$CID":/app/iic_booking/remote_analysis/management/commands/backfill_analysis_software_catalog.py
-          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.test "$CID" \
-            /app/.venv/bin/pytest iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py -q --tb=short
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Pytest R11 catalog inventory
+        run: uv run pytest iic_booking/remote_analysis/tests/test_r11_catalog_inventory.py -q --tb=short --create-db -p no:sugar

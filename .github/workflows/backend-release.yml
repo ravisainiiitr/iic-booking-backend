@@ -84,10 +84,26 @@ jobs:
       - name: Verify SHA
         id: sha
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_MODE: ${{ steps.meta.outputs.mode }}
         run: |
-          $sha = & .\scripts\release\Verify-ReleaseTag.ps1 -Tag '${{ steps.meta.outputs.tag }}'
-          "sha=$($sha.Trim())" >> $env:GITHUB_OUTPUT
-          Write-Host "SHA=$($sha.Trim()) mode=${{ steps.meta.outputs.mode }}"
+          $ErrorActionPreference = 'Stop'
+          # Self-contained: the build host has never resolved .\scripts\release\*.ps1 from this
+          # step, so verify inline and log what the workspace looks like for diagnosis.
+          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts\release\Verify-ReleaseTag.ps1'
+          Write-Host "cwd=$((Get-Location).Path) workspace=$env:GITHUB_WORKSPACE verify_script_present=$(Test-Path -LiteralPath $script)"
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $head) { throw 'git rev-parse HEAD failed' }
+          $peeled = (git rev-list -n 1 "refs/tags/$env:RELEASE_TAG").Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $peeled) { throw "Tag $env:RELEASE_TAG not found" }
+          Write-Host "TAG=$env:RELEASE_TAG HEAD=$head PEELED=$peeled"
+          if ($head -ne $peeled) { throw "HEAD ($head) does not match tag peel ($peeled)" }
+          if ((git cat-file -t "refs/tags/$env:RELEASE_TAG").Trim() -eq 'commit') {
+            Write-Warning "Tag $env:RELEASE_TAG is lightweight (points directly at commit). Prefer annotated tags for releases."
+          }
+          "sha=$head" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA=$head mode=$env:RELEASE_MODE"
 
   test:
     name: Backend tests
