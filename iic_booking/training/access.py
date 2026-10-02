@@ -1,20 +1,97 @@
-"""Feature flags, pilot scope and role checks for Training & Certification.
+"""Feature flags, equipment scope, audience and role checks for Training & Certification.
+
+Module on   = Main Admin switch (``TrainingModuleSettings.module_enabled``) OR env ``TRAINING_MODULE_ENABLED``.
+Equipment   = equipment the Main Admin enabled (``TrainingEquipmentSetting``) plus env
+              ``TRAINING_PILOT_EQUIPMENT_CODES``. When neither names any equipment and the env switch is on,
+              every equipment is in scope (the original env-only pilot behaviour); with only the DB switch
+              on and nothing enabled, no equipment is in scope.
+Audience    = ``TEST_ACCOUNTS`` (default): faculty/students must be flagged test accounts; OICs, operators,
+              dept admins and admins are unaffected. ``EVERYONE``: everyone eligible.
 
 OIC scope always goes through ``get_equipment_ids_managed_by_oic`` so temporary OICs are covered.
 """
 
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
+from django.db import DatabaseError, transaction
+from django.db.models import Q
 
 from iic_booking.users.models.user_type import UserType
 
+logger = logging.getLogger(__name__)
+
 DISABLED_CODE = "training_disabled"
+AUDIENCE_CODE = "training_not_available"
 STUDENT_TYPES = (UserType.STUDENT, UserType.INDIVIDUAL_STUDENT)
+STAFF_TYPES = (UserType.ADMIN, UserType.MANAGER, UserType.OPERATOR, UserType.DEPT_ADMIN)
+
+
+def env_module_enabled() -> bool:
+    return bool(getattr(settings, "TRAINING_MODULE_ENABLED", False))
+
+
+def module_settings():
+    """The Main Admin settings row; defaults (off, test accounts only) until migrated or first saved."""
+    from .models import TrainingModuleSettings
+
+    try:
+        with transaction.atomic():
+            return TrainingModuleSettings.current()
+    except DatabaseError:
+        logger.warning("training module settings unavailable; using defaults", exc_info=True)
+        return TrainingModuleSettings(pk=TrainingModuleSettings.SINGLETON_PK)
+
+
+def db_module_enabled() -> bool:
+    return bool(module_settings().module_enabled)
 
 
 def module_enabled() -> bool:
-    return bool(getattr(settings, "TRAINING_MODULE_ENABLED", False))
+    return env_module_enabled() or db_module_enabled()
+
+
+def audience() -> str:
+    return module_settings().audience
+
+
+def test_accounts_only() -> bool:
+    from .models import TrainingAudience
+
+    return audience() != TrainingAudience.EVERYONE
+
+
+def is_main_admin(user) -> bool:
+    return bool(
+        user
+        and getattr(user, "is_authenticated", False)
+        and (getattr(user, "is_superuser", False) or user.user_type == UserType.ADMIN)
+    )
+
+
+def in_audience(user) -> bool:
+    """Whether the user may see Training at all under the current audience setting."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    from iic_booking.users.test_accounts import is_test_user
+
+    if is_test_user(user) or getattr(user, "is_superuser", False) or user.user_type in STAFF_TYPES:
+        return True
+    return not test_accounts_only()
+
+
+def audience_users(qs):
+    """Narrow a User queryset to the audience (used for broadcast notifications)."""
+    if not test_accounts_only():
+        return qs
+    from iic_booking.users.test_accounts import FORCE_EMAIL_REDIRECT_ADDRESSES
+
+    cond = Q(is_test_account=True)
+    for email in FORCE_EMAIL_REDIRECT_ADDRESSES:
+        cond |= Q(email__iexact=email)
+    return qs.filter(cond)
 
 
 def _csv(raw: str, *, lower: bool = False, upper: bool = False) -> set[str]:
@@ -35,28 +112,49 @@ def pilot_oic_emails() -> set[str]:
     return _csv(getattr(settings, "TRAINING_PILOT_OIC_EMAILS", "") or "", lower=True)
 
 
+def db_enabled_equipment_ids() -> set[int]:
+    from .models import TrainingEquipmentSetting
+
+    try:
+        with transaction.atomic():
+            return set(TrainingEquipmentSetting.objects.filter(enabled=True).values_list("equipment_id", flat=True))
+    except DatabaseError:
+        logger.warning("training equipment settings unavailable", exc_info=True)
+        return set()
+
+
+def env_pilot_equipment_ids() -> set[int]:
+    from iic_booking.equipment.models import Equipment
+
+    codes = pilot_equipment_codes()
+    if not codes:
+        return set()
+    return set(Equipment.objects.filter(code__in=codes).values_list("equipment_id", flat=True))
+
+
+def pilot_equipment_ids() -> set[int] | None:
+    """Equipment with Training enabled. None when every equipment is in scope (env switch, no list anywhere)."""
+    ids = db_enabled_equipment_ids()
+    if pilot_equipment_codes():
+        return ids | env_pilot_equipment_ids()
+    if not ids and env_module_enabled():
+        return None
+    return ids
+
+
 def pilot_equipment_queryset():
     from iic_booking.equipment.models import Equipment
 
     qs = Equipment.objects.all()
-    codes = pilot_equipment_codes()
-    if codes:
-        qs = qs.filter(code__in=codes)
+    ids = pilot_equipment_ids()
+    if ids is not None:
+        qs = qs.filter(equipment_id__in=ids)
     return qs
 
 
 def equipment_in_pilot(equipment) -> bool:
-    codes = pilot_equipment_codes()
-    if not codes:
-        return True
-    return (getattr(equipment, "code", "") or "").upper() in codes
-
-
-def pilot_equipment_ids() -> set[int] | None:
-    """None when every equipment is in scope."""
-    if not pilot_equipment_codes():
-        return None
-    return set(pilot_equipment_queryset().values_list("equipment_id", flat=True))
+    ids = pilot_equipment_ids()
+    return ids is None or getattr(equipment, "equipment_id", None) in ids
 
 
 def _restrict(ids, pilot_ids: set[int] | None) -> set[int]:
@@ -69,11 +167,16 @@ def is_admin(user) -> bool:
 
 
 def is_faculty(user) -> bool:
-    return bool(user and getattr(user, "is_authenticated", False) and user.user_type == UserType.FACULTY)
+    """Faculty inside the audience (test faculty only while the audience is test accounts)."""
+    return bool(
+        user and getattr(user, "is_authenticated", False) and user.user_type == UserType.FACULTY and in_audience(user)
+    )
 
 
 def is_student(user) -> bool:
-    return bool(user and getattr(user, "is_authenticated", False) and user.user_type in STUDENT_TYPES)
+    return bool(
+        user and getattr(user, "is_authenticated", False) and user.user_type in STUDENT_TYPES and in_audience(user)
+    )
 
 
 def oic_pilot_allowed(user) -> bool:
@@ -152,8 +255,12 @@ def can_view_equipment(user, equipment_id: int) -> bool:
 
 
 def availability(user) -> dict:
-    """Session data the frontend uses to show or hide Training menus."""
-    enabled = module_enabled()
+    """Session data the frontend uses to show or hide Training menus.
+
+    ``enabled`` is per user: false for faculty/students outside the audience, so they see nothing.
+    """
+    enabled = module_enabled() and in_audience(user)
+    scope_ids = pilot_equipment_ids() if enabled else set()
     roles = {
         "admin": is_admin(user),
         "faculty": is_faculty(user) and _internal_department(user),
@@ -171,8 +278,10 @@ def availability(user) -> dict:
     }
     return {
         "enabled": enabled,
-        "pilot": bool(pilot_equipment_codes() or pilot_oic_emails()),
-        "pilot_equipment_count": len(pilot_equipment_codes()),
+        "audience": audience(),
+        "pilot": scope_ids is not None or bool(pilot_oic_emails()),
+        "pilot_equipment_count": len(scope_ids) if scope_ids is not None else 0,
+        "can_manage_module": is_main_admin(user),
         "roles": roles,
         "menus": menus,
     }

@@ -4,8 +4,11 @@
 #   enable-pilot : TRAINING_MODULE_ENABLED=True, TRAINING_PILOT_EQUIPMENT_CODES=<equipment_codes>,
 #                  TRAINING_PILOT_OIC_EMAILS=<oic_emails> (empty = every OIC of the pilot equipment).
 #                  Codes must exist in production; each email must be an active user (warning if not an OIC).
-#   disable      : TRAINING_MODULE_ENABLED=False. Pilot lists are kept so re-enabling is one run.
+#   disable      : TRAINING_MODULE_ENABLED=False and the Main Admin switch (Admin Settings → Training Policy)
+#                  off too, so the module is fully off. Pilot lists and admin-enabled equipment are kept.
 # enable-pilot / disable back up the env file, recreate django, celeryworker and celerybeat, then show status.
+# The module is on when the env switch OR the Main Admin switch is on; equipment in scope is the env pilot list
+# plus equipment the Main Admin enabled. Use Training Admin Config for the DB-backed settings.
 # The env file is gitignored on the host and Deploy Backend never rewrites it, so the setting survives deploys.
 name: Apply Training Pilot Config
 
@@ -184,6 +187,15 @@ jobs:
               summary.write(f"Updated the production env file (backup: `{os.path.basename(backup)}`).\n\n")
           PY
 
+      - name: Turn the Main Admin switch off
+        if: env.MODE == 'disable'
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py training_config --module off --confirm TRAINING
+
       - name: Recreate django, celeryworker and celerybeat
         if: env.MODE != 'status'
         run: |
@@ -237,12 +249,13 @@ jobs:
           file_email_count = len({e.lower() for e in csv(file_vals.get("TRAINING_PILOT_OIC_EMAILS"))})
 
           enabled = report["module_enabled"]
+          env_enabled = report.get("env_module_enabled", enabled)
           codes = [e["code"] for e in report["pilot_equipment"]]
           mig = report["migrations"]
           task = report["housekeeping_task"]
           local, public = os.environ.get("LOCAL_CODE", ""), os.environ.get("PUBLIC_CODE", "")
           api_ok = local in {"200", "401", "403"} or public in {"200", "401", "403"}
-          in_sync = (file_enabled, file_codes, file_email_count) == (enabled, set(codes), report["pilot_oic_email_count"])
+          in_sync = (file_enabled, file_codes, file_email_count) == (env_enabled, set(codes), report["pilot_oic_email_count"])
 
           problems = []
           if mig["pending"]:
@@ -266,10 +279,19 @@ jobs:
               lines.append("- **Training module: ON.** Users in the pilot can see the Training menus.")
           else:
               lines.append("- **Training module: OFF.** Nobody sees the Training menus.")
+          if "db_module_enabled" in report:
+              lines.append(f"- Switches: env `TRAINING_MODULE_ENABLED`={env_enabled}, Main Admin switch={report['db_module_enabled']}")
+              lines.append(f"- Audience: `{report['audience']}`")
+              db_eq = report.get("db_enabled_equipment") or []
+              lines.append("- Main Admin enabled equipment: " + (", ".join(f"`{e['code']}` ({e['name']})" for e in db_eq) or "none"))
+              eff = report.get("effective_equipment_codes")
+              lines.append("- Equipment in scope: " + ("every equipment" if eff is None else (", ".join(f"`{c}`" for c in eff) or "none")))
           if report["pilot_equipment"]:
               parts = [f"`{e['code']}` ({e['name']}, {e['status']})" if e["found"] else f"`{e['code']}` (NOT FOUND)"
                        for e in report["pilot_equipment"]]
               lines.append(f"- Pilot equipment: {', '.join(parts)}")
+          elif "effective_equipment_codes" in report:
+              lines.append("- Env pilot equipment: none listed.")
           else:
               lines.append("- Pilot equipment: none listed, so every equipment is in scope while the module is on.")
           if report["pilot_oics"]:

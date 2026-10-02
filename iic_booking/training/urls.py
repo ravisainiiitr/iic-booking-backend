@@ -47,4 +47,7 @@ urlpatterns = [
     path("workspace/summary/", views.workspace_summary, name="workspace-summary"),
     path("policy/", views.policy, name="policy"),
     path("policy/history/", views.policy_history, name="policy-history"),
+    path("admin/module/", views.module_settings, name="module-settings"),
+    path("admin/equipment/", views.module_equipment, name="module-equipment"),
+    path("admin/equipment/<int:equipment_id>/", views.module_equipment_toggle, name="module-equipment-toggle"),
 ]

@@ -748,6 +748,70 @@ class UserBadge(models.Model):
         ]
 
 
+# ---------------------------------------------------------------------------
+# Module switch, audience and per-equipment enablement (Main Admin)
+# ---------------------------------------------------------------------------
+class TrainingAudience(models.TextChoices):
+    TEST_ACCOUNTS = "TEST_ACCOUNTS", _("Test accounts only")
+    EVERYONE = "EVERYONE", _("Everyone eligible")
+
+
+class TrainingModuleSettings(models.Model):
+    """Single row (pk=1) edited by the Main Admin in Admin Settings → Training Policy.
+
+    The module is on when this switch or the server env ``TRAINING_MODULE_ENABLED`` is on. The audience
+    applies either way; faculty and students outside it see no Training menus and get 403 from the API.
+    """
+
+    SINGLETON_PK = 1
+
+    module_enabled = models.BooleanField(
+        default=False,
+        help_text=_("Turns Training & Certification on without editing the server env (env TRAINING_MODULE_ENABLED also turns it on)."),
+    )
+    audience = models.CharField(
+        max_length=20,
+        choices=TrainingAudience.choices,
+        default=TrainingAudience.TEST_ACCOUNTS,
+        help_text=_("Test accounts only: only flagged test faculty/students see Training. OICs, operators and admins of enabled equipment always can."),
+    )
+    updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Training module settings"
+        verbose_name_plural = "Training module settings"
+
+    def __str__(self) -> str:
+        return f"Training module ({'on' if self.module_enabled else 'off'}, {self.get_audience_display()})"
+
+    def save(self, *args, **kwargs):
+        self.pk = self.SINGLETON_PK
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def current(cls) -> "TrainingModuleSettings":
+        """Read-only view of the row; an unsaved default when it does not exist yet."""
+        return cls.objects.filter(pk=cls.SINGLETON_PK).first() or cls(pk=cls.SINGLETON_PK)
+
+
+class TrainingEquipmentSetting(models.Model):
+    """Per-equipment Training enablement set by the Main Admin (UI, API or Django admin)."""
+
+    equipment = models.OneToOneField(
+        "equipment.Equipment", on_delete=models.CASCADE, related_name="training_setting"
+    )
+    enabled = models.BooleanField(default=False)
+    updated_by = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["enabled"])]
+
+    def __str__(self) -> str:
+        return f"Training {'on' if self.enabled else 'off'}: {self.equipment_id}"
+
+
 class TrainingAuditLog(models.Model):
     actor = models.ForeignKey(USER, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     action = models.CharField(max_length=60)

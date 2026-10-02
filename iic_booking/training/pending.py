@@ -30,7 +30,7 @@ def _scope(qs, ids: set[int] | None, field: str = "equipment_id"):
 
 
 def training_items(c) -> None:
-    if not access.module_enabled():
+    if not access.module_enabled() or not access.in_audience(c.user):
         return
     _personal(c)
     _staff(c)

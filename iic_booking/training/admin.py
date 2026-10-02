@@ -118,6 +118,50 @@ class UserBadgeAdmin(admin.ModelAdmin):
     raw_id_fields = ("user", "badge", "equipment", "award")
 
 
+@admin.register(models.TrainingModuleSettings)
+class TrainingModuleSettingsAdmin(admin.ModelAdmin):
+    list_display = ("__str__", "module_enabled", "audience", "updated_by", "updated_at")
+    fields = ("module_enabled", "audience", "updated_by", "updated_at")
+    readonly_fields = ("updated_by", "updated_at")
+
+    def has_add_permission(self, request):
+        return not models.TrainingModuleSettings.objects.exists()
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+@admin.register(models.TrainingEquipmentSetting)
+class TrainingEquipmentSettingAdmin(admin.ModelAdmin):
+    list_display = ("equipment", "enabled", "updated_by", "updated_at")
+    list_filter = ("enabled",)
+    search_fields = ("equipment__name", "equipment__code")
+    raw_id_fields = ("equipment",)
+    readonly_fields = ("updated_by", "updated_at")
+
+    def save_model(self, request, obj, form, change):
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+
+
+class TrainingEquipmentSettingInline(admin.StackedInline):
+    """Shown on the Equipment add/change page so training can be enabled while creating equipment."""
+
+    model = models.TrainingEquipmentSetting
+    fk_name = "equipment"
+    extra = 1
+    max_num = 1
+    can_delete = False
+    fields = ("enabled", "updated_by", "updated_at")
+    readonly_fields = ("updated_by", "updated_at")
+    verbose_name = "Training & Certification"
+    verbose_name_plural = "Training & Certification (enable for this equipment)"
+
+
 @admin.register(models.TrainingAuditLog)
 class TrainingAuditLogAdmin(admin.ModelAdmin):
     list_display = ("id", "action", "object_type", "object_id", "actor", "created_at")

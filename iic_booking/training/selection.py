@@ -175,6 +175,12 @@ def nominate(faculty, data: dict) -> TrainingNomination:
         raise TrainingError("Student not found.", status=404)
     if student.user_type not in access.STUDENT_TYPES:
         raise TrainingError("Only IIT Roorkee students can be nominated.")
+    if not access.in_audience(student):
+        raise TrainingError(
+            "Training is open to test accounts only for now, so this student cannot be nominated yet.",
+            status=403,
+            code=access.AUDIENCE_CODE,
+        )
     if not access.is_valid_nominator(faculty, student):
         raise TrainingError(
             "You can only nominate students you supervise or who have joined your wallet (approved).",
@@ -984,8 +990,8 @@ def _notify_call_open(call: NominationCall, actor) -> None:
     from iic_booking.users.models import User
     from iic_booking.users.models.department import DepartmentType
 
-    faculty = User.objects.filter(
-        user_type=UserType.FACULTY, is_active=True, department__department_type=DepartmentType.INTERNAL
+    faculty = access.audience_users(
+        User.objects.filter(user_type=UserType.FACULTY, is_active=True, department__department_type=DepartmentType.INTERNAL)
     )
     notify.send(
         "training_call_open_faculty_email",
