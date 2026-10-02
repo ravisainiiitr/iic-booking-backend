@@ -11,6 +11,11 @@ on:
         required: true
         type: string
         default: ''
+      sync_email_templates:
+        description: Also run sync_default_email_templates (overwrites admin-customised email templates with the catalog)
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   migrate:
@@ -93,7 +98,7 @@ jobs:
             python manage.py migrate device_provisioning --noinput
 
       - name: Sync default email templates
-        if: steps.find.outputs.mode == 'exec'
+        if: steps.find.outputs.mode == 'exec' && inputs.sync_email_templates
         run: |
           docker exec "${{ steps.find.outputs.container }}" \
             python manage.py sync_default_email_templates
