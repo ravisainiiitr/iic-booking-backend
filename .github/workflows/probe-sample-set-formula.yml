@@ -58,7 +58,11 @@ jobs:
               lines = str(ht).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")
               return [line.strip()[:40] for line in lines[:3]] + ([f"<+{len(lines) - 3} more lines>"] if len(lines) > 3 else [])
 
+          NEW_RESOLVER = getattr(api_views, "_resolve_numeric_formula_max", None)
+
           def formula_max(field, values, eq):
+              if NEW_RESOLVER is not None:
+                  return NEW_RESOLVER(field, values, eq)
               if numeric_max_formula(field.options) and not isinstance(field.options, dict):
                   return "legacy non-dict formula (validator reads only dict options)"
               return api_views._resolve_numeric_max_for_field_a(field, values, eq)
@@ -97,7 +101,7 @@ jobs:
                                   default_value=f.default_value,
                               )
                               print(f"      with B={b}: formula max={fm} -> validator bounds (min, max, step)={bounds}")
-                      if c["max_formula"] and f.field_key != "A":
+                      if c["max_formula"] and f.field_key != "A" and NEW_RESOLVER is None:
                           print("      NOTE: formula on a field other than A (validator only applies formulas to A)")
 
                   def scan(label, values_iter):
@@ -156,6 +160,7 @@ jobs:
           CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
           docker exec -i -w /app "$CID" python - <<'PY'
           import inspect
+          import logging
           import os
           import re
           from collections import Counter, defaultdict
@@ -172,8 +177,12 @@ jobs:
               Booking, BookingInputTemplate, BookingStatus, DynamicInputField, DynamicInputFieldType, Equipment,
               EquipmentStatus,
           )
+          from iic_booking.equipment import numeric_field_limits as nfl
           from iic_booking.equipment.numeric_field_limits import max_formula_error, numeric_constraints, numeric_max_formula
           from iic_booking.users.models.user_type import UserType
+
+          NEW_VALIDATOR = hasattr(api_views, "_resolve_numeric_formula_max") and hasattr(nfl, "evaluate_max_formula")
+          logging.getLogger(nfl.__name__).setLevel(logging.ERROR)
 
           ACTIVE_STATUSES = [
               BookingStatus.PENDING, BookingStatus.PENDING_PAYMENT, BookingStatus.WAITLISTED, BookingStatus.BOOKED,
@@ -189,8 +198,12 @@ jobs:
           def tokens(formula):
               return list(dict.fromkeys(TOKEN_RE.findall(formula)))
 
-          def evaluate(formula, values, slot_minutes):
-              """Same substitution as api_views._resolve_numeric_max_for_field_a."""
+          def evaluate(formula, values, slot_minutes, fallbacks=None):
+              """What the deployed validator works out for ``formula`` with one set's values."""
+              if NEW_VALIDATOR:
+                  return nfl.evaluate_max_formula(
+                      formula, values, slot_duration_minutes=slot_minutes, fallbacks=fallbacks
+                  )
               expr = formula
               for token in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
                   v = num(values.get(token))
@@ -220,11 +233,16 @@ jobs:
                       out.append((kind, text))
               return out
 
-          src_resolve = inspect.getsource(api_views._resolve_numeric_max_for_field_a)
           src_validate = inspect.getsource(api_views._validate_dynamic_numeric_input_limits)
-          legacy_ok = "numeric_max_formula(raw_options)" in src_resolve
+          if NEW_VALIDATOR:
+              src_resolve = inspect.getsource(api_views._resolve_numeric_formula_max)
+              legacy_ok = "numeric_max_formula(field.options)" in src_resolve
+          else:
+              src_resolve = inspect.getsource(api_views._resolve_numeric_max_for_field_a)
+              legacy_ok = "numeric_max_formula(raw_options)" in src_resolve
           a_only = 'key == "A"' in src_validate and "not is_external" in src_validate
-          print(f"deployed validator: formulas only on field A for non-external users={a_only}; "
+          print(f"deployed validator: formulas on every numeric field for every user type={NEW_VALIDATOR and not a_only}; "
+                f"formulas only on field A for non-external users={a_only}; "
                 f"legacy text options ('B*4') read={legacy_ok}; help-text formulas evaluated=False (parser reads the first number)")
 
           def category(row, kind, source, formula):
@@ -238,6 +256,8 @@ jobs:
                   return "ignored: unparseable formula"
               if not isinstance(row.options, dict) and not legacy_ok:
                   return "ignored: legacy text format not read"
+              if not a_only:
+                  return "applied"
               if row.field_key != "A":
                   return "ignored: not field A"
               if is_ext(row.user_type):
@@ -286,9 +306,25 @@ jobs:
               viol = defaultdict(Counter)
               checked = defaultdict(Counter)
 
+              fallback_cache = {}
+
+              def fallbacks_for(eq_id, ut):
+                  """Values the validator uses for empty referenced fields (default, else minimum)."""
+                  if not NEW_VALIDATOR:
+                      return None
+                  if (eq_id, ut) not in fallback_cache:
+                      out = {}
+                      for x in sorted(rows_by_eq[eq_id], key=lambda x: (x.user_type != ut, bool(x.user_type))):
+                          if x.field_key not in out:
+                              out[x.field_key] = nfl.formula_fallback_value(x)
+                      fallback_cache[(eq_id, ut)] = {k: v for k, v in out.items() if v is not None}
+                  return fallback_cache[(eq_id, ut)]
+
               def check(eq_id, values, ut, bucket):
                   base, sets = split_sample_sets(values if isinstance(values, dict) else {})
                   eq = equipment[eq_id]
+                  fallbacks = fallbacks_for(eq_id, ut)
+                  unresolved = Counter()
                   hit = set()
                   sets_hit = Counter()
                   seen_lines = set()
@@ -302,14 +338,22 @@ jobs:
                           continue
                       for group in (base, *sets):
                           value = num(group.get(r.field_key))
-                          limit = evaluate(formula, group, eq.slot_duration_minutes)
-                          if value is None or limit is None:
+                          if value is None:
+                              continue
+                          limit = (
+                              evaluate(formula, group, eq.slot_duration_minutes, fallbacks)
+                              if source == "options" else evaluate(formula, group, eq.slot_duration_minutes)
+                          )
+                          if limit is None:
+                              unresolved[line] += 1
                               continue
                           if (kind == "max" and value > limit) or (kind == "min" and value < limit):
                               hit.add(line)
                               sets_hit[line] += 1
                   for line in seen_lines:
                       checked[line][bucket] += 1
+                  for line, n in unresolved.items():
+                      checked[line][bucket + "_unresolved_sets"] += n
                   for line in hit:
                       viol[line][bucket] += 1
                       viol[line][bucket + "_sets"] += sets_hit[line]
@@ -326,7 +370,8 @@ jobs:
 
               print("\n== formula / cross-field limits (rows with the same formula and outcome merged; user types listed) ==")
               print("status | equipment | field (A/B/other) | label | user types | source | kind | formula | validator | "
-                    "active bookings checked / violating (sets) | templates checked / violating (sets)")
+                    "active bookings checked / violating (sets) | templates checked / violating (sets) | "
+                    "sets where the formula could not be worked out (bookings / templates)")
               by_cat = Counter()
               ignored_impact = []
               for eq_id in sorted(formula_rows, key=lambda i: (equipment[i].status != EquipmentStatus.ACTIVE, i)):
@@ -344,7 +389,8 @@ jobs:
                       line = (f"  {status} | {eq.equipment_id}:{eq.code} {(eq.name or '')[:55]!r} | {key} ({ab}) | {(label or '')[:45]!r} | "
                               f"{','.join(m['uts'])} | {source} | {kind} | {formula!r} | {cat} | "
                               f"{m['chk']['bookings']} / {m['vio']['bookings']} ({m['vio']['bookings_sets']}) | "
-                              f"{m['chk']['templates']} / {m['vio']['templates']} ({m['vio']['templates_sets']})")
+                              f"{m['chk']['templates']} / {m['vio']['templates']} ({m['vio']['templates_sets']}) | "
+                              f"{m['chk']['bookings_unresolved_sets']} / {m['chk']['templates_unresolved_sets']}")
                       print(line)
                       if cat.startswith("ignored") or "ignored when" in cat:
                           ignored_impact.append(line)
@@ -356,11 +402,12 @@ jobs:
                   for r, kind, source, formula, cat in formula_rows[eq_id]:
                       shown = {x.field_key: x for x in shown_rows(eq_id, r.user_type)}
                       issues = []
+                      missing_note = "formula ignored" if NEW_VALIDATOR else "counts as 0"
                       for t in tokens(formula):
                           if t not in shown:
-                              issues.append(f"{t} missing (counts as 0)")
+                              issues.append(f"{t} missing ({missing_note})")
                           elif shown[t].field_type != DynamicInputFieldType.NUMERIC:
-                              issues.append(f"{t} is {shown[t].field_type} (non-numeric, counts as 0 unless a number)")
+                              issues.append(f"{t} is {shown[t].field_type} (non-numeric, {missing_note} unless a number)")
                       if not issues:
                           continue
                       broken += 1

@@ -494,49 +494,27 @@ def _to_float_or_none(value):
             return None
     return None
 
-def _resolve_numeric_max_for_field_a(field, input_values, equipment):
-    """
-    Resolve max limit for numeric field A.
+def _resolve_numeric_formula_max(field, input_values, equipment, fallbacks=None):
+    """Max from ``field``'s options.max_formula (field keys A-Z, SLOT_DURATION_MINUTES), worked out with
+    ``input_values`` (one sample set). None when the field has no formula or it cannot be worked out."""
+    from .numeric_field_limits import evaluate_max_formula, numeric_max_formula
 
-    Priority:
-    1) options.max_formula (supports A..Z + SLOT_DURATION_MINUTES),
-    2) options.max
-    """
-    from .numeric_field_limits import numeric_max_formula
-
-    raw_options = field.options
-    opts = raw_options if isinstance(raw_options, dict) else {}
-    formula = numeric_max_formula(raw_options)
-    if formula:
-        expr = formula
-        for token in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-            v = _to_float_or_none(input_values.get(token))
-            expr = re.sub(
-                rf"(?<![a-zA-Z0-9_]){token}(?![a-zA-Z0-9_])",
-                str(v if v is not None else 0),
-                expr,
-            )
-        expr = re.sub(
-            r"(?<![a-zA-Z0-9_])SLOT_DURATION_MINUTES(?![a-zA-Z0-9_])",
-            str(getattr(equipment, "slot_duration_minutes", 0) or 0),
-            expr,
-        )
-        if not re.fullmatch(r"[0-9\.\+\-\*\/\(\)\s]+", expr):
-            return None
-        try:
-            return float(eval(expr, {"__builtins__": {}}, {}))
-        except Exception:
-            return None
-
-    if isinstance(opts, dict):
-        return _to_float_or_none(opts.get("max"))
-    return None
+    formula = numeric_max_formula(field.options)
+    if not formula:
+        return None
+    return evaluate_max_formula(
+        formula,
+        input_values,
+        slot_duration_minutes=getattr(equipment, "slot_duration_minutes", 0),
+        fallbacks=fallbacks,
+        context=f" on {getattr(equipment, 'code', '') or getattr(equipment, 'pk', '')} field {field.field_key}",
+    )
 
 
 _FORMULA_FIELD_KEY_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z])(?![A-Za-z0-9_])")
 
 
-def _formula_limit_note(formula, input_values, labels):
+def _formula_limit_note(formula, input_values, labels, fallbacks=None):
     """How a formula maximum was worked out, e.g. "B × 4, where B is Number of Slots = 2"."""
     def pretty(v):
         return int(v) if float(v).is_integer() else round(v, 6)
@@ -544,6 +522,8 @@ def _formula_limit_note(formula, input_values, labels):
     refs = []
     for key in dict.fromkeys(_FORMULA_FIELD_KEY_RE.findall(formula)):
         value = _to_float_or_none(input_values.get(key))
+        if value is None and fallbacks:
+            value = fallbacks.get(key)
         shown = pretty(value) if value is not None else "not set"
         label = labels.get(key)
         refs.append(f"{key} is {label} = {shown}" if label and label != key else f"{key} = {shown}")
@@ -582,23 +562,20 @@ def _validate_dynamic_numeric_input_limits(
     help_text convention (NUMERIC):
       line 1 = min, line 2 = max, line 3 = step (defaults 0 / 100 / 1).
 
-    Field A may also use options.max_formula / options.max. External booking users
-    skip formula/static options.max for A only; help_text / default range still apply.
-    A formula is worked out from ``input_values`` only, so pass one sample set's values at a time.
+    Any NUMERIC field may set options.max_formula (e.g. A <= B*4, or a constant "1"); it applies to every
+    user type, external ones included. A formula is worked out from ``input_values`` only, so pass one
+    sample set's values at a time; a referenced field left empty uses its default (else its minimum), and
+    a formula that cannot be worked out is ignored (see ``evaluate_max_formula``).
 
     Numeric user inputs must be at least 1 (see ``resolve_numeric_field_bounds``). ``baseline`` is the
     booking's / template's stored values when editing: an unchanged value saved before that minimum
     existed (e.g. 0) is kept rather than blocking the edit. ``check_max=False`` checks only the minimum,
     plus a formula maximum when ``check_formula_max`` is True (it defaults to ``check_max``).
     """
-    from .numeric_field_limits import numeric_max_formula, resolve_numeric_field_bounds
+    from .numeric_field_limits import formula_fallback_value, numeric_max_formula, resolve_numeric_field_bounds
 
     if check_formula_max is None:
         check_formula_max = check_max
-
-    is_external = booking_user is not None and UserType.is_external_user(
-        getattr(booking_user, "user_type", None) or ""
-    )
 
     all_fields = list(
         DynamicInputField.objects.filter(equipment=equipment).only(
@@ -611,8 +588,15 @@ def _validate_dynamic_numeric_input_limits(
     effective_user_type = str(user_type or getattr(booking_user, "user_type", "") or "")
     floor_keys = _numeric_min_floor_keys(equipment, all_fields, effective_user_type)
     labels = {}
-    for f in sorted(all_fields, key=lambda f: f.user_type != effective_user_type):
+    shown_rows = {}
+    for f in sorted(all_fields, key=lambda f: (f.user_type != effective_user_type, bool(f.user_type))):
         labels.setdefault(f.field_key, f.field_label or f.field_key)
+        shown_rows.setdefault(f.field_key, f)
+    fallbacks = {}
+    for key, row in shown_rows.items():
+        value = formula_fallback_value(row)
+        if value is not None:
+            fallbacks[key] = value
     baseline = baseline if isinstance(baseline, dict) else None
 
     for field in fields:
@@ -624,9 +608,7 @@ def _validate_dynamic_numeric_input_limits(
         if value is None:
             continue
 
-        formula_max = None
-        if key == "A" and not is_external:
-            formula_max = _resolve_numeric_max_for_field_a(field, input_values, equipment)
+        formula_max = _resolve_numeric_formula_max(field, input_values, equipment, fallbacks)
 
         min_v, max_v, _step = resolve_numeric_field_bounds(
             options=field.options,
@@ -655,8 +637,11 @@ def _validate_dynamic_numeric_input_limits(
         if not (check_max or (check_formula_max and formula)):
             continue
         pretty = int(max_v) if float(max_v).is_integer() else round(max_v, 6)
-        if formula:
-            return f"{label} cannot be greater than {pretty} ({_formula_limit_note(formula, input_values, labels)})."
+        if formula and re.search(r"[A-Z]", formula):
+            return (
+                f"{label} cannot be greater than {pretty} "
+                f"({_formula_limit_note(formula, input_values, labels, fallbacks)})."
+            )
         return f"{label} cannot be greater than {pretty}."
     return None
 

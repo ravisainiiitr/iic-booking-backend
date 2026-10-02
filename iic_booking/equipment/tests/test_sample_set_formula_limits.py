@@ -313,9 +313,166 @@ def test_legacy_plain_string_formula_is_honoured(egs_factory):
     assert _sample_set_groups_limit_error(eq, {"A": 1, "B": 1, SAMPLE_SETS_KEY: [{"A": 4, "B": 1}]}, student) is None
 
 
+@pytest.mark.parametrize("user_type", [UserType.EXTERNAL, UserType.INSTITUTE, UserType.RND])
 @pytest.mark.django_db
-def test_external_users_skip_field_a_formula_as_in_set_one(egs_factory):
+def test_external_industry_and_rnd_users_are_capped_by_field_a_formula(egs_factory, user_type):
     eq = _apreo(egs_factory)
-    external = UserFactory(user_type=UserType.EXTERNAL, department=egs_factory.department)
+    external = UserFactory(user_type=user_type, department=egs_factory.department)
 
-    assert _sample_set_groups_limit_error(eq, {"A": 9, "B": 1, SAMPLE_SETS_KEY: [{"A": 9, "B": 1}]}, external) is None
+    assert _sample_set_groups_limit_error(eq, {"A": 5, "B": 1}, external) == _formula_error(4, 1, prefix="")
+    assert _sample_set_groups_limit_error(eq, {"A": 4, "B": 1, SAMPLE_SETS_KEY: [{"A": 9, "B": 2}]}, external) == (
+        _formula_error(8, 2)
+    )
+    assert _sample_set_groups_limit_error(eq, {"A": 4, "B": 1, SAMPLE_SETS_KEY: [{"A": 8, "B": 2}]}, external) is None
+
+
+@pytest.mark.django_db
+def test_external_user_calculation_is_capped_by_formula(egs_factory):
+    eq = _apreo(egs_factory, external_slot_quota_percent=50)
+    profile = ChargeProfile.objects.get(equipment=eq)
+    profile.pk = None
+    profile.user_type = UserType.EXTERNAL
+    profile.save()
+    client = egs_factory.client_for(UserFactory(user_type=UserType.EXTERNAL, department=egs_factory.department))
+
+    resp = _calc(client, eq, 4, 1, [{"A": 9, "B": 2}])
+
+    assert resp.status_code == 400
+    assert resp.data["error"] == _formula_error(8, 2)
+
+
+@pytest.mark.django_db
+def test_external_user_unchanged_legacy_set_still_saves_but_edits_must_fit(egs_factory):
+    eq = _apreo(egs_factory, enable_charge_recalculation=True)
+    owner = UserFactory(user_type=UserType.EXTERNAL, department=egs_factory.department)
+    stored = {"A": 4, "B": 1, SAMPLE_SETS_KEY: [{"A": 9, "B": 1}]}
+
+    assert _sample_set_groups_limit_error(eq, stored, owner, baseline=stored, check_max=False, check_formula_max=True) is None
+    changed = {"A": 4, "B": 1, SAMPLE_SETS_KEY: [{"A": 10, "B": 1}]}
+    assert _sample_set_groups_limit_error(eq, changed, owner, baseline=stored) == _formula_error(4, 1)
+
+
+def _ebsd(f):
+    """EBSD: B "No. of Scans" options {"max_formula": "1"} on every user type row."""
+    eq = f.equipment(time_formula="A*30", slot_duration_minutes=60)
+    for user_type in APREO_USER_TYPES:
+        DynamicInputField.objects.create(
+            equipment=eq, user_type=user_type, field_key="A", field_label="No. of Samples",
+            field_type=DynamicInputFieldType.NUMERIC, options={"min": 1, "max": 10}, default_value="1", is_required=True,
+        )
+        DynamicInputField.objects.create(
+            equipment=eq, user_type=user_type, field_key="B", field_label="No. of Scans",
+            field_type=DynamicInputFieldType.NUMERIC, options={"max_formula": "1"}, default_value="1", is_required=True,
+        )
+    return eq
+
+
+@pytest.mark.parametrize("user_type", [UserType.STUDENT, UserType.EXTERNAL])
+@pytest.mark.django_db
+def test_ebsd_constant_formula_on_field_b_caps_every_set(egs_factory, user_type):
+    eq = _ebsd(egs_factory)
+    user = UserFactory(user_type=user_type, department=egs_factory.department)
+
+    assert _sample_set_groups_limit_error(eq, {"A": 3, "B": 2}, user) == "No. of Scans cannot be greater than 1."
+    assert _sample_set_groups_limit_error(eq, {"A": 3, "B": 1, SAMPLE_SETS_KEY: [{"A": 2, "B": 2}]}, user) == (
+        "Sample set 2: No. of Scans cannot be greater than 1."
+    )
+    assert _sample_set_groups_limit_error(eq, {"A": 3, "B": 1, SAMPLE_SETS_KEY: [{"A": 2, "B": 1}]}, user) is None
+
+
+@pytest.mark.django_db
+def test_ebsd_calculation_rejects_two_scans_in_set_two(egs_factory):
+    eq = _ebsd(egs_factory)
+    client = egs_factory.client_for(egs_factory.student())
+
+    resp = _calc(client, eq, 2, 1, [{"A": 2, "B": 2}])
+
+    assert resp.status_code == 400
+    assert resp.data["error"] == "Sample set 2: No. of Scans cannot be greater than 1."
+
+
+def _three_numbers(f, c_formula, a_formula=None, b_default="1"):
+    eq = f.equipment(time_formula="A*30", slot_duration_minutes=60)
+    a_options = {"min": 1, "max": 50}
+    if a_formula:
+        a_options["max_formula"] = a_formula
+    for key, label, options, default in (
+        ("A", "No. of Samples", a_options, "1"),
+        ("B", "No. of Slots", {"min": 1, "max": 20}, b_default),
+        ("C", "No. of Spots", {"min": 1, "max_formula": c_formula}, "1"),
+    ):
+        DynamicInputField.objects.create(
+            equipment=eq, user_type="", field_key=key, field_label=label,
+            field_type=DynamicInputFieldType.NUMERIC, options=options, default_value=default, is_required=True,
+        )
+    return eq
+
+
+@pytest.mark.django_db
+def test_formula_on_another_field_uses_that_sets_values(egs_factory):
+    eq = _three_numbers(egs_factory, "A*2")
+    student = egs_factory.student()
+
+    assert _sample_set_groups_limit_error(eq, {"A": 2, "B": 1, "C": 4}, student) is None
+    assert _sample_set_groups_limit_error(eq, {"A": 2, "B": 1, "C": 5}, student) == (
+        "No. of Spots cannot be greater than 4 (A × 2, where A is No. of Samples = 2)."
+    )
+    assert _sample_set_groups_limit_error(eq, {"A": 5, "B": 1, "C": 9, SAMPLE_SETS_KEY: [{"A": 1, "B": 1, "C": 3}]}, student) == (
+        "Sample set 2: No. of Spots cannot be greater than 2 (A × 2, where A is No. of Samples = 1)."
+    )
+
+
+@pytest.mark.django_db
+def test_empty_or_hidden_referenced_field_falls_back_to_default_then_minimum(egs_factory):
+    student = egs_factory.student()
+
+    with_default = _three_numbers(egs_factory, "B*3", b_default="2")
+    assert _sample_set_groups_limit_error(with_default, {"A": 1, "C": 6}, student) is None
+    assert _sample_set_groups_limit_error(with_default, {"A": 1, "B": "", "C": 7}, student) == (
+        "No. of Spots cannot be greater than 6 (B × 3, where B is No. of Slots = 2)."
+    )
+
+    no_default = _three_numbers(egs_factory, "B*3", b_default="")
+    assert _sample_set_groups_limit_error(no_default, {"A": 1, "C": 4, SAMPLE_SETS_KEY: [{"A": 1, "C": 4}]}, student) == (
+        "No. of Spots cannot be greater than 3 (B × 3, where B is No. of Slots = 1)."
+    )
+
+
+@pytest.mark.django_db
+def test_circular_formulas_use_current_values_without_recursing(egs_factory):
+    eq = _three_numbers(egs_factory, "A", a_formula="C*2")
+    student = egs_factory.student()
+
+    assert _sample_set_groups_limit_error(eq, {"A": 4, "B": 1, "C": 3}, student) is None
+    assert _sample_set_groups_limit_error(eq, {"A": 7, "B": 1, "C": 3}, student) == (
+        "No. of Samples cannot be greater than 6 (C × 2, where C is No. of Spots = 3)."
+    )
+    assert _sample_set_groups_limit_error(eq, {"A": 2, "B": 1, "C": 3}, student) == (
+        "No. of Spots cannot be greater than 2 (A, where A is No. of Samples = 2)."
+    )
+
+
+@pytest.mark.parametrize("formula", ["Z*2", "B/0", "B**"])
+@pytest.mark.django_db
+def test_unresolvable_formula_is_ignored_with_a_warning(egs_factory, caplog, formula):
+    eq = _three_numbers(egs_factory, formula)
+    student = egs_factory.student()
+
+    with caplog.at_level("WARNING", logger="iic_booking.equipment.numeric_field_limits"):
+        assert _sample_set_groups_limit_error(eq, {"A": 1, "B": 1, "C": 90}, student) is None
+        assert _sample_set_groups_limit_error(eq, {"A": 1, "B": 1, "C": 101}, student) == (
+            "No. of Spots cannot be greater than 100."
+        )
+    assert any("Ignoring max formula" in r.getMessage() for r in caplog.records)
+
+
+def test_evaluate_max_formula_helper():
+    from iic_booking.equipment.numeric_field_limits import evaluate_max_formula
+
+    assert evaluate_max_formula("B*4", {"B": "2"}) == 8
+    assert evaluate_max_formula("1", {}) == 1
+    assert evaluate_max_formula("B*4", {"B": ""}, fallbacks={"B": 1}) == 4
+    assert evaluate_max_formula("A-B", {"A": 1, "B": 3}) == -2
+    assert evaluate_max_formula("SLOT_DURATION_MINUTES/30", {}, slot_duration_minutes=90) == 3
+    assert evaluate_max_formula("B*4", {"B": [1]}) is None
+    assert evaluate_max_formula("B*4", {}) is None

@@ -376,3 +376,76 @@ def initial_numeric_value(*, options: Any = None, help_text: Optional[str] = Non
             return ""
         return str(_json_number(min(max_v, max(min_v, parsed))))
     return str(_json_number(min_v)) if is_required else ""
+
+
+_FORMULA_FIELD_REF_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z])(?![A-Za-z0-9_])")
+_SLOT_DURATION_RE = re.compile(r"(?<![A-Za-z0-9_])SLOT_DURATION_MINUTES(?![A-Za-z0-9_])")
+
+
+def formula_fallback_value(field: Any) -> Optional[float]:
+    """Value a max formula uses for ``field`` when a sample set leaves it empty or hidden: the value the
+    booking form starts it with (its default within its limits, else its minimum). None when unknown."""
+    if field is None:
+        return None
+    if str(getattr(field, "field_type", "") or "").upper() != "NUMERIC":
+        default = getattr(field, "default_value", None)
+        return _strict_number(default) if default not in (None, "") else None
+    start = initial_numeric_value(
+        options=getattr(field, "options", None),
+        help_text=getattr(field, "help_text", None),
+        default_value=getattr(field, "default_value", None),
+        is_required=True,
+    )
+    return _strict_number(start) if start != "" else None
+
+
+def _formula_number(value: float) -> str:
+    text = f"{value:.10f}".rstrip("0").rstrip(".") or "0"
+    return f"({text})" if value < 0 else text
+
+
+def evaluate_max_formula(
+    formula: str,
+    values: Any,
+    *,
+    slot_duration_minutes: Any = 0,
+    fallbacks: Optional[dict] = None,
+    context: str = "",
+) -> Optional[float]:
+    """Maximum from ``formula`` (e.g. "B*4", or a constant such as "1") with one sample set's ``values``.
+
+    Only the other fields' current values are read, never their own formulas, so circular references
+    cannot recurse. A referenced field that is empty or not a number uses ``fallbacks[key]`` (see
+    ``formula_fallback_value``). Returns None and logs a warning when the formula cannot be worked out,
+    so the caller ignores it.
+    """
+    import logging
+
+    formula = (formula or "").strip()
+    if not formula:
+        return None
+    values = values if isinstance(values, dict) else {}
+    fallbacks = fallbacks or {}
+    expr = formula
+    for key in dict.fromkeys(_FORMULA_FIELD_REF_RE.findall(formula)):
+        raw = values.get(key)
+        value = _strict_number(raw) if raw not in (None, "") and not isinstance(raw, (list, dict)) else None
+        if value is None:
+            value = fallbacks.get(key)
+        if value is None:
+            logging.getLogger(__name__).warning(
+                "Ignoring max formula %r%s: field %s has no value or default.", formula, context, key
+            )
+            return None
+        expr = re.sub(rf"(?<![A-Za-z0-9_]){key}(?![A-Za-z0-9_])", _formula_number(float(value)), expr)
+    expr = _SLOT_DURATION_RE.sub(_formula_number(_strict_number(slot_duration_minutes) or 0.0), expr)
+    try:
+        if not _FORMULA_EXPR_RE.fullmatch(expr):
+            raise ValueError("unsupported characters")
+        result = _strict_number(eval(compile(expr, "<max_formula>", "eval"), {"__builtins__": {}}, {}))  # noqa: S307
+        if result is None:
+            raise ValueError("not a finite number")
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("Ignoring max formula %r%s: %s", formula, context, exc)
+        return None
+    return result
