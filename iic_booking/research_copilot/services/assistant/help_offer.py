@@ -17,7 +17,7 @@ from django.utils import timezone
 
 from iic_booking.research_copilot.services.assistant import cards as C
 
-CODES = ("slot_taken", "no_slots", "quota_exceeded", "no_wallet", "charge_error", "booking_failed")
+CODES = ("slot_taken", "no_slots", "quota_exceeded", "no_wallet", "insufficient_funds", "charge_error", "booking_failed")
 
 _QUOTA_MIN_RE = re.compile(
     r"(?P<scope>[A-Za-z ]+?)\s+(?P<period>weekly|monthly)\s+quota exceeded:\s*current usage (?P<used>\d+) min"
@@ -33,6 +33,8 @@ def classify(message: str) -> str:
     m = (message or "").lower()
     if "quota" in m and ("exceed" in m or "limit" in m):
         return "quota_exceeded"
+    if "insufficient" in m or "enough balance" in m:
+        return "insufficient_funds"
     if "wallet" in m and ("access" in m or "don't have" in m or "do not have" in m or "no wallet" in m or "not linked" in m):
         return "no_wallet"
     if "no longer available" in m or "already booked" in m or "slot is taken" in m or ("not available" in m and "slot" in m):
@@ -190,6 +192,25 @@ def _no_wallet(user, conversation, eq, payload: dict[str, Any]) -> dict[str, Any
     return C.reply("\n".join(lines), actions=actions[:4], intent="help_no_wallet", kind="ANSWER", title_hint="Wallet needed to book")
 
 
+def _insufficient(user, conversation, eq, payload: dict[str, Any]) -> dict[str, Any]:
+    from iic_booking.research_copilot.services.assistant import daily
+
+    t = daily.user_type(user)
+    lines = ["The wallet this booking is charged to doesn't have enough balance for it."]
+    if t in daily.STUDENT_TYPES:
+        lines += ["", "Bookings are paid from your supervisor's wallet, so ask them to recharge it (Wallet → **Recharge "
+                      "Wallet**). If they set a spending limit for you, they can raise it under **Student management**.",
+                  "", "Meanwhile you can book fewer slots or samples so the charge fits the balance."]
+    elif t == "faculty":
+        lines += ["", "**Recharge your wallet**", daily.recharge_steps_text(user)]
+    else:
+        lines += ["", "Open **Wallet** to check the balance and recharge, or reduce the slots or samples."]
+    actions = [C.prompt_action("Wallet balance", "What is my wallet balance?"),
+               C.prompt_action("How to recharge", "How do I recharge my wallet?")] + _base_actions(eq)
+    return C.reply("\n".join(lines), actions=actions[:4], intent="help_insufficient_funds", kind="ANSWER",
+                   title_hint="Not enough wallet balance")
+
+
 def _charge_error(user, conversation, eq, payload: dict[str, Any]) -> dict[str, Any]:
     from iic_booking.research_copilot.services.assistant import info
 
@@ -255,6 +276,8 @@ def reply(user, conversation, payload: dict[str, Any]) -> dict[str, Any]:
         out = _quota(user, conversation, eq, payload)
     elif code == "no_wallet":
         out = _no_wallet(user, conversation, eq, payload)
+    elif code == "insufficient_funds":
+        out = _insufficient(user, conversation, eq, payload)
     elif code == "charge_error":
         out = _charge_error(user, conversation, eq, payload)
     else:
