@@ -10,6 +10,7 @@ from django.db import DatabaseError, models
 import json
 import re
 import logging
+from iic_booking.training.admin import TrainingEquipmentSettingInline
 from iic_booking.users.models.user_type import UserType
 
 logger = logging.getLogger(__name__)
@@ -1460,6 +1461,7 @@ class EquipmentAdmin(admin.ModelAdmin):
         ChargeProfileInline,
         DynamicInputFieldInline,
         SlotMasterInline,
+        TrainingEquipmentSettingInline,
     ]
     
     def get_inlines(self, request, obj):

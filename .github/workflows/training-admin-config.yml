@@ -1,0 +1,148 @@
+# Training & Certification settings stored in the database (the same ones the Main Admin edits in
+# Admin Settings → Training Policy). No env edits and no restarts.
+#   status : read-only. Module switches, audience, enabled equipment; with `find`, equipment matching a name/code.
+#   apply  : change the Main Admin switch, the audience and/or enable/disable equipment by code. Needs confirm=TRAINING.
+#            Unknown codes are rejected before anything is written.
+# The module is on when this switch OR env TRAINING_MODULE_ENABLED is on (Apply Training Pilot Config edits the env).
+name: Training Admin Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status | apply"
+        required: true
+        default: status
+        type: choice
+        options: [status, apply]
+      find:
+        description: "Optional: list equipment whose name or code contains this (e.g. XRF)"
+        required: false
+        default: ""
+      module:
+        description: "Main Admin module switch (apply only)"
+        required: false
+        default: unchanged
+        type: choice
+        options: [unchanged, "on", "off"]
+      audience:
+        description: "Who sees Training (apply only)"
+        required: false
+        default: unchanged
+        type: choice
+        options: [unchanged, TEST_ACCOUNTS, EVERYONE]
+      enable_codes:
+        description: "Equipment codes to enable, comma-separated (apply only)"
+        required: false
+        default: ""
+      disable_codes:
+        description: "Equipment codes to disable, comma-separated (apply only)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type TRAINING to apply (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  config:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
+    steps:
+      - name: Build command
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          inputs = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("inputs") or {}
+
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+
+          def codes(key):
+              out = []
+              for part in (inputs.get(key) or "").split(","):
+                  part = part.strip()
+                  if part and part not in out:
+                      if not re.fullmatch(r"[A-Za-z0-9_-]+", part):
+                          fail(f"Invalid equipment code {part!r} in {key}.")
+                      out.append(part)
+              return out
+
+          args = ["--json"]
+          find = (inputs.get("find") or "").strip()
+          if find:
+              if not re.fullmatch(r"[\w .()-]{1,60}", find):
+                  fail("find may only contain letters, digits, spaces and . ( ) - _")
+              args += ["--find", find]
+          if inputs.get("action") == "apply":
+              if (inputs.get("confirm") or "").strip() != "TRAINING":
+                  fail("Type TRAINING in the confirm box to apply.")
+              changed = False
+              if inputs.get("module") in ("on", "off"):
+                  args += ["--module", inputs["module"]]
+                  changed = True
+              if inputs.get("audience") in ("TEST_ACCOUNTS", "EVERYONE"):
+                  args += ["--audience", inputs["audience"]]
+                  changed = True
+              enable, disable = codes("enable_codes"), codes("disable_codes")
+              if enable:
+                  args += ["--enable", ",".join(enable)]
+                  changed = True
+              if disable:
+                  args += ["--disable", ",".join(disable)]
+                  changed = True
+              if not changed:
+                  fail("apply needs a module, audience or equipment change.")
+              args += ["--confirm", "TRAINING"]
+          json.dump(args, open(os.path.join(os.environ["RUNNER_TEMP"], "training-config-args.json"), "w"))
+          print("args: " + " ".join(a for a in args if a != "TRAINING"))
+          PY
+
+      - name: Run training_config
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          mapfile -t ARGS < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))))' "$RUNNER_TEMP/training-config-args.json")
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py training_config "${ARGS[@]}" > "$RUNNER_TEMP/training-config.json"
+          python3 - "$RUNNER_TEMP/training-config.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          st = report["state"]
+          lines = ["## Training admin config", ""]
+          lines += [f"- Changed: {c}" for c in report["changes"]] or ["- No changes (read-only)."]
+          lines.append(f"- **Module: {'ON' if st['module_enabled'] else 'OFF'}** "
+                       f"(env switch {st['env_module_enabled']}, Main Admin switch {st['db_module_enabled']})")
+          lines.append(f"- Audience: `{st['audience']}` ({st['audience_label']})")
+          lines.append("- Env pilot codes: " + (", ".join(st["env_pilot_equipment_codes"]) or "none"))
+          if st["all_equipment_in_scope"]:
+              lines.append("- Equipment in scope: **every equipment** (env switch on, nothing listed)")
+          rows = st["enabled_equipment"]
+          lines.append("- Enabled equipment: " + (", ".join(
+              f"`{r['code']}` {r['name']} ({r['status']}; admin={r['enabled']}, env={r['env_pilot']})" for r in rows) or "none"))
+          for r in (report.get("find") or {}).get("results", []):
+              lines.append(f"- Match `{r['code']}`: {r['name']} ({r['status']}, {r['department'] or '-'}), training_enabled={r['training_enabled']}")
+          if report.get("find") and not report["find"]["results"]:
+              lines.append(f"- No equipment matches {report['find']['text']!r}.")
+          text = "\n".join(lines) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write(text)
+          PY

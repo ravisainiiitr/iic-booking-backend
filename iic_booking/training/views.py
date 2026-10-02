@@ -1,5 +1,6 @@
-"""Training & Certification API. Everything except the bootstrap and admin policy endpoints is off while
-``TRAINING_MODULE_ENABLED`` is false."""
+"""Training & Certification API. Everything except the bootstrap, admin policy and module settings endpoints
+is off while the module is off (see ``access`` for how the env and Main Admin switches combine), and refused
+to users outside the audience."""
 
 from __future__ import annotations
 
@@ -55,6 +56,11 @@ def training_api(methods, *, allow_disabled: bool = False):
             if not allow_disabled and not access.module_enabled():
                 return Response(
                     {"detail": "Training & Certification is not enabled.", "code": access.DISABLED_CODE},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if not allow_disabled and not access.in_audience(request.user):
+                return Response(
+                    {"detail": "Training & Certification is not available for your account yet.", "code": access.AUDIENCE_CODE},
                     status=status.HTTP_403_FORBIDDEN,
                 )
             try:
@@ -540,7 +546,7 @@ def _badge_allowed_ids(user, requested: list[int]) -> list[int]:
 
 @training_api(["GET"], allow_disabled=True)
 def badges(request):
-    if not access.module_enabled():
+    if not access.module_enabled() or not access.in_audience(request.user):
         return Response({"results": {}})
     raw = (request.query_params.get("user_ids") or str(request.user.id)).split(",")
     requested = [int(x) for x in raw if x.strip().isdigit()][:500]
@@ -742,6 +748,8 @@ def policy(request):
     return Response(
         {
             "module_enabled": access.module_enabled(),
+            "audience": access.audience(),
+            "can_manage_module": access.is_main_admin(user),
             "pilot_equipment_codes": sorted(access.pilot_equipment_codes()),
             "pilot_oic_count": len(access.pilot_oic_emails()),
             "can_edit_global": editor == "all",
@@ -754,6 +762,72 @@ def policy(request):
             ],
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Module switch, audience and per-equipment enablement (Main Admin only)
+# ---------------------------------------------------------------------------
+def _require_main_admin(user):
+    if not access.is_main_admin(user):
+        _forbid("Only the Main Administrator can change where Training & Certification is enabled.")
+
+
+def _bool_input(raw, field: str) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str) and raw.strip().lower() in {"true", "1", "yes", "on", "false", "0", "no", "off"}:
+        return raw.strip().lower() in {"true", "1", "yes", "on"}
+    raise TrainingError(f"{field} must be true or false.")
+
+
+@training_api(["GET", "POST"], allow_disabled=True)
+def module_settings(request):
+    from .module_config import module_state, update_module
+
+    _require_main_admin(request.user)
+    if request.method == "POST":
+        d = request.data
+        update_module(
+            request.user,
+            module_enabled=_bool_input(d["module_enabled"], "module_enabled") if "module_enabled" in d else None,
+            audience=d.get("audience") if "audience" in d else None,
+        )
+    return Response(module_state())
+
+
+@training_api(["GET"], allow_disabled=True)
+def module_equipment(request):
+    from iic_booking.equipment.models import Equipment
+
+    from .module_config import equipment_row
+
+    _require_main_admin(request.user)
+    db_enabled = access.db_enabled_equipment_ids()
+    env_codes = access.pilot_equipment_codes()
+    qs = Equipment.objects.select_related("internal_department").order_by("name")
+    search = (request.query_params.get("q") or "").strip()
+    if search:
+        qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search) | Q(internal_department__name__icontains=search))
+    if request.query_params.get("enabled") == "1":
+        qs = qs.filter(Q(equipment_id__in=db_enabled) | Q(code__in=env_codes))
+    total = qs.count()
+    return Response(
+        {"count": total, "results": [equipment_row(e, db_enabled, env_codes) for e in qs[:MAX_LIST]], "limit": MAX_LIST}
+    )
+
+
+@training_api(["POST"], allow_disabled=True)
+def module_equipment_toggle(request, equipment_id: int):
+    from iic_booking.equipment.models import Equipment
+
+    from .module_config import equipment_row, set_equipment_enabled
+
+    _require_main_admin(request.user)
+    eq = _get(Equipment, equipment_id)
+    if "enabled" not in request.data:
+        raise TrainingError("enabled is required.")
+    set_equipment_enabled(request.user, eq, _bool_input(request.data["enabled"], "enabled"))
+    return Response(equipment_row(eq, access.db_enabled_equipment_ids(), access.pilot_equipment_codes()))
 
 
 @training_api(["GET"], allow_disabled=True)

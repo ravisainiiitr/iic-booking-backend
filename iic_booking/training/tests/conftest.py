@@ -15,7 +15,13 @@ from iic_booking.equipment.models import (
     SlotMaster,
     SlotStatus,
 )
-from iic_booking.training.models import BadgeDefinition, CertificationLevel, TrainingPolicy
+from iic_booking.training.models import (
+    BadgeDefinition,
+    CertificationLevel,
+    TrainingAudience,
+    TrainingModuleSettings,
+    TrainingPolicy,
+)
 from iic_booking.users.models.department import Department
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import SubWallet, Wallet, WalletJoinRequest, WalletJoinRequestStatus
@@ -41,6 +47,8 @@ def seed_levels(db):
     BadgeDefinition.objects.get_or_create(code="trained", defaults={"name": "Trained", "level": trained})
     if not TrainingPolicy.objects.filter(scope="GLOBAL").exists():
         TrainingPolicy.objects.create(scope="GLOBAL", version=1, is_active=True)
+    # Most tests use ordinary accounts; audience tests switch back to test accounts only.
+    TrainingModuleSettings.objects.update_or_create(pk=1, defaults={"audience": TrainingAudience.EVERYONE})
     return trained
 
 

@@ -1,5 +1,7 @@
 """Read-only Training & Certification pilot status (used by the Apply Training Pilot Config workflow).
 
+Reports the env switch and pilot list next to the Main Admin switch, audience and enabled equipment.
+
 Never prints a full email address. With --codes / --oic-emails it validates proposed pilot values
 instead of the running settings and exits non-zero when a code or email is not usable.
 """
@@ -97,9 +99,25 @@ def build_report(codes: list[str], emails: list[str], *, validate: bool) -> dict
                 "so they will not see the Training workspace."
             )
 
+    scope_ids = access.pilot_equipment_ids()
+    db_ids = access.db_enabled_equipment_ids()
+    db_equipment = [
+        {"code": e.code, "name": e.name, "status": e.status}
+        for e in Equipment.objects.filter(equipment_id__in=db_ids).order_by("code")
+    ]
+    effective = (
+        None
+        if scope_ids is None
+        else sorted(Equipment.objects.filter(equipment_id__in=scope_ids).values_list("code", flat=True))
+    )
     return {
         "mode": "validate" if validate else "status",
         "module_enabled": access.module_enabled(),
+        "env_module_enabled": access.env_module_enabled(),
+        "db_module_enabled": access.db_module_enabled(),
+        "audience": access.audience(),
+        "db_enabled_equipment": db_equipment,
+        "effective_equipment_codes": effective,
         "pilot_scope": "listed equipment" if codes else "all equipment",
         "pilot_equipment": equipment,
         "pilot_oic_email_count": len(emails),
@@ -112,7 +130,15 @@ def build_report(codes: list[str], emails: list[str], *, validate: bool) -> dict
 
 
 def format_human(report: dict) -> str:
-    lines = [f"training_module_enabled={report['module_enabled']}", f"pilot_scope={report['pilot_scope']}"]
+    effective = report["effective_equipment_codes"]
+    lines = [
+        f"training_module_enabled={report['module_enabled']} "
+        f"(env={report['env_module_enabled']} admin_switch={report['db_module_enabled']})",
+        f"audience={report['audience']}",
+        "admin_enabled_equipment=" + (",".join(e["code"] for e in report["db_enabled_equipment"]) or "-"),
+        "effective_equipment=" + ("ALL" if effective is None else ",".join(effective) or "-"),
+        f"pilot_scope={report['pilot_scope']}",
+    ]
     for eq in report["pilot_equipment"]:
         state = f"found ({eq['name']}, {eq['status']})" if eq["found"] else "NOT FOUND"
         lines.append(f"pilot_equipment {eq['code']}: {state}")
