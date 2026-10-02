@@ -18101,10 +18101,7 @@ def get_nomination_resume(request, nomination_id):
     can_access = (
         nom.student_id == request.user.id
         or nom.supervisor_id == request.user.id
-        or (check_operator_permission(request.user) and (
-            request.user.user_type == UserType.ADMIN
-            or (request.user.user_type != UserType.ADMIN and nom.equipment_id in get_equipment_ids_managed_by_oic(request.user.id))
-        ))
+        or _can_decide_nomination(request.user, nom.equipment_id)
     )
     if not can_access:
         return Response(
@@ -18157,6 +18154,33 @@ def revoke_equipment_nomination(request, nomination_id):
     nom.delete()
     return Response({"message": "Nomination revoked."}, status=status.HTTP_200_OK)
 
+NOMINATION_DECIDER_ERROR = (
+    "Only the Main Admin or the Officer In Charge (including a temporary OIC) of the equipment "
+    "can review operating nominations."
+)
+
+
+def _nomination_decider_equipment_ids(user):
+    """Equipment whose operating nominations the user may review and decide.
+
+    None means all equipment (Main Admin). OICs and active temporary OICs get the equipment they manage,
+    regardless of booking-management permissions. Everyone else (Lab Operators, Department Administrators,
+    faculty, students) gets an empty set.
+    """
+    if not user or not getattr(user, "is_authenticated", False):
+        return set()
+    if user.user_type == UserType.ADMIN:
+        return None
+    if user.user_type == UserType.MANAGER:
+        return set(get_equipment_ids_managed_by_oic(user.id))
+    return set()
+
+
+def _can_decide_nomination(user, equipment_id) -> bool:
+    ids = _nomination_decider_equipment_ids(user)
+    return ids is None or equipment_id in ids
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_equipment_nominations_admin(request):
@@ -18164,20 +18188,14 @@ def list_equipment_nominations_admin(request):
     Admin/OIC: list all nominations with optional filters semester_id, equipment_id, supervisor_id, status.
     OIC sees only nominations for equipment they manage.
     """
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "Only admin, manager (OIC), or operator can list all nominations."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    decider_ids = _nomination_decider_equipment_ids(request.user)
+    if decider_ids is not None and not decider_ids:
+        return Response({"error": NOMINATION_DECIDER_ERROR}, status=status.HTTP_403_FORBIDDEN)
     qs = StudentEquipmentNomination.objects.all().select_related(
         "student", "student__department", "supervisor", "equipment", "semester", "approved_by"
     )
-    if request.user.user_type != UserType.ADMIN:
-        oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-        if not oic_equipment_ids:
-            qs = qs.none()
-        else:
-            qs = qs.filter(equipment_id__in=oic_equipment_ids)
+    if decider_ids is not None:
+        qs = qs.filter(equipment_id__in=decider_ids)
     semester_id = request.query_params.get("semester_id")
     if semester_id:
         qs = qs.filter(semester_id=semester_id)
@@ -18203,19 +18221,14 @@ def list_equipment_nominations_admin(request):
 @permission_classes([IsAuthenticated])
 def approve_equipment_nomination(request, nomination_id):
     """Admin/OIC: approve a PENDING nomination."""
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "Only admin, manager (OIC), or operator can approve nominations."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    if _nomination_decider_equipment_ids(request.user) == set():
+        return Response({"error": NOMINATION_DECIDER_ERROR}, status=status.HTTP_403_FORBIDDEN)
     try:
         nom = StudentEquipmentNomination.objects.select_related("student", "equipment", "semester").get(pk=nomination_id)
     except StudentEquipmentNomination.DoesNotExist:
         return Response({"error": "Nomination not found."}, status=status.HTTP_404_NOT_FOUND)
-    if request.user.user_type != UserType.ADMIN:
-        oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-        if nom.equipment_id not in oic_equipment_ids:
-            return Response({"error": "You can only approve nominations for equipment you manage."}, status=status.HTTP_403_FORBIDDEN)
+    if not _can_decide_nomination(request.user, nom.equipment_id):
+        return Response({"error": "You can only approve nominations for equipment you manage."}, status=status.HTTP_403_FORBIDDEN)
     if nom.status != StudentEquipmentNominationStatus.PENDING:
         return Response({"error": "Only PENDING nominations can be approved."}, status=status.HTTP_400_BAD_REQUEST)
     from django.utils import timezone as tz
@@ -18251,19 +18264,14 @@ def approve_equipment_nomination(request, nomination_id):
 @permission_classes([IsAuthenticated])
 def reject_equipment_nomination(request, nomination_id):
     """Admin/OIC: reject a PENDING nomination. Optional body: { \"remarks\": \"...\" }."""
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "Only admin, manager (OIC), or operator can reject nominations."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    if _nomination_decider_equipment_ids(request.user) == set():
+        return Response({"error": NOMINATION_DECIDER_ERROR}, status=status.HTTP_403_FORBIDDEN)
     try:
         nom = StudentEquipmentNomination.objects.select_related("student", "equipment", "semester").get(pk=nomination_id)
     except StudentEquipmentNomination.DoesNotExist:
         return Response({"error": "Nomination not found."}, status=status.HTTP_404_NOT_FOUND)
-    if request.user.user_type != UserType.ADMIN:
-        oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-        if nom.equipment_id not in oic_equipment_ids:
-            return Response({"error": "You can only reject nominations for equipment you manage."}, status=status.HTTP_403_FORBIDDEN)
+    if not _can_decide_nomination(request.user, nom.equipment_id):
+        return Response({"error": "You can only reject nominations for equipment you manage."}, status=status.HTTP_403_FORBIDDEN)
     if nom.status != StudentEquipmentNominationStatus.PENDING:
         return Response({"error": "Only PENDING nominations can be rejected."}, status=status.HTTP_400_BAD_REQUEST)
     remarks = (request.data.get("remarks") if hasattr(request, "data") and request.data else None) or ""
