@@ -34,5 +34,10 @@ TEMPLATES[0]["OPTIONS"]["debug"] = True  # type: ignore[index]
 # ------------------------------------------------------------------------------
 # https://docs.djangoproject.com/en/dev/ref/settings/#media-url
 MEDIA_URL = "http://media.testserver/"
+# base.py points default storage at the production S3 bucket; tests must never reach it.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
 # Your stuff...
 # ------------------------------------------------------------------------------
