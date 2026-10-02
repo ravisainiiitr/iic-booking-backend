@@ -148,6 +148,22 @@ def booking_quota_should_skip(equipment) -> bool:
     return False
 
 
+# A week has 10,080 minutes and a 31-day month 44,640. Limits at ~90% of that (e.g. 10,075/week) can't
+# realistically be used up by one user, so they mean "no limit": still enforced, but never shown as a quota.
+EFFECTIVELY_UNLIMITED_QUOTA_MINUTES = {
+    QuotaType.WEEKLY: 9000,
+    QuotaType.MONTHLY: 40000,
+}
+
+
+def quota_limit_is_effectively_unlimited(quota_type: str, limit_minutes) -> bool:
+    threshold = EFFECTIVELY_UNLIMITED_QUOTA_MINUTES.get(str(quota_type or "").upper())
+    try:
+        return threshold is not None and int(limit_minutes or 0) >= threshold
+    except (TypeError, ValueError):
+        return False
+
+
 class QuotaService:
     """
     Reusable quota engine for equipment bookings.
