@@ -1,0 +1,26 @@
+# Read-only smoke test of Booking Assistant everyday answers on production, as the test student:
+# "List my recent bookings", "wallet balance", "how to recharge wallet", ... with latency per question.
+# Prints timings and routing only (no reply text, balances or booking details). Nothing is booked or paid.
+name: Smoke Booking Assistant
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - name: Run read-only smoke test in the django container
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python - < scripts/ops/smoke_booking_assistant_daily.py
