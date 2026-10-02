@@ -244,7 +244,7 @@ def test_legacy_zero_displays_and_is_kept_when_unchanged(egs_factory):
 
 
 @pytest.mark.django_db
-def test_template_rejects_zero_and_keeps_legacy_zero(egs_factory):
+def test_template_rejects_zero_and_out_of_range_values(egs_factory):
     eq = _equipment(egs_factory)
     user = egs_factory.student()
     client = egs_factory.client_for(user)
@@ -264,13 +264,20 @@ def test_template_rejects_zero_and_keeps_legacy_zero(egs_factory):
     assert min_two.status_code == 400
     assert min_two.data["error"] == "No. of Slots cannot be less than 2."
     over_max = client.post(url, {"equipment": eq.pk, "name": "A9", "input_values": {**VALID, "A": "9"}}, format="json")
-    assert over_max.status_code == 201, over_max.data
+    assert over_max.status_code == 400
+    assert over_max.data["error"] == "No. of Samples: max 4 allowed."
+    assert over_max.data["error_field"] == {"field": "A", "set": 1, "kind": "max", "limit": 4}
 
+    # A value saved before the minimum of 1 existed must be fixed before the inputs can be saved again;
+    # renaming alone still works.
     legacy = BookingInputTemplate.objects.create(user=user, equipment=eq, name="Legacy", input_values={**VALID, "D": 0})
-    renamed = client.patch(f"{url}{legacy.pk}/", {"input_values": {**VALID, "D": 0, "A": 2}}, format="json")
+    kept_zero = client.patch(f"{url}{legacy.pk}/", {"input_values": {**VALID, "D": 0, "A": 2}}, format="json")
+    assert kept_zero.status_code == 400
+    assert kept_zero.data["error_field"]["field"] == "D"
+    renamed = client.patch(f"{url}{legacy.pk}/", {"name": "Legacy 2"}, format="json")
     assert renamed.status_code == 200, renamed.data
-    zeroed = client.patch(f"{url}{legacy.pk}/", {"input_values": {**VALID, "D": 0, "A": 0}}, format="json")
-    assert zeroed.status_code == 400
+    fixed = client.patch(f"{url}{legacy.pk}/", {"input_values": {**VALID, "D": 1, "A": 2}}, format="json")
+    assert fixed.status_code == 200, fixed.data
     assert BookingInputTemplate.objects.get(pk=legacy.pk).input_values["A"] == 2
 
 

@@ -97,10 +97,10 @@ jobs:
           LIKELY_FAILS = {"quota_low", "wallet_low", "no_wallet"}
           DEGRADED = {
               "sample_sets_disabled", "option_invalid", "preferred_weekend", "preferred_slot_missing",
-              "preferred_slot_too_short", "preferred_holiday", "preferred_mode_unavailable", "slots_exceed_day",
+              "preferred_slot_too_short", "preferred_holiday", "preferred_mode_unavailable",
           }
           # Codes the template_health module also reports, for the agreement check.
-          SHARED = FAILS | LIKELY_FAILS | DEGRADED - {"slots_exceed_day"} | {
+          SHARED = FAILS | LIKELY_FAILS | DEGRADED | {
               "field_removed", "option_not_offered", "workspace_unavailable", "peak_window_paused",
           }
 
@@ -327,9 +327,6 @@ jobs:
                       if est:
                           estimates[t.pk] = est
                           slots, booked, charge = est
-                          starts = sorted(day_starts[eq.pk])
-                          if starts and slots > len(starts):
-                              add("slots_exceed_day", t)
 
                       if t.preferred_weekday is not None and t.preferred_start_time is not None:
                           wd, st = t.preferred_weekday, t.preferred_start_time

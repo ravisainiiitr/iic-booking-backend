@@ -210,17 +210,38 @@ def test_list_detail_check_and_attention_endpoints(egs_factory, no_portal_lock):
 
 
 @pytest.mark.django_db
-def test_fixed_max_is_advice_on_save_and_the_response_says_so(egs_factory, no_portal_lock):
+def test_saving_out_of_range_values_is_blocked_with_the_field(egs_factory, no_portal_lock):
     eq = _equipment(egs_factory)
+    _numeric(eq, "B", "Scans", max_formula="A*2")
     student, _sub = _student_with_wallet(egs_factory)
     client = egs_factory.client_for(student)
 
-    saved = client.post(URL, {"equipment": eq.pk, "name": "Over", "input_values": {"A": "11"}}, format="json")
-    assert saved.status_code == 201, saved.data
-    issue = saved.data["health"]["issues"][0]
-    assert (issue["code"], issue["limit"], issue["fix"]) == ("numeric_max", 10, "clamp")
+    over = client.post(URL, {"equipment": eq.pk, "name": "Over", "input_values": {"A": "11"}}, format="json")
+    assert over.status_code == 400
+    assert over.data == {
+        "error": "No. of Samples: max 10 allowed.",
+        "error_field": {"field": "A", "set": 1, "kind": "max", "limit": 10},
+    }
 
-    fixed = client.patch(f"{URL}{saved.data['id']}/", {"input_values": {"A": "10"}}, format="json")
+    under = client.post(URL, {"equipment": eq.pk, "name": "Under", "input_values": {"A": "0"}}, format="json")
+    assert (under.status_code, under.data["error_field"]["field"], under.data["error_field"]["kind"]) == (400, "A", "min")
+
+    formula = client.post(
+        URL,
+        {"equipment": eq.pk, "name": "F", "input_values": {"A": "2", "B": "4", SAMPLE_SETS_KEY: [{"A": "1", "B": "3"}]}},
+        format="json",
+    )
+    assert formula.status_code == 400
+    assert formula.data["error_field"] == {"field": "B", "set": 2, "kind": "formula_max", "limit": 2}
+    assert formula.data["error"].startswith("Sample set 2: Scans cannot be greater than 2")
+    assert not BookingInputTemplate.objects.filter(user=student).exists()
+
+    # A template saved over the maximum before this rule stays as it is until its inputs are fixed.
+    legacy = _saved(student, eq, {"A": "11"})
+    blocked = client.patch(f"{URL}{legacy.pk}/", {"input_values": {"A": "11", "C": "Ar"}}, format="json")
+    assert blocked.status_code == 400
+    assert check_template(legacy, use_cache=False)["issues"][0]["code"] == "numeric_max"
+    fixed = client.patch(f"{URL}{legacy.pk}/", {"input_values": {"A": "10"}}, format="json")
     assert fixed.status_code == 200, fixed.data
     assert fixed.data["health"]["status"] == "ok"
 

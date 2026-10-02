@@ -1,0 +1,79 @@
+name: Notify Template Health (one-time email)
+
+# Emails each user whose saved booking templates would fail, or are likely to fail, when booking opens
+# (one email per user, grouping their templates). Runs `manage.py notify_template_health` in the production
+# Django container. Dry run by default: prints masked recipients and counts only. Sending needs
+# mode=send and confirm=SEND_TEMPLATE_NOTICE. Template/issue pairs already emailed are skipped, so a re-run
+# does not repeat an email.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: dry-run lists masked recipients; send emails them
+        required: true
+        type: choice
+        options:
+          - dry-run
+          - send
+        default: dry-run
+      confirm:
+        description: Type SEND_TEMPLATE_NOTICE to send (ignored for dry-run)
+        required: false
+        type: string
+        default: ''
+      opens_at:
+        description: 'Local date and time booking opens, e.g. "2026-10-07 21:00" (blank = next Wednesday 21:00)'
+        required: false
+        type: string
+        default: ''
+      max_recipients:
+        description: Refuse to send if more users than this would be emailed
+        required: false
+        type: string
+        default: '6'
+
+jobs:
+  notify:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Check inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          OPENS_AT: ${{ inputs.opens_at }}
+          MAX_RECIPIENTS: ${{ inputs.max_recipients }}
+        run: |
+          set -euo pipefail
+          if [[ "${MODE}" == "send" && "${CONFIRM}" != "SEND_TEMPLATE_NOTICE" ]]; then
+            echo "Refusing to send: confirm must be exactly SEND_TEMPLATE_NOTICE."
+            exit 2
+          fi
+          if [[ -n "${OPENS_AT}" && ! "${OPENS_AT}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9]{2}:[0-9]{2}$ ]]; then
+            echo "opens_at must look like 2026-10-07 21:00"
+            exit 2
+          fi
+          if [[ ! "${MAX_RECIPIENTS}" =~ ^[0-9]+$ ]]; then
+            echo "max_recipients must be a whole number"
+            exit 2
+          fi
+
+      - name: Run notify_template_health
+        env:
+          MODE: ${{ inputs.mode }}
+          OPENS_AT: ${{ inputs.opens_at }}
+          MAX_RECIPIENTS: ${{ inputs.max_recipients }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          if [ -z "$CID" ]; then
+            echo "Could not find the Django container."
+            exit 1
+          fi
+          ARGS=(--max-recipients "${MAX_RECIPIENTS}")
+          if [[ "${MODE}" == "send" ]]; then ARGS+=(--send); else ARGS+=(--dry-run); fi
+          if [[ -n "${OPENS_AT}" ]]; then ARGS+=(--opens-at "${OPENS_AT}"); fi
+          # Any address in log or error output is masked as x***@domain.
+          docker exec -w /app "$CID" python manage.py notify_template_health "${ARGS[@]}" 2>&1 \
+            | sed -E 's/([A-Za-z0-9])[A-Za-z0-9._%+-]*@([A-Za-z0-9.-]+)/\1***@\2/g'
