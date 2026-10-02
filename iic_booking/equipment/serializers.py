@@ -2253,9 +2253,10 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         Others may resubmit the current value (the form sends every field); it is then left unchanged."""
         if "allow_multiple_sample_sets" not in attrs:
             return
+        from .sample_set_limits import can_edit_sample_sets_switch
+
         request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == UserType.ADMIN:
+        if can_edit_sample_sets_switch(getattr(request, "user", None)):
             return
         current = instance.allow_multiple_sample_sets if instance is not None and instance.pk else True
         if bool(attrs["allow_multiple_sample_sets"]) != current:

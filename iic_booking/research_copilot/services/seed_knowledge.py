@@ -24,8 +24,17 @@ To book equipment on the IIC Equipment Booking Portal:
    booking is created; wallet balance, quotas and supervisor spending limits are checked at that moment.
 6. Track the booking from View Booking on the dashboard.
 Booking windows: next week's slots normally open every Wednesday at 9:00 PM. The booking page shows the
-exact window for each account, and the server clock in its header shows portal time (IST) — windows open by
-that clock. Admins and OICs can book any week.
+exact window for each account and a live countdown to the next opening, and the server clock in its header shows
+portal time (IST) — windows open by that clock. Admins and OICs can book any week.
+Peak booking window: during the weekly opening, IIT Roorkee users who click an equipment card go straight to its
+booking page, and external users (External, Industry, R&D and other non-IITR accounts) are paused from 8:55 to
+9:15 PM on Wednesdays (the default) with a notice beforehand. Admins, OICs and staff are never paused.
+On the booking page: the remaining weekly quota is shown before you pick slots; tap a greyed-out slot to see why
+it cannot be booked; the Review line above Confirm sums up slots, time and charge. Students without a linked
+supervisor wallet see Link supervisor's wallet / Invite your supervisor, and a warning shows when the wallet
+cannot cover the charge. If a booking fails, the form stays filled in (only slots someone else took are dropped)
+and an unsaved booking is restored as a draft on the same device (Discard clears it).
+In the Equipments catalog each card shows a From price and Book now, with a category filter.
 You can also book through the Booking Assistant (bottom-right button): choose Book equipment and follow the
 steps. Never invent slot availability — always check the equipment page or live slots.
 """,
@@ -48,6 +57,8 @@ Common booking statuses shown in View Booking:
 - Completed: the analysis finished; results may be available in View results.
 - Cancelled / Refunded: cancelled under the cancellation policy. Cancelled and refunded bookings keep their
   original start and end dates.
+In My Bookings, "What do these statuses mean?" opens the same legend, and each booking shows its cancel /
+reschedule deadline, or "Deadline passed - contact the Officer in Charge".
 """,
     },
     {
@@ -165,6 +176,9 @@ is charged and timed separately and added to the same booking; Step 2 shows the 
 Duplicate, Remove or Collapse on a set as needed. The lab decides per equipment whether sample sets are offered;
 when they are not, the button is not shown and a separate booking is needed for samples with other settings.
 Bookings made earlier keep their sample sets.
+Number fields start at 1 (0 is not accepted) and show "Max N allowed" beside the box at the limit. Limits that
+depend on another field (for example No. of Samples up to Number of Slots x 4) apply to every user type and to
+each sample set using that set's own values.
 Editing inputs after booking: open the booking and choose Edit User Inputs. Values can be changed until the
 booking is completed (the Officer In Charge can also edit after completion). Field limits still apply.
 If the charge goes up, pay the difference (Pay now) within 1 minute or the edit is cancelled and the previous
@@ -304,6 +318,16 @@ Changes released in September–October 2026:
   Operator dashboard.
 - Booking Assistant: instant answers for my bookings, wallet balance, recharge steps, transactions, results,
   waitlist and tickets, with next-step buttons on every booking (cancel / reschedule always need Confirm).
+- Booking page: form kept after a failed booking with a restored draft, wallet link / Invite your supervisor
+  banner and low-balance warning, remaining weekly quota, opening countdown, friendly waitlist queue message,
+  tap a greyed slot to see why, phone-friendly slot grid and a Review line before Confirm; Need help? opens the
+  Booking Assistant after a failed booking, and every answer has "Was this helpful?".
+- My Bookings: cancel / reschedule deadline on each booking and a status legend.
+- Sample sets start from the equipment's defaults; number fields start at 1 and show "Max N allowed".
+- Catalog From prices, category filter and Book now; peak booking window (external users paused 8:55–9:15 PM on
+  Wednesdays); keyboard-accessible dashboard menus.
+- OIC: important instruction editor with fonts, point sizes and subscript / superscript. Admin: honorific titles
+  for OICs and Lab Operators and the per-equipment Allow samples with different parameters switch.
 """,
     },
     {

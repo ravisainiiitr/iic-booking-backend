@@ -83,6 +83,15 @@ def sample_sets_allowed(equipment) -> bool:
     return getattr(equipment, "allow_multiple_sample_sets", True) is not False
 
 
+def can_edit_sample_sets_switch(user) -> bool:
+    """Who may change the switch: the main administrator or a superuser (any user type)."""
+    from iic_booking.users.models.user_type import UserType
+
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    return bool(getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == UserType.ADMIN)
+
+
 def sample_sets_disabled_error(equipment, input_values, baseline=None) -> Optional[str]:
     """Error when the switch is off and ``input_values`` hold more extra sample sets than ``baseline``.
 
