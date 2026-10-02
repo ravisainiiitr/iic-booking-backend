@@ -1,0 +1,225 @@
+name: Probe Booking Assistant Unanswered Questions (read-only)
+
+# Prints the questions the Booking Assistant logged as unanswered (KnowledgeGap rows, plus user
+# messages whose reply was the "couldn't find an answer" fallback), clustered by theme with counts,
+# and how many each theme the current deterministic intent table would already answer. Example texts
+# are redacted (names, emails, phone numbers, booking IDs, roll numbers, long numbers, URLs) and
+# shortened; no user, conversation or message identifiers are printed.
+# Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Look-back window in days
+        required: false
+        default: '3650'
+      examples:
+        description: Redacted examples to print per theme
+        required: false
+        default: '15'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Unanswered questions by theme (SELECT only, redacted)
+        env:
+          DAYS: ${{ github.event.inputs.days }}
+          EXAMPLES: ${{ github.event.inputs.examples }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e DAYS="${DAYS:-3650}" -e EXAMPLES="${EXAMPLES:-15}" -w /app "$CID" python - <<'PY'
+          import os
+          import re
+          from collections import Counter, defaultdict
+          from datetime import timedelta
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+          from django.utils import timezone
+
+          DAYS = int((os.environ.get("DAYS") or "3650").strip() or 3650)
+          EXAMPLES = int((os.environ.get("EXAMPLES") or "15").strip() or 15)
+          SINCE = timezone.now() - timedelta(days=DAYS)
+          print(f"window: last {DAYS} days")
+
+          COMMON = set("""
+          the and for are but not you all any can had her was one our out day get has him his how man new now old see
+          two way who boy did its let put say she too use yes also very good nice great best better well much many more
+          most some such than that this then them they there their these those what when where which while with within
+          without would could should shall will have from into onto your yours about above after again against below
+          between both down during each few further here just like only other over same so under until upon why booking
+          bookings book booked slot slots sample samples equipment instrument instruments lab labs laboratory portal
+          website site page pages user users time times date dates week weeks month months year years payment payments
+          wallet charge charges amount fee fees money price prices rate rates rating ratings process system easy easier
+          hard difficult simple quick fast slow please thank thanks sir madam mam team staff operator operators office
+          officer incharge faculty student students research researcher scholar scholars project projects supervisor
+          department departments institute institution technology technical science sciences engineering university
+          college centre center indian india national private limited pvt ltd industry industries company services
+          service analysis analytical result results data report reports email emails mail phone call number name id
+          login logout account register registration form forms field fields option options select calendar schedule
+          available availability open close closed cancel cancelled cancellation reschedule refund approval approve
+          approved pending confirm confirmed status message messages notification support ticket tickets issue problem
+          error errors help experience mobile app button menu dashboard search filter list view details information
+          instructions guide policy rule rules limit limits quota waitlist queue urgent priority wait waiting need want
+          make give take provide work working sem fesem tem xrd xps nmr ftir raman icp afm bet tga dsc hplc gcms lcms
+          edx hours hour minute minutes morning evening night today tomorrow monday tuesday wednesday thursday friday
+          saturday sunday first last next previous different another free paid total small large long short recharge
+          link linked linking invoice proforma gst credit debit balance transaction transactions hello thanks okay
+          """.split())
+
+          from iic_booking.users.models import User
+
+          NAME_TOKENS = set()
+          for nm in User.objects.exclude(name__isnull=True).exclude(name="").values_list("name", flat=True).iterator():
+              for t in re.findall(r"[A-Za-z]{3,}", nm or ""):
+                  NAME_TOKENS.add(t.lower())
+          try:
+              from iic_booking.equipment.models import Equipment
+              for nm, code in Equipment.objects.values_list("name", "code"):
+                  for t in re.findall(r"[A-Za-z]{3,}", f"{nm or ''} {code or ''}"):
+                      NAME_TOKENS.discard(t.lower())
+          except Exception:  # noqa: BLE001
+              pass
+          NAME_TOKENS -= COMMON
+          REDACTIONS = Counter()
+
+          PATTERNS = [
+              ("EMAIL", re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")),
+              ("URL", re.compile(r"(?:https?://|www\.)\S+", re.I)),
+              ("ID", re.compile(r"\b(?:booking|bkg|order|ticket|roll|enrol\w*|enroll\w*|id)\s*(?:no\.?|number|id)?\s*[:#-]?\s*[A-Za-z0-9-]*\d[A-Za-z0-9-]*", re.I)),
+              ("ID", re.compile(r"\b[A-Za-z]{2,}[A-Za-z0-9]*\d{4,}\b")),
+              ("PHONE", re.compile(r"(?<!\w)\+?\d[\d\s().-]{8,}\d(?!\w)")),
+              ("NUM", re.compile(r"#\s*\d+|\b\d{5,}\b")),
+              ("NAME", re.compile(r"\b(?:Dr|Prof|Mr|Mrs|Ms|Miss|Shri|Smt|Er|Sir|Madam|Mam)\.?\s+[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?")),
+          ]
+
+          def _name_sub(m):
+              w = m.group(0)
+              if w.lower() in NAME_TOKENS:
+                  REDACTIONS["NAME"] += 1
+                  return "[NAME]"
+              return w
+
+          def redact(text, limit=160):
+              text = " ".join(str(text or "").split())
+              for label, rx in PATTERNS:
+                  text, n = rx.subn(f"[{label}]", text)
+                  REDACTIONS[label] += n
+              text = re.sub(r"(?<!\[)\b[A-Za-z]{3,}\b(?!\])", _name_sub, text)
+              return text[:limit] + ("..." if len(text) > limit else "")
+
+          THEMES = [
+              ("greeting / small talk", r"^(hi+|hello|hey|hii+|good (morning|afternoon|evening)|thanks?( you)?|thank u|ok(ay)?|test(ing)?|yes|no|bye|who are you|what are you)\b[\s!.?]*$"),
+              ("booking failed / error at submit", r"\b(fail\w*|error|not (able|working|going|getting|allowed|showing)|unable|can'?t|cannot|couldn'?t|stuck|problem|issue)\b.*\b(book\w*|slot|submit|pay\w*)\b|\b(book\w*|slot|submit)\b.*\b(fail\w*|error|not (able|working)|unable|can'?t|cannot)\b"),
+              ("quota / weekly limit / max slots", r"\b(quota|limit\w*|maximum|max\w*|how many (slots|hours|bookings|samples))\b"),
+              ("supervisor / wallet access / linking", r"\b(supervisor|guide|faculty|professor|prof)\b.*\b(wallet|link|join|approv\w*|add|access)\b|\b(join|link)\w*\b.*\bwallet\b|\bno (wallet|access)\b|\bwallet access\b"),
+              ("wallet / recharge / payment", r"\b(wallet|recharge|top ?up|balance|pay\w*|deposit|transfer|upi|neft|money|fund\w*|grant|sric)\b"),
+              ("charges / cost / estimate", r"\b(charges?|cost\w*|price|pricing|rates?|fees?|tariff|how much|estimat\w*|gst)\b"),
+              ("cancel / refund / reschedule", r"\b(cancel\w*|refund\w*|reschedul\w*|postpone|change (date|slot|time))\b"),
+              ("waitlist / no slots available", r"\b(wait ?list\w*|waiting|queue|no slots?|slots? (not|are not|aren'?t) (available|showing|visible|open)|full|fully booked|when (will|do) slots? open|slot opening|opens?)\b"),
+              ("slot window / when booking opens / peak", r"\b(wednesday|9 ?pm|21:00|window|release\w*|opening time|when (can|do) i book|booking (opens|starts|time))\b"),
+              ("results / data / report download", r"\b(results?|data|reports?|download|output|files?|spectra|images?)\b"),
+              ("invoice / proforma / receipt", r"\b(invoice|proforma|pro forma|receipt|bill\w*|utili[sz]ation certificate)\b"),
+              ("sample submission / preparation / requirements", r"\b(sample\w*|prepar\w*|submit|submission|send|courier|powder|film|coat\w*|requirement\w*|quantity)\b"),
+              ("equipment capability / which instrument / technique", r"\b(which|what) (equipment|instrument|machine|technique)\b|\b(measure|analy[sz]\w*|characteri[sz]\w*|detect|resolution|capabilit\w*|specification\w*|specs)\b"),
+              ("location / contact / operator / timings", r"\b(where|location|located|room|building|contact|phone|email|operator|oic|in-?charge|timing\w*|working hours|office hours|open on)\b"),
+              ("account / login / profile / registration", r"\b(login|log in|sign ?(in|up)|password|otp|profile|register\w*|account|verify|verification|email change)\b"),
+              ("external / industry users", r"\b(external|industry|company|outside|other (institute|college|university)|non-?iitr|startup|msme)\b"),
+              ("training / remote analysis / self-operation", r"\b(training|train|remote|self[- ]?operat\w*|hands[- ]?on|operate (it )?myself|dsa|raa)\b"),
+              ("booking status / my bookings", r"\b(status|my bookings?|track|confirmed|approved|pending)\b"),
+              ("how to book / booking steps", r"\b(how (to|do i|can i) (book|make|reserve)|book\w*|reserve|slot\w*)\b"),
+              ("equipment availability / downtime", r"\b(available|availability|working|down|maintenance|repair|breakdown|functional)\b"),
+          ]
+          THEMES = [(name, re.compile(rx, re.I)) for name, rx in THEMES]
+
+          def theme(text):
+              t = " ".join(str(text or "").lower().split())
+              for name, rx in THEMES:
+                  if rx.search(t):
+                      return name
+              return "other"
+
+          from iic_booking.research_copilot.services.assistant import intents as ba_intents
+          from iic_booking.research_copilot.services.assistant.info import detect_policy_topic
+
+          def covered_now(text):
+              try:
+                  det = ba_intents.detect(text)
+                  if det is not None and det.intent not in ("howto_cancel", "howto_reschedule"):
+                      return f"intent:{det.intent}"
+                  topic = detect_policy_topic(ba_intents.normalize(text))
+                  if topic:
+                      return f"policy:{topic}"
+              except Exception:  # noqa: BLE001
+                  return "check-error"
+              return ""
+
+          def report(title, texts):
+              print(f"\n== {title} ==")
+              norm = Counter(" ".join(t.lower().split()) for t in texts)
+              print(f"  rows={len(texts)} distinct texts={len(norm)} repeated texts (>1)={sum(1 for v in norm.values() if v > 1)}")
+              by_theme = defaultdict(list)
+              for t in texts:
+                  by_theme[theme(t)].append(t)
+              total = max(1, len(texts))
+              print("  theme | rows | % | already answered by today's deterministic intents")
+              for name, rows in sorted(by_theme.items(), key=lambda kv: -len(kv[1])):
+                  cov = Counter(covered_now(t) for t in rows)
+                  hit = sum(n for k, n in cov.items() if k and k != "check-error")
+                  print(f"  {name:48s} {len(rows):4d} {100 * len(rows) / total:5.1f}%  covered={hit} "
+                        f"{dict((k, n) for k, n in cov.most_common(5) if k)}")
+              for name, rows in sorted(by_theme.items(), key=lambda kv: -len(kv[1])):
+                  print(f"\n  -- {name} ({len(rows)}) - redacted examples, most repeated first --")
+                  seen = Counter(" ".join(t.split()) for t in rows)
+                  for text, n in seen.most_common(EXAMPLES):
+                      cov = covered_now(text)
+                      print(f"    x{n:<3d} {redact(text)!r}" + (f"  [now {cov}]" if cov else ""))
+              words = Counter()
+              for t in by_theme.get("other", []):
+                  for w in re.findall(r"[a-z]{3,}", t.lower()):
+                      if w in COMMON or w not in NAME_TOKENS:
+                          words[w] += 1
+              print(f"\n  top words in 'other': {dict(words.most_common(40))}")
+
+          from iic_booking.research_copilot.models import KnowledgeGap, Message
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              gaps = KnowledgeGap.objects.filter(created_at__gte=SINCE)
+              print(f"\nknowledge gaps={gaps.count()} distinct users={gaps.values('user_id').distinct().count()}")
+              print(f"  by status={dict(Counter(gaps.values_list('status', flat=True)))}")
+              print(f"  by reason={dict(Counter(gaps.values_list('reason', flat=True)).most_common())}")
+              print(f"  by intent={dict(Counter(gaps.values_list('intent', flat=True)).most_common(12))}")
+              print(f"  by month={dict(sorted(Counter(timezone.localtime(d).strftime('%Y-%m') for d in gaps.values_list('created_at', flat=True)).items()))}")
+              print(f"  by user type={dict(Counter(gaps.values_list('user__user_type', flat=True)).most_common())}")
+              report("A. KnowledgeGap (logged as unanswered), all statuses", list(gaps.values_list("query_summary", flat=True)))
+              report("A2. KnowledgeGap, status=open only", list(gaps.filter(status="open").values_list("query_summary", flat=True)))
+
+              fallback_texts = []
+              for conv_id, created, md in (
+                  Message.objects.filter(created_at__gte=SINCE, role="assistant")
+                  .values_list("conversation_id", "created_at", "metadata").iterator()
+              ):
+                  md = md if isinstance(md, dict) else {}
+                  intent = str(md.get("intent") or "")
+                  if md.get("llm_fallback") == "canned" or intent in ("assistant:fallback", "assistant:not_found") or md.get("llm_quota_blocked"):
+                      prev = (Message.objects.filter(conversation_id=conv_id, role="user", created_at__lte=created)
+                              .order_by("-created_at").values_list("content", flat=True).first())
+                      if prev:
+                          fallback_texts.append(prev)
+              report("B. User messages answered with the generic fallback (no answer)", fallback_texts)
+
+              print(f"\nredactions applied: {dict(REDACTIONS)}")
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
