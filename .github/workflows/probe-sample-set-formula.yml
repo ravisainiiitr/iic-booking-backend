@@ -1,0 +1,144 @@
+name: Probe Sample Set Formula Limits (read-only)
+
+# Prints the NUMERIC input-field limits of the equipment whose name matches the filter (default APREO):
+# field keys, labels, user types, options (min / max / step / max_formula) and the help-text limit lines,
+# plus what the deployed validator allows per sample set. Also counts (no values, no users) which keys
+# extra sample sets of that equipment's bookings / templates store, and how many sets hold A above their
+# own formula maximum. Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+    inputs:
+      name_filter:
+        description: Equipment name fragment to print in detail
+        required: false
+        default: 'APREO'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Numeric field limits and sample-set keys (SELECT only)
+        env:
+          NAME_FILTER: ${{ github.event.inputs.name_filter }}
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -e NAME_FILTER="${NAME_FILTER:-APREO}" -w /app "$CID" python - <<'PY'
+          import os
+          from collections import Counter
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment import api_views
+          from iic_booking.equipment.calculators import split_sample_sets
+          from iic_booking.equipment.models import Booking, DynamicInputField, DynamicInputFieldType, Equipment
+          from iic_booking.equipment.numeric_field_limits import (
+              numeric_constraints,
+              numeric_max_formula,
+              resolve_numeric_field_bounds,
+          )
+
+          NAME_FILTER = (os.environ.get("NAME_FILTER") or "APREO").strip()
+
+          def limit_lines(ht):
+              """First three help-text lines (the min / max / step convention), each cut to 40 characters."""
+              if not ht or not str(ht).strip():
+                  return []
+              lines = str(ht).replace("\r\n", "\n").replace("\r", "\n").strip().split("\n")
+              return [line.strip()[:40] for line in lines[:3]] + ([f"<+{len(lines) - 3} more lines>"] if len(lines) > 3 else [])
+
+          def formula_max(field, values, eq):
+              if numeric_max_formula(field.options) and not isinstance(field.options, dict):
+                  return "legacy non-dict formula (validator reads only dict options)"
+              return api_views._resolve_numeric_max_for_field_a(field, values, eq)
+
+          try:
+              from iic_booking.equipment.models import BookingInputTemplate as BookingTemplate
+          except ImportError:
+              BookingTemplate = None
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              for eq in Equipment.objects.filter(name__icontains=NAME_FILTER).order_by("equipment_id"):
+                  print(f"\n== equipment id={eq.equipment_id} code={eq.code!r} status={eq.status} name={eq.name!r} "
+                        f"slot={eq.slot_duration_minutes}min allow_multiple_sample_sets="
+                        f"{getattr(eq, 'allow_multiple_sample_sets', '<no column>')} profile={eq.profile_type}")
+                  rows = list(DynamicInputField.objects.filter(equipment=eq).order_by("field_key", "user_type", "pk"))
+                  for f in rows:
+                      base = f"  field {f.field_key!r} user_type={f.user_type or '<shared>'!r} label={f.field_label!r} type={f.field_type}"
+                      if f.field_type != DynamicInputFieldType.NUMERIC:
+                          print(base)
+                          continue
+                      c = numeric_constraints(options=f.options, help_text=f.help_text)
+                      print(f"{base} required={f.is_required} default={f.default_value!r}\n"
+                            f"      options={f.options!r} help_limit_lines={limit_lines(f.help_text)}\n"
+                            f"      resolved min={c['min']} max={c['max']} step={c['step']} max_formula={c['max_formula']!r} source={c['source']}")
+                      if c["max_formula"]:
+                          for b in (1, 2, 3, 5):
+                              values = {"B": b}
+                              fm = formula_max(f, values, eq)
+                              bounds = resolve_numeric_field_bounds(
+                                  options=f.options, help_text=f.help_text,
+                                  formula_max=fm if isinstance(fm, (int, float)) else None,
+                                  default_value=f.default_value,
+                              )
+                              print(f"      with B={b}: formula max={fm} -> validator bounds (min, max, step)={bounds}")
+                      if c["max_formula"] and f.field_key != "A":
+                          print("      NOTE: formula on a field other than A (validator only applies formulas to A)")
+
+                  def scan(label, values_iter):
+                      n_with_sets = 0
+                      set_keys = Counter()
+                      base_keys = Counter()
+                      over_formula = Counter()
+                      missing_b = 0
+                      a_rows = [f for f in rows if f.field_key == "A" and f.field_type == DynamicInputFieldType.NUMERIC]
+                      for iv in values_iter:
+                          base, sets = split_sample_sets(iv if isinstance(iv, dict) else {})
+                          if not sets:
+                              continue
+                          n_with_sets += 1
+                          base_keys.update(base.keys())
+                          for idx, s in enumerate(sets, start=2):
+                              set_keys.update(s.keys())
+                              if "B" not in s:
+                                  missing_b += 1
+                              for af in a_rows:
+                                  a = api_views._to_float_or_none(s.get("A"))
+                                  fm = formula_max(af, s, eq)
+                                  if a is not None and isinstance(fm, (int, float)) and a > fm:
+                                      over_formula[f"set {idx} (user_type row {af.user_type or '<shared>'!r})"] += 1
+                      print(f"  {label}: with extra sample sets={n_with_sets}")
+                      print(f"    keys in sample set 1: {dict(base_keys.most_common(30))}")
+                      print(f"    keys in extra sets:   {dict(set_keys.most_common(30))}")
+                      print(f"    extra sets without B: {missing_b}")
+                      print(f"    extra sets whose A is above their own formula max: {dict(over_formula) or 'none'}")
+
+                  scan("bookings", Booking.objects.filter(equipment=eq).values_list("input_values", flat=True).iterator())
+                  if BookingTemplate is not None:
+                      try:
+                          scan("templates", BookingTemplate.objects.filter(equipment=eq).values_list("input_values", flat=True).iterator())
+                      except Exception as exc:  # noqa: BLE001
+                          print(f"  templates: skipped ({type(exc).__name__})")
+
+              print("\n== other active equipment with a NUMERIC max_formula ==")
+              seen = Counter()
+              for f in DynamicInputField.objects.filter(field_type=DynamicInputFieldType.NUMERIC, equipment__status="ACTIVE").select_related("equipment"):
+                  formula = numeric_max_formula(f.options)
+                  if formula:
+                      seen[(f.equipment.equipment_id, (f.equipment.name or "")[:50], f.field_key, formula, type(f.options).__name__)] += 1
+              for (eid, name, key, formula, kind), n in sorted(seen.items()):
+                  print(f"  {eid}:{name} field {key} max_formula={formula!r} options_type={kind} rows={n}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
