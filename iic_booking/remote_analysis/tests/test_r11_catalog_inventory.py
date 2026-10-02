@@ -39,15 +39,15 @@ def test_inventory_sync_promotes_catalog_and_links():
         ws,
         {
             "software": [
-                {"displayName": "Notepad", "version": "10.0", "publisher": "Microsoft", "category": "analysis"},
-                {"displayName": "Notepad", "version": "10.0", "publisher": "Microsoft", "category": "analysis"},
+                {"displayName": "Gwyddion", "version": "2.66", "publisher": "CMI", "category": "analysis"},
+                {"displayName": "Gwyddion", "version": "2.66", "publisher": "CMI", "category": "analysis"},
             ]
         },
     )
     assert result["accepted"] is True
     assert result["added"] >= 1
-    assert AnalysisSoftwareCatalog.objects.filter(name__iexact="Notepad").count() == 1
-    row = InstalledSoftware.objects.filter(workstation=ws, software_name="Notepad", is_present=True).first()
+    assert AnalysisSoftwareCatalog.objects.filter(name__iexact="Gwyddion").count() == 1
+    row = InstalledSoftware.objects.filter(workstation=ws, software_name="Gwyddion", is_present=True).first()
     assert row is not None
     assert row.catalog_id is not None
     assert row.allocation_enabled is True

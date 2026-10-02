@@ -268,6 +268,7 @@ class InventoryService:
                 item.get("contentHash") or item.get("ContentHash") or _content_hash(item),
                 128,
             )
+            category = _clip(item.get("category") or "", 128)
             try:
                 promote = bool(
                     item.get("promoteToCatalog")
@@ -301,7 +302,6 @@ class InventoryService:
 
             executable = _clip(item.get("executable") or "", 1024)
             install_path = _clip(item.get("installPath") or item.get("install_path") or "", 1024)
-            category = _clip(item.get("category") or "", 128)
             license_type = _clip(item.get("licenseType") or item.get("license_type") or "", 128)
             licensed = bool(item.get("isLicensed") or item.get("licensed") or False)
 
