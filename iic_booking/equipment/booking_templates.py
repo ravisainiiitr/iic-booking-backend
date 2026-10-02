@@ -157,7 +157,30 @@ def _clean_name(raw):
     return name, None
 
 
-def _clean_input_values(raw, equipment=None, user=None):
+def _numeric_minimum_error(equipment, values, user, baseline=None):
+    """First numeric input below its minimum (at least 1) in sample set 1 or an extra set, else None.
+
+    Maximums are checked when the booking is made. Unchanged values of the stored template (``baseline``)
+    saved before the minimum of 1 existed are kept.
+    """
+    from .api_views import _validate_dynamic_numeric_input_limits
+    from .calculators import split_sample_sets
+
+    base, sets = split_sample_sets(values)
+    old_base, old_sets = split_sample_sets(baseline if isinstance(baseline, dict) else {})
+    groups = [(base, old_base, "")] + [
+        (s, old_sets[i] if i < len(old_sets) else None, f"Sample set {i + 2}: ") for i, s in enumerate(sets)
+    ]
+    for group, old, prefix in groups:
+        error = _validate_dynamic_numeric_input_limits(
+            equipment, group, booking_user=user, baseline=old, check_max=False
+        )
+        if error:
+            return f"{prefix}{error}"
+    return None
+
+
+def _clean_input_values(raw, equipment=None, user=None, baseline=None):
     if raw is None:
         return {}, None
     if not isinstance(raw, dict):
@@ -167,7 +190,9 @@ def _clean_input_values(raw, equipment=None, user=None):
     if equipment is not None:
         from .sample_set_limits import combined_max_error
 
-        error = combined_max_error(equipment, raw, booking_user=user)
+        error = _numeric_minimum_error(equipment, raw, user, baseline) or combined_max_error(
+            equipment, raw, booking_user=user
+        )
         if error:
             return None, error
     return raw, None
@@ -341,7 +366,9 @@ def booking_template_detail(request, template_id):
         template.name = name
         update_fields.append("name")
     if "input_values" in data or request.method == "PUT":
-        input_values, error = _clean_input_values(data.get("input_values"), template.equipment, request.user)
+        input_values, error = _clean_input_values(
+            data.get("input_values"), template.equipment, request.user, baseline=template.input_values
+        )
         if error:
             return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
         template.input_values = input_values

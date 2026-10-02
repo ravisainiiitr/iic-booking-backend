@@ -2926,6 +2926,8 @@ class BookingSerializer(serializers.ModelSerializer):
             'editing_required': getattr(f, 'editing_required', False),
             'help_text': (f.help_text or '').strip() or None,
             'source_element_field_key': (f.source_element_field_key or '').strip() or None,
+            # Number limits depend on it (a 0.02 default allows decimals below the minimum of 1).
+            'default_value': f.default_value,
         }
         if f.options:
             item['options'] = f.options

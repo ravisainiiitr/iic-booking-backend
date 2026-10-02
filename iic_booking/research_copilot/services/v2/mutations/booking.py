@@ -286,6 +286,7 @@ def _copilot_input_values(
     """
     from iic_booking.equipment.api_views import _validate_dynamic_numeric_input_limits
     from iic_booking.equipment.equipment_group_service import _effective_input_fields
+    from iic_booking.equipment.numeric_field_limits import initial_numeric_value
 
     fields = _effective_input_fields(equipment, getattr(user, "user_type", "") or "")
     by_key = {f.field_key: f for f in fields}
@@ -354,6 +355,13 @@ def _copilot_input_values(
     ]
     for f in fields:
         if f.field_key not in values and f.default_value not in (None, ""):
+            if str(getattr(f, "field_type", "")) == "NUMERIC":
+                start = initial_numeric_value(
+                    options=f.options, help_text=f.help_text, default_value=f.default_value, is_required=f.is_required
+                )
+                if start != "":
+                    values[f.field_key] = start
+                continue
             values[f.field_key] = f.default_value
     if not validate:
         return values, missing

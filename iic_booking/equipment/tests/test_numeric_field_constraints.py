@@ -40,7 +40,7 @@ def test_help_text_lines_fill_what_options_do_not_set():
 def test_nothing_configured_gives_none_not_ui_defaults():
     c = numeric_constraints(options=[], help_text="")
     assert (c["min"], c["max"], c["step"], c["max_formula"]) == (None, None, None, "")
-    assert resolve_numeric_field_bounds(options=[], help_text="") == (0.0, 100.0, 1.0)
+    assert resolve_numeric_field_bounds(options=[], help_text="") == (1.0, 100.0, 1.0)
 
 
 def test_non_positive_option_step_falls_back_to_help_text():

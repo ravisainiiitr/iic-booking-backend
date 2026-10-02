@@ -461,7 +461,7 @@ def map_inputs(source_equipment, target_equipment, user_type: str, values: dict,
             result.missing_required.append({"key": f.field_key, "label": f.field_label})
 
     result.error = _validate_dynamic_numeric_input_limits(
-        target_equipment, result.values, booking_user=booking_user
+        target_equipment, result.values, booking_user=booking_user, user_type=user_type
     )
     return result
 

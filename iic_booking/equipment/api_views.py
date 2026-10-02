@@ -532,7 +532,30 @@ def _resolve_numeric_max_for_field_a(field, input_values, equipment):
         return _to_float_or_none(opts.get("max"))
     return None
 
-def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user=None):
+def _numeric_min_floor_keys(equipment, fields, user_type):
+    """Field keys whose minimum of 1 applies: the field the booking form shows for ``user_type`` is NUMERIC.
+
+    The form uses rows typed for the user type, else shared rows; with neither, every row of the key.
+    PRINT_3D A / B / C (weight, material, time) come from the STL analysis, not from the user.
+    """
+    rows_by_key = {}
+    for field in fields:
+        rows_by_key.setdefault(field.field_key, []).append(field)
+    is_print_3d = getattr(equipment, "profile_type", None) == EquipmentProfileType.PRINT_3D
+    keys = set()
+    for key, rows in rows_by_key.items():
+        if is_print_3d and key in ("A", "B", "C"):
+            continue
+        typed = [f for f in rows if f.user_type == user_type] if user_type else []
+        shown = typed or [f for f in rows if not f.user_type] or rows
+        if all(f.field_type == DynamicInputFieldType.NUMERIC for f in shown):
+            keys.add(key)
+    return keys
+
+
+def _validate_dynamic_numeric_input_limits(
+    equipment, input_values, booking_user=None, *, user_type=None, baseline=None, check_max=True
+):
     """
     Validate NUMERIC dynamic fields against options / help_text limits.
 
@@ -541,6 +564,10 @@ def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user
 
     Field A may also use options.max_formula / options.max. External booking users
     skip formula/static options.max for A only; help_text / default range still apply.
+
+    Numeric user inputs must be at least 1 (see ``resolve_numeric_field_bounds``). ``baseline`` is the
+    booking's / template's stored values when editing: an unchanged value saved before that minimum
+    existed (e.g. 0) is kept rather than blocking the edit. ``check_max=False`` checks only the minimum.
     """
     from .numeric_field_limits import resolve_numeric_field_bounds
 
@@ -548,14 +575,18 @@ def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user
         getattr(booking_user, "user_type", None) or ""
     )
 
-    fields = list(
-        DynamicInputField.objects.filter(
-            equipment=equipment,
-            field_type=DynamicInputFieldType.NUMERIC,
-        ).only("field_key", "field_label", "options", "help_text")
+    all_fields = list(
+        DynamicInputField.objects.filter(equipment=equipment).only(
+            "field_key", "field_label", "field_type", "options", "help_text", "default_value", "user_type"
+        )
     )
+    fields = [f for f in all_fields if f.field_type == DynamicInputFieldType.NUMERIC]
     if not fields:
         return None
+    floor_keys = _numeric_min_floor_keys(
+        equipment, all_fields, str(user_type or getattr(booking_user, "user_type", "") or "")
+    )
+    baseline = baseline if isinstance(baseline, dict) else None
 
     for field in fields:
         key = field.field_key
@@ -574,27 +605,45 @@ def _validate_dynamic_numeric_input_limits(equipment, input_values, booking_user
             options=field.options,
             help_text=field.help_text,
             formula_max=formula_max,
+            default_value=field.default_value,
+            apply_min_floor=key in floor_keys,
         )
         label = field.field_label or key
         if value < min_v:
+            unchanged_legacy = (
+                baseline is not None
+                and _to_float_or_none(baseline.get(key)) == value
+                and value
+                >= resolve_numeric_field_bounds(
+                    options=field.options, help_text=field.help_text, apply_min_floor=False
+                )[0]
+            )
+            if unchanged_legacy:
+                continue
             pretty = int(min_v) if float(min_v).is_integer() else round(min_v, 6)
             return f"{label} cannot be less than {pretty}."
-        if value > max_v:
+        if check_max and value > max_v:
             pretty = int(max_v) if float(max_v).is_integer() else round(max_v, 6)
             return f"{label} cannot be greater than {pretty}."
     return None
 
 
-def _normalize_sample_sets_input(equipment, input_values, raw_sets, booking_user=None, check_combined_max=True):
+def _normalize_sample_sets_input(
+    equipment, input_values, raw_sets, booking_user=None, check_combined_max=True, *, user_type=None, baseline=None
+):
     """Clean additional sample parameter sets into ``input_values['_sample_sets']``.
 
     ``raw_sets`` is a list of input dicts (or its JSON string, for query params). Each set is
     cleaned and validated like the primary inputs, and the A/B totals across all sets must stay
-    within the equipment maximum (``check_combined_max``). Returns (input_values, error_message).
+    within the equipment maximum (``check_combined_max``). ``baseline`` is the stored input values
+    when editing (unchanged legacy values below the minimum of 1 are kept, set by set).
+    Returns (input_values, error_message).
     """
     import json as _json
 
-    from .calculators import MAX_SAMPLE_SETS, SAMPLE_SETS_KEY, normalize_periodic_table_billable_counts
+    from .calculators import MAX_SAMPLE_SETS, SAMPLE_SETS_KEY, normalize_periodic_table_billable_counts, split_sample_sets
+
+    _base, baseline_sets = split_sample_sets(baseline if isinstance(baseline, dict) else {})
 
     out = {k: v for k, v in (input_values or {}).items() if k != SAMPLE_SETS_KEY}
     if raw_sets in (None, "", []):
@@ -624,7 +673,10 @@ def _normalize_sample_sets_input(equipment, input_values, raw_sets, booking_user
         if not cleaned:
             continue
         cleaned = normalize_periodic_table_billable_counts(equipment, cleaned)
-        error = _validate_dynamic_numeric_input_limits(equipment, cleaned, booking_user=booking_user)
+        set_baseline = baseline_sets[index - 2] if index - 2 < len(baseline_sets) else None
+        error = _validate_dynamic_numeric_input_limits(
+            equipment, cleaned, booking_user=booking_user, user_type=user_type, baseline=set_baseline
+        )
         if error:
             return out, f"Sample set {index}: {error}"
         cleaned_sets.append(cleaned)
@@ -2881,13 +2933,17 @@ def equipment_calculate(request, pk):
     input_values = normalize_periodic_table_billable_counts(equipment, input_values)
 
     numeric_limit_error = _validate_dynamic_numeric_input_limits(
-        equipment, input_values, booking_user=booking_user
+        equipment, input_values, booking_user=booking_user, user_type=user_type
     )
     if numeric_limit_error:
         return Response({"error": numeric_limit_error}, status=status.HTTP_400_BAD_REQUEST)
 
     input_values, sample_sets_error = _normalize_sample_sets_input(
-        equipment, input_values, request.query_params.get("sample_sets"), booking_user=booking_user
+        equipment,
+        input_values,
+        request.query_params.get("sample_sets"),
+        booking_user=booking_user,
+        user_type=user_type,
     )
     if sample_sets_error:
         return Response({"error": sample_sets_error}, status=status.HTTP_400_BAD_REQUEST)
@@ -3237,6 +3293,15 @@ def proforma_invoice_calculate(request):
                     input_values[k] = float(v)
                 except (ValueError, TypeError):
                     input_values[k] = v
+
+        minimum_error = _validate_dynamic_numeric_input_limits(
+            equipment, input_values, booking_user=request.user, user_type=user_type, check_max=False
+        )
+        if minimum_error:
+            return Response(
+                {"error": f"{equipment.code or equipment.equipment_id}: {minimum_error}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         line_data, err = _calculate_one_proforma_line(request.user, equipment, input_values)
         if err:
@@ -8547,6 +8612,23 @@ def create_urgent_booking_request(request):
             {"error": "You must accept the disclaimer to submit an urgent booking request."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    counts = {}
+    for name, label in (("number_of_samples", "Number of samples"), ("slots_requested", "Number of slots")):
+        raw_count = request.data.get(name)
+        if raw_count is None or raw_count == "":
+            counts[name] = 1
+            continue
+        try:
+            count = float(str(raw_count).strip())
+        except (TypeError, ValueError):
+            return Response({"error": f"{label} must be a whole number."}, status=status.HTTP_400_BAD_REQUEST)
+        if count < 1:
+            return Response({"error": f"{label} must be at least 1."}, status=status.HTTP_400_BAD_REQUEST)
+        if not count.is_integer():
+            return Response({"error": f"{label} must be a whole number."}, status=status.HTTP_400_BAD_REQUEST)
+        counts[name] = int(count)
+    number_of_samples = counts["number_of_samples"]
+    slots_requested = counts["slots_requested"]
     try:
         equip = Equipment.objects.get(pk=int(equipment_id))
         dept_blocked, dept_message = department_equipment_booking_blocked(equip, request.user)
@@ -8669,8 +8751,6 @@ def create_urgent_booking_request(request):
                 {"error": "Reviewer comment is too long (maximum 8000 characters)."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-    number_of_samples = int(request.data.get("number_of_samples") or 1)
-    slots_requested = int(request.data.get("slots_requested") or 1)
     duration_minutes = request.data.get("duration_minutes")
     if duration_minutes is not None:
         try:
@@ -14892,7 +14972,13 @@ def update_booking_input_values(request, booking_id):
     original = dict(booking.input_values) if booking.input_values else {}
     if sample_sets_submitted:
         current, sample_sets_error = _normalize_sample_sets_input(
-            equipment, current, raw_sample_sets, booking_user=booking.user, check_combined_max=False
+            equipment,
+            current,
+            raw_sample_sets,
+            booking_user=booking.user,
+            check_combined_max=False,
+            user_type=booking_field_user_type(booking),
+            baseline=original,
         )
         if sample_sets_error:
             return Response({"error": sample_sets_error}, status=status.HTTP_400_BAD_REQUEST)
@@ -14916,7 +15002,7 @@ def update_booking_input_values(request, booking_id):
     )
     if values_changed:
         numeric_limit_error = _validate_dynamic_numeric_input_limits(
-            equipment, current, booking_user=booking.user
+            equipment, current, booking_user=booking.user, user_type=booking_field_user_type(booking), baseline=original
         ) or combined_max_error(
             equipment, current, user_type=booking_field_user_type(booking), baseline=original
         )

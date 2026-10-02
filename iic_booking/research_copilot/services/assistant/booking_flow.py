@@ -52,7 +52,11 @@ def _numeric_bounds(f) -> dict[str, Any]:
     from iic_booking.equipment.numeric_field_limits import resolve_numeric_field_bounds
 
     try:
-        lo, hi, step = resolve_numeric_field_bounds(options=getattr(f, "options", None), help_text=getattr(f, "help_text", None))
+        lo, hi, step = resolve_numeric_field_bounds(
+            options=getattr(f, "options", None),
+            help_text=getattr(f, "help_text", None),
+            default_value=getattr(f, "default_value", None),
+        )
     except Exception:  # noqa: BLE001
         return {}
     return {"min": lo, "max": hi, "step": step}
@@ -107,6 +111,13 @@ def _form_fields(user, eq) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]
         }
         if ftype == "NUMERIC":
             row.update(_numeric_bounds(f))
+            if row["default"] is not None:
+                from iic_booking.equipment.numeric_field_limits import initial_numeric_value
+
+                start = initial_numeric_value(
+                    options=f.options, help_text=f.help_text, default_value=f.default_value, is_required=f.is_required
+                )
+                row["default"] = start or None
         elif ftype == "PERIODIC_TABLE":
             info = periodic_field_info(f)
             row.update({"allowed": info["allowed"], "locked": info["locked"], "default": None})

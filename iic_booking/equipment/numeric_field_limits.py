@@ -9,6 +9,12 @@ from typing import Any, Optional, Tuple
 DEFAULT_NUMERIC_MIN = 0.0
 DEFAULT_NUMERIC_MAX = 100.0
 DEFAULT_NUMERIC_STEP = 1.0
+# Numeric user inputs (counts of samples, slots, parts ...) cannot be 0 or negative.
+NUMERIC_MIN_FLOOR = 1.0
+MIN_BELOW_ONE_MESSAGE = (
+    "Min must be at least 1: number inputs cannot be 0. For decimal values set a Step below 1; "
+    "for negative values tick Allow negative."
+)
 
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
@@ -260,7 +266,49 @@ def normalize_numeric_field_config(options: Any, help_text: Optional[str]) -> Tu
                 raise ValueError(
                     f"{_NUMERIC_OPTION_LABELS[key]} must be a whole number when Step is a whole number."
                 )
+    allows_negative = _is_truthy_option(opts.get("allow_negative")) or _is_truthy_option(opts.get("allowNegative"))
+    if (
+        min_v is not None
+        and 0 <= min_v < NUMERIC_MIN_FLOOR
+        and not allows_negative
+        and not (step_v is not None and step_v < 1)
+    ):
+        raise ValueError(MIN_BELOW_ONE_MESSAGE)
     return (opts if opts else []), help_text
+
+
+def numeric_field_allows_below_one(
+    *, options: Any = None, help_text: Optional[str] = None, default_value: Any = None
+) -> bool:
+    """
+    True when the equipment set the field up for decimal or negative values, so the minimum of 1 does
+    not apply: Allow negative, a negative or fractional Min (e.g. -7 eV, 0.1 s/step), a Step below 1, or a
+    negative / fractional default (e.g. a 0.02 degree step size). A Min of 0 alone is not such a signal.
+    """
+    opts = _options_dict(options)
+    if _is_truthy_option(opts.get("allow_negative")) or _is_truthy_option(opts.get("allowNegative")):
+        return True
+    configured = numeric_constraints(options=options, help_text=help_text)
+    if configured["min"] is not None and configured["min"] < NUMERIC_MIN_FLOOR and configured["min"] != 0:
+        return True
+    if configured["step"] is not None and configured["step"] < 1:
+        return True
+    default = None
+    if default_value is not None and not (isinstance(default_value, str) and not default_value.strip()):
+        default = _strict_number(default_value)
+    return default is not None and default < NUMERIC_MIN_FLOOR and default != 0
+
+
+def _step_from_default(default_value: Any) -> Optional[float]:
+    """Resolution of a fractional default (0.02 -> 0.01), so an unset Step does not round it away."""
+    if default_value is None or isinstance(default_value, bool):
+        return None
+    n = _strict_number(default_value)
+    if n is None or n.is_integer():
+        return None
+    text = f"{abs(n):.10f}".rstrip("0")
+    places = len(text.split(".", 1)[1]) if "." in text else 0
+    return 10.0 ** -places if places else None
 
 
 def resolve_numeric_field_bounds(
@@ -268,19 +316,32 @@ def resolve_numeric_field_bounds(
     options: Any = None,
     help_text: Optional[str] = None,
     formula_max: Optional[float] = None,
+    default_value: Any = None,
+    apply_min_floor: bool = True,
 ) -> Tuple[float, float, float]:
     """
     Resolve (min, max, step) for a NUMERIC dynamic field.
 
     Priority (see ``numeric_constraints``):
-      min/step: options → help_text → defaults (0 / 1)
+      min: options → help_text → default 0
+      step: options → help_text → resolution of a fractional default_value → default 1
       max: formula_max (if provided) → options.max → help_text → default 100
+
+    The min is at least 1 (``NUMERIC_MIN_FLOOR``) unless the field is set up for decimal or negative
+    values (``numeric_field_allows_below_one``) or ``apply_min_floor`` is False.
     """
     opts = _options_dict(options)
     configured = numeric_constraints(options=options, help_text=help_text)
 
     min_v = configured["min"] if configured["min"] is not None else DEFAULT_NUMERIC_MIN
-    step_v = configured["step"] if configured["step"] is not None else DEFAULT_NUMERIC_STEP
+    if configured["step"] is not None:
+        step_v = configured["step"]
+    else:
+        step_v = _step_from_default(default_value) or DEFAULT_NUMERIC_STEP
+    if apply_min_floor and min_v < NUMERIC_MIN_FLOOR and not numeric_field_allows_below_one(
+        options=options, help_text=help_text, default_value=default_value
+    ):
+        min_v = NUMERIC_MIN_FLOOR
 
     if formula_max is not None:
         max_v = float(formula_max)
@@ -298,3 +359,20 @@ def resolve_numeric_field_bounds(
     if step_v <= 0:
         step_v = DEFAULT_NUMERIC_STEP
     return float(min_v), float(max_v), float(step_v)
+
+
+def initial_numeric_value(*, options: Any = None, help_text: Optional[str] = None, default_value: Any = None,
+                          is_required: bool = False) -> str:
+    """
+    Value the booking form starts a NUMERIC field with (mirrors the frontend ``initialNumericFieldValue``):
+    the default clamped to the field's limits; "" for an optional field whose default is below its
+    minimum (e.g. a legacy default of 0) or that has no default; else the minimum.
+    """
+    min_v, max_v, _step = resolve_numeric_field_bounds(options=options, help_text=help_text, default_value=default_value)
+    raw = None if default_value is None or (isinstance(default_value, str) and not default_value.strip()) else default_value
+    parsed = _strict_number(raw) if raw is not None else None
+    if parsed is not None:
+        if parsed < min_v and not is_required:
+            return ""
+        return str(_json_number(min(max_v, max(min_v, parsed))))
+    return str(_json_number(min_v)) if is_required else ""
