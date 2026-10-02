@@ -8,7 +8,14 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import BookingInputTemplate, DynamicInputField, DynamicInputFieldType, Equipment, EquipmentStatus
+from .models import (
+    BookingInputTemplate,
+    DynamicInputField,
+    DynamicInputFieldType,
+    Equipment,
+    EquipmentProfileType,
+    EquipmentStatus,
+)
 from .template_slot_preference import (
     AUTO_NEXT_MODES,
     IF_SLOT_TAKEN_ASK,
@@ -189,19 +196,36 @@ def _clean_name(raw):
     return name, None
 
 
-def _numeric_minimum_error(equipment, values, user, baseline=None):
-    """First numeric input below its minimum (at least 1), or above a formula maximum worked out from its
-    own sample set (e.g. A <= B*4), in sample set 1 or an extra set, else None.
+def _numeric_limit_error(equipment, values, user):
+    """First numeric input the booking would reject, as an error body, else None.
 
-    Fixed maximums are checked when the booking is made. Unchanged values of the stored template
-    (``baseline``) saved before the minimum of 1 existed are kept, as is a set left exactly as stored.
+    Below its minimum (at least 1), above its fixed maximum, or above a formula maximum worked out from its
+    own sample set (e.g. A <= B*4), in sample set 1 or an extra set. Stored values get no exemption: a
+    template saved before a limit existed must be brought within it before it can be saved again.
     """
-    from .api_views import _sample_set_groups_limit_error
+    from .api_views import _numeric_limit_problems
+    from .calculators import split_sample_sets
 
-    return _sample_set_groups_limit_error(
-        equipment, values, booking_user=user, baseline=baseline if isinstance(baseline, dict) else {},
-        check_max=False, check_formula_max=True,
-    )
+    # A 3D print's size inputs come from the uploaded model, which is checked when the booking is made.
+    model_keys = ("A", "B", "C") if equipment.profile_type == EquipmentProfileType.PRINT_3D else ()
+    base, sets = split_sample_sets(values)
+    for index, group in enumerate([base, *sets], start=1):
+        problem = next(
+            (p for p in _numeric_limit_problems(equipment, group, user) if not (p["kind"] == "max" and p["key"] in model_keys)),
+            None,
+        )
+        if problem is None:
+            continue
+        text = f"{problem['label']}: max {problem['limit']} allowed." if problem["kind"] == "max" else problem["message"]
+        return {
+            "error": f"Sample set {index}: {text}" if index > 1 else text,
+            "error_field": {"field": problem["key"], "set": index, "kind": problem["kind"], "limit": problem["limit"]},
+        }
+    return None
+
+
+def _error_body(error):
+    return error if isinstance(error, dict) else {"error": error}
 
 
 def _clean_input_values(raw, equipment=None, user=None, baseline=None):
@@ -216,7 +240,7 @@ def _clean_input_values(raw, equipment=None, user=None, baseline=None):
 
         error = (
             sample_sets_disabled_error(equipment, raw, baseline)
-            or _numeric_minimum_error(equipment, raw, user, baseline)
+            or _numeric_limit_error(equipment, raw, user)
             or combined_max_error(equipment, raw, booking_user=user)
         )
         if error:
@@ -366,7 +390,7 @@ def booking_templates(request):
         return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
     input_values, error = _clean_input_values(data.get("input_values"), equipment, user)
     if error:
-        return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(_error_body(error), status=status.HTTP_400_BAD_REQUEST)
     options, error = _clean_options(data.get("options"))
     if error:
         return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
@@ -419,7 +443,7 @@ def booking_template_detail(request, template_id):
             data.get("input_values"), template.equipment, request.user, baseline=template.input_values
         )
         if error:
-            return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(_error_body(error), status=status.HTTP_400_BAD_REQUEST)
         template.input_values = input_values
         update_fields.append("input_values")
     if "options" in data or request.method == "PUT":

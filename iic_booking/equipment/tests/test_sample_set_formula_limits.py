@@ -257,7 +257,7 @@ def test_template_sets_are_held_to_their_own_formula(egs_factory):
 
 
 @pytest.mark.django_db
-def test_template_set_one_formula_and_unchanged_legacy_sets(egs_factory):
+def test_template_set_one_formula_and_legacy_sets_must_be_fixed(egs_factory):
     eq = _apreo(egs_factory)
     user = egs_factory.student()
     client = egs_factory.client_for(user)
@@ -267,12 +267,20 @@ def test_template_set_one_formula_and_unchanged_legacy_sets(egs_factory):
     assert bad.status_code == 400
     assert bad.data["error"] == _formula_error(4, 1, prefix="")
 
+    # A set saved over its formula maximum before the rule must be brought within it to save the inputs again.
     legacy_values = {"A": "1", "B": "1", SAMPLE_SETS_KEY: [{"A": "9", "B": "1"}]}
     legacy = BookingInputTemplate.objects.create(user=user, equipment=eq, name="Legacy", input_values=legacy_values)
     kept = client.patch(
         f"{url}{legacy.pk}/", {"input_values": {**legacy_values, "A": "2"}}, format="json"
     )
-    assert kept.status_code == 200, kept.data
+    assert kept.status_code == 400
+    assert kept.data["error"] == _formula_error(4, 1)
+    assert (kept.data["error_field"]["field"], kept.data["error_field"]["set"]) == ("A", 2)
+    fixed = client.patch(
+        f"{url}{legacy.pk}/", {"input_values": {**legacy_values, "A": "2", SAMPLE_SETS_KEY: [{"A": "4", "B": "1"}]}},
+        format="json",
+    )
+    assert fixed.status_code == 200, fixed.data
 
 
 # --- proforma ---------------------------------------------------------------------------------------
