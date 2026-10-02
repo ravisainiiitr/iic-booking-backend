@@ -336,6 +336,7 @@ class CurtailReason(models.TextChoices):
 class ChargeMode(models.TextChoices):
     FREE = "FREE", _("No charge")
     WALLET = "WALLET", _("Charge faculty wallet")
+    WAIVED = "WAIVED", _("Charge waived by the OIC")
 
 
 class DemoRequest(models.Model):

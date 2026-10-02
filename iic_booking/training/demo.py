@@ -16,6 +16,10 @@ use when the request becomes APPROVED (OIC approval, or the faculty accepting a 
 charged before that, so rejected, withdrawn or expired requests cost nothing and curtailment lowers the charge.
 Refund is 100% when IIC cancels; faculty cancellations follow the policy windows (default 100% ≥7 days,
 50% ≥2 days).
+
+The OIC (temporary OIC, Main Admin) may waive the charge with a reason when approving or proposing, or later
+on an approved request; a charge already deducted is then refunded in full. Waivers are kept in the
+request's revisions and the training audit log.
 """
 
 from __future__ import annotations
@@ -57,6 +61,14 @@ from .policy import add_working_days, effective_policy, working_days_between
 from .slots import ReservationError, demo_label, release_session_slots, reserve_session_slots
 
 OPEN_FOR_DECISION = (DemoStatus.SUBMITTED, DemoStatus.UNDER_REVIEW)
+WAIVABLE_STATUSES = (
+    DemoStatus.PROPOSED_ALTERNATIVE,
+    DemoStatus.APPROVED,
+    DemoStatus.SCHEDULED,
+    DemoStatus.COMPLETED,
+    DemoStatus.NO_SHOW,
+)
+WAIVER_REASON_MIN_CHARS = 10
 INBOX_STATUSES = (DemoStatus.SUBMITTED, DemoStatus.UNDER_REVIEW, DemoStatus.PROPOSED_ALTERNATIVE, DemoStatus.APPROVED)
 SNAPSHOT_FIELDS = (
     "status",
@@ -140,8 +152,37 @@ def _course_text(req: DemoRequest) -> str:
     return dict(DemoPurpose.choices).get(req.purpose, "Demonstration")
 
 
+def waiver_info(req: DemoRequest) -> dict | None:
+    if req.charge_mode != ChargeMode.WAIVED:
+        return None
+    rev = req.revisions.filter(action="charge_waived").select_related("actor").order_by("-created_at", "-id").first()
+    return {
+        "by": _faculty_name(rev.actor) if rev and rev.actor_id else "the OIC",
+        "by_id": rev.actor_id if rev else None,
+        "at": rev.created_at.isoformat() if rev else None,
+        "reason": rev.reason if rev else "",
+        "amount": str(req.charge_amount),
+        "refunded": str(req.refund_amount) if req.refund_txn_id else "0.00",
+    }
+
+
+def waiver_sentence(req: DemoRequest) -> str:
+    info = waiver_info(req)
+    if not info:
+        return ""
+    text = f"Charge waived by {info['by']}"
+    if info["reason"]:
+        text += f" — {info['reason']}"
+    return text
+
+
 def charge_text(req: DemoRequest) -> str:
     duration = req.approved_duration_minutes or req.requested_duration_minutes
+    if req.charge_mode == ChargeMode.WAIVED:
+        text = waiver_sentence(req)
+        if req.refund_txn_id and req.refund_amount:
+            text += f"; {format_inr(req.refund_amount)} refunded to the faculty member's {charges.wallet_label(req.equipment)}"
+        return text
     if req.charge_mode != ChargeMode.WALLET or not req.charge_amount:
         return "No charge"
     basis = f"internal IITR rate, {notify.fmt_minutes(duration)}"
@@ -378,13 +419,15 @@ def decide(req: DemoRequest, actor, data: dict) -> DemoRequest:
             req.curtailed = curtailed
             req.curtail_reason_code = reason_code if curtailed else ""
             req.oic_remarks = remarks
-            _apply_charge(req, data, duration)
+            waiver_reason = _apply_charge(req, data, duration)
             _stamp(req, actor)
             if action == "approve":
                 req.status = DemoStatus.APPROVED
                 req.save()
                 _debit(req)
                 _revise(req, actor, "approved_curtailed" if curtailed else "approved", before, reason_code=req.curtail_reason_code, reason=remarks)
+                if waiver_reason:
+                    _record_waiver(req, actor, waiver_reason, before_mode=before["charge_mode"])
                 if data.get("start_at"):
                     start = _parse_dt(data.get("start_at"), "start_at")
                     scheduled_before = _snap(req)
@@ -400,9 +443,53 @@ def decide(req: DemoRequest, actor, data: dict) -> DemoRequest:
                 req.status = DemoStatus.PROPOSED_ALTERNATIVE
                 req.save()
                 _revise(req, actor, "proposed", before, reason_code=req.curtail_reason_code, reason=remarks)
+                if waiver_reason:
+                    _record_waiver(req, actor, waiver_reason, before_mode=before["charge_mode"])
     _notify_decision(req, actor, action)
     if req.status == DemoStatus.SCHEDULED:
         _notify_scheduled(req, actor)
+    return req
+
+
+def waive(req: DemoRequest, actor, reason: str = "") -> DemoRequest:
+    """Waive the charge of an already decided request; a deducted charge is refunded in full."""
+    if not access.can_manage_equipment(actor, req.equipment_id):
+        raise TrainingError("Only the equipment's OIC can waive the demonstration charge.", status=403, code="forbidden")
+    reason = _clean_waiver_reason(reason)
+    with transaction.atomic():
+        req = _lock(req)
+        if req.status not in WAIVABLE_STATUSES:
+            raise TrainingError(f"The charge of a {req.get_status_display().lower()} request cannot be waived.")
+        if req.charge_mode != ChargeMode.WALLET or req.charge_amount <= 0:
+            raise TrainingError("There is no demonstration charge to waive.", code="nothing_to_waive")
+        before_mode = req.charge_mode
+        if req.wallet_txn_id and not req.refund_txn_id:
+            req.refund_txn = req.sub_wallet.credit(
+                req.charge_amount,
+                description=f"Demonstration charge waived – full refund – {req.equipment.code} – {_charge_date(req)} ({req.reference})",
+                related_user=req.requester,
+            )
+            req.refund_amount = req.charge_amount
+        req.charge_mode = ChargeMode.WAIVED
+        req.save()
+        _record_waiver(req, actor, reason, before_mode=before_mode)
+    summary = (
+        f"The {format_inr(req.charge_amount)} demonstration charge for {req.reference} on {req.equipment.name} "
+        f"was waived by {_faculty_name(actor)} — {reason}"
+    )
+    summary += "" if summary.endswith((".", "!", "?")) else "."
+    if req.refund_txn_id:
+        summary += f" {format_inr(req.refund_amount)} was refunded to your {charges.wallet_label(req.equipment)}."
+    notify.send(
+        "demo_request_decision_faculty_email",
+        [req.requester],
+        context=_context(req, summary=summary),
+        title=f"Demo {req.reference}: charge waived",
+        message=summary,
+        path=f"/training/demo-requests?request={req.pk}",
+        actor=actor,
+        event="training.demo.charge_waived",
+    )
     return req
 
 
@@ -621,32 +708,82 @@ def _approved_size(req: DemoRequest, data: dict) -> tuple[int, int, bool]:
     return duration, participants, curtailed
 
 
-def _apply_charge(req: DemoRequest, data: dict, duration: int) -> None:
+def _truthy(value) -> bool:
+    return value is True or str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _clean_waiver_reason(raw) -> str:
+    reason = " ".join(str(raw or "").split())
+    if len(reason) < WAIVER_REASON_MIN_CHARS:
+        raise TrainingError(
+            f"Give a reason of at least {WAIVER_REASON_MIN_CHARS} characters for waiving the charge.",
+            code="waiver_reason_required",
+        )
+    return reason[:1000]
+
+
+def _parse_rate(raw) -> Decimal:
+    try:
+        rate = Decimal(str(raw))
+    except Exception:
+        raise TrainingError("Invalid hourly rate.") from None
+    if rate <= 0:
+        raise TrainingError("Hourly rate must be above zero.")
+    return rate
+
+
+def _apply_charge(req: DemoRequest, data: dict, duration: int) -> str:
     """Internal IITR rate × approved duration. The OIC enters an hourly rate only when the equipment has no
-    internal rate the portal can use; otherwise the rate cannot be changed or waived."""
+    internal rate the portal can use. Returns the waiver reason when the OIC waives the charge."""
     if not charges.is_chargeable(req.purpose):
         req.charge_mode, req.rate_per_hour, req.charge_amount = ChargeMode.FREE, Decimal("0.00"), Decimal("0.00")
-        return
+        return ""
     rate = charges.internal_rate(req.equipment, req.requester).rate_per_hour
+    raw = data.get("rate_per_hour")
+    if _truthy(data.get("waive_charge")):
+        reason = _clean_waiver_reason(data.get("waiver_reason"))
+        if rate is None:
+            rate = _parse_rate(raw) if raw not in (None, "") else Decimal("0.00")
+        req.charge_mode, req.rate_per_hour = ChargeMode.WAIVED, max(rate, Decimal("0.00"))
+        req.charge_amount = charges.amount_for(rate, duration) if rate > 0 else Decimal("0.00")
+        return reason
     if rate is None:
-        raw = data.get("rate_per_hour")
         if raw in (None, ""):
             raise TrainingError(
                 "This equipment has no internal IITR rate the portal can convert to an hourly charge. "
                 "Enter the hourly rate to charge.",
                 code="rate_required",
             )
-        try:
-            rate = Decimal(str(raw))
-        except Exception:
-            raise TrainingError("Invalid hourly rate.") from None
-        if rate <= 0:
-            raise TrainingError("Hourly rate must be above zero.")
+        rate = _parse_rate(raw)
     if rate <= 0:
         req.charge_mode, req.rate_per_hour, req.charge_amount = ChargeMode.FREE, Decimal("0.00"), Decimal("0.00")
-        return
+        return ""
     req.charge_mode, req.rate_per_hour = ChargeMode.WALLET, rate
     req.charge_amount = charges.amount_for(rate, duration)
+    return ""
+
+
+def _record_waiver(req: DemoRequest, actor, reason: str, *, before_mode: str) -> None:
+    refunded = str(req.refund_amount) if req.refund_txn_id else "0.00"
+    details = {
+        "charge_mode": req.charge_mode,
+        "amount_waived": str(req.charge_amount),
+        "refunded": refunded,
+        "reason": reason,
+        "waived_by": getattr(actor, "pk", None),
+        "waived_by_name": _faculty_name(actor) if getattr(actor, "pk", None) else "",
+    }
+    DemoRequestRevision.objects.create(
+        request=req,
+        actor=actor if getattr(actor, "pk", None) else None,
+        action="charge_waived",
+        from_status=req.status,
+        to_status=req.status,
+        before={"charge_mode": before_mode},
+        after={k: details[k] for k in ("charge_mode", "amount_waived", "refunded")},
+        reason=reason,
+    )
+    audit(actor, "demo.charge_waived", req, before={"charge_mode": before_mode}, after=details, note=reason)
 
 
 def _charge_date(req: DemoRequest) -> str:
@@ -768,7 +905,13 @@ def _notify_decision(req: DemoRequest, actor, action: str) -> None:
         )
     else:
         summary = f"Your demonstration request {req.reference} on {req.equipment.name} was approved as requested."
-    if action != "reject" and req.charge_mode == ChargeMode.WALLET and req.charge_amount:
+    if action != "reject" and req.charge_mode == ChargeMode.WAIVED:
+        amount = f" ({format_inr(req.charge_amount)})" if req.charge_amount else ""
+        info = waiver_info(req) or {}
+        summary += f" The demonstration charge{amount} was waived by {info.get('by', 'the OIC')}"
+        summary += f" — {info['reason']}" if info.get("reason") else ""
+        summary += "" if summary.endswith((".", "!", "?")) else "."
+    elif action != "reject" and req.charge_mode == ChargeMode.WALLET and req.charge_amount:
         label = charges.wallet_label(req.equipment)
         if req.wallet_txn_id:
             summary += f" {format_inr(req.charge_amount)} (internal IITR rate) was deducted from your {label}."
