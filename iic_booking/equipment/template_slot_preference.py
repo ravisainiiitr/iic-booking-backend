@@ -122,6 +122,33 @@ def apply_preference_fields(template, preferred, if_slot_taken, consent):
     return None
 
 
+def has_preferred_slot(template) -> bool:
+    return template.preferred_weekday is not None and template.preferred_start_time is not None
+
+
+def template_books_any_slots(template) -> bool:
+    options = template.options if isinstance(template.options, dict) else {}
+    return options.get("book_any_available_slots") is True
+
+
+def effective_if_slot_taken(template) -> str:
+    """The "if my slot is taken" choice a template really uses.
+
+    A template offers one fallback. "Book any free slots" wins over the preferred-slot fallback (the book
+    request skips the latter whenever the former is on), and the automatic modes need a preferred slot and
+    consent. Older templates saved with both keep working this way without rewriting their rows.
+    """
+    mode = template.if_slot_taken or IF_SLOT_TAKEN_ASK
+    if (
+        mode not in AUTO_NEXT_MODES
+        or not template.if_slot_taken_consented_at
+        or not has_preferred_slot(template)
+        or template_books_any_slots(template)
+    ):
+        return IF_SLOT_TAKEN_ASK
+    return mode
+
+
 def serialize_preference(template) -> dict:
     start = template.preferred_start_time
     preferred = None
@@ -133,10 +160,11 @@ def serialize_preference(template) -> dict:
             "slot_count": template.preferred_slot_count or 1,
             "slot_master": template.preferred_slot_master_id,
         }
-    consented = template.if_slot_taken_consented_at
+    mode = effective_if_slot_taken(template)
+    consented = template.if_slot_taken_consented_at if mode in AUTO_NEXT_MODES else None
     return {
         "preferred_slot": preferred,
-        "if_slot_taken": template.if_slot_taken or IF_SLOT_TAKEN_ASK,
+        "if_slot_taken": mode,
         "if_slot_taken_consented_at": consented.isoformat() if consented else None,
     }
 
@@ -331,20 +359,30 @@ def lock_equivalent_run(equipment, user, *, shape, mode):
 
 
 def template_fallback_mode(request, equipment, booking_user):
-    """The consented auto-next mode of the user's own template named in this book request, if any."""
-    raw = (request.data or {}).get("booking_template_id")
+    """The consented auto-next mode of the user's own template named in this book request, if any.
+
+    ``use_template_slot_fallback: false`` means the user picked another "if my slots are taken" choice
+    on the booking page for this booking.
+    """
+    data = request.data or {}
+    if data.get("use_template_slot_fallback") is False:
+        return None
+    raw = data.get("booking_template_id")
     if raw in (None, "") or isinstance(raw, bool) or not str(raw).isdigit():
         return None
     if booking_user is None or booking_user.pk != request.user.pk:
         return None
     template = (
         BookingInputTemplate.objects.filter(pk=int(raw), user=request.user, equipment=equipment)
-        .only("if_slot_taken", "if_slot_taken_consented_at")
+        .only(
+            "if_slot_taken", "if_slot_taken_consented_at", "preferred_weekday", "preferred_start_time", "options",
+        )
         .first()
     )
-    if template is None or template.if_slot_taken not in AUTO_NEXT_MODES or not template.if_slot_taken_consented_at:
+    if template is None:
         return None
-    return template.if_slot_taken
+    mode = effective_if_slot_taken(template)
+    return mode if mode in AUTO_NEXT_MODES else None
 
 
 def _fmt_range(start, end) -> str:
@@ -529,10 +567,11 @@ def resolve_preferred_slot(template, user, *, slot_count=None, now=None) -> dict
 
     message = f"Your preferred slot, {_fmt_range(run[0].start_datetime, run[-1].end_datetime)}, is already booked or unavailable."
     auto_next = None
-    if template.if_slot_taken in AUTO_NEXT_MODES and template.if_slot_taken_consented_at:
+    mode = effective_if_slot_taken(template)
+    if mode in AUTO_NEXT_MODES:
         nxt = find_equivalent_runs(
             equipment, user, anchor_start=anchor_start, slot_count=count,
-            total_minutes=total_minutes, mode=template.if_slot_taken, now=now,
+            total_minutes=total_minutes, mode=mode, now=now,
         )
         if nxt:
             auto_next = _run_payload(nxt[0])
