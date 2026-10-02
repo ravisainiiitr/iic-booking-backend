@@ -65,6 +65,7 @@ from .user_document import UserDocument
 from .user_group import UserGroup, UserGroupMember
 from .project import Project
 from .auth_lock import UserLoginLock
+from .mobile_device_session import MobileDeviceSession
 from .auth_settings import AuthSettings
 from .wallet_sric_settings import WalletCashbookMailboxMessage, WalletSricSettings
 from .test_account_email_settings import TestAccountEmailSettings
@@ -163,6 +164,7 @@ __all__ = [
     "UserGroupMember",
     "Project",
     "UserLoginLock",
+    "MobileDeviceSession",
     "AuthSettings",
     "WalletSricSettings",
     "WalletCashbookMailboxMessage",

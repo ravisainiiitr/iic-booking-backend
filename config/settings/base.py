@@ -585,12 +585,30 @@ REST_FRAMEWORK = {
         "research_copilot_mutation": env("RESEARCH_COPILOT_MUTATION_THROTTLE", default="20/hour"),
         "research_copilot_tool": env("RESEARCH_COPILOT_TOOL_THROTTLE", default="120/hour"),
         "research_copilot_anon": env("RESEARCH_COPILOT_ANON_THROTTLE", default="60/hour"),
+        # Mobile app device sessions. Campus users share a NAT, so the per-IP refresh budget is generous.
+        "mobile_enroll": env("MOBILE_ENROLL_THROTTLE_RATE", default="20/hour"),
+        "mobile_refresh_device": env("MOBILE_REFRESH_DEVICE_THROTTLE_RATE", default="30/hour"),
+        "mobile_refresh_ip": env("MOBILE_REFRESH_IP_THROTTLE_RATE", default="3000/hour"),
       },
     }
 
 # Inactivity logout disabled: tokens do not expire due to inactivity.
 # AUTH_INACTIVITY_TIMEOUT_SECONDS is kept for backwards compatibility but not used.
 AUTH_INACTIVITY_TIMEOUT_SECONDS = env.int("AUTH_INACTIVITY_TIMEOUT_SECONDS", default=1800)
+
+# Mobile app device sessions (separate from the web's single-session DRF Token)
+# ------------------------------------------------------------------------------
+MOBILE_DEVICE_SESSIONS_ENABLED = env.bool("MOBILE_DEVICE_SESSIONS_ENABLED", default=True)
+MOBILE_ACCESS_TOKEN_LIFETIME_HOURS = env.int("MOBILE_ACCESS_TOKEN_LIFETIME_HOURS", default=24)
+# Sliding: every refresh pushes the refresh expiry forward, capped by the absolute maximum.
+MOBILE_REFRESH_TOKEN_LIFETIME_DAYS = env.int("MOBILE_REFRESH_TOKEN_LIFETIME_DAYS", default=60)
+MOBILE_SESSION_ABSOLUTE_MAX_DAYS = env.int("MOBILE_SESSION_ABSOLUTE_MAX_DAYS", default=180)
+MOBILE_ADMIN_REFRESH_TOKEN_LIFETIME_DAYS = env.int("MOBILE_ADMIN_REFRESH_TOKEN_LIFETIME_DAYS", default=14)
+MOBILE_ADMIN_SESSION_ABSOLUTE_MAX_DAYS = env.int("MOBILE_ADMIN_SESSION_ABSOLUTE_MAX_DAYS", default=30)
+MOBILE_SESSION_MAX_DEVICES = env.int("MOBILE_SESSION_MAX_DEVICES", default=5)
+MOBILE_ACCESS_GRACE_SECONDS = env.int("MOBILE_ACCESS_GRACE_SECONDS", default=120)
+MOBILE_REFRESH_REUSE_GRACE_SECONDS = env.int("MOBILE_REFRESH_REUSE_GRACE_SECONDS", default=60)
+MOBILE_ENROLL_MAX_TOKEN_AGE_HOURS = env.int("MOBILE_ENROLL_MAX_TOKEN_AGE_HOURS", default=12)
 
 # Department Sync Agent control plane
 # ------------------------------------------------------------------------------

@@ -36,6 +36,14 @@ from iic_booking.users.api.auth_views import (
     account_email_login,
     account_password,
 )
+from iic_booking.users.api.mobile_session_views import (
+    mobile_device_revoke,
+    mobile_devices,
+    mobile_devices_revoke_all,
+    mobile_enroll,
+    mobile_logout,
+    mobile_refresh,
+)
 from iic_booking.users.views import (
     department_list,
     department_detail,
@@ -839,6 +847,12 @@ urlpatterns = router.urls + [
         name="booking-analysis-data-selection-legacy",
     ),
     path("auth/logout/", logout, name="logout"),
+    path("auth/mobile/enroll/", mobile_enroll, name="auth-mobile-enroll"),
+    path("auth/mobile/refresh/", mobile_refresh, name="auth-mobile-refresh"),
+    path("auth/mobile/logout/", mobile_logout, name="auth-mobile-logout"),
+    path("auth/mobile/devices/", mobile_devices, name="auth-mobile-devices"),
+    path("auth/mobile/devices/revoke-all/", mobile_devices_revoke_all, name="auth-mobile-devices-revoke-all"),
+    path("auth/mobile/devices/<int:pk>/revoke/", mobile_device_revoke, name="auth-mobile-device-revoke"),
     path("auth/register/", register, name="register"),
     path("auth/register/user-types/", get_register_user_types, name="register-user-types"),
     path("auth/register/indian-states/", get_indian_states, name="register-indian-states"),

@@ -1,10 +1,15 @@
 """
 Custom token authentication. Token does not expire due to inactivity.
 Single session is still enforced at login (token is regenerated on each login).
+
+Keys starting with "iicm_" are mobile app device-session access tokens
+(see iic_booking.users.mobile_sessions); they are independent of the web Token.
 """
 from django.conf import settings
 from rest_framework import authentication, exceptions
 from rest_framework.authtoken.models import Token
+
+MOBILE_ACCESS_PREFIX = "iicm_"
 
 
 def set_token_activity(token_key):
@@ -25,6 +30,22 @@ def get_inactivity_timeout_seconds(user=None) -> int:
         return 1800
 
 
+def _user_for_key(key, request=None):
+    """Active user for a web Token key or a mobile access key, else None."""
+    if not key:
+        return None
+    if key.startswith(MOBILE_ACCESS_PREFIX):
+        from iic_booking.users.mobile_sessions import authenticate_mobile_access_key, client_ip
+
+        result = authenticate_mobile_access_key(key, ip=client_ip(request))
+        return result[0] if result else None
+    try:
+        token = Token.objects.select_related("user").get(key=key)
+    except Token.DoesNotExist:
+        return None
+    return token.user if token.user.is_active else None
+
+
 def resolve_request_user(request):
     """
     Return the authenticated user from session/auth header, or from ?token= query param.
@@ -39,28 +60,16 @@ def resolve_request_user(request):
     if auth_header.lower().startswith("token "):
         header_key = auth_header[6:].strip()
         if header_key:
-            try:
-                token = Token.objects.select_related("user").get(key=header_key)
-            except Token.DoesNotExist:
-                pass
-            else:
-                if token.user.is_active:
-                    return token.user
+            header_user = _user_for_key(header_key, request)
+            if header_user is not None:
+                return header_user
 
     token_key = (getattr(request, "query_params", None) or {}).get("token") or request.GET.get("token") or ""
     token_key = (token_key or "").strip()
     if not token_key:
         return None
 
-    try:
-        token = Token.objects.select_related("user").get(key=token_key)
-    except Token.DoesNotExist:
-        return None
-
-    if not token.user.is_active:
-        return None
-
-    return token.user
+    return _user_for_key(token_key, request)
 
 
 class TokenAuthenticationWithInactivity(authentication.TokenAuthentication):
@@ -78,7 +87,18 @@ class TokenAuthenticationWithInactivity(authentication.TokenAuthentication):
         if len(auth) > 2:
             raise exceptions.AuthenticationFailed("Invalid token header. Token string should not contain spaces.")
 
-        key = auth[1].decode("utf-8")
+        try:
+            key = auth[1].decode("utf-8")
+        except UnicodeError:
+            raise exceptions.AuthenticationFailed("Invalid token header. Token string should not contain invalid characters.")
+
+        if key.startswith(MOBILE_ACCESS_PREFIX):
+            from iic_booking.users.mobile_sessions import authenticate_mobile_access_key, client_ip
+
+            result = authenticate_mobile_access_key(key, ip=client_ip(request))
+            if result is None:
+                raise exceptions.AuthenticationFailed("Invalid token.")
+            return result
 
         try:
             token = Token.objects.select_related("user").get(key=key)

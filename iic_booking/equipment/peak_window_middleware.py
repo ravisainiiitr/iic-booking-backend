@@ -13,6 +13,7 @@ from .peak_window import compute_peak_state, external_pause_payload, is_peak_blo
 EXEMPT_PATHS = frozenset(
     {
         "/api/auth/logout/",
+        "/api/auth/mobile/logout/",
         "/api/auth/user/",
         "/api/auth/settings/",
         "/api/peak-window/status/",
@@ -42,8 +43,14 @@ def _blockable_from_token(key: str) -> bool:
         return hit[1]
     from rest_framework.authtoken.models import Token
 
-    token = Token.objects.select_related("user").filter(key=key).first()
-    user = token.user if token is not None and token.user.is_active else None
+    from iic_booking.users.mobile_sessions import ACCESS_PREFIX, authenticate_mobile_access_key
+
+    if key.startswith(ACCESS_PREFIX):
+        result = authenticate_mobile_access_key(key, touch=False)
+        user = result[0] if result else None
+    else:
+        token = Token.objects.select_related("user").filter(key=key).first()
+        user = token.user if token is not None and token.user.is_active else None
     blockable = is_peak_blockable_user(user)
     with _token_lock:
         if len(_token_blockable) > 20000:
