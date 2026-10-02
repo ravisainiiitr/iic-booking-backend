@@ -631,6 +631,40 @@ class QuotaService:
     # Legacy equipment-level quotas
     # ------------------------------------------------------------------
 
+    LEGACY_EXTERNAL_SNAPSHOT_FILTER = {"user_type_snapshot__in": ["external", "EXTERNAL"]}
+
+    @classmethod
+    def _legacy_bookings_in_period(
+        cls,
+        *,
+        equipment,
+        snapshot_filter: dict,
+        start_date: datetime,
+        end_date: datetime,
+        exclude_booking_id: Optional[int] = None,
+    ) -> QuerySet:
+        """Quota-consuming bookings on one equipment for a user-type snapshot within a period."""
+        bookings_with_slots_in_period = Booking.objects.filter(
+            pk=OuterRef("pk"),
+            daily_slots__start_datetime__gte=start_date,
+            daily_slots__start_datetime__lte=end_date,
+        )
+        qs = (
+            cls._base_quota_bookings_qs()
+            .filter(equipment=equipment, **snapshot_filter)
+            .filter(
+                Q(
+                    quota_period_anchor_at__isnull=False,
+                    quota_period_anchor_at__gte=start_date,
+                    quota_period_anchor_at__lte=end_date,
+                )
+                | (Q(quota_period_anchor_at__isnull=True) & Exists(bookings_with_slots_in_period))
+            )
+        )
+        if exclude_booking_id is not None:
+            qs = qs.exclude(booking_id=exclude_booking_id)
+        return qs
+
     @classmethod
     def _check_user_type_quota(
         cls,
@@ -655,28 +689,13 @@ class QuotaService:
         if not quotas:
             return True, None
 
-        bookings_with_slots_in_period = Booking.objects.filter(
-            pk=OuterRef("pk"),
-            daily_slots__start_datetime__gte=start_date,
-            daily_slots__start_datetime__lte=end_date,
+        existing_bookings = cls._legacy_bookings_in_period(
+            equipment=equipment,
+            snapshot_filter={"user_type_snapshot": user_type},
+            start_date=start_date,
+            end_date=end_date,
+            exclude_booking_id=exclude_booking_id,
         )
-        existing_bookings = (
-            cls._base_quota_bookings_qs()
-            .filter(
-                equipment=equipment,
-                user_type_snapshot=user_type,
-            )
-            .filter(
-                Q(
-                    quota_period_anchor_at__isnull=False,
-                    quota_period_anchor_at__gte=start_date,
-                    quota_period_anchor_at__lte=end_date,
-                )
-                | (Q(quota_period_anchor_at__isnull=True) & Exists(bookings_with_slots_in_period))
-            )
-        )
-        if exclude_booking_id is not None:
-            existing_bookings = existing_bookings.exclude(booking_id=exclude_booking_id)
 
         period_label = "Monthly" if quota_type == QuotaType.MONTHLY else "Weekly"
         for quota in quotas:
@@ -730,28 +749,13 @@ class QuotaService:
         if not quotas:
             return True, None
 
-        bookings_with_slots_in_period = Booking.objects.filter(
-            pk=OuterRef("pk"),
-            daily_slots__start_datetime__gte=start_date,
-            daily_slots__start_datetime__lte=end_date,
+        existing_bookings = cls._legacy_bookings_in_period(
+            equipment=equipment,
+            snapshot_filter=cls.LEGACY_EXTERNAL_SNAPSHOT_FILTER,
+            start_date=start_date,
+            end_date=end_date,
+            exclude_booking_id=exclude_booking_id,
         )
-        existing_bookings = (
-            cls._base_quota_bookings_qs()
-            .filter(
-                equipment=equipment,
-                user_type_snapshot__in=["external", "EXTERNAL"],
-            )
-            .filter(
-                Q(
-                    quota_period_anchor_at__isnull=False,
-                    quota_period_anchor_at__gte=start_date,
-                    quota_period_anchor_at__lte=end_date,
-                )
-                | (Q(quota_period_anchor_at__isnull=True) & Exists(bookings_with_slots_in_period))
-            )
-        )
-        if exclude_booking_id is not None:
-            existing_bookings = existing_bookings.exclude(booking_id=exclude_booking_id)
 
         period_label = "Monthly" if quota_type == QuotaType.MONTHLY else "Weekly"
         for quota in quotas:
