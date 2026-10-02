@@ -1104,6 +1104,10 @@ def omniport_callback(request):
             getattr(user, "id", None),
         )
 
+    from iic_booking.users.supervisor_invites import convert_invites_on_login
+
+    convert_invites_on_login(user)
+
     # Prepare response data
     response_data = {
         "token": token.key,
@@ -1357,6 +1361,10 @@ def login(request):
             getattr(user, "id", None),
         )
 
+    from iic_booking.users.supervisor_invites import convert_invites_on_login
+
+    convert_invites_on_login(user)
+
     # Serialize full user data using UserSerializer
     from ..serializers import UserSerializer
     user_serializer = UserSerializer(user, context={"request": request})
@@ -1585,6 +1593,10 @@ def verify_login_otp(request):
             "Faculty wallet sync hook failed for user_id=%s (login continues)",
             getattr(user, "id", None),
         )
+
+    from iic_booking.users.supervisor_invites import convert_invites_on_login
+
+    convert_invites_on_login(user)
 
     from ..serializers import UserSerializer
     user_serializer = UserSerializer(user, context={"request": request})

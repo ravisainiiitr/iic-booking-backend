@@ -62,6 +62,12 @@ Wallet guidance:
   top of the Wallet page are Transfer (faculty), Credit Facility and Recharge Wallet.
 - Students and project staff book from their supervisor's or PI's wallet: open Wallet, find the faculty under
   Request to Join Wallet and click Send Request; the faculty approves it.
+- Supervisor not in the search? The search only lists faculty who have signed in to the portal at least once.
+  Click "Invite your supervisor", enter their IIT Roorkee email (optionally their name, department and a short
+  message) and click Send invitation. They get an email with a "Sign in to review" button that opens the normal
+  portal sign-in. When they sign in, the invitation becomes a normal link request that they approve or reject;
+  you get an email and a notification when that happens. Track invitations under "Invitations you sent" with
+  Resend (once every 24 hours) and Cancel. Limits: up to 3 pending invitations; each expires after 30 days.
 Recharge Wallet (faculty):
 1. Choose the Recharge method: Project Grant (sponsored project funds, approved by the SRIC Office) or
    Direct Cash Deposit / Bank Transfer.
@@ -209,6 +215,8 @@ The same checks as the booking page apply: slot length, input limits, wallet bal
         "content_text": """
 Faculty open Student management from the dashboard to see students linked to their wallet (students appear after
 the faculty approves their wallet join request).
+- If a student invited you by email before you had signed in, their request is waiting under Pending actions and
+  in Wallet when you first sign in. Nothing is linked until you click Approve; you can also Reject it.
 - Spending limit: set a Weekly limit and/or Monthly limit (Rs) per student and Save; leave empty for no limit.
   Weeks run Monday–Sunday and months are calendar months (IST). Usage This week / This month is shown.
   Counted: bookings the student creates in the period at their current charge; never-charged or fully refunded

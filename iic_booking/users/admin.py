@@ -2327,3 +2327,41 @@ class PortalMigrationPhaseTransitionAdmin(admin.ModelAdmin):
         return False
 
 
+from .models.supervisor_invite import SupervisorInvite, SupervisorInviteEvent  # noqa: E402
+
+
+@admin.register(SupervisorInvite)
+class SupervisorInviteAdmin(admin.ModelAdmin):
+    list_display = ("id", "student", "email", "status", "created_at", "expires_at", "last_sent_at", "send_count", "accepted_by")
+    list_filter = ("status",)
+    search_fields = ("email", "student__email", "student__name")
+    exclude = ("token_hash",)
+    readonly_fields = (
+        "student", "email", "supervisor_name", "department", "message", "status", "created_at", "expires_at",
+        "last_sent_at", "send_count", "accepted_at", "accepted_by", "join_request", "cancelled_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SupervisorInviteEvent)
+class SupervisorInviteEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "action", "email", "actor", "invite")
+    list_filter = ("action",)
+    search_fields = ("email",)
+    readonly_fields = ("invite", "action", "actor", "email", "details", "created_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
