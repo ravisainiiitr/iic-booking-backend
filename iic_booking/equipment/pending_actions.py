@@ -532,7 +532,14 @@ def collect_pending_actions(user) -> list[dict[str, Any]]:
     c.safely("staff", lambda: _staff_items(c))
     c.safely("admin", lambda: _admin_items(c))
     c.safely("personal", lambda: _personal_items(c))
+    c.safely("training", lambda: _training_items(c))
     return c.items
+
+
+def _training_items(c: _Collector) -> None:
+    from iic_booking.training.pending import training_items
+
+    training_items(c)
 
 
 @api_view(["GET"])

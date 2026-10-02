@@ -1,0 +1,77 @@
+# Probe: rank equipment as Training & Certification pilot candidates by recent student demand.
+# Read-only; prints equipment-level aggregate counts only (no user identities, no secrets).
+name: Probe Training Pilot Candidates
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Look-back window in days
+        required: true
+        default: "180"
+      top:
+        description: Number of equipment to list
+        required: true
+        default: "20"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Rank equipment by student demand
+        env:
+          PROBE_DAYS: ${{ github.event.inputs.days }}
+          PROBE_TOP: ${{ github.event.inputs.top }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          echo "django_container=$CID"
+          test -n "$CID"
+          docker exec -i -e PROBE_DAYS="$PROBE_DAYS" -e PROBE_TOP="$PROBE_TOP" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import timedelta
+          from django.conf import settings
+          from django.db.models import Count
+          from django.utils import timezone
+          from iic_booking.equipment import models as em
+          from iic_booking.users.models.user_type import UserType
+
+          days = max(1, int(os.environ.get("PROBE_DAYS") or 180))
+          top = max(1, int(os.environ.get("PROBE_TOP") or 20))
+          since = timezone.now() - timedelta(days=days)
+          students = (UserType.STUDENT,)
+          print(f"training_module_enabled={getattr(settings, 'TRAINING_MODULE_ENABLED', None)} "
+                f"pilot_codes_set={bool(getattr(settings, 'TRAINING_PILOT_EQUIPMENT_CODES', ''))}")
+
+          def per_equipment(qs):
+              return {r["equipment_id"]: r["n"] for r in qs.values("equipment_id").annotate(n=Count("pk"))}
+
+          bookings = per_equipment(em.Booking.objects.filter(created_at__gte=since, user__user_type__in=students)
+                                   .exclude(status__in=("CANCELLED", "REFUNDED")))
+          student_users = {r["equipment_id"]: r["n"] for r in em.Booking.objects.filter(
+              created_at__gte=since, user__user_type__in=students).exclude(status__in=("CANCELLED", "REFUNDED"))
+              .values("equipment_id").annotate(n=Count("user_id", distinct=True))}
+          failed = per_equipment(em.BookingAttemptLog.objects.filter(requested_at__gte=since, outcome="FAILED",
+                                                                    user__user_type__in=students))
+          waitlist = per_equipment(em.WaitlistEntry.objects.filter(created_at__gte=since, user__user_type__in=students))
+          noslot = per_equipment(em.NoSlotAllocationLog.objects.filter(requested_at__gte=since, user__user_type__in=students))
+          oics = per_equipment(em.EquipmentManager.objects.all())
+          operators = per_equipment(em.EquipmentOperator.objects.all())
+
+          rows = []
+          for eq in em.Equipment.objects.filter(status="ACTIVE").select_related("internal_department"):
+              k = eq.equipment_id
+              unmet = failed.get(k, 0) + waitlist.get(k, 0) + noslot.get(k, 0)
+              score = bookings.get(k, 0) + 2 * unmet + 3 * student_users.get(k, 0)
+              rows.append((score, eq, unmet))
+          rows.sort(key=lambda r: (-r[0], r[1].code or ""))
+          print(f"== top {top} ACTIVE equipment by student demand, last {days} days")
+          print("code | name | dept | student_bookings | distinct_students | failed | waitlist | no_slot | oics | operators")
+          for score, eq, unmet in rows[:top]:
+              k = eq.equipment_id
+              dept = getattr(eq.internal_department, "code", None) or "-"
+              print(f"{eq.code} | {eq.name} | {dept} | {bookings.get(k, 0)} | {student_users.get(k, 0)} | "
+                    f"{failed.get(k, 0)} | {waitlist.get(k, 0)} | {noslot.get(k, 0)} | {oics.get(k, 0)} | {operators.get(k, 0)}")
+          PY

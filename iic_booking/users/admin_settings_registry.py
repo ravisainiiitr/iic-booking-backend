@@ -263,6 +263,12 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
         "label": "Reward Config (Per Equipment)",
         "path": "/admin-settings/rewards",
     },
+    {
+        "key": "admin_settings.training",
+        "label": "Training Policy",
+        "description": "Selection caps, scoring weights, validity and demo charges for Training & Certification",
+        "path": "/admin-settings/training",
+    },
 ]
 
 
@@ -497,6 +503,7 @@ PERMISSION_CODE_MODULE_KEYS: dict[str, tuple[str, ...]] = {
     "lab.assign": ("user_management", "user_management.users"),
     "finance.assign": ("user_management", "user_management.users"),
     "permissions.manage_staff": ("user_management", "user_management.users"),
+    "training.manage": ("admin_settings.training",),
 }
 
 

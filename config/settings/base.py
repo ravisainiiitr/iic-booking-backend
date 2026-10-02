@@ -127,6 +127,7 @@ LOCAL_APPS = [
     "iic_booking.device_provisioning.apps.DeviceProvisioningConfig",
     "iic_booking.research_copilot.apps.ResearchCopilotConfig",
     "iic_booking.my_research.apps.MyResearchConfig",
+    "iic_booking.training.apps.TrainingConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -783,6 +784,13 @@ MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=Fals
 MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
 MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
 MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
+# --- Training & Certification (demo requests, nominations, shortlisting, sessions, Trained badge) ---
+# Master switch. Disabling hides the UI and API; requests, nominations, awards and slot reservations are kept.
+TRAINING_MODULE_ENABLED = env.bool("TRAINING_MODULE_ENABLED", default=False)
+# Optional comma-separated equipment codes in the pilot (empty = all equipment).
+TRAINING_PILOT_EQUIPMENT_CODES = env("TRAINING_PILOT_EQUIPMENT_CODES", default="")
+# Optional comma-separated OIC emails who get the Training workspace during the pilot (empty = every OIC).
+TRAINING_PILOT_OIC_EMAILS = env("TRAINING_PILOT_OIC_EMAILS", default="")
 COMPATIBLE_BACKEND_MIN = env("COMPATIBLE_BACKEND_MIN", default="2.5.2")
 # Optional JSON override for installer matrix, e.g.
 # {"dsa":{"minimum":"1.0.1","latest":"1.0.2"}}

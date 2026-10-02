@@ -91,6 +91,19 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "operator_leave_rejected_operator_email",
     "operator_unavailability_submitted_operator_email",
     "operator_unavailability_intimation_oic_email",
+    "demo_request_submitted_oic_email",
+    "demo_request_decision_faculty_email",
+    "demo_request_response_oic_email",
+    "demo_scheduled_participants_email",
+    "demo_request_cancelled_email",
+    "demo_request_escalated_email",
+    "training_call_open_faculty_email",
+    "training_nomination_received_student_email",
+    "training_selection_result_email",
+    "training_waitlist_promoted_email",
+    "training_appeal_decided_email",
+    "training_session_scheduled_email",
+    "certification_awarded_email",
 ]
 
 
@@ -1641,6 +1654,83 @@ def _nomination_and_leave_templates() -> list[dict[str, Any]]:
     ]
 
 
+_TRAINING_HELP = (
+    "{{ user_name }}, {{ summary }}, {{ reference }}, {{ equipment_name }}, {{ equipment_code }}, "
+    "{{ title }}, {{ when }}, {{ duration }}, {{ participants }}, {{ status }}, {{ charge }}, "
+    "{{ deadline }}, {{ remarks }}, {{ link }}"
+)
+
+
+def _training_email(code: str, *, title: str, subject: str, description: str, cta_label: str) -> dict[str, Any]:
+    return _simple_email(
+        code=code,
+        title=title,
+        subject=subject,
+        intro="{{ summary }}",
+        description=description,
+        detail_rows=[
+            optional_detail_row("Reference", "reference"),
+            optional_detail_row("Equipment", "equipment_name"),
+            optional_detail_row("Title", "title"),
+            optional_detail_row("When", "when"),
+            optional_detail_row("Duration", "duration"),
+            optional_detail_row("Participants", "participants"),
+            optional_detail_row("Status", "status"),
+            optional_detail_row("Charge", "charge"),
+            optional_detail_row("Respond by", "deadline"),
+        ],
+        note_vars=(("remarks", "Remarks"),),
+        cta_label=cta_label,
+        variable_help=_TRAINING_HELP,
+    )
+
+
+def _training_templates() -> list[dict[str, Any]]:
+    rows = (
+        ("demo_request_submitted_oic_email", "Demonstration Request", "Demo request {{ reference }} – {{ equipment_name }}",
+         "Sent to the OIC(s) when a faculty member requests a demonstration.", "Review request"),
+        ("demo_request_decision_faculty_email", "Demonstration Request Update", "{{ status }}: demo request {{ reference }}",
+         "Sent to the faculty member when the OIC approves, curtails, proposes another time or rejects.", "View request"),
+        ("demo_request_response_oic_email", "Faculty Response to Proposed Time", "Faculty responded: demo request {{ reference }}",
+         "Sent to the OIC(s) when the faculty member accepts, counters or declines a proposed time.", "Open inbox"),
+        ("demo_scheduled_participants_email", "Demonstration Scheduled", "Demonstration scheduled – {{ equipment_name }}",
+         "Sent to the faculty member and listed participants when a demo is scheduled.", "View details"),
+        ("demo_request_cancelled_email", "Demonstration Cancelled", "Demonstration cancelled – {{ reference }}",
+         "Sent when a scheduled or approved demo is cancelled (includes refund details).", "View request"),
+        ("demo_request_escalated_email", "Demo Request Awaiting Decision", "Overdue demo request {{ reference }}",
+         "Sent to Department Administrators/Main Admin when a demo request passes its review SLA.", "Open inbox"),
+        ("training_call_open_faculty_email", "Training Nominations Open", "Nominations open: {{ title }}",
+         "Sent to faculty when an OIC opens a training nomination call.", "Nominate students"),
+        ("training_nomination_received_student_email", "You Have Been Nominated", "Training nomination: {{ title }}",
+         "Sent to a student when their supervisor nominates them; asks them to confirm interest.", "Confirm interest"),
+        ("training_selection_result_email", "Training Selection Result", "Training selection: {{ title }}",
+         "Sent to nominated students (and their nominating faculty) when a selection is published.", "View result"),
+        ("training_waitlist_promoted_email", "Training Seat Offered", "Seat offered: {{ title }}",
+         "Sent when a waitlisted student is promoted to a seat.", "Confirm seat"),
+        ("training_appeal_decided_email", "Selection Appeal Decided", "Appeal decided: {{ title }}",
+         "Sent to the appellant when an appeal is decided.", "View result"),
+        ("training_session_scheduled_email", "Training Session Scheduled", "Training session: {{ title }}",
+         "Sent to confirmed participants when a session is scheduled or changed.", "View my trainings"),
+        ("certification_awarded_email", "Training Completed", "You are now Trained on {{ equipment_name }}",
+         "Sent when a participant completes all sessions and receives the Trained level and badge.", "View my trainings"),
+    )
+    return [
+        _training_email(code, title=title, subject=subject, description=desc, cta_label=cta)
+        for code, title, subject, desc, cta in rows
+    ]
+
+
+def get_default_email_template(code: str) -> Optional[dict[str, Any]]:
+    """Catalog spec for one code without building (and validating) the whole catalog."""
+    for spec in _training_templates():
+        if spec["code"] == code:
+            return spec
+    for spec in get_default_email_templates():
+        if spec["code"] == code:
+            return spec
+    return None
+
+
 def get_default_email_templates() -> list[dict]:
     """
     Return list of dicts with keys:
@@ -1653,6 +1743,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_wallet_templates())
     templates.extend(_registration_and_support_templates())
     templates.extend(_nomination_and_leave_templates())
+    templates.extend(_training_templates())
 
     by_code = {t["code"]: t for t in templates}
     missing = [c for c in DEFAULT_EMAIL_TEMPLATE_CODES if c not in by_code]

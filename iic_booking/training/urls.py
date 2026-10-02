@@ -1,0 +1,50 @@
+from django.urls import path
+
+from . import views
+
+app_name = "training"
+
+urlpatterns = [
+    path("bootstrap/", views.bootstrap, name="bootstrap"),
+    path("equipment/", views.equipment_list, name="equipment-list"),
+    path("equipment/<int:equipment_id>/", views.equipment_detail, name="equipment-detail"),
+    path("equipment/<int:equipment_id>/free-windows/", views.free_windows, name="free-windows"),
+    path("demo-requests/", views.demo_requests, name="demo-requests"),
+    path("demo-requests/<int:pk>/", views.demo_request_detail, name="demo-request-detail"),
+    path(
+        "demo-requests/<int:pk>/<str:action>/",
+        views.demo_request_action,
+        name="demo-request-action",
+    ),
+    path("calls/", views.calls, name="calls"),
+    path("calls/<int:pk>/", views.call_detail, name="call-detail"),
+    path("calls/<int:pk>/close/", views.call_close, name="call-close"),
+    path("calls/<int:pk>/nominations/", views.call_nominations, name="call-nominations"),
+    path("calls/<int:pk>/shortlist/", views.call_shortlist, name="call-shortlist"),
+    path("calls/<int:pk>/results/", views.call_results, name="call-results"),
+    path("nominations/", views.nominations, name="nominations"),
+    path("nominations/<int:pk>/<str:action>/", views.nomination_action, name="nomination-action"),
+    path("shortlist-runs/<int:pk>/publish/", views.run_publish, name="run-publish"),
+    path("shortlist-runs/<int:pk>/export/", views.run_export, name="run-export"),
+    path("shortlist-runs/<int:pk>/verify/", views.run_verify, name="run-verify"),
+    path("shortlist-entries/<int:pk>/override/", views.entry_override, name="entry-override"),
+    path("shortlist-entries/<int:pk>/appeal/", views.entry_appeal, name="entry-appeal"),
+    path("appeals/", views.appeals, name="appeals"),
+    path("appeals/<int:pk>/decide/", views.appeal_decide, name="appeal-decide"),
+    path("events/", views.events, name="events"),
+    path("events/<int:pk>/", views.event_detail, name="event-detail"),
+    path("events/<int:pk>/cancel/", views.event_cancel, name="event-cancel"),
+    path("events/<int:pk>/sessions/", views.event_sessions, name="event-sessions"),
+    path("sessions/<int:pk>/", views.session_detail, name="session-detail"),
+    path("sessions/<int:pk>/reserve/", views.session_reserve, name="session-reserve"),
+    path("sessions/<int:pk>/release/", views.session_release, name="session-release"),
+    path("sessions/<int:pk>/attendance/", views.session_attendance, name="session-attendance"),
+    path("attendance/sessions/", views.attendance_sessions, name="attendance-sessions"),
+    path("certifications/", views.certifications, name="certifications"),
+    path("badges/", views.badges, name="badges"),
+    path("me/trainings/", views.my_trainings, name="my-trainings"),
+    path("faculty/students-trainings/", views.faculty_students_trainings, name="faculty-students-trainings"),
+    path("workspace/summary/", views.workspace_summary, name="workspace-summary"),
+    path("policy/", views.policy, name="policy"),
+    path("policy/history/", views.policy_history, name="policy-history"),
+]
