@@ -198,7 +198,7 @@ class TestFailureHelp:
         conv = _new_conv(lab)
         body = _body(_help(lab, conv, {"code": "no_wallet", "equipment_id": lab.xrd.pk}))
         text = body["message"]["content"]
-        assert "Request to Join Wallet" in text and "Channel I" in text
+        assert "Request to Join Wallet" in text and "Invite your supervisor" in text
         link = next(a for a in body["message"]["suggested_actions"] if a.get("label") == "Link my supervisor's wallet")
         assert link["href"] == "/wallet"
 
