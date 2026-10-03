@@ -1187,6 +1187,48 @@ def obtain_auth_token_single_session(request):
     return Response({"token": token.key})
 
 
+def _pending_faculty_name(user) -> str:
+    try:
+        from iic_booking.users import registration_approvals
+
+        approval = registration_approvals._safe(
+            lambda: registration_approvals.RegistrationApproval.objects.select_related("faculty").filter(user=user).first(),
+            None,
+        )
+        if approval is not None and approval.status == "pending_faculty" and approval.faculty_id:
+            return get_user_display_name(approval.faculty)
+    except Exception:
+        logger.exception("registration approval lookup failed user=%s", user.pk)
+    return ""
+
+
+def _programme_expired_payload(user, password: str) -> dict:
+    payload = {
+        "error": "Access expired",
+        "code": "programme_expired",
+        "message": (
+            "Your programme validity has passed, so access is disabled. Your supervisor can extend it by up to "
+            "six months at a time. Request an extension below or contact support."
+        ),
+        "email_verified": True,
+        "admin_approved": True,
+        "programme_validity": user.program_end_date.isoformat() if user.program_end_date else None,
+        "extension_max_months": 6,
+    }
+    # The extension link is only handed out to someone who knows the password.
+    if password and user.check_password(password):
+        try:
+            from iic_booking.users import registration_approvals
+
+            if registration_approvals.can_request_extension(user):
+                payload["extension_token"] = registration_approvals.make_user_extension_token(user)
+                if user.supervisor_id:
+                    payload["supervisor_name"] = get_user_display_name(user.supervisor)
+        except Exception:
+            logger.exception("programme extension token failed user=%s", user.pk)
+    return payload
+
+
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
@@ -1234,12 +1276,20 @@ def login(request):
     
     # Check if admin has approved
     if not user.admin_approved:
+        message = "Your email has been verified, but your account is pending admin approval. You will be notified once approved."
+        faculty_name = _pending_faculty_name(user)
+        if faculty_name:
+            message = (
+                f"Your registration is waiting for approval by {faculty_name}, the IITR faculty member you named. "
+                "You will be emailed once it is decided."
+            )
         return Response(
             {
                 "error": "Account pending approval",
-                "message": "Your email has been verified, but your account is pending admin approval. You will be notified once approved.",
+                "message": message,
                 "email_verified": True,
                 "admin_approved": False,
+                "pending_faculty": bool(faculty_name),
             },
             status=status.HTTP_403_FORBIDDEN,
         )
@@ -1261,12 +1311,7 @@ def login(request):
     if UserType.is_internal_user(getattr(user, "user_type", "")):
         if getattr(user, "program_end_date", None) and timezone.localdate() > user.program_end_date:
             return Response(
-                {
-                    "error": "Access expired",
-                    "message": "Your program/course/position end date has passed. Access is disabled. Contact support if you need an extension.",
-                    "email_verified": True,
-                    "admin_approved": True,
-                },
+                _programme_expired_payload(user, password),
                 status=status.HTTP_403_FORBIDDEN,
             )
         if getattr(user, "access_on_hold", False):
@@ -2688,15 +2733,33 @@ def self_verify(request, uidb64, token):
         user.email_verified = True
         # External with non-public email: no admin approval needed. Others: request goes to admin.
         email_domain = user.email.strip().split("@")[-1].lower() if user.email and "@" in user.email else ""
+        from iic_booking.users import registration_approvals
+
         if user.user_type in UserType.get_external_user_codes() and email_domain not in PUBLIC_EMAIL_DOMAINS:
             user.admin_approved = True
             user.save(update_fields=["email_verified", "admin_approved"])
+            registration_approvals.on_registration_verified(user, request=request)
             return Response(
                 {"message": "Account verified successfully. You can now log in.", "email_verified": True, "admin_approved": True},
                 status=status.HTTP_200_OK,
             )
         user.admin_approved = False
         user.save(update_fields=["email_verified", "admin_approved"])
+        approval = registration_approvals.on_registration_verified(user, request=request)
+        if approval is not None and approval.status == "pending_faculty" and user.supervisor_id:
+            supervisor_name = get_user_display_name(user.supervisor)
+            return Response(
+                {
+                    "message": (
+                        f"Registration verified. Your request has been sent to {supervisor_name} for approval. "
+                        "You will be notified by email once they decide."
+                    ),
+                    "email_verified": True,
+                    "admin_approved": False,
+                    "pending_faculty": True,
+                },
+                status=status.HTTP_200_OK,
+            )
         return Response(
             {"message": "Registration verified. Your request has been sent for admin approval. You will be notified once approved.", "email_verified": True, "admin_approved": False},
             status=status.HTTP_200_OK,

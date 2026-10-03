@@ -53,6 +53,16 @@ from .channel_i_identity import (
     AffiliationKind,
 )
 from .supervisor_invite import SupervisorInvite, SupervisorInviteEvent, SupervisorInviteStatus
+from .registration_approval import (
+    RegistrationApproval,
+    RegistrationApprovalChannel,
+    RegistrationApprovalEvent,
+    RegistrationApprovalPolicy,
+    RegistrationApprovalStatus,
+    RegistrationApprovalToken,
+    RegistrationExtensionRequest,
+    RegistrationExtensionStatus,
+)
 from .wallet_student_recharge_settings import WalletStudentRechargeSettings
 from .department_faculty_credit_facility import (
     DepartmentFacultyCreditFacilitySettings,
@@ -128,6 +138,14 @@ __all__ = [
     "SupervisorInvite",
     "SupervisorInviteEvent",
     "SupervisorInviteStatus",
+    "RegistrationApproval",
+    "RegistrationApprovalChannel",
+    "RegistrationApprovalEvent",
+    "RegistrationApprovalPolicy",
+    "RegistrationApprovalStatus",
+    "RegistrationApprovalToken",
+    "RegistrationExtensionRequest",
+    "RegistrationExtensionStatus",
     "Department",
     "DepartmentType",
     "OrganizationRequest",
