@@ -366,7 +366,11 @@ def create_booking_event(
     """
     if created_by is None and not system_actor:
         created_by = booking.user
-    
+
+    from .dept_admin_actions import actor_role_metadata
+
+    event_metadata = {**actor_role_metadata(created_by), **(metadata or {})}
+
     # Create the event
     event = BookingEvent.objects.create(
         booking=booking,
@@ -375,7 +379,7 @@ def create_booking_event(
         new_status=new_status,
         comment=comment,
         created_by=created_by,
-        metadata=metadata or {},
+        metadata=event_metadata,
     )
     
     # Send notifications after response-critical DB work: queue on commit so email/push

@@ -9,6 +9,12 @@ from datetime import datetime, date, timedelta
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from iic_booking.equipment.dept_admin_actions import (
+    DEPT_ADMIN_OTHER_DEPARTMENT_MESSAGE,
+    dept_admin_can_manage_bookings,
+    is_dept_admin,
+    record_staff_action,
+)
 from iic_booking.equipment.image_utils import persist_equipment_image_upload
 from django.http import StreamingHttpResponse
 from django.utils import timezone
@@ -2719,7 +2725,8 @@ def admin_api_router():
             {"waitlist", "waitlist_all", "waitlist_clear", "waitlist_slots", "waitlist_confirm"}
         )
         WAITLIST_STAFF_TYPES = frozenset({UserType.MANAGER, UserType.OPERATOR})
-        # Department Administrators view (not change) waitlists of their own department.
+        # Department Administrators manage waitlists of their own department's equipment (changes need
+        # bookings.manage); other departments' equipment is refused with 403.
         WAITLIST_READ_ACTIONS = frozenset({"waitlist", "waitlist_all"})
         # OIC changes slot status / reserves slots of their own (queryset-scoped) equipment
         # like the Main Admin, without Admin Panel or the equipment settings module.
@@ -2728,9 +2735,12 @@ def admin_api_router():
         def _is_staff_waitlist_request(self):
             action_name = getattr(self, "action", None)
             ut = getattr(self.request.user, "user_type", None)
-            return (action_name in self.WAITLIST_ACTIONS and ut in self.WAITLIST_STAFF_TYPES) or (
-                action_name in self.WAITLIST_READ_ACTIONS and ut == UserType.DEPT_ADMIN
+            return action_name in self.WAITLIST_ACTIONS and (
+                ut in self.WAITLIST_STAFF_TYPES or ut == UserType.DEPT_ADMIN
             )
+
+        def _is_dept_admin_waitlist_request(self):
+            return self._is_staff_waitlist_request() and is_dept_admin(self.request.user)
 
         def _is_oic_slot_request(self):
             return (
@@ -2752,6 +2762,12 @@ def admin_api_router():
             from iic_booking.users.rbac import user_has_admin_panel_access, user_has_permission
 
             if self._is_staff_scoped_request():
+                if (
+                    self._is_dept_admin_waitlist_request()
+                    and self.action not in self.WAITLIST_READ_ACTIONS
+                    and not dept_admin_can_manage_bookings(request.user)
+                ):
+                    raise PermissionDenied("Managing waitlists needs the Manage bookings permission for your department.")
                 return
             # Lab Operator / OIC / Accounts In Charge with reports.view may list scoped
             # equipment for the Reports filter without full Admin Panel / equipment module access.
@@ -2783,6 +2799,21 @@ def admin_api_router():
                 department_id = None
             if department_id is None or int(department_id) != int(user.department_id):
                 raise PermissionDenied("Department Administrators can manage equipment only inside their own department.")
+
+        def get_object(self):
+            from django.http import Http404
+
+            try:
+                return super().get_object()
+            except Http404:
+                lookup = self.kwargs.get(self.lookup_url_kwarg or self.lookup_field)
+                if (
+                    self._is_dept_admin_waitlist_request()
+                    and str(lookup or "").isdigit()
+                    and Equipment.objects.filter(equipment_id=int(lookup)).exists()
+                ):
+                    raise PermissionDenied(DEPT_ADMIN_OTHER_DEPARTMENT_MESSAGE)
+                raise
 
         def get_queryset(self):
             from django.db.models import Q
@@ -3592,9 +3623,10 @@ def admin_api_router():
 
         @action(detail=True, methods=["post"], url_path="waitlist-clear")
         def waitlist_clear(self, request, pk=None):
-            """Clear the waitlist for this equipment (admin/OIC)."""
+            """Clear the waitlist for this equipment (Admin, OIC, Lab Operator, Department Administrator)."""
             equipment = self.get_object()
             deleted, _ = WaitlistEntry.objects.filter(equipment=equipment).delete()
+            record_staff_action(request.user, "waitlist.clear", equipment_id=equipment.equipment_id, deleted=deleted)
             return Response({
                 "message": f"Waitlist cleared. Removed {deleted} entry(ies).",
                 "deleted": deleted,
@@ -3776,7 +3808,8 @@ def admin_api_router():
                         )
                     reduced_inputs, time_override, _n = reduced
                     requirement_note = (
-                        "Waitlist requirement adjusted to fit the slots chosen by the Officer In Charge. "
+                        "Waitlist requirement adjusted to fit the slots chosen by the "
+                        f"{'Department Administrator' if is_dept_admin(request.user) else 'Officer In Charge'}. "
                         f"Original duration: {required_minutes}m. Fulfilled: {time_override}m."
                     )
                     input_values = reduced_inputs
@@ -3812,6 +3845,13 @@ def admin_api_router():
                     )
                 except Exception:
                     logger.exception("Failed to copy waitlist sample onto booking %s", booking.booking_id)
+            record_staff_action(
+                request.user,
+                "waitlist.confirm",
+                equipment_id=equipment.equipment_id,
+                waitlist_entry_id=entry.id,
+                booking_id=booking.booking_id,
+            )
             entry.delete()
             return Response(
                 {

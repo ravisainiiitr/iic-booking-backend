@@ -191,6 +191,12 @@ from .quota_utils import (
 from .quota_breakdown import QuotaExceededError, quota_failure_fields
 from .booking_timing import BookingRequestTimer, attach_booking_performance_headers
 from .booking_events import create_booking_event
+from .dept_admin_actions import (
+    DEPT_ADMIN_OTHER_DEPARTMENT_MESSAGE,
+    dept_admin_manages_equipment,
+    is_dept_admin,
+    record_staff_action,
+)
 from .booking_cancellation import (
     CancellationValidationError,
     actor_may_cancel_booking,
@@ -8717,6 +8723,11 @@ def _notify_oics_urgent_request_pending(req, actor, *, requester) -> None:
     )
 
 
+def _decider_phrase(actor) -> str:
+    """Who decided, as shown to the requester: the Department Administrator, else the Officer in charge."""
+    return "the Department Administrator" if is_dept_admin(actor) else "the Officer in charge"
+
+
 def _notify_urgent_request_decided(urg, actor, *, requester_already_notified: bool) -> None:
     from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
 
@@ -8730,7 +8741,7 @@ def _notify_urgent_request_decided(urg, actor, *, requester_already_notified: bo
         notify_in_app(
             [urg.user],
             title=f"Urgent booking request {verb}",
-            message=f"{label} request #{urg.id} for {equipment.name} was {verb} by the Officer in charge."
+            message=f"{label} request #{urg.id} for {equipment.name} was {verb} by {_decider_phrase(actor)}."
             + (f" Notes: {notes}" if notes else ""),
             link="/my-urgent-requests",
             notification_type="info" if approved else "warning",
@@ -9896,6 +9907,9 @@ def update_urgent_booking_request(request, request_id):
     if request.method == "DELETE":
         if urg.hold_booking_id and urg.hold_booking and urg.hold_booking.status == BookingStatus.HOLD:
             _release_hold_booking(urg.hold_booking)
+        record_staff_action(
+            request.user, "urgent_request.delete", equipment_id=urg.equipment_id, urgent_request_id=urg.id
+        )
         urg.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -9938,6 +9952,13 @@ def update_urgent_booking_request(request, request_id):
         if hold_err:
             return Response({"error": hold_err}, status=status.HTTP_400_BAD_REQUEST)
     urg.save()
+    if new_status in (UrgentBookingRequestStatus.APPROVED, UrgentBookingRequestStatus.REJECTED):
+        record_staff_action(
+            request.user,
+            f"urgent_request.{new_status.lower()}",
+            equipment_id=urg.equipment_id,
+            urgent_request_id=urg.id,
+        )
     # Email requester when Admin/OIC approves/rejects without a separate hold email (no hold conversion / release).
     try:
         if new_status == UrgentBookingRequestStatus.APPROVED and not hold_converted:
@@ -10316,6 +10337,14 @@ def urgent_hold_expiry_config(request):
             {"error": "Only admin and Officer in charge can view or update this config."},
             status=status.HTTP_403_FORBIDDEN,
         )
+    if request.method == "PATCH" and is_dept_admin(request.user):
+        return Response(
+            {
+                "error": "The urgent request expiry applies to the whole portal; only the Main Administrator can change it.",
+                "code": "URGENT_EXPIRY_GLOBAL",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
     config = UrgentHoldExpiryConfig.objects.first()
     if not config:
         config = UrgentHoldExpiryConfig.objects.create(hold_expiry_hours=24, urgent_booking_validity_days=1)
@@ -10339,6 +10368,7 @@ def urgent_hold_expiry_config(request):
             )
         config.urgent_booking_validity_days = vd
         config.save(update_fields=["urgent_booking_validity_days", "updated_at"])
+        record_staff_action(request.user, "urgent_request.expiry_config", urgent_booking_validity_days=vd)
 
     validity_days = getattr(config, "urgent_booking_validity_days", None)
     return Response({
@@ -15970,7 +16000,9 @@ def _approved_repeat_request_awaiting_booking(orig_booking):
     )
 
 
-REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE = "Only the Officer In Charge or the Main Administrator can manage repeat samples."
+REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE = (
+    "Only the Officer In Charge, the Department Administrator or the Main Administrator can manage repeat samples."
+)
 REPEAT_SAMPLE_BY_OIC_MESSAGE = (
     "Repeat samples are arranged by the Officer In Charge. Please visit the lab with your booking details; "
     "if a repeat is justified, the OIC will book it for you free of charge and you will receive a confirmation email."
@@ -15978,7 +16010,14 @@ REPEAT_SAMPLE_BY_OIC_MESSAGE = (
 
 
 def _is_repeat_sample_manager(user) -> bool:
-    return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
+    return _is_admin_user(user) or getattr(user, "user_type", None) in (UserType.MANAGER, UserType.DEPT_ADMIN)
+
+
+def _can_manage_repeat_for_equipment(user, equipment_id) -> bool:
+    """Main Admin, the equipment's OIC (incl. temporary OIC) or a Department Administrator of its department."""
+    if is_dept_admin(user):
+        return dept_admin_manages_equipment(user, equipment_id)
+    return _user_can_manage_oic_equipment(user, equipment_id)
 
 
 def repeat_sample_extra_week_applies(user, equipment, raw_booking_id) -> bool:
@@ -16003,7 +16042,8 @@ def repeat_sample_extra_week_applies(user, equipment, raw_booking_id) -> bool:
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def enable_repeat_sample(request, booking_id):
-    """Enable repeat sample for a completed booking. Admin, or the OIC of the booking's equipment."""
+    """Enable repeat sample for a completed booking. Admin, the OIC of the booking's equipment, or the
+    Department Administrator of its department."""
     if not _is_repeat_sample_manager(request.user):
         return Response(
             {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
@@ -16013,7 +16053,7 @@ def enable_repeat_sample(request, booking_id):
         booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not _user_can_manage_oic_equipment(request.user, booking.equipment_id):
+    if not _can_manage_repeat_for_equipment(request.user, booking.equipment_id):
         return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     if booking.status != BookingStatus.COMPLETED:
         return Response(
@@ -16032,6 +16072,9 @@ def enable_repeat_sample(request, booking_id):
         )
     booking.repeat_sample_enabled = True
     booking.save(update_fields=["repeat_sample_enabled"])
+    record_staff_action(
+        request.user, "repeat_sample.enable", equipment_id=booking.equipment_id, booking_id=booking.booking_id
+    )
     create_booking_event(
         booking=booking,
         event_type=BookingEventType.REPEAT_SAMPLE_OFFERED,
@@ -16084,8 +16127,9 @@ def create_repeat_booking(request, booking_id):
     """
     Create a complimentary replica booking (repeat sample), excluded from quota.
 
-    - OIC of the equipment / Main Administrator: marks the completed booking as a repeat and books it for
-      the booking user in one step (no user request needed; approval is recorded). Body: slot_ids?, admin_notes?.
+    - OIC of the equipment / Department Administrator of its department / Main Administrator: marks the
+      completed booking as a repeat and books it for the booking user in one step (no user request needed;
+      approval is recorded). Body: slot_ids?, admin_notes?.
     - Booking user: only when a repeat was already granted before repeat samples became OIC-only.
     """
     try:
@@ -16096,7 +16140,7 @@ def create_repeat_booking(request, booking_id):
     if staff_path:
         if not _is_repeat_sample_manager(request.user):
             return Response({"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
-        if not _user_can_manage_oic_equipment(request.user, orig_booking.equipment_id):
+        if not _can_manage_repeat_for_equipment(request.user, orig_booking.equipment_id):
             return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     if orig_booking.status != BookingStatus.COMPLETED:
         return Response({"error": "Only completed bookings can have a repeat sample."}, status=status.HTTP_400_BAD_REQUEST)
@@ -16254,6 +16298,7 @@ def create_repeat_booking(request, booking_id):
     charge_breakdown = [{"description": "Repeat sample (complimentary — no charge)", "amount": 0.0}]
     notes = discount_remark
 
+    staff_role = "the Department Administrator" if is_dept_admin(request.user) else "the Officer In Charge"
     with transaction.atomic():
         if staff_path:
             now = timezone.now()
@@ -16267,13 +16312,17 @@ def create_repeat_booking(request, booking_id):
                 approved_req.status = RepeatSampleRequestStatus.APPROVED
                 approved_req.responded_at = now
                 approved_req.responded_by = request.user
-                approved_req.admin_notes = staff_notes or "Marked as repeat sample by the Officer In Charge at the lab."
+                approved_req.admin_notes = staff_notes or f"Marked as repeat sample by {staff_role} at the lab."
                 approved_req.save()
             elif pending is not None:
                 pending.status = RepeatSampleRequestStatus.REJECTED
                 pending.responded_at = now
                 pending.responded_by = request.user
-                pending.admin_notes = "Superseded: the OIC booked the repeat sample."
+                pending.admin_notes = (
+                    "Superseded: the Department Administrator booked the repeat sample."
+                    if is_dept_admin(request.user)
+                    else "Superseded: the OIC booked the repeat sample."
+                )
                 pending.save(update_fields=["status", "responded_at", "responded_by_id", "admin_notes"])
         new_booking = Booking.objects.create(
             user=orig_booking.user,
@@ -16292,7 +16341,7 @@ def create_repeat_booking(request, booking_id):
             **{},
         )
         daily_slots.update(booking=new_booking, status=SlotStatus.BOOKED)
-        booked_by = "by the Officer In Charge " if staff_path else ""
+        booked_by = f"by {staff_role} " if staff_path else ""
         create_booking_event(
             booking=new_booking,
             event_type=BookingEventType.REPEAT_SAMPLE_CREATED,
@@ -16312,6 +16361,14 @@ def create_repeat_booking(request, booking_id):
             approved_req.new_booking = new_booking
             approved_req.booked_at = timezone.now()
             approved_req.save(update_fields=["new_booking_id", "booked_at"])
+    if staff_path:
+        record_staff_action(
+            request.user,
+            "repeat_sample.book",
+            equipment_id=equipment.equipment_id,
+            booking_id=orig_booking.booking_id,
+            new_booking_id=new_booking.booking_id,
+        )
 
     return Response({
         "message": "Repeat booking created successfully.",
@@ -16324,6 +16381,17 @@ def create_repeat_booking(request, booking_id):
 def _repeat_request_in_scope(user, repeat_req) -> bool:
     allowed_ids = _get_equipment_ids_for_log_access(user)
     return allowed_ids is None or repeat_req.booking.equipment_id in allowed_ids
+
+
+def _repeat_request_action_denied(user, repeat_req):
+    """Error response when ``user`` may not approve / reject ``repeat_req``, else None."""
+    if is_dept_admin(user):
+        if not dept_admin_manages_equipment(user, repeat_req.booking.equipment_id):
+            return Response({"error": DEPT_ADMIN_OTHER_DEPARTMENT_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+        return None
+    if not _repeat_request_in_scope(user, repeat_req):
+        return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
+    return None
 
 
 def _notify_repeat_sample_requested(repeat_req, actor) -> None:
@@ -16374,7 +16442,7 @@ def _notify_repeat_sample_decided(repeat_req, actor) -> None:
         notify_in_app(
             [booking.user],
             title="Repeat sample request rejected",
-            message=f"{ref} — {equipment.name}: the Officer in charge rejected your repeat sample request."
+            message=f"{ref} — {equipment.name}: {_decider_phrase(actor)} rejected your repeat sample request."
             + (f" Reason: {notes}" if notes else ""),
             link=f"/my-bookings?booking={ref}",
             notification_type="warning",
@@ -16446,14 +16514,13 @@ def request_repeat_sample(request, booking_id):
 @permission_classes([IsAuthenticated])
 def list_repeat_sample_requests(request):
     """
-    List repeat sample records: Main Admin (all), OIC (managed equipment, incl. temporary OIC) and,
-    read-only, Department Administrator (own department).
+    List repeat sample records: Main Admin (all), OIC (managed equipment, incl. temporary OIC) and
+    Department Administrator (own department).
     Query params: status (PENDING, APPROVED, REJECTED), department_id, equipment_id.
     """
     from .staff_list_filters import allowed_equipment_queryset, resolve_staff_list_filter
 
-    is_dept_admin = getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN
-    if not (_is_repeat_sample_manager(request.user) or is_dept_admin):
+    if not _is_repeat_sample_manager(request.user):
         return Response(
             {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
             status=status.HTTP_403_FORBIDDEN,
@@ -16578,7 +16645,7 @@ def user_identity_card(request, user_id):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def reject_repeat_sample_request(request, request_id):
-    """Reject a repeat sample request. Admin/OIC only. Body: { admin_notes?: string }."""
+    """Reject a repeat sample request. Admin, OIC or Department Administrator (own department). Body: { admin_notes?: string }."""
     if not _is_repeat_sample_manager(request.user):
         return Response(
             {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
@@ -16590,8 +16657,9 @@ def reject_repeat_sample_request(request, request_id):
         ).get(id=request_id)
     except RepeatSampleRequest.DoesNotExist:
         return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not _repeat_request_in_scope(request.user, repeat_req):
-        return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
+    denied = _repeat_request_action_denied(request.user, repeat_req)
+    if denied is not None:
+        return denied
     if repeat_req.status != RepeatSampleRequestStatus.PENDING:
         return Response({"error": f"Request is already {repeat_req.status}."}, status=status.HTTP_400_BAD_REQUEST)
     from django.utils import timezone
@@ -16600,6 +16668,12 @@ def reject_repeat_sample_request(request, request_id):
     repeat_req.responded_by = request.user
     repeat_req.admin_notes = (request.data.get("admin_notes") or "").strip()
     repeat_req.save(update_fields=["status", "responded_at", "responded_by_id", "admin_notes"])
+    record_staff_action(
+        request.user,
+        "repeat_sample.reject",
+        equipment_id=repeat_req.booking.equipment_id,
+        repeat_sample_request_id=repeat_req.id,
+    )
     _notify_repeat_sample_decided(repeat_req, request.user)
     return Response({
         "message": "Repeat sample request rejected.",
@@ -16610,7 +16684,8 @@ def reject_repeat_sample_request(request, request_id):
 @permission_classes([IsAuthenticated])
 def approve_repeat_sample_request(request, request_id):
     """
-    Approve a repeat sample request. Admin/OIC only. Body: { admin_notes?: string }.
+    Approve a repeat sample request. Admin, OIC or Department Administrator (own department).
+    Body: { admin_notes?: string }.
 
     No booking is created here. The user is notified and may book one complimentary repeat themselves
     (parameters inherited from the original booking and locked, no charge), with slots starting no earlier
@@ -16627,8 +16702,9 @@ def approve_repeat_sample_request(request, request_id):
         ).get(id=request_id)
     except RepeatSampleRequest.DoesNotExist:
         return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not _repeat_request_in_scope(request.user, repeat_req):
-        return Response({"error": "Repeat sample request not found."}, status=status.HTTP_404_NOT_FOUND)
+    denied = _repeat_request_action_denied(request.user, repeat_req)
+    if denied is not None:
+        return denied
     if repeat_req.status != RepeatSampleRequestStatus.PENDING:
         return Response({"error": f"Request is already {repeat_req.status}."}, status=status.HTTP_400_BAD_REQUEST)
     orig_booking = repeat_req.booking
@@ -16677,6 +16753,12 @@ def approve_repeat_sample_request(request, request_id):
             },
             send_notification=True,
         )
+    record_staff_action(
+        request.user,
+        "repeat_sample.approve",
+        equipment_id=orig_booking.equipment_id,
+        repeat_sample_request_id=repeat_req.id,
+    )
     _notify_repeat_sample_decided(repeat_req, request.user)
     return Response({
         "message": (
