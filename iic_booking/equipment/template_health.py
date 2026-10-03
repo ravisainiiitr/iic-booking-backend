@@ -229,6 +229,45 @@ def _numeric_issues(equipment, user, base, sets, fields, *, is_print_3d):
     return issues
 
 
+_TABLE_INCOMPLETE_KINDS = frozenset({"required", "min_rows", "row_count"})
+
+
+def _typed_table_issues(equipment, user, base, sets, fields, existing):
+    """Advanced-table rows the booking would reject, one issue per table and sample set.
+
+    ``table_invalid`` (a cell out of range, an option no longer offered, too many rows) blocks saving the
+    template like a numeric limit; ``table_incomplete`` (required cells, row count) only needs filling in.
+    """
+    from .calculators import SAMPLE_SETS_KEY
+    from .typed_table import iter_typed_table_problems
+
+    table_fields = [
+        f for f in fields.values()
+        if f.field_type == DynamicInputFieldType.TYPED_TABLE and isinstance(f.table_config, dict)
+        and f.table_config.get("columns")
+    ]
+    if not table_fields:
+        return []
+    already_required = {(i["field"], 1) for i in existing if i["code"] == "required_missing"}
+    values = {**base, SAMPLE_SETS_KEY: list(sets)} if sets else dict(base)
+    issues = []
+    seen = set()
+    for problem in iter_typed_table_problems(
+        equipment, values, user_type=str(getattr(user, "user_type", "") or ""), fields=table_fields
+    ):
+        incomplete = problem["kind"] in _TABLE_INCOMPLETE_KINDS
+        marker = (problem["key"], problem["set"], incomplete)
+        if marker in seen or (incomplete and (problem["key"], problem["set"]) in already_required):
+            continue
+        seen.add(marker)
+        issues.append(_issue(
+            "table_incomplete" if incomplete else "table_invalid", ERROR, problem["message"],
+            field=problem["key"], sample_set=problem["set"], label=problem["label"], limit=problem.get("limit"),
+            row=problem.get("row"), column=problem.get("column"), kind=problem["kind"],
+        ))
+    return issues
+
+
 def _sample_set_issues(equipment, user, values, sets):
     from .calculators import MAX_SAMPLE_SETS
     from .sample_set_limits import combined_max_error, sample_sets_allowed
@@ -582,6 +621,7 @@ def check_values(user, equipment, input_values, options=None, preferred=None, *,
     if any(i["code"] == "sample_sets_disabled" for i in set_issues):
         sets = []
     issues.extend(_numeric_issues(equipment, user, base, sets, fields, is_print_3d=is_print_3d))
+    issues.extend(_typed_table_issues(equipment, user, base, sets, fields, issues))
     if light:
         return {**_summary(issues, None), "light": True}
 

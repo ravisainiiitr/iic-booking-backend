@@ -1922,6 +1922,7 @@ class DynamicInputFieldType(models.TextChoices):
     TOGGLE = 'TOGGLE', _('Toggle')
     PERIODIC_TABLE = 'PERIODIC_TABLE', _('Periodic table / Element selector')
     TABLE = 'TABLE', _('Table')
+    TYPED_TABLE = 'TYPED_TABLE', _('Advanced table (typed columns)')
     ICPMS_STANDARD_COVERAGE = 'ICPMS_STANDARD_COVERAGE', _('ICPMS Standard Coverage')
 
 class DynamicInputField(models.Model):
@@ -2021,6 +2022,14 @@ class DynamicInputField(models.Model):
             'Field key link: '
             'ICPMS Standard Coverage — Periodic Table field providing the element list; '
             'TABLE — numeric field whose value sets the table row count (first column = S.No.).'
+        ),
+    )
+    table_config = models.JSONField(
+        blank=True,
+        default=dict,
+        help_text=_(
+            'Advanced table (typed columns) schema: columns (key, label, type, limits, options) '
+            'and row rules (user-managed or linked to a numeric field key).'
         ),
     )
     editing_required = models.BooleanField(

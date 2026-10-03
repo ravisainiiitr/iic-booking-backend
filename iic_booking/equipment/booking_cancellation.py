@@ -196,7 +196,10 @@ def _merge_reduced_input_values(booking: Booking, reduced_input_values: dict) ->
         if not isinstance(key, str) or len(key) != 1 or not key.isalpha():
             raise CancellationValidationError("reduced_input_values keys must be single letter field keys (A-G).")
         merged[key.upper()] = value
-    return merged
+    from .sample_set_limits import booking_field_user_type
+    from .typed_table import trim_linked_typed_tables
+
+    return trim_linked_typed_tables(booking.equipment, merged, user_type=booking_field_user_type(booking))
 
 
 def compute_partial_cancel_plan(

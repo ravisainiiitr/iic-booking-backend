@@ -961,6 +961,8 @@ def build_proforma_invoice_multi_pdf(
             for k, v in input_vals.items():
                 if v in (None, "", []):
                     continue
+                if isinstance(v, list) and any(isinstance(item, dict) for item in v):
+                    v = f"{len(v)} row{'s' if len(v) != 1 else ''}"
                 vs = str(v).strip()
                 if not vs:
                     continue

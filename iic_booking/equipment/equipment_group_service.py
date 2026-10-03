@@ -366,6 +366,7 @@ def _structured_field_types() -> tuple:
     return (
         DynamicInputFieldType.PERIODIC_TABLE,
         DynamicInputFieldType.TABLE,
+        DynamicInputFieldType.TYPED_TABLE,
         DynamicInputFieldType.ICPMS_STANDARD_COVERAGE,
     )
 
@@ -380,6 +381,7 @@ def _fields_compatible(src_field, tgt_field) -> bool:
             src_field.field_key == tgt_field.field_key
             and (src_field.options or None) == (tgt_field.options or None)
             and (src_field.source_element_field_key or None) == (tgt_field.source_element_field_key or None)
+            and (getattr(src_field, "table_config", None) or None) == (getattr(tgt_field, "table_config", None) or None)
         )
     return True
 

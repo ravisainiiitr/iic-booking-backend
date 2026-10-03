@@ -107,14 +107,23 @@ def booking_input_summary(booking: Booking) -> list[dict[str, Any]]:
     values = booking.input_values or {}
     if not isinstance(values, dict) or not values:
         return []
+    from .sample_set_limits import booking_field_user_type
+    from .typed_table import format_typed_table_text, shown_typed_table_fields
+
     labels = dict(
         DynamicInputField.objects.filter(equipment_id=booking.equipment_id).values_list("field_key", "field_label")
     )
+    table_configs = {
+        f.field_key: f.table_config
+        for f in shown_typed_table_fields(booking.equipment, booking_field_user_type(booking))
+    }
     summary = []
     for key, value in values.items():
         if value in (None, "", [], {}):
             continue
-        if isinstance(value, (list, tuple)):
+        if key in table_configs and isinstance(value, list):
+            value = format_typed_table_text(table_configs[key], value, max_rows=50)
+        elif isinstance(value, (list, tuple)):
             value = ", ".join(str(v) for v in value)
         elif isinstance(value, dict):
             value = ", ".join(f"{k}: {v}" for k, v in value.items())

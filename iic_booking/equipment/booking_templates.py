@@ -111,6 +111,9 @@ def _summary_value(value, field_type, elements):
     if field_type == DynamicInputFieldType.TABLE and isinstance(value, list):
         rows = sum(1 for row in value if isinstance(row, list) and any(str(c).strip() for c in row))
         return f"{rows} row{'' if rows == 1 else 's'}" if rows else None
+    if field_type == DynamicInputFieldType.TYPED_TABLE and isinstance(value, list):
+        rows = sum(1 for row in value if isinstance(row, dict))
+        return f"{rows} row{'' if rows == 1 else 's'}" if rows else None
     if isinstance(value, bool):
         return "Yes" if value else None
     if isinstance(value, list):
@@ -224,6 +227,28 @@ def _numeric_limit_error(equipment, values, user):
     return None
 
 
+def _typed_table_error(equipment, values, user):
+    """(cleaned values, error body or None) for advanced-table cells the booking would reject.
+
+    Templates may be saved half-filled, so required cells and the linked row count are not enforced here;
+    cell limits (numeric range, options, text length) and the maximum row count are.
+    """
+    from .typed_table import clean_typed_tables
+
+    cleaned, problem = clean_typed_tables(
+        equipment, values, user_type=str(getattr(user, "user_type", "") or ""), check_required=False
+    )
+    if not problem:
+        return cleaned, None
+    return values, {
+        "error": problem["message"],
+        "error_field": {
+            "field": problem["key"], "set": problem.get("set") or 1, "kind": problem["kind"],
+            "limit": problem.get("limit"), "row": problem.get("row"), "column": problem.get("column"),
+        },
+    }
+
+
 def _error_body(error):
     return error if isinstance(error, dict) else {"error": error}
 
@@ -243,6 +268,8 @@ def _clean_input_values(raw, equipment=None, user=None, baseline=None):
             or _numeric_limit_error(equipment, raw, user)
             or combined_max_error(equipment, raw, booking_user=user)
         )
+        if not error:
+            raw, error = _typed_table_error(equipment, raw, user)
         if error:
             return None, error
     return raw, None

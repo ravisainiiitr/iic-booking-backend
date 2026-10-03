@@ -359,8 +359,15 @@ def _build_safe_scalar_input_values(
     safe: Dict[str, Any] = {}
     if not normalized:
         return safe
+    from .typed_table import filled_row_count, typed_table_keys
+
+    table_keys = typed_table_keys(equipment)
     for key, value in normalized.items():
         if key.endswith("_elements"):
+            continue
+        if key in table_keys and isinstance(value, list):
+            # An advanced table's key stands for its number of filled rows in formulas.
+            safe[key] = filled_row_count(value)
             continue
         if isinstance(value, (int, float, bool)):
             safe[key] = value
