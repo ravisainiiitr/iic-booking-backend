@@ -2715,16 +2715,21 @@ def admin_api_router():
         lookup_field = "equipment_id"
         # OIC / Lab Operator manage waitlists of their own (queryset-scoped) equipment from
         # the dashboard, without Admin Panel or the equipment settings module.
-        WAITLIST_ACTIONS = frozenset({"waitlist", "waitlist_clear", "waitlist_slots", "waitlist_confirm"})
+        WAITLIST_ACTIONS = frozenset(
+            {"waitlist", "waitlist_all", "waitlist_clear", "waitlist_slots", "waitlist_confirm"}
+        )
         WAITLIST_STAFF_TYPES = frozenset({UserType.MANAGER, UserType.OPERATOR})
+        # Department Administrators view (not change) waitlists of their own department.
+        WAITLIST_READ_ACTIONS = frozenset({"waitlist", "waitlist_all"})
         # OIC changes slot status / reserves slots of their own (queryset-scoped) equipment
         # like the Main Admin, without Admin Panel or the equipment settings module.
         OIC_SLOT_ACTIONS = frozenset({"bulk_slot_status", "bulk_home_department_only"})
 
         def _is_staff_waitlist_request(self):
-            return (
-                getattr(self, "action", None) in self.WAITLIST_ACTIONS
-                and getattr(self.request.user, "user_type", None) in self.WAITLIST_STAFF_TYPES
+            action_name = getattr(self, "action", None)
+            ut = getattr(self.request.user, "user_type", None)
+            return (action_name in self.WAITLIST_ACTIONS and ut in self.WAITLIST_STAFF_TYPES) or (
+                action_name in self.WAITLIST_READ_ACTIONS and ut == UserType.DEPT_ADMIN
             )
 
         def _is_oic_slot_request(self):
@@ -2800,7 +2805,7 @@ def admin_api_router():
                 qs = qs.filter(equipment_id__in=allowed_ids)
             # Everyone except Main Admin: strict department isolation. Staff waitlist and OIC slot
             # access are already limited to managed / mapped equipment, which may sit in another department.
-            if not self._is_staff_scoped_request():
+            if ut not in self.WAITLIST_STAFF_TYPES or not self._is_staff_scoped_request():
                 qs = apply_equipment_department_scope(qs, user)
             if self.action != "list":
                 return qs
@@ -3330,42 +3335,40 @@ def admin_api_router():
                 status=status.HTTP_200_OK,
             )
 
-        @action(detail=True, methods=["get"], url_path="waitlist")
-        def waitlist(self, request, pk=None):
-            """List waitlist entries for this equipment (admin/OIC). Ordered by created_at (FIFO)."""
-            equipment = self.get_object()
-            entries = (
-                WaitlistEntry.objects.filter(equipment=equipment)
-                .select_related("user")
-                .order_by("created_at")
-            )
-            active_count = WaitlistEntry.objects.filter(equipment=equipment, status="ACTIVE").count()
-            cannot_fulfill_count = WaitlistEntry.objects.filter(equipment=equipment, status="CANNOT_FULFILL").count()
-            user_ids = [e.user_id for e in entries if getattr(e, "user_id", None) is not None]
+        @staticmethod
+        def _waitlist_rows(entries):
+            """
+            Rows for waitlist entries. ``entries`` must be ordered by created_at within each equipment;
+            WL1..WLn positions are numbered per equipment.
+            """
+            entries = list(entries)
+            user_ids = {e.user_id for e in entries if getattr(e, "user_id", None) is not None}
+            equipment_ids = {e.equipment_id for e in entries}
             failed_logs_by_user: dict = {}
             if user_ids:
                 logs = (
                     BookingAttemptLog.objects.filter(
-                        equipment=equipment,
+                        equipment_id__in=equipment_ids,
                         user_id__in=user_ids,
                         outcome=BookingAttemptOutcome.FAILED,
                     )
-                    .order_by("user_id", "-requested_at")
+                    .order_by("equipment_id", "user_id", "-requested_at")
                 )
                 for lg in logs:
-                    failed_logs_by_user.setdefault(lg.user_id, []).append(lg)
-            position = 0
+                    failed_logs_by_user.setdefault((lg.equipment_id, lg.user_id), []).append(lg)
+            positions: dict = {}
             result = []
             for e in entries:
+                equipment = e.equipment
                 status_e = (getattr(e, "status", None) or "ACTIVE").strip().upper()
                 # Only ACTIVE entries get WL1..WLn positions; others keep null position.
                 wl_position = None
                 wl_code = None
                 if status_e == "ACTIVE":
-                    position += 1
-                    wl_position = position
-                    wl_code = f"WL{position}"
-                user_logs = failed_logs_by_user.get(getattr(e, "user_id", None), [])
+                    positions[e.equipment_id] = positions.get(e.equipment_id, 0) + 1
+                    wl_position = positions[e.equipment_id]
+                    wl_code = f"WL{wl_position}"
+                user_logs = failed_logs_by_user.get((e.equipment_id, getattr(e, "user_id", None)), [])
                 # Prefer a log that happened before the waitlist entry was created.
                 matched_log = None
                 if user_logs and getattr(e, "created_at", None) is not None:
@@ -3408,6 +3411,9 @@ def admin_api_router():
                     "id": e.id,
                     "position": wl_position,
                     "waitlist_code": wl_code,
+                    "equipment_id": e.equipment_id,
+                    "equipment_code": equipment.code,
+                    "equipment_name": getattr(equipment, "name", "") or equipment.code,
                     "user_id": e.user_id,
                     "user_email": getattr(e.user, "email", ""),
                     "user_name": getattr(e.user, "name", None) or getattr(e.user, "email", ""),
@@ -3445,7 +3451,28 @@ def admin_api_router():
                     "booking_attempt_failure_title": friendly["title"] if friendly else "",
                     "booking_attempt_failure_summary": friendly["message"] if friendly else "",
                 })
-            opted_out_count = WaitlistEntry.objects.filter(equipment=equipment, status="OPT_OUT").count()
+            return result
+
+        @staticmethod
+        def _waitlist_status_counts(entries_qs) -> dict:
+            from django.db.models import Count
+
+            counts = {
+                row["status"]: row["n"]
+                for row in entries_qs.order_by().values("status").annotate(n=Count("id"))
+            }
+            return {
+                "active_count": counts.get("ACTIVE", 0),
+                "cannot_fulfill_count": counts.get("CANNOT_FULFILL", 0),
+                "opted_out_count": counts.get("OPT_OUT", 0),
+            }
+
+        @action(detail=True, methods=["get"], url_path="waitlist")
+        def waitlist(self, request, pk=None):
+            """List waitlist entries for this equipment (admin/OIC). Ordered by created_at (FIFO)."""
+            equipment = self.get_object()
+            entries_qs = WaitlistEntry.objects.filter(equipment=equipment)
+            result = self._waitlist_rows(entries_qs.select_related("user", "equipment").order_by("created_at"))
             return Response({
                 "equipment_id": equipment.equipment_id,
                 "equipment_code": equipment.code,
@@ -3453,9 +3480,45 @@ def admin_api_router():
                 "waitlist_queue_depth": getattr(equipment, "waitlist_queue_depth", None) or 0,
                 "entries": result,
                 "count": len(result),
-                "active_count": active_count,
-                "cannot_fulfill_count": cannot_fulfill_count,
-                "opted_out_count": opted_out_count,
+                **self._waitlist_status_counts(entries_qs),
+            })
+
+        @action(detail=False, methods=["get"], url_path="waitlist-all")
+        def waitlist_all(self, request):
+            """
+            Waitlist entries across the equipment the user may see (Main Admin: all; Department
+            Administrator: own department; OIC incl. temporary OIC: managed equipment; Lab Operator:
+            mapped equipment). Query: department_id, equipment_id (both only narrow that scope).
+            ``equipment`` carries the queue depth when one equipment is selected.
+            """
+            from iic_booking.equipment.staff_list_filters import resolve_staff_list_filter
+
+            allowed = self.get_queryset()
+            list_filter = resolve_staff_list_filter(
+                request, allowed, unrestricted=getattr(request.user, "user_type", None) == UserType.ADMIN
+            )
+            entries_qs = list_filter.apply(WaitlistEntry.objects.all())
+            rows = self._waitlist_rows(
+                entries_qs.select_related("user", "equipment").order_by(
+                    "equipment__name", "equipment_id", "created_at"
+                )
+            )
+            selected = None
+            if list_filter.equipment_id is not None:
+                eq = list_filter.scoped_equipment.first()
+                if eq is not None:
+                    selected = {
+                        "equipment_id": eq.equipment_id,
+                        "equipment_code": eq.code,
+                        "equipment_name": getattr(eq, "name", "") or eq.code,
+                        "waitlist_queue_depth": getattr(eq, "waitlist_queue_depth", None) or 0,
+                    }
+            return Response({
+                "entries": rows,
+                "count": len(rows),
+                **self._waitlist_status_counts(entries_qs),
+                "equipment": selected,
+                "filters": list_filter.payload,
             })
 
         @action(detail=True, methods=["get"], url_path="booking-requesters")
