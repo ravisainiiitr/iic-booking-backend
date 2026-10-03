@@ -247,6 +247,11 @@ class Command(BaseCommand):
             sync_profile=profile,
             defaults={"is_active": True, "unassigned_at": None, "notes": "DSA end-to-end test equipment"},
         )
+        # A new profile starts at configuration_version 1, below the agent's max, so heartbeat alone
+        # would never tell the DSA to re-bootstrap and pick up the test equipment.
+        if not agent.bootstrap_required:
+            agent.bootstrap_required = True
+            agent.save(update_fields=["bootstrap_required", "updated_at"])
 
     def _generate_slots(self, equipment, days: int) -> int:
         from iic_booking.equipment.slot_utils import SlotGenerator
