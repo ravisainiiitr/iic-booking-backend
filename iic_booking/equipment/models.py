@@ -703,6 +703,15 @@ class Equipment(models.Model):
         verbose_name=_('Visibility Group'),
         help_text=_('If set, only members of this group can see this equipment. Leave empty for public visibility.'),
     )
+    visible_to_test_accounts_only = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_('Visible to test accounts only'),
+        help_text=_(
+            'Testing equipment: only flagged test accounts (and the Main Administrator) can see or book it. '
+            'Hidden from everyone else, from public counts, and from Department Sync Agent installer equipment lists.'
+        ),
+    )
     equipment_group = models.ForeignKey(
         'EquipmentGroup',
         on_delete=models.SET_NULL,

@@ -1,0 +1,136 @@
+# Department Sync Agent end-to-end test equipment (visible to flagged test accounts only).
+#   status : read-only. Equipment flags, zero-charge check, OIC / Lab Operator are test accounts, upcoming slots,
+#            bookings (and how many are by non-test users: must be 0), DSA assignments, and the latest DSA and
+#            Equipment PC Wizard installer versions with SHA-256 (for the two-laptop harness to verify downloads).
+#   apply  : create or refresh the equipment (idempotent), zero charges, test OIC (test.manager) and test Lab
+#            Operator (test.operator), daily slots, and optionally assign it to the DSA with machine name
+#            <dsa_machine_name>. Never creates user accounts; needs migration equipment.0223 applied.
+name: Setup DSA Test Equipment
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "status | apply"
+        required: true
+        default: status
+        type: choice
+        options: [status, apply]
+      code:
+        description: "Equipment code"
+        required: false
+        default: DSATEST
+      department_code:
+        description: "Internal department code (the DSA's department)"
+        required: false
+        default: IIC
+      dsa_machine_name:
+        description: "Optional: assign to the active DSA with this machine name (e.g. RAVI)"
+        required: false
+        default: ""
+      slot_days:
+        description: "Generate daily slots for this many days (apply only)"
+        required: false
+        default: "21"
+      confirm:
+        description: "Type SETUP_DSA_TEST to apply (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 15
+    env:
+      MODE: ${{ github.event.inputs.mode }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json, os, re, sys
+          inputs = json.load(open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8")).get("inputs") or {}
+          mode = os.environ["MODE"]
+          def fail(msg):
+              print(f"::error::{msg}")
+              sys.exit(1)
+          code = (inputs.get("code") or "DSATEST").strip()
+          dept = (inputs.get("department_code") or "IIC").strip()
+          machine = (inputs.get("dsa_machine_name") or "").strip()
+          days = (inputs.get("slot_days") or "21").strip()
+          if not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", code):
+              fail("code: letters, digits, '-' or '_' only.")
+          if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", dept):
+              fail("department_code: letters, digits, '-' or '_' only.")
+          if machine and not re.fullmatch(r"[A-Za-z0-9_.-]{1,63}", machine):
+              fail("dsa_machine_name: a Windows computer name (letters, digits, '-', '_', '.').")
+          if not re.fullmatch(r"\d{1,2}", days):
+              fail("slot_days: 0-99.")
+          if mode == "apply" and (inputs.get("confirm") or "").strip() != "SETUP_DSA_TEST":
+              fail("Type SETUP_DSA_TEST in the confirm box to apply.")
+          args = ["--code", code]
+          if mode == "apply":
+              args += ["--confirm", "SETUP_DSA_TEST", "--department-code", dept, "--slot-days", days]
+              if machine:
+                  args += ["--dsa-machine-name", machine]
+          else:
+              args += ["--status"]
+          open(os.path.join(os.environ["RUNNER_TEMP"], "dsa-test-args.json"), "w").write(json.dumps(args))
+          print(f"mode={mode} code={code} department={dept} dsa_machine_name={machine or '-'} slot_days={days}")
+          PY
+
+      - name: Run setup_dsa_test_equipment
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          mapfile -t ARGS < <(python3 -c 'import json,sys; [print(a) for a in json.load(open(sys.argv[1]))]' "$RUNNER_TEMP/dsa-test-args.json")
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+            python manage.py setup_dsa_test_equipment "${ARGS[@]}" --json > "$RUNNER_TEMP/dsa-test.json"
+          python3 - "$RUNNER_TEMP/dsa-test.json" <<'PY'
+          import json, os, sys
+          raw = open(sys.argv[1], encoding="utf-8").read()
+          start = raw.find("{")
+          prefix, report = raw[:start].strip(), json.loads(raw[start:])
+          if prefix:
+              print(prefix)
+          print(json.dumps(report, indent=2))
+          lines = [f"## DSA test equipment ({os.environ['MODE']})", ""]
+          if not report.get("found"):
+              lines.append(f"- Equipment `{report['code']}`: **not found**")
+          else:
+              lines += [
+                  f"- `{report['code']}` id {report['equipment_id']} — {report['name']} ({report['department']}, {report['status']})",
+                  f"- Visible to test accounts only: **{report['visible_to_test_accounts_only']}**",
+                  f"- OIC / Lab Operators all test accounts: {report['oic_all_test_accounts']} / {report['operators_all_test_accounts']}",
+                  f"- Active charge profiles with non-zero rates: {report['nonzero_active_charge_profiles']}",
+                  f"- Upcoming daily slots: {report['upcoming_daily_slots']}",
+                  f"- Bookings: {report['bookings_total']} (by non-test users: {report['bookings_by_non_test_users']})",
+                  "- DSA assignments: " + (", ".join(f"{a.get('machine_name')} v{a.get('agent_version')}" for a in report["dsa_assignments"]) or "none"),
+              ]
+          for key, rel in (report.get("installers") or {}).items():
+              lines.append(f"- Installer `{key}`: {rel.get('version')} sha256 `{rel.get('sha256')}` file `{rel.get('file')}`")
+          problems = []
+          if report.get("found"):
+              if not report["visible_to_test_accounts_only"]:
+                  problems.append("Equipment is NOT flagged test-accounts-only.")
+              if report["nonzero_active_charge_profiles"]:
+                  problems.append("Equipment has non-zero active charge profiles.")
+              if report["bookings_by_non_test_users"]:
+                  problems.append("Equipment has bookings by non-test users.")
+              if not (report["oic_all_test_accounts"] and report["operators_all_test_accounts"]):
+                  problems.append("A non-test OIC or Lab Operator is assigned.")
+          lines.append("")
+          lines.append("**Problems:**\n" + "\n".join(f"- {p}" for p in problems) if problems else "**All checks passed.**")
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8").write("\n".join(lines) + "\n")
+          for p in problems:
+              print(f"::error::{p}")
+          sys.exit(1 if problems else 0)
+          PY

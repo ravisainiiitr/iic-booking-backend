@@ -113,10 +113,19 @@ def resolve_installer_agent(request, *, allow_access_token: bool = True) -> tupl
 
 
 def build_equipment_tree_for_department(department_id: int | None = None) -> dict:
-    """Shared department→equipment tree shape for DSA installer / provisioning."""
+    """
+    Shared department→equipment tree shape for DSA installer / provisioning.
+
+    Test-only equipment is left out: installers auto-bind every listed instrument, so a real DSA
+    must never pick it up. Bind it explicitly (``/equipmentId=``) on a test DSA instead.
+    """
     from iic_booking.equipment.models import Equipment
 
-    equipment_qs = Equipment.objects.select_related("internal_department").order_by("name")
+    equipment_qs = (
+        Equipment.objects.select_related("internal_department")
+        .exclude(visible_to_test_accounts_only=True)
+        .order_by("name")
+    )
     if department_id is not None:
         scoped = equipment_qs.filter(internal_department_id=department_id)
         if scoped.exists():

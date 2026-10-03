@@ -1492,6 +1492,11 @@ def user_can_see_equipment(user, equipment):
         department_equipment_visibility_allowed,
     )
 
+    from iic_booking.users.test_accounts import user_may_see_test_only_equipment
+
+    if getattr(equipment, "visible_to_test_accounts_only", False) and not user_may_see_test_only_equipment(user):
+        return False
+
     allowed, _ = department_equipment_visibility_allowed(user, equipment)
     if not allowed:
         return False
@@ -1601,7 +1606,9 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
         ).distinct()
 
     from iic_booking.users.legacy_ledger.booking_lock import apply_department_catalog_visibility
+    from iic_booking.users.test_accounts import exclude_test_only_equipment
 
+    queryset = exclude_test_only_equipment(queryset, user)
     queryset = apply_department_catalog_visibility(queryset, user)
 
     from .mode_utils import filter_queryset_for_mode_catalog
