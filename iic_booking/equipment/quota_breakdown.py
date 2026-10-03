@@ -17,6 +17,10 @@ For legacy equipment-level limits (shared by every user of a type on one instrum
 bookings are shown as "Another user" to everyone except staff.
 The supervisor (faculty wallet owner, else the user's supervisor) is shown with email and employee ID
 to staff and the group owner, and by name and department to the user.
+A failed booking attempt's calculation follows the same rules: staff of the equipment, the person the
+attempt was for and their group's faculty may open it.
+Each row carries when the booking was requested (its creation, kept through reschedules; the waitlist
+join time for bookings confirmed from the waitlist).
 """
 
 from __future__ import annotations
@@ -201,8 +205,44 @@ def person_details(user: Optional[User]) -> Optional[dict]:
     }
 
 
-def _row(booking, *, minutes: int, counted: bool, note: Optional[str], supervisor: Optional[User] = None) -> dict:
+def _waitlist_joined_at(bookings) -> dict[int, Optional[datetime]]:
+    """
+    Bookings confirmed from the waitlist: booking id -> when the user joined the waitlist (None when not
+    recorded). Those bookings are created at confirmation, so the original request is the waitlist entry.
+    """
+    from .models import BookingEvent, BookingEventType
+
+    ids = [b.pk for b in bookings]
+    if not ids:
+        return {}
+    out: dict[int, Optional[datetime]] = {}
+    events = BookingEvent.objects.filter(booking_id__in=ids, event_type=BookingEventType.CREATED).values_list(
+        "booking_id", "metadata"
+    )
+    for booking_id, metadata in events:
+        if isinstance(metadata, dict) and metadata.get("from_waitlist"):
+            out[booking_id] = _parse_dt(metadata.get("waitlist_joined_at"))
+    return out
+
+
+def _row(
+    booking,
+    *,
+    minutes: int,
+    counted: bool,
+    note: Optional[str],
+    supervisor: Optional[User] = None,
+    waitlist: Optional[dict] = None,
+) -> dict:
     first, last = _slot_span(booking)
+    joined = (waitlist or {}).get(booking.pk)
+    requested_at = joined or booking.created_at
+    if joined is not None:
+        requested_note = "Joined the waitlist"
+    elif waitlist and booking.pk in waitlist:
+        requested_note = "Confirmed from the waitlist"
+    else:
+        requested_note = None
     return {
         "booking_id": booking.booking_id,
         "display_booking_id": _display_id(booking),
@@ -211,6 +251,9 @@ def _row(booking, *, minutes: int, counted: bool, note: Optional[str], superviso
         "equipment_code": booking.equipment.code if booking.equipment_id else "",
         "slot_start": first.isoformat() if first else None,
         "slot_end": last.isoformat() if last else None,
+        # When the user asked for it: kept through reschedules; the waitlist join time for waitlist bookings.
+        "requested_at": requested_at.isoformat() if requested_at else None,
+        "requested_note": requested_note,
         "minutes": int(minutes),
         "counted": counted,
         "status": booking.status,
@@ -253,7 +296,7 @@ def build_quota_breakdown(
     """Unredacted breakdown of one limit for one period (cached briefly)."""
     start, end = QuotaService._get_quota_period(dim.quota_type, reference_dt)
     cache_key = (
-        f"quota-breakdown:v2:{subject.pk}:{equipment.pk}:{dim.scope}:{dim.scope_label}:"
+        f"quota-breakdown:v3:{subject.pk}:{equipment.pk}:{dim.scope}:{dim.scope_label}:"
         f"{start.date().isoformat()}:{exclude_booking_id or 0}"
     )
     try:
@@ -278,6 +321,7 @@ def build_quota_breakdown(
             supervisors[user.pk] = supervisor_of(user)
         return supervisors[user.pk]
 
+    waitlist = _waitlist_joined_at(counted_bookings)
     counted = []
     for b in counted_bookings:
         first, _ = _slot_span(b)
@@ -288,7 +332,14 @@ def build_quota_breakdown(
                 f"{'month' if dim.quota_type == QuotaType.MONTHLY else 'week'}"
             )
         counted.append(
-            _row(b, minutes=booking_effective_quota_minutes(b), counted=True, note=note, supervisor=supervisor_for(b.user))
+            _row(
+                b,
+                minutes=booking_effective_quota_minutes(b),
+                counted=True,
+                note=note,
+                supervisor=supervisor_for(b.user),
+                waitlist=waitlist,
+            )
         )
     used = sum(r["minutes"] for r in counted)
 
@@ -320,6 +371,7 @@ def build_quota_breakdown(
     if exclude_booking_id is not None:
         not_counted_qs = not_counted_qs.exclude(booking_id=exclude_booking_id)
     not_counted_bookings = list(not_counted_qs[: NOT_COUNTED_LIMIT + 1])
+    waitlist_nc = _waitlist_joined_at(not_counted_bookings[:NOT_COUNTED_LIMIT])
     not_counted = [
         _row(
             b,
@@ -327,6 +379,7 @@ def build_quota_breakdown(
             counted=False,
             note=_not_counted_note(b, dim.quota_type),
             supervisor=supervisor_for(b.user),
+            waitlist=waitlist_nc,
         )
         for b in not_counted_bookings[:NOT_COUNTED_LIMIT]
     ]
@@ -570,6 +623,51 @@ class AttemptContext:
     attempted_at: datetime
     logged: dict
     failure_reason: str
+    access: str = "staff"
+
+
+_NOT_MINUTE_LIMITS = ("booking-count quota", "charge quota", "external weekly slot quota")
+
+
+def attempt_has_breakdown(outcome: str, failure_reason: str) -> bool:
+    """A failed attempt refused by a weekly / monthly minutes limit (the ones the breakdown explains)."""
+    from .models import BookingAttemptOutcome
+
+    text = (failure_reason or "").lower()
+    return (
+        outcome == BookingAttemptOutcome.FAILED
+        and "quota" in text
+        and ("weekly" in text or "monthly" in text)
+        and not any(kind in text for kind in _NOT_MINUTE_LIMITS)
+    )
+
+
+def attempt_subject(log) -> User:
+    """The person the attempt was for: the booked-for user when staff / a supervisor booked on their behalf."""
+    info = log.additional_info if isinstance(log.additional_info, dict) else {}
+    booked_for_id = info.get("booked_for_user_id")
+    if booked_for_id not in (None, "") and str(booked_for_id) != str(log.user_id):
+        return User.objects.filter(pk=booked_for_id).first() or log.user
+    return log.user
+
+
+def attempt_access(viewer: User, log, subject: User) -> Optional[str]:
+    """
+    Admin / OIC / Department Administrator of the equipment (as for the attempt log): "staff". Otherwise
+    only the person the attempt was for ("self") or the faculty who owns their wallet group ("owner").
+    """
+    from .api_views import _get_equipment_ids_for_log_access, check_operator_permission
+
+    if check_operator_permission(viewer):
+        allowed = _get_equipment_ids_for_log_access(viewer)
+        if allowed is None or log.equipment_id in allowed:
+            return "staff"
+    owner = QuotaService.faculty_wallet_owner(subject)
+    if owner is not None and owner.pk == viewer.pk:
+        return "owner"
+    if subject.pk == viewer.pk:
+        return "self"
+    return None
 
 
 def attempt_log_context(viewer: User, log_id: int) -> AttemptContext:
@@ -578,31 +676,21 @@ def attempt_log_context(viewer: User, log_id: int) -> AttemptContext:
     requested slot (as enforcement checks it), never the attempt time: booking opens on Wednesday
     evening for the next week, so the attempt's own week is usually the wrong one.
     """
-    from .api_views import _get_equipment_ids_for_log_access, check_operator_permission
     from .attempt_log_display import requested_slots
-    from .models import BookingAttemptLog, BookingAttemptOutcome
+    from .models import BookingAttemptLog
 
-    if not check_operator_permission(viewer):
-        raise BreakdownError("Only admin and Officer in charge can view quota details of booking attempts.", 403)
     log = BookingAttemptLog.objects.select_related("user", "equipment", "equipment__equipment_group").filter(pk=log_id).first()
     if log is None:
         raise BreakdownError("Log entry not found.", 404)
-    allowed = _get_equipment_ids_for_log_access(viewer)
-    if allowed is not None and log.equipment_id not in allowed:
-        raise BreakdownError("You do not have permission to view quota details for this equipment.", 403)
+    subject = attempt_subject(log)
+    access = attempt_access(viewer, log, subject)
+    if access is None:
+        raise BreakdownError("You can only see the calculation for your own booking attempts.", 403)
     reason = (log.failure_reason or "").strip()
-    if log.outcome != BookingAttemptOutcome.FAILED or "quota" not in reason.lower():
-        raise BreakdownError("This attempt did not fail on a booking limit.")
-    quota_type = normalize_quota_type(
-        "WEEKLY" if "weekly" in reason.lower() else "MONTHLY" if "monthly" in reason.lower() else ""
-    )
-    if quota_type is None:
-        raise BreakdownError("Could not tell from the failure whether the weekly or monthly limit was reached.")
+    if not attempt_has_breakdown(log.outcome, reason):
+        raise BreakdownError("This attempt did not fail on a weekly or monthly booking limit.")
+    quota_type = normalize_quota_type("WEEKLY" if "weekly" in reason.lower() else "MONTHLY")
     info = log.additional_info if isinstance(log.additional_info, dict) else {}
-    subject = log.user
-    booked_for_id = info.get("booked_for_user_id")
-    if booked_for_id not in (None, "") and str(booked_for_id) != str(log.user_id):
-        subject = User.objects.filter(pk=booked_for_id).first() or subject
     reference = None
     for slot in requested_slots(info):
         reference = _parse_dt(slot.get("start_datetime"))
@@ -626,6 +714,7 @@ def attempt_log_context(viewer: User, log_id: int) -> AttemptContext:
         attempted_at=log.requested_at or timezone.now(),
         logged=logged,
         failure_reason=reason,
+        access=access,
     )
 
 
@@ -677,7 +766,8 @@ def quota_breakdown_view(request):
       booking_id: that booking's owner and equipment, without the booking itself (Edit inputs / reschedule;
         ``date`` defaults to the booking's own quota period);
       requested: minutes of the refused request, shown as "requested";
-      log_id: a failed Booking Attempt Log entry (staff), computed for the attempt's period from current data.
+      log_id: a failed Booking Attempt Log entry, computed for the attempt's period from current data: staff
+        of the equipment, the person the attempt was for, or their group's faculty; 403 for anyone else.
     """
     params = request.query_params
     try:
@@ -695,7 +785,7 @@ def quota_breakdown_view(request):
             dim = resolve_dimension(subject, equipment, quota_type, scope)
             reference_dt, source = attempt_reference_and_source(ctx, dim)
             raw = build_quota_breakdown(subject, equipment, dim, reference_dt)
-            data = with_request(present_breakdown(raw, request.user, "staff"), requested)
+            data = with_request(present_breakdown(raw, request.user, ctx.access), requested)
             data["historical"] = True
             data["attempt"] = attempt_notes(ctx, data, source)
             return Response(data, status=status.HTTP_200_OK)

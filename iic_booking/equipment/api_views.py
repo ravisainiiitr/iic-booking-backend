@@ -9634,6 +9634,101 @@ def list_booking_attempt_logs(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def list_my_booking_attempts(request):
+    """
+    The signed-in user's own booking attempts (made by them or booked for them by staff / their supervisor),
+    newest first, with the reason in plain words and whether the weekly / monthly limit calculation can be
+    opened (``/bookings/quota-breakdown/?log_id=``). No inputs or charges.
+    Query params: outcome (FAILED by default; SUCCESS or ALL), date_from, date_to (YYYY-MM-DD, IST), limit, offset.
+    """
+    from .attempt_log_display import _slot_item, _int_list
+    from .failure_reasons import explain as explain_failure
+    from .quota_breakdown import attempt_has_breakdown
+
+    me = request.user
+    qs = (
+        BookingAttemptLog.objects.filter(Q(user=me) | Q(additional_info__booked_for_user_id=me.pk))
+        .select_related("user", "equipment")
+        .order_by("-requested_at", "-id")
+    )
+    outcome = (request.query_params.get("outcome") or "FAILED").strip().upper()
+    if outcome in (BookingAttemptOutcome.SUCCESS, BookingAttemptOutcome.FAILED):
+        qs = qs.filter(outcome=outcome)
+    for param, lookup, extra_days in (("date_from", "requested_at__gte", 0), ("date_to", "requested_at__lt", 1)):
+        raw = (request.query_params.get(param) or "").strip()
+        if not raw:
+            continue
+        try:
+            day = datetime.strptime(raw, "%Y-%m-%d").date() + timedelta(days=extra_days)
+        except ValueError:
+            return Response({"error": f"Invalid {param}. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        qs = qs.filter(**{lookup: timezone.make_aware(datetime.combine(day, datetime.min.time()))})
+    try:
+        limit = max(1, min(int(request.query_params.get("limit") or 20), 100))
+        offset = max(0, int(request.query_params.get("offset") or 0))
+    except ValueError:
+        return Response({"error": "Invalid limit or offset."}, status=status.HTTP_400_BAD_REQUEST)
+    total_count = qs.count()
+    page = list(qs[offset : offset + limit])
+
+    infos = {log.pk: (log.additional_info if isinstance(log.additional_info, dict) else {}) for log in page}
+    slot_ids = {sid for info in infos.values() for sid in _int_list(info.get("slot_ids"))}
+    slots_by_id = {
+        s.pk: s for s in DailySlot.objects.filter(id__in=slot_ids).select_related("slot_master")
+    } if slot_ids else {}
+    other_ids = set()
+    for log in page:
+        booked_for = infos[log.pk].get("booked_for_user_id")
+        if booked_for not in (None, "") and str(booked_for) != str(log.user_id):
+            other_ids.add(int(booked_for))
+    others = {u.pk: u for u in User.objects.filter(pk__in=other_ids)} if other_ids else {}
+
+    results = []
+    for log in page:
+        info = infos[log.pk]
+        ids = _int_list(info.get("slot_ids"))
+        if ids:
+            slots = sorted(
+                (_slot_item(slots_by_id[i]) for i in ids if i in slots_by_id),
+                key=lambda s: s["start_datetime"] or "",
+            )
+        elif info.get("start_time") and info.get("end_time"):
+            slots = [{"id": None, "slot_name": None, "date": None,
+                      "start_datetime": str(info["start_time"]), "end_datetime": str(info["end_time"])}]
+        else:
+            slots = []
+        failed = log.outcome == BookingAttemptOutcome.FAILED
+        friendly = explain_failure(log.failure_reason, outcome=log.outcome) if failed else None
+        booked_for = infos[log.pk].get("booked_for_user_id")
+        for_other = booked_for not in (None, "") and str(booked_for) != str(log.user_id)
+        results.append({
+            "id": log.id,
+            "requested_at": log.requested_at.isoformat() if log.requested_at else None,
+            "equipment_id": log.equipment_id,
+            "equipment_code": log.equipment.code,
+            "equipment_name": log.equipment.name,
+            "outcome": log.outcome,
+            "failure_title": friendly["title"] if friendly else "",
+            "failure_summary": friendly["message"] if friendly else "",
+            "failure_code": friendly["code"] if friendly else "",
+            "slots_requested": log.slots_requested,
+            "duration_minutes": log.duration_minutes,
+            "requested_slots": slots,
+            "booked_by_name": get_user_display_name(log.user) if log.user_id != me.pk else None,
+            "booked_for_name": (
+                get_user_display_name(others[int(booked_for)])
+                if for_other and log.user_id == me.pk and int(booked_for) in others
+                else None
+            ),
+            "can_view_calculation": attempt_has_breakdown(log.outcome, log.failure_reason),
+        })
+    return Response(
+        {"results": results, "total_count": total_count, "limit": limit, "offset": offset},
+        status=status.HTTP_200_OK,
+    )
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def get_my_unsuccessful_booking_attempts(request):
     """
     List current user's unsuccessful (FAILED) booking attempts for an equipment in the past 2 weeks.
@@ -9872,6 +9967,8 @@ def get_booking_attempt_log_quota_breakdown(request, log_id):
 
     try:
         ctx = attempt_log_context(request.user, log_id)
+        if ctx.access != "staff":
+            raise BreakdownError("Only admin and Officer in charge can use this view; open the calculation instead.", 403)
         dim = resolve_dimension(ctx.subject, ctx.equipment, ctx.quota_type, ctx.scope)
         reference_date, _ = attempt_reference_and_source(ctx, dim)
     except BreakdownError as exc:

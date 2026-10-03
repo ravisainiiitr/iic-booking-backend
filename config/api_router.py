@@ -359,6 +359,7 @@ from iic_booking.equipment.api_views import (
     log_no_slot_allocation,
     log_booking_attempt,
     list_booking_attempt_logs,
+    list_my_booking_attempts,
     get_my_unsuccessful_booking_attempts,
     list_my_waitlist_entries,
     cancel_my_waitlist_entry,
@@ -1472,6 +1473,7 @@ urlpatterns = router.urls + [
     # Urgent booking request (internal users) + no-slot allocation log
     path("no-slot-allocation/log/", log_no_slot_allocation, name="log-no-slot-allocation"),
     path("booking-attempt-logs/", list_booking_attempt_logs, name="list-booking-attempt-logs"),
+    path("booking-attempt-logs/mine/", list_my_booking_attempts, name="my-booking-attempts"),
     path("booking-attempt-logs/my-unsuccessful/", get_my_unsuccessful_booking_attempts, name="my-unsuccessful-booking-attempts"),
     path("waitlist/my/", list_my_waitlist_entries, name="my-waitlist-entries"),
     path("waitlist/<int:entry_id>/cancel/", cancel_my_waitlist_entry, name="cancel-my-waitlist-entry"),

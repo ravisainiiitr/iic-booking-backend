@@ -514,7 +514,133 @@ def test_attempt_breakdown_reports_a_changed_limit(world):
     assert res.data["attempt"]["limit_changed"] is True
 
 
-def test_attempt_breakdown_is_staff_only(world):
+def test_the_user_can_open_the_calculation_of_their_own_attempt_only(world):
+    w = world
+    log, next_week, counted_ids = _wednesday_evening_attempt(w)
+    _book(w, w.peer, next_week + timedelta(days=3), 9, minutes=30)
+
+    own = _get(w, w.student, log_id=log.pk)
+    assert own.status_code == 200, own.data
+    assert own.data["viewer_access"] == "self" and own.data["full_details"] is False
+    assert own.data["period_start"].startswith(next_week.isoformat())
+    assert {r["booking_id"] for r in own.data["counted"]} == counted_ids
+    assert own.data["used_minutes"] == 120 and own.data["requested_minutes"] == 90
+    assert own.data["attempt"]["logged_limit_minutes"] == 120
+
+    assert _get(w, w.faculty, log_id=log.pk).data["viewer_access"] == "owner"
+    for stranger in (w.peer, w.outsider, w.other_oic):
+        assert _get(w, stranger, log_id=log.pk).status_code == 403
+    # The older date-wise view stays staff-only.
+    assert w.f.client_for(w.student).get(f"/api/booking-attempt-logs/{log.pk}/quota-breakdown/").status_code == 403
+
+
+def test_attempt_booked_for_the_user_by_staff_is_theirs(world):
     w = world
     log, _, _ = _wednesday_evening_attempt(w)
-    assert _get(w, w.student, log_id=log.pk).status_code == 403
+    BookingAttemptLog.objects.filter(pk=log.pk).update(
+        user=w.admin, additional_info={**log.additional_info, "booked_for_user_id": w.student.pk}
+    )
+    assert _get(w, w.student, log_id=log.pk).status_code == 200
+    assert _get(w, w.peer, log_id=log.pk).status_code == 403
+
+
+def test_non_minute_limit_failures_have_no_calculation(world):
+    w = world
+    log = _quota_attempt(
+        w,
+        attempted_at=timezone.now(),
+        info={},
+        reason="Quota check failed: Individual Weekly booking-count quota exceeded: 3 bookings vs limit 2",
+    )
+    assert _get(w, w.student, log_id=log.pk).status_code == 400
+
+
+# --- when each booking was requested ------------------------------------------------------------
+
+
+def test_rows_carry_the_original_request_time(world):
+    from iic_booking.equipment.models import BookingEvent, BookingEventType
+
+    w = world
+    week = _monday(2)
+    first = _book(w, w.student, week, 9)
+    asked = timezone.now() - timedelta(days=3, seconds=17)
+    Booking.objects.filter(pk=first.pk).update(created_at=asked)
+    # A reschedule moves the slots but keeps the booking (and its request time).
+    first.daily_slots.update(
+        start_datetime=_at(week + timedelta(days=1), 15), end_datetime=_at(week + timedelta(days=1), 16)
+    )
+    from_waitlist = _book(w, w.student, week + timedelta(days=2), 9, minutes=30)
+    joined = timezone.now() - timedelta(days=5)
+    BookingEvent.objects.create(
+        booking=from_waitlist,
+        event_type=BookingEventType.CREATED,
+        metadata={"from_waitlist": True, "waitlist_joined_at": joined.isoformat()},
+    )
+    old_waitlist = _book(w, w.student, week + timedelta(days=3), 9, minutes=30)
+    BookingEvent.objects.create(booking=old_waitlist, event_type=BookingEventType.CREATED, metadata={"from_waitlist": True})
+
+    res = _get(w, w.student, equipment=w.eq.pk, period="week", scope="individual", date=week.isoformat())
+
+    rows = {r["booking_id"]: r for r in res.data["counted"]}
+    assert datetime.fromisoformat(rows[first.pk]["requested_at"]) == asked
+    assert rows[first.pk]["requested_note"] is None
+    assert datetime.fromisoformat(rows[from_waitlist.pk]["requested_at"]) == joined
+    assert rows[from_waitlist.pk]["requested_note"] == "Joined the waitlist"
+    assert rows[old_waitlist.pk]["requested_note"] == "Confirmed from the waitlist"
+    assert rows[old_waitlist.pk]["requested_at"] is not None
+
+
+def test_students_see_group_members_request_times(world):
+    w = world
+    week = _monday(2)
+    _book(w, w.peer, week, 9)
+    res = _get(w, w.student, equipment=w.eq.pk, period="week", scope="group", date=week.isoformat())
+    peer_row = res.data["counted"][0]
+    assert peer_row["can_open"] is False and peer_row["requested_at"]
+
+
+# --- My booking attempts --------------------------------------------------------------------------
+
+MINE = "/api/booking-attempt-logs/mine/"
+
+
+def test_my_attempts_lists_only_my_own_and_booked_for_me(world):
+    w = world
+    log, _, _ = _wednesday_evening_attempt(w)
+    for_me = _quota_attempt(w, attempted_at=timezone.now() - timedelta(days=1), info={"booked_for_user_id": w.student.pk},
+                            reason="Selected slots are already occupied.")
+    BookingAttemptLog.objects.filter(pk=for_me.pk).update(user=w.oic)
+    peers = _quota_attempt(w, attempted_at=timezone.now(), info={}, reason="Quota check failed: Individual Weekly quota exceeded")
+    BookingAttemptLog.objects.filter(pk=peers.pk).update(user=w.peer)
+    ok = BookingAttemptLog.objects.create(user=w.student, equipment=w.eq, outcome=BookingAttemptOutcome.SUCCESS)
+
+    res = w.f.client_for(w.student).get(MINE)
+
+    assert res.status_code == 200, res.data
+    by_id = {r["id"]: r for r in res.data["results"]}
+    assert set(by_id) == {log.pk, for_me.pk} and res.data["total_count"] == 2
+    assert by_id[log.pk]["can_view_calculation"] is True
+    assert by_id[log.pk]["failure_title"] == "Weekly booking limit reached"
+    assert by_id[log.pk]["requested_slots"][0]["start_datetime"]
+    assert by_id[for_me.pk]["can_view_calculation"] is False
+    assert by_id[for_me.pk]["booked_by_name"]
+    assert "additional_info" not in by_id[log.pk] and "failure_reason" not in by_id[log.pk]
+    assert {r["id"] for r in w.f.client_for(w.student).get(MINE, {"outcome": "ALL"}).data["results"]} == {log.pk, for_me.pk, ok.pk}
+
+
+def test_my_attempts_date_filter_and_pages(world):
+    w = world
+    today = timezone.localdate()
+    logs = [
+        _quota_attempt(w, attempted_at=_at(today - timedelta(days=d), 21), info={}, reason="Quota check failed: Individual Weekly quota exceeded")
+        for d in (0, 1, 2, 10)
+    ]
+    client = w.f.client_for(w.student)
+    recent = client.get(MINE, {"date_from": (today - timedelta(days=2)).isoformat(), "date_to": today.isoformat()})
+    assert recent.data["total_count"] == 3
+    first_page = client.get(MINE, {"limit": 2})
+    second_page = client.get(MINE, {"limit": 2, "offset": 2})
+    assert [r["id"] for r in first_page.data["results"]] == [logs[0].pk, logs[1].pk]
+    assert [r["id"] for r in second_page.data["results"]] == [logs[2].pk, logs[3].pk]
+    assert client.get(MINE, {"date_from": "yesterday"}).status_code == 400
