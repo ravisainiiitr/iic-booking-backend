@@ -78,10 +78,10 @@ jobs:
           args = ["--code", code]
           if mode == "apply":
               args += ["--confirm", "SETUP_DSA_TEST", "--department-code", dept, "--slot-days", days]
-              if machine:
-                  args += ["--dsa-machine-name", machine]
           else:
               args += ["--status"]
+          if machine:
+              args += ["--dsa-machine-name", machine]
           open(os.path.join(os.environ["RUNNER_TEMP"], "dsa-test-args.json"), "w").write(json.dumps(args))
           print(f"mode={mode} code={code} department={dept} dsa_machine_name={machine or '-'} slot_days={days}")
           PY
@@ -115,6 +115,13 @@ jobs:
                   f"- Bookings: {report['bookings_total']} (by non-test users: {report['bookings_by_non_test_users']})",
                   "- DSA assignments: " + (", ".join(f"{a.get('machine_name')} v{a.get('agent_version')}" for a in report["dsa_assignments"]) or "none"),
               ]
+          scope = report.get("dsa_scope")
+          if scope and scope.get("found"):
+              lines.append(
+                  f"- DSA `{scope['machine_name']}` scope: {scope['assigned_count']} equipment; config version expected "
+                  f"{scope['expected_configuration_version']} / reported {scope['reported_configuration_version']}; "
+                  f"bootstrap_required {scope['bootstrap_required']}"
+              )
           for key, rel in (report.get("installers") or {}).items():
               lines.append(f"- Installer `{key}`: {rel.get('version')} sha256 `{rel.get('sha256')}` file `{rel.get('file')}`")
           problems = []

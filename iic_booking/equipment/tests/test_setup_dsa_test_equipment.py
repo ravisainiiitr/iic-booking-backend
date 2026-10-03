@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from io import StringIO
 
@@ -87,3 +88,8 @@ def test_assigns_only_the_named_agent(seeded):
     agent.refresh_from_db()
     assert agent.equipment_id is None
     assert agent.bootstrap_required is True
+
+    out = _run("--status", "--json", "--dsa-machine-name", "RAVI")
+    scope = json.loads(out[out.index("{"):])["dsa_scope"]
+    assert scope["found"] is True
+    assert scope["assigned_codes"] == ["DSATEST"]
