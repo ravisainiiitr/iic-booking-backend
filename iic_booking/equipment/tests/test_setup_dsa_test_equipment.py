@@ -79,9 +79,11 @@ def test_assigns_only_the_named_agent(seeded):
     agent = DepartmentSyncAgent.objects.create(
         agent_uuid=uuid.uuid4(), agent_name="DSA RAVI", machine_name="RAVI", machine_guid=uuid.uuid4(), department=dept
     )
+    DepartmentSyncAgent.objects.filter(pk=agent.pk).update(bootstrap_required=False)
     _run("--confirm", "SETUP_DSA_TEST", "--slot-days", "0", "--dsa-machine-name", "ravi")
     eq = Equipment.objects.get(code="DSATEST")
     active = AgentAssignment.objects.filter(sync_profile__equipment=eq, is_active=True)
     assert [a.sync_agent_id for a in active] == [agent.id]
     agent.refresh_from_db()
     assert agent.equipment_id is None
+    assert agent.bootstrap_required is True
