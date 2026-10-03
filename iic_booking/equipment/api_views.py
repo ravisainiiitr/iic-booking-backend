@@ -5819,6 +5819,7 @@ def _book_equipment_impl(request, pk):
                 slots_requested=daily_slots.count(),
                 number_of_samples=max(1, num_samples),
                 duration_minutes=total_time_minutes,
+                additional_info=_get_additional_info_from_request(request, equipment),
             )
             
     except ValueError as e:
@@ -8215,6 +8216,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
     except Exception:
         attempt = None
     input_values = {}
+    input_fields = []
     selected_parameters = []
     total_time_minutes = 0
     user_phone = None
@@ -8226,10 +8228,20 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
     try:
         if attempt and isinstance(getattr(attempt, "additional_info", None), dict):
             info = attempt.additional_info or {}
-            iv = info.get("input_values")
-            if isinstance(iv, dict):
-                # This already uses field labels (see _get_additional_info_from_request).
-                input_values = iv
+            try:
+                from .attempt_log_display import resolve_logged_inputs
+
+                resolved = resolve_logged_inputs(
+                    getattr(equipment, "equipment_id", None), getattr(user, "user_type", "") or "", info,
+                    parse_json=False,
+                )
+                input_fields = resolved["input_fields"]
+                input_values = dict(resolved["input_values"])
+                if resolved["comments"]:
+                    input_values["comments"] = resolved["comments"]
+            except Exception:
+                iv = info.get("input_values")
+                input_values = iv if isinstance(iv, dict) else {}
             sp = info.get("selected_parameters")
             if isinstance(sp, list):
                 selected_parameters = sp
@@ -8425,6 +8437,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
         "total_hours": round(total_time_minutes / 60.0, 2) if total_time_minutes else 0,
         "total_charge": "0.00",
         "input_values": input_values,
+        "input_fields": input_fields,
         "selected_parameters": selected_parameters,
         "charge_breakdown": [],
         "status": "WAITLISTED" if (getattr(entry, "status", "ACTIVE") or "ACTIVE").upper() == "ACTIVE" else (getattr(entry, "status", "") or "WAITLISTED"),
@@ -9184,7 +9197,10 @@ def list_urgent_booking_requests(request):
     validity_days_list = 1
     if config_for_expiry and getattr(config_for_expiry, "urgent_booking_validity_days", None) is not None:
         validity_days_list = config_for_expiry.urgent_booking_validity_days or 1
+    from .input_display import booking_input_fields
+
     key_to_label_cache = {}
+    input_fields_cache = {}
     urgent_log_cache = {}
     approved_6m_cache = {}
     for req in requests_qs:
@@ -9241,6 +9257,8 @@ def list_urgent_booking_requests(request):
                 "total_time_minutes": hb.total_time_minutes,
                 "slot_times": slot_times,
                 "input_values": input_values_with_labels,
+                "input_values_by_key": input_vals,
+                "input_fields": booking_input_fields(hb, cache=input_fields_cache),
                 "charge_breakdown": hb.charge_breakdown if getattr(hb, "charge_breakdown", None) else None,
             }
         results.append({
@@ -9311,6 +9329,8 @@ def get_urgent_request_detail(request, request_id):
                 {"error": "You do not have permission to view this request (equipment not under your charge)."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+    from .input_display import booking_input_fields as _booking_input_fields
+
     log_count, log_recent = _get_no_slot_log_for_urgent_display(urg.user, urg.equipment)
     evidence_url = None
     if urg.evidence_file:
@@ -9349,6 +9369,8 @@ def get_urgent_request_detail(request, request_id):
             "total_time_minutes": hb.total_time_minutes,
             "slot_times": slot_times,
             "input_values": input_values_with_labels,
+            "input_values_by_key": input_vals,
+            "input_fields": _booking_input_fields(hb),
             "charge_breakdown": hb.charge_breakdown if getattr(hb, "charge_breakdown", None) else None,
         }
     config_detail = UrgentHoldExpiryConfig.objects.first()
@@ -9507,6 +9529,8 @@ def list_booking_attempt_logs(request):
             booking_id__in=booking_ids
         ).values_list("booking_id", "virtual_booking_id"):
             display_booking_id_map[bid] = (vbid or "").strip() or None
+    from .failure_reasons import explain as explain_failure
+
     results = []
     for log in page:
         display_booking_id = None
@@ -9514,6 +9538,11 @@ def list_booking_attempt_logs(request):
             display_booking_id = display_booking_id_map.get(log.booking_id)
             if not display_booking_id and log.equipment:
                 display_booking_id = f"{log.equipment.code}-{log.booking_id}"
+        friendly = (
+            explain_failure(log.failure_reason, outcome=log.outcome)
+            if log.outcome == BookingAttemptOutcome.FAILED
+            else None
+        )
         results.append({
             "id": log.id,
             "user_id": log.user_id,
@@ -9525,6 +9554,9 @@ def list_booking_attempt_logs(request):
             "requested_at": log.requested_at.isoformat() if log.requested_at else None,
             "outcome": log.outcome,
             "failure_reason": log.failure_reason or "",
+            "failure_title": friendly["title"] if friendly else "",
+            "failure_summary": friendly["message"] if friendly else "",
+            "failure_code": friendly["code"] if friendly else "",
             "number_of_samples": log.number_of_samples,
             "slots_requested": log.slots_requested,
             "duration_minutes": log.duration_minutes,
@@ -9717,13 +9749,16 @@ def submit_waitlist_sample(request, entry_id):
         status=status.HTTP_200_OK,
     )
 
-@api_view(["DELETE"])
+@api_view(["GET", "DELETE"])
 @permission_classes([IsAuthenticated])
 def delete_booking_attempt_log(request, log_id):
     """
-    Permanently delete a single booking attempt log entry. Admin only.
-    No other user type can delete log entries.
+    GET: readable details of one attempt (booker, requested slots, inputs with field labels, plain-language
+    outcome) for admin and Officer in charge, limited like the log list.
+    DELETE: permanently delete a single booking attempt log entry. Admin only.
     """
+    if request.method == "GET":
+        return _booking_attempt_log_detail(request, log_id)
     if request.user.user_type != UserType.ADMIN:
         return Response(
             {"error": "Only admin can delete log entries."},
@@ -9735,6 +9770,29 @@ def delete_booking_attempt_log(request, log_id):
         return Response({"error": "Log entry not found."}, status=status.HTTP_404_NOT_FOUND)
     log.delete()
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _booking_attempt_log_detail(request, log_id):
+    from .attempt_log_display import attempt_detail
+
+    if not check_operator_permission(request.user):
+        return Response(
+            {"error": "Only admin and Officer in charge can view the booking attempt log."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    try:
+        log = BookingAttemptLog.objects.select_related(
+            "user", "user__department", "user__supervisor", "equipment"
+        ).get(pk=log_id)
+    except BookingAttemptLog.DoesNotExist:
+        return Response({"error": "Log entry not found."}, status=status.HTTP_404_NOT_FOUND)
+    equipment_ids = _get_equipment_ids_for_log_access(request.user)
+    if equipment_ids is not None and log.equipment_id not in equipment_ids:
+        return Response(
+            {"error": "You do not have permission to view this log entry."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return Response(attempt_detail(log), status=status.HTTP_200_OK)
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
@@ -10596,10 +10654,27 @@ def _get_additional_info_from_request(request, equipment=None):
                 label = key_to_label.get(key, key)
                 input_values_with_labels[label] = value
             info["input_values"] = input_values_with_labels
+            # Field keys too, so the attempt details resolve labels/options even after a field is renamed.
+            info["input_values_by_key"] = input_values
         else:
             info["input_values"] = input_values
     if "selected_parameters" in data:
         info["selected_parameters"] = data.get("selected_parameters")
+    try:
+        raw_slot_ids = data.get("slot_ids")
+        if isinstance(raw_slot_ids, list) and raw_slot_ids:
+            info["slot_ids"] = [int(x) for x in raw_slot_ids if str(x).strip().lstrip("-").isdigit()][:200]
+        for key in ("start_time", "end_time"):
+            if data.get(key):
+                info[key] = str(data.get(key))[:40]
+        behalf = data.get("user_id")
+        if behalf not in (None, "") and str(behalf) != str(getattr(request.user, "pk", "")):
+            info["booked_for_user_id"] = int(behalf)
+        alt_source = data.get("alternative_of_equipment_id")
+        if alt_source not in (None, ""):
+            info["alternative_of_equipment_id"] = int(alt_source)
+    except (TypeError, ValueError, AttributeError):
+        pass
     return info if info else None
 
 def _student_booking_description_suffix(wallet_target, booking_user):
@@ -15162,10 +15237,15 @@ def update_booking_input_values(request, booking_id):
             disallowed_keys.append(key)
 
     if disallowed_keys:
+        from .input_display import booking_input_fields, clean_label, humanize_key
+
+        key_labels = {f["field_key"]: clean_label(f.get("field_label")) for f in booking_input_fields(booking)}
+        locked = ", ".join(key_labels.get(k) or humanize_key(k) for k in sorted(disallowed_keys))
         return Response(
             {
-                "error": "Some input fields are not editable after booking.",
+                "error": f"These inputs cannot be changed after booking: {locked}.",
                 "non_editable_fields": sorted(disallowed_keys),
+                "non_editable_field_labels": [key_labels.get(k) or humanize_key(k) for k in sorted(disallowed_keys)],
                 "allowed_fields": sorted(allowed_keys),
             },
             status=status.HTTP_400_BAD_REQUEST,

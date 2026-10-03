@@ -508,18 +508,19 @@ def summary_reply(
     pf = pf or {}
     charge = pf.get("charge") or {}
     wallet = pf.get("wallet") or {}
-    labels = {f["key"]: f["label"] for f in input_fields(user, eq)}
-    shown_inputs = [
-        {"key": k, "label": labels.get(k, k), "value": v}
-        for k, v in sorted((prep.get("input_values") or {}).items())
-        if not str(k).startswith("_") and not str(k).endswith("_elements")
-    ]
-    for k, v in sorted((prep.get("input_values") or {}).items()):
-        if str(k).endswith("_elements") and v:
-            base = str(k)[: -len("_elements")]
-            for row in shown_inputs:
-                if row["key"] == base:
-                    row["value"] = f"{v} ({row['value']} billable)"
+    from iic_booking.equipment.equipment_group_service import _effective_input_fields
+    from iic_booking.equipment.input_display import field_item, input_summary_items
+
+    values = prep.get("input_values") or {}
+    try:
+        defs = [field_item(f) for f in _effective_input_fields(eq, getattr(user, "user_type", "") or "")]
+    except Exception:  # noqa: BLE001
+        defs = [{"field_key": f["key"], "field_label": f["label"], "field_type": f["type"]} for f in input_fields(user, eq)]
+    shown_inputs = input_summary_items(values, defs, max_rows=10)
+    for row in shown_inputs:
+        billable = values.get(row["key"])
+        if values.get(f"{row['key']}_elements") and billable not in (None, "") and not isinstance(billable, (list, dict)):
+            row["value"] = f"{row['value']} ({billable} billable)"
     start, end = _local(prep.get("start_time")), _local(prep.get("end_time"))
     when_label = f"{start:%a %d %b %Y}, {start:%H:%M}" + (f"–{end:%H:%M}" if end else "") if start else ""
     cancel_note, cancel_until = booking_mut_cancel_note(eq, prep)

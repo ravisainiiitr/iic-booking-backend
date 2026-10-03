@@ -209,6 +209,8 @@ def _get_latest_waitlist_attempt_payload(
     info = log.additional_info or {}
     raw_inputs = info.get("input_values")
     selected_parameters = info.get("selected_parameters")
+    if isinstance(info.get("input_values_by_key"), dict):
+        raw_inputs = info["input_values_by_key"]
     if not isinstance(raw_inputs, dict):
         return {}, selected_parameters if isinstance(selected_parameters, list) else None, None, None
 
@@ -308,6 +310,15 @@ def _waitlist_party_context(user, equipment) -> dict:
     return booking_party_context(user, equipment)
 
 
+def _readable_failure(reason: str) -> str:
+    """Plain-language failure sentence for emails (no internal slot IDs or quota arithmetic)."""
+    if not (reason or "").strip():
+        return ""
+    from .failure_reasons import explain
+
+    return explain(reason)["message"]
+
+
 def send_unsuccessful_booking_waitlist_email(user, equipment: Equipment, position: int, failure_reason: str = ""):
     """Send email to user: booking unsuccessful, you have been added to the waitlist at position X."""
     try:
@@ -322,7 +333,7 @@ def send_unsuccessful_booking_waitlist_email(user, equipment: Equipment, positio
                 "equipment_code": getattr(equipment, "code", ""),
                 "waitlist_position": _format_waitlist_code(position),
                 "waitlist_requested_at": requested_at,
-                "failure_reason": failure_reason or "The selected slots were not available.",
+                "failure_reason": _readable_failure(failure_reason) or "The selected slots were not available.",
                 **_waitlist_party_context(user, equipment),
             },
         )
@@ -347,7 +358,7 @@ def send_waitlist_unsuccessful_email(user, equipment: Equipment, position: int, 
                 "equipment_code": getattr(equipment, "code", ""),
                 "waitlist_position": _format_waitlist_code(position),
                 "waitlist_requested_at": requested_at,
-                "failure_reason": failure_reason or "Your waitlisted booking could not be confirmed.",
+                "failure_reason": _readable_failure(failure_reason) or "Your waitlisted booking could not be confirmed.",
                 **_waitlist_party_context(user, equipment),
             },
         )
@@ -628,9 +639,9 @@ def notify_waitlist_slots_available(
                 getattr(user, "email", user.pk),
                 equipment_code,
             )
+            free = len(available_ids)
             cannot_fulfill_remark_by_id[int(entry.id)] = (
-                f"Cannot fit required duration into currently available slots. "
-                f"available_slots={len(available_ids)}"
+                f"The requested time does not fit into the {free} free slot{'' if free == 1 else 's'} available now."
             )
             continue
 
@@ -649,8 +660,11 @@ def notify_waitlist_slots_available(
             s = str(v).strip()
             if not s:
                 return None
-            label = key_to_label.get(str(k), str(k))
-            return f"{label}={s}"
+            label = key_to_label.get(str(k), str(k)).rstrip(": ")
+            return f"{label} {s}"
+
+        def _slots_text(n):
+            return f"{int(n)} slot{'' if int(n) == 1 else 's'}"
 
         original_parts = []
         fulfilled_parts = []
@@ -664,11 +678,11 @@ def notify_waitlist_slots_available(
         except Exception:
             pass
         if attempt_slots_requested:
-            original_parts.append(f"slots={int(attempt_slots_requested)}")
+            original_parts.append(_slots_text(attempt_slots_requested))
         if attempt_duration_minutes:
-            original_parts.append(f"duration={int(attempt_duration_minutes)}m")
-        fulfilled_parts.append(f"slots={int(slots_to_book)}")
-        fulfilled_parts.append(f"duration={int(effective_time_minutes)}m")
+            original_parts.append(f"{int(attempt_duration_minutes)} min")
+        fulfilled_parts.append(_slots_text(slots_to_book))
+        fulfilled_parts.append(f"{int(effective_time_minutes)} min")
 
         original_parts = [p for p in original_parts if p]
         fulfilled_parts = [p for p in fulfilled_parts if p]
@@ -735,10 +749,11 @@ def notify_waitlist_slots_available(
                 a_val = (reduced_input_values or {}).get("A")
             except Exception:
                 a_val = None
+            a_label = key_to_label.get("A", "No. of samples").rstrip(": ")
             cannot_fulfill_remark_by_id[int(entry.id)] = (
-                f"Auto-book failed after reduction"
-                + (f" (A={a_val})" if a_val is not None else "")
-                + f": {err or 'unknown'}"
+                "Automatic booking failed"
+                + (f" after reducing {a_label} to {a_val}" if a_val is not None else "")
+                + f": {_readable_failure(err) if err else 'reason not known'}"
             )
             # No notification is sent here because waitlist allocation is handled automatically.
             # Keeping the entry ensures they can be retried when a future slot-release event occurs.

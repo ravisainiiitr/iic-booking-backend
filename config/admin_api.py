@@ -3382,6 +3382,27 @@ def admin_api_router():
                 slots_requested = getattr(matched_log, "slots_requested", None) if matched_log else None
                 duration_minutes = getattr(matched_log, "duration_minutes", None) if matched_log else None
                 additional_info = getattr(matched_log, "additional_info", None) if matched_log else None
+                attempt_inputs = []
+                friendly = None
+                if matched_log is not None:
+                    try:
+                        from iic_booking.equipment.attempt_log_display import resolve_logged_inputs
+                        from iic_booking.equipment.failure_reasons import explain
+                        from iic_booking.equipment.input_display import input_summary_lines
+
+                        resolved = resolve_logged_inputs(
+                            equipment.equipment_id, getattr(e.user, "user_type", "") or "", additional_info
+                        )
+                        values = dict(resolved["input_values"])
+                        if resolved["comments"]:
+                            values["comments"] = resolved["comments"]
+                        attempt_inputs = [
+                            {"label": label, "text": text}
+                            for label, text in input_summary_lines(values, resolved["input_fields"], max_rows=10)
+                        ]
+                        friendly = explain(failure_reason)
+                    except Exception:
+                        attempt_inputs = []
 
                 result.append({
                     "id": e.id,
@@ -3419,6 +3440,10 @@ def admin_api_router():
                     "booking_attempt_slots_requested": slots_requested,
                     "booking_attempt_duration_minutes": duration_minutes,
                     "booking_attempt_additional_info": additional_info,
+                    "booking_attempt_log_id": getattr(matched_log, "id", None) if matched_log else None,
+                    "booking_attempt_inputs": attempt_inputs,
+                    "booking_attempt_failure_title": friendly["title"] if friendly else "",
+                    "booking_attempt_failure_summary": friendly["message"] if friendly else "",
                 })
             opted_out_count = WaitlistEntry.objects.filter(equipment=equipment, status="OPT_OUT").count()
             return Response({

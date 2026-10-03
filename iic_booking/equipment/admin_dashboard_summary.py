@@ -264,18 +264,27 @@ def _booking_attempts(scope: _Scope, now: datetime) -> dict[str, Any]:
         "equipment__internal_department_id",
     ).order_by()
     row = qs.aggregate(total=Count("pk"), failed=Count("pk", filter=Q(outcome=BookingAttemptOutcome.FAILED)))
+    from .failure_reasons import explain
+
     reasons = (
         qs.filter(outcome=BookingAttemptOutcome.FAILED)
         .exclude(failure_reason="")
         .values("failure_reason")
         .annotate(n=Count("pk"))
-        .order_by("-n")[:3]
+        .order_by("-n")[:200]
     )
+    # Messages differ in their numbers (quota usage, slot IDs), so group them by the plain-language reason.
+    grouped: dict[str, int] = {}
+    for r in reasons:
+        friendly = explain(r["failure_reason"])
+        label = friendly["title"] if friendly["code"] not in ("other", "unknown") else r["failure_reason"][:160]
+        grouped[label] = grouped.get(label, 0) + r["n"]
+    top = sorted(grouped.items(), key=lambda item: -item[1])[:3]
     return {
         "days": ATTEMPT_DAYS,
         "total": row["total"] or 0,
         "failed": row["failed"] or 0,
-        "top_failure_reasons": [{"reason": r["failure_reason"][:160], "count": r["n"]} for r in reasons],
+        "top_failure_reasons": [{"reason": label, "count": n} for label, n in top],
     }
 
 

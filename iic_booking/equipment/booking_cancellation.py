@@ -885,10 +885,21 @@ def perform_booking_cancellation(
                 "booking inputs and charge revised (no slots released)."
             )
         if partial_plan.get("new_input_values"):
+            from .input_display import booking_input_fields, input_summary_lines
+
             revised = partial_plan["new_input_values"]
-            parts = [f"{k}={v}" for k, v in sorted(revised.items()) if str(k).isalpha() and len(str(k)) == 1]
+            fields = booking_input_fields(booking)
+            known = {f["field_key"] for f in fields}
+            parts = [
+                f"{label}: {text}"
+                for label, text in input_summary_lines(
+                    {k: v for k, v in revised.items() if k in known or str(k).endswith("_elements")
+                     or k == "_sample_sets"},
+                    fields, max_rows=5, include_comments=False,
+                )
+            ]
             if parts:
-                event_comment += f" Revised inputs: {', '.join(parts)}."
+                event_comment += f" Revised inputs: {'; '.join(parts)}."
         if should_refund and refund_amount > 0:
             event_comment += f" ₹{refund_amount} refunded to wallet."
         elif cancel_notes:

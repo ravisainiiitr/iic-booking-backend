@@ -957,12 +957,18 @@ def build_proforma_invoice_multi_pdf(
         )
         input_vals = row.get("input_labels_and_values") or row.get("input_values") or {}
         if isinstance(input_vals, dict):
+            from .input_display import format_input_value, formatted_as_text, humanize_key
+
             input_parts = []
             for k, v in input_vals.items():
-                if v in (None, "", []):
+                if v in (None, "", []) or str(k).startswith("_"):
                     continue
-                if isinstance(v, list) and any(isinstance(item, dict) for item in v):
-                    v = f"{len(v)} row{'s' if len(v) != 1 else ''}"
+                if isinstance(v, (list, dict)) or (isinstance(v, str) and v.strip()[:1] in ("[", "{")):
+                    v = formatted_as_text(format_input_value({"field_key": k, "field_type": ""}, {k: v}), max_rows=10)
+                if isinstance(v, bool):
+                    v = "Yes" if v else "No"
+                if "_" in str(k):
+                    k = humanize_key(k)
                 vs = str(v).strip()
                 if not vs:
                     continue

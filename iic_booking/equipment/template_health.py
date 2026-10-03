@@ -151,9 +151,13 @@ def _field_issues(fields, base, *, is_print_3d):
             continue
         field = fields.get(key)
         if field is None:
+            preview = "" if isinstance(value, (list, dict)) else str(value).strip()
+            if len(preview) > 40:
+                preview = preview[:39].rstrip() + "…"
             issues.append(_issue(
                 "field_removed", INFO,
-                f"A saved input ({key}) is no longer on this equipment's form and will be left out.",
+                f"A saved input{f' (value “{preview}”)' if preview else ''} is no longer on this equipment's form "
+                f"and will be left out.",
                 field=key,
             ))
             present.pop(key, None)

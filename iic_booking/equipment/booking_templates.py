@@ -8,6 +8,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .input_display import choice_label, clean_label
 from .models import (
     BookingInputTemplate,
     DynamicInputField,
@@ -89,25 +90,29 @@ def template_booking_block(user, equipment):
 
 
 def _field_labels(user, equipment_ids):
-    """{equipment_id: {field_key: (label, field_type)}}, preferring fields scoped to the user's type."""
+    """{equipment_id: {field_key: (label, field_type, options)}}, preferring fields scoped to the user's type."""
     if not equipment_ids:
         return {}
     user_type = str(getattr(user, "user_type", "") or "")
     rows = DynamicInputField.objects.filter(
         equipment_id__in=list(equipment_ids), user_type__in=[user_type, ""]
-    ).values_list("equipment_id", "user_type", "field_key", "field_label", "field_type")
+    ).values_list("equipment_id", "user_type", "field_key", "field_label", "field_type", "options")
     labels = {}
-    for equipment_id, field_user_type, key, label, field_type in rows:
+    for equipment_id, field_user_type, key, label, field_type, options in rows:
         per_equipment = labels.setdefault(equipment_id, {})
         if key in per_equipment and not field_user_type:
             continue
-        per_equipment[key] = (label or key, field_type)
+        per_equipment[key] = (clean_label(label) or key, field_type, options)
     return labels
 
 
-def _summary_value(value, field_type, elements):
+def _summary_value(value, field_type, elements, options=None):
     if elements:
         return elements
+    if field_type in (DynamicInputFieldType.RADIO, DynamicInputFieldType.COMBO) and value not in (None, "", []):
+        value = choice_label(value, options, field_type)
+    elif field_type == DynamicInputFieldType.MULTI_SELECT and isinstance(value, list):
+        value = [choice_label(v, options, "COMBO") for v in value]
     if field_type == DynamicInputFieldType.TABLE and isinstance(value, list):
         rows = sum(1 for row in value if isinstance(row, list) and any(str(c).strip() for c in row))
         return f"{rows} row{'' if rows == 1 else 's'}" if rows else None
@@ -136,10 +141,10 @@ def input_summary(input_values, labels):
     for key in sorted(labels):
         if key not in values:
             continue
-        label, field_type = labels[key]
+        label, field_type, options = labels[key]
         raw_elements = values.get(f"{key}_elements")
         elements = raw_elements.strip() if isinstance(raw_elements, str) else ""
-        text = _summary_value(values[key], field_type, elements.replace(",", ", ") if elements else "")
+        text = _summary_value(values[key], field_type, elements.replace(",", ", ") if elements else "", options)
         if text is None:
             continue
         items.append({"key": key, "label": label, "value": text})

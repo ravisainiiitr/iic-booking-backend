@@ -351,12 +351,12 @@ def _build_email_body(booking, analyses, attachments: list[tuple[str, bytes, str
         ]
     )
 
-    input_values = booking.input_values or {}
-    if input_values:
-        for key in sorted(input_values.keys()):
-            if str(key).endswith("_elements"):
-                continue
-            lines.append(f"  {key}: {input_values[key]}")
+    from .input_display import booking_input_fields, input_summary_lines
+
+    summary = input_summary_lines(booking.input_values or {}, booking_input_fields(booking))
+    if summary:
+        for label, text in summary:
+            lines.append(f"  {label}: {text}")
     else:
         lines.append("  —")
 
