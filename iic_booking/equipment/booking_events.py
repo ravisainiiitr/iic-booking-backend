@@ -498,9 +498,13 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         return
 
     from .booking_lab_messages import is_user_lab_message, send_lab_message_notifications
+    from .booking_lab_outreach import is_staff_outreach, send_staff_outreach_notifications
 
     if is_user_lab_message(event):
         send_lab_message_notifications(event)
+        return
+    if is_staff_outreach(event):
+        send_staff_outreach_notifications(event)
         return
     
     user = event.booking.user

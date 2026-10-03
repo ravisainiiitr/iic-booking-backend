@@ -3720,11 +3720,28 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
     cancel_block_reason = serializers.SerializerMethodField()
     cancel_block_message = serializers.SerializerMethodField()
     sample_summary = serializers.SerializerMethodField()
+    lab_questions_open = serializers.SerializerMethodField()
 
     def get_charge_recalculation_pay_seconds_remaining(self, obj):
         from .input_edit_payment_window import payment_seconds_remaining
 
         return payment_seconds_remaining(obj)
+
+    def get_lab_questions_open(self, obj):
+        """Lab questions awaiting the user's reply; counted once for the whole page."""
+        counts = self.context.get("_lab_questions_open")
+        if counts is None:
+            from .booking_lab_outreach import open_question_counts
+
+            rows = getattr(getattr(self, "parent", None), "instance", None)
+            if rows is not None and not isinstance(rows, Booking):
+                ids = [getattr(b, "booking_id", None) for b in rows]
+            else:
+                ids = [obj.booking_id]
+            counts = open_question_counts(ids)
+            if rows is not None and not isinstance(rows, Booking):
+                self.context["_lab_questions_open"] = counts
+        return counts.get(obj.booking_id, 0)
 
     def get_sample_summary(self, obj):
         """{"sets", "samples"} for the list row; sample-count fields are loaded once for the whole page."""
@@ -3764,7 +3781,7 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
             'rated_at', 'repeat_sample_enabled', 'source_booking_id',
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
-            'oic_contacts', 'sample_summary',
+            'oic_contacts', 'sample_summary', 'lab_questions_open',
         ]
         read_only_fields = [
             'booking_id',

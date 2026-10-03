@@ -257,6 +257,11 @@ from iic_booking.equipment.remote_analysis_integration import views as booking_r
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
 from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
+from iic_booking.equipment.booking_lab_outreach import (
+    booking_lab_outreach_send,
+    booking_lab_question_resolve,
+    lab_questions_awaiting,
+)
 from iic_booking.equipment.booking_templates import (
     booking_template_attention,
     booking_template_check,
@@ -1411,6 +1416,24 @@ urlpatterns = router.urls + [
         booking_lab_message_reply,
         name="booking-lab-message-reply",
     ),
+    path(
+        "bookings/<int:booking_id>/lab-messages/reminder/",
+        booking_lab_outreach_send,
+        {"kind": "reminder"},
+        name="booking-lab-message-reminder",
+    ),
+    path(
+        "bookings/<int:booking_id>/lab-messages/question/",
+        booking_lab_outreach_send,
+        {"kind": "question"},
+        name="booking-lab-message-question",
+    ),
+    path(
+        "bookings/<int:booking_id>/lab-messages/<int:event_id>/resolve/",
+        booking_lab_question_resolve,
+        name="booking-lab-question-resolve",
+    ),
+    path("lab-questions/awaiting/", lab_questions_awaiting, name="lab-questions-awaiting"),
     path("bookings/<int:booking_id>/sample-trace/", booking_sample_trace, name="booking-sample-trace"),
     path("bookings/<int:booking_id>/sample-trace/set/", set_booking_sample_status, name="set-booking-sample-status"),
     path("bookings/<int:booking_id>/ensure-results-folder/", ensure_booking_results_folder, name="ensure-booking-results-folder"),
