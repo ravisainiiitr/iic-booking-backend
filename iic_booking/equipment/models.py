@@ -602,6 +602,33 @@ class Equipment(models.Model):
             'Set to 0 to disable.'
         ),
     )
+    results_deadline_value = models.PositiveSmallIntegerField(
+        default=2,
+        validators=[MaxValueValidator(720)],
+        verbose_name=_('Results deadline'),
+        help_text=_(
+            'How long after the last slot ends the laboratory shares the results, in the unit below. '
+            'Working days skip Saturdays, Sundays and institute holidays; the deadline is the end of the last '
+            'working day. Bookings still open after it are listed as Results overdue for the Lab Operators and '
+            'the Officer In-Charge and, when the results-deadline automation is on, enter the Operator Absent '
+            'disruption flow (refund or reschedule choice). Set to 0 for no results deadline.'
+        ),
+    )
+    results_deadline_unit = models.CharField(
+        max_length=16,
+        choices=[('WORKING_DAYS', _('Working days')), ('HOURS', _('Hours'))],
+        default='WORKING_DAYS',
+        verbose_name=_('Results deadline unit'),
+        help_text=_('Working days (default) or clock hours after the slot, for fast instruments.'),
+    )
+    show_results_deadline_to_users = models.BooleanField(
+        default=False,
+        verbose_name=_('Show results deadline to users'),
+        help_text=_(
+            'When on, the sample submission policy and the booking details tell users when to expect results '
+            '("Results expected by <date>"). Off by default: users see the generic wording only.'
+        ),
+    )
     show_lifecycle_countdowns = models.BooleanField(
         default=True,
         verbose_name=_('Show sample lifecycle countdowns'),
@@ -4927,6 +4954,60 @@ class PeakWindowSetting(models.Model):
     def __str__(self):
         state = 'on' if self.enabled else 'off'
         return f'Peak window {state} (-{self.lead_minutes} / +{self.trail_minutes} min)'
+
+
+class ResultsDeadlinePolicy(models.Model):
+    """
+    Portal-wide switch for the results-deadline safeguard (singleton, main administrator).
+
+    Off: the deprecated per-equipment timers (Auto Operator Unavailable / Auto Operator Absent
+    Disruption, hours after the slot) keep acting as before. On: bookings whose last slot ends at
+    or after ``automation_since`` are protected by the equipment's results deadline instead; bookings
+    that ended earlier stay on the old timers, so switching on never acts on past bookings.
+    """
+    automation_enabled = models.BooleanField(
+        default=False,
+        verbose_name=_('Results-deadline automation enabled'),
+        help_text=_(
+            'When on, bookings whose slot ends after the switch-on time enter the Operator Absent disruption '
+            'flow once their results deadline passes (instead of the old fixed-hour timers).'
+        ),
+    )
+    automation_since = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Applies to slots ending from'),
+        help_text=_('Set automatically when the automation is switched on. Earlier bookings keep the old timers.'),
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _('Results deadline policy')
+        verbose_name_plural = _('Results deadline policy')
+
+    def save(self, *args, **kwargs):
+        if self.automation_enabled:
+            was_enabled = bool(
+                self.pk
+                and ResultsDeadlinePolicy.objects.filter(pk=self.pk, automation_enabled=True).exists()
+            )
+            # Every switch-on starts a new window, so bookings that ended while it was off are never caught up.
+            if not was_enabled or self.automation_since is None:
+                self.automation_since = timezone.now()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        if self.automation_enabled:
+            return f'Results-deadline automation on (slots ending from {self.automation_since:%Y-%m-%d %H:%M})'
+        return 'Results-deadline automation off'
 
 
 class BookingBufferConfig(models.Model):

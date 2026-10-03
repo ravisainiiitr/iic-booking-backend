@@ -1,0 +1,50 @@
+# Results-deadline safeguard switch on production: status / dry-run are read-only; enable is refused by the
+# command when the dry run shows any existing booking would be acted on.
+name: Results Deadline Automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status | dry-run | enable | disable"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [status, dry-run, enable, disable]
+      confirm:
+        description: "Type CHANGE to run enable / disable"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          RD_ACTION: ${{ github.event.inputs.action }}
+          RD_CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          case "$RD_ACTION" in
+            status|dry-run) ;;
+            enable|disable)
+              if [[ "$RD_CONFIRM" != "CHANGE" ]]; then echo "confirm=CHANGE is required for $RD_ACTION"; exit 1; fi ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -w /app "$CID" python manage.py results_deadline_automation "$RD_ACTION"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

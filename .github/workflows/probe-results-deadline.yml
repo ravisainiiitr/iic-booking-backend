@@ -1,0 +1,142 @@
+# Read-only: per-equipment operator timers (Auto Operator Unavailable / Auto Operator Absent Disruption),
+# how often each acted recently, historical results turnaround, and (once deployed) the results-deadline dry run.
+name: Probe Results Deadline
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Look-back window in days for timer activity and turnaround"
+        required: false
+        default: "180"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          PROBE_DAYS: ${{ github.event.inputs.days }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e PROBE_DAYS="${PROBE_DAYS:-180}" -w /app "$CID" python - <<'PY'
+          import os, statistics, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from datetime import timedelta
+          from django.db.models import Max
+          from django.utils import timezone
+          from django_celery_beat.models import PeriodicTask
+          from iic_booking.equipment.models import (
+              Booking, BookingSampleTrace, BookingStatus, Equipment, Holiday, SampleTraceStatus,
+          )
+
+          days = int(os.environ.get("PROBE_DAYS") or 180)
+          now = timezone.now()
+          since = now - timedelta(days=days)
+          print(f"now={now.isoformat()} lookback_days={days}")
+
+          print("== Beat entries ==")
+          for t in PeriodicTask.objects.filter(task__contains="operator_").order_by("name"):
+              print(f"  {t.task} enabled={t.enabled} last_run_at={t.last_run_at} runs={t.total_run_count} crontab={t.crontab}")
+
+          print("== Equipment timers (hours after last slot end) ==")
+          eq_rows = list(Equipment.objects.order_by("code").values(
+              "equipment_id", "code", "name", "status",
+              "operator_unavailable_after_booking_end_hours",
+              "operator_absent_disruption_after_booking_end_hours",
+              "booking_not_utilize_window_hours", "sample_submission_lead_hours", "sample_collect_deadline_hours",
+          ))
+          non_default = 0
+          for e in eq_rows:
+              u = e["operator_unavailable_after_booking_end_hours"]
+              a = e["operator_absent_disruption_after_booking_end_hours"]
+              flag = "" if (u, a) == (24, 48) else "  <-- non-default"
+              non_default += 1 if flag else 0
+              walk_in = e["sample_submission_lead_hours"] == 0 and e["sample_collect_deadline_hours"] == 0
+              print(f"  {e['code']:<14} status={e['status']!s:<18} unavailable={u}h absent={a}h walk_in={walk_in}{flag}")
+          print(f"equipment total={len(eq_rows)} non_default={non_default}")
+          print("unavailable values:", dict(Counter(e["operator_unavailable_after_booking_end_hours"] for e in eq_rows)))
+          print("absent values:", dict(Counter(e["operator_absent_disruption_after_booking_end_hours"] for e in eq_rows)))
+
+          print("== Timer 1: Auto Operator Unavailable (full refund, status ABSENT) ==")
+          auto_reason = "Automatically marked after booking end (scheduled job)."
+          t1 = BookingSampleTrace.objects.filter(status=SampleTraceStatus.OP_UNAVAILABLE, created_by__isnull=True, reason=auto_reason)
+          print(f"  all_time={t1.count()} last_{days}d={t1.filter(created_at__gte=since).count()}")
+          per_eq = Counter(t1.filter(created_at__gte=since).values_list("booking__equipment__code", flat=True))
+          for code, n in sorted(per_eq.items()):
+              print(f"    {code}: {n}")
+          for tr in t1.order_by("-created_at")[:10]:
+              print(f"    recent booking_id={tr.booking_id} at={tr.created_at:%Y-%m-%d}")
+          manual_op = BookingSampleTrace.objects.filter(status=SampleTraceStatus.OP_UNAVAILABLE, created_at__gte=since).exclude(reason=auto_reason).count()
+          print(f"  manual OP_UNAVAILABLE traces last_{days}d={manual_op}")
+
+          print("== Timer 2: Auto Operator Absent Disruption (refund/reschedule choice) ==")
+          tag = "[Auto disruption: operator absent (stuck sample status)]"
+          t2 = Booking.objects.filter(notes__contains=tag).annotate(last_end=Max("daily_slots__end_datetime"))
+          print(f"  all_time={t2.count()}")
+          recent = [b for b in t2 if b.last_end is None or b.last_end >= since]
+          print(f"  slot_end_in_last_{days}d={len(recent)}")
+          print("  current status:", dict(Counter(b.status for b in t2)))
+          for code, n in sorted(Counter(b.equipment.code for b in recent).items()):
+              print(f"    {code}: {n}")
+          staff_absent = Booking.objects.filter(disruption_kind="OPERATOR_ABSENT").exclude(notes__contains=tag).count()
+          print(f"  other OPERATOR_ABSENT disruptions (staff/slot) all_time={staff_absent}")
+          new_tag = "[Auto disruption: operator absent (results deadline passed)]"
+          new_reason = "Automatically marked: results deadline passed (scheduled job)."
+          print(f"  results-deadline safeguard: disruptions={Booking.objects.filter(notes__contains=new_tag).count()} "
+                f"refunds={BookingSampleTrace.objects.filter(status=SampleTraceStatus.OP_UNAVAILABLE, reason=new_reason).count()}")
+          holds = Booking.objects.filter(operator_absent_hold_until__isnull=False)
+          print(f"  bookings with operator_absent_hold_until set={holds.count()} open={holds.filter(status__in=['PENDING','BOOKED']).count()}")
+
+          print("== Historical results turnaround (completed bookings, slot end -> completed_at) ==")
+          hol = set(Holiday.objects.filter(is_active=True, date__gte=(since - timedelta(days=10)).date()).values_list("date", flat=True))
+          def working_days_between(a, b):
+              da, db = timezone.localdate(a), timezone.localdate(b)
+              n, d = 0, da
+              while d < db:
+                  d += timedelta(days=1)
+                  if d.weekday() < 5 and d not in hol:
+                      n += 1
+              return n
+          comp = (Booking.objects.filter(status=BookingStatus.COMPLETED, completed_at__gte=since)
+                  .annotate(last_end=Max("daily_slots__end_datetime")).values_list("equipment__code", "last_end", "completed_at"))
+          td = defaultdict(list)
+          for code, end, done in comp:
+              if end and done and done >= end:
+                  td[code].append(working_days_between(end, done))
+          for code in sorted(td):
+              v = sorted(td[code])
+              p90 = v[min(len(v) - 1, int(round(0.9 * (len(v) - 1))))]
+              over2 = sum(1 for x in v if x > 2)
+              print(f"  {code:<14} n={len(v):<4} median_wd={statistics.median(v):<4} p90_wd={p90:<3} max_wd={v[-1]:<3} later_than_2wd={over2}")
+
+          print("== Open bookings past slot end (PENDING/BOOKED/PROCESSING) ==")
+          open_past = (Booking.objects.filter(status__in=["PENDING", "BOOKED", "PROCESSING"])
+                       .annotate(last_end=Max("daily_slots__end_datetime")).filter(last_end__lt=now))
+          print(f"  count={open_past.count()} by_status={dict(Counter(open_past.values_list('status', flat=True)))}")
+
+          try:
+              from iic_booking.equipment import results_deadline as rd
+          except Exception as exc:
+              print("results_deadline module not deployed:", type(exc).__name__)
+              raise SystemExit(0)
+          print("== Results deadline (deployed) ==")
+          print(rd.dry_run_report_text(now=now))
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

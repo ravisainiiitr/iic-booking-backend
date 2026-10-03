@@ -146,6 +146,39 @@ def _viewer_sample_locked(serializer, booking) -> bool:
     return user_changes_locked_for(user, booking, accepted=accepted)
 
 
+class _ResultsDeadlineFieldMixin:
+    """``results_deadline``: always for staff; for users only when the equipment shows it to users."""
+
+    def get_results_deadline(self, obj):
+        from .results_deadline import (
+            WorkingCalendar,
+            booking_results_deadline_payload,
+            preload_page,
+            viewer_is_staff,
+        )
+
+        ctx = self.context
+        if "_results_deadline_calendar" not in ctx:
+            ctx["_results_deadline_calendar"] = WorkingCalendar()
+            request = ctx.get("request")
+            ctx["_results_deadline_staff"] = viewer_is_staff(getattr(request, "user", None))
+            rows = getattr(getattr(self, "parent", None), "instance", None)
+            if rows is not None and not isinstance(rows, Booking):
+                try:
+                    preload_page(list(rows))
+                except Exception:
+                    logger.exception("results deadline preload failed")
+        try:
+            return booking_results_deadline_payload(
+                obj,
+                staff_view=ctx["_results_deadline_staff"],
+                calendar=ctx["_results_deadline_calendar"],
+            )
+        except Exception:
+            logger.exception("results deadline payload failed for booking %s", getattr(obj, "booking_id", None))
+            return None
+
+
 class _RescheduleBlockFieldsMixin:
     """can_reschedule / can_cancel are null when the viewer is unknown (no request in context); the endpoints still enforce."""
 
@@ -1416,6 +1449,12 @@ class EquipmentListSerializer(serializers.ModelSerializer):
     publication_count = serializers.IntegerField(read_only=True, allow_null=True)
     featured_publication_title = serializers.CharField(read_only=True, allow_null=True)
     featured_citation = serializers.CharField(read_only=True, allow_null=True)
+    results_deadline_public = serializers.SerializerMethodField()
+
+    def get_results_deadline_public(self, obj):
+        from .results_deadline import public_equipment_deadline
+
+        return public_equipment_deadline(obj)
 
     class Meta:
         model = Equipment
@@ -1429,6 +1468,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'status',
             'status_display',
             'location',
+            'results_deadline_public',
             'image_url',
             'video_file',
             'video_url',
@@ -1721,6 +1761,9 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
+            'results_deadline_value',
+            'results_deadline_unit',
+            'show_results_deadline_to_users',
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
             'atmosphere_sensitive_sample_enabled',
@@ -2188,6 +2231,9 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'booking_not_utilize_window_hours',
             'operator_unavailable_after_booking_end_hours',
             'operator_absent_disruption_after_booking_end_hours',
+            'results_deadline_value',
+            'results_deadline_unit',
+            'show_results_deadline_to_users',
             'skip_quota_check',
             'enable_charge_recalculation',
             'allow_multiple_sample_sets',
@@ -2252,6 +2298,34 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             )
         return value
 
+    RESULTS_DEADLINE_FIELDS = ("results_deadline_value", "results_deadline_unit", "show_results_deadline_to_users")
+
+    def _validate_results_deadline(self, attrs, instance):
+        """Main Admin and the equipment's OIC (incl. temporary OIC) only; values checked against the unit."""
+        from .results_deadline import validate_deadline
+
+        changed = [
+            name
+            for name in self.RESULTS_DEADLINE_FIELDS
+            if name in attrs and (instance is None or getattr(instance, name) != attrs[name])
+        ]
+        if not changed:
+            return
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is not None and instance is not None:
+            from .api_views import _user_can_act_as_oic_for_equipment
+
+            if not _user_can_act_as_oic_for_equipment(user, instance) and not getattr(user, "is_superuser", False):
+                raise serializers.ValidationError(
+                    {changed[0]: "Only the Main Admin or the equipment's Officer In-Charge can change the results deadline."}
+                )
+        value = attrs.get("results_deadline_value", getattr(instance, "results_deadline_value", 2) if instance else 2)
+        unit = attrs.get("results_deadline_unit", getattr(instance, "results_deadline_unit", "WORKING_DAYS") if instance else "WORKING_DAYS")
+        _value, _unit, errors = validate_deadline(value, unit)
+        if errors:
+            raise serializers.ValidationError(errors)
+
     def validate_parent_equipment(self, value):
         if value is None:
             return value
@@ -2278,6 +2352,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
 
         attrs = super().validate(attrs)
         instance = getattr(self, "instance", None)
+        self._validate_results_deadline(attrs, instance)
         enable_multi = attrs.get(
             "enable_multi_mode",
             getattr(instance, "enable_multi_mode", False) if instance else False,
@@ -2989,10 +3064,11 @@ def _booking_breakdown_suffix_start_index(stored: list) -> int:
     return len(stored)
 
 
-class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer):
+class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Serializer for Booking model. Shows 'Booked' for PENDING (user-facing)."""
     
     booking_id = serializers.SerializerMethodField()
+    results_deadline = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
@@ -3182,6 +3258,7 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
             'status_display',
             'notes',
             'operator_absent_hold_until',
+            'results_deadline',
             'atmosphere_sensitive_sample',
             'equipment_atmosphere_sensitive_sample_enabled',
             'equipment_allow_multiple_sample_sets',
@@ -3673,9 +3750,10 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
         return BookingSampleTraceSerializer(events, many=True, context=self.context).data
 
 
-class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer):
+class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Lightweight serializer for list/table view. Excludes heavy fields (daily_slots, charge_breakdown, input_fields, sample_trace)."""
     booking_id = serializers.SerializerMethodField()
+    results_deadline = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
@@ -3781,7 +3859,7 @@ class BookingListSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerial
             'rated_at', 'repeat_sample_enabled', 'source_booking_id',
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
-            'oic_contacts', 'sample_summary', 'lab_questions_open',
+            'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline',
         ]
         read_only_fields = [
             'booking_id',

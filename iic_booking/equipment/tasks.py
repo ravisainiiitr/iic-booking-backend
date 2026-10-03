@@ -642,15 +642,21 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
     those use ``auto_mark_operator_absent_disruption_after_booking_end`` or manual disruption instead.
 
     Bookings with only SAMPLE_SENT or no trace are handled by ``check_booking_not_utilized`` (20:00 IST) or staff.
+
+    When the results-deadline automation is on (``ResultsDeadlinePolicy``), bookings whose last slot ends
+    after the switch-on time wait for the equipment's results deadline instead of the hours above.
     """
     from .models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
     from .operator_unavailable import apply_operator_unavailable_booking
+    from .results_deadline import MODE_LEGACY, WorkingCalendar, automation_state, safeguard_due_at
     from .sample_trace_policy import (
         OPERATOR_UNAVAILABLE_AUTO_REFUND_EXCLUDED_LATEST_STATUSES,
         latest_sample_trace,
     )
 
     now = timezone.now()
+    state = automation_state()
+    calendar = WorkingCalendar()
     marked = 0
     bookings = (
         Booking.objects.filter(status__in=[BookingStatus.PENDING, BookingStatus.BOOKED])
@@ -659,9 +665,6 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
     )
     for booking in bookings:
         equipment = booking.equipment
-        hours = int(getattr(equipment, "operator_unavailable_after_booking_end_hours", 24) or 0)
-        if hours <= 0:
-            continue
         slots = list(booking.daily_slots.all())
         if not slots:
             continue
@@ -671,12 +674,14 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
         end_dt = max(end_times)
         if timezone.is_naive(end_dt):
             end_dt = timezone.make_aware(end_dt)
-        hold_until = getattr(booking, "operator_absent_hold_until", None)
-        if hold_until is not None:
-            if timezone.is_naive(hold_until):
-                hold_until = timezone.make_aware(hold_until)
-            end_dt = max(end_dt, hold_until)
-        if now < end_dt + timedelta(hours=hours):
+        due_at, mode = safeguard_due_at(
+            booking,
+            end_dt,
+            legacy_hours=getattr(equipment, "operator_unavailable_after_booking_end_hours", 24),
+            state=state,
+            calendar=calendar,
+        )
+        if due_at is None or now < due_at:
             continue
 
         non_sample_sent_exists = BookingSampleTrace.objects.filter(booking_id=booking.booking_id).exclude(
@@ -707,7 +712,11 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
         try:
             apply_operator_unavailable_booking(
                 booking,
-                notes="Automatically marked after booking end (scheduled job).",
+                notes=(
+                    "Automatically marked after booking end (scheduled job)."
+                    if mode == MODE_LEGACY
+                    else "Automatically marked: results deadline passed (scheduled job)."
+                ),
                 actor=None,
             )
         except ValueError as e:
@@ -833,12 +842,19 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
 
     Per-equipment configuration:
     - equipment.operator_absent_disruption_after_booking_end_hours (default: 48; 0 disables)
+
+    When the results-deadline automation is on (``ResultsDeadlinePolicy``), bookings whose last slot ends
+    after the switch-on time are acted on once the equipment's results deadline (or the booking's
+    extension) has passed; a later sample-status update no longer restarts the wait.
     """
     from .models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
     from .maintenance_policy import apply_operator_absent_disruption_for_booking
+    from .results_deadline import MODE_LEGACY, WorkingCalendar, automation_state, safeguard_due_at
     from .sample_trace_policy import SAMPLE_TRACE_IN_LAB_OR_ANALYSIS_STATUSES
 
     now = timezone.now()
+    state = automation_state()
+    calendar = WorkingCalendar()
     marked = 0
     bookings = (
         Booking.objects.filter(status__in=[BookingStatus.PENDING, BookingStatus.BOOKED])
@@ -848,8 +864,6 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
     for booking in bookings:
         equipment = booking.equipment
         hours = int(getattr(equipment, "operator_absent_disruption_after_booking_end_hours", 48) or 0)
-        if hours <= 0:
-            continue
 
         slots = list(booking.daily_slots.all())
         if not slots:
@@ -860,13 +874,8 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
         end_dt = max(end_times)
         if timezone.is_naive(end_dt):
             end_dt = timezone.make_aware(end_dt)
-        hold_until = getattr(booking, "operator_absent_hold_until", None)
-        if hold_until is not None:
-            if timezone.is_naive(hold_until):
-                hold_until = timezone.make_aware(hold_until)
-            end_dt = max(end_dt, hold_until)
-
-        if now < end_dt + timedelta(hours=hours):
+        due_at, mode = safeguard_due_at(booking, end_dt, legacy_hours=hours, state=state, calendar=calendar)
+        if due_at is None or now < due_at:
             continue
 
         latest = (
@@ -882,11 +891,15 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
             continue
         if latest_at and timezone.is_naive(latest_at):
             latest_at = timezone.make_aware(latest_at)
-        if latest_at and now < latest_at + timedelta(hours=hours):
+        if mode == MODE_LEGACY and latest_at and now < latest_at + timedelta(hours=hours):
             continue
 
         try:
-            tag = "[Auto disruption: operator absent (stuck sample status)]"
+            tag = (
+                "[Auto disruption: operator absent (stuck sample status)]"
+                if mode == MODE_LEGACY
+                else "[Auto disruption: operator absent (results deadline passed)]"
+            )
             booking.notes = f"{(booking.notes or '').strip()}\n{tag}".strip()
             booking.save(update_fields=["notes"])
         except Exception:

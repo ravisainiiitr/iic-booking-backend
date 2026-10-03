@@ -252,6 +252,21 @@ def reminder_presets(booking, now=None) -> list[dict[str, str]]:
                 "If you have already handed it over, please mark it as submitted on the booking page."
             ),
         })
+    if (
+        booking.status in (BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING)
+        and start
+        and start <= now
+        and not analysed
+    ):
+        presets.append({
+            "code": "results_delayed",
+            "label": "Results delayed",
+            "text": (
+                f"The results for booking {ref} on {equipment_name} are taking longer than expected. "
+                "The lab is working on it and will update you as soon as they are ready. "
+                "We apologise for the delay."
+            ),
+        })
     if analysed and not sample_back and booking.status not in _CLOSED_STATUSES:
         deadline, _hours = compute_sample_collection_deadline(booking)
         by = f" by {_date_text(deadline)}, {_time_text(deadline)}" if deadline and deadline > now else ""
