@@ -10428,13 +10428,18 @@ def expire_urgent_hold_requests():
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def urgent_hold_expiry_config(request):
-    """Admin/OIC: GET/PATCH urgent booking validity period in days (single setting). After this period, PENDING requests expire and hold is released."""
+    """
+    Urgent booking validity period in days (single setting for the whole portal). After this period,
+    PENDING requests expire and the hold is released. Staff who manage bookings can view it; only the
+    Main Administrator can change it.
+    """
     if not check_operator_permission(request.user):
         return Response(
             {"error": "Only admin and Officer in charge can view or update this config."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    if request.method == "PATCH" and is_dept_admin(request.user):
+    is_main_admin = request.user.user_type == UserType.ADMIN or getattr(request.user, "is_superuser", False)
+    if request.method == "PATCH" and not is_main_admin:
         return Response(
             {
                 "error": "The urgent request expiry applies to the whole portal; only the Main Administrator can change it.",
