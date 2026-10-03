@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "GitHub release tag (this repo) whose assets include the signed APK"
+        description: "GitHub release tag (this repo) whose assets include the signed APK; use a draft release so the APK is not public"
         required: true
         default: "android-app-1.0.0"
       asset_name:
@@ -35,7 +35,8 @@ jobs:
   publish:
     runs-on: [self-hosted, Linux]
     permissions:
-      contents: read
+      # Draft releases are only visible to tokens with write access.
+      contents: write
     steps:
       - name: Download APK from release
         env:
@@ -53,8 +54,8 @@ jobs:
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
-            | ASSET="$ASSET" python3 -c 'import json,os,sys; r=json.load(sys.stdin); m=[a["url"] for a in r.get("assets",[]) if a.get("name")==os.environ["ASSET"]]; assert m, "asset not found"; print(m[0])')"
+            "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+            | TAG="$TAG" ASSET="$ASSET" python3 -c 'import json,os,sys; rs=[r for r in json.load(sys.stdin) if r.get("tag_name")==os.environ["TAG"]]; assert rs, "release not found"; m=[a["url"] for a in rs[0].get("assets",[]) if a.get("name")==os.environ["ASSET"]]; assert m, "asset not found"; print(m[0])')"
           curl -fsSL \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/octet-stream" \
