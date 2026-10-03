@@ -182,17 +182,36 @@ def user_department_modes(masters: dict[str, bool], *, project_grant_exempt: boo
     return out
 
 
-def recharge_departments():
+def listed_department_ids() -> list[int]:
+    """Departments shown by the public equipment catalog's department filter."""
+    from iic_booking.equipment.api_views import catalog_department_rows
+
+    return [row["id"] for row in catalog_department_rows()]
+
+
+def listed_departments():
     from iic_booking.users.models.department import Department, DepartmentType
-    from iic_booking.users.repositories.wallet_repository import get_internal_departments_with_equipment
 
-    from iic_booking.users.models.wallet import SubWallet
+    return Department.objects.filter(
+        id__in=listed_department_ids(), department_type=DepartmentType.INTERNAL
+    ).order_by("name")
 
-    ids = set(get_internal_departments_with_equipment().values_list("id", flat=True))
-    ids |= set(SubWallet.objects.values_list("department_id", flat=True).distinct())
-    ids |= set(department_state_rows().keys())
+
+def saved_only_departments(listed_ids: Iterable[int] | None = None):
+    """Departments without catalog equipment that still carry a saved wallet-mode setting."""
+    from iic_booking.users.models.department import Department, DepartmentType
+
+    listed = set(listed_department_ids() if listed_ids is None else listed_ids)
+    ids = {
+        dept_id
+        for dept_id, states in department_state_rows().items()
+        if any(s == DepartmentModeState.DISABLED for s in states.values())
+    }
+    ids |= {r.department_id for r in recipient_rows() if r.department_id}
     ids |= set(Department.objects.filter(enable_wallet_credit=True).values_list("id", flat=True))
-    return Department.objects.filter(id__in=ids, department_type=DepartmentType.INTERNAL).order_by("name")
+    return Department.objects.filter(
+        id__in=ids - listed, department_type=DepartmentType.INTERNAL
+    ).order_by("name")
 
 
 def set_department_states(changes: Iterable[dict[str, Any]], *, actor, ip: str | None = None) -> int:
