@@ -38,6 +38,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_status_changed_email",
     "booking_comment_email",
     "booking_lab_message_email",
+    "booking_lab_staff_message_email",
     "booking_reminder_email",
     "booking_charge_recalculated_email",
     "booking_not_utilized_email",
@@ -532,6 +533,47 @@ def _booking_templates() -> list[dict[str, Any]]:
                 _BOOKING_COMMON_HELP
                 + ", {{ booking_status }}, {{ sender_name }}, {{ sender_display }}, {{ sent_at }}, "
                 "{{ message_reason }}, {{ lab_message }}, {{ lab_message_html }}"
+            ),
+        ),
+        _booking_email(
+            code="booking_lab_staff_message_email",
+            title="{{ message_heading }}",
+            subject="{{ message_heading }} \u2013 booking {{ booking_id }} \u2013 {{ equipment_name }}",
+            intro=(
+                "<strong>{{ sender_display }}</strong> has sent you {{ message_kind_phrase }} about your booking "
+                "<strong>{{ booking_id }}</strong> on {{ equipment_name }}."
+                "{% if reply_needed %} Please reply from the booking page in the portal.{% endif %}"
+                "{% if reply_by %} Reply needed by <strong>{{ reply_by }}</strong>.{% endif %}"
+            ),
+            description=(
+                "Sent to the booking user when the Officer In-Charge, temporary OIC or Lab Operator of the "
+                "equipment (or the Main Admin) sends a reminder or asks a question from the booking details page. "
+                "The heading is \u201cReminder from the lab\u201d or \u201cQuestion from the lab \u2013 reply needed\u201d."
+            ),
+            include_duration=False,
+            include_charges=False,
+            extra_detail_rows=[
+                optional_detail_row("From", "sender_display"),
+                optional_detail_row("Sent at", "sent_at"),
+                optional_detail_row("Reply needed by", "reply_by"),
+            ],
+            note_vars=(),
+            post_details_html=optional_note_block("lab_message_html", label="Message"),
+            post_details_text=(
+                "Message:\n{{ lab_message }}\n"
+                "{% if reply_by %}Reply needed by: {{ reply_by }}\n{% endif %}"
+                "To reply, open the booking in the portal and write in Message the lab. "
+                "Replies to this email are not seen by the lab.\n"
+            ),
+            extra_html=paragraph_html(
+                "To reply, open the booking in the portal and write in <strong>Message the lab</strong>. "
+                "Replies to this email are not seen by the lab."
+            ),
+            cta_label="Reply in portal",
+            variable_help=(
+                _BOOKING_COMMON_HELP
+                + ", {{ message_heading }}, {{ message_kind_phrase }}, {{ reply_needed }}, {{ sender_name }}, "
+                "{{ sender_display }}, {{ sent_at }}, {{ reply_by }}, {{ lab_message }}, {{ lab_message_html }}"
             ),
         ),
         _booking_email(
