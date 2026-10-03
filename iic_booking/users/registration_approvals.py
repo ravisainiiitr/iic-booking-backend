@@ -1147,11 +1147,7 @@ def _decide_extension(
         new_until = _parse_until(until) or ext.max_until
         cap = ext.max_until
         if new_until > cap:
-            raise ApprovalError(
-                f"An extension can be at most six months, up to {_fmt_date(cap)}.",
-                "extension_too_long",
-                extra={"max_until": cap.isoformat()},
-            )
+            raise ApprovalError(f"An extension can be at most six months, up to {_fmt_date(cap)}.", "extension_too_long")
         floor = max(ext.previous_end_date or timezone.localdate(), timezone.localdate())
         if new_until <= floor:
             raise ApprovalError("Choose a date after the current validity.", "extension_too_short")
@@ -1645,6 +1641,7 @@ def list_rows(params: dict[str, Any]) -> list[dict[str, Any]]:
         qs = qs.filter(
             Q(name__icontains=q) | Q(email__icontains=q) | Q(emp_id__icontains=q) | Q(phone_number__icontains=q)
             | Q(supervisor__name__icontains=q) | Q(supervisor__email__icontains=q)
+            | Q(department__name__icontains=q) | Q(organization_request__name__icontains=q)
         )
     wanted = {s for s in str(params.get("status") or "").split(",") if s in LIST_STATUSES}
     rows = []
