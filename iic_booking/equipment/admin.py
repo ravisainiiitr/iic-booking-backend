@@ -367,6 +367,7 @@ class DynamicInputFieldForm(forms.ModelForm):
         help_text=_(
             'Enter options one per line (for RADIO, COMBO, MULTI_SELECT). '
             'For TABLE: enter column headers, one per line. '
+            'For Advanced table (typed columns): use the "Configure columns" button. '
             'For NUMERIC (especially key A), you may enter plain formula like B*4 '
             '(interpreted as {"min":1,"max_formula":"B*4"}), '
             'or JSON like {"min":1,"max":100} / {"min":1,"max_formula":"B*5"}. '
@@ -443,6 +444,17 @@ class DynamicInputFieldForm(forms.ModelForm):
                 'options_text': _('Options are required for RADIO, COMBO, MULTI_SELECT, and TABLE (column headers, one per line) field types.')
             })
 
+        if field_type == DynamicInputFieldType.TYPED_TABLE:
+            from .typed_table import TableConfigError, normalize_table_config, table_link_key
+
+            try:
+                cleaned_data['table_config'] = normalize_table_config(cleaned_data.get('table_config'))
+            except TableConfigError as exc:
+                raise forms.ValidationError({'options_text': _('Advanced table: %(error)s') % {'error': exc}})
+            cleaned_data['source_element_field_key'] = table_link_key(cleaned_data['table_config'])
+        else:
+            cleaned_data['table_config'] = {}
+
         if field_type == DynamicInputFieldType.NUMERIC and options_text:
             if options_text.startswith('{'):
                 try:
@@ -478,6 +490,8 @@ class DynamicInputFieldForm(forms.ModelForm):
         field_type = self.cleaned_data.get('field_type')
         default_value = (self.cleaned_data.get('default_value') or '').strip()
 
+        if field_type == DynamicInputFieldType.TYPED_TABLE:
+            options_text = ''
         if options_text:
             if field_type == DynamicInputFieldType.NUMERIC:
                 if options_text.startswith('{'):
@@ -527,7 +541,19 @@ class DynamicInputFieldInlineFormSet(forms.models.BaseInlineFormSet):
     def clean(self):
         # BaseModelFormSet.clean() rejects duplicate keys within the submission.
         super().clean()
-        if any(self.errors) or not getattr(self.instance, "pk", None):
+        if any(self.errors):
+            return
+        from .typed_table import validate_table_links
+
+        groups = {}
+        for f in self.forms:
+            if getattr(f, "cleaned_data", None) and f.cleaned_data.get("field_key") and not self._should_delete_form(f):
+                groups.setdefault(f.cleaned_data.get("user_type") or "", []).append(f.cleaned_data)
+        for user_type, items in groups.items():
+            error = validate_table_links(items)
+            if error:
+                raise forms.ValidationError(f"{error} ({user_type or 'all user types'})")
+        if not getattr(self.instance, "pk", None):
             return
         submitted_pks = {f.instance.pk for f in self.forms if f.instance.pk}
         final_keys = {
@@ -586,6 +612,7 @@ class DynamicInputFieldInline(admin.TabularInline):
         'options_text',
         'help_text',
         'source_element_field_key',
+        'table_config',
     ]
     # Keep in DOM for POST; JS hides the outer shell and moves rows under charge profiles.
     classes = ['collapse', 'js-dynamic-input-fields-inline']
@@ -598,6 +625,10 @@ class DynamicInputFieldInline(admin.TabularInline):
         if 'user_type' in formset.form.base_fields:
             formset.form.base_fields['user_type'].widget = forms.HiddenInput()
             formset.form.base_fields['user_type'].required = False
+        if 'table_config' in formset.form.base_fields:
+            # Edited with the "Configure columns" builder (js/typed_table_builder.js).
+            formset.form.base_fields['table_config'].widget = forms.HiddenInput()
+            formset.form.base_fields['table_config'].required = False
         return formset
 
 
@@ -999,6 +1030,7 @@ class ChargeProfileInline(admin.StackedInline):
         js = (
             'admin/js/jquery.init.js',
             'js/dynamic_input_field.js',
+            'js/typed_table_builder.js',
             'js/charge_profile_admin.js',
             'js/charge_profile_dynamic_fields.js',
         )

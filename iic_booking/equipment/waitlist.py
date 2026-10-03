@@ -635,6 +635,11 @@ def notify_waitlist_slots_available(
             continue
 
         reduced_input_values, effective_time_minutes, slots_to_book = reduced
+        from .typed_table import restore_typed_tables
+
+        reduced_input_values = restore_typed_tables(
+            equipment, attempt_input_values, reduced_input_values, user_type=str(getattr(user, "user_type", "") or "")
+        )
         slot_ids_to_book = available_ids[: int(slots_to_book)]
 
         # Add original vs fulfilled requirement in booking notes (when reduced).

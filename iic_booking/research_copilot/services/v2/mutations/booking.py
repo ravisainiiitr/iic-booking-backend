@@ -265,12 +265,13 @@ def missing_input_fields(*, user, equipment, samples: int, provided: dict[str, A
     from iic_booking.equipment.equipment_group_service import _effective_input_fields
 
     fields = _effective_input_fields(equipment, getattr(user, "user_type", "") or "")
-    values, _missing = _copilot_input_values(user=user, equipment=equipment, samples=samples, provided=provided, validate=False)
+    values, missing = _copilot_input_values(user=user, equipment=equipment, samples=samples, provided=provided, validate=False)
     filled = set((values or {}).keys()) | set((provided or {}).keys())
     return [
         _field_descriptor(f)
         for f in fields
-        if f.is_required and f.field_key not in filled and f.default_value in (None, "")
+        if (f.is_required and f.field_key not in filled and f.default_value in (None, ""))
+        or (str(getattr(f, "field_type", "")) == "TYPED_TABLE" and (f.field_label or f.field_key) in missing)
     ]
 
 
@@ -353,6 +354,11 @@ def _copilot_input_values(
         for f in fields
         if f.is_required and _empty(f) and f.default_value in (None, "")
     ]
+    from iic_booking.equipment.typed_table import iter_typed_table_problems
+
+    for problem in iter_typed_table_problems(equipment, values, user_type=getattr(user, "user_type", "") or ""):
+        if problem["label"] not in missing:
+            missing.append(problem["label"])
     for f in fields:
         if f.field_key not in values and f.default_value not in (None, ""):
             if str(getattr(f, "field_type", "")) == "NUMERIC":

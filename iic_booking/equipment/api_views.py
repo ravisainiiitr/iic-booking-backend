@@ -4118,6 +4118,14 @@ def _book_equipment_impl(request, pk):
             (input_values_raw or {}).get(SAMPLE_SETS_KEY) if isinstance(input_values_raw, dict) else None,
             booking_user=booking_user,
         )
+    if not numeric_limit_error:
+        from .typed_table import clean_typed_tables
+
+        input_values, table_problem = clean_typed_tables(
+            equipment, input_values, user_type=str(getattr(booking_user, "user_type", "") or "")
+        )
+        if table_problem:
+            numeric_limit_error = table_problem["message"]
     if numeric_limit_error:
         _create_booking_attempt_log(
             request, equipment, BookingAttemptOutcome.FAILED,
@@ -15190,6 +15198,14 @@ def update_booking_input_values(request, booking_id):
         ) or combined_max_error(
             equipment, current, user_type=booking_field_user_type(booking), baseline=original
         )
+        if not numeric_limit_error:
+            from .typed_table import clean_typed_tables
+
+            current, table_problem = clean_typed_tables(
+                equipment, current, user_type=booking_field_user_type(booking), baseline=original
+            )
+            if table_problem:
+                numeric_limit_error = table_problem["message"]
         if numeric_limit_error:
             return Response(
                 {"error": numeric_limit_error},

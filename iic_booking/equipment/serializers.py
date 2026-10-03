@@ -888,6 +888,7 @@ class DynamicInputFieldSerializer(serializers.ModelSerializer):
             'options',
             'help_text',
             'source_element_field_key',
+            'table_config',
             'created_at',
             'updated_at'
         ]
@@ -1021,6 +1022,7 @@ def _comments_input_field_schema():
         "options": [],
         "help_text": "Additional notes from user.",
         "source_element_field_key": None,
+        "table_config": {},
     }
 
 
@@ -2070,9 +2072,24 @@ class DynamicInputFieldWriteSerializer(serializers.Serializer):
     options = serializers.JSONField(required=False, allow_null=True, default=list)
     help_text = serializers.CharField(allow_blank=True, required=False, default='')
     source_element_field_key = serializers.CharField(max_length=1, allow_blank=True, allow_null=True, required=False, default=None)
+    table_config = serializers.JSONField(required=False, allow_null=True, default=dict)
 
     def validate(self, attrs):
-        if str(attrs.get('field_type') or '').strip().upper() == DynamicInputFieldType.NUMERIC:
+        field_type = str(attrs.get('field_type') or '').strip().upper()
+        if field_type == DynamicInputFieldType.TYPED_TABLE:
+            from .typed_table import TableConfigError, normalize_table_config, table_link_key
+
+            try:
+                attrs['table_config'] = normalize_table_config(attrs.get('table_config'))
+            except TableConfigError as exc:
+                key = str(attrs.get('field_key') or '').upper()
+                user_type = str(attrs.get('user_type') or '').strip() or 'all user types'
+                raise serializers.ValidationError({'table_config': [f"Field {key} ({user_type}): {exc}"]})
+            attrs['source_element_field_key'] = table_link_key(attrs['table_config'])
+            attrs['options'] = []
+        else:
+            attrs['table_config'] = {}
+        if field_type == DynamicInputFieldType.NUMERIC:
             from .numeric_field_limits import normalize_numeric_field_config
 
             try:
@@ -2306,6 +2323,18 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                     })
         self._validate_group_department(attrs, instance)
         self._validate_sample_sets_switch(attrs, instance)
+        if attrs.get("input_fields") is not None:
+            from .typed_table import validate_table_links
+
+            groups = {}
+            for item in attrs["input_fields"]:
+                groups.setdefault(str(item.get("user_type") or "").strip(), []).append(item)
+            for user_type, items in groups.items():
+                error = validate_table_links(items)
+                if error:
+                    raise serializers.ValidationError(
+                        {"input_fields": [f"{error} ({user_type or 'all user types'})"]}
+                    )
         # Portal-wide: Remote Analysis stays off for every equipment.
         attrs["enable_remote_analysis"] = False
         return attrs
@@ -2495,6 +2524,7 @@ def _create_related(equipment, inlines, actor=None):
             options=item.get('options', []) or [],
             help_text=item.get('help_text') or '',
             source_element_field_key=(item.get('source_element_field_key') or '').strip() or None,
+            table_config=item.get('table_config') or {},
         )
     for item in inlines.get('charge_profiles', []):
         show_bd = item.get('show_charge_breakdown', True)
@@ -2742,6 +2772,7 @@ def _sync_related(equipment, inlines, actor=None):
                 'options': item.get('options', []) or [],
                 'help_text': item.get('help_text') or '',
                 'source_element_field_key': (item.get('source_element_field_key') or '').strip() or None,
+                'table_config': item.get('table_config') or {},
             }
             DynamicInputField.objects.update_or_create(
                 equipment=equipment,
@@ -3102,6 +3133,8 @@ class BookingSerializer(_RescheduleBlockFieldsMixin, serializers.ModelSerializer
         }
         if f.options:
             item['options'] = f.options
+        if getattr(f, 'table_config', None):
+            item['table_config'] = f.table_config
         return item
 
     class Meta:
