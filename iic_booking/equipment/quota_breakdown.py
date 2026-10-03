@@ -15,6 +15,8 @@ Who sees what:
 - anyone else: 403.
 For legacy equipment-level limits (shared by every user of a type on one instrument) other users'
 bookings are shown as "Another user" to everyone except staff.
+The supervisor (faculty wallet owner, else the user's supervisor) is shown with email and employee ID
+to staff and the group owner, and by name and department to the user.
 """
 
 from __future__ import annotations
@@ -169,7 +171,37 @@ def _status_label(value: str) -> str:
         return str(value or "").replace("_", " ").title()
 
 
-def _row(booking, *, minutes: int, counted: bool, note: Optional[str]) -> dict:
+def supervisor_of(user: Optional[User]) -> Optional[User]:
+    """
+    The supervisor as the portal links them: the owner of the faculty wallet the user books on
+    (``get_accessible_wallet``, the same link that groups faculty limits), else the user's ``supervisor``.
+    None for faculty (they head the group), external users and staff without either link.
+    """
+    if user is None or user.is_faculty():
+        return None
+    wallet = user.get_accessible_wallet()
+    if wallet is not None and wallet.user_id and wallet.user_id != user.pk:
+        return wallet.user
+    if getattr(user, "supervisor_id", None):
+        return user.supervisor
+    return None
+
+
+def person_details(user: Optional[User]) -> Optional[dict]:
+    if user is None:
+        return None
+    department = getattr(user, "department", None)
+    return {
+        "id": user.pk,
+        "name": get_user_display_name(user),
+        "email": user.email or None,
+        "department_name": department.name if department else None,
+        "department_code": getattr(department, "code", None) if department else None,
+        "id_number": (getattr(user, "emp_id", "") or "").strip() or None,
+    }
+
+
+def _row(booking, *, minutes: int, counted: bool, note: Optional[str], supervisor: Optional[User] = None) -> dict:
     first, last = _slot_span(booking)
     return {
         "booking_id": booking.booking_id,
@@ -185,6 +217,8 @@ def _row(booking, *, minutes: int, counted: bool, note: Optional[str]) -> dict:
         "status_label": _status_label(booking.status),
         "user_id": booking.user_id,
         "user_name": get_user_display_name(booking.user) if booking.user_id else "",
+        "supervisor_id": supervisor.pk if supervisor else None,
+        "supervisor_name": get_user_display_name(supervisor) if supervisor else None,
         "note": note,
     }
 
@@ -219,7 +253,7 @@ def build_quota_breakdown(
     """Unredacted breakdown of one limit for one period (cached briefly)."""
     start, end = QuotaService._get_quota_period(dim.quota_type, reference_dt)
     cache_key = (
-        f"quota-breakdown:v1:{subject.pk}:{equipment.pk}:{dim.scope}:{dim.scope_label}:"
+        f"quota-breakdown:v2:{subject.pk}:{equipment.pk}:{dim.scope}:{dim.scope_label}:"
         f"{start.date().isoformat()}:{exclude_booking_id or 0}"
     )
     try:
@@ -231,10 +265,19 @@ def build_quota_breakdown(
 
     counted_bookings = list(
         dim.bookings_in_period(start, end, exclude_booking_id)
-        .select_related("equipment", "user")
+        .select_related("equipment", "user", "user__supervisor")
         .prefetch_related("daily_slots")
         .order_by("quota_reference_at", "booking_id")
     )
+    supervisors: dict[int, Optional[User]] = {}
+
+    def supervisor_for(user: Optional[User]) -> Optional[User]:
+        if user is None:
+            return None
+        if user.pk not in supervisors:
+            supervisors[user.pk] = supervisor_of(user)
+        return supervisors[user.pk]
+
     counted = []
     for b in counted_bookings:
         first, _ = _slot_span(b)
@@ -244,7 +287,9 @@ def build_quota_breakdown(
                 "Moved by a disruption or staff reschedule – still counted here, in its original "
                 f"{'month' if dim.quota_type == QuotaType.MONTHLY else 'week'}"
             )
-        counted.append(_row(b, minutes=booking_effective_quota_minutes(b), counted=True, note=note))
+        counted.append(
+            _row(b, minutes=booking_effective_quota_minutes(b), counted=True, note=note, supervisor=supervisor_for(b.user))
+        )
     used = sum(r["minutes"] for r in counted)
 
     owner = QuotaService.faculty_wallet_owner(subject)
@@ -268,7 +313,7 @@ def build_quota_breakdown(
             | Q(quota_period_anchor_at__gte=start, quota_period_anchor_at__lte=end)
         )
         .exclude(booking_id__in=[r["booking_id"] for r in counted])
-        .select_related("equipment", "user")
+        .select_related("equipment", "user", "user__supervisor")
         .prefetch_related("daily_slots")
         .order_by("first_slot_at", "booking_id")
     )
@@ -276,9 +321,18 @@ def build_quota_breakdown(
         not_counted_qs = not_counted_qs.exclude(booking_id=exclude_booking_id)
     not_counted_bookings = list(not_counted_qs[: NOT_COUNTED_LIMIT + 1])
     not_counted = [
-        _row(b, minutes=booking_effective_quota_minutes(b), counted=False, note=_not_counted_note(b, dim.quota_type))
+        _row(
+            b,
+            minutes=booking_effective_quota_minutes(b),
+            counted=False,
+            note=_not_counted_note(b, dim.quota_type),
+            supervisor=supervisor_for(b.user),
+        )
         for b in not_counted_bookings[:NOT_COUNTED_LIMIT]
     ]
+    supervisor = supervisor_for(subject)
+    if supervisor is None and dim.scope == "group":
+        supervisor = owner
 
     group = getattr(equipment, "equipment_group", None)
     data = {
@@ -294,7 +348,8 @@ def build_quota_breakdown(
         "used_minutes": int(used),
         "effectively_unlimited": quota_limit_is_effectively_unlimited(dim.quota_type, dim.limit_minutes),
         "subject": {"id": subject.pk, "name": get_user_display_name(subject)},
-        "group_owner": {"id": owner.pk, "name": get_user_display_name(owner)} if owner is not None else None,
+        "supervisor": person_details(supervisor),
+        "group_owner": person_details(owner),
         "group_member_ids": [u.pk for u in member_users],
         "group_members_count": len(dim.users) if dim.scope == "group" else None,
         "excluded_booking_id": exclude_booking_id,
@@ -358,7 +413,15 @@ def present_breakdown(raw: dict, viewer: User, access: str) -> dict:
             out["user_name"] = ANOTHER_USER
             out["user_id"] = None
             out["display_booking_id"] = None
+            out["supervisor_id"] = None
+            out["supervisor_name"] = None
         return out
+
+    def person(p: Optional[dict]) -> Optional[dict]:
+        # Users who are not staff / group owner see the supervisor's name and department only.
+        if p is None or full_all:
+            return p
+        return {**p, "email": None, "id_number": None}
 
     counted = [present(r) for r in raw["counted"]]
     not_counted = [present(r) for r in raw["not_counted"] if full_all or r["user_id"] == viewer.pk]
@@ -376,6 +439,8 @@ def present_breakdown(raw: dict, viewer: User, access: str) -> dict:
 
     out = {k: v for k, v in raw.items() if k not in ("counted", "not_counted", "group_member_ids")}
     out.update(
+        supervisor=person(raw.get("supervisor")),
+        group_owner=person(raw.get("group_owner")),
         counted=counted,
         not_counted=not_counted,
         members=members,
@@ -392,6 +457,7 @@ def with_request(data: dict, requested_minutes: Optional[int]) -> dict:
     data["requested_minutes"] = requested
     data["remaining_minutes"] = max(0, limit - used)
     data["over_by_minutes"] = max(0, used + requested - limit)
+    data["request_exceeds_limit"] = bool(limit > 0 and requested > limit and not data.get("effectively_unlimited"))
     return data
 
 
