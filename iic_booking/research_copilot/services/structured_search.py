@@ -28,7 +28,7 @@ def search_equipment(*, query: str, limit: int = 5) -> list[StructuredHit]:
     if any(f.name == "code" for f in Equipment._meta.get_fields()):
         filt = filt | Q(code__icontains=q)
 
-    qs = Equipment.objects.filter(filt).order_by("name")[:limit]
+    qs = Equipment.objects.filter(filt).exclude(visible_to_test_accounts_only=True).order_by("name")[:limit]
     hits: list[StructuredHit] = []
     for eq in qs:
         specs = list(eq.equipment_specifications.all()[:6])

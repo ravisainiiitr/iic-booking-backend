@@ -42,7 +42,11 @@ def site_stats(request):
     from iic_booking.equipment.models import Booking, Equipment, EquipmentPublication, EquipmentStatus
 
     User = get_user_model()
-    equipment_count = Equipment.objects.exclude(status=EquipmentStatus.DISPOSED).count()
+    equipment_count = (
+        Equipment.objects.exclude(status=EquipmentStatus.DISPOSED)
+        .exclude(visible_to_test_accounts_only=True)
+        .count()
+    )
     active_users_count = User.objects.filter(is_active=True).count()
     total_bookings_count = Booking.objects.count()
     publication_count = EquipmentPublication.objects.count()

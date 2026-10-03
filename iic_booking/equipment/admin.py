@@ -1534,7 +1534,7 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'name', 'code', 'category', 'equipment_group', 'alternative_priority',
                 'auto_allocate_alternative_default',
                 'enable_multi_mode', 'parent_equipment',
-                'internal_department', 'visibility_group',
+                'internal_department', 'visibility_group', 'visible_to_test_accounts_only',
                 'profile_type', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
                 'office_address', 'alternate_phone_number',
                 'make', 'show_make_on_card',

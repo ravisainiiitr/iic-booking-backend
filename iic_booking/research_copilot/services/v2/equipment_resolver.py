@@ -63,7 +63,7 @@ def _qs_visible(user=None):
             return get_visible_equipment_queryset(user)
     except Exception:  # noqa: BLE001
         pass
-    return Equipment.objects.all()
+    return Equipment.objects.exclude(visible_to_test_accounts_only=True)
 
 
 def resolve_equipment(*, text: str, user=None, context_equipment_id: int | None = None) -> EquipmentResolution:

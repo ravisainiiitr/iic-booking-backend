@@ -1483,6 +1483,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'internal_department_code',
             'visibility_group',
             'visibility_group_name',
+            'visible_to_test_accounts_only',
             'equipment_group',
             'equipment_group_id',
             'equipment_group_name',
@@ -1520,7 +1521,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
             'parent_equipment',
             'enable_multi_mode',
         ]
-        read_only_fields = ['equipment_id', 'created_at', 'updated_at']
+        read_only_fields = ['equipment_id', 'created_at', 'updated_at', 'visible_to_test_accounts_only']
 
     def get_image_url(self, obj):
         """Return stable proxy URL whenever a DB image path exists (no false-negative S3 hide)."""
@@ -1601,10 +1602,11 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
             'publication_count',
             'featured_publication_title',
             'featured_citation',
+            'visible_to_test_accounts_only',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['equipment_id', 'created_at', 'updated_at']
+        read_only_fields = ['equipment_id', 'created_at', 'updated_at', 'visible_to_test_accounts_only']
 
     def get_image_url(self, obj):
         return _equipment_image_url(
@@ -1703,6 +1705,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'parent_equipment',
             'visibility_group',
             'visibility_group_name',
+            'visible_to_test_accounts_only',
             'reschedule_hours_threshold',
             'results_base_location',
             'specifications',
@@ -1773,7 +1776,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'skip_quota_check',
             'sample_preparation_by_user',
         ]
-        read_only_fields = ['equipment_id']
+        read_only_fields = ['equipment_id', 'visible_to_test_accounts_only']
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

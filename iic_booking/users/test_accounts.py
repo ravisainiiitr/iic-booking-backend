@@ -100,6 +100,24 @@ def booking_is_test(booking: Any) -> bool:
     return User.objects.filter(pk=user_id, is_test_account=True).exists()
 
 
+def user_may_see_test_only_equipment(user: Any) -> bool:
+    """Equipment flagged visible_to_test_accounts_only: test accounts and the Main Administrator only."""
+    if user is None or not getattr(user, "is_authenticated", False):
+        return False
+    if is_test_user(user) or getattr(user, "is_superuser", False):
+        return True
+    from iic_booking.users.models.user_type import UserType
+
+    return getattr(user, "user_type", None) == UserType.ADMIN
+
+
+def exclude_test_only_equipment(qs: QuerySet, user: Any = None, *, prefix: str = "") -> QuerySet:
+    """Drop test-only equipment from ``qs`` unless ``user`` may see it (``prefix`` e.g. ``"equipment__"``)."""
+    if user_may_see_test_only_equipment(user):
+        return qs
+    return qs.exclude(**{f"{prefix}visible_to_test_accounts_only": True})
+
+
 def exclude_test_bookings(qs: QuerySet) -> QuerySet:
     return qs.exclude(user__is_test_account=True)
 
