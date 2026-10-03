@@ -1,0 +1,98 @@
+name: Publish Android App (APK)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "GitHub release tag (this repo) whose assets include the signed APK"
+        required: true
+        default: "android-app-1.0.0"
+      asset_name:
+        description: "APK asset file name in that release"
+        required: true
+        default: "IIC-Booking-1.0.0.apk"
+      version_name:
+        description: "versionName of the APK"
+        required: true
+        default: "1.0.0"
+      version_code:
+        description: "versionCode of the APK"
+        required: true
+        default: "1"
+      expect_sha256:
+        description: "SHA-256 of the APK (publishing stops if the downloaded file differs)"
+        required: true
+      signing_cert_sha256:
+        description: "SHA-256 fingerprint of the signing certificate (shown to users)"
+        required: false
+        default: ""
+      notes:
+        description: "Release notes shown on the download card"
+        required: true
+        default: "First release for Officers In Charge and Lab Operators."
+
+jobs:
+  publish:
+    runs-on: [self-hosted, Linux]
+    permissions:
+      contents: read
+    steps:
+      - name: Download APK from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+          ASSET: ${{ inputs.asset_name }}
+          REPO: ${{ github.repository }}
+          EXPECT: ${{ inputs.expect_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/iic-android
+          cd /tmp/iic-android
+          rm -f app.apk
+          ASSET_API_URL="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | ASSET="$ASSET" python3 -c 'import json,os,sys; r=json.load(sys.stdin); m=[a["url"] for a in r.get("assets",[]) if a.get("name")==os.environ["ASSET"]]; assert m, "asset not found"; print(m[0])')"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -o app.apk \
+            "$ASSET_API_URL"
+          ls -l app.apk
+          GOT="$(sha256sum app.apk | cut -d' ' -f1)"
+          echo "sha256=$GOT"
+          test "$GOT" = "$(echo "$EXPECT" | tr 'A-F' 'a-f')"
+
+      - name: Publish into Django (media storage)
+        env:
+          VERSION_NAME: ${{ inputs.version_name }}
+          VERSION_CODE: ${{ inputs.version_code }}
+          EXPECT: ${{ inputs.expect_sha256 }}
+          CERT: ${{ inputs.signing_cert_sha256 }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          echo "container=$CID"
+          test -n "$CID"
+          docker cp /tmp/iic-android/app.apk "$CID:/tmp/iic-booking-app.apk"
+          docker exec -w /app "$CID" python manage.py publish_mobile_app /tmp/iic-booking-app.apk \
+            --version-name "$VERSION_NAME" \
+            --version-code "$VERSION_CODE" \
+            --expect-sha256 "$EXPECT" \
+            --signing-cert-sha256 "$CERT" \
+            --notes "$NOTES"
+          docker exec "$CID" rm -f /tmp/iic-booking-app.apk
+          rm -f /tmp/iic-android/app.apk
+          docker exec -w /app "$CID" python manage.py shell -c "
+          from iic_booking.deployment.models import MobileAppRelease
+          rel = MobileAppRelease.objects.filter(is_latest=True, platform='android').first()
+          assert rel is not None, 'no latest android release'
+          print('OK version', rel.version_name, rel.version_code)
+          print('OK sha256', rel.sha256)
+          print('OK size', rel.download_size_bytes)
+          print('OK storage name', rel.file.name)
+          "

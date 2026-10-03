@@ -40,6 +40,13 @@ REASON_USER_REVOKED_ALL = "user_revoked_all"
 REASON_PASSWORD_CHANGED = "password_changed"
 REASON_ADMIN_FORCE_LOGOUT = "admin_force_logout"
 REASON_ADMIN_REVOKED = "admin_revoked"
+REASON_APP_AUDIENCE = "app_audience"
+
+
+def _in_app_audience(user) -> bool:
+    from iic_booking.deployment.mobile_app import user_in_app_audience
+
+    return user_in_app_audience(user)
 
 
 class MobileSessionError(Exception):
@@ -250,6 +257,19 @@ def refresh_session(*, device_id: str, refresh_token: str, ip: str | None = None
             error = MobileSessionError("SESSION_EXPIRED", "Your session has expired. Please sign in again.")
         elif not session.user.is_active:
             error = MobileSessionError("SESSION_REVOKED", "This account is not active.")
+        elif not _in_app_audience(session.user):
+            session.revoked_at = now
+            session.revoke_reason = REASON_APP_AUDIENCE
+            session.save(update_fields=["revoked_at", "revoke_reason"])
+            logger.info(
+                "Mobile session revoked: user_id=%s session_id=%s reason=%s",
+                session.user_id,
+                session.pk,
+                REASON_APP_AUDIENCE,
+            )
+            from iic_booking.deployment.mobile_app import AUDIENCE_CODE, audience_message
+
+            error = MobileSessionError(AUDIENCE_CODE, audience_message())
         else:
             reused = not constant_time_compare(session.refresh_hash, digest)
             grace = timedelta(seconds=_int_setting("MOBILE_REFRESH_REUSE_GRACE_SECONDS", 60))
