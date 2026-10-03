@@ -166,39 +166,68 @@ def project_grant_switch_exempt(user) -> bool:
     )
 
 
-def project_grant_recharge_enabled(user=None) -> bool:
+def _department_allows(option: str, department) -> bool:
+    """Master is on: does the department (of the sub-wallet involved) still allow the option?"""
+    if department is None:
+        return True
+    from iic_booking.users.wallet_payment_modes import department_allows
+
+    return department_allows(option, department)
+
+
+def project_grant_recharge_enabled(user=None, department=None) -> bool:
     if project_grant_switch_exempt(user):
         return True
-    return bool(WalletSricSettings.get_singleton().project_grant_recharge_enabled)
+    if not WalletSricSettings.get_singleton().project_grant_recharge_enabled:
+        return False
+    return _department_allows("project_grant", department)
 
 
-def direct_cash_recharge_enabled() -> bool:
-    return bool(WalletSricSettings.get_singleton().direct_cash_recharge_enabled)
+def direct_cash_recharge_enabled(department=None) -> bool:
+    if not WalletSricSettings.get_singleton().direct_cash_recharge_enabled:
+        return False
+    return _department_allows("direct_cash", department)
 
 
-def online_gateway_recharge_enabled() -> bool:
-    return bool(WalletSricSettings.get_singleton().online_gateway_recharge_enabled)
+def online_gateway_recharge_enabled(department=None) -> bool:
+    if not WalletSricSettings.get_singleton().online_gateway_recharge_enabled:
+        return False
+    return _department_allows("online_gateway", department)
 
 
-def peer_transfer_enabled() -> bool:
-    return bool(WalletSricSettings.get_singleton().peer_transfer_enabled)
+def peer_transfer_enabled(department=None) -> bool:
+    if not WalletSricSettings.get_singleton().peer_transfer_enabled:
+        return False
+    return _department_allows("peer_transfer", department)
 
 
 AWAITING_APPROVAL_MESSAGE = "Awaiting Competent Authority Approval."
 
 
 def wallet_mode_flags(user=None) -> dict:
-    """Wallet funding / transfer options the Main Administrator can switch on or off, as seen by ``user``."""
+    """Wallet funding / transfer options the Main Administrator can switch on or off, as seen by ``user``.
+
+    The top-level flags are the masters; ``department_modes`` lists departments that switch an
+    enabled master off (``{department_id: {flag: False}}``).
+    """
     from iic_booking.users.wallet_credit_facility_v2 import feature_enabled as credit_feature_enabled
+    from iic_booking.users.wallet_payment_modes import user_department_modes
 
     s = WalletSricSettings.get_singleton()
+    exempt = project_grant_switch_exempt(user)
+    masters = {
+        "project_grant": bool(s.project_grant_recharge_enabled),
+        "direct_cash": bool(s.direct_cash_recharge_enabled),
+        "online_gateway": bool(s.online_gateway_recharge_enabled),
+        "peer_transfer": bool(s.peer_transfer_enabled),
+    }
     return {
-        "project_grant_recharge_enabled": bool(s.project_grant_recharge_enabled)
-        or project_grant_switch_exempt(user),
-        "direct_cash_recharge_enabled": bool(s.direct_cash_recharge_enabled),
-        "online_gateway_recharge_enabled": bool(s.online_gateway_recharge_enabled),
-        "peer_transfer_enabled": bool(s.peer_transfer_enabled),
+        "project_grant_recharge_enabled": masters["project_grant"] or exempt,
+        "direct_cash_recharge_enabled": masters["direct_cash"],
+        "online_gateway_recharge_enabled": masters["online_gateway"],
+        "peer_transfer_enabled": masters["peer_transfer"],
         "credit_facility_enabled": bool(credit_feature_enabled()),
+        "department_modes": user_department_modes(masters, project_grant_exempt=exempt),
         "disabled_message": AWAITING_APPROVAL_MESSAGE,
     }
 

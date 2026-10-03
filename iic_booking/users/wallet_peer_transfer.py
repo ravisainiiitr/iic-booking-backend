@@ -358,6 +358,18 @@ def confirm_transfer_with_otp(*, transfer_id: int, sender, otp: str) -> WalletPe
     return locked
 
 
+def peer_transfer_staff_emails(transfer: WalletPeerTransfer) -> list[str]:
+    """Configured To + CC for the department (defaults: Department Administrators and Accounts In-charge)."""
+    from iic_booking.users.wallet_payment_modes import configured_recipients, expand_recipients, unique_emails
+
+    to_tokens, cc_tokens, _ = configured_recipients("peer_transfer", transfer.department_id)
+    owner = transfer.sender
+    return unique_emails(
+        expand_recipients(to_tokens, department=transfer.department, wallet_owner=owner)
+        + expand_recipients(cc_tokens, department=transfer.department, wallet_owner=owner)
+    )
+
+
 def notify_peer_transfer_completed(transfer: WalletPeerTransfer) -> None:
     """Email sender, recipient, department admin(s), and account in-charge(s)."""
     when = (transfer.completed_at or timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
@@ -389,12 +401,8 @@ Transaction Status: Completed
         (transfer.sender.email, sender_body),
         (transfer.recipient.email, recipient_body),
     ]
-    for u in find_department_administrators(transfer.department):
-        if u.email:
-            pairs.append((u.email, staff_body))
-    for u in find_department_account_incharges(transfer.department):
-        if u.email:
-            pairs.append((u.email, staff_body))
+    for email in peer_transfer_staff_emails(transfer):
+        pairs.append((email, staff_body))
 
     seen = set()
     for email, body in pairs:

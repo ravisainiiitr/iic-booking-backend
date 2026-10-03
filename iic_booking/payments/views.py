@@ -134,7 +134,7 @@ def razorpay_create_order(request):
         from iic_booking.users.models.wallet_sric_settings import online_gateway_recharge_enabled
         from iic_booking.users.student_wallet_recharge import assert_iitr_student_may_recharge
 
-        if not online_gateway_recharge_enabled():
+        if not online_gateway_recharge_enabled(department=request.data.get("department_id")):
             return online_gateway_recharge_disabled_response()
 
         try:

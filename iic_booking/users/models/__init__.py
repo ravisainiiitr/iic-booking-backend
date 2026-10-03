@@ -68,6 +68,17 @@ from .auth_lock import UserLoginLock
 from .mobile_device_session import MobileDeviceSession
 from .auth_settings import AuthSettings
 from .wallet_sric_settings import WalletCashbookMailboxMessage, WalletSricSettings
+from .wallet_payment_modes import (
+    DepartmentModeState,
+    WalletDirectRecharge,
+    WalletDirectRechargeGrant,
+    WalletDirectRechargeMode,
+    WalletModeDepartmentSetting,
+    WalletModeEmailRecipients,
+    WalletModeOption,
+    WalletPaymentModeAuditEvent,
+    WalletPaymentModeConfig,
+)
 from .test_account_email_settings import TestAccountEmailSettings
 from .user_type_inactivity import UserTypeInactivityTimeout
 from .billing import ExternalBillingProfile

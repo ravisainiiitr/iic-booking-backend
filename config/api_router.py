@@ -1084,6 +1084,8 @@ urlpatterns = router.urls + [
         admin_wallet_credit_v2_post_credit,
         name="admin-wallet-credit-post-credit",
     ),
+    # Wallet Payment Modes: department matrix, email recipients, direct wallet recharge
+    path("", include("iic_booking.users.api.wallet_payment_modes_urls")),
     path("admin/identity/dashboard/", identity_dashboard, name="admin-identity-dashboard"),
     path("admin/identity/degrees/", degree_classification_list, name="admin-identity-degrees"),
     path("admin/identity/department-mappings/", department_mapping_list, name="admin-identity-department-mappings"),

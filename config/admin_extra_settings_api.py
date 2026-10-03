@@ -494,6 +494,7 @@ def register_extra_admin_routes(router):
             max_digits=12, decimal_places=2, min_value=Decimal("1.00"), required=False
         )
         credit_max_days = serializers.IntegerField(min_value=1, max_value=3650, required=False)
+        direct_recharge_enabled = serializers.BooleanField(required=False)
 
     class WalletModeSettingsViewSet(ViewSet):
         """Main Administrator switches for wallet funding / transfer options and credit caps."""
@@ -510,10 +511,13 @@ def register_extra_admin_routes(router):
         def _payload():
             from iic_booking.users.identity.flags import wallet_credit_enabled
             from iic_booking.users.models.wallet_credit_facility import WalletCreditPolicy
+            from iic_booking.users.wallet_payment_modes import direct_recharge_master_enabled, schema_ready
 
             sric = WalletSricSettings.get_singleton()
             policy = WalletCreditPolicy.get_solo()
             return {
+                "direct_recharge_enabled": direct_recharge_master_enabled(),
+                "department_settings_available": schema_ready(),
                 "project_grant_recharge_enabled": sric.project_grant_recharge_enabled,
                 "direct_cash_recharge_enabled": sric.direct_cash_recharge_enabled,
                 "online_gateway_recharge_enabled": sric.online_gateway_recharge_enabled,
@@ -533,11 +537,26 @@ def register_extra_admin_routes(router):
         def partial_update(self, request, pk=None):
             from django.db import transaction
 
+            from iic_booking.users.mobile_sessions import client_ip
             from iic_booking.users.models.wallet_credit_facility import WalletCreditPolicy
+            from iic_booking.users.wallet_payment_modes import SchemaPending, record_audit, set_direct_recharge_master
 
             ser = WalletModeSettingsSerializer(data=request.data, partial=True)
             ser.is_valid(raise_exception=True)
             data = ser.validated_data
+            ip = client_ip(request)
+            before = self._payload()
+            if "direct_recharge_enabled" in data:
+                try:
+                    set_direct_recharge_master(data["direct_recharge_enabled"], actor=request.user, ip=ip)
+                except SchemaPending:
+                    return Response(
+                        {
+                            "error": "Direct wallet recharge settings are being installed. Try again in a few minutes.",
+                            "code": "SCHEMA_PENDING",
+                        },
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
             with transaction.atomic():
                 sric = WalletSricSettings.get_singleton()
                 sric_updates = [f for f in self.SRIC_FIELDS if f in data]
@@ -564,7 +583,19 @@ def register_extra_admin_routes(router):
                     policy_updates.append("max_credit_duration_days")
                 if policy_updates:
                     policy.save(update_fields=[*policy_updates, "updated_at"])
-            return Response(self._payload())
+            after = self._payload()
+            changed = {k: (before.get(k), after.get(k)) for k in data if k != "direct_recharge_enabled"}
+            changed = {k: v for k, v in changed.items() if v[0] != v[1]}
+            if changed:
+                record_audit(
+                    request.user,
+                    "master_changed",
+                    "wallet_mode_settings",
+                    {k: v[0] for k, v in changed.items()},
+                    {k: v[1] for k, v in changed.items()},
+                    ip,
+                )
+            return Response(after)
 
         def update(self, request, pk=None):
             return self.partial_update(request, pk=pk)
