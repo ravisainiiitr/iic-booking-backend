@@ -44,6 +44,8 @@ def ticket_download_path(product: str, token: str) -> str:
         return f"/api/v1/sync/installer/releases/download/ticket/{token}/"
     if product == "eq_wizard":
         return f"/api/v1/deployment/wizard/download/{token}/"
+    if product == "android_app":
+        return f"/api/v1/deployment/mobile-app/download/{token}/"
     return f"/api/v1/analysis/installer/releases/download/ticket/{token}/"
 
 

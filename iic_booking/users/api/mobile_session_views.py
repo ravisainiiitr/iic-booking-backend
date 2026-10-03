@@ -89,6 +89,12 @@ def mobile_enroll(request):
     if not ms.sessions_enabled():
         return _error("MOBILE_SESSIONS_DISABLED", "Staying signed in on the app is currently turned off.", status.HTTP_403_FORBIDDEN)
 
+    from iic_booking.deployment.mobile_app import audience_refusal_payload, user_in_app_audience
+
+    if not user_in_app_audience(request.user):
+        payload = audience_refusal_payload()
+        return _error(payload.pop("code"), payload.pop("error"), status.HTTP_403_FORBIDDEN, **payload)
+
     if ms.login_too_old_to_enroll(getattr(request.auth, "created", None)):
         return _error("LOGIN_TOO_OLD", "Please sign in again to set up this device.", status.HTTP_403_FORBIDDEN)
 

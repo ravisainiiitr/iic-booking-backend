@@ -49,6 +49,15 @@ def _clear_cache():
     cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _open_app_audience(monkeypatch):
+    """These tests cover device-session mechanics for any role; audience gating has its own tests."""
+    monkeypatch.setattr(
+        "iic_booking.deployment.mobile_app.audience_user_types",
+        lambda: [code for code, _label in UserType.get_choices()],
+    )
+
+
 def make_user(email="app.user@example.com", user_type=UserType.EXTERNAL, **extra) -> User:
     user = User.objects.create_user(email=email, password=PASSWORD, name="App User", user_type=user_type, **extra)
     user.email_verified = True

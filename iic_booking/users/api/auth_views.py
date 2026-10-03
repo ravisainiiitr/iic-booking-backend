@@ -1,6 +1,7 @@
 import secrets
 import base64
 import socket
+import time
 from contextlib import contextmanager
 from io import BytesIO
 from urllib.parse import urlencode, quote
@@ -23,6 +24,7 @@ from iic_booking.communication.welcome_email import build_welcome_email, welcome
 from iic_booking.users.test_accounts import redirect_email_for_user
 from django.http import HttpResponseRedirect, HttpResponse
 from django.urls import reverse
+from django.utils.crypto import constant_time_compare
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes, force_str
 from django.utils import timezone
@@ -1328,6 +1330,10 @@ def login(request):
     # Ensure authenticated user matches the user we found
     user = authenticated_user
 
+    refusal = _app_audience_refusal(request, user)
+    if refusal is not None:
+        return refusal
+
     from iic_booking.equipment.peak_window import peak_login_refusal
 
     refusal = peak_login_refusal(user)
@@ -1402,8 +1408,38 @@ def _normalize_phone_india(raw):
 
 
 LOGIN_OTP_CACHE_PREFIX = "login_otp:"
+LOGIN_OTP_REQUESTS_PREFIX = "login_otp_requests:"
 FORGOT_OTP_CACHE_PREFIX = "forgot_otp:"
 OTP_EXPIRY_SECONDS = 600  # 10 minutes
+LOGIN_OTP_MAX_REQUESTS = 5
+LOGIN_OTP_REQUEST_WINDOW_SECONDS = 15 * 60
+LOGIN_OTP_MAX_ATTEMPTS = 5
+
+
+def _login_otp_request_allowed(email: str) -> bool:
+    """At most LOGIN_OTP_MAX_REQUESTS login OTP emails per address in a rolling-ish 15 minute window."""
+    key = f"{LOGIN_OTP_REQUESTS_PREFIX}{email}"
+    if cache.add(key, 1, timeout=LOGIN_OTP_REQUEST_WINDOW_SECONDS):
+        return True
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=LOGIN_OTP_REQUEST_WINDOW_SECONDS)
+        return True
+    return count <= LOGIN_OTP_MAX_REQUESTS
+
+
+def _app_audience_refusal(request, user):
+    """Sign-in from the IIC Booking app (client=iic_app) by a role outside the app audience: refuse, no token."""
+    from iic_booking.deployment.mobile_app import (
+        audience_refusal_payload,
+        is_app_client,
+        user_in_app_audience,
+    )
+
+    if not is_app_client(request) or user_in_app_audience(user):
+        return None
+    return Response(audience_refusal_payload(), status=status.HTTP_403_FORBIDDEN)
 
 CHANNEL_I_FIRST_LOGIN_MESSAGE = (
     "Your first sign-in must be via Channel i. After signing in, set a password from "
@@ -1498,14 +1534,29 @@ def request_login_otp(request):
         return _email_login_disabled_response()
     if _requires_channel_i_first_login(user):
         return Response({"error": CHANNEL_I_FIRST_LOGIN_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+    refusal = _app_audience_refusal(request, user)
+    if refusal is not None:
+        return refusal
     from iic_booking.equipment.peak_window import peak_login_refusal
 
     refusal = peak_login_refusal(user)
     if refusal is not None:
         return refusal
+    if not _login_otp_request_allowed(email_raw):
+        return Response(
+            {
+                "error": "Too many OTP requests for this email. Please wait 15 minutes and try again.",
+                "code": "OTP_RATE_LIMITED",
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
     otp = "".join([str(secrets.randbelow(10)) for _ in range(6)])
     cache_key = f"{LOGIN_OTP_CACHE_PREFIX}{email_raw}"
-    cache.set(cache_key, {"otp": otp, "user_id": user.id}, timeout=OTP_EXPIRY_SECONDS)
+    cache.set(
+        cache_key,
+        {"otp": otp, "user_id": user.id, "attempts": 0, "expires_at": time.time() + OTP_EXPIRY_SECONDS},
+        timeout=OTP_EXPIRY_SECONDS,
+    )
     try:
         subject = "Your IIT Roorkee login OTP"
         body_plain = f"Your one-time password (OTP) for login is: {otp}\n\nThis OTP expires in 10 minutes. Do not share it with anyone."
@@ -1553,19 +1604,38 @@ def verify_login_otp(request):
         )
     cache_key = f"{LOGIN_OTP_CACHE_PREFIX}{email_raw}"
     data = cache.get(cache_key)
-    if not data or data.get("otp") != otp:
+    if data and not constant_time_compare(str(data.get("otp") or ""), otp):
+        attempts = int(data.get("attempts") or 0) + 1
+        if attempts >= LOGIN_OTP_MAX_ATTEMPTS:
+            cache.delete(cache_key)
+            return Response(
+                {
+                    "error": "Too many incorrect codes. Please request a new OTP.",
+                    "code": "OTP_ATTEMPTS_EXCEEDED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        remaining = int(float(data.get("expires_at") or 0) - time.time()) if data.get("expires_at") else OTP_EXPIRY_SECONDS
+        if remaining > 0:
+            cache.set(cache_key, {**data, "attempts": attempts}, timeout=remaining)
+        data = None
+    if not data:
         return Response(
             {"error": "Invalid or expired OTP. Please request a new one."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    cache.delete(cache_key)
     try:
         user = User.objects.get(pk=data["user_id"])
     except User.DoesNotExist:
+        cache.delete(cache_key)
         return Response(
             {"error": "User not found or inactive."},
             status=status.HTTP_404_NOT_FOUND,
         )
+    cache.delete(cache_key)
+    refusal = _app_audience_refusal(request, user)
+    if refusal is not None:
+        return refusal
     if not user.can_login():
         return Response(
             {"error": "User not found or inactive."},

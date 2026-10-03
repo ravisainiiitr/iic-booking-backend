@@ -262,6 +262,7 @@ from iic_booking.equipment.booking_lab_outreach import (
     booking_lab_question_resolve,
     lab_questions_awaiting,
 )
+from iic_booking.equipment.staff_app_summary import staff_app_today
 from iic_booking.equipment.booking_templates import (
     booking_template_attention,
     booking_template_check,
@@ -1313,6 +1314,7 @@ urlpatterns = router.urls + [
     ),
     path("bookings/stats/", booking_stats, name="booking-stats"),
     path("bookings/lab-operator-dashboard/", lab_operator_dashboard, name="lab-operator-dashboard"),
+    path("staff-app/today/", staff_app_today, name="staff-app-today"),
     path(
         "bookings/awaiting-completion/",
         bookings_awaiting_completion_view,
