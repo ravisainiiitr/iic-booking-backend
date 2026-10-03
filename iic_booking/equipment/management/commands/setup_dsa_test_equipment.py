@@ -46,8 +46,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opts):
         code = (opts["code"] or DEFAULT_CODE).strip()
+        machine = (opts["dsa_machine_name"] or "").strip()
         if opts["status"]:
-            self._emit(self._report(code), opts["json"])
+            self._emit(self._report(code, machine), opts["json"])
             return
         if (opts["confirm"] or "").strip() != CONFIRM_TOKEN:
             raise CommandError(f"Refusing to change data: pass --confirm {CONFIRM_TOKEN} (or use --status).")
@@ -59,14 +60,14 @@ class Command(BaseCommand):
             self._inputs_and_charges(equipment)
             self._slot_masters(equipment)
             self._staff(equipment, users)
-            if (opts["dsa_machine_name"] or "").strip():
-                self._assign_agent(equipment, opts["dsa_machine_name"].strip())
+            if machine:
+                self._assign_agent(equipment, machine)
         slots = self._generate_slots(equipment, max(0, int(opts["slot_days"] or 0)))
         self.stdout.write(
             f"{'Created' if created else 'Updated'} equipment {equipment.code} (id {equipment.pk}); "
             f"new daily slots: {slots}"
         )
-        self._emit(self._report(code), opts["json"])
+        self._emit(self._report(code, machine), opts["json"])
 
     def _test_users(self):
         from iic_booking.users.models import User
@@ -265,7 +266,39 @@ class Command(BaseCommand):
             )
         return created
 
-    def _report(self, code: str) -> dict:
+    def _agent_scope(self, machine_name: str) -> dict:
+        from iic_booking.sync.models import AgentAssignment, DepartmentSyncAgent
+        from iic_booking.sync.services.tokens import agent_expected_versions
+
+        agent = (
+            DepartmentSyncAgent.objects.filter(machine_name__iexact=machine_name, is_active=True)
+            .order_by("-last_seen_at", "-last_heartbeat_at")
+            .first()
+        )
+        if agent is None:
+            return {"machine_name": machine_name, "found": False}
+        codes = sorted(
+            AgentAssignment.objects.filter(sync_agent=agent, is_active=True).values_list(
+                "sync_profile__equipment__code", flat=True
+            )
+        )
+        expected_config, expected_schema = agent_expected_versions(agent)
+        return {
+            "machine_name": agent.machine_name,
+            "found": True,
+            "status": agent.status,
+            "version": agent.version,
+            "last_seen_at": agent.last_seen_at.isoformat() if agent.last_seen_at else None,
+            "bootstrap_required": agent.bootstrap_required,
+            "expected_configuration_version": expected_config,
+            "reported_configuration_version": agent.last_reported_configuration_version,
+            "expected_schema_version": expected_schema,
+            "reported_schema_version": agent.last_reported_schema_version,
+            "assigned_count": len(codes),
+            "assigned_codes": codes,
+        }
+
+    def _report(self, code: str, machine_name: str = "") -> dict:
         from iic_booking.equipment.models import (
             Booking,
             ChargeProfile,
@@ -276,6 +309,8 @@ class Command(BaseCommand):
         )
 
         report: dict = {"code": code, "found": False, "installers": self._installers()}
+        if machine_name:
+            report["dsa_scope"] = self._agent_scope(machine_name)
         equipment = Equipment.objects.select_related("internal_department").filter(code=code).first()
         if equipment is None:
             return report
