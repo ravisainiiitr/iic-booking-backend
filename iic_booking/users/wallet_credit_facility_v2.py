@@ -534,7 +534,35 @@ def create_and_submit_request(
         reason=purpose_clean,
     )
     _notify_credit_event(facility, "submitted", locked_user)
+    facility_id = facility.pk
+    transaction.on_commit(lambda: _email_credit_submitted(facility_id))
     return facility
+
+
+def _email_credit_submitted(facility_id: int) -> None:
+    """Email the configured Credit Limit recipients (none by default), copying the requester."""
+    try:
+        from iic_booking.users.wallet_payment_modes import send_option_email
+
+        facility = WalletCreditFacility.objects.select_related("user", "department").get(pk=facility_id)
+        user = facility.user
+        name = get_user_display_name(user) or user.email
+        send_option_email(
+            "credit",
+            department=facility.department_id,
+            requester=user,
+            subject=f"[{facility.public_reference}] Wallet credit request ₹{facility.requested_amount} — {name}",
+            text_body=(
+                "A wallet credit request was submitted and awaits review in Wallet Credit Management.\n\n"
+                f"Reference: {facility.public_reference}\n"
+                f"Requested by: {name} ({user.email})\n"
+                f"Department: {facility.department.name if facility.department_id else '—'}\n"
+                f"Amount: ₹{facility.requested_amount}\n"
+                f"Purpose: {facility.purpose}\n"
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("credit request email failed for facility %s", facility_id)
 
 
 @transaction.atomic

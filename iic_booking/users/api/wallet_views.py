@@ -1573,7 +1573,7 @@ def create_razorpay_order(request):
     """Create a Razorpay order for sub-wallet recharge.
     Request Body: amount (required), department_id (required, internal department).
     """
-    if not online_gateway_recharge_enabled():
+    if not online_gateway_recharge_enabled(department=request.data.get("department_id")):
         return online_gateway_recharge_disabled_response()
     serializer = WalletCreditSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -1802,9 +1802,13 @@ def send_user_otp_for_recharge(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not project_grant_recharge_enabled(request.user):
+    if recharge_mode == WalletRechargeMode.PROJECT_GRANT and not project_grant_recharge_enabled(
+        request.user, department=department_id
+    ):
         return _project_grant_recharge_disabled_response()
-    if recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT and not direct_cash_recharge_enabled():
+    if recharge_mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT and not direct_cash_recharge_enabled(
+        department=department_id
+    ):
         return _direct_cash_recharge_disabled_response()
 
     # Project Grant remains faculty-only. Students may use Direct Cash Deposit / Bank Transfer.
@@ -2195,14 +2199,14 @@ def create_wallet_recharge_request(request):
     if (
         mode == WalletRechargeMode.PROJECT_GRANT
         and not recharge_request.user_otp_verified
-        and not project_grant_recharge_enabled(request.user)
+        and not project_grant_recharge_enabled(request.user, department=recharge_request.department_id)
     ):
         recharge_request.delete()
         return _project_grant_recharge_disabled_response()
     if (
         mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT
         and not recharge_request.user_otp_verified
-        and not direct_cash_recharge_enabled()
+        and not direct_cash_recharge_enabled(department=recharge_request.department_id)
     ):
         recharge_request.delete()
         return _direct_cash_recharge_disabled_response()
@@ -2708,7 +2712,7 @@ def send_sric_wallet_recharge_notification(request, request_id):
     if (
         (recharge_request.recharge_mode or WalletRechargeMode.PROJECT_GRANT) == WalletRechargeMode.PROJECT_GRANT
         and not recharge_request.sric_notification_sent
-        and not project_grant_recharge_enabled(request.user)
+        and not project_grant_recharge_enabled(request.user, department=recharge_request.department_id)
     ):
         return _project_grant_recharge_disabled_response()
 

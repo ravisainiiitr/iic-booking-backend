@@ -270,6 +270,35 @@ def _settle_wallet_recharge(order: PaymentOrder, payment: Payment) -> None:
     )
     # Credit base only (convenience fee is gateway cost borne by payer)
     sub.credit(order.base_amount, desc, related_user=order.user)
+    order_id = order.pk
+    transaction.on_commit(lambda: _notify_gateway_recharge(order_id, payment.razorpay_payment_id))
+
+
+def _notify_gateway_recharge(order_id: int, payment_id: str) -> None:
+    """Email the configured online-gateway recipients (none by default), copying the payer."""
+    try:
+        from iic_booking.users.wallet_payment_modes import send_option_email
+
+        order = PaymentOrder.objects.select_related("user", "department", "wallet__user").get(pk=order_id)
+        name = getattr(order.user, "name", "") or getattr(order.user, "email", "")
+        dept = order.department.name if order.department_id else "—"
+        send_option_email(
+            "online_gateway",
+            department=order.department_id,
+            requester=order.user,
+            wallet_owner=getattr(order.wallet, "user", None),
+            subject=f"Wallet recharged online: ₹{order.base_amount} — {name}",
+            text_body=(
+                "A wallet recharge through the online payment gateway was credited.\n\n"
+                f"Paid by: {name} ({getattr(order.user, 'email', '')})\n"
+                f"Department sub-wallet: {dept}\n"
+                f"Amount credited: ₹{order.base_amount}\n"
+                f"Gateway order: {order.razorpay_order_id}\n"
+                f"Payment: {payment_id}\n"
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("online gateway recharge email failed for order %s", order_id)
 
 
 @transaction.atomic

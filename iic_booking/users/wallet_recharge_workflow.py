@@ -831,16 +831,16 @@ def cancel_request(
     return locked
 
 
-def get_recharge_cc_emails(mode: str) -> list[str]:
-    """Admin-configured CC addresses for the given recharge mode."""
-    settings_obj = WalletSricSettings.get_singleton()
-    if mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT:
-        raw = [settings_obj.ar_sric_emails, settings_obj.cash_deposit_cc_emails]
-    else:
-        raw = [settings_obj.ar_sric_emails, settings_obj.dean_sric_emails, settings_obj.project_grant_cc_emails]
-    return _unique_emails(
-        email for block in raw for email in _parse_sric_recipient_emails(block or "")
-    )
+def _mode_option(mode: str) -> str:
+    return "direct_cash" if mode == WalletRechargeMode.DIRECT_CASH_DEPOSIT else "project_grant"
+
+
+def get_recharge_cc_emails(mode: str, department=None) -> list[str]:
+    """Configured CC addresses for the recharge mode (department override, else default, else SRIC settings)."""
+    from iic_booking.users.wallet_payment_modes import configured_recipients, expand_recipients
+
+    _, cc_tokens, _ = configured_recipients(_mode_option(mode), department)
+    return _unique_emails(expand_recipients(cc_tokens, department=department))
 
 
 def _unique_emails(emails, *, exclude=()) -> list[str]:
@@ -871,11 +871,26 @@ def get_recharge_copy_recipients(recharge_request: WalletRechargeRequest, *, exc
     wallet_owner = getattr(getattr(recharge_request, "wallet", None), "user", None)
     if wallet_owner is not None:
         defaults.append(getattr(wallet_owner, "email", "") or "")
-    return _unique_emails(defaults + get_recharge_cc_emails(mode), exclude=exclude)
+    cc = get_recharge_cc_emails(mode, getattr(recharge_request, "department_id", None))
+    return _unique_emails(defaults + cc, exclude=exclude)
 
 
 def get_recharge_approver_emails(recharge_request: WalletRechargeRequest) -> list[str]:
-    """The office that receives the Approve / Decline links: Bill Section (cash) or SRIC Office (project grant)."""
+    """Who receives the Approve / Decline links: the configured To list for the department, which defaults
+    to the Bill Section (cash) or SRIC Office (project grant). Never empty while those offices are set."""
+    from iic_booking.users.wallet_payment_modes import configured_recipients, expand_recipients
+
+    mode = getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
+    department_id = getattr(recharge_request, "department_id", None)
+    wallet_owner = getattr(getattr(recharge_request, "wallet", None), "user", None)
+    to_tokens, _, _ = configured_recipients(_mode_option(mode), department_id)
+    # The links credit the wallet without login: never send them to the requester or the wallet owner.
+    parties = [getattr(recharge_request.user, "email", "") or "", getattr(wallet_owner, "email", "") or ""]
+    emails = _unique_emails(
+        expand_recipients(to_tokens, department=department_id, wallet_owner=wallet_owner), exclude=parties
+    )
+    if emails:
+        return emails
     return get_sric_bill_section_emails() if _is_cash_mode(recharge_request) else get_sric_recipient_emails()
 
 
@@ -1615,7 +1630,8 @@ def notify_stakeholders_of_decision(recharge_request: WalletRechargeRequest) -> 
                 recipients.extend(get_recharge_approver_emails(recharge_request))
             recipients.extend(
                 get_recharge_cc_emails(
-                    getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT
+                    getattr(recharge_request, "recharge_mode", None) or WalletRechargeMode.PROJECT_GRANT,
+                    recharge_request.department_id,
                 )
             )
         except Exception:
