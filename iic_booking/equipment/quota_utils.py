@@ -7,7 +7,7 @@ aggregation. QuotaChecker remains as a thin alias for older call sites.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -31,7 +31,6 @@ from .models import (
     QuotaType,
     UserTypeQuota,
 )
-from iic_booking.users.display import get_user_display_name
 
 # Bookings that hold (or held) the user's slots count toward quota:
 # - awaiting payment / pending: the slots are reserved for the user;
@@ -72,16 +71,97 @@ class QuotaCheckResult:
     limit_minutes: int
     remaining_before_request: int
     message: Optional[str] = None
+    quota_type: str = ""
+    # "group" (faculty wallet, shared), "individual" (one user) or "pool" (legacy per-user-type limit).
+    scope_kind: str = ""
+    period_start: Optional[datetime] = None
+    period_end: Optional[datetime] = None
+    members_count: int = 1
 
     def as_error(self) -> str:
         if self.message:
             return self.message
         projected = self.used_minutes + self.requested_minutes
+        shared = (
+            f" (shared across {self.members_count} user(s) on the faculty wallet)"
+            if self.scope_kind == "group"
+            else ""
+        )
         return (
             f"{self.scope} quota exceeded: "
             f"current usage {self.used_minutes} min + requested {self.requested_minutes} min "
             f"= {projected} min; configured limit {self.limit_minutes} min; "
-            f"remaining before this request {max(0, self.remaining_before_request)} min."
+            f"remaining before this request {max(0, self.remaining_before_request)} min"
+            f"{shared}."
+        )
+
+    def payload(self) -> dict:
+        """What the booking UI needs to explain the refusal and open the breakdown."""
+        return {
+            "scope": self.scope_kind,
+            "scope_label": self.scope,
+            "period": self.quota_type,
+            "period_start": self.period_start.isoformat() if self.period_start else None,
+            "period_end": self.period_end.isoformat() if self.period_end else None,
+            "limit_minutes": int(self.limit_minutes),
+            "used_minutes": int(self.used_minutes),
+            "requested_minutes": int(self.requested_minutes),
+            "remaining_minutes": max(0, int(self.limit_minutes) - int(self.used_minutes)),
+            "over_by_minutes": max(0, int(self.used_minutes) + int(self.requested_minutes) - int(self.limit_minutes)),
+            "members_count": int(self.members_count),
+        }
+
+
+@dataclass(frozen=True)
+class QuotaDecision:
+    """Outcome of the full quota pipeline; ``failure`` is set for minute limits so callers can explain it."""
+
+    allowed: bool
+    error: Optional[str] = None
+    failure: Optional[QuotaCheckResult] = None
+
+    def as_tuple(self) -> tuple[bool, Optional[str]]:
+        return self.allowed, self.error
+
+
+QUOTA_ALLOWED = QuotaDecision(True)
+
+
+@dataclass(frozen=True)
+class QuotaDimension:
+    """
+    One weekly or monthly minute limit that applies to a user, and whose bookings count toward it.
+    Enforcement, the booking-page summary and the "bookings counted" breakdown all read usage through
+    ``bookings_in_period`` so they can never disagree.
+    """
+
+    quota_type: str
+    scope: str  # "group" | "individual" | "pool"
+    scope_label: str
+    limit_minutes: int
+    users: tuple = ()
+    equipment_ids: tuple = ()
+    snapshot_filter: Optional[dict] = field(default=None, compare=False, hash=False)
+
+    @property
+    def period_word(self) -> str:
+        return "Monthly" if self.quota_type == QuotaType.MONTHLY else "Weekly"
+
+    def bookings_in_period(self, start_date: datetime, end_date: datetime, exclude_booking_id: Optional[int] = None) -> QuerySet:
+        if self.scope == "pool":
+            return QuotaService._legacy_bookings_in_period(
+                equipment=self.equipment_ids[0],
+                snapshot_filter=self.snapshot_filter or {},
+                start_date=start_date,
+                end_date=end_date,
+                exclude_booking_id=exclude_booking_id,
+            )
+        return QuotaService._bookings_in_period(
+            users=list(self.users),
+            group_equipment_ids=list(self.equipment_ids),
+            start_date=start_date,
+            end_date=end_date,
+            exclude_booking_id=exclude_booking_id,
         )
 
 
@@ -204,29 +284,38 @@ def check_booking_minutes_change(booking, new_total_time_minutes: int) -> tuple[
     Only increases are checked, against the period the booking counts in; decreases always pass
     and free the difference because usage is derived from the stored minutes.
     """
+    return evaluate_booking_minutes_change(booking, new_total_time_minutes).as_tuple()
+
+
+def evaluate_booking_minutes_change(booking, new_total_time_minutes: int) -> "QuotaDecision":
+    """check_booking_minutes_change with the failing limit attached."""
     if not booking_counts_toward_quota(booking) or booking_quota_should_skip(booking.equipment):
-        return True, None
+        return QUOTA_ALLOWED
     slot_mins = remaining_slot_minutes_for_booking(booking)
     old_effective = booking_effective_quota_minutes(booking)
     new_effective = max(0, int(new_total_time_minutes or 0))
     if slot_mins > 0:
         new_effective = min(new_effective, slot_mins)
     if new_effective <= old_effective:
-        return True, None
-    ok, err = QuotaService.validate_booking_quota(
-        user=booking.user,
-        equipment=booking.equipment,
+        return QUOTA_ALLOWED
+    decision = QuotaService.evaluate_booking_quota(
+        booking.user,
+        booking.equipment,
         additional_time_minutes=new_effective,
         additional_bookings=1,
         additional_charge=Decimal(str(booking.total_charge or "0")),
         booking_date=booking_quota_reference_datetime(booking),
         exclude_booking_id=booking.pk,
     )
-    if ok:
-        return True, None
-    return False, (
-        f"This change needs {new_effective - old_effective} more minute(s) of instrument time "
-        f"({old_effective} → {new_effective} min), which is over your booking limit. {err}"
+    if decision.allowed:
+        return QUOTA_ALLOWED
+    return QuotaDecision(
+        False,
+        (
+            f"This change needs {new_effective - old_effective} more minute(s) of instrument time "
+            f"({old_effective} → {new_effective} min), which is over your booking limit. {decision.error}"
+        ),
+        decision.failure,
     )
 
 
@@ -283,8 +372,33 @@ class QuotaService:
         Returns (allowed, error_message). When bypass_quota is True (urgent /
         hold flows), returns (True, None) immediately after skip checks.
         """
+        return cls.evaluate_booking_quota(
+            user,
+            equipment,
+            additional_time_minutes=additional_time_minutes,
+            additional_bookings=additional_bookings,
+            additional_charge=additional_charge,
+            booking_date=booking_date,
+            exclude_booking_id=exclude_booking_id,
+            bypass_quota=bypass_quota,
+        ).as_tuple()
+
+    @classmethod
+    def evaluate_booking_quota(
+        cls,
+        user: User,
+        equipment,
+        *,
+        additional_time_minutes: int = 0,
+        additional_bookings: int = 0,
+        additional_charge: Decimal = Decimal("0.00"),
+        booking_date: Optional[datetime] = None,
+        exclude_booking_id: Optional[int] = None,
+        bypass_quota: bool = False,
+    ) -> QuotaDecision:
+        """validate_booking_quota with the failing limit attached (scope, period, limit, used, requested)."""
         if bypass_quota or booking_quota_should_skip(equipment):
-            return True, None
+            return QUOTA_ALLOWED
 
         if booking_date is None:
             booking_date = timezone.now()
@@ -299,29 +413,30 @@ class QuotaService:
                     .filter(equipment_group_id=equipment.equipment_group_id, is_enforced=True)
                     .order_by("quota_type")
                 )
-                return cls._validate_group_quotas(
+                return cls._group_decision(
                     user=user,
                     equipment=equipment,
+                    quota_types=(QuotaType.MONTHLY, QuotaType.WEEKLY),
                     additional_time_minutes=additional_time_minutes,
                     booking_date=booking_date,
                     exclude_booking_id=exclude_booking_id,
                 )
 
-            # Legacy equipment-level quotas (WEEKLY then MONTHLY for each configured limit).
+            # Legacy equipment-level quotas (MONTHLY then WEEKLY for each configured limit).
             for quota_type in (QuotaType.MONTHLY, QuotaType.WEEKLY):
-                ok, err = cls.check_user_quota(
-                    user=user,
-                    equipment=equipment,
-                    quota_type=quota_type,
-                    additional_time_minutes=additional_time_minutes,
-                    additional_bookings=additional_bookings,
-                    additional_charge=additional_charge,
-                    booking_date=booking_date,
-                    exclude_booking_id=exclude_booking_id,
+                decision = cls._legacy_decision(
+                    user,
+                    equipment,
+                    quota_type,
+                    additional_time_minutes,
+                    additional_bookings,
+                    additional_charge,
+                    booking_date,
+                    exclude_booking_id,
                 )
-                if not ok:
-                    return False, err
-            return True, None
+                if not decision.allowed:
+                    return decision
+            return QUOTA_ALLOWED
 
     @classmethod
     def check_user_quota(
@@ -347,207 +462,152 @@ class QuotaService:
         equipment.refresh_from_db(fields=["equipment_group"])
 
         if equipment.equipment_group:
-            return cls._check_group_quota_period(
-                user,
-                equipment,
-                quota_type,
-                additional_time_minutes,
-                booking_date,
-                exclude_booking_id,
-            )
+            # Single-period group check: faculty then individual within that period.
+            return cls._group_decision(
+                user=user,
+                equipment=equipment,
+                quota_types=(quota_type,),
+                additional_time_minutes=additional_time_minutes,
+                booking_date=booking_date,
+                exclude_booking_id=exclude_booking_id,
+            ).as_tuple()
 
-        if user.is_external():
-            return cls._check_external_quota(
-                equipment,
-                quota_type,
-                additional_time_minutes,
-                additional_bookings,
-                additional_charge,
-                booking_date,
-                exclude_booking_id,
-            )
-        return cls._check_user_type_quota(
+        return cls._legacy_decision(
+            user,
             equipment,
-            user.user_type,
             quota_type,
             additional_time_minutes,
             additional_bookings,
             additional_charge,
             booking_date,
             exclude_booking_id,
-        )
+        ).as_tuple()
 
     # ------------------------------------------------------------------
     # Group-level pipeline
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def faculty_wallet_owner(user: User) -> Optional[User]:
+        """The faculty whose wallet ``user`` books on (the faculty themselves for faculty users), else None."""
+        if user.is_faculty():
+            return user
+        wallet = user.get_accessible_wallet()
+        if wallet and wallet.user_id != user.pk and wallet.user.user_type == UserType.FACULTY:
+            return wallet.user
+        return None
+
     @classmethod
-    def _validate_group_quotas(
+    def group_quota_dimensions(
+        cls,
+        user: User,
+        equipment_group,
+        quota_types=(QuotaType.MONTHLY, QuotaType.WEEKLY),
+    ) -> list[QuotaDimension]:
+        """
+        Group limits that apply to ``user``, in enforcement order:
+          1. Faculty Monthly / Weekly (faculty, or a student on a faculty wallet): shared by the wallet group
+          2. Individual Monthly / Weekly (everyone except faculty)
+        A limit of 0 means "no limit" and is still listed (callers skip it).
+        """
+        group_equipment_ids = tuple(equipment_group.equipment.values_list("equipment_id", flat=True))
+        is_internal = UserType.is_internal_user(user.user_type)
+        is_faculty = bool(user.is_faculty())
+        use_faculty_quota = cls.faculty_wallet_owner(user) is not None
+        quotas = {
+            q.quota_type: q
+            for q in EquipmentGroupQuota.objects.filter(
+                equipment_group=equipment_group, quota_type__in=list(quota_types), is_enforced=True
+            )
+        }
+        ordered = [quotas[t] for t in quota_types if t in quotas]
+        dims: list[QuotaDimension] = []
+        if use_faculty_quota and ordered:
+            members = tuple(cls._wallet_users(user))
+            for q in ordered:
+                period_word = "Monthly" if q.quota_type == QuotaType.MONTHLY else "Weekly"
+                dims.append(
+                    QuotaDimension(
+                        quota_type=q.quota_type,
+                        scope="group",
+                        scope_label=f"Faculty {period_word}",
+                        limit_minutes=int(
+                            (q.internal_faculty_quota_minutes if is_internal else q.external_faculty_quota_minutes) or 0
+                        ),
+                        users=members,
+                        equipment_ids=group_equipment_ids,
+                    )
+                )
+        if not is_faculty:
+            for q in ordered:
+                period_word = "Monthly" if q.quota_type == QuotaType.MONTHLY else "Weekly"
+                dims.append(
+                    QuotaDimension(
+                        quota_type=q.quota_type,
+                        scope="individual",
+                        scope_label=f"Individual {period_word}",
+                        limit_minutes=int(
+                            (q.internal_individual_quota_minutes if is_internal else q.external_individual_quota_minutes)
+                            or 0
+                        ),
+                        users=(user,),
+                        equipment_ids=group_equipment_ids,
+                    )
+                )
+        return dims
+
+    @classmethod
+    def evaluate_dimension(
+        cls,
+        dim: QuotaDimension,
+        *,
+        booking_date: datetime,
+        additional_time_minutes: int = 0,
+        exclude_booking_id: Optional[int] = None,
+    ) -> QuotaCheckResult:
+        start_date, end_date = cls._get_quota_period(dim.quota_type, booking_date)
+        common = dict(
+            scope=dim.scope_label,
+            requested_minutes=additional_time_minutes,
+            quota_type=dim.quota_type,
+            scope_kind=dim.scope,
+            period_start=start_date,
+            period_end=end_date,
+            members_count=len(dim.users) or 1,
+        )
+        # Group limits of 0 mean "not configured"; a legacy HOURS limit of 0 blocks any booking.
+        if dim.limit_minutes <= 0 and dim.scope != "pool":
+            return QuotaCheckResult(allowed=True, used_minutes=0, limit_minutes=0, remaining_before_request=0, **common)
+        used = cls._sum_booking_quota_minutes(dim.bookings_in_period(start_date, end_date, exclude_booking_id))
+        return QuotaCheckResult(
+            allowed=used + additional_time_minutes <= dim.limit_minutes,
+            used_minutes=used,
+            limit_minutes=dim.limit_minutes,
+            remaining_before_request=max(0, dim.limit_minutes - used),
+            **common,
+        )
+
+    @classmethod
+    def _group_decision(
         cls,
         *,
         user: User,
         equipment,
+        quota_types,
         additional_time_minutes: int,
         booking_date: datetime,
         exclude_booking_id: Optional[int],
-    ) -> tuple[bool, Optional[str]]:
-        equipment_group = equipment.equipment_group
-        group_equipment_ids = list(
-            equipment_group.equipment.values_list("equipment_id", flat=True)
-        )
-        is_internal = UserType.is_internal_user(user.user_type)
-        is_faculty = bool(user.is_faculty())
-        wallet = user.get_accessible_wallet()
-        is_using_faculty_wallet = bool(
-            wallet
-            and wallet.user.user_type == UserType.FACULTY
-            and wallet.user_id != user.pk
-        )
-        use_faculty_quota = is_faculty or is_using_faculty_wallet
-
-        monthly = cls._get_group_quota(equipment_group, QuotaType.MONTHLY)
-        weekly = cls._get_group_quota(equipment_group, QuotaType.WEEKLY)
-
-        # Steps 1–2: Faculty Monthly then Faculty Weekly
-        if use_faculty_quota:
-            for quota_obj, period_label in (
-                (monthly, "Faculty Monthly"),
-                (weekly, "Faculty Weekly"),
-            ):
-                if quota_obj is None:
-                    continue
-                limit = (
-                    quota_obj.internal_faculty_quota_minutes
-                    if is_internal
-                    else quota_obj.external_faculty_quota_minutes
-                )
-                result = cls._evaluate_faculty_minutes(
-                    user=user,
-                    group_equipment_ids=group_equipment_ids,
-                    limit_minutes=limit,
-                    quota_type=quota_obj.quota_type,
-                    booking_date=booking_date,
-                    additional_time_minutes=additional_time_minutes,
-                    scope_label=period_label,
-                    exclude_booking_id=exclude_booking_id,
-                )
-                if not result.allowed:
-                    return False, result.as_error()
-
-            # Faculty users: no individual checks.
-            if is_faculty:
-                return True, None
-
-        # Steps 3–4: Individual Monthly then Individual Weekly (students / non-faculty)
-        if not is_faculty:
-            for quota_obj, period_label in (
-                (monthly, "Individual Monthly"),
-                (weekly, "Individual Weekly"),
-            ):
-                if quota_obj is None:
-                    continue
-                limit = (
-                    quota_obj.internal_individual_quota_minutes
-                    if is_internal
-                    else quota_obj.external_individual_quota_minutes
-                )
-                result = cls._evaluate_individual_minutes(
-                    user=user,
-                    group_equipment_ids=group_equipment_ids,
-                    limit_minutes=limit,
-                    quota_type=quota_obj.quota_type,
-                    booking_date=booking_date,
-                    additional_time_minutes=additional_time_minutes,
-                    scope_label=period_label,
-                    exclude_booking_id=exclude_booking_id,
-                )
-                if not result.allowed:
-                    return False, result.as_error()
-
-        return True, None
-
-    @classmethod
-    def _check_group_quota_period(
-        cls,
-        user: User,
-        equipment,
-        quota_type: str,
-        additional_time_minutes: int,
-        booking_date: datetime,
-        exclude_booking_id: Optional[int],
-    ) -> tuple[bool, Optional[str]]:
-        """Single-period group check (legacy API): faculty then individual within that period."""
-        equipment_group = equipment.equipment_group
-        group_quota = cls._get_group_quota(equipment_group, quota_type)
-        if group_quota is None:
-            return True, None
-
-        group_equipment_ids = list(
-            equipment_group.equipment.values_list("equipment_id", flat=True)
-        )
-        is_internal = UserType.is_internal_user(user.user_type)
-        is_faculty = bool(user.is_faculty())
-        wallet = user.get_accessible_wallet()
-        is_using_faculty_wallet = bool(
-            wallet
-            and wallet.user.user_type == UserType.FACULTY
-            and wallet.user_id != user.pk
-        )
-        use_faculty_quota = is_faculty or is_using_faculty_wallet
-        period_name = "Monthly" if quota_type == QuotaType.MONTHLY else "Weekly"
-
-        if use_faculty_quota:
-            limit = (
-                group_quota.internal_faculty_quota_minutes
-                if is_internal
-                else group_quota.external_faculty_quota_minutes
-            )
-            result = cls._evaluate_faculty_minutes(
-                user=user,
-                group_equipment_ids=group_equipment_ids,
-                limit_minutes=limit,
-                quota_type=quota_type,
+    ) -> QuotaDecision:
+        for dim in cls.group_quota_dimensions(user, equipment.equipment_group, quota_types):
+            result = cls.evaluate_dimension(
+                dim,
                 booking_date=booking_date,
                 additional_time_minutes=additional_time_minutes,
-                scope_label=f"Faculty {period_name}",
                 exclude_booking_id=exclude_booking_id,
             )
             if not result.allowed:
-                return False, result.as_error()
-            if is_faculty:
-                return True, None
-
-        if not is_faculty:
-            limit = (
-                group_quota.internal_individual_quota_minutes
-                if is_internal
-                else group_quota.external_individual_quota_minutes
-            )
-            result = cls._evaluate_individual_minutes(
-                user=user,
-                group_equipment_ids=group_equipment_ids,
-                limit_minutes=limit,
-                quota_type=quota_type,
-                booking_date=booking_date,
-                additional_time_minutes=additional_time_minutes,
-                scope_label=f"Individual {period_name}",
-                exclude_booking_id=exclude_booking_id,
-            )
-            if not result.allowed:
-                return False, result.as_error()
-
-        return True, None
-
-    @staticmethod
-    def _get_group_quota(equipment_group, quota_type: str) -> Optional[EquipmentGroupQuota]:
-        try:
-            return EquipmentGroupQuota.objects.get(
-                equipment_group=equipment_group,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
-        except EquipmentGroupQuota.DoesNotExist:
-            return None
+                return QuotaDecision(False, result.as_error(), result)
+        return QUOTA_ALLOWED
 
     # ------------------------------------------------------------------
     # Usage queries
@@ -629,103 +689,6 @@ class QuotaService:
             unique.append(u)
         return unique
 
-    @classmethod
-    def _evaluate_individual_minutes(
-        cls,
-        *,
-        user: User,
-        group_equipment_ids,
-        limit_minutes: int,
-        quota_type: str,
-        booking_date: datetime,
-        additional_time_minutes: int,
-        scope_label: str,
-        exclude_booking_id: Optional[int],
-    ) -> QuotaCheckResult:
-        if limit_minutes <= 0:
-            return QuotaCheckResult(
-                allowed=True,
-                scope=scope_label,
-                used_minutes=0,
-                requested_minutes=additional_time_minutes,
-                limit_minutes=0,
-                remaining_before_request=0,
-            )
-        start_date, end_date = cls._get_quota_period(quota_type, booking_date)
-        existing = cls._bookings_in_period(
-            users=[user],
-            group_equipment_ids=group_equipment_ids,
-            start_date=start_date,
-            end_date=end_date,
-            exclude_booking_id=exclude_booking_id,
-        )
-        used = cls._sum_booking_quota_minutes(existing)
-        remaining = max(0, limit_minutes - used)
-        projected = used + additional_time_minutes
-        allowed = projected <= limit_minutes
-        return QuotaCheckResult(
-            allowed=allowed,
-            scope=scope_label,
-            used_minutes=used,
-            requested_minutes=additional_time_minutes,
-            limit_minutes=limit_minutes,
-            remaining_before_request=remaining,
-        )
-
-    @classmethod
-    def _evaluate_faculty_minutes(
-        cls,
-        *,
-        user: User,
-        group_equipment_ids,
-        limit_minutes: int,
-        quota_type: str,
-        booking_date: datetime,
-        additional_time_minutes: int,
-        scope_label: str,
-        exclude_booking_id: Optional[int],
-    ) -> QuotaCheckResult:
-        if limit_minutes <= 0:
-            return QuotaCheckResult(
-                allowed=True,
-                scope=scope_label,
-                used_minutes=0,
-                requested_minutes=additional_time_minutes,
-                limit_minutes=0,
-                remaining_before_request=0,
-            )
-        wallet_users = cls._wallet_users(user)
-        start_date, end_date = cls._get_quota_period(quota_type, booking_date)
-        existing = cls._bookings_in_period(
-            users=wallet_users,
-            group_equipment_ids=group_equipment_ids,
-            start_date=start_date,
-            end_date=end_date,
-            exclude_booking_id=exclude_booking_id,
-        )
-        used = cls._sum_booking_quota_minutes(existing)
-        remaining = max(0, limit_minutes - used)
-        projected = used + additional_time_minutes
-        allowed = projected <= limit_minutes
-        msg = None
-        if not allowed:
-            msg = (
-                f"{scope_label} quota exceeded: "
-                f"current usage {used} min + requested {additional_time_minutes} min "
-                f"= {projected} min; configured limit {limit_minutes} min; "
-                f"remaining before this request {remaining} min "
-                f"(shared across {len(wallet_users)} user(s) on the faculty wallet)."
-            )
-        return QuotaCheckResult(
-            allowed=allowed,
-            scope=scope_label,
-            used_minutes=used,
-            requested_minutes=additional_time_minutes,
-            limit_minutes=limit_minutes,
-            remaining_before_request=remaining,
-            message=msg,
-        )
-
     # ------------------------------------------------------------------
     # Legacy equipment-level quotas
     # ------------------------------------------------------------------
@@ -753,70 +716,46 @@ class QuotaService:
         return qs
 
     @classmethod
-    def _check_user_type_quota(
-        cls,
-        equipment,
-        user_type: str,
-        quota_type: str,
-        additional_time_minutes: int,
-        additional_bookings: int,
-        additional_charge: Decimal,
-        booking_date: datetime,
-        exclude_booking_id: Optional[int] = None,
-    ) -> tuple[bool, Optional[str]]:
-        start_date, end_date = cls._get_quota_period(quota_type, booking_date)
-        quotas = list(
-            UserTypeQuota.objects.filter(
-                equipment=equipment,
-                user_type=user_type,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
+    def _legacy_quotas(cls, user: User, equipment, quota_type: str):
+        """(quotas, snapshot_filter, label prefix) of the equipment-level limits that apply to ``user``."""
+        if user.is_external():
+            quotas = ExternalUserQuota.objects.filter(equipment=equipment, quota_type=quota_type, is_enforced=True)
+            return list(quotas), cls.LEGACY_EXTERNAL_SNAPSHOT_FILTER, "External"
+        quotas = UserTypeQuota.objects.filter(
+            equipment=equipment, user_type=user.user_type, quota_type=quota_type, is_enforced=True
         )
-        if not quotas:
-            return True, None
-
-        existing_bookings = cls._legacy_bookings_in_period(
-            equipment=equipment,
-            snapshot_filter={"user_type_snapshot": user_type},
-            start_date=start_date,
-            end_date=end_date,
-            exclude_booking_id=exclude_booking_id,
-        )
-
-        period_label = "Monthly" if quota_type == QuotaType.MONTHLY else "Weekly"
-        for quota in quotas:
-            if quota.limit_type == QuotaLimitType.HOURS:
-                used = cls._sum_booking_quota_minutes(existing_bookings)
-                projected = used + additional_time_minutes
-                if projected > quota.limit_value:
-                    remaining = max(0, int(quota.limit_value) - used)
-                    return False, (
-                        f"Individual {period_label} quota exceeded: "
-                        f"current usage {used} min + requested {additional_time_minutes} min "
-                        f"= {projected} min; configured limit {int(quota.limit_value)} min; "
-                        f"remaining before this request {remaining} min."
-                    )
-            elif quota.limit_type == QuotaLimitType.BOOKINGS:
-                total_bookings = existing_bookings.count() + additional_bookings
-                if total_bookings > quota.limit_value:
-                    return False, (
-                        f"Individual {period_label} booking-count quota exceeded: "
-                        f"{total_bookings} bookings vs limit {quota.limit_value}."
-                    )
-            elif quota.limit_type == QuotaLimitType.CHARGE:
-                used_charge = cls._sum_booking_quota_charge(existing_bookings)
-                projected = used_charge + additional_charge
-                if projected > quota.limit_value:
-                    return False, (
-                        f"Individual {period_label} charge quota exceeded: "
-                        f"₹{projected} vs limit ₹{quota.limit_value}."
-                    )
-        return True, None
+        return list(quotas), {"user_type_snapshot": user.user_type}, "Individual"
 
     @classmethod
-    def _check_external_quota(
+    def legacy_quota_dimensions(
+        cls, user: User, equipment, quota_types=(QuotaType.MONTHLY, QuotaType.WEEKLY)
+    ) -> list[QuotaDimension]:
+        """Equipment-level minute (HOURS) limits: shared by every booking of the user's type on the equipment."""
+        dims: list[QuotaDimension] = []
+        for quota_type in quota_types:
+            quotas, snapshot_filter, prefix = cls._legacy_quotas(user, equipment, quota_type)
+            for quota in quotas:
+                if quota.limit_type != QuotaLimitType.HOURS:
+                    continue
+                dims.append(cls._legacy_dimension(quota, equipment, snapshot_filter, prefix))
+        return dims
+
+    @staticmethod
+    def _legacy_dimension(quota, equipment, snapshot_filter: dict, prefix: str) -> QuotaDimension:
+        period_word = "Monthly" if quota.quota_type == QuotaType.MONTHLY else "Weekly"
+        return QuotaDimension(
+            quota_type=quota.quota_type,
+            scope="pool",
+            scope_label=f"{prefix} {period_word}",
+            limit_minutes=int(quota.limit_value or 0),
+            equipment_ids=(equipment.pk,),
+            snapshot_filter=snapshot_filter,
+        )
+
+    @classmethod
+    def _legacy_decision(
         cls,
+        user: User,
         equipment,
         quota_type: str,
         additional_time_minutes: int,
@@ -824,21 +763,15 @@ class QuotaService:
         additional_charge: Decimal,
         booking_date: datetime,
         exclude_booking_id: Optional[int] = None,
-    ) -> tuple[bool, Optional[str]]:
-        start_date, end_date = cls._get_quota_period(quota_type, booking_date)
-        quotas = list(
-            ExternalUserQuota.objects.filter(
-                equipment=equipment,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
-        )
+    ) -> QuotaDecision:
+        quotas, snapshot_filter, prefix = cls._legacy_quotas(user, equipment, quota_type)
         if not quotas:
-            return True, None
+            return QUOTA_ALLOWED
 
+        start_date, end_date = cls._get_quota_period(quota_type, booking_date)
         existing_bookings = cls._legacy_bookings_in_period(
             equipment=equipment,
-            snapshot_filter=cls.LEGACY_EXTERNAL_SNAPSHOT_FILTER,
+            snapshot_filter=snapshot_filter,
             start_date=start_date,
             end_date=end_date,
             exclude_booking_id=exclude_booking_id,
@@ -847,32 +780,30 @@ class QuotaService:
         period_label = "Monthly" if quota_type == QuotaType.MONTHLY else "Weekly"
         for quota in quotas:
             if quota.limit_type == QuotaLimitType.HOURS:
-                used = cls._sum_booking_quota_minutes(existing_bookings)
-                projected = used + additional_time_minutes
-                if projected > quota.limit_value:
-                    remaining = max(0, int(quota.limit_value) - used)
-                    return False, (
-                        f"External {period_label} quota exceeded: "
-                        f"current usage {used} min + requested {additional_time_minutes} min "
-                        f"= {projected} min; configured limit {int(quota.limit_value)} min; "
-                        f"remaining before this request {remaining} min."
-                    )
+                result = cls.evaluate_dimension(
+                    cls._legacy_dimension(quota, equipment, snapshot_filter, prefix),
+                    booking_date=booking_date,
+                    additional_time_minutes=additional_time_minutes,
+                    exclude_booking_id=exclude_booking_id,
+                )
+                if not result.allowed:
+                    return QuotaDecision(False, result.as_error(), result)
             elif quota.limit_type == QuotaLimitType.BOOKINGS:
                 total_bookings = existing_bookings.count() + additional_bookings
                 if total_bookings > quota.limit_value:
-                    return False, (
-                        f"External {period_label} booking-count quota exceeded: "
+                    return QuotaDecision(False, (
+                        f"{prefix} {period_label} booking-count quota exceeded: "
                         f"{total_bookings} bookings vs limit {quota.limit_value}."
-                    )
+                    ))
             elif quota.limit_type == QuotaLimitType.CHARGE:
                 used_charge = cls._sum_booking_quota_charge(existing_bookings)
                 projected = used_charge + additional_charge
                 if projected > quota.limit_value:
-                    return False, (
-                        f"External {period_label} charge quota exceeded: "
+                    return QuotaDecision(False, (
+                        f"{prefix} {period_label} charge quota exceeded: "
                         f"₹{projected} vs limit ₹{quota.limit_value}."
-                    )
-        return True, None
+                    ))
+        return QUOTA_ALLOWED
 
     # ------------------------------------------------------------------
     # Period boundaries (Monday–Sunday week; calendar month)
@@ -925,142 +856,57 @@ class QuotaChecker(QuotaService):
     pass
 
 
-def _breakdown_events(existing_bookings) -> tuple[int, list[dict]]:
-    bookings = list(
-        existing_bookings.select_related("equipment", "user")
-        .prefetch_related("daily_slots")
-        .order_by("booking_id")
-    )
-    events = []
-    for b in bookings:
-        ref = getattr(b, "quota_reference_at", None)
-        display_id = (b.virtual_booking_id or "").strip() or (
-            f"{b.equipment.code}-{b.booking_id}" if b.equipment else str(b.booking_id)
-        )
-        events.append(
-            {
-                "date": timezone.localtime(ref).strftime("%Y-%m-%d") if ref else "",
-                "booking_id": display_id,
-                "real_booking_id": b.booking_id,
-                "equipment_name": b.equipment.name if b.equipment else "",
-                "equipment_code": b.equipment.code if b.equipment else "",
-                "display_booking_id": display_id,
-                "total_time_minutes": booking_effective_quota_minutes(b),
-                "user_name": get_user_display_name(b.user) if b.user else "",
-            }
-        )
-    return sum(e["total_time_minutes"] for e in events), events
-
-
 def get_quota_breakdown(user, equipment, quota_type: str, reference_date: datetime, failure_reason: str = ""):
     """
-    Return date-wise breakdown of quota usage for display (admin/OIC).
-    Used when a booking attempt failed due to weekly/monthly quota.
+    Date-wise quota usage in the older attempt-log shape (period, limit, total, events), built from the
+    same breakdown as /bookings/quota-breakdown/.
     """
+    from .quota_breakdown import BreakdownError, build_quota_breakdown, resolve_dimension, scope_from_failure_reason
+
     start_date, end_date = QuotaService._get_quota_period(quota_type, reference_date)
     equipment.refresh_from_db(fields=["equipment_group"])
-    limit_minutes = 0
-    quota_scope = "individual"
-
-    if equipment.equipment_group:
-        try:
-            group_quota = EquipmentGroupQuota.objects.get(
-                equipment_group=equipment.equipment_group,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
-        except EquipmentGroupQuota.DoesNotExist:
-            return {
-                "period_start": start_date.isoformat(),
-                "period_end": end_date.isoformat(),
-                "quota_type": quota_type,
-                "quota_scope": "group",
-                "limit_minutes": 0,
-                "total_minutes": 0,
-                "summary_message": "No quota configured for this group.",
-                "events": [],
-            }
-
-        group_equipment_ids = list(
-            equipment.equipment_group.equipment.values_list("equipment_id", flat=True)
-        )
-        is_internal = UserType.is_internal_user(user.user_type)
-        use_faculty = "faculty" in (failure_reason or "").lower()
-
-        if use_faculty:
-            quota_scope = "faculty"
-            wallet_users = QuotaService._wallet_users(user)
-            limit_minutes = (
-                group_quota.internal_faculty_quota_minutes
-                if is_internal
-                else group_quota.external_faculty_quota_minutes
-            )
-            existing_bookings = QuotaService._bookings_in_period(
-                users=wallet_users,
-                group_equipment_ids=group_equipment_ids,
-                start_date=start_date,
-                end_date=end_date,
-                exclude_booking_id=None,
-            )
-        else:
-            limit_minutes = (
-                group_quota.internal_individual_quota_minutes
-                if is_internal
-                else group_quota.external_individual_quota_minutes
-            )
-            existing_bookings = QuotaService._bookings_in_period(
-                users=[user],
-                group_equipment_ids=group_equipment_ids,
-                start_date=start_date,
-                end_date=end_date,
-                exclude_booking_id=None,
-            )
-    else:
-        if user.is_external():
-            quotas = ExternalUserQuota.objects.filter(
-                equipment=equipment,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
-            snapshot_filter = QuotaService.LEGACY_EXTERNAL_SNAPSHOT_FILTER
-            quota_scope = "external"
-        else:
-            quotas = UserTypeQuota.objects.filter(
-                equipment=equipment,
-                user_type=user.user_type,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
-            snapshot_filter = {"user_type_snapshot": user.user_type}
-            quota_scope = "user_type"
-        existing_bookings = QuotaService._legacy_bookings_in_period(
-            equipment=equipment,
-            snapshot_filter=snapshot_filter,
-            start_date=start_date,
-            end_date=end_date,
-        )
-
-        for q in quotas:
-            if getattr(q, "limit_type", None) == QuotaLimitType.HOURS:
-                limit_minutes = int(q.limit_value) if q.limit_value is not None else 0
-                break
-            if hasattr(q, "limit_value") and q.limit_value is not None:
-                limit_minutes = int(q.limit_value)
-                break
-
-    total_minutes, events = _breakdown_events(existing_bookings)
-    events.sort(key=lambda e: (e["date"], e["real_booking_id"]))
-    summary_message = (
-        f"{total_minutes} minutes used out of {limit_minutes} minutes limit "
-        f"({quota_type.lower()}, {quota_scope})"
-    )
-    return {
+    empty = {
         "period_start": start_date.isoformat(),
         "period_end": end_date.isoformat(),
         "quota_type": quota_type,
+        "quota_scope": "group" if equipment.equipment_group_id else "individual",
+        "limit_minutes": 0,
+        "total_minutes": 0,
+        "summary_message": "No quota configured for this limit.",
+        "events": [],
+    }
+    scope = scope_from_failure_reason(failure_reason, equipment) if failure_reason else None
+    try:
+        dim = resolve_dimension(user, equipment, quota_type, scope)
+    except BreakdownError:
+        return empty
+    data = build_quota_breakdown(user, equipment, dim, reference_date)
+    quota_scope = {"group": "faculty", "individual": "individual"}.get(dim.scope) or (
+        "external" if user.is_external() else "user_type"
+    )
+    events = [
+        {
+            "date": timezone.localtime(datetime.fromisoformat(r["slot_start"])).strftime("%Y-%m-%d") if r["slot_start"] else "",
+            "booking_id": r["display_booking_id"],
+            "real_booking_id": r["booking_id"],
+            "equipment_name": r["equipment_name"],
+            "equipment_code": r["equipment_code"],
+            "display_booking_id": r["display_booking_id"],
+            "total_time_minutes": r["minutes"],
+            "user_name": r["user_name"],
+        }
+        for r in data["counted"]
+    ]
+    events.sort(key=lambda e: (e["date"], e["real_booking_id"]))
+    return {
+        **empty,
         "quota_scope": quota_scope,
-        "limit_minutes": limit_minutes,
-        "total_minutes": total_minutes,
-        "summary_message": summary_message,
+        "limit_minutes": data["limit_minutes"],
+        "total_minutes": data["used_minutes"],
+        "summary_message": (
+            f"{data['used_minutes']} minutes used out of {data['limit_minutes']} minutes limit "
+            f"({quota_type.lower()}, {quota_scope})"
+        ),
         "events": events,
     }
+

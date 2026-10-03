@@ -21,7 +21,7 @@ from rest_framework.response import Response
 from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 
-from .models import Booking, Equipment, ExternalUserQuota, QuotaLimitType, QuotaType, UserTypeQuota
+from .models import Booking, Equipment
 from .quota_utils import (
     QuotaService,
     booking_counts_toward_quota,
@@ -46,134 +46,33 @@ def _period_item(*, quota_type: str, scope: str, shared: bool, limit_minutes: in
     }
 
 
-def _group_periods(user: User, equipment, reference_dt: datetime) -> list[dict]:
-    """Mirror of QuotaService._validate_group_quotas with zero requested minutes."""
-    equipment_group = equipment.equipment_group
-    group_equipment_ids = list(equipment_group.equipment.values_list("equipment_id", flat=True))
-    is_internal = UserType.is_internal_user(user.user_type)
-    is_faculty = bool(user.is_faculty())
-    wallet = user.get_accessible_wallet()
-    is_using_faculty_wallet = bool(
-        wallet
-        and wallet.user.user_type == UserType.FACULTY
-        and wallet.user_id != user.pk
-    )
-    use_faculty_quota = is_faculty or is_using_faculty_wallet
-
-    monthly = QuotaService._get_group_quota(equipment_group, QuotaType.MONTHLY)
-    weekly = QuotaService._get_group_quota(equipment_group, QuotaType.WEEKLY)
-
+def _dimension_periods(dims, reference_dt: datetime) -> list[dict]:
+    """Usage of each limit with zero requested minutes, through the same path as enforcement."""
     periods: list[dict] = []
-    if use_faculty_quota:
-        for quota_obj, scope in ((monthly, "Faculty Monthly"), (weekly, "Faculty Weekly")):
-            if quota_obj is None:
-                continue
-            limit = (
-                quota_obj.internal_faculty_quota_minutes
-                if is_internal
-                else quota_obj.external_faculty_quota_minutes
+    for dim in dims:
+        if dim.scope != "pool" and dim.limit_minutes <= 0:
+            continue
+        result = QuotaService.evaluate_dimension(dim, booking_date=reference_dt)
+        periods.append(
+            _period_item(
+                quota_type=dim.quota_type,
+                scope=dim.scope_label,
+                shared=dim.scope == "group",
+                limit_minutes=result.limit_minutes,
+                used_minutes=result.used_minutes,
+                reference_dt=reference_dt,
             )
-            if not limit or limit <= 0:
-                continue
-            result = QuotaService._evaluate_faculty_minutes(
-                user=user,
-                group_equipment_ids=group_equipment_ids,
-                limit_minutes=limit,
-                quota_type=quota_obj.quota_type,
-                booking_date=reference_dt,
-                additional_time_minutes=0,
-                scope_label=scope,
-                exclude_booking_id=None,
-            )
-            periods.append(
-                _period_item(
-                    quota_type=quota_obj.quota_type,
-                    scope=scope,
-                    shared=True,
-                    limit_minutes=result.limit_minutes,
-                    used_minutes=result.used_minutes,
-                    reference_dt=reference_dt,
-                )
-            )
-
-    if not is_faculty:
-        for quota_obj, scope in ((monthly, "Individual Monthly"), (weekly, "Individual Weekly")):
-            if quota_obj is None:
-                continue
-            limit = (
-                quota_obj.internal_individual_quota_minutes
-                if is_internal
-                else quota_obj.external_individual_quota_minutes
-            )
-            if not limit or limit <= 0:
-                continue
-            result = QuotaService._evaluate_individual_minutes(
-                user=user,
-                group_equipment_ids=group_equipment_ids,
-                limit_minutes=limit,
-                quota_type=quota_obj.quota_type,
-                booking_date=reference_dt,
-                additional_time_minutes=0,
-                scope_label=scope,
-                exclude_booking_id=None,
-            )
-            periods.append(
-                _period_item(
-                    quota_type=quota_obj.quota_type,
-                    scope=scope,
-                    shared=False,
-                    limit_minutes=result.limit_minutes,
-                    used_minutes=result.used_minutes,
-                    reference_dt=reference_dt,
-                )
-            )
+        )
     return periods
+
+
+def _group_periods(user: User, equipment, reference_dt: datetime) -> list[dict]:
+    return _dimension_periods(QuotaService.group_quota_dimensions(user, equipment.equipment_group), reference_dt)
 
 
 def _legacy_periods(user: User, equipment, reference_dt: datetime) -> list[dict]:
-    """Equipment-level HOURS quotas (limit_value is in minutes), same querysets as enforcement."""
-    is_external = bool(user.is_external())
-    prefix = "External" if is_external else "Individual"
-    periods: list[dict] = []
-    for quota_type in (QuotaType.MONTHLY, QuotaType.WEEKLY):
-        if is_external:
-            quotas = ExternalUserQuota.objects.filter(
-                equipment=equipment, quota_type=quota_type, is_enforced=True
-            )
-            snapshot_filter = QuotaService.LEGACY_EXTERNAL_SNAPSHOT_FILTER
-        else:
-            quotas = UserTypeQuota.objects.filter(
-                equipment=equipment,
-                user_type=user.user_type,
-                quota_type=quota_type,
-                is_enforced=True,
-            )
-            snapshot_filter = {"user_type_snapshot": user.user_type}
-        hour_quotas = [q for q in quotas if q.limit_type == QuotaLimitType.HOURS]
-        if not hour_quotas:
-            continue
-        start, end = QuotaService._get_quota_period(quota_type, reference_dt)
-        used = QuotaService._sum_booking_quota_minutes(
-            QuotaService._legacy_bookings_in_period(
-                equipment=equipment,
-                snapshot_filter=snapshot_filter,
-                start_date=start,
-                end_date=end,
-            )
-        )
-        label = "Monthly" if quota_type == QuotaType.MONTHLY else "Weekly"
-        for quota in hour_quotas:
-            periods.append(
-                _period_item(
-                    quota_type=quota_type,
-                    scope=f"{prefix} {label}",
-                    shared=False,
-                    limit_minutes=int(quota.limit_value or 0),
-                    used_minutes=used,
-                    reference_dt=reference_dt,
-                )
-            )
-    return periods
+    """Equipment-level HOURS quotas (limit_value is in minutes)."""
+    return _dimension_periods(QuotaService.legacy_quota_dimensions(user, equipment), reference_dt)
 
 
 def build_booking_quota_summary(user: User, equipment, reference_day: date) -> dict:

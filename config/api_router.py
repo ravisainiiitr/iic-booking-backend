@@ -256,6 +256,7 @@ from iic_booking.equipment.print_3d_views import (
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
+from iic_booking.equipment.quota_breakdown import quota_breakdown_view
 from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
 from iic_booking.equipment.booking_lab_outreach import (
     booking_lab_outreach_send,
@@ -1314,6 +1315,7 @@ urlpatterns = router.urls + [
         name="approaching-sample-submission",
     ),
     path("bookings/stats/", booking_stats, name="booking-stats"),
+    path("bookings/quota-breakdown/", quota_breakdown_view, name="booking-quota-breakdown"),
     path("bookings/lab-operator-dashboard/", lab_operator_dashboard, name="lab-operator-dashboard"),
     path("staff-app/today/", staff_app_today, name="staff-app-today"),
     path(

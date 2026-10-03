@@ -26,6 +26,7 @@ from iic_booking.equipment.models import (
     Equipment,
     EquipmentGroup,
 )
+from iic_booking.equipment.quota_utils import QuotaDecision
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.tests.factories import UserFactory
 
@@ -77,7 +78,7 @@ def test_cross_reschedule_target_quota_denied_leaves_booking_unchanged(
     old_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
 
     with patch.object(api_views, "booking_quota_should_skip", return_value=False), patch.object(
-        api_views.QuotaService, "validate_booking_quota", return_value=(False, "Quota exceeded on target.")
+        api_views.QuotaService, "evaluate_booking_quota", return_value=QuotaDecision(False, "Quota exceeded on target.")
     ) as quota:
         res = egs_factory.client_for(owner).post(
             f"/api/bookings/{booking.pk}/user-reschedule/", _cross_body(target_slot, target), format="json"
