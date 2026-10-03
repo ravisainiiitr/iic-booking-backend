@@ -93,6 +93,10 @@ jobs:
               print(f"    {code}: {n}")
           staff_absent = Booking.objects.filter(disruption_kind="OPERATOR_ABSENT").exclude(notes__contains=tag).count()
           print(f"  other OPERATOR_ABSENT disruptions (staff/slot) all_time={staff_absent}")
+          new_tag = "[Auto disruption: operator absent (results deadline passed)]"
+          new_reason = "Automatically marked: results deadline passed (scheduled job)."
+          print(f"  results-deadline safeguard: disruptions={Booking.objects.filter(notes__contains=new_tag).count()} "
+                f"refunds={BookingSampleTrace.objects.filter(status=SampleTraceStatus.OP_UNAVAILABLE, reason=new_reason).count()}")
           holds = Booking.objects.filter(operator_absent_hold_until__isnull=False)
           print(f"  bookings with operator_absent_hold_until set={holds.count()} open={holds.filter(status__in=['PENDING','BOOKED']).count()}")
 

@@ -106,9 +106,26 @@ def booking_management_path(booking) -> str:
     return f"/booking-management?expand={booking.booking_id}"
 
 
-def serialize_awaiting_booking(booking, now=None) -> dict[str, Any]:
+def results_due(booking, now=None, calendar=None) -> tuple[str, bool]:
+    """("Mon 06 Oct 2026" or "", overdue?) from the equipment's results deadline."""
+    from .results_deadline import booking_results_deadline, due_display, is_results_overdue
+
+    try:
+        deadline = booking_results_deadline(booking, calendar)
+        if deadline is None:
+            return "", False
+        return due_display(deadline), is_results_overdue(booking, deadline, now)
+    except Exception:
+        logger.exception("results deadline failed booking_id=%s", getattr(booking, "booking_id", None))
+        return "", False
+
+
+def serialize_awaiting_booking(booking, now=None, calendar=None) -> dict[str, Any]:
     equipment = booking.equipment
+    due, results_overdue = results_due(booking, now, calendar)
     return {
+        "results_due_display": due,
+        "results_overdue": results_overdue,
         "booking_id": booking.booking_id,
         "booking_ref": _booking_ref(booking),
         "equipment_id": equipment.equipment_id,
@@ -133,8 +150,14 @@ def pending_action_detail(booking) -> str:
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def bookings_awaiting_completion_view(request):
+    from .results_deadline import WorkingCalendar
+
     now = timezone.now()
-    rows = [serialize_awaiting_booking(b, now) for b in bookings_awaiting_completion_for_user(request.user, now)]
+    calendar = WorkingCalendar()
+    rows = [
+        serialize_awaiting_booking(b, now, calendar)
+        for b in bookings_awaiting_completion_for_user(request.user, now)
+    ]
     return Response({"count": len(rows), "bookings": rows}, status=status.HTTP_200_OK)
 
 
@@ -169,22 +192,27 @@ def _digest_context(user, bookings: list, now) -> dict[str, Any]:
     from iic_booking.communication.email_branding import absolute_http_url
     from iic_booking.communication.utils import get_frontend_absolute_url
 
+    from .results_deadline import WorkingCalendar
+
+    calendar = WorkingCalendar()
     shown = bookings[:MAX_EMAIL_ROWS]
     more = len(bookings) - len(shown)
     cell = "padding:6px 8px;border-bottom:1px solid #e2e8f0;font-size:13px;text-align:left;vertical-align:top;"
     head = "".join(
         f"<th style=\"{cell}background:#f1f5f9;font-weight:700;\">{label}</th>"
-        for label in ("Booking ID", "Equipment", "User", "Booking ended", "Overdue by")
+        for label in ("Booking ID", "Equipment", "User", "Booking ended", "Overdue by", "Results due")
     )
     rows_html = []
     rows_text = []
     for b in shown:
+        due, results_overdue = results_due(b, now, calendar)
         values = (
             _booking_ref(b),
             b.equipment.name,
             _person(b.user),
             _ended_display(b.last_slot_end),
             overdue_label(b.last_slot_end, now),
+            (f"{due} (results overdue)" if results_overdue else due) or "—",
         )
         link = absolute_http_url(get_frontend_absolute_url(booking_management_path(b)))
         first = f"<a href=\"{html.escape(link, quote=True)}\">{html.escape(values[0])}</a>" if link else html.escape(values[0])
@@ -194,7 +222,9 @@ def _digest_context(user, bookings: list, now) -> dict[str, Any]:
             + "".join(f"<td style=\"{cell}\">{html.escape(v)}</td>" for v in values[1:])
             + "</tr>"
         )
-        rows_text.append(f"- {values[0]} | {values[1]} | {values[2]} | ended {values[3]} | overdue by {values[4]}")
+        rows_text.append(
+            f"- {values[0]} | {values[1]} | {values[2]} | ended {values[3]} | overdue by {values[4]} | results due {values[5]}"
+        )
     if more > 0:
         rows_text.append(f"... and {more} more (see your dashboard)")
     bookings_html = (

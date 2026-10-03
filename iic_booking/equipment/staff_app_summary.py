@@ -173,8 +173,10 @@ def build_staff_today(user) -> dict:
             "urgent_requests_pending": 0 if is_oic else None,
             "waitlist_active": 0 if is_oic else None,
             "tickets_assigned_open": tickets_open,
+            "results_overdue": 0,
         },
         "message_booking_ids": [],
+        "results_overdue_booking_ids": [],
     }
     if not equipment_ids:
         payload["days"] = [
@@ -201,6 +203,11 @@ def build_staff_today(user) -> dict:
     message_ids = _awaiting_reply_booking_ids(equipment_ids, now)
     counts["user_messages_awaiting_reply"] = len(message_ids)
     payload["message_booking_ids"] = message_ids[:50]
+    from .results_deadline import overdue_booking_ids
+
+    overdue_ids = overdue_booking_ids(base, now)
+    counts["results_overdue"] = len(overdue_ids)
+    payload["results_overdue_booking_ids"] = overdue_ids[:50]
     if is_oic:
         counts["urgent_requests_pending"] = UrgentBookingRequest.objects.filter(
             equipment_id__in=equipment_ids, status=UrgentBookingRequestStatus.PENDING

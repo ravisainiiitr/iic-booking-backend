@@ -6065,6 +6065,21 @@ def list_bookings(request):
             )
         queryset = queryset.filter(status=status_filter.upper())
 
+    if str(request.query_params.get("results_overdue") or "").strip().lower() in ("1", "true", "yes"):
+        from .results_deadline import overdue_booking_ids, viewer_is_staff
+
+        if viewer_is_staff(request.user):
+            scope_ids = list(
+                queryset.filter(status__in=[BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING])
+                .values_list("booking_id", flat=True)
+                .distinct()
+            )
+            queryset = queryset.filter(
+                booking_id__in=overdue_booking_ids(Booking.objects.filter(booking_id__in=scope_ids))
+            )
+        else:
+            queryset = queryset.none()
+
     # Search across booking ID, equipment name, user name/email/phone (single query param)
     search = request.query_params.get('search', '').strip()
     if search:
@@ -12008,8 +12023,8 @@ def absent_booking(request, booking_id):
 @permission_classes([IsAuthenticated])
 def extend_booking_operator_absent_hold(request, booking_id):
     """
-    Admin / Officer in Charge: extend the grace window used by automatic Operator Absent
-    (and Operator Unavailable) jobs without changing slots or rescheduling the booking.
+    Admin / Officer in Charge: extend the booking's results deadline (the time the automatic Operator
+    Absent / Operator Unavailable safeguards and the "results overdue" list use) without changing slots.
 
     Body:
       { "hold_until": "<ISO datetime>" }  — required; must be after last slot end
@@ -12019,7 +12034,7 @@ def extend_booking_operator_absent_hold(request, booking_id):
     """
     if request.user.user_type not in (UserType.ADMIN, UserType.MANAGER):
         return Response(
-            {"error": "Only Admin and Officer in charge can extend the operator-absent hold."},
+            {"error": "Only Admin and Officer in charge can extend the results deadline."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -12040,7 +12055,7 @@ def extend_booking_operator_absent_hold(request, booking_id):
     status_u = (booking.status or "").upper()
     if status_u not in (BookingStatus.BOOKED, BookingStatus.PENDING):
         return Response(
-            {"error": "Operator-absent hold can only be set for Booked or Pending bookings."},
+            {"error": "The results deadline can only be extended for Booked or Pending bookings."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -12055,16 +12070,16 @@ def extend_booking_operator_absent_hold(request, booking_id):
             booking,
             BookingEventType.COMMENT,
             created_by=request.user,
-            comment="Cleared operator-absent hold extension.",
+            comment="Cleared results deadline extension.",
             metadata={
                 "operator_absent_hold_cleared": True,
                 "previous_hold_until": previous.isoformat() if previous else None,
             },
             send_notification=False,
         )
-        serializer = BookingSerializer(booking)
+        serializer = BookingSerializer(booking, context={"request": request})
         return Response(
-            {"message": "Operator-absent hold cleared.", "booking": serializer.data},
+            {"message": "Results deadline extension cleared.", "booking": serializer.data},
             status=status.HTTP_200_OK,
         )
 
@@ -12128,10 +12143,12 @@ def extend_booking_operator_absent_hold(request, booking_id):
     from iic_booking.equipment.booking_events import create_booking_event
 
     hold_local = timezone.localtime(hold_until).strftime("%Y-%m-%d %H:%M")
-    comment = (
-        f"Operator-absent grace extended until {hold_local} (no slot change). "
-        f"Reason: {reason_display}."
+    what = (
+        "Results deadline"
+        if getattr(booking.equipment, "show_results_deadline_to_users", False)
+        else "Lab processing time"
     )
+    comment = f"{what} extended until {hold_local} (no slot change). Reason: {reason_display}."
     create_booking_event(
         booking,
         BookingEventType.COMMENT,
@@ -12147,10 +12164,10 @@ def extend_booking_operator_absent_hold(request, booking_id):
         send_notification=True,
     )
 
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"request": request})
     return Response(
         {
-            "message": "Operator-absent hold extended. The user has been notified. Slots were not changed.",
+            "message": "Results deadline extended. The user has been notified. Slots were not changed.",
             "booking": serializer.data,
         },
         status=status.HTTP_200_OK,
@@ -17299,6 +17316,9 @@ def _oic_equipment_settings_row(eq) -> dict:
             "weekly_view_time_from": _t(eq.weekly_view_time_from),
             "weekly_view_time_to": _t(eq.weekly_view_time_to),
             **{name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_INT_FIELDS},
+            "results_deadline_value": eq.results_deadline_value,
+            "results_deadline_unit": eq.results_deadline_unit,
+            "show_results_deadline_to_users": bool(eq.show_results_deadline_to_users),
             "important_instruction": eq.important_instruction or "",
             "important_instruction_by_user_type": {
                 k: v
@@ -17392,6 +17412,27 @@ def oic_equipment_settings_update(request, equipment_id):
             continue
         setattr(eq, name, value)
         changed.append(name)
+
+    if "results_deadline_value" in data or "results_deadline_unit" in data:
+        from .results_deadline import validate_deadline
+
+        value, unit, deadline_errors = validate_deadline(
+            data.get("results_deadline_value", eq.results_deadline_value),
+            data.get("results_deadline_unit", eq.results_deadline_unit),
+        )
+        if deadline_errors:
+            errors.update(deadline_errors)
+        else:
+            eq.results_deadline_value = value
+            eq.results_deadline_unit = unit
+            changed.extend(["results_deadline_value", "results_deadline_unit"])
+
+    if "show_results_deadline_to_users" in data:
+        raw = data.get("show_results_deadline_to_users")
+        eq.show_results_deadline_to_users = (
+            raw if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
+        )
+        changed.append("show_results_deadline_to_users")
 
     from .rich_text import clean_important_instruction as _clean_instruction
     from .rich_text import instruction_user_type_choices

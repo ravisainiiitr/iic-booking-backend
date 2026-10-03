@@ -46,6 +46,7 @@ from .models import (
     BookingBufferConfig,
     InternalUserSlotWindowSetting,
     PeakWindowSetting,
+    ResultsDeadlinePolicy,
     ProformaInvoiceFormat,
     Semester,
     StudentEquipmentNomination,
@@ -1587,8 +1588,9 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'max_rush_relief_requests_per_week', 'max_surcharge_urgent_requests_per_week',
                 'waitlist_queue_depth',
                 'booking_not_utilize_window_hours',
-                'operator_unavailable_after_booking_end_hours',
-                'operator_absent_disruption_after_booking_end_hours',
+                'results_deadline_value',
+                'results_deadline_unit',
+                'show_results_deadline_to_users',
                 'show_lifecycle_countdowns',
                 'sample_submission_lead_hours',
                 'atmosphere_sensitive_sample_enabled',
@@ -1606,10 +1608,10 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'Booking Not Utilize Window: hours after last slot end before the manual “Booking Not Utilized” '
                 'button is allowed per equipment (0 = hidden). Global auto not-utilized (weekdays 20:00 IST) uses '
                 '24h after latest booked slot end_datetime and only empty or Sample Sent lifecycle. '
-                'Auto Operator Unavailable: hours after last slot end for possible full refund when lifecycle '
-                'moved past Sample Sent but is not finished — skipped if latest trace is forwarded, accepted, processing, held, or rejected. '
-                'Auto Operator Absent Disruption: hours after last slot end when latest trace is stuck at Forwarded, '
-                'Accepted, or Processing; opens disruption (refund vs reschedule). '
+                'Results deadline: working days (weekends and holidays skipped) or hours after the last slot by '
+                'which results are due (0 = none). Lab Operators and the OIC see bookings past it as Results overdue; '
+                'users see it only when "Show results deadline to users" is on. It also replaces the old Auto Operator '
+                'Unavailable / Absent Disruption timers once the results-deadline safeguard is switched on. '
                 'Lifecycle countdowns: submit-sample lead time before slot start, booking timer until slot end after '
                 'Sample Accepted, and collect/discard hours after booking completion. '
                 'When submission lead time and collect/discard deadline are both 0, the equipment is walk-in: '
@@ -1617,6 +1619,17 @@ class EquipmentAdmin(admin.ModelAdmin):
                 'are sent and bookings are not auto-marked Not Utilized. '
                 'Atmosphere-sensitive sample option: when enabled, bookers may choose to submit at slot start. '
                 'Repeat sample: days after completion when user can request a repeat; disclaimer shown in popup. Define actual timings in Slot Masters below.'
+            ),
+            'classes': ('collapse',)
+        }),
+        (_('Deprecated (replaced by Results deadline)'), {
+            'fields': (
+                'operator_unavailable_after_booking_end_hours',
+                'operator_absent_disruption_after_booking_end_hours',
+            ),
+            'description': _(
+                'Old fixed-hour timers. Still used for bookings whose slot ended before the results-deadline '
+                'safeguard was switched on (and for all bookings while it is off). Do not change for new setups.'
             ),
             'classes': ('collapse',)
         }),
@@ -2078,6 +2091,25 @@ class PeakWindowSettingAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return super().has_add_permission(request) and not PeakWindowSetting.objects.exists()
+
+
+@admin.register(ResultsDeadlinePolicy)
+class ResultsDeadlinePolicyAdmin(admin.ModelAdmin):
+    """Switch for the results-deadline safeguard (singleton). Use the management command for a dry run first."""
+
+    list_display = ["automation_enabled", "automation_since", "updated_by", "updated_at"]
+    ordering = ["pk"]
+    fields = ["automation_enabled", "automation_since", "updated_by", "created_at", "updated_at"]
+    readonly_fields = ["automation_since", "updated_by", "created_at", "updated_at"]
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and not ResultsDeadlinePolicy.objects.exists()
+
+    def save_model(self, request, obj, form, change):
+        obj.updated_by = request.user
+        if not obj.automation_enabled:
+            obj.automation_since = None
+        super().save_model(request, obj, form, change)
 
 
 # ============================================================================

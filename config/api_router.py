@@ -458,6 +458,7 @@ from iic_booking.equipment.equipment_addition_requests import (
     equipment_addition_request_reject,
 )
 from iic_booking.equipment.completion_reminders import bookings_awaiting_completion_view
+from iic_booking.equipment.results_deadline import results_overdue_view
 from iic_booking.equipment.admin_dashboard_summary import admin_dashboard_summary
 from iic_booking.equipment.pending_actions import pending_actions
 from iic_booking.equipment.publication_claim_views import (
@@ -1320,6 +1321,7 @@ urlpatterns = router.urls + [
         bookings_awaiting_completion_view,
         name="bookings-awaiting-completion",
     ),
+    path("bookings/results-overdue/", results_overdue_view, name="bookings-results-overdue"),
     path(
         "bookings/lab-dashboard-calendar-colors/",
         lab_dashboard_calendar_colors,
