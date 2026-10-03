@@ -26,8 +26,9 @@ from iic_booking.equipment.models import (
     QuotaLimitType,
     QuotaType,
 )
-from iic_booking.equipment.quota_breakdown import resolve_dimension
+from iic_booking.equipment.quota_breakdown import resolve_dimension, supervisor_of
 from iic_booking.equipment.quota_utils import QuotaService
+from iic_booking.users.models.user import User
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import Wallet, WalletJoinRequest, WalletJoinRequestStatus
 from iic_booking.users.tests.factories import UserFactory
@@ -267,6 +268,48 @@ def test_student_sees_group_members_by_name_without_links(world):
     assert res.data["full_details"] is False
     assert res.data["not_counted"] == []
     assert "total_charge" not in prof_row and "input_values" not in prof_row
+
+
+def test_supervisor_in_full_for_staff_and_by_name_for_the_student(world):
+    w = world
+    week = _monday(2)
+    _book(w, w.student, week, 9)
+    _book(w, w.peer, week + timedelta(days=1), 9)
+    params = dict(equipment=w.eq.pk, period="week", scope="group", date=week.isoformat())
+
+    staff = _get(w, w.oic, user_id=w.student.pk, **params).data
+    assert staff["supervisor"]["id"] == w.faculty.pk
+    assert staff["supervisor"]["email"] == w.faculty.email
+    assert staff["supervisor"]["department_name"] == w.f.department.name
+    assert staff["group_owner"]["id"] == w.faculty.pk
+    assert {r["supervisor_id"] for r in staff["counted"]} == {w.faculty.pk}
+
+    own = _get(w, w.student, **params).data
+    assert own["supervisor"]["name"] == staff["supervisor"]["name"]
+    assert own["supervisor"]["email"] is None and own["supervisor"]["id_number"] is None
+    peer_row = next(r for r in own["counted"] if r["user_id"] == w.peer.pk)
+    assert peer_row["supervisor_name"] == staff["supervisor"]["name"]
+
+
+def test_supervisor_falls_back_to_the_users_supervisor_and_is_empty_for_faculty(world):
+    w = world
+    User.objects.filter(pk=w.outsider.pk).update(supervisor=w.faculty)
+    res = _get(w, w.admin, equipment=w.eq.pk, period="week", scope="individual", user_id=w.outsider.pk)
+    assert res.data["supervisor"]["id"] == w.faculty.pk
+
+    res = _get(w, w.admin, equipment=w.eq.pk, period="week", scope="group", user_id=w.faculty.pk)
+    assert res.data["supervisor"]["id"] == w.faculty.pk  # group limits: the group head
+    assert supervisor_of(w.faculty) is None
+    assert supervisor_of(w.admin) is None
+
+
+def test_a_single_request_over_the_limit_is_flagged(world):
+    w = world
+    params = dict(equipment=w.eq.pk, period="week", scope="individual")
+    over = _get(w, w.student, requested=WEEKLY_INDIVIDUAL + 30, **params).data
+    assert over["request_exceeds_limit"] is True
+    assert over["used_minutes"] == 0 and over["over_by_minutes"] == 30
+    assert _get(w, w.student, requested=30, **params).data["request_exceeds_limit"] is False
 
 
 @pytest.mark.parametrize("viewer_name", ["faculty", "oic", "admin"])
