@@ -9202,7 +9202,10 @@ def list_my_urgent_booking_requests(request):
 @permission_classes([IsAuthenticated])
 def list_urgent_booking_requests(request):
     """
-    List urgent booking requests. Admin and Officer in charge only.
+    List urgent booking requests: Main Admin (all), Department Administrator (own department),
+    Officer in charge / Lab Operator (their equipment). Query: status, request_type, department_id,
+    equipment_id, limit, offset. ``filters`` echoes the applied filters, the user's scope and the
+    equipment options for the Equipment filter.
     Returns list with user, equipment, requested_at, status, and no-slot log summary for each user/equipment.
     """
     if not check_operator_permission(request.user):
@@ -9210,18 +9213,20 @@ def list_urgent_booking_requests(request):
             {"error": "Only admin and Officer in charge can view urgent requests."},
             status=status.HTTP_403_FORBIDDEN,
         )
+    from .staff_list_filters import allowed_equipment_queryset, resolve_staff_list_filter
+
     requests_qs = (
         UrgentBookingRequest.objects
         .select_related("user", "equipment", "decided_by", "wallet_approved_by", "supervisor", "hold_booking")
         .order_by("-requested_at")
     )
-    # Restrict OIC/manager to their managed equipment; operator to their mapped equipment; admin sees all
+    # OIC: managed equipment (incl. temporary OIC); operator: mapped equipment; Department
+    # Administrator: own department; admin: all. department_id / equipment_id only narrow this.
     equipment_ids = _get_equipment_ids_for_log_access(request.user)
-    if equipment_ids is not None:
-        if len(equipment_ids) == 0:
-            requests_qs = requests_qs.none()
-        else:
-            requests_qs = requests_qs.filter(equipment_id__in=equipment_ids)
+    list_filter = resolve_staff_list_filter(
+        request, allowed_equipment_queryset(equipment_ids), unrestricted=equipment_ids is None
+    )
+    requests_qs = list_filter.apply(requests_qs)
     status_filter = request.query_params.get("status", "").strip().upper()
     if status_filter and status_filter in UrgentBookingRequestStatus.values:
         requests_qs = requests_qs.filter(status=status_filter)
@@ -9338,7 +9343,13 @@ def list_urgent_booking_requests(request):
             "hold_booking_summary": hold_booking_summary,
         })
     return Response(
-        {"urgent_requests": results, "total_count": total_count, "limit": limit, "offset": offset},
+        {
+            "urgent_requests": results,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "filters": list_filter.payload,
+        },
         status=status.HTTP_200_OK,
     )
 
@@ -16434,8 +16445,15 @@ def request_repeat_sample(request, booking_id):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def list_repeat_sample_requests(request):
-    """List repeat sample requests. Admin/OIC only. Query params: status (PENDING, APPROVED, REJECTED)."""
-    if not _is_repeat_sample_manager(request.user):
+    """
+    List repeat sample records: Main Admin (all), OIC (managed equipment, incl. temporary OIC) and,
+    read-only, Department Administrator (own department).
+    Query params: status (PENDING, APPROVED, REJECTED), department_id, equipment_id.
+    """
+    from .staff_list_filters import allowed_equipment_queryset, resolve_staff_list_filter
+
+    is_dept_admin = getattr(request.user, "user_type", None) == UserType.DEPT_ADMIN
+    if not (_is_repeat_sample_manager(request.user) or is_dept_admin):
         return Response(
             {"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE},
             status=status.HTTP_403_FORBIDDEN,
@@ -16443,12 +16461,17 @@ def list_repeat_sample_requests(request):
     status_filter = (request.query_params.get("status") or "").strip().upper()
     qs = RepeatSampleRequest.objects.select_related("booking", "booking__user", "booking__equipment", "new_booking", "responded_by").order_by("-requested_at")
     equipment_ids = _get_equipment_ids_for_log_access(request.user)
-    if equipment_ids is not None:
-        qs = qs.filter(booking__equipment_id__in=equipment_ids)
+    list_filter = resolve_staff_list_filter(
+        request, allowed_equipment_queryset(equipment_ids), unrestricted=equipment_ids is None
+    )
+    qs = list_filter.apply(qs, field="booking__equipment_id")
     if status_filter in ("PENDING", "APPROVED", "REJECTED"):
         qs = qs.filter(status=status_filter)
     serializer = RepeatSampleRequestSerializer(qs, many=True)
-    return Response({"repeat_sample_requests": serializer.data}, status=status.HTTP_200_OK)
+    return Response(
+        {"repeat_sample_requests": serializer.data, "filters": list_filter.payload},
+        status=status.HTTP_200_OK,
+    )
 
 def _programme_label(degree: str, branch: str) -> str:
     """
