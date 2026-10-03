@@ -452,6 +452,32 @@ def wallet_spend_month(*, user) -> dict:
     )
 
 
+def _readable_value(value) -> str:
+    from iic_booking.equipment.input_display import humanize_key
+
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, dict):
+        return ", ".join(f"{humanize_key(k)}: {_readable_value(v)}" for k, v in list(value.items())[:8])
+    if isinstance(value, (list, tuple)):
+        shown = [_readable_value(v) for v in list(value)[:5]]
+        more = len(value) - len(shown)
+        return "; ".join(shown) + (f"; … {more} more" if more > 0 else "")
+    return str(value)
+
+
+def _readable_status_lines(data) -> list[str]:
+    from iic_booking.equipment.input_display import humanize_key
+
+    if isinstance(data, dict):
+        return [f"- {humanize_key(k)}: {_readable_value(v)}" for k, v in list(data.items())[:12]]
+    if isinstance(data, (list, tuple)):
+        return [f"- {_readable_value(v)}" for v in list(data)[:12]]
+    return [f"- {data}"]
+
+
 def sample_or_results(*, user, text: str, which: str) -> dict:
     if user is None or not getattr(user, "is_authenticated", False):
         return build_response(kind="ACTION_REQUIRED", content="Sign in required.", actions=[{"id": "sign_in", "label": "Sign in", "href": "/auth", "enabled": True}])
@@ -462,10 +488,9 @@ def sample_or_results(*, user, text: str, which: str) -> dict:
     else:
         result = tools_svc._get_booking_results(arguments={}, user=user)
     data = (result or {}).get("data") or {}
-    content = f"```json\n{data}\n```" if data else ((result or {}).get("error") or {}).get("message") or "No data."
-    if isinstance(data, dict) and data:
-        # Friendlier
-        content = "**Status**\n\n" + "\n".join(f"- {k}: {v}" for k, v in list(data.items())[:12])
+    content = ((result or {}).get("error") or {}).get("message") or "No data."
+    if data:
+        content = "**Status**\n\n" + "\n".join(_readable_status_lines(data))
     return build_response(kind="LIVE_DATA", content=str(content)[:4000], actions=list((result or {}).get("actions") or []), metadata={"deterministic": True})
 
 

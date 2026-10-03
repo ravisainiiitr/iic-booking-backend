@@ -177,7 +177,7 @@ def build_report_pdf(
             ["Distinct users served (excl. cancelled/refunded/waitlist/pending)", str(eq.get("distinct_users_served", 0))],
             ["Distinct internal users", str(eq.get("distinct_users_internal", 0))],
             ["Distinct external users", str(eq.get("distinct_users_external", 0))],
-            ["Total samples (input A)", str(eq.get("total_samples", 0))],
+            ["Total samples (from the No. of samples input)", str(eq.get("total_samples", 0))],
             ["Samples — internal / external", f"{eq.get('samples_internal', 0)} / {eq.get('samples_external', 0)}"],
             [
                 "Booking hours (total / int. / ext.)",
@@ -462,7 +462,7 @@ def build_report_excel(
         "Distinct users",
         "Users int.",
         "Users ext.",
-        "Samples (A)",
+        "Samples total",
         "Samples int.",
         "Samples ext.",
         "Book hrs total",

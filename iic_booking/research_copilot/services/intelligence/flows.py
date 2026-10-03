@@ -846,8 +846,11 @@ def booking_summary(turn: Turn, eq, prep: dict[str, Any], data: dict[str, Any] |
             after = None
     start = _dt(prep.get("start_time"))
     policy, _until = booking_mut._cancellation_window_note(equipment=eq, start=start) if start else ("", None)
-    labels = {f.field_key: (f.field_label or f.field_key) for f in _fields_for(turn.user, eq)}
-    inputs = [{"key": k, "label": labels.get(k, k), "value": v} for k, v in sorted((prep.get("input_values") or {}).items())]
+    from iic_booking.equipment.input_display import field_item, input_summary_items
+
+    inputs = input_summary_items(
+        prep.get("input_values") or {}, [field_item(f) for f in _fields_for(turn.user, eq)], max_rows=10
+    )
     s["slot_ids"] = prep.get("slot_ids") or []
     s["step"] = "confirm"
     card = _proposal_card(prep) | {

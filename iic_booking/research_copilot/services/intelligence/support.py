@@ -103,12 +103,17 @@ def _description(*, question, copilot_response, intent, entities, reason, note, 
     if copilot_response:
         parts += ["", f"Booking Assistant response: {copilot_response[:1500]}"]
     parts += ["", f"Reason: {reason}"]
+    from iic_booking.equipment.input_display import humanize_key
+
     if intent:
-        parts.append(f"Detected intent: {intent}")
+        parts.append(f"Detected intent: {humanize_key(str(intent).lower())}")
     if entities:
         shown = {k: v for k, v in entities.items() if v not in (None, "", [], {}, False)}
         if shown:
-            parts.append("Detected details: " + ", ".join(f"{k}={v}" for k, v in list(shown.items())[:12]))
+            parts.append("Detected details: " + "; ".join(
+                f"{humanize_key(k)}: {', '.join(map(str, v)) if isinstance(v, (list, tuple)) else v}"
+                for k, v in list(shown.items())[:12]
+            ))
     history = _history(conversation)
     if history:
         parts += ["", "Recent conversation:", history]

@@ -2640,6 +2640,27 @@ class BookingDataShareAdmin(admin.ModelAdmin):
         return False
 
 
+def _readable_inputs_html(values, fields):
+    """User inputs as a small label / value table (option labels, Yes/No, table rows) for read-only admin fields."""
+    from django.utils.html import format_html_join
+
+    from .input_display import input_summary_lines
+
+    try:
+        lines = input_summary_lines(values or {}, fields, max_rows=20)
+    except Exception:
+        lines = []
+    if not lines:
+        return '-'
+    rows = format_html_join(
+        '',
+        '<tr><th style="text-align:left;padding:2px 12px 2px 0;vertical-align:top">{}</th>'
+        '<td style="padding:2px 0">{}</td></tr>',
+        lines,
+    )
+    return format_html('<table>{}</table>', rows)
+
+
 @admin.register(Booking)
 class BookingAdmin(admin.ModelAdmin):
     """Admin configuration for Booking."""
@@ -2649,7 +2670,15 @@ class BookingAdmin(admin.ModelAdmin):
     search_fields = ['booking_id', 'virtual_booking_id', 'equipment__code', 'user__email', 'user__name']
     ordering = ['-created_at']
     date_hierarchy = 'created_at'
-    readonly_fields = ['booking_id', 'virtual_booking_id', 'created_at', 'updated_at', 'rated_at']
+    readonly_fields = ['booking_id', 'virtual_booking_id', 'created_at', 'updated_at', 'rated_at', 'readable_inputs']
+
+    @admin.display(description=_('User inputs (as shown to users)'))
+    def readable_inputs(self, obj):
+        if obj is None or not obj.pk:
+            return '-'
+        from .input_display import booking_input_fields
+
+        return _readable_inputs_html(obj.input_values, booking_input_fields(obj))
     
     inlines = [DailySlotInline]
     
@@ -2661,8 +2690,8 @@ class BookingAdmin(admin.ModelAdmin):
             'fields': ('total_time_minutes', 'total_charge')
         }),
         (_('Input Values'), {
-            'fields': ('input_values', 'selected_parameters'),
-            'description': _('Dynamic input values and selected parameters')
+            'fields': ('readable_inputs', 'input_values', 'selected_parameters'),
+            'description': _('Dynamic input values and selected parameters (raw values are keyed by field letter)')
         }),
         (_('Charge Breakdown'), {
             'fields': ('charge_breakdown',),
@@ -2751,14 +2780,41 @@ class BookingAttemptLogAdmin(admin.ModelAdmin):
         'slots_requested',
         'duration_minutes',
         'booking_id',
+        'failure_explained',
+        'readable_inputs',
     ]
 
     def failure_reason_short(self, obj):
         if not obj.failure_reason:
             return '-'
-        return obj.failure_reason[:60] + '…' if len(obj.failure_reason) > 60 else obj.failure_reason
+        from .failure_reasons import explain
+
+        return explain(obj.failure_reason, outcome=obj.outcome)["title"]
 
     failure_reason_short.short_description = _('Failure reason')
+
+    @admin.display(description=_('Outcome in plain language'))
+    def failure_explained(self, obj):
+        if obj is None or str(obj.outcome).upper() == 'SUCCESS':
+            return '-'
+        from .failure_reasons import explain
+
+        friendly = explain(obj.failure_reason, outcome=obj.outcome)
+        return f"{friendly['title']}: {friendly['message']}"
+
+    @admin.display(description=_('User inputs'))
+    def readable_inputs(self, obj):
+        if obj is None:
+            return '-'
+        from .attempt_log_display import resolve_logged_inputs
+
+        resolved = resolve_logged_inputs(
+            obj.equipment_id, getattr(obj.user, 'user_type', '') or '', obj.additional_info
+        )
+        values = dict(resolved['input_values'])
+        if resolved['comments']:
+            values['comments'] = resolved['comments']
+        return _readable_inputs_html(values, resolved['input_fields'])
 
     def has_add_permission(self, request):
         return False
@@ -2901,7 +2957,16 @@ class BookingInputTemplateAdmin(admin.ModelAdmin):
     list_filter = ["equipment"]
     search_fields = ["name", "user__email", "user__name", "equipment__code", "equipment__name"]
     raw_id_fields = ["user", "equipment"]
-    readonly_fields = ["created_at", "updated_at"]
+    readonly_fields = ["created_at", "updated_at", "readable_inputs"]
+
+    @admin.display(description=_("Saved inputs (as shown to users)"))
+    def readable_inputs(self, obj):
+        if obj is None or not obj.pk:
+            return "-"
+        from .input_display import equipment_field_items
+
+        fields = equipment_field_items(obj.equipment_id, getattr(obj.user, "user_type", "") or "")
+        return _readable_inputs_html(obj.input_values, fields)
 
     def has_add_permission(self, request):
         return False
