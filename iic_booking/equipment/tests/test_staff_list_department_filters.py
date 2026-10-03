@@ -209,7 +209,7 @@ def test_waitlist_all_department_admin_sees_own_department_only(waitlists):
         assert res.data["filters"]["scope"] == "department"
         assert res.data["filters"]["locked_department_id"] == w["iic"].pk
         assert _client(da).get(WAITLIST_ALL, {"department_id": w["chem_dept"].pk}).data["entries"] == []
-        # Read-only: clearing still needs the equipment module.
+        # Without the Manage bookings grant a Department Administrator can view but not clear.
         assert _client(da).post(f"/api/admin/equipment/{w['mine'].pk}/waitlist-clear/", {}, format="json").status_code == 403
     assert WaitlistEntry.objects.filter(equipment=w["mine"]).count() == 2
 
