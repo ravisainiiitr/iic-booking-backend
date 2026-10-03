@@ -1233,7 +1233,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
     if not keeps_original_quota_period and not av.booking_is_quota_exempt(booking):
         try:
             if not av.booking_quota_should_skip(target):
-                quota_allowed, quota_error = av.QuotaService.validate_booking_quota(
+                quota_decision = av.QuotaService.evaluate_booking_quota(
                     user=owner,
                     equipment=target,
                     additional_time_minutes=int(booking.total_time_minutes or 0),
@@ -1242,8 +1242,15 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
                     booking_date=start_time,
                     exclude_booking_id=booking.booking_id,
                 )
-                if not quota_allowed:
-                    return _error(quota_error, "QUOTA_EXCEEDED")
+                if not quota_decision.allowed:
+                    fields = av.quota_failure_fields(
+                        quota_decision,
+                        equipment=target,
+                        subject=owner,
+                        booking_date=start_time,
+                        booking_id=booking.booking_id,
+                    )
+                    return _error(quota_decision.error, fields.pop("code"), **fields)
         except Exception:
             logger.exception("Quota check failed during cross-equipment reschedule for booking %s", booking.pk)
             return _error("Quota check failed. Please try again or contact admin.", "QUOTA_CHECK_FAILED")

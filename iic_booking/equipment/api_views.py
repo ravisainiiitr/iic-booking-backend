@@ -181,11 +181,14 @@ from .slot_department_access import (
 from .quota_utils import (
     QuotaService,
     booking_is_quota_exempt,
+    booking_quota_reference_datetime,
     booking_quota_should_skip,
     check_booking_minutes_change,
+    evaluate_booking_minutes_change,
     get_quota_breakdown,
     keep_quota_in_original_period,
 )
+from .quota_breakdown import QuotaExceededError, quota_failure_fields
 from .booking_timing import BookingRequestTimer, attach_booking_performance_headers
 from .booking_events import create_booking_event
 from .booking_cancellation import (
@@ -4700,16 +4703,17 @@ def _book_equipment_impl(request, pk):
                 ]
         if not is_admin and not booking_quota_should_skip(equipment):
             # Urgent / HOLD bookings bypass quota restrictions.
-            quota_allowed, quota_error = QuotaService.validate_booking_quota(
-                user=booking_user,
-                equipment=equipment,
+            quota_decision = QuotaService.evaluate_booking_quota(
+                booking_user,
+                equipment,
                 additional_time_minutes=total_time_minutes,
                 additional_bookings=1,
                 additional_charge=total_charge,
                 booking_date=booking_date,
                 bypass_quota=bool(create_as_hold),
             )
-            if not quota_allowed:
+            if not quota_decision.allowed:
+                quota_error = quota_decision.error
                 _create_booking_attempt_log(
                     request, equipment, BookingAttemptOutcome.FAILED,
                     failure_reason=f"Quota check failed: {quota_error}",
@@ -4718,7 +4722,15 @@ def _book_equipment_impl(request, pk):
                     duration_minutes=total_time_minutes,
                     additional_info=_get_additional_info_from_request(request, equipment),
                 )
-                return Response({"error": quota_error}, status=status.HTTP_400_BAD_REQUEST)
+                return Response(
+                    {
+                        "error": quota_error,
+                        **quota_failure_fields(
+                            quota_decision, equipment=equipment, subject=booking_user, booking_date=booking_date
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         perf.mark("quota_checks_done")
         status_map = {'booked': BookingStatus.BOOKED, 'hold': BookingStatus.HOLD}
         booking_status_enum = BookingStatus.HOLD if create_as_hold else status_map.get(booking_status.lower(), BookingStatus.BOOKED)
@@ -4982,17 +4994,26 @@ def _book_equipment_impl(request, pk):
                     # Re-validate group/legacy quotas under the same atomic block as the slot claim
                     # so concurrent bookings cannot oversubscribe after the outer pre-check commits.
                     if not booking_quota_should_skip(equipment) and not create_as_hold:
-                        quota_ok, quota_err = QuotaService.validate_booking_quota(
-                            user=booking_user,
-                            equipment=equipment,
+                        locked_booking_date = locked_slots[0].start_datetime if locked_slots else None
+                        quota_decision = QuotaService.evaluate_booking_quota(
+                            booking_user,
+                            equipment,
                             additional_time_minutes=total_time_minutes,
                             additional_bookings=1,
                             additional_charge=total_charge,
-                            booking_date=locked_slots[0].start_datetime if locked_slots else None,
+                            booking_date=locked_booking_date,
                             bypass_quota=False,
                         )
-                        if not quota_ok:
-                            raise ValueError(quota_err or "Quota check failed.")
+                        if not quota_decision.allowed:
+                            raise QuotaExceededError(
+                                quota_decision.error or "Quota check failed.",
+                                quota_failure_fields(
+                                    quota_decision,
+                                    equipment=equipment,
+                                    subject=booking_user,
+                                    booking_date=locked_booking_date,
+                                ),
+                            )
                 if not is_admin:
                     from iic_booking.users.student_spending_limits import spending_limit_error
 
@@ -5220,6 +5241,19 @@ def _book_equipment_impl(request, pk):
             return ok_response
         except ValueError as e:
             err_msg = str(e)
+            if isinstance(e, QuotaExceededError):
+                try:
+                    _create_booking_attempt_log(
+                        request, equipment, BookingAttemptOutcome.FAILED,
+                        failure_reason=f"Quota check failed: {err_msg}",
+                        slots_requested=len(slot_ids),
+                        number_of_samples=request.data.get("number_of_samples") or 1,
+                        duration_minutes=total_time_minutes,
+                        additional_info=_get_additional_info_from_request(request, equipment),
+                    )
+                except TransactionManagementError:
+                    pass
+                return Response({"error": err_msg, **e.fields}, status=status.HTTP_400_BAD_REQUEST)
             try:
                 _create_booking_attempt_log(
                     request, equipment, BookingAttemptOutcome.FAILED,
@@ -5619,16 +5653,17 @@ def _book_equipment_impl(request, pk):
     # Check quota limits before creating booking (skip for admin; urgent HOLD bypasses)
     booking_date = start_time
     if not is_admin and not booking_quota_should_skip(equipment):
-        quota_allowed, quota_error = QuotaService.validate_booking_quota(
-            user=booking_user,
-            equipment=equipment,
+        quota_decision = QuotaService.evaluate_booking_quota(
+            booking_user,
+            equipment,
             additional_time_minutes=total_time_minutes,
             additional_bookings=1,
             additional_charge=total_charge,
             booking_date=booking_date,
             bypass_quota=bool(create_as_hold),
         )
-        if not quota_allowed:
+        if not quota_decision.allowed:
+            quota_error = quota_decision.error
             _create_booking_attempt_log(
                 request, equipment, BookingAttemptOutcome.FAILED,
                 failure_reason=f"Quota check failed: {quota_error}",
@@ -5638,7 +5673,12 @@ def _book_equipment_impl(request, pk):
                 additional_info=_get_additional_info_from_request(request, equipment),
             )
             return Response(
-                {"error": quota_error},
+                {
+                    "error": quota_error,
+                    **quota_failure_fields(
+                        quota_decision, equipment=equipment, subject=booking_user, booking_date=booking_date
+                    ),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -9798,48 +9838,24 @@ def _booking_attempt_log_detail(request, log_id):
 @permission_classes([IsAuthenticated])
 def get_booking_attempt_log_quota_breakdown(request, log_id):
     """
-    Get date-wise quota calculation details for a failed booking attempt (quota check failed).
-    Admin and Officer in charge only. OIC can only view breakdown for logs of equipments they manage.
+    Older shape of /bookings/quota-breakdown/?log_id=… (kept for clients not yet updated): date-wise
+    quota usage for a failed attempt, for the period of the requested slot. Admin / OIC (own equipment).
     """
-    if not check_operator_permission(request.user):
-        return Response(
-            {"error": "Only admin and Officer in charge can view quota calculation details."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    from .quota_breakdown import (
+        BreakdownError,
+        attempt_log_context,
+        attempt_reference_and_source,
+        resolve_dimension,
+    )
+
     try:
-        log = BookingAttemptLog.objects.select_related("user", "equipment").get(pk=log_id)
-    except BookingAttemptLog.DoesNotExist:
-        return Response({"error": "Log entry not found."}, status=status.HTTP_404_NOT_FOUND)
-    if log.outcome != BookingAttemptOutcome.FAILED:
-        return Response(
-            {"error": "Quota breakdown is only available for failed attempts."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    failure_reason = (log.failure_reason or "").strip()
-    if "quota check failed" not in failure_reason.lower():
-        return Response(
-            {"error": "Quota breakdown is only available when failure reason is quota check failed."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if "weekly" in failure_reason.lower():
-        quota_type = "WEEKLY"
-    elif "monthly" in failure_reason.lower():
-        quota_type = "MONTHLY"
-    else:
-        return Response(
-            {"error": "Could not determine quota type (weekly/monthly) from failure reason."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    equipment_ids = _get_equipment_ids_for_log_access(request.user)
-    if equipment_ids is not None and log.equipment_id not in equipment_ids:
-        return Response(
-            {"error": "You do not have permission to view quota details for this equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-    from django.utils import timezone
-    reference_date = log.requested_at or timezone.now()
+        ctx = attempt_log_context(request.user, log_id)
+        dim = resolve_dimension(ctx.subject, ctx.equipment, ctx.quota_type, ctx.scope)
+        reference_date, _ = attempt_reference_and_source(ctx, dim)
+    except BreakdownError as exc:
+        return Response({"error": exc.message}, status=exc.http_status)
     breakdown = get_quota_breakdown(
-        log.user, log.equipment, quota_type, reference_date, failure_reason
+        ctx.subject, ctx.equipment, ctx.quota_type, reference_date, ctx.failure_reason
     )
     return Response(breakdown, status=status.HTTP_200_OK)
 
@@ -10664,7 +10680,7 @@ def _get_additional_info_from_request(request, equipment=None):
         raw_slot_ids = data.get("slot_ids")
         if isinstance(raw_slot_ids, list) and raw_slot_ids:
             info["slot_ids"] = [int(x) for x in raw_slot_ids if str(x).strip().lstrip("-").isdigit()][:200]
-        for key in ("start_time", "end_time"):
+        for key in ("start_time", "end_time", "visible_week_start"):
             if data.get(key):
                 info[key] = str(data.get(key))[:40]
         behalf = data.get("user_id")
@@ -13271,17 +13287,29 @@ def user_reschedule_booking(request, booking_id):
             and not booking_is_quota_exempt(booking)
             and not booking_quota_should_skip(equipment)
         ):
-            quota_allowed, quota_error = QuotaService.validate_booking_quota(
-                user=booking.user,
-                equipment=equipment,
+            quota_decision = QuotaService.evaluate_booking_quota(
+                booking.user,
+                equipment,
                 additional_time_minutes=int(getattr(booking, "total_time_minutes", 0) or 0),
                 additional_bookings=1,
                 additional_charge=Decimal(str(getattr(booking, "total_charge", 0) or "0")),
                 booking_date=start_time,
                 exclude_booking_id=booking.booking_id,
             )
-            if not quota_allowed:
-                return Response({"error": quota_error}, status=status.HTTP_400_BAD_REQUEST)
+            if not quota_decision.allowed:
+                return Response(
+                    {
+                        "error": quota_decision.error,
+                        **quota_failure_fields(
+                            quota_decision,
+                            equipment=equipment,
+                            subject=booking.user,
+                            booking_date=start_time,
+                            booking_id=booking.booking_id,
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
     except Exception:
         logger.exception("Quota check failed during user reschedule for booking %s", booking.booking_id)
         return Response({"error": "Quota check failed. Please try again or contact admin."}, status=status.HTTP_400_BAD_REQUEST)
@@ -15327,10 +15355,19 @@ def update_booking_input_values(request, booking_id):
         booking, original, current, enable_recalc=enable_recalc, values_changed=values_changed
     )
     if new_total_time_minutes is not None and not is_staff_editor:
-        quota_ok, quota_error = check_booking_minutes_change(booking, new_total_time_minutes)
-        if not quota_ok:
+        quota_decision = evaluate_booking_minutes_change(booking, new_total_time_minutes)
+        if not quota_decision.allowed:
             return Response(
-                {"error": quota_error, "code": "QUOTA_EXCEEDED"},
+                {
+                    "error": quota_decision.error,
+                    **quota_failure_fields(
+                        quota_decision,
+                        equipment=equipment,
+                        subject=booking.user,
+                        booking_date=booking_quota_reference_datetime(booking),
+                        booking_id=booking.pk,
+                    ),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
