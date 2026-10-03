@@ -430,6 +430,7 @@ def create_booking_for_waitlist_user(
         event_metadata["waitlist_position"] = f"WL{int(waitlist_queue_position)}"
     if waitlist_joined_at is not None:
         event_metadata["waitlist_joined_at_display"] = _format_datetime_for_email(waitlist_joined_at)
+        event_metadata["waitlist_joined_at"] = waitlist_joined_at.isoformat()
 
     try:
         with transaction.atomic():
