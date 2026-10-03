@@ -294,8 +294,42 @@ def _personal_items(c: _Collector) -> None:
             lambda n: n.message or n.subject,
         )
 
+    def registration_approvals():
+        from iic_booking.users import registration_approvals as reg
+
+        if user.user_type != UserType.FACULTY or not reg.schema_ready():
+            return
+        from iic_booking.users.models import (
+            RegistrationApproval,
+            RegistrationApprovalStatus,
+            RegistrationExtensionRequest,
+            RegistrationExtensionStatus,
+        )
+
+        c.add(
+            "registration_approvals",
+            "Registrations awaiting your approval",
+            RegistrationApproval.objects.filter(faculty=user, status=RegistrationApprovalStatus.PENDING_FACULTY)
+            .select_related("user")
+            .order_by("forwarded_at"),
+            "/registration-approvals",
+            "People who named you as their IITR supervisor when registering. Confirm or decline each request.",
+            lambda a: f"{_person(a.user)} ({a.user.email})",
+        )
+        c.add(
+            "registration_extensions",
+            "Access extensions awaiting your approval",
+            RegistrationExtensionRequest.objects.filter(faculty=user, status=RegistrationExtensionStatus.PENDING)
+            .select_related("user")
+            .order_by("created_at"),
+            "/registration-approvals",
+            "Users under your supervision asked to extend their access (up to six months each time).",
+            lambda e: f"{_person(e.user)} — valid until {e.previous_end_date or '—'}",
+        )
+
     for name, fn in (
         ("wallet_join", wallet_join),
+        ("registration_approvals", registration_approvals),
         ("urgent_supervisor", urgent_supervisor),
         ("credit_clarification", credit_clarification),
         ("nominations", nominations),
@@ -507,7 +541,34 @@ def _admin_items(c: _Collector) -> None:
             "New equipment addition requests are waiting for review.",
         )
 
-    for name, fn in (("notices", notices), ("wallet", wallet), ("equipment_additions", equipment_additions)):
+    def registration_requests():
+        from iic_booking.users import registration_approvals as reg
+
+        if not reg.schema_ready():
+            return
+        pending_admin = reg.pending_admin_count()
+        c.add(
+            "registration_requests",
+            "Registration requests",
+            pending_admin,
+            "/admin/registration-requests?status=pending_admin",
+            "Self-registered accounts are waiting for the Main Administrator. Requests claiming IITR can be "
+            "forwarded to the faculty member the user named.",
+        )
+        c.add(
+            "registration_extensions_admin",
+            "Access extension requests without a faculty member",
+            reg.RegistrationExtensionRequest.objects.filter(status=reg.ExtStatus.PENDING, faculty__isnull=True),
+            "/admin/registration-requests",
+            "These users asked for an extension but have no IITR faculty supervisor on record.",
+        )
+
+    for name, fn in (
+        ("notices", notices),
+        ("wallet", wallet),
+        ("equipment_additions", equipment_additions),
+        ("registration_requests", registration_requests),
+    ):
         c.safely(name, fn)
 
 

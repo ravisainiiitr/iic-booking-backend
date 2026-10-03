@@ -25,6 +25,13 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
                 "path": "/admin/section/users",
             },
             {
+                "key": "user_management.registration_requests",
+                "label": "Registration Requests",
+                "description": "Approve, reject or forward self-registrations to the IITR faculty named; full log and programme expiry",
+                "path": "/admin/registration-requests",
+                "main_admin_only": True,
+            },
+            {
                 "key": "user_management.departments",
                 "label": "Departments",
                 "path": "/admin/section/departments",

@@ -247,6 +247,17 @@ def expire_channel_i_students() -> int:
     return n
 
 
+@shared_task(name="users.registration_programme_expiry")
+@defer_during_peak("users.registration_programme_expiry")
+def registration_programme_expiry() -> dict:
+    """Programme expiry warnings and disabling for self-registered IITR accounts. No-op until switched on."""
+    from iic_booking.users.registration_approvals import run_expiry
+
+    result = run_expiry()
+    logger.info("registration_programme_expiry: %s", result)
+    return result
+
+
 @shared_task(name="users.send_migration_notification_recipient", bind=True, max_retries=3)
 def send_migration_notification_recipient(self, recipient_id: int) -> dict:
     """Deliver one Phase 8C migration notification (staging/Mailpit). Never production."""

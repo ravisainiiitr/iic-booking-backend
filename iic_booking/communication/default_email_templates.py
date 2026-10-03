@@ -79,6 +79,15 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "registration_self_verification_email",
     "registration_verification_otp_email",
     "registration_approval_confirmation_email",
+    "registration_faculty_approval_request_email",
+    "registration_faculty_approval_reminder_email",
+    "registration_request_approved_email",
+    "registration_request_rejected_email",
+    "registration_expiry_warning_email",
+    "registration_extension_request_email",
+    "registration_extension_granted_email",
+    "registration_extension_denied_email",
+    "registration_access_disabled_email",
     "support_ticket_resolution_email",
     "admin_bulk_email",
     "oic_monthly_report",
@@ -1372,6 +1381,235 @@ def _supervisor_invite_templates() -> list[dict[str, Any]]:
     ]
 
 
+_REG_USER_ROWS = (
+    ("Name", "user_name"),
+    ("Email", "user_email"),
+    ("Registered as", "user_type"),
+    ("Department / organisation", "department"),
+    ("Employee / student ID", "employee_id"),
+    ("Phone", "phone"),
+    ("Programme start", "programme_start"),
+    ("Programme validity", "programme_validity"),
+)
+_REG_USER_HELP = (
+    "{{ user_name }}, {{ user_email }}, {{ user_type }}, {{ department }}, {{ employee_id }}, {{ phone }}, "
+    "{{ programme_start }}, {{ programme_validity }}"
+)
+_SIX_MONTHS_HTML = paragraph_html(
+    "Each extension is valid for up to <strong>six months</strong>. Further extensions can be requested in the same way."
+)
+_SIX_MONTHS_TEXT = "Each extension is valid for up to six months. Further extensions can be requested in the same way.\n"
+
+
+def _rows(pairs: Sequence[tuple[str, str]]) -> tuple[list[str], str]:
+    html = [optional_detail_row(label, var) for label, var in pairs]
+    text = "".join(f"{{% if {var} %}}- {label}: {{{{ {var} }}}}\n{{% endif %}}" for label, var in pairs)
+    return html, text
+
+
+def _registration_approval_templates() -> list[dict[str, Any]]:
+    user_rows, user_text = _rows(_REG_USER_ROWS)
+    disclaimer_html = paragraph_html(
+        "Before approving you will be asked to confirm: <em>{{ disclaimer_text }}</em>"
+    )
+    disclaimer_text = "Before approving you will be asked to confirm:\n\"{{ disclaimer_text }}\"\n"
+    faculty_after_html = (
+        disclaimer_html
+        + paragraph_html(
+            "Sign in with your usual IIT Roorkee login to approve or disapprove. The request is also listed under "
+            "Pending approvals on your dashboard. This link can be used once and expires on {{ expires_on }}."
+        )
+    )
+    faculty_after_text = (
+        user_text
+        + "\n"
+        + disclaimer_text
+        + "Sign in with your usual IIT Roorkee login to approve or disapprove. The request is also listed under "
+        "Pending approvals on your dashboard. This link can be used once and expires on {{ expires_on }}.\n"
+    )
+    validity_rows, validity_text = _rows(
+        (
+            ("Name", "user_name"),
+            ("Email", "user_email"),
+            ("Current validity", "current_validity"),
+            ("Latest date allowed", "max_until"),
+        )
+    )
+    extension_disclaimer_html = paragraph_html("Before approving you will be asked to confirm: <em>{{ disclaimer_text }}</em>")
+    return [
+        _simple_email(
+            code="registration_faculty_approval_request_email",
+            title="Registration Awaiting Your Approval",
+            subject="Please confirm {{ user_name }}'s registration on the " + PRODUCT_NAME,
+            intro=(
+                "<strong>{{ user_name }}</strong> has registered on the {product} and named you as their "
+                "IIT Roorkee faculty supervisor. Their account becomes active only after you confirm that they "
+                "work under your supervision."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to the IITR faculty member a self-registered user named as supervisor (post-docs, research "
+                "associates, IITR startups). The button opens a single-use link after normal sign-in."
+            ),
+            name_var="recipient_name",
+            details_heading="Registration details",
+            detail_rows=user_rows,
+            post_details_html=faculty_after_html,
+            post_details_text=faculty_after_text,
+            cta_label="Review the registration",
+            variable_help="{{ recipient_name }}, " + _REG_USER_HELP + ", {{ disclaimer_text }}, {{ expires_on }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_faculty_approval_reminder_email",
+            title="Reminder: Registration Awaiting Your Approval",
+            subject="Reminder: please confirm {{ user_name }}'s registration",
+            intro=(
+                "This is a reminder that <strong>{{ user_name }}</strong> is waiting for you to confirm their "
+                "registration on the {product}. Their account stays inactive until you decide."
+            ).replace("{product}", PRODUCT_NAME),
+            description="Reminder sent by the Main Administrator to the faculty member for a pending registration.",
+            name_var="recipient_name",
+            details_heading="Registration details",
+            detail_rows=user_rows,
+            post_details_html=faculty_after_html,
+            post_details_text=faculty_after_text,
+            cta_label="Review the registration",
+            variable_help="{{ recipient_name }}, " + _REG_USER_HELP + ", {{ disclaimer_text }}, {{ expires_on }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_request_approved_email",
+            title="Registration Approved",
+            subject=f"Your registration on the {PRODUCT_NAME} is approved",
+            intro=(
+                "Your registration has been approved by <strong>{{ decided_by }}</strong>. Your account is now "
+                "active and you can sign in and book equipment."
+            ),
+            description="Sent to the user when their registration is approved (by their faculty supervisor or the Main Administrator). The faculty member is copied.",
+            details_heading="Account details",
+            detail_rows=[
+                optional_detail_row("Registered as", "user_type"),
+                optional_detail_row("Programme validity", "programme_validity"),
+            ],
+            post_details_text=(
+                "{% if user_type %}- Registered as: {{ user_type }}\n{% endif %}"
+                "{% if programme_validity %}- Programme validity: {{ programme_validity }}\n{% endif %}"
+            ),
+            note_vars=(("validity_note", "Access validity"),),
+            cta_label="Sign in",
+            variable_help="{{ user_name }}, {{ decided_by }}, {{ user_type }}, {{ programme_validity }}, {{ validity_note }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_request_rejected_email",
+            title="Registration Not Approved",
+            subject=f"Your registration on the {PRODUCT_NAME} was not approved",
+            intro=(
+                "Your registration was not approved by <strong>{{ decided_by }}</strong>. The reason is given "
+                "below. If you think this is a mistake, contact your supervisor or reply to the IIC office."
+            ),
+            description="Sent to the user when their registration is disapproved by the faculty member or rejected by the Main Administrator (reason required).",
+            note_vars=(("reason", "Reason"),),
+            cta_label="Open the portal",
+            variable_help="{{ user_name }}, {{ decided_by }}, {{ reason }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_expiry_warning_email",
+            title="Your Access Is About to Expire",
+            subject="Your portal access expires on {{ programme_validity }}",
+            intro=(
+                "Your access to the {product} is valid until <strong>{{ programme_validity }}</strong> "
+                "({{ days_left }} day(s) from today). After that date your account will be disabled unless "
+                "your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} grants an extension."
+            ).replace("{product}", PRODUCT_NAME),
+            description="Sent to the user (faculty copied) 30, 7 and 1 day(s) before the programme validity ends, when the expiry automation is on.",
+            post_details_html=_SIX_MONTHS_HTML
+            + paragraph_html("Use the button below to ask your supervisor for an extension. Existing bookings are not cancelled."),
+            post_details_text=_SIX_MONTHS_TEXT
+            + "Use the link below to ask your supervisor for an extension. Existing bookings are not cancelled.\n",
+            cta_label="Request an extension",
+            variable_help="{{ user_name }}, {{ programme_validity }}, {{ days_left }}, {{ faculty_name }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_extension_request_email",
+            title="Access Extension Request",
+            subject="{{ user_name }} asks you to extend their portal access",
+            intro=(
+                "<strong>{{ user_name }}</strong> has asked you, as their IIT Roorkee supervisor, to extend their "
+                "access to the {product}. You can extend it by up to six months, until {{ max_until }} at most, "
+                "or choose an earlier date."
+            ).replace("{product}", PRODUCT_NAME),
+            description="Sent to the faculty supervisor when a user requests an extension of their programme validity.",
+            name_var="recipient_name",
+            details_heading="Request details",
+            detail_rows=validity_rows,
+            post_details_html=extension_disclaimer_html
+            + paragraph_html("This link can be used once and expires on {{ expires_on }}. The request is also under Pending approvals on your dashboard."),
+            post_details_text=validity_text
+            + "\nBefore approving you will be asked to confirm:\n\"{{ disclaimer_text }}\"\n"
+            "This link can be used once and expires on {{ expires_on }}. The request is also under Pending approvals on your dashboard.\n",
+            note_vars=(("user_reason", "Message from the user"),),
+            cta_label="Review the request",
+            variable_help=(
+                "{{ recipient_name }}, {{ user_name }}, {{ user_email }}, {{ current_validity }}, {{ max_until }}, "
+                "{{ user_reason }}, {{ disclaimer_text }}, {{ expires_on }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="registration_extension_granted_email",
+            title="Access Extended",
+            subject="Your portal access is extended until {{ new_validity }}",
+            intro=(
+                "<strong>{{ decided_by }}</strong> has extended your access to the {product} until "
+                "<strong>{{ new_validity }}</strong>."
+            ).replace("{product}", PRODUCT_NAME),
+            description="Sent to the user (faculty copied) when an extension is granted.",
+            details_heading="Validity",
+            detail_rows=[
+                optional_detail_row("Previous validity", "previous_validity"),
+                optional_detail_row("New validity", "new_validity"),
+            ],
+            post_details_html=_SIX_MONTHS_HTML,
+            post_details_text=(
+                "{% if previous_validity %}- Previous validity: {{ previous_validity }}\n{% endif %}"
+                "{% if new_validity %}- New validity: {{ new_validity }}\n{% endif %}\n" + _SIX_MONTHS_TEXT
+            ),
+            cta_label="Sign in",
+            variable_help="{{ user_name }}, {{ decided_by }}, {{ previous_validity }}, {{ new_validity }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_extension_denied_email",
+            title="Extension Not Granted",
+            subject="Your request to extend portal access was not granted",
+            intro=(
+                "<strong>{{ decided_by }}</strong> did not grant your request to extend your access beyond "
+                "{{ previous_validity }}. The reason is given below."
+            ),
+            description="Sent to the user (faculty copied) when an extension is declined (reason required).",
+            note_vars=(("reason", "Reason"),),
+            cta_label="Open the portal",
+            variable_help="{{ user_name }}, {{ decided_by }}, {{ previous_validity }}, {{ reason }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_access_disabled_email",
+            title="Your Access Has Been Disabled",
+            subject="Your portal access has been disabled: programme validity ended",
+            intro=(
+                "Your programme validity ended on <strong>{{ programme_validity }}</strong>, so your account on "
+                "the {product} has been disabled. Your existing bookings have not been cancelled."
+            ).replace("{product}", PRODUCT_NAME),
+            description="Sent to the user (faculty copied) when the expiry automation disables the account.",
+            post_details_html=paragraph_html(
+                "Your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} can restore your access by "
+                "granting an extension of up to six months. Use the button below to request it."
+            ),
+            post_details_text=(
+                "Your supervisor{% if faculty_name %} ({{ faculty_name }}){% endif %} can restore your access by "
+                "granting an extension of up to six months. Use the link below to request it.\n"
+            ),
+            cta_label="Request an extension",
+            variable_help="{{ user_name }}, {{ programme_validity }}, {{ faculty_name }}, {{ link }}",
+        ),
+    ]
+
+
 def _registration_and_support_templates() -> list[dict[str, Any]]:
     return [
         _simple_email(
@@ -1854,6 +2092,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_urgent_templates())
     templates.extend(_wallet_templates())
     templates.extend(_registration_and_support_templates())
+    templates.extend(_registration_approval_templates())
     templates.extend(_nomination_and_leave_templates())
     templates.extend(_training_templates())
 

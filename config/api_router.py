@@ -81,6 +81,7 @@ from iic_booking.users.api.student_spending_limit_views import (
     student_spending_limit_detail,
 )
 from iic_booking.users.api import supervisor_invite_views
+from iic_booking.users.api import registration_approval_views as reg_approval_views
 from iic_booking.users.api.wallet_views import (
     get_wallet,
     get_wallet_balance,
@@ -1046,6 +1047,28 @@ urlpatterns = router.urls + [
     path("wallet/supervisor-invites/<int:invite_id>/resend/", supervisor_invite_views.resend_supervisor_invite, name="wallet-supervisor-invite-resend"),
     path("wallet/supervisor-invites/<int:invite_id>/cancel/", supervisor_invite_views.cancel_supervisor_invite, name="wallet-supervisor-invite-cancel"),
     path("wallet/my-spending-limit/", my_student_spending_limit, name="wallet-my-spending-limit"),
+    path("admin/registration-requests/", reg_approval_views.admin_registration_requests, name="admin-registration-requests"),
+    path("admin/registration-requests/summary/", reg_approval_views.admin_registration_summary, name="admin-registration-requests-summary"),
+    path("admin/registration-requests/bulk-forward/", reg_approval_views.admin_registration_bulk_forward, name="admin-registration-requests-bulk-forward"),
+    path("admin/registration-requests/log/", reg_approval_views.admin_registration_log, name="admin-registration-requests-log"),
+    path("admin/registration-requests/automation/", reg_approval_views.admin_registration_automation, name="admin-registration-requests-automation"),
+    path("admin/registration-requests/extensions/<int:ext_id>/decide/", reg_approval_views.admin_extension_decide, name="admin-registration-extension-decide"),
+    path("admin/registration-requests/extensions/<int:ext_id>/remind/", reg_approval_views.admin_extension_remind, name="admin-registration-extension-remind"),
+    path("admin/registration-requests/<int:user_id>/", reg_approval_views.admin_registration_request_detail, name="admin-registration-request-detail"),
+    path("admin/registration-requests/<int:user_id>/approve/", reg_approval_views.admin_registration_approve, name="admin-registration-request-approve"),
+    path("admin/registration-requests/<int:user_id>/reject/", reg_approval_views.admin_registration_reject, name="admin-registration-request-reject"),
+    path("admin/registration-requests/<int:user_id>/forward/", reg_approval_views.admin_registration_forward, name="admin-registration-request-forward"),
+    path("admin/registration-requests/<int:user_id>/remind/", reg_approval_views.admin_registration_remind, name="admin-registration-request-remind"),
+    path("admin/registration-requests/<int:user_id>/change-faculty/", reg_approval_views.admin_registration_change_faculty, name="admin-registration-request-change-faculty"),
+    path("admin/registration-requests/<int:user_id>/extend/", reg_approval_views.admin_registration_extend, name="admin-registration-request-extend"),
+    path("registration-approvals/", reg_approval_views.faculty_registration_approvals, name="registration-approvals"),
+    path("registration-approvals/review/", reg_approval_views.faculty_review_token, name="registration-approvals-review"),
+    path("registration-approvals/extension-request/", reg_approval_views.extension_request_by_link, name="registration-approvals-extension-request"),
+    path("registration-approvals/my-validity/", reg_approval_views.my_programme_validity, name="registration-approvals-my-validity"),
+    path("registration-approvals/extensions/<int:ext_id>/", reg_approval_views.faculty_extension_detail, name="registration-approvals-extension-detail"),
+    path("registration-approvals/extensions/<int:ext_id>/decide/", reg_approval_views.faculty_extension_decide, name="registration-approvals-extension-decide"),
+    path("registration-approvals/<int:approval_id>/", reg_approval_views.faculty_registration_approval_detail, name="registration-approvals-detail"),
+    path("registration-approvals/<int:approval_id>/decide/", reg_approval_views.faculty_registration_approval_decide, name="registration-approvals-decide"),
     
     # Wallet recharge request endpoints
     path("wallet/credit-facility/settings/", wallet_credit_facility_settings_view, name="wallet-credit-facility-settings"),
