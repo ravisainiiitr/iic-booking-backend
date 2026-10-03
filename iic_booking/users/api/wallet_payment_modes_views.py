@@ -16,7 +16,6 @@ from rest_framework.response import Response
 
 from iic_booking.users import wallet_payment_modes as svc
 from iic_booking.users.mobile_sessions import client_ip
-from iic_booking.users.models.department import Department, DepartmentType
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet_payment_modes import (
     DepartmentModeState,
@@ -103,8 +102,10 @@ def admin_wallet_payment_modes_overview(request):
     """Masters, department matrix, recipient configuration and option metadata in one payload."""
     masters = svc.master_states()
     states = svc.department_state_rows()
+    listed = list(svc.listed_departments())
+    saved_only = list(svc.saved_only_departments([d.pk for d in listed]))
     departments = []
-    for dept in svc.recharge_departments():
+    for dept, is_listed in [(d, True) for d in listed] + [(d, False) for d in saved_only]:
         row = states.get(dept.pk, {})
         dept_states = {o: row.get(o, DepartmentModeState.INHERIT) for o in svc.DEPARTMENT_STATE_OPTIONS}
         dept_states[WalletModeOption.CREDIT] = "enabled" if dept.enable_wallet_credit else "disabled"
@@ -115,7 +116,14 @@ def admin_wallet_payment_modes_overview(request):
             for o in svc.OPTIONS
         }
         departments.append(
-            {"id": dept.pk, "name": dept.name, "code": dept.code or "", "states": dept_states, "effective": effective}
+            {
+                "id": dept.pk,
+                "name": dept.name,
+                "code": dept.code or "",
+                "listed": is_listed,
+                "states": dept_states,
+                "effective": effective,
+            }
         )
     return Response(
         {
@@ -316,11 +324,9 @@ def admin_direct_recharge_grants(request):
         errors["valid_until"] = "Valid until must be in the future."
     department = None
     if data.get("department_id"):
-        department = Department.objects.filter(
-            pk=svc._department_id(data.get("department_id")), department_type=DepartmentType.INTERNAL
-        ).first()
+        department = svc.listed_departments().filter(pk=svc._department_id(data.get("department_id"))).first()
         if department is None:
-            errors["department_id"] = "Department was not found."
+            errors["department_id"] = "Select a department that has equipment listed in the catalog."
     cap = None
     if data.get("max_amount_per_transaction") not in (None, ""):
         try:
@@ -414,7 +420,7 @@ def direct_recharge_access_view(request):
     if access["allowed"]:
         access["departments"] = [
             {"id": d.pk, "name": d.name, "code": d.code or ""}
-            for d in svc.recharge_departments()
+            for d in svc.listed_departments()
             if svc.department_allows(WalletModeOption.DIRECT_RECHARGE, d.pk)
             and (access["is_main_admin"] or any(g["department_id"] in (None, d.pk) for g in access["grants"]))
         ]

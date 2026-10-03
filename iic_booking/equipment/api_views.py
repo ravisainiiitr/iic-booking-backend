@@ -2001,19 +2001,27 @@ def temporary_oic_update(request, delegation_id):
         "temporary_oic_name": get_user_display_name(delegation.temporary_oic),
     }, status=status.HTTP_200_OK)
 
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def equipment_catalog_departments(request):
-    """List internal departments that have visible, non-disposed equipment (for catalog filters)."""
-    queryset = get_visible_equipment_queryset(request.user).exclude(status=EquipmentStatus.DISPOSED)
+def _catalog_equipment_queryset(user):
+    return get_visible_equipment_queryset(user).exclude(status=EquipmentStatus.DISPOSED)
 
+
+def catalog_department_rows(user=None) -> list[dict]:
+    """
+    Departments offered by the equipment catalog's department filter.
+
+    ``user=None`` gives the public listing (anonymous visibility: no test-only
+    equipment, hidden department catalogs and group-restricted equipment excluded).
+    """
+    from django.contrib.auth.models import AnonymousUser
+
+    queryset = _catalog_equipment_queryset(user if user is not None else AnonymousUser())
     dept_rows = (
         queryset.filter(internal_department__isnull=False)
         .values("internal_department_id", "internal_department__name", "internal_department__code")
         .annotate(equipment_count=Count("equipment_id"))
         .order_by("internal_department__name")
     )
-    departments = [
+    return [
         {
             "id": row["internal_department_id"],
             "name": row["internal_department__name"],
@@ -2026,7 +2034,14 @@ def equipment_catalog_departments(request):
             row.get("internal_department__code"),
         )
     ]
-    unassigned_count = queryset.filter(internal_department__isnull=True).count()
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def equipment_catalog_departments(request):
+    """List internal departments that have visible, non-disposed equipment (for catalog filters)."""
+    departments = catalog_department_rows(request.user)
+    unassigned_count = _catalog_equipment_queryset(request.user).filter(internal_department__isnull=True).count()
 
     return Response(
         {

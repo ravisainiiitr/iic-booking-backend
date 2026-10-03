@@ -13,6 +13,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from iic_booking.equipment.models import Equipment, EquipmentStatus
 from iic_booking.users import wallet_payment_modes as svc
 from iic_booking.users.models import Department, DepartmentType, UserType, Wallet
 from iic_booking.users.models.wallet import (
@@ -61,8 +62,8 @@ MODES = "/api/admin/wallet-mode-settings/"
 
 class Base(TestCase):
     def setUp(self):
-        self.dept = Department.objects.create(name="Chem Modes", code="CHM", department_type=DepartmentType.INTERNAL)
-        self.other = Department.objects.create(name="Phys Modes", code="PHM", department_type=DepartmentType.INTERNAL)
+        self.dept = self.listed_department("Chem Modes", "CHM")
+        self.other = self.listed_department("Phys Modes", "PHM")
         self.faculty = User.objects.create_user(
             email="fac.pm@test.iitr.ac.in", password="pass12345", name="Fac PM", user_type=UserType.FACULTY,
             department=self.dept,
@@ -85,6 +86,16 @@ class Base(TestCase):
         self.api.force_authenticate(self.faculty)
         self.admin_api = APIClient()
         self.admin_api.force_authenticate(self.admin)
+
+    @staticmethod
+    def listed_department(name, code, **equipment):
+        dept = Department.objects.create(
+            name=name, code=code, department_type=DepartmentType.INTERNAL, equipment_visibility_enabled=True
+        )
+        Equipment.objects.create(
+            name=f"{name} XRD", code=f"{code}EQ", internal_department=dept, user_rating_enabled=False, **equipment
+        )
+        return dept
 
     def masters(self, **flags):
         WalletSricSettings.get_singleton()
@@ -365,6 +376,56 @@ class AdminMatrixTests(Base):
         self.assertTrue(res.data["direct_recharge_enabled"])
         self.assertTrue(WalletPaymentModeConfig.objects.get(pk=1).direct_recharge_enabled)
         self.assertTrue(WalletPaymentModeAuditEvent.objects.filter(action="master_changed", target="direct_recharge").exists())
+
+
+class CatalogDepartmentTests(Base):
+    """Department pickers follow the public equipment catalog's department filter."""
+
+    def setUp(self):
+        super().setUp()
+        self.test_only = self.listed_department("DSA Test Modes", "DSM", visible_to_test_accounts_only=True)
+        self.disposed = self.listed_department("Disposed Modes", "DPM", status=EquipmentStatus.DISPOSED)
+        self.empty = Department.objects.create(name="Empty Modes", code="EMM", department_type=DepartmentType.INTERNAL)
+        self.saved = Department.objects.create(name="Saved Modes", code="SVM", department_type=DepartmentType.INTERNAL)
+        self.disable(self.saved, "peer_transfer")
+
+    def test_same_rule_as_public_catalog_filter(self):
+        public = APIClient().get("/api/equipments/catalog-departments/").data["departments"]
+        self.assertEqual(svc.listed_department_ids(), [d["id"] for d in public])
+        self.assertEqual(svc.listed_department_ids(), [self.dept.id, self.other.id])
+
+    def test_overview_lists_catalog_departments_then_saved_only(self):
+        inherit_only = Department.objects.create(name="Inherit Modes", code="INM", department_type=DepartmentType.INTERNAL)
+        WalletModeDepartmentSetting.objects.create(department=inherit_only)
+        credit = Department.objects.create(
+            name="Credit Modes", code="CRM", department_type=DepartmentType.INTERNAL, enable_wallet_credit=True
+        )
+        recipients = Department.objects.create(name="Mail Modes", code="MLM", department_type=DepartmentType.INTERNAL)
+        WalletModeEmailRecipients.objects.create(option="peer_transfer", department=recipients, to_recipients=["a@test.iitr.ac.in"])
+
+        rows = self.admin_api.get(OVERVIEW).data["departments"]
+        self.assertEqual(
+            [(d["id"], d["listed"]) for d in rows],
+            [(self.dept.id, True), (self.other.id, True), (credit.id, False), (recipients.id, False), (self.saved.id, False)],
+        )
+        saved = next(d for d in rows if d["id"] == self.saved.id)
+        self.assertEqual(saved["states"]["peer_transfer"], "disabled")
+
+    def test_direct_recharge_scope_uses_catalog_departments(self):
+        WalletPaymentModeConfig.objects.update_or_create(pk=1, defaults={"direct_recharge_enabled": True})
+        access = self.admin_api.get(ACCESS).data
+        self.assertEqual([d["id"] for d in access["departments"]], [self.dept.id, self.other.id])
+
+        payload = {
+            "user_id": self.designee.id,
+            "valid_until": (timezone.localdate() + timedelta(days=3)).isoformat(),
+            "reason": "Year-end deposits",
+        }
+        bad = self.admin_api.post(GRANTS, {**payload, "department_id": self.saved.id}, format="json")
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("department_id", bad.data["errors"])
+        ok = self.admin_api.post(GRANTS, {**payload, "department_id": self.dept.id}, format="json")
+        self.assertEqual(ok.status_code, 201, ok.data)
 
 
 @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
