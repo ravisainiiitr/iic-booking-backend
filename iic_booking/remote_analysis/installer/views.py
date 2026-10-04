@@ -25,6 +25,7 @@ from iic_booking.remote_analysis.installer.services import (
     link_workstation_to_equipment,
     seed_workstation_software_from_selection,
     sha256_filefield,
+    upsert_workstation_rdp_secret,
     verify_enrollment_key,
 )
 
@@ -555,6 +556,87 @@ def link_equipment(request):
         priority_boost=int(data.get("priority_boost") or data.get("priorityBoost") or 10),
     )
     return Response({"accepted": True, **result})
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def save_rdp_secret(request):
+    """
+    Store the Remote Desktop sign-in for a workstation without linking equipment.
+
+    An agent token may only change its own workstation; otherwise a portal
+    manager is required. Enrollment keys are not accepted here.
+    """
+    from iic_booking.remote_analysis.authentication import RemoteAnalysisAgentUser
+    from iic_booking.remote_analysis.models import AnalysisWorkstation
+
+    _try_bind_agent_auth(request)
+    _try_bind_portal_token(request)
+
+    data = request.data if isinstance(request.data, dict) else {}
+    workstation_id = str(data.get("workstation_id") or data.get("workstationId") or "").strip()
+    agent_id = str(data.get("agent_id") or data.get("agentId") or "").strip()
+    user = getattr(request, "user", None)
+
+    if isinstance(user, RemoteAnalysisAgentUser):
+        ws = user.workstation
+        if (workstation_id and workstation_id != str(ws.id)) or (agent_id and agent_id != ws.agent_id):
+            return Response(
+                {"detail": "An agent can only update its own workstation."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+    elif user is not None and getattr(user, "is_authenticated", False) and (
+        getattr(user, "is_superuser", False) or CanManageRemoteAnalysis().has_permission(request, None)
+    ):
+        ws = None
+        if workstation_id:
+            ws = AnalysisWorkstation.objects.filter(pk=workstation_id).first()
+        if ws is None and agent_id:
+            ws = AnalysisWorkstation.objects.filter(agent_id=agent_id).first()
+        if ws is None:
+            return Response(
+                {"detail": "Workstation not found. Register the agent first."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+    else:
+        return Response(
+            {"detail": "Agent token or Remote Analysis manager sign-in required."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    username = str(data.get("rdp_username") or data.get("rdpUsername") or "").strip()
+    password = str(data.get("rdp_password") or data.get("rdpPassword") or "")
+    domain = str(data.get("rdp_domain") or data.get("rdpDomain") or "").strip()
+    if not username or not password:
+        return Response(
+            {"detail": "rdpUsername and rdpPassword are required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(username) > 128 or len(password) > 256 or len(domain) > 128:
+        return Response({"detail": "Credential value too long."}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        port = int(data.get("rdp_port") or data.get("rdpPort") or 3389)
+    except (TypeError, ValueError):
+        port = 3389
+    if not 1 <= port <= 65535:
+        return Response({"detail": "Invalid rdpPort."}, status=status.HTTP_400_BAD_REQUEST)
+
+    updated = upsert_workstation_rdp_secret(
+        workstation=ws,
+        rdp_username=username,
+        rdp_password=password,
+        rdp_domain=domain,
+        rdp_port=port,
+    )
+    return Response(
+        {
+            "accepted": True,
+            "rdp_secret_updated": updated,
+            "workstation_id": str(ws.id),
+            "equipment_linked": False,
+        }
+    )
 
 
 @api_view(["POST"])

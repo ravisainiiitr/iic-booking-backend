@@ -205,6 +205,43 @@ def seed_workstation_software_from_selection(
     }
 
 
+def upsert_workstation_rdp_secret(
+    *,
+    workstation,
+    rdp_username: str = "",
+    rdp_password: str = "",
+    rdp_domain: str | None = "",
+    rdp_port: int = 3389,
+) -> bool:
+    """Store the Remote Desktop sign-in for a workstation; returns False when nothing was given."""
+    from iic_booking.remote_analysis.guacamole.secrets import encrypt_password
+    from iic_booking.remote_analysis.session_models import WorkstationRdpSecret
+
+    if not (rdp_username or rdp_password):
+        return False
+    existing = WorkstationRdpSecret.objects.filter(workstation=workstation).first()
+    # Preserve existing ciphertext when installer re-links username without a new password.
+    password_encrypted = (
+        encrypt_password(rdp_password)
+        if rdp_password
+        else (existing.password_encrypted if existing else "")
+    )
+    WorkstationRdpSecret.objects.update_or_create(
+        workstation=workstation,
+        defaults={
+            "username": rdp_username
+            or getattr(workstation, "windows_username", "")
+            or (existing.username if existing else "")
+            or "",
+            "password_encrypted": password_encrypted,
+            "domain": rdp_domain if rdp_domain is not None else (existing.domain if existing else ""),
+            "port": int(rdp_port or (existing.port if existing else 3389) or 3389),
+            "security": (existing.security if existing and existing.security else "nla"),
+        },
+    )
+    return True
+
+
 @transaction.atomic
 def link_workstation_to_equipment(
     *,
@@ -223,38 +260,19 @@ def link_workstation_to_equipment(
         EquipmentAnalysisPool,
         EquipmentAnalysisSoftware,
     )
-    from iic_booking.remote_analysis.guacamole.secrets import encrypt_password
-    from iic_booking.remote_analysis.session_models import WorkstationRdpSecret
-
     pool, pool_created = EquipmentAnalysisPool.objects.update_or_create(
         equipment=equipment,
         workstation=workstation,
         defaults={"priority_boost": priority_boost},
     )
 
-    rdp_updated = False
-    if rdp_username or rdp_password:
-        existing = WorkstationRdpSecret.objects.filter(workstation=workstation).first()
-        # Preserve existing ciphertext when installer re-links username without a new password.
-        password_encrypted = (
-            encrypt_password(rdp_password)
-            if rdp_password
-            else (existing.password_encrypted if existing else "")
-        )
-        WorkstationRdpSecret.objects.update_or_create(
-            workstation=workstation,
-            defaults={
-                "username": rdp_username
-                or getattr(workstation, "windows_username", "")
-                or (existing.username if existing else "")
-                or "",
-                "password_encrypted": password_encrypted,
-                "domain": rdp_domain if rdp_domain is not None else (existing.domain if existing else ""),
-                "port": int(rdp_port or (existing.port if existing else 3389) or 3389),
-                "security": (existing.security if existing and existing.security else "nla"),
-            },
-        )
-        rdp_updated = True
+    rdp_updated = upsert_workstation_rdp_secret(
+        workstation=workstation,
+        rdp_username=rdp_username,
+        rdp_password=rdp_password,
+        rdp_domain=rdp_domain,
+        rdp_port=rdp_port,
+    )
 
     seed = seed_workstation_software_from_selection(
         workstation=workstation,
