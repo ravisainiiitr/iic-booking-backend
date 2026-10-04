@@ -27,7 +27,7 @@ RESULT_TTL_SECONDS = 600
 
 _WIN_ABSOLUTE = re.compile(r"^[A-Za-z]:\\")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-_SYSTEM_PREFIXES = ("\\windows", "\\program files", "\\programdata", "\\$recycle.bin", "\\system volume information")
+_SYSTEM_PREFIXES = ("\\windows", "\\program files", "\\program files (x86)", "\\programdata", "\\$recycle.bin", "\\system volume information")
 
 
 class PcFolderError(Exception):
@@ -56,13 +56,16 @@ def normalize_path(raw: Any) -> str:
     if any(p in {".", ".."} for p in parts):
         raise PcFolderError("invalid_path", "Folder paths cannot contain '.' or '..'.")
     path = path.rstrip("\\")
+    # "D:" alone means "current directory on D:" to Windows, so drive roots keep their backslash.
+    if len(path) == 2:
+        path += "\\"
     return path[0].upper() + path[1:]
 
 
 def _check_selectable(path: str) -> None:
-    rest = path[2:].lower()
+    rest = path[2:].lower().rstrip("\\")
     if not rest:
-        raise PcFolderError("folder_not_allowed", f"A whole drive ({path}\\) cannot be chosen. Pick a folder inside it.")
+        raise PcFolderError("folder_not_allowed", f"A whole drive ({path[:2]}\\) cannot be chosen. Pick a folder inside it.")
     if any(rest == p or rest.startswith(p + "\\") for p in _SYSTEM_PREFIXES):
         raise PcFolderError("folder_not_allowed", f"{path} is a system folder and cannot be chosen.")
 

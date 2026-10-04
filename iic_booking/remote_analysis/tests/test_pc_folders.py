@@ -250,6 +250,12 @@ def test_end_with_no_folders_works_on_old_agents(ra_user, eligible_workstation, 
 
 def test_normalize_path():
     assert pc_folders.normalize_path("d:/data/run 1/") == "D:\\data\\run 1"
+    assert pc_folders.normalize_path("d:\\") == "D:\\"
+    assert pc_folders.normalize_path("E:/") == "E:\\"
+    with pytest.raises(pc_folders.PcFolderError, match="whole drive \\(D:\\\\\\)"):
+        pc_folders._check_selectable("D:\\")
+    with pytest.raises(pc_folders.PcFolderError, match="system folder"):
+        pc_folders._check_selectable("C:\\Program Files (x86)\\App")
     for bad in ("data", "\\\\server\\share", "D:\\a\\..\\b", "D:\\a\x00b", 5):
         with pytest.raises(pc_folders.PcFolderError):
             pc_folders.normalize_path(bad)
