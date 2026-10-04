@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 STAFF_TYPES = {"manager", "operator", "admin", "dept_admin"}
 STUDENT_TYPES = {"student", "individual_student"}
-EXTERNAL_TYPES = {"external", "rnd", "industry", "startup_incubated_iitr", "external_startup_msme", "other"}
+EXTERNAL_TYPES = {"external", "rnd", "industry", "external_startup_msme", "other"}
 
 
 def user_type(user) -> str:

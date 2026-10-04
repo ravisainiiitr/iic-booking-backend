@@ -6759,3 +6759,26 @@ class BookingInputTemplate(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.equipment_id}) for user {self.user_id}"
+
+class ChargeCopyBatch(models.Model):
+    """One run of copy_user_type_charges: the rows it created, so the run can be rolled back."""
+
+    source_user_type = models.CharField(max_length=50)
+    target_user_type = models.CharField(max_length=50)
+    created = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=_("IDs created by this run: charge_profiles, input_fields, param_definitions."),
+    )
+    summary = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    rolled_back_at = models.DateTimeField(null=True, blank=True)
+    rollback_summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = _("Charge copy batch")
+        verbose_name_plural = _("Charge copy batches")
+
+    def __str__(self):
+        return f"Charge copy {self.pk}: {self.source_user_type} -> {self.target_user_type}"
