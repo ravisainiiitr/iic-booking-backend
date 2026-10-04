@@ -17,9 +17,12 @@ import re
 import uuid
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Q
+from django.http import HttpResponse, StreamingHttpResponse
 from django.utils import timezone
+from django.views.decorators.http import require_GET
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -27,7 +30,7 @@ from rest_framework.response import Response
 
 from iic_booking.equipment.models import Booking, BookingStatus, EquipmentPublicationClaim
 
-from . import file_policy, storage
+from . import archive, file_policy, storage
 from .access import (
     DISABLED_CODE,
     NOT_ELIGIBLE_CODE,
@@ -705,6 +708,84 @@ def file_preview(request, file_id):
             "size_bytes": research_file.size_bytes,
         }
     )
+
+
+# ---------------------------------------------------------------- zip downloads
+
+
+def _zip_too_large() -> Response:
+    gb = archive.max_bytes() / 1024**3
+    return _error(
+        f"This is too large to download as one zip (up to {archive.max_files():,} files and {gb:,.0f} GB). "
+        "Download its folders one at a time instead.",
+        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        "zip_too_large",
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def workspace_zip(request, workspace_id):
+    """Checks access and size, then hands out a single-use link the browser downloads natively."""
+    access, error = _access(request, workspace_id)
+    if error:
+        return error
+    folder, error = _resolve_parent(access, request.data.get("folder_id"))
+    if error:
+        return error
+    try:
+        plan = archive.build_plan(access.workspace, folder)
+    except archive.ArchiveTooLarge:
+        return _zip_too_large()
+    if plan.file_count == 0:
+        return _error("There are no files to download here yet.", status.HTTP_400_BAD_REQUEST, "zip_empty")
+    token = archive.issue_token(user_id=request.user.pk, workspace_id=access.workspace.pk, folder_id=folder.pk if folder else None)
+    return Response(
+        {
+            "path": f"/v1/my-research/downloads/{token}/",
+            "filename": plan.filename,
+            "file_count": plan.file_count,
+            "total_bytes": plan.total_bytes,
+            "expires_in": archive.TOKEN_MAX_AGE_SECONDS,
+        }
+    )
+
+
+def _plain(message: str, http_status: int) -> HttpResponse:
+    return HttpResponse(message, status=http_status, content_type="text/plain; charset=utf-8")
+
+
+@require_GET
+def zip_download(request, token):
+    payload = archive.redeem_token(token)
+    if payload is None:
+        return _plain("This download link has expired or was already used. Start the download again from My Research.", 410)
+    if not feature_enabled():
+        return _plain("My Research is not available.", 404)
+    user = get_user_model().objects.filter(pk=payload.get("u"), is_active=True).first()
+    access = resolve_access(user, payload.get("w")) if user else None
+    if access is None:
+        return _plain("Project not found.", 404)
+    folder = None
+    if payload.get("f"):
+        folder = _load_folder(access, payload["f"])
+        if folder is None:
+            return _plain("Folder not found.", 404)
+    try:
+        plan = archive.build_plan(access.workspace, folder)
+    except archive.ArchiveTooLarge:
+        return _plain("This is too large to download as one zip. Download its folders one at a time instead.", 413)
+    logger.info(
+        "my_research zip download workspace=%s folder=%s user=%s role=%s files=%s bytes=%s",
+        access.workspace.pk, folder.pk if folder else None, user.pk, access.role, plan.file_count, plan.total_bytes,
+    )
+    response = StreamingHttpResponse(archive.aiter_zip(plan.entries), content_type="application/zip")
+    response["Content-Disposition"] = storage.content_disposition("attachment", plan.filename)
+    response["Cache-Control"] = "private, no-store"
+    response["X-Accel-Buffering"] = "no"
+    # Already compressed; this header makes GZipMiddleware leave the stream alone.
+    response["Content-Encoding"] = "identity"
+    return response
 
 
 # ---------------------------------------------------------------- uploads
