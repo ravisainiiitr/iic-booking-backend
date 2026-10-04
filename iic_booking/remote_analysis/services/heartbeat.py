@@ -300,11 +300,14 @@ def mark_stale_workstations_offline() -> int:
 
 
 def _workstation_has_active_hold(workstation: AnalysisWorkstation) -> bool:
-    """True when a live reservation or desktop session still owns this workstation."""
+    """True when a live reservation, desktop session or in-flight output collect still owns this workstation."""
     from iic_booking.remote_analysis.constants import ReservationStatus, SessionStatus
     from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
     from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+    from iic_booking.remote_analysis.workspace.sync import collect_in_flight_for_workstation
 
+    if collect_in_flight_for_workstation(workstation):
+        return True
     if AnalysisReservation.objects.filter(
         workstation=workstation,
         status__in=[

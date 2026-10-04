@@ -34,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._\- ]+")
 
+INGEST_MAY_SET_PHASES = frozenset(
+    {
+        "",
+        WorkspaceSyncPhase.PREPARING,
+        WorkspaceSyncPhase.PREPARATION_FAILED,
+        WorkspaceSyncPhase.COMPLETED,
+        WorkspaceSyncPhase.CANCELLED,
+    }
+)
+
 
 def _safe_filename(name: str) -> str:
     base = Path(name or "result.bin").name
@@ -160,6 +170,10 @@ class BookingResultIngestService:
 
     @staticmethod
     def _set_phase(workspace: AnalysisWorkspace, phase: str, percent: int, message: str) -> None:
+        # Once a session lifecycle is under way (input sync, active session, collect), seeding
+        # must not rewind the phase — that hid live sync state and stalled InputReady gating.
+        if workspace.sync_phase not in INGEST_MAY_SET_PHASES:
+            return
         workspace.sync_phase = phase
         workspace.sync_progress_percent = min(100, max(0, percent))
         workspace.sync_message = (message or "")[:512]

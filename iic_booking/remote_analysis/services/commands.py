@@ -125,42 +125,47 @@ class CommandService:
             duration_ms=duration,
         )
         ws = command.workstation
+        release_to = None
+        if success and command.command_type == CommandType.CLEAN_WORKSTATION and ws.status in {
+            WorkstationStatus.BUSY,
+            WorkstationStatus.CLEANING,
+            WorkstationStatus.PREPARING,
+            WorkstationStatus.RESERVED,
+        }:
+            from iic_booking.remote_analysis.workspace.sync import collect_in_flight_for_workstation
+
+            # Session Output still being collected: stay unavailable until the collect finishes.
+            release_to = (
+                WorkstationStatus.CLEANING
+                if collect_in_flight_for_workstation(ws)
+                else WorkstationStatus.AVAILABLE
+            )
+            if release_to == ws.status:
+                release_to = None
         if ws.current_command == command.command_type:
             ws.current_command = ""
             update_fields = ["current_command", "updated_at"]
             # Successful CLEAN must free the portal workstation even if the next
             # agent heartbeat still reports a sticky BUSY (see HeartbeatService).
-            if success and command.command_type == CommandType.CLEAN_WORKSTATION:
-                if ws.status in {
-                    WorkstationStatus.BUSY,
-                    WorkstationStatus.CLEANING,
-                    WorkstationStatus.PREPARING,
-                    WorkstationStatus.RESERVED,
-                }:
-                    WorkstationStateHistory.objects.create(
-                        workstation=ws,
-                        from_status=ws.status,
-                        to_status=WorkstationStatus.AVAILABLE,
-                        reason="CLEAN_WORKSTATION completed",
-                    )
-                    ws.status = WorkstationStatus.AVAILABLE
-                    update_fields.append("status")
-            ws.save(update_fields=update_fields)
-        elif success and command.command_type == CommandType.CLEAN_WORKSTATION:
-            if ws.status in {
-                WorkstationStatus.BUSY,
-                WorkstationStatus.CLEANING,
-                WorkstationStatus.PREPARING,
-                WorkstationStatus.RESERVED,
-            }:
+            if release_to:
                 WorkstationStateHistory.objects.create(
                     workstation=ws,
                     from_status=ws.status,
-                    to_status=WorkstationStatus.AVAILABLE,
+                    to_status=release_to,
                     reason="CLEAN_WORKSTATION completed",
                 )
-                ws.status = WorkstationStatus.AVAILABLE
-                ws.save(update_fields=["status", "updated_at"])
+                ws.status = release_to
+                update_fields.append("status")
+            ws.save(update_fields=update_fields)
+        elif release_to:
+            WorkstationStateHistory.objects.create(
+                workstation=ws,
+                from_status=ws.status,
+                to_status=release_to,
+                reason="CLEAN_WORKSTATION completed",
+            )
+            ws.status = release_to
+            ws.save(update_fields=["status", "updated_at"])
 
         record_event(
             category=AuditCategory.COMMANDS,
@@ -219,6 +224,7 @@ class CommandService:
                             ws_obj,
                             success=success,
                             message=message,
+                            session_id=str((command.payload or {}).get("session_id") or ""),
                         )
             except Exception:
                 logger.exception(

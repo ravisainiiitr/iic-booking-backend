@@ -682,15 +682,17 @@ class BookingRemoteAnalysisService:
             checked_in_this_call = True
             self.audit.log(booking, "CheckinAccepted", details=str(reservation.id), actor=user)
 
-        workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user)
-        if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
-            try:
-                BookingRawStagingService().stage_into_workspace(booking, workspace, actor=user)
-            except Exception:  # noqa: BLE001
-                logger.exception("RAW staging before launch failed for booking %s", booking.pk)
-
         orch = SessionOrchestrator()
         was_new = find_reusable_open_session(reservation, settings_obj=orch.settings) is None
+        # Repeat launch POSTs (polling, reconnects) reuse the open session: never re-ingest or
+        # re-stage there — that reset the sync phase and re-read every raw file per click.
+        if was_new:
+            workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user, ingest=False)
+            if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
+                try:
+                    BookingRawStagingService().stage_into_workspace(booking, workspace, actor=user)
+                except Exception:  # noqa: BLE001
+                    logger.exception("RAW staging before launch failed for booking %s", booking.pk)
         try:
             session = orch.create_session(
                 reservation=reservation,

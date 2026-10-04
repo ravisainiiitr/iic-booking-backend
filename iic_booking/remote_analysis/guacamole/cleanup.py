@@ -77,6 +77,7 @@ class SessionCleanupService:
         workspace_id = ""
         local_path = ""
         defer_output = True
+        collect_issued = False
         try:
             from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
             from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
@@ -87,7 +88,9 @@ class SessionCleanupService:
                 local_path = ws_obj.local_agent_path
                 sync_svc = WorkspaceSyncService()
                 try:
-                    sync_svc.issue_collect_command(ws_obj, actor=actor)
+                    collect_issued = (
+                        sync_svc.issue_collect_command(ws_obj, actor=actor, session_id=str(session.id)) is not None
+                    )
                 except Exception:
                     logger.exception("COLLECT_WORKSPACE failed for session %s", session.id)
                 ws_obj.refresh_from_db()
@@ -129,13 +132,15 @@ class SessionCleanupService:
         ws = session.workstation
         try:
             if ws.status not in {WorkstationStatus.DISABLED, WorkstationStatus.MAINTENANCE}:
+                # Output is still on the PC until COLLECT finishes; released by mark_synced / heartbeat.
+                release_to = WorkstationStatus.CLEANING if collect_issued else WorkstationStatus.AVAILABLE
                 WorkstationStateHistory.objects.create(
                     workstation=ws,
                     from_status=ws.status,
-                    to_status=WorkstationStatus.AVAILABLE,
+                    to_status=release_to,
                     reason=f"Session cleanup: {reason}"[:500],
                 )
-                ws.status = WorkstationStatus.AVAILABLE
+                ws.status = release_to
                 ws.save(update_fields=["status", "updated_at"])
         except Exception:
             logger.exception("Workstation release failed for session %s", session.id)

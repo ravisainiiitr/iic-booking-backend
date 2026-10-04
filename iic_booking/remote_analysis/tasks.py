@@ -258,7 +258,10 @@ def archive_old_metrics(days: int = 90) -> dict:
 
 @ra_periodic_task(name="remote_analysis.retry_failed_workspace_collects")
 def retry_failed_workspace_collects(limit: int = 20) -> dict:
-    """Re-issue COLLECT for workspaces stuck in FAILED/RETRYING with deferred Output."""
+    """Re-issue COLLECT for workspaces stuck in FAILED/RETRYING with deferred Output.
+
+    UploadFailed is terminal: retries were exhausted (transfer_max_retries) and the PC was released.
+    """
     from iic_booking.remote_analysis.constants import TransferDirection, TransferStatus, WorkspaceSyncPhase
     from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
     from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
@@ -266,7 +269,6 @@ def retry_failed_workspace_collects(limit: int = 20) -> dict:
     qs = AnalysisWorkspace.objects.filter(
         sync_phase__in=[
             WorkspaceSyncPhase.PREPARATION_FAILED,
-            WorkspaceSyncPhase.UPLOAD_FAILED,
             WorkspaceSyncPhase.RETRY_PENDING,
             WorkspaceSyncPhase.UPLOADING_OUTPUT,
             # legacy rows before migration
@@ -280,6 +282,8 @@ def retry_failed_workspace_collects(limit: int = 20) -> dict:
     for ws in qs:
         last = ws.transfers.filter(direction=TransferDirection.AGENT_PUSH).order_by("-created_at").first()
         if last and last.status in {TransferStatus.FAILED, TransferStatus.RETRYING} and ws.workstation_id:
+            if svc.collect_retries_exhausted(ws):
+                continue
             try:
                 svc.retry_failed_transfers(ws)
                 retried += 1
