@@ -57,6 +57,16 @@ class RegistrationApproval(models.Model):
         "users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name=_("Forwarded by")
     )
     forward_count = models.PositiveIntegerField(_("Times forwarded"), default=0)
+    decision_deadline = models.DateTimeField(
+        _("Faculty must decide by"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "Set each time the request is sent to the faculty. A pending request past this time is treated as "
+            "declined. Empty for requests never sent (they are never timed out)."
+        ),
+    )
     last_reminder_at = models.DateTimeField(_("Last reminder at"), null=True, blank=True)
     reminder_count = models.PositiveIntegerField(_("Reminders sent"), default=0)
     first_viewed_at = models.DateTimeField(_("First viewed by faculty at"), null=True, blank=True)
@@ -153,8 +163,15 @@ class RegistrationApprovalToken(models.Model):
 
     token_hash = models.CharField(_("Token hash"), max_length=64, unique=True)
     purpose = models.CharField(_("Purpose"), max_length=16, choices=Purpose.choices)
+    class Outcome(models.TextChoices):
+        APPROVED = "approved", _("Approved")
+        DECLINED = "declined", _("Declined")
+        TIMED_OUT = "timed_out", _("Timed out")
+        CLOSED = "closed", _("Closed")
+
+    # SET_NULL so a link outlives a removed account and a late click can say why it no longer works.
     approval = models.ForeignKey(
-        RegistrationApproval, on_delete=models.CASCADE, null=True, blank=True, related_name="tokens"
+        RegistrationApproval, on_delete=models.SET_NULL, null=True, blank=True, related_name="tokens"
     )
     extension = models.ForeignKey(
         RegistrationExtensionRequest, on_delete=models.CASCADE, null=True, blank=True, related_name="tokens"
@@ -162,6 +179,8 @@ class RegistrationApprovalToken(models.Model):
     faculty = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="+", verbose_name=_("Faculty"))
     expires_at = models.DateTimeField(_("Expires at"))
     used_at = models.DateTimeField(_("Used at"), null=True, blank=True)
+    outcome = models.CharField(_("Request outcome"), max_length=16, choices=Outcome.choices, blank=True, default="")
+    subject_name = models.CharField(_("User name"), max_length=255, blank=True, default="")
     created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
 
     class Meta:
@@ -189,6 +208,9 @@ class RegistrationApprovalEvent(models.Model):
         TOKEN_REFUSED = "token_refused", _("Review link refused")
         EMAIL_FAILED = "email_failed", _("Email failed")
         AUTOMATION_CHANGED = "automation_changed", _("Expiry automation switched")
+        TIMED_OUT = "timed_out", _("Timed out (no faculty decision)")
+        ACCOUNT_REMOVED = "account_removed", _("Pending account removal")
+        USER_NOTIFIED = "user_notified", _("User told about the decision window")
 
     user = models.ForeignKey(
         "users.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+", verbose_name=_("User")
@@ -229,6 +251,11 @@ class RegistrationApprovalPolicy(models.Model):
     expiry_automation_enabled = models.BooleanField(_("Programme expiry automation enabled"), default=False)
     warning_days = models.CharField(_("Warning days before expiry"), max_length=64, default="30,7,1")
     token_valid_days = models.PositiveSmallIntegerField(_("Faculty review link valid for (days)"), default=14)
+    decision_window_hours = models.PositiveSmallIntegerField(
+        _("Faculty decision window (hours)"),
+        default=24,
+        help_text=_("Hours the faculty member has to decide after a request is sent; afterwards it is treated as declined."),
+    )
     enabled_at = models.DateTimeField(_("Enabled at"), null=True, blank=True)
     updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
     updated_by = models.ForeignKey(

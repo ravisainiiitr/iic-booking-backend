@@ -2033,7 +2033,7 @@ def register(request):
         - password_confirm: Password confirmation (required, must match password)
         - name: User's full name (required)
         - user_type: One of "external", "RND", "Institutes", or "other" (required, external users only)
-        - profile_picture: Profile picture image file (required)
+        - profile_picture: Profile picture image file (optional; can be added later)
         - emp_id: Employee/Student ID (optional, must be unique if provided)
         - phone_number: Phone number (optional)
         - department: Department ID (optional)
@@ -2168,6 +2168,9 @@ def register(request):
     organization_request_id = serializer.validated_data.get("organization_request")
     department = None
     org_request = None
+    is_iitr_type = user_type_code in allowed_internal_startup or (
+        user_type_code in allowed_internal_with_alias and bool(user_type_alias)
+    )
     if department_id:
         try:
             from iic_booking.users.models import Department
@@ -2178,19 +2181,23 @@ def register(request):
                 {"error": "Invalid department ID"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # IITR Post Doc / Research Associates / Startups / incubated startups must have an internal department
-        if user_type_code in allowed_internal_with_alias and user_type_alias:
-            if department.department_type != DepartmentType.INTERNAL:
-                return Response(
-                    {"error": "Internal department is required for this user type."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        elif user_type_code in allowed_internal_startup:
-            if department.department_type != DepartmentType.INTERNAL:
-                return Response(
-                    {"error": "Internal startup department is required for this user type."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        # IITR Post Doc / Research Associates / IITR Startup must pick an IIT Roorkee department or centre
+        if is_iitr_type and department.department_type != DepartmentType.INTERNAL:
+            return Response(
+                {
+                    "error": "Select your IIT Roorkee department or centre.",
+                    "fieldErrors": {"department": ["Select an IIT Roorkee department or centre."]},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    elif is_iitr_type:
+        return Response(
+            {
+                "error": "Select your IIT Roorkee department or centre.",
+                "fieldErrors": {"department": ["Select an IIT Roorkee department or centre."]},
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     elif user_type_code == UserType.RND and organization_request_id:
         try:
             org_request = OrganizationRequest.objects.get(pk=organization_request_id)
@@ -2748,15 +2755,24 @@ def self_verify(request, uidb64, token):
         approval = registration_approvals.on_registration_verified(user, request=request)
         if approval is not None and approval.status == "pending_faculty" and user.supervisor_id:
             supervisor_name = get_user_display_name(user.supervisor)
+            hours = registration_approvals.decision_window_hours()
+            deadline = getattr(approval, "decision_deadline", None)
+            deadline_text = registration_approvals._fmt_datetime_ist(deadline)
             return Response(
                 {
                     "message": (
                         f"Registration verified. Your request has been sent to {supervisor_name} for approval. "
-                        "You will be notified by email once they decide."
+                        f"They have {hours} hours to decide"
+                        + (f" (by {deadline_text} IST)" if deadline_text else "")
+                        + ". If they do not respond in time, the request is cancelled and you can register again. "
+                        "We have emailed you these details and will email you their decision."
                     ),
                     "email_verified": True,
                     "admin_approved": False,
                     "pending_faculty": True,
+                    "supervisor_name": supervisor_name,
+                    "decision_window_hours": hours,
+                    "decision_deadline": deadline.isoformat() if deadline else None,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -2950,8 +2966,8 @@ def get_register_user_types(request):
     Get user types available for registration.
     
     Returns a list of user types that are eligible for registration.
-    Includes external users and internal alias types (IITR Post Doctoral Fellows,
-    IITR Research Associates in Projects, IITR Startups) which map to student/individual_student.
+    Includes external users, IITR Startup, and internal alias types (IITR Post Doctoral Fellows,
+    IITR Research Associates in Projects) which map to student.
     
     Returns:
         - user_types: List of user type objects with code, name, description, and optional alias
@@ -2967,15 +2983,24 @@ def get_register_user_types(request):
 
         # Build list with plain strings only (no serializer to avoid any lazy/serialization issues)
         user_types_list = [
-            {"code": code, "name": name, "description": ""}
+            {
+                "code": code,
+                "name": name,
+                "description": (
+                    "Startups incubated at IIT Roorkee. Own wallet for bookings; approved by your IITR Faculty mentor."
+                    if code == UserType.STARTUP_INCUBATED_IITR
+                    else ""
+                ),
+                **({"iitr": True} if code == UserType.STARTUP_INCUBATED_IITR else {}),
+            }
             for code, name in register_choices
         ]
 
-        # Alias types: same functionality as IITR Student or Individual Student, display alias in UI
+        # Alias types: same functionality as IITR Student, display alias in UI.
+        # "IITR Startups" (individual_student) was merged into IITR Startup (startup_incubated_iitr).
         alias_types = [
             (UserType.STUDENT, "IITR Post Doctoral Fellows", "Same as IITR Student. Use faculty wallet for bookings."),
             (UserType.STUDENT, "IITR Research Associates in Projects", "Same as IITR Student. Use faculty wallet for bookings."),
-            (UserType.INDIVIDUAL_STUDENT, "IITR Startups", "Same as Individual Student. Own wallet for bookings."),
         ]
         for code, name, description in alias_types:
             user_types_list.append({
@@ -2983,6 +3008,7 @@ def get_register_user_types(request):
                 "name": name,
                 "description": description,
                 "alias": name,
+                "iitr": True,
             })
 
         return Response(

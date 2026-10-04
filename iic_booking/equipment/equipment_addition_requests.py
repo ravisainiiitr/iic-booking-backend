@@ -680,7 +680,7 @@ def _build_setup_instruction(req: EquipmentAdditionRequest) -> str:
         ("External Educational Student", req.charge_external_educational_student),
         ("External Government R&D", req.charge_external_govt_rnd),
         ("Industry", req.charge_industry),
-        ("Startup Incubated at IIT Roorkee", req.charge_startup_incubated_iitr),
+        ("IITR Startup", req.charge_startup_incubated_iitr),
         ("External Startup/MSME", req.charge_external_startup_msme),
     ]
     filled = [f"  {label}: {val}" for label, val in charge_lines if (val or "").strip()]

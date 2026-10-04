@@ -56,7 +56,7 @@ def _user_type_label(user_type: str | None, user_type_alias: str | None = None) 
         "external": "Educational Institute",
         "rnd": "Govt R&D Organization",
         "industry": "Industry",
-        "startup_incubated_iitr": "Startup Incubated at IIT Roorkee",
+        "startup_incubated_iitr": "IITR Startup",
         "external_startup_msme": "External Startup / MSME",
         "other": "External User",
     }
