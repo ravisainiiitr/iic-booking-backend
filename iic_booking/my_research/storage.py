@@ -187,6 +187,13 @@ def head_object(key: str, *, with_checksum: bool = False) -> dict[str, Any]:
         raise ResearchStorageError(str(exc)) from exc
 
 
+def _is_invalid_range(exc: Exception) -> bool:
+    response = getattr(exc, "response", None) or {}
+    code = str((response.get("Error") or {}).get("Code") or "")
+    status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    return code == "InvalidRange" or status == 416
+
+
 def read_prefix(key: str, length: int) -> bytes:
     if length <= 0:
         return b""
@@ -196,6 +203,9 @@ def read_prefix(key: str, length: int) -> bytes:
     except Exception as exc:
         if _is_not_found(exc):
             raise ObjectNotFound(key) from exc
+        # S3 rejects any byte range on a 0-byte object.
+        if _is_invalid_range(exc):
+            return b""
         raise ResearchStorageError(str(exc)) from exc
 
 
