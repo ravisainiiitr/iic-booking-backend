@@ -668,7 +668,7 @@ class MultiParamDefinitionForm(forms.ModelForm):
             (UserType.EXTERNAL, _("Educational Institute")),
             (UserType.RND, _("Govt R&D Organizations")),
             (UserType.INSTITUTE, _("Industry")),
-            (UserType.STARTUP_INCUBATED_IITR, _("Startup Incubated at IIT Roorkee")),
+            (UserType.STARTUP_INCUBATED_IITR, _("IITR Startup")),
             (UserType.EXTERNAL_STARTUP_MSME, _("External Startup/MSME")),
         ]
         self.fields['user_type'].widget = forms.Select(choices=allowed_user_types)
@@ -783,7 +783,7 @@ def _charge_profile_user_type_choices(extra_pi_user_types: list[str] | None = No
         (UserType.EXTERNAL, _("Educational Institute")),
         (UserType.RND, _("Govt R&D Organizations")),
         (UserType.INSTITUTE, _("Industry")),
-        (UserType.STARTUP_INCUBATED_IITR, _("Startup Incubated at IIT Roorkee")),
+        (UserType.STARTUP_INCUBATED_IITR, _("IITR Startup")),
         (UserType.EXTERNAL_STARTUP_MSME, _("External Startup/MSME")),
     ]
     known = {c[0] for c in choices}

@@ -4,6 +4,8 @@ from iic_booking.users.models import User, UserType, Gender
 from iic_booking.users.models.department import DepartmentType
 from django.utils.dateparse import parse_date
 
+LEGACY_STARTUP_ALIASES = {"iitr startups", "iitr startup"}
+
 
 class OmniportCallbackSerializer(serializers.Serializer):
     """Serializer for Omniport OAuth callback."""
@@ -112,7 +114,7 @@ class RegisterSerializer(serializers.Serializer):
         ),
         required=False,
         allow_null=True,
-        help_text="IITR Internal Faculty supervisor ID (required for Post Doctoral Fellows and Research Associates in Projects)",
+        help_text="IITR Internal Faculty supervisor ID (required for Post Doctoral Fellows, Research Associates in Projects and IITR Startup)",
     )
     program_start_date = serializers.DateField(
         required=False,
@@ -124,8 +126,9 @@ class RegisterSerializer(serializers.Serializer):
         help_text="Current program/employment validity (date). Access is disabled after this date.",
     )
     profile_picture = serializers.ImageField(
-        required=True,
-        help_text="Profile picture (required, image file)",
+        required=False,
+        allow_null=True,
+        help_text="Profile picture (optional; can be added later from My Profile)",
     )
     # Note: documents, document_types, and document_descriptions are handled separately
     # in the view to avoid issues with multipart/form-data array notation
@@ -164,19 +167,28 @@ class RegisterSerializer(serializers.Serializer):
         if attrs["password"] != attrs["password_confirm"]:
             raise serializers.ValidationError({"password_confirm": "Passwords do not match."})
         ut = attrs.get("user_type")
+        alias = (attrs.get("user_type_alias") or "").strip()
+        if ut == UserType.INDIVIDUAL_STUDENT and alias.lower() in LEGACY_STARTUP_ALIASES:
+            # "IITR Startups" was merged into IITR Startup.
+            ut = attrs["user_type"] = UserType.STARTUP_INCUBATED_IITR
+            alias = ""
         if ut in (UserType.STUDENT, UserType.INDIVIDUAL_STUDENT):
-            alias = (attrs.get("user_type_alias") or "").strip()
             if not alias:
                 raise serializers.ValidationError({
                     "user_type_alias": "A display name (e.g. IITR Post Doctoral Fellows) is required for this user type."
                 })
             attrs["user_type_alias"] = alias[:100]
-            # Supervisor required for IITR Post Doctoral Fellows and IITR Research Associates in Projects
             if alias in ("IITR Post Doctoral Fellows", "IITR Research Associates in Projects"):
                 if not attrs.get("supervisor"):
                     raise serializers.ValidationError({
                         "supervisor": "Please select your IITR Faculty supervisor."
                     })
+        elif ut == UserType.STARTUP_INCUBATED_IITR:
+            attrs["user_type_alias"] = None
+            if not attrs.get("supervisor"):
+                raise serializers.ValidationError({
+                    "supervisor": "Please select the IITR Faculty member who mentors your startup."
+                })
         else:
             attrs["user_type_alias"] = None
             attrs["supervisor"] = None

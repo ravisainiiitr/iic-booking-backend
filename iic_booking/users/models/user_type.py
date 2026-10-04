@@ -49,7 +49,7 @@ class UserType:
             (cls.EXTERNAL, _("Educational Institute")),
             (cls.RND, _("Govt R&D Organizations")),
             (cls.INSTITUTE, _("Industry")),
-            (cls.STARTUP_INCUBATED_IITR, _("Startup Incubated at IIT Roorkee")),
+            (cls.STARTUP_INCUBATED_IITR, _("IITR Startup")),
             (cls.EXTERNAL_STARTUP_MSME, _("External Startup/MSME")),
             (cls.OTHER, _("Other")),
         ]

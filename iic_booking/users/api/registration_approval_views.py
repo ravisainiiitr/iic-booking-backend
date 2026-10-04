@@ -9,10 +9,12 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from iic_booking.users import registration_approvals as svc
+from iic_booking.users.api.token_auth import TokenAuthenticationWithInactivity
 from iic_booking.users.models import (
     RegistrationApproval,
     RegistrationApprovalChannel,
@@ -516,9 +518,67 @@ def faculty_registration_approval_decide(request, approval_id: int):
             "message": (
                 "Approved. The account is now active; the user has been emailed and you are copied."
                 if approved
-                else "Disapproved. The user has been emailed the reason and you are copied."
+                else "Declined. The user has been emailed the reason and can register again; you are copied."
             ),
             "item": svc.serialize_request_for_faculty(approval),
+        }
+    )
+
+
+class _OptionalTokenAuthentication(TokenAuthenticationWithInactivity):
+    """A stale sign-in on the browser must not block the emailed link; it only identifies who is signed in."""
+
+    def authenticate(self, request):
+        try:
+            return super().authenticate(request)
+        except AuthenticationFailed:
+            return None
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([_OptionalTokenAuthentication])
+@permission_classes([AllowAny])
+def registration_email_decision(request):
+    """Approve / Decline buttons in the faculty email. GET shows the request; POST records the decision."""
+    if not svc.schema_ready():
+        return _schema_pending()
+    data = request.data if request.method == "POST" else request.query_params
+    raw = (data.get("token") or "").strip()
+    viewer = request.user if getattr(request.user, "is_authenticated", False) else None
+    try:
+        row = svc.resolve_email_decision_token(raw, viewer=viewer, request=request)
+    except svc.ApprovalError as err:
+        return _error(err)
+    if request.method == "GET":
+        svc.record_view(
+            faculty=row.faculty, approval=row.approval, channel=RegistrationApprovalChannel.EMAIL_LINK, request=request
+        )
+        return Response({"item": svc.serialize_email_decision(row)})
+    decision = (data.get("decision") or "").strip().lower()
+    try:
+        approval = svc.faculty_decide(
+            row.approval,
+            faculty=row.faculty,
+            decision=decision,
+            reason=data.get("reason", ""),
+            disclaimer_accepted=_bool(data.get("disclaimer_accepted")),
+            disclaimer_version=data.get("disclaimer_version", ""),
+            raw_token=raw,
+            request=request,
+        )
+    except svc.ApprovalError as err:
+        return _error(err)
+    approved = approval.status == RegistrationApprovalStatus.APPROVED
+    return Response(
+        {
+            "decision": "approved" if approved else "declined",
+            "message": (
+                "Approved. The account is now active and the applicant has been emailed. A copy has been sent to you."
+                if approved
+                else "Declined. The applicant has been emailed your reason and can register again. "
+                "A copy has been sent to you."
+            ),
+            "account_removed": bool(getattr(approval, "_account_removed", False)),
         }
     )
 

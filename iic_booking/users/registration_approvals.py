@@ -81,6 +81,18 @@ TPL_EXTENSION_REQUEST = "registration_extension_request_email"
 TPL_EXTENSION_GRANTED = "registration_extension_granted_email"
 TPL_EXTENSION_DENIED = "registration_extension_denied_email"
 TPL_DISABLED = "registration_access_disabled_email"
+# Emails with Approve / Decline buttons and the decision deadline (new codes: existing DB rows are never re-synced).
+TPL_FACULTY_DECISION = "registration_faculty_decision_request_email"
+TPL_FACULTY_DECISION_REMINDER = "registration_faculty_decision_reminder_email"
+TPL_USER_SENT_TO_FACULTY = "registration_sent_to_faculty_email"
+TPL_USER_DECLINED = "registration_declined_reregister_email"
+TPL_USER_TIMED_OUT = "registration_timed_out_email"
+
+DEFAULT_DECISION_WINDOW_HOURS = 24
+TIMED_OUT_MESSAGE = (
+    "Request timed out. The 24-hour window to decide on this registration has passed, so it was treated as "
+    "declined and the applicant has been told they can register again."
+)
 
 LIST_STATUSES = ("unverified", "pending_faculty", "pending_admin", "approved", "rejected", "expired", "disabled")
 
@@ -114,6 +126,10 @@ def schema_ready() -> bool:
         RegistrationExtensionRequest.objects.exists()
         RegistrationApprovalToken.objects.exists()
         RegistrationApprovalPolicy.objects.exists()
+        # Columns added by migration 0129.
+        RegistrationApproval.objects.filter(decision_deadline__isnull=False).exists()
+        RegistrationApprovalToken.objects.filter(outcome="x").exists()
+        RegistrationApprovalPolicy.objects.filter(decision_window_hours=0).exists()
         return True
 
     return _safe(probe, False)
@@ -156,6 +172,30 @@ def token_valid_days() -> int:
         return max(1, min(60, int(policy().token_valid_days or DEFAULT_TOKEN_VALID_DAYS)))
     except (TypeError, ValueError):
         return DEFAULT_TOKEN_VALID_DAYS
+
+
+def decision_window_hours() -> int:
+    try:
+        value = int(getattr(policy(), "decision_window_hours", None) or DEFAULT_DECISION_WINDOW_HOURS)
+    except (TypeError, ValueError):
+        return DEFAULT_DECISION_WINDOW_HOURS
+    return max(1, min(168, value))
+
+
+def _fmt_datetime_ist(value) -> str:
+    if not value:
+        return ""
+    return timezone.localtime(value).strftime("%d %b %Y, %I:%M %p")
+
+
+def deadline_passed(approval: Optional[RegistrationApproval], now=None) -> bool:
+    deadline = getattr(approval, "decision_deadline", None)
+    return bool(
+        approval is not None
+        and approval.status == Status.PENDING_FACULTY
+        and deadline is not None
+        and deadline <= (now or timezone.now())
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -374,21 +414,30 @@ def hash_token(token: str) -> str:
     return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
 
 
-def _issue_token(*, faculty, approval=None, extension=None) -> tuple[str, RegistrationApprovalToken]:
+def _issue_token(*, faculty, approval=None, extension=None, expires_at=None) -> tuple[str, RegistrationApprovalToken]:
     while True:
         raw = secrets.token_urlsafe(32)
         digest = hash_token(raw)
         if not RegistrationApprovalToken.objects.filter(token_hash=digest).exists():
             break
+    subject = getattr(approval, "user", None) or getattr(extension, "user", None)
     row = RegistrationApprovalToken.objects.create(
         token_hash=digest,
         purpose=RegistrationApprovalToken.Purpose.EXTENSION if extension else RegistrationApprovalToken.Purpose.REGISTRATION,
         approval=approval,
         extension=extension,
         faculty=faculty,
-        expires_at=timezone.now() + timedelta(days=token_valid_days()),
+        expires_at=expires_at or timezone.now() + timedelta(days=token_valid_days()),
+        subject_name=(_name(subject) if subject else "")[:255],
     )
     return raw, row
+
+
+def _close_tokens(approval: RegistrationApproval, outcome: str, now=None) -> None:
+    """Retire every link for this request and remember why, so a late click can explain it."""
+    now = now or timezone.now()
+    RegistrationApprovalToken.objects.filter(approval=approval, used_at__isnull=True).update(used_at=now)
+    RegistrationApprovalToken.objects.filter(approval=approval, outcome="").update(outcome=outcome)
 
 
 def _retire_tokens(*, approval=None, extension=None) -> None:
@@ -409,15 +458,48 @@ def review_link(raw_token: str) -> str:
     return get_frontend_absolute_url(f"/login?next={quote(target, safe='')}")
 
 
+def decision_link(raw_token: str, action: str) -> str:
+    """One-click page from the faculty email; no sign-in, the single-use token is the credential."""
+    from iic_booking.communication.utils import get_frontend_absolute_url
+
+    return get_frontend_absolute_url(f"/registration-decision?token={quote(raw_token, safe='')}&action={action}")
+
+
+def register_link() -> str:
+    from iic_booking.communication.utils import get_frontend_absolute_url
+
+    return get_frontend_absolute_url("/auth?mode=register")
+
+
+def _refuse_closed_token(row: RegistrationApprovalToken, now=None) -> None:
+    """Explain why a registration link no longer works: timed out, already decided or removed."""
+    if row.purpose != RegistrationApprovalToken.Purpose.REGISTRATION:
+        return
+    approval = row.approval if row.approval_id else None
+    if row.outcome == RegistrationApprovalToken.Outcome.TIMED_OUT or deadline_passed(approval, now):
+        raise ApprovalError(TIMED_OUT_MESSAGE, "timed_out", 410)
+    if row.outcome in (RegistrationApprovalToken.Outcome.APPROVED, RegistrationApprovalToken.Outcome.DECLINED):
+        raise ApprovalError(
+            "This request has already been "
+            + ("approved." if row.outcome == RegistrationApprovalToken.Outcome.APPROVED else "declined."),
+            "already_decided",
+            410,
+            {"outcome": row.outcome},
+        )
+    if approval is None:
+        raise ApprovalError("This registration request is no longer open.", "request_closed", 410)
+
+
 def resolve_token(raw_token: str, faculty, *, request=None, lock: bool = False) -> RegistrationApprovalToken:
     """Return the token row when it is valid for ``faculty``; refuse used, expired or someone else's link."""
     digest = hash_token((raw_token or "").strip())
     qs = RegistrationApprovalToken.objects.select_related("approval__user", "extension__user")
     if lock:
-        qs = qs.select_for_update()
+        qs = qs.select_for_update(of=("self",))
     row = qs.filter(token_hash=digest).first() if raw_token else None
     if row is None:
         raise ApprovalError("This approval link is not valid.", "token_invalid", 404)
+    _refuse_closed_token(row)
     target_user = row.approval.user if row.approval_id else (row.extension.user if row.extension_id else None)
     if row.faculty_id != getattr(faculty, "pk", None):
         audit(
@@ -442,6 +524,66 @@ def resolve_token(raw_token: str, faculty, *, request=None, lock: bool = False) 
             "This approval link has expired. Open Pending approvals on your dashboard instead.", "token_expired", 410
         )
     return row
+
+
+def resolve_email_decision_token(raw_token: str, *, viewer=None, request=None) -> RegistrationApprovalToken:
+    """Token from the Approve / Decline buttons in the faculty email. No sign-in needed; if someone is signed in
+    it must be the faculty member the email went to. An overdue request is timed out here and refused."""
+    digest = hash_token((raw_token or "").strip())
+    row = (
+        RegistrationApprovalToken.objects.select_related("approval__user__department", "faculty")
+        .filter(token_hash=digest, purpose=RegistrationApprovalToken.Purpose.REGISTRATION)
+        .first()
+        if raw_token
+        else None
+    )
+    if row is None:
+        raise ApprovalError("This approval link is not valid.", "token_invalid", 404)
+    if getattr(viewer, "is_authenticated", False) and viewer.pk != row.faculty_id:
+        audit(
+            Event.Action.TOKEN_REFUSED,
+            user=row.approval.user if row.approval_id else None,
+            approval=row.approval,
+            actor=viewer,
+            channel=Channel.EMAIL_LINK,
+            request=request,
+            reason="wrong_faculty",
+        )
+        raise ApprovalError(
+            "You are signed in as someone else. This link was sent to a different faculty member; sign out or open "
+            "it in a private window.",
+            "wrong_faculty",
+            403,
+        )
+    approval = row.approval if row.approval_id else None
+    if deadline_passed(approval):
+        time_out_approval(approval.pk)
+        raise ApprovalError(TIMED_OUT_MESSAGE, "timed_out", 410)
+    _refuse_closed_token(row)
+    if row.used_at is not None:
+        raise ApprovalError("This approval link has already been used.", "token_used", 410)
+    if approval.status != Status.PENDING_FACULTY:
+        raise ApprovalError("This request has already been decided.", "already_decided", 410)
+    if row.expires_at <= timezone.now():
+        raise ApprovalError(
+            "This approval link has expired. Open Pending approvals on your dashboard instead.", "token_expired", 410
+        )
+    return row
+
+
+def serialize_email_decision(row: RegistrationApprovalToken) -> dict[str, Any]:
+    approval = row.approval
+    data = serialize_request_for_faculty(approval)
+    data.update(
+        {
+            "faculty_name": _name(row.faculty),
+            "department": _department_name(approval.user),
+            "decision_deadline": _iso(approval.decision_deadline),
+            "decision_deadline_display": _fmt_datetime_ist(approval.decision_deadline),
+            "window_hours": decision_window_hours(),
+        }
+    )
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -620,13 +762,21 @@ def forward(user, *, actor=None, request=None, automatic: bool = False, reminder
     _forward_checks(user, approval)
     if reminder and approval.status != Status.PENDING_FACULTY:
         raise ApprovalError("A reminder can only be sent for a request that is with the faculty.", "not_with_faculty")
+    if reminder and deadline_passed(approval):
+        raise ApprovalError(TIMED_OUT_MESSAGE, "timed_out", 410)
     faculty = user.supervisor
-    _retire_tokens(approval=approval)
-    raw, token = _issue_token(faculty=faculty, approval=approval)
     now = timezone.now()
+    if reminder and approval.decision_deadline:
+        deadline = approval.decision_deadline
+    else:
+        # Every (re-)forward starts a fresh window; reminders keep the current one.
+        deadline = now + timedelta(hours=decision_window_hours())
+    _retire_tokens(approval=approval)
+    raw, token = _issue_token(faculty=faculty, approval=approval, expires_at=deadline)
     approval.faculty = faculty
     approval.status = Status.PENDING_FACULTY
-    fields = ["faculty", "status", "updated_at"]
+    approval.decision_deadline = deadline
+    fields = ["faculty", "status", "decision_deadline", "updated_at"]
     if reminder:
         approval.last_reminder_at = now
         approval.reminder_count += 1
@@ -637,15 +787,21 @@ def forward(user, *, actor=None, request=None, automatic: bool = False, reminder
         approval.forward_count += 1
         fields += ["forwarded_at", "forwarded_by", "forward_count"]
     approval.save(update_fields=fields)
+    hours = decision_window_hours()
     context = {
         **_user_context(user),
         "recipient_name": _name(faculty),
+        "faculty_name": _name(faculty),
         "disclaimer_text": registration_disclaimer(user),
         "expires_on": _fmt_date(timezone.localtime(token.expires_at).date()),
+        "deadline": _fmt_datetime_ist(deadline),
+        "window_hours": str(hours),
+        "approve_link": decision_link(raw, "approve"),
+        "decline_link": decision_link(raw, "decline"),
         "link": review_link(raw),
     }
     sent = _send(
-        TPL_FACULTY_REMINDER if reminder else TPL_FACULTY_REQUEST,
+        TPL_FACULTY_DECISION_REMINDER if reminder else TPL_FACULTY_DECISION,
         faculty,
         context,
         created_by=actor,
@@ -663,7 +819,25 @@ def forward(user, *, actor=None, request=None, automatic: bool = False, reminder
         automatic=automatic or None,
         email_sent=sent,
         link_expires_at=_iso(token.expires_at),
+        decision_deadline=_iso(deadline),
     )
+    if not reminder:
+        user_context = {
+            **_user_context(user),
+            "faculty_name": _name(faculty),
+            "deadline": _fmt_datetime_ist(deadline),
+            "window_hours": str(hours),
+            "link": _login_link(),
+        }
+        user_sent = _send(TPL_USER_SENT_TO_FACULTY, user, user_context, created_by=actor, approval=approval)
+        audit(
+            Event.Action.USER_NOTIFIED,
+            approval=approval,
+            role="system",
+            channel=Channel.SYSTEM,
+            decision_deadline=_iso(deadline),
+            email_sent=user_sent,
+        )
     try:
         from iic_booking.communication.in_app import notify_in_app
 
@@ -746,7 +920,8 @@ def change_faculty(user, *, faculty, reason: str, actor, request=None, then_forw
     approval.faculty = faculty
     if approval.status == Status.PENDING_FACULTY:
         approval.status = Status.PENDING_ADMIN
-    approval.save(update_fields=["faculty", "status", "updated_at"])
+    approval.decision_deadline = None
+    approval.save(update_fields=["faculty", "status", "decision_deadline", "updated_at"])
     RegistrationExtensionRequest.objects.filter(user=user, status=ExtStatus.PENDING).update(faculty=faculty)
     audit(
         Event.Action.FACULTY_CHANGED,
@@ -811,6 +986,10 @@ def faculty_decide(
     raw_token: str = "",
     request=None,
 ) -> RegistrationApproval:
+    if deadline_passed(approval):
+        # Commit the timeout (own savepoint) before refusing, so the applicant is told straight away.
+        time_out_approval(approval.pk)
+        raise ApprovalError(TIMED_OUT_MESSAGE, "timed_out", 410)
     if raw_token:
         # Outside the atomic block so a refused link stays in the audit log.
         resolve_token(raw_token, faculty, request=request)
@@ -849,7 +1028,12 @@ def _faculty_decide(
         raise ApprovalError("This request is not addressed to you.", "not_your_request", 403)
     if approval.status != Status.PENDING_FACULTY:
         raise ApprovalError("This request has already been decided.", "already_decided", 409)
+    now = timezone.now()
+    if deadline_passed(approval, now):
+        raise ApprovalError(TIMED_OUT_MESSAGE, "timed_out", 410)
     decision = (decision or "").strip().lower()
+    if decision == "decline":
+        decision = "disapprove"
     reason = (reason or "").strip()[:MAX_REASON_LENGTH]
     user = approval.user
     if decision == "approve":
@@ -859,13 +1043,12 @@ def _faculty_decide(
             raise ApprovalError("The confirmation text has changed. Reload the page and try again.", "disclaimer_outdated", 409)
     elif decision == "disapprove":
         if not reason:
-            raise ApprovalError("Give a reason for disapproving.", "reason_required")
+            raise ApprovalError("Give a reason for declining. It is emailed to the applicant.", "reason_required")
     else:
-        raise ApprovalError("Choose approve or disapprove.", "decision_invalid")
+        raise ApprovalError("Choose approve or decline.", "decision_invalid")
 
     approved = decision == "approve"
     disclaimer = registration_disclaimer(user) if approved else ""
-    now = timezone.now()
     approval.status = Status.APPROVED if approved else Status.REJECTED
     approval.decided_at = now
     approval.decided_by = faculty
@@ -878,7 +1061,11 @@ def _faculty_decide(
     if token is not None:
         token.used_at = now
         token.save(update_fields=["used_at"])
-    _retire_tokens(approval=approval)
+    _close_tokens(
+        approval,
+        RegistrationApprovalToken.Outcome.APPROVED if approved else RegistrationApprovalToken.Outcome.DECLINED,
+        now,
+    )
     if approved:
         _make_operational(user)
     audit(
@@ -892,9 +1079,188 @@ def _faculty_decide(
         disclaimer_text=disclaimer or None,
         disclaimer_version=DISCLAIMER_VERSION if approved else None,
         programme_validity=_iso(user.program_end_date),
+        snapshot=None if approved else request_snapshot(user, approval),
     )
-    _notify_decision(user, approval, approved=approved, decided_by=faculty, reason=reason, cc_faculty=faculty)
+    if approved:
+        _notify_decision(user, approval, approved=True, decided_by=faculty, reason=reason, cc_faculty=faculty)
+        return approval
+    context = {
+        **_user_context(user),
+        "decided_by": _name(faculty),
+        "faculty_name": _name(faculty),
+        "reason": reason,
+        "link": register_link(),
+    }
+    _send(TPL_USER_DECLINED, user, context, cc=[faculty], created_by=faculty, approval=approval)
+    remove_pending_account(user, approval, outcome="declined", actor=faculty, request=request, channel=channel)
     return approval
+
+
+# ---------------------------------------------------------------------------
+# Registration: removal after a decline or a timeout, and the 24-hour timeout
+# ---------------------------------------------------------------------------
+
+
+def request_snapshot(user, approval: Optional[RegistrationApproval] = None) -> dict[str, Any]:
+    """Key details kept in the audit log after the pending account is removed."""
+    faculty = getattr(approval, "faculty", None) if approval is not None else None
+    faculty = faculty or (user.supervisor if user.supervisor_id else None)
+    return {
+        "user_id": user.pk,
+        "name": _name(user),
+        "email": user.email,
+        "user_type": user.user_type,
+        "user_type_label": user_type_label(user),
+        "department": _department_name(user),
+        "employee_id": user.emp_id or "",
+        "phone": user.phone_number or "",
+        "programme_start": _iso(user.program_start_date),
+        "programme_validity": _iso(user.program_end_date),
+        "registered_at": _iso(user.date_joined),
+        "faculty_id": getattr(faculty, "pk", None),
+        "faculty_name": _name(faculty) if faculty else "",
+        "faculty_email": getattr(faculty, "email", "") if faculty else "",
+        "forwarded_at": _iso(getattr(approval, "forwarded_at", None)),
+        "decision_deadline": _iso(getattr(approval, "decision_deadline", None)),
+    }
+
+
+def _removal_blocker(user) -> str:
+    from iic_booking.equipment.models import Booking
+
+    if fully_approved(user):
+        return "account_approved"
+    if user.last_login is not None:
+        return "has_signed_in"
+    if Booking.objects.filter(user=user).exists():
+        return "has_bookings"
+    return ""
+
+
+def remove_pending_account(
+    user, approval: RegistrationApproval, *, outcome: str, actor=None, request=None, channel: str = ""
+) -> bool:
+    """Delete a never-approved pending account so the email can register again; the audit log keeps a snapshot.
+
+    Anything that ever became a real account (approved, signed in, has bookings) is kept as Rejected instead.
+    """
+    from django.db.models import ProtectedError
+    from django.db.utils import IntegrityError
+
+    channel = channel or (Channel.SYSTEM if actor is None else Channel.PORTAL)
+    blocker = _removal_blocker(user)
+    snapshot = request_snapshot(user, approval)
+    if not blocker:
+        try:
+            with transaction.atomic():
+                user.delete()
+        except (ProtectedError, IntegrityError) as exc:
+            blocker = f"delete_refused:{type(exc).__name__}"
+    if blocker:
+        audit(
+            Event.Action.ACCOUNT_REMOVED,
+            user=user,
+            approval=approval,
+            actor=actor,
+            role="system" if actor is None else "",
+            channel=channel,
+            request=request,
+            outcome=outcome,
+            removed=False,
+            kept_reason=blocker,
+        )
+        return False
+    approval._account_removed = True
+    try:
+        with transaction.atomic():
+            Event.objects.create(
+                user=None,
+                subject_email=(snapshot["email"] or "")[:254],
+                subject_name=(snapshot["name"] or "")[:255],
+                approval=None,
+                action=Event.Action.ACCOUNT_REMOVED,
+                actor=actor if getattr(actor, "pk", None) else None,
+                actor_email=(getattr(actor, "email", "") or "")[:254] if getattr(actor, "pk", None) else "",
+                actor_role="faculty" if getattr(actor, "pk", None) else "system",
+                channel=channel,
+                ip_address=_client_ip(request),
+                details={"outcome": outcome, "removed": True, "snapshot": snapshot},
+            )
+    except Exception:
+        logger.exception("registration approval removal audit failed")
+    return True
+
+
+def time_out_approval(approval_id: int, now=None) -> bool:
+    """Treat one overdue request as declined: tell the applicant, then remove the pending account."""
+    now = now or timezone.now()
+    with transaction.atomic():
+        approval = (
+            RegistrationApproval.objects.select_for_update(of=("self",))
+            .select_related("user", "faculty")
+            .filter(pk=approval_id)
+            .first()
+        )
+        if approval is None or not deadline_passed(approval, now):
+            return False
+        user = approval.user
+        if fully_approved(user):
+            return False
+        hours = decision_window_hours()
+        reason = f"No decision was made within {hours} hours of sending the request to the faculty member."
+        approval.status = Status.REJECTED
+        approval.decided_at = now
+        approval.decided_by = None
+        approval.decided_role = "system"
+        approval.decision_reason = reason
+        approval.decision_channel = Channel.SYSTEM
+        approval.save()
+        _close_tokens(approval, RegistrationApprovalToken.Outcome.TIMED_OUT, now)
+        audit(
+            Event.Action.TIMED_OUT,
+            approval=approval,
+            role="system",
+            channel=Channel.SYSTEM,
+            reason=reason,
+            decision_deadline=_iso(approval.decision_deadline),
+            snapshot=request_snapshot(user, approval),
+        )
+        context = {
+            **_user_context(user),
+            "faculty_name": _name(approval.faculty) if approval.faculty_id else "the faculty member",
+            "deadline": _fmt_datetime_ist(approval.decision_deadline),
+            "window_hours": str(hours),
+            "reason": reason,
+            "link": register_link(),
+        }
+        _send(TPL_USER_TIMED_OUT, user, context, approval=approval)
+        remove_pending_account(user, approval, outcome="timed_out")
+    return True
+
+
+def overdue_approvals_q(now=None) -> Q:
+    """Only requests actually sent with a deadline; never-forwarded or pre-deadline requests have none."""
+    return Q(status=Status.PENDING_FACULTY, decision_deadline__isnull=False, decision_deadline__lte=now or timezone.now())
+
+
+def process_decision_timeouts(now=None, limit: int = 200) -> dict[str, int]:
+    if not schema_ready():
+        return {"timed_out": 0, "skipped": 0, "schema_pending": 1}
+    now = now or timezone.now()
+    ids = list(
+        RegistrationApproval.objects.filter(overdue_approvals_q(now)).order_by("decision_deadline").values_list("pk", flat=True)[:limit]
+    )
+    done = skipped = 0
+    for pk in ids:
+        try:
+            if time_out_approval(pk, now):
+                done += 1
+            else:
+                skipped += 1
+        except Exception:
+            skipped += 1
+            logger.exception("registration decision timeout failed approval=%s", pk)
+    return {"timed_out": done, "skipped": skipped}
 
 
 @transaction.atomic
@@ -918,7 +1284,11 @@ def admin_decide(user, *, actor, approve: bool, reason: str = "", request=None) 
     approval.disclaimer_text = ""
     approval.disclaimer_version = ""
     approval.save()
-    _retire_tokens(approval=approval)
+    _close_tokens(
+        approval,
+        RegistrationApprovalToken.Outcome.APPROVED if approve else RegistrationApprovalToken.Outcome.DECLINED,
+        now,
+    )
     if approve:
         _make_operational(user)
     elif user.admin_approved:
@@ -1451,6 +1821,9 @@ def serialize_row(user, today: Optional[date] = None) -> dict[str, Any]:
         "programme_validity": _iso(user.program_end_date),
         "email_verified": user.email_verified,
         "forwarded_at": _iso(approval.forwarded_at) if approval else None,
+        "decision_deadline": _iso(approval.decision_deadline)
+        if approval is not None and approval.status == Status.PENDING_FACULTY
+        else None,
         "reminder_count": approval.reminder_count if approval else 0,
         "decided_at": _iso(approval.decided_at) if approval else None,
         "decided_role": approval.decided_role if approval else "",
@@ -1544,9 +1917,11 @@ def serialize_request_for_faculty(approval: RegistrationApproval) -> dict[str, A
         "programme_validity": _iso(user.program_end_date),
         "registered_at": _iso(user.date_joined),
         "forwarded_at": _iso(approval.forwarded_at),
+        "decision_deadline": _iso(approval.decision_deadline) if approval.status == Status.PENDING_FACULTY else None,
         "decided_at": _iso(approval.decided_at),
         "decision_reason": approval.decision_reason,
         "disclaimer_text": approval.disclaimer_text,
+        "account_removed": bool(getattr(approval, "_account_removed", False)),
     }
     if approval.status == Status.PENDING_FACULTY:
         data["disclaimer_template"] = registration_disclaimer(user)
@@ -1583,6 +1958,7 @@ def serialize_detail(user, *, request=None) -> dict[str, Any]:
                 "faculty": _person(approval.faculty) if approval.faculty_id else None,
                 "forward_count": approval.forward_count,
                 "forwarded_at": _iso(approval.forwarded_at),
+                "decision_deadline": _iso(approval.decision_deadline),
                 "last_reminder_at": _iso(approval.last_reminder_at),
                 "first_viewed_at": _iso(approval.first_viewed_at),
                 "decided_at": _iso(approval.decided_at),
@@ -1684,6 +2060,7 @@ def summary_counts() -> dict[str, Any]:
         "bulk_forward_candidates": len(bulk_forward_candidates(True)),
         "pending_extensions": pending_ext,
         "automation_enabled": automation_enabled(),
+        "decision_window_hours": decision_window_hours(),
     }
 
 
@@ -1732,4 +2109,24 @@ def production_report(today: Optional[date] = None) -> dict[str, Any]:
         ).exclude(is_test_account=True).count(),
         "automation_enabled": automation_enabled(),
         "schema_ready": ready,
+        **_decision_timer_counts(ready, now),
     }
+
+
+def _decision_timer_counts(ready: bool, now) -> dict[str, Any]:
+    if not ready:
+        return {}
+
+    def counts() -> dict[str, Any]:
+        with_faculty = RegistrationApproval.objects.filter(status=Status.PENDING_FACULTY)
+        return {
+            "decision_window_hours": decision_window_hours(),
+            "with_faculty_timer_running": with_faculty.filter(decision_deadline__gt=now).count(),
+            "with_faculty_overdue": with_faculty.filter(overdue_approvals_q(now)).count(),
+            "with_faculty_no_timer": with_faculty.filter(decision_deadline__isnull=True).count(),
+            "pending_admin_never_forwarded": RegistrationApproval.objects.filter(
+                status=Status.PENDING_ADMIN, forwarded_at__isnull=True
+            ).count(),
+        }
+
+    return _safe(counts, {})

@@ -112,12 +112,13 @@ def test_verified_postdoc_registration_is_forwarded_to_faculty(faculty):
 
     assert approval.status == RegistrationApprovalStatus.PENDING_FACULTY
     assert approval.faculty == faculty
-    assert _actions(user) == [A.SUBMITTED, A.FORWARDED]
+    assert _actions(user) == [A.SUBMITTED, A.FORWARDED, A.USER_NOTIFIED]
     assert RegistrationApprovalToken.objects.filter(approval=approval, used_at__isnull=True).count() == 1
-    assert [m.to for m in mail.outbox] == [[faculty.email]]
+    assert [m.to for m in mail.outbox] == [[faculty.email], [user.email]]
     body = mail.outbox[0].body
     assert "Asha Verma" in body and "working under my supervision" in body
     assert "registration-approvals" in body and "Pending approvals" in body
+    assert "/registration-decision?token=" in body and "within 24 hours" in body
 
 
 def test_external_registration_is_recorded_but_not_forwarded(faculty):
@@ -173,9 +174,10 @@ def test_disapprove_needs_reason_and_emails_user(faculty):
         f"{FACULTY_URL}{approval.pk}/decide/", {"decision": "disapprove", "reason": "Not in my group"}, format="json"
     )
     assert res.status_code == 200
-    user.refresh_from_db()
-    assert not user.admin_approved
+    assert res.data["item"]["account_removed"] is True
+    assert not type(user).objects.filter(email=user.email).exists()
     assert "Not in my group" in mail.outbox[-1].body
+    assert mail.outbox[-1].to == [user.email] and faculty.email in (mail.outbox[-1].cc or [])
 
 
 def test_wrong_faculty_gets_403_and_is_logged(faculty, other_faculty):
@@ -212,7 +214,7 @@ def test_token_is_single_use_and_expires(faculty):
     assert RegistrationApprovalEvent.objects.get(user=user, action=A.APPROVED).channel == "email_link"
 
     res = client.post(f"{FACULTY_URL}{approval.pk}/decide/", _approve_payload(token=raw), format="json")
-    assert res.status_code == 410 and res.data["code"] == "token_used"
+    assert res.status_code == 410 and res.data["code"] == "already_decided"
 
     user2 = _postdoc(faculty)
     approval2 = svc.on_registration_verified(user2)
@@ -306,7 +308,8 @@ def test_admin_bulk_forward_existing_requests(admin, faculty, dept):
         assert RegistrationApproval.objects.get(user=user).status == RegistrationApprovalStatus.PENDING_FACULTY
         ev = RegistrationApprovalEvent.objects.get(user=user, action=A.FORWARDED)
         assert ev.actor == admin and ev.actor_role == "main_admin"
-    assert len(mail.outbox) == 2
+    # One request to the faculty member and one "sent to your supervisor" notice per user.
+    assert len(mail.outbox) == 4
     assert not RegistrationApproval.objects.filter(user=missing).exists()
     assert client.get(f"{ADMIN_URL}bulk-forward/").data["count"] == 0
 

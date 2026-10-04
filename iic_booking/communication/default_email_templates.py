@@ -88,6 +88,11 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "registration_extension_granted_email",
     "registration_extension_denied_email",
     "registration_access_disabled_email",
+    "registration_faculty_decision_request_email",
+    "registration_faculty_decision_reminder_email",
+    "registration_sent_to_faculty_email",
+    "registration_declined_reregister_email",
+    "registration_timed_out_email",
     "support_ticket_resolution_email",
     "admin_bulk_email",
     "oic_monthly_report",
@@ -1606,6 +1611,187 @@ def _registration_approval_templates() -> list[dict[str, Any]]:
             ),
             cta_label="Request an extension",
             variable_help="{{ user_name }}, {{ programme_validity }}, {{ faculty_name }}, {{ link }}",
+        ),
+        *_registration_decision_templates(user_rows, user_text),
+    ]
+
+
+def _decision_buttons_html() -> str:
+    def button(var: str, label: str, color: str) -> str:
+        return f"""
+    <td bgcolor="{color}" style="border-radius:10px;">
+      <a href="{{{{ {var} }}}}"
+         style="display:inline-block;padding:14px 30px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">
+        {label}
+      </a>
+    </td>"""
+
+    return f"""
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:20px 0 8px 0;">
+  <tr>{button("approve_link", "Approve", "#15803d")}
+    <td style="width:14px;">&nbsp;</td>{button("decline_link", "Decline", "#b91c1c")}
+  </tr>
+</table>"""
+
+
+def _deadline_callout_html(text: str) -> str:
+    return f"""
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:16px 0 8px 0;">
+  <tr>
+    <td style="padding:14px 18px;background:#fff7ed;border:1px solid #fdba74;border-radius:12px;font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#7c2d12;">
+      {text}
+    </td>
+  </tr>
+</table>"""
+
+
+def _registration_decision_templates(user_rows: list[str], user_text: str) -> list[dict[str, Any]]:
+    faculty_html = (
+        _deadline_callout_html(
+            "<strong>Please respond within {{ window_hours }} hours, by {{ deadline }} IST.</strong> "
+            "If there is no decision by then, the request is automatically declined and the applicant can "
+            "register again."
+        )
+        + _decision_buttons_html()
+        + paragraph_html(
+            "<strong>Approve</strong> opens a short confirmation page where you tick: <em>{{ disclaimer_text }}</em>"
+        )
+        + paragraph_html(
+            "<strong>Decline</strong> asks for a reason, which is emailed to the applicant. Their pending request is "
+            "then cancelled so they can register afresh."
+        )
+        + paragraph_html(
+            "No sign-in is needed for these buttons. Each link works once and only until the deadline. You can also "
+            "review the request under Pending approvals after signing in: <a href=\"{{ link }}\">open in the portal</a>."
+        )
+    )
+    faculty_text = (
+        user_text
+        + "\nPlease respond within {{ window_hours }} hours, by {{ deadline }} IST. If there is no decision by then, "
+        "the request is automatically declined and the applicant can register again.\n\n"
+        "Approve: {{ approve_link }}\n"
+        "Decline: {{ decline_link }}\n\n"
+        "Approve asks you to confirm: \"{{ disclaimer_text }}\"\n"
+        "Decline asks for a reason, which is emailed to the applicant.\n"
+        "No sign-in is needed. Each link works once and only until the deadline. You can also review the request "
+        "under Pending approvals after signing in: {{ link }}\n"
+    )
+    faculty_help = (
+        "{{ recipient_name }}, " + _REG_USER_HELP + ", {{ disclaimer_text }}, {{ window_hours }}, {{ deadline }}, "
+        "{{ approve_link }}, {{ decline_link }}, {{ link }}"
+    )
+    reregister_html = paragraph_html(
+        "You can register again at any time with the same email address. Please check the details you enter, "
+        "especially your IIT Roorkee faculty supervisor."
+    )
+    reregister_text = (
+        "You can register again at any time with the same email address. Please check the details you enter, "
+        "especially your IIT Roorkee faculty supervisor.\n"
+    )
+    return [
+        _simple_email(
+            code="registration_faculty_decision_request_email",
+            title="Registration Awaiting Your Approval",
+            subject="Action needed within {{ window_hours }} hours: confirm {{ user_name }}'s registration",
+            intro=(
+                "<strong>{{ user_name }}</strong> has registered on the {product} and named you as their "
+                "IIT Roorkee faculty supervisor. Their account becomes active only after you confirm that they "
+                "work under your supervision."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to the IITR faculty member a self-registered user (post-doc, research associate, IITR Startup) "
+                "named. Approve / Decline buttons open single-use pages that work until the decision deadline."
+            ),
+            name_var="recipient_name",
+            details_heading="Registration details",
+            detail_rows=user_rows,
+            post_details_html=faculty_html,
+            post_details_text=faculty_text,
+            cta_var="portal_review_link",
+            cta_label="Review in the portal",
+            variable_help=faculty_help,
+        ),
+        _simple_email(
+            code="registration_faculty_decision_reminder_email",
+            title="Reminder: Registration Awaiting Your Approval",
+            subject="Reminder: please decide on {{ user_name }}'s registration by {{ deadline }} IST",
+            intro=(
+                "This is a reminder that <strong>{{ user_name }}</strong> is waiting for you to confirm their "
+                "registration on the {product}. Their account stays inactive until you decide."
+            ).replace("{product}", PRODUCT_NAME),
+            description="Reminder sent by the Main Administrator; the original decision deadline still applies.",
+            name_var="recipient_name",
+            details_heading="Registration details",
+            detail_rows=user_rows,
+            post_details_html=faculty_html,
+            post_details_text=faculty_text,
+            cta_var="portal_review_link",
+            cta_label="Review in the portal",
+            variable_help=faculty_help,
+        ),
+        _simple_email(
+            code="registration_sent_to_faculty_email",
+            title="Registration Sent to Your Supervisor",
+            subject="Your registration is with {{ faculty_name }} for approval",
+            intro=(
+                "Thank you for verifying your email. Your registration on the {product} has been sent to "
+                "<strong>{{ faculty_name }}</strong>, the IIT Roorkee faculty member you named, for approval."
+            ).replace("{product}", PRODUCT_NAME),
+            description=(
+                "Sent to the applicant when their request is sent to the faculty member, with the decision deadline."
+            ),
+            post_details_html=_deadline_callout_html(
+                "<strong>{{ faculty_name }} has {{ window_hours }} hours to decide, until {{ deadline }} IST.</strong> "
+                "If they do not respond in time, the request is cancelled automatically and you can register again."
+            )
+            + paragraph_html(
+                "We will email you as soon as they decide. You may wish to let them know to look out for the email."
+            ),
+            post_details_text=(
+                "{{ faculty_name }} has {{ window_hours }} hours to decide, until {{ deadline }} IST. If they do not "
+                "respond in time, the request is cancelled automatically and you can register again.\n"
+                "We will email you as soon as they decide.\n"
+            ),
+            cta_var="portal_review_link",
+            cta_label="Open the portal",
+            variable_help="{{ user_name }}, {{ faculty_name }}, {{ window_hours }}, {{ deadline }}",
+        ),
+        _simple_email(
+            code="registration_declined_reregister_email",
+            title="Registration Declined",
+            subject=f"Your registration on the {PRODUCT_NAME} was declined",
+            intro=(
+                "<strong>{{ decided_by }}</strong> has declined your registration request. The reason is given "
+                "below. Your pending request has been cancelled and its details removed."
+            ),
+            description=(
+                "Sent to the applicant (faculty copied) when the faculty member declines; the pending account is "
+                "removed so they can register again."
+            ),
+            note_vars=(("reason", "Reason"),),
+            extra_html=reregister_html,
+            post_details_text=reregister_text,
+            cta_label="Register again",
+            variable_help="{{ user_name }}, {{ decided_by }}, {{ reason }}, {{ link }}",
+        ),
+        _simple_email(
+            code="registration_timed_out_email",
+            title="Registration Request Timed Out",
+            subject="Your registration request timed out",
+            intro=(
+                "Your registration request was not decided by <strong>{{ faculty_name }}</strong> within "
+                "{{ window_hours }} hours (by {{ deadline }} IST), so it has been treated as declined and cancelled. "
+                "Its details have been removed."
+            ),
+            description=(
+                "Sent to the applicant when the faculty member does not decide within the decision window; the "
+                "pending account is removed so they can register again."
+            ),
+            extra_html=reregister_html
+            + paragraph_html("Before registering again, you may wish to remind your supervisor to look out for the email."),
+            post_details_text=reregister_text,
+            cta_label="Register again",
+            variable_help="{{ user_name }}, {{ faculty_name }}, {{ window_hours }}, {{ deadline }}, {{ link }}",
         ),
     ]
 

@@ -1063,6 +1063,7 @@ urlpatterns = router.urls + [
     path("admin/registration-requests/<int:user_id>/extend/", reg_approval_views.admin_registration_extend, name="admin-registration-request-extend"),
     path("registration-approvals/", reg_approval_views.faculty_registration_approvals, name="registration-approvals"),
     path("registration-approvals/review/", reg_approval_views.faculty_review_token, name="registration-approvals-review"),
+    path("registration-approvals/email-decision/", reg_approval_views.registration_email_decision, name="registration-approvals-email-decision"),
     path("registration-approvals/extension-request/", reg_approval_views.extension_request_by_link, name="registration-approvals-extension-request"),
     path("registration-approvals/my-validity/", reg_approval_views.my_programme_validity, name="registration-approvals-my-validity"),
     path("registration-approvals/extensions/<int:ext_id>/", reg_approval_views.faculty_extension_detail, name="registration-approvals-extension-detail"),

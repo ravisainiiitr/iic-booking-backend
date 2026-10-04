@@ -258,6 +258,16 @@ def registration_programme_expiry() -> dict:
     return result
 
 
+@shared_task(name="users.registration_decision_timeouts")
+def registration_decision_timeouts() -> dict:
+    """Treat faculty requests past their decision deadline as declined. Requests never sent have no deadline."""
+    from iic_booking.users.registration_approvals import process_decision_timeouts
+
+    result = process_decision_timeouts()
+    logger.info("registration_decision_timeouts: %s", result)
+    return result
+
+
 @shared_task(name="users.send_migration_notification_recipient", bind=True, max_retries=3)
 def send_migration_notification_recipient(self, recipient_id: int) -> dict:
     """Deliver one Phase 8C migration notification (staging/Mailpit). Never production."""
