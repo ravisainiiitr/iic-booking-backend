@@ -50,12 +50,19 @@ def session_reached_live_desktop(session) -> bool:
         return False
 
 
+def is_test_only_booking(booking) -> bool:
+    """Bookings on test-account-only equipment stay re-openable so commissioning can repeat sessions."""
+    equipment = getattr(booking, "equipment", None)
+    return bool(getattr(equipment, "visible_to_test_accounts_only", False))
+
+
 def maybe_close_booking_analysis_after_session(session, *, final_status: str) -> bool:
     """
     Permanently close remote analysis for the booking when a live session ends.
 
     Returns True if analysis_closed_at was set (or already set).
-    Does not close on FAILED (prepare/credentials) so the user can retry.
+    Does not close on FAILED (prepare/credentials) so the user can retry,
+    nor for bookings on test-account-only equipment.
     """
     if final_status not in CLOSE_ON_FINAL:
         return False
@@ -74,6 +81,8 @@ def maybe_close_booking_analysis_after_session(session, *, final_status: str) ->
         return False
     if getattr(booking, "analysis_closed_at", None):
         return True
+    if is_test_only_booking(booking):
+        return False
 
     now = timezone.now()
     booking.analysis_closed_at = now
@@ -101,6 +110,8 @@ def ensure_analysis_closed_from_history(booking) -> bool:
         return False
     if getattr(booking, "analysis_closed_at", None):
         return True
+    if is_test_only_booking(booking):
+        return False
     try:
         from iic_booking.remote_analysis.session_models import RemoteDesktopSession
 
