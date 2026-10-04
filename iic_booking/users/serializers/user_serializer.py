@@ -8,6 +8,9 @@ from rest_framework import serializers
 from ..models import User
 from ..models import UserType
 from ..models.department import DepartmentType
+from ..mobile_number import INDIAN_MOBILE_ERROR
+from ..mobile_number import normalize_indian_mobile
+from ..mobile_number import user_needs_mobile_number
 from ..rbac import ensure_default_dept_admin_permission_grants
 
 
@@ -174,6 +177,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
     admin_panel_enabled = serializers.SerializerMethodField()
     admin_panel_modules = serializers.SerializerMethodField()
     gender_from_channel_i = serializers.SerializerMethodField()
+    needs_mobile_number = serializers.SerializerMethodField()
 
     # MethodField — never call ImageField.url during list (signed S3 / NoSuchKey broke OIC user pickers).
     profile_picture = serializers.SerializerMethodField()
@@ -248,6 +252,20 @@ class UserSerializer(serializers.ModelSerializer[User]):
             # Never fail list/detail serialization because of a bad/missing media object.
             return None
 
+    def get_needs_mobile_number(self, obj):
+        return user_needs_mobile_number(obj)
+
+    def validate_phone_number(self, value):
+        raw = (value or "").strip()
+        current = (getattr(self.instance, "phone_number", None) or "").strip() if self.instance else ""
+        # Re-saving an existing value (Profile sends it on every save) or clearing it keeps working.
+        if not raw or raw == current:
+            return raw
+        normalized = normalize_indian_mobile(raw)
+        if normalized is None:
+            raise serializers.ValidationError(INDIAN_MOBILE_ERROR)
+        return normalized
+
     def validate(self, attrs):
         enabled = attrs.get("wallet_low_balance_alert_enabled")
         if enabled is True:
@@ -310,6 +328,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "emp_id",
             "phone_number",
             "secondary_phone_number",
+            "needs_mobile_number",
             "profile_picture",
             "department",
             "department_code",
@@ -343,6 +362,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "id",
             "email",
             "gender_from_channel_i",
+            "needs_mobile_number",
             "department_code",
             "department_name",
             "department_type",
