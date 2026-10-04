@@ -1,0 +1,71 @@
+# Probe: how many active users outside IITR faculty / Officer In Charge have no valid mobile number
+# (the users the post-login "Complete your profile" prompt will ask). Read-only; prints counts per user
+# type only (no names, emails or phone numbers).
+name: Probe Missing Mobile Numbers
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Count users without a valid mobile number
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, re, json, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from iic_booking.users.models import User
+
+          # Same rule as iic_booking/users/mobile_number.py (inlined so the probe works on any release).
+          SEP = re.compile(r"[\s\-().]")
+          PREFIX = re.compile(r"^(?:\+91|0091|91(?=\d{10}$)|0+)")
+          MOBILE = re.compile(r"[6-9]\d{9}")
+
+          def valid(v):
+              raw = str(v or "").strip()
+              return bool(raw) and bool(MOBILE.fullmatch(PREFIX.sub("", SEP.sub("", raw))))
+
+          def reason(v):
+              raw = str(v or "").strip()
+              if not raw:
+                  return "empty"
+              digits = re.sub(r"\D", "", raw)
+              if digits and set(digits) == {"0"}:
+                  return "all_zeros"
+              if len(digits) < 10:
+                  return "too_short"
+              return "other_invalid"
+
+          EXEMPT = {"faculty", "manager"}
+          rows = User.objects.filter(is_active=True, force_inactive=False).values_list("user_type", "phone_number", "channel_i_identity__id")
+          total, missing, reasons, sso_missing = Counter(), Counter(), Counter(), Counter()
+          exempt = Counter()
+          for ut, phone, ci in rows:
+              key = (ut or "(none)")
+              if str(ut or "").lower() in EXEMPT:
+                  exempt[key] += 1
+                  continue
+              total[key] += 1
+              if not valid(phone):
+                  missing[key] += 1
+                  reasons[reason(phone)] += 1
+                  if ci:
+                      sso_missing[key] += 1
+          by_type = {
+              k: {"active": total[k], "no_valid_mobile": missing[k], "of_which_channel_i": sso_missing[k]}
+              for k in sorted(total, key=lambda k: -missing[k])
+          }
+          print("BY_USER_TYPE", json.dumps(by_type, indent=1))
+          print("TOTALS", json.dumps({
+              "active_non_faculty": sum(total.values()),
+              "no_valid_mobile": sum(missing.values()),
+              "reasons": dict(reasons),
+              "excluded_faculty_and_oic_active": dict(exempt),
+          }, indent=1))
+          PY
