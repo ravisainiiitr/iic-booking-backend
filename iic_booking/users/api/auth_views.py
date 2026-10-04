@@ -903,11 +903,15 @@ def omniport_callback(request):
     if not user_type:
         user_type = determine_user_type_from_omniport(user_info)
 
+    from iic_booking.users.mobile_number import normalize_indian_mobile as _normalize_mobile
+
     # Prepare defaults for user creation (no email key — passed separately)
     defaults = {
         "internal_id": internal_id,
         "name": name or "",
-        "phone_number": phone_number,
+        "phone_number": (
+            _normalize_mobile(phone_number) or _normalize_mobile(secondary_phone_number) or phone_number
+        ),
         "secondary_phone_number": secondary_phone_number,
         "emp_id": emp_id,
         "date_of_birth": date_of_birth,
@@ -988,6 +992,10 @@ def omniport_callback(request):
             if date_of_birth and user.date_of_birth != date_of_birth:
                 user.date_of_birth = date_of_birth
                 update_fields.append("date_of_birth")
+            from iic_booking.users.mobile_number import fill_missing_mobile_from_channel_i
+
+            if fill_missing_mobile_from_channel_i(user, phone_number, secondary_phone_number):
+                update_fields.append("phone_number")
             if update_fields:
                 user.save(update_fields=update_fields)
             logger.info(

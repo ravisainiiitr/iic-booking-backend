@@ -41,6 +41,20 @@ def is_mobile_prompt_exempt(user) -> bool:
     return user_type in MOBILE_PROMPT_EXEMPT_USER_TYPES
 
 
+def fill_missing_mobile_from_channel_i(user, primary: object, secondary: object = None) -> bool:
+    """Set ``user.phone_number`` from Channel i when the account has no valid number. Returns True if changed.
+
+    A valid number already on the account (entered by the user or an admin) is never overwritten.
+    """
+    if is_valid_mobile_number(getattr(user, "phone_number", None)):
+        return False
+    mobile = normalize_indian_mobile(primary) or normalize_indian_mobile(secondary)
+    if not mobile:
+        return False
+    user.phone_number = mobile
+    return True
+
+
 def user_needs_mobile_number(user) -> bool:
     """True when the post-login prompt should ask this user for a mobile number."""
     if user is None or is_mobile_prompt_exempt(user):
