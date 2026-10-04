@@ -445,6 +445,11 @@ class WorkspaceSyncService:
             "compression_min_bytes": int(getattr(self.settings, "compression_min_bytes", 0) or 0),
             "bandwidth_limit_kbps": int(getattr(self.settings, "bandwidth_limit_kbps", 0) or 0),
         }
+        from iic_booking.equipment.remote_analysis_integration.pc_folders import collect_sources
+
+        extra_sources = collect_sources(workspace, session_id)
+        if extra_sources:
+            payload["extra_sources"] = extra_sources
         payload.update(self._equipment_booking_paths(workspace))
         # When equipment RESULTS path is configured, agent uploads from that booking folder.
         if payload.get("results_booking_path"):
@@ -587,7 +592,12 @@ class WorkspaceSyncService:
                         "Files Available",
                         "Processed analysis files are available for download.",
                     )
-                    self._issue_verified_cleanup(workspace, session_id=session_id, verified_files=verified)
+                    self._issue_verified_cleanup(
+                        workspace,
+                        session_id=session_id,
+                        verified_files=verified,
+                        extra_sources=(plan.details or {}).get("extra_sources") if plan is not None else None,
+                    )
                     workspace.refresh_from_db()
                     if workspace.sync_phase != WorkspaceSyncPhase.CLEANUP_FAILED:
                         self.set_sync_phase(
@@ -749,11 +759,13 @@ class WorkspaceSyncService:
         actor=None,
         session_id: str = "",
         verified_files: list[dict[str, str]] | None = None,
+        extra_sources: list[dict[str, Any]] | None = None,
     ) -> None:
         """After UploadVerified, clean the session folder.
 
         Agents advertising verified_cleanup_v1 delete only Output files matching ``verified_files``
         (path + sha256). Older agents only drop scratch folders and keep Output for their stale cleanup.
+        Files from ``extra_sources`` folders are listed as ``<alias>/<path>`` and deleted the same way.
         """
         if not workspace.workstation_id:
             return
@@ -778,6 +790,11 @@ class WorkspaceSyncService:
                     "delete_folders": ["Input", "Working", "Temp"],
                 }
             )
+            from iic_booking.equipment.remote_analysis_integration.pc_folders import cleanup_sources
+
+            to_clean = cleanup_sources(extra_sources)
+            if to_clean:
+                payload["extra_sources"] = to_clean
             pc_cleanup = "pending"
         else:
             payload.update({"defer_output_cleanup": True, "delete_folders": ["Input", "Working", "Temp"]})

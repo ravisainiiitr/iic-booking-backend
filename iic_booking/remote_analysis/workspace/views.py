@@ -420,9 +420,14 @@ def agent_workspace_collect_plan(request, workspace_id):
     workspace = _agent_workspace(request, workspace_id)
     if workspace is None:
         return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    from iic_booking.equipment.remote_analysis_integration.pc_folders import plan_sources
+
     files = _plan_files(request.data.get("files"))
     if files is None:
         return Response({"detail": "Invalid files"}, status=status.HTTP_400_BAD_REQUEST)
+    extra_sources = plan_sources(request.data.get("extra_sources"))
+    if extra_sources is None:
+        return Response({"detail": "Invalid extra_sources"}, status=status.HTTP_400_BAD_REQUEST)
     now = timezone.now()
     WorkspaceTransfer.objects.filter(
         workspace=workspace,
@@ -441,6 +446,7 @@ def agent_workspace_collect_plan(request, workspace_id):
             "session_id": str(request.data.get("session_id") or "")[:64],
             "files": files,
             "files_total": len(files),
+            "extra_sources": extra_sources,
         },
     )
     merge_state(
@@ -454,6 +460,7 @@ def agent_workspace_collect_plan(request, workspace_id):
             "files_done": 0,
             "files_total": len(files),
             "current_file": "",
+            "extra_sources": extra_sources,
         },
     )
     return Response({"transfer_id": str(plan.id)}, status=status.HTTP_201_CREATED)
@@ -499,6 +506,7 @@ def agent_workspace_progress(request, workspace_id):
             "files_done": _int(request.data.get("files_done")),
             "files_total": _int(request.data.get("files_total")) or previous.get("files_total") or 0,
             "current_file": str(request.data.get("current_file") or "")[:512],
+            "extra_sources": previous.get("extra_sources") or [],
         },
     )
     return Response({"accepted": True})

@@ -33,13 +33,15 @@ from iic_booking.remote_analysis.workspace_models import WorkspaceFile
 @pytest.mark.parametrize(
     ("viewport", "expected"),
     [
-        ({"width": 1280, "height": 720, "dpr": 2}, (2560, 1440)),
+        ({"width": 1280, "height": 720, "dpr": 2}, (1280, 720)),
+        ({"width": 1707, "height": 860, "dpr": 1.5}, (1706, 860)),
         ({"width": 1440, "height": 900, "dpr": 1}, (1440, 900)),
         ({"width": 800, "height": 500, "dpr": 1}, (1024, 700)),
         ({"width": 3000, "height": 2000, "dpr": 2}, (2560, 1600)),
         ({"width": 1365, "height": 767, "dpr": 1}, (1364, 766)),
         ({"width": 1280, "height": 720}, (1280, 720)),
-        ({"width": 1100.6, "height": 801.2, "dpr": 1.25}, (1376, 1002)),
+        ({"width": 1100.6, "height": 801.2, "dpr": 1.25}, (1100, 800)),
+        ({"width": 1280, "height": 720, "dpr": 0}, (1280, 720)),
         ({"width": "x", "height": 720}, None),
         ({"width": 0, "height": 720, "dpr": 1}, None),
         (None, None),
@@ -68,7 +70,7 @@ def test_create_session_applies_viewport_and_reuse_updates_it(
     reservation, session = _session(
         ra_user, reservation_window, ra_settings, tmp_path, viewport={"width": 1280, "height": 720, "dpr": 2}
     )
-    assert (session.display_width, session.display_height) == (2560, 1440)
+    assert (session.display_width, session.display_height) == (1280, 720)
 
     again = SessionOrchestrator().create_session(
         reservation=reservation, user=ra_user, viewport={"width": 1600, "height": 900, "dpr": 1}

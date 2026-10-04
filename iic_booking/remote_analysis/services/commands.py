@@ -42,10 +42,13 @@ def record_verified_cleanup(payload: dict[str, Any], *, success: bool, result: d
     from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
 
     kept = []
+    removed = []
     if isinstance(result, dict) and isinstance(result.get("kept"), list):
         kept = [str(p) for p in result["kept"]][:500]
     elif not success:
         kept = [str(f.get("path") or "") for f in payload.get("verified_files") or []][:500]
+    if isinstance(result, dict) and isinstance(result.get("removed_folders"), list):
+        removed = [str(p)[:1024] for p in result["removed_folders"]][:20]
     merge_state(
         AnalysisWorkspace,
         payload["workspace_id"],
@@ -53,6 +56,7 @@ def record_verified_cleanup(payload: dict[str, Any], *, success: bool, result: d
         pc_cleanup="done" if success and not kept else "kept",
         kept_files=kept,
         pc_deleted=int(result.get("deleted") or 0) if isinstance(result, dict) else 0,
+        pc_removed_folders=removed,
     )
 
 
@@ -272,6 +276,11 @@ class CommandService:
                     command.command_type,
                     command.id,
                 )
+
+        if command.command_type == CommandType.BROWSE_PC_FOLDERS and success:
+            from iic_booking.equipment.remote_analysis_integration.pc_folders import store_browse_result
+
+            store_browse_result(command, result)
 
         cmd_payload = command.payload or {}
         if (

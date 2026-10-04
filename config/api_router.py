@@ -872,6 +872,19 @@ urlpatterns = router.urls + [
             ("sync-now", booking_ra_views.booking_analysis_sync_now),
         )
     ],
+    *[
+        path(f"{prefix}bookings/<int:booking_id>/analysis/{route}", view, name=f"booking-analysis-{name}{suffix}")
+        for prefix, suffix in (("v1/", ""), ("", "-legacy"))
+        for route, view, name in (
+            ("pc-folders/", booking_ra_views.booking_analysis_pc_folders, "pc-folders"),
+            ("pc-folders/browse/", booking_ra_views.booking_analysis_pc_browse, "pc-browse"),
+            (
+                "pc-folders/browse/<str:request_id>/",
+                booking_ra_views.booking_analysis_pc_browse_result,
+                "pc-browse-result",
+            ),
+        )
+    ],
     path("auth/logout/", logout, name="logout"),
     path("auth/mobile/enroll/", mobile_enroll, name="auth-mobile-enroll"),
     path("auth/mobile/refresh/", mobile_refresh, name="auth-mobile-refresh"),

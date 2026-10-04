@@ -30,19 +30,22 @@ def _disable_flag(enabled: bool) -> str:
 
 
 def clamp_viewport(viewport: Any) -> tuple[int, int] | None:
-    """Browser viewport {width, height, dpr} -> even RDP pixel size within limits, or None."""
+    """Browser viewport {width, height, dpr} -> even RDP pixel size within limits, or None.
+
+    The desktop is sized in CSS pixels, not device pixels: Windows renders the RDP session at
+    100% scaling, so a 150%/200% laptop given its full device resolution shows tiny icons and text.
+    """
     if not isinstance(viewport, dict):
         return None
     try:
         width = float(viewport.get("width"))
         height = float(viewport.get("height"))
-        dpr = float(viewport.get("dpr") or 1)
     except (TypeError, ValueError):
         return None
-    if not (width > 0 and height > 0) or not (0 < dpr <= 8):
+    if not (width > 0 and height > 0):
         return None
     out = []
-    for value, lo, hi in ((width * dpr, VIEWPORT_MIN[0], VIEWPORT_MAX[0]), (height * dpr, VIEWPORT_MIN[1], VIEWPORT_MAX[1])):
+    for value, lo, hi in ((width, VIEWPORT_MIN[0], VIEWPORT_MAX[0]), (height, VIEWPORT_MIN[1], VIEWPORT_MAX[1])):
         px = int(min(max(round(value), lo), hi))
         out.append(px - (px % 2))
     return out[0], out[1]

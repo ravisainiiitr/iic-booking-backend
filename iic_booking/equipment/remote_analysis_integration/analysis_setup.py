@@ -235,6 +235,7 @@ def setup_payload(booking, user) -> dict[str, Any]:
             "default_source": "booking",
             "default_booking_id": _default_input_booking_id(booking, user),
             "selected": _selected_input(setup, link, workspace),
+            "pc_input_path": (getattr(ws_for_output, "input_path", "") or None) if ws_for_output else None,
         },
         "output": {
             "pc_output_path": (getattr(ws_for_output, "output_path", "") or None) if ws_for_output else None,
@@ -556,6 +557,13 @@ def sync_status(booking, user) -> dict[str, Any]:
         destination = research.processed_destination(link)
     else:
         destination = {"workspace_id": None, "folder_id": None, "path_label": BOOKING_DETAILS_LABEL}
+    extra_folders: list[dict[str, Any]] = []
+    if workspace is not None and ts.get("extra_sources"):
+        from iic_booking.equipment.remote_analysis_integration.pc_folders import status_folders
+        from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
+
+        sid = str(session.id) if session is not None else WorkspaceSyncService().last_collect_session_id(workspace)
+        extra_folders = status_folders(workspace, sid)
     stamps = [u for u in updated if u is not None]
     return {
         "phase": phase,
@@ -565,6 +573,9 @@ def sync_status(booking, user) -> dict[str, Any]:
         "verified": bool(workspace is not None and workspace.upload_verified_at and phase in {"done", "copying_to_workspace", "cleaning_pc", "in_session"}),
         "pc_cleanup": ts.get("pc_cleanup") or "pending",
         "kept_files": list(ts.get("kept_files") or []),
+        "pc_deleted": int(ts.get("pc_deleted") or 0),
+        "pc_removed_folders": list(ts.get("pc_removed_folders") or []) if extra_folders else [],
+        "extra_folders": extra_folders,
         "destination": destination,
         "updated_at": (max(stamps).isoformat() if stamps else _now_iso()),
         "poll_after_ms": ACTIVE_POLL_MS if phase in TRANSFER_PHASES else IDLE_POLL_MS,

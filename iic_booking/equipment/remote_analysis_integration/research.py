@@ -218,14 +218,23 @@ def _new_research_file(workspace, folder, name: str, *, booking, actor, origin: 
     )
 
 
-def _finalize_research_file(research_file: ResearchFile, *, checksum_b64: str, verified: bool, etag: str = "", actor=None) -> None:
+def _finalize_research_file(
+    research_file: ResearchFile,
+    *,
+    checksum_b64: str,
+    verified: bool,
+    etag: str = "",
+    actor=None,
+    any_type: bool = False,
+) -> None:
     head = research_storage.head_object(research_file.storage_key)
     size = int(head.get("ContentLength") or 0)
     if research_file.size_bytes and size != research_file.size_bytes:
         research_storage.delete_object(research_file.storage_key)
         raise ResearchCopyError("size_mismatch", f"{research_file.display_name}: stored size {size} != {research_file.size_bytes}")
     detected = file_policy.sniff_type(research_storage.read_prefix(research_file.storage_key, file_policy.SNIFF_BYTES))
-    reason = file_policy.rejection_reason(detected)
+    # Unknown/executable types are still only ever served as octet-stream attachments.
+    reason = None if any_type else file_policy.rejection_reason(detected)
     if reason:
         research_storage.delete_object(research_file.storage_key)
         raise ResearchCopyError("rejected", f"{research_file.display_name}: {reason}")
@@ -516,7 +525,7 @@ def bridge_processed(
                 path = storage_mgr.read_file(workspace, wf.storage_relpath)
                 with open(path, "rb") as fh:
                     verified = upload_verified(fh, research_file, checksum)
-                _finalize_research_file(research_file, checksum_b64=checksum, verified=verified, actor=actor)
+                _finalize_research_file(research_file, checksum_b64=checksum, verified=verified, actor=actor, any_type=True)
                 copied += 1
             bridged.append({"path": rel, "sha256": wf.sha256, "file_id": str(wf.pk)})
         except ResearchCopyError as exc:
