@@ -135,6 +135,16 @@ urlpatterns = [
         workspace_views.agent_workspace_upload,
         name="workspace-agent-upload",
     ),
+    path(
+        "workspaces/<uuid:workspace_id>/collect-plan/",
+        workspace_views.agent_workspace_collect_plan,
+        name="workspace-agent-collect-plan",
+    ),
+    path(
+        "workspaces/<uuid:workspace_id>/progress/",
+        workspace_views.agent_workspace_progress,
+        name="workspace-agent-progress",
+    ),
     # Milestone 6 — Operations Center
     path("operations/dashboard/", ops_views.operations_dashboard, name="operations-dashboard"),
     path("operations/diagnostics/", ops_views.deployment_diagnostics, name="operations-diagnostics"),

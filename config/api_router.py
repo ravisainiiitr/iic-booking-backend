@@ -858,6 +858,20 @@ urlpatterns = router.urls + [
         booking_ra_views.booking_analysis_data_selection,
         name="booking-analysis-data-selection-legacy",
     ),
+    *[
+        path(
+            f"{prefix}bookings/<int:booking_id>/analysis/{segment}/",
+            view,
+            name=f"booking-analysis-{segment}{suffix}",
+        )
+        for prefix, suffix in (("v1/", ""), ("", "-legacy"))
+        for segment, view in (
+            ("setup", booking_ra_views.booking_analysis_setup),
+            ("input-sources", booking_ra_views.booking_analysis_input_sources),
+            ("sync-status", booking_ra_views.booking_analysis_sync_status),
+            ("sync-now", booking_ra_views.booking_analysis_sync_now),
+        )
+    ],
     path("auth/logout/", logout, name="logout"),
     path("auth/mobile/enroll/", mobile_enroll, name="auth-mobile-enroll"),
     path("auth/mobile/refresh/", mobile_refresh, name="auth-mobile-refresh"),

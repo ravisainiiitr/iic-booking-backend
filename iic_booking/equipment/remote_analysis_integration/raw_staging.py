@@ -28,19 +28,24 @@ SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 CHUNK_BYTES = 1024 * 1024
 
 
-def _listing_cache_key(virtual: str) -> str:
-    return "ra:results-s3:" + hashlib.sha1(virtual.encode("utf-8")).hexdigest()
+def _listing_cache_key(virtual: str, prefix_only: bool = False) -> str:
+    digest = hashlib.sha1(virtual.encode("utf-8")).hexdigest()
+    return f"ra:results-s3{':p' if prefix_only else ''}:{digest}"
 
 
-def cached_results_s3_objects(virtual: str, *, fresh: bool = False) -> list[dict[str, Any]]:
+def cached_results_s3_objects(virtual: str, *, fresh: bool = False, prefix_only: bool = False) -> list[dict[str, Any]]:
     """S3 results for a virtual booking id, cached briefly so status polls never page the bucket."""
-    key = _listing_cache_key(virtual)
+    key = _listing_cache_key(virtual, prefix_only)
     if not fresh:
         hit = cache.get(key)
+        if hit is None and prefix_only:
+            hit = cache.get(_listing_cache_key(virtual))
         if hit is not None:
             return list(hit)
     try:
-        entries = list_results_s3_objects(virtual)
+        entries = (
+            list_results_s3_objects(virtual, prefix_only=True) if prefix_only else list_results_s3_objects(virtual)
+        )
     except Exception:  # noqa: BLE001
         return []
     cache.set(key, entries, RESULTS_LISTING_CACHE_SECONDS)

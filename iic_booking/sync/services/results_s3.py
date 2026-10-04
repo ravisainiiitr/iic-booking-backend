@@ -124,11 +124,11 @@ def open_results_s3_stream(key: str):
         return None
 
 
-def list_results_s3_objects(virtual_booking_id: str) -> list[dict]:
+def list_results_s3_objects(virtual_booking_id: str, *, prefix_only: bool = False) -> list[dict]:
     """Objects under Results/ whose path has a segment equal to the virtual booking id.
 
     Lists only the Results/{vid}/ prefix first; the full Results/ scan (legacy nested
-    Results/<year>/<lab>/{vid}/ layouts) runs only when that prefix is empty.
+    Results/<year>/<lab>/{vid}/ layouts) runs only when that prefix is empty and not prefix_only.
     """
     vid = (virtual_booking_id or "").strip().strip("/")
     client, bucket = _s3_client()
@@ -156,7 +156,10 @@ def list_results_s3_objects(virtual_booking_id: str) -> list[dict]:
         return found
 
     try:
-        return _scan(f"{S3_RESULTS_PREFIX}/{vid}/") or _scan(f"{S3_RESULTS_PREFIX}/")
+        found = _scan(f"{S3_RESULTS_PREFIX}/{vid}/")
+        if found or prefix_only:
+            return found
+        return _scan(f"{S3_RESULTS_PREFIX}/")
     except Exception:
         logger.warning("Results S3 list failed | vid=%s", vid, exc_info=True)
         raise

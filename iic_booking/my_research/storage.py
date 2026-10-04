@@ -199,6 +199,64 @@ def read_prefix(key: str, length: int) -> bytes:
         raise ResearchStorageError(str(exc)) from exc
 
 
+SINGLE_COPY_MAX_BYTES = 5 * 1024**3
+
+
+def copy_from(source_bucket: str, source_key: str, key: str, *, size_bytes: int) -> dict[str, str]:
+    """Server-side copy into the research bucket. Returns {"etag", "checksum_sha256"} (checksum may be "")."""
+    source = {"Bucket": source_bucket, "Key": source_key}
+    try:
+        if size_bytes and size_bytes > SINGLE_COPY_MAX_BYTES:
+            _client().copy(source, bucket_name(), key, ExtraArgs=_sse_params() or None)
+            head = _client().head_object(Bucket=bucket_name(), Key=key)
+            return {"etag": str(head.get("ETag") or "").strip('"'), "checksum_sha256": ""}
+        resp = _client().copy_object(
+            CopySource=source, Bucket=bucket_name(), Key=key, ChecksumAlgorithm="SHA256", **_sse_params()
+        )
+    except Exception as exc:
+        if _is_not_found(exc):
+            raise ObjectNotFound(source_key) from exc
+        raise ResearchStorageError(str(exc)) from exc
+    result = resp.get("CopyObjectResult") or {}
+    return {
+        "etag": str(result.get("ETag") or "").strip('"'),
+        "checksum_sha256": str(result.get("ChecksumSHA256") or ""),
+    }
+
+
+def upload_fileobj(fileobj, key: str, *, content_type: str = "application/octet-stream") -> None:
+    """Streamed (multipart when large) upload of a readable file object."""
+    try:
+        _client().upload_fileobj(fileobj, bucket_name(), key, ExtraArgs={"ContentType": content_type, **_sse_params()})
+    except Exception as exc:
+        raise ResearchStorageError(str(exc)) from exc
+
+
+def put_object_verified(fileobj, key: str, *, checksum_sha256_b64: str, content_type: str = "application/octet-stream") -> None:
+    """Single PUT; S3 rejects the request when the body does not match the SHA-256."""
+    try:
+        _client().put_object(
+            Bucket=bucket_name(),
+            Key=key,
+            Body=fileobj,
+            ContentType=content_type,
+            ChecksumSHA256=checksum_sha256_b64,
+            **_sse_params(),
+        )
+    except Exception as exc:
+        raise ResearchStorageError(str(exc)) from exc
+
+
+def open_stream(key: str):
+    """Streaming body (caller reads in chunks and closes)."""
+    try:
+        return _client().get_object(Bucket=bucket_name(), Key=key)["Body"]
+    except Exception as exc:
+        if _is_not_found(exc):
+            raise ObjectNotFound(key) from exc
+        raise ResearchStorageError(str(exc)) from exc
+
+
 def delete_object(key: str) -> None:
     try:
         _client().delete_object(Bucket=bucket_name(), Key=key)

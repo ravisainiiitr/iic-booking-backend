@@ -289,7 +289,36 @@ def retry_failed_workspace_collects(limit: int = 20) -> dict:
                 retried += 1
             except Exception:
                 logger.exception("retry collect failed for workspace %s", ws.id)
-    return {"retried": retried}
+
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    bridged = 0
+    stale = (timezone.now() - timedelta(hours=72)).isoformat()
+    for ws in AnalysisWorkspace.objects.filter(
+        research_link__isnull=False,
+        transfer_state__bridge__phase="failed",
+        transfer_state__bridge__first_failed_at__gte=stale,
+    ).order_by("updated_at")[:limit]:
+        bridge = (ws.transfer_state or {}).get("bridge") or {}
+        bridge_workspace_output.delay(str(ws.id), bridge.get("session_id") or "", None, True)
+        bridged += 1
+    return {"retried": retried, "bridge_retried": bridged}
+
+
+@ra_periodic_task(name="remote_analysis.run_analysis_setup")
+def run_analysis_setup(setup_id: str) -> dict:
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import run_setup
+
+    return run_setup(setup_id)
+
+
+@ra_periodic_task(name="remote_analysis.bridge_workspace_output")
+def bridge_workspace_output(workspace_id: str, session_id: str = "", paths: list | None = None, session_ended: bool = True) -> dict:
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import run_bridge
+
+    return run_bridge(workspace_id, session_id, paths, session_ended)
 
 
 @ra_periodic_task(name="remote_analysis.interval_workspace_collect")

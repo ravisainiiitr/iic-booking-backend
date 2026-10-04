@@ -301,6 +301,16 @@ class BookingRemoteAnalysisService:
         except Exception:  # noqa: BLE001
             logger.exception("raw_ready check failed for booking %s; retrying without request", booking.pk)
             raw_ready = staging.has_raw_files(booking, request=None)
+        if not raw_ready:
+            from iic_booking.remote_analysis.workspace_models import BookingAnalysisSetup
+
+            setup = BookingAnalysisSetup.objects.select_related("input_booking").filter(booking=booking).first()
+            if setup is not None:
+                raw_ready = setup.input_source == "upload" or bool(
+                    setup.input_booking_id
+                    and setup.input_booking_id != booking.pk
+                    and staging.has_raw_files(setup.input_booking, request=None)
+                )
         require_raw = bool(settings_obj.analyze_data_require_s3_files)
         software_configured = (
             bool(workflows)
@@ -379,7 +389,6 @@ class BookingRemoteAnalysisService:
         One-shot Analyze Data: resolve workflow (or legacy software) → allocate → stage RAW → launch.
         Never exposes workstation identity to the caller.
         """
-        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
         from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
         from iic_booking.remote_analysis.guacamole.session import SessionError
         from iic_booking.remote_analysis.services.workflow_engine import WorkflowEngine, WorkflowEngineError
@@ -530,9 +539,9 @@ class BookingRemoteAnalysisService:
 
         staging_result = None
         if settings_obj.analyze_data_stage_raw_on_launch and workspace is not None:
-            staging_result = BookingRawStagingService().stage_into_workspace(
-                booking, workspace, actor=user, request=request
-            )
+            from iic_booking.equipment.remote_analysis_integration.analysis_setup import stage_input
+
+            staging_result = stage_input(booking, workspace, actor=user, request=request)
             self.audit.log(
                 booking,
                 "RawStaged",
@@ -643,7 +652,7 @@ class BookingRemoteAnalysisService:
         from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
         from iic_booking.remote_analysis.guacamole.session import SessionError, SessionOrchestrator
         from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings, WorkstationRdpSecret
-        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
+        from iic_booking.equipment.remote_analysis_integration.analysis_setup import stage_input
         from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 
         settings_obj = RemoteAnalysisSettings.get_solo()
@@ -693,7 +702,7 @@ class BookingRemoteAnalysisService:
             workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user, ingest=False)
             if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
                 try:
-                    BookingRawStagingService().stage_into_workspace(booking, workspace, actor=user)
+                    stage_input(booking, workspace, actor=user)
                 except Exception:  # noqa: BLE001
                     logger.exception("RAW staging before launch failed for booking %s", booking.pk)
         try:

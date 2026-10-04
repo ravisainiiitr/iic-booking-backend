@@ -676,3 +676,94 @@ def booking_analysis_job_resume(request, booking_id: int):
     except SessionError as exc:
         return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
     return Response(payload)
+
+
+def _owned_booking(request, booking_id: int):
+    """Setup / sync endpoints are owner-only; never 404 (the frontend reads 404 as "not deployed")."""
+    booking = (
+        Booking.objects.select_related("equipment", "user", "analysis_reservation__workstation")
+        .filter(booking_id=booking_id)
+        .first()
+    )
+    if booking is None or booking.user_id != request.user.pk:
+        return None
+    return booking
+
+
+def _forbidden():
+    return Response({"detail": "Permission denied.", "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_setup(request, booking_id: int):
+    """GET/POST /api/v1/bookings/{id}/analysis/setup/"""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    if request.method == "POST":
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            analysis_setup.apply_setup(booking, request.user, body)
+        except analysis_setup.SetupError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(analysis_setup.setup_payload(booking, request.user))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_input_sources(request, booking_id: int):
+    """GET /api/v1/bookings/{id}/analysis/input-sources/?q=&page=&page_size="""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    qp = request.query_params
+
+    def _num(name, default):
+        try:
+            return int(qp.get(name) or default)
+        except (TypeError, ValueError):
+            return default
+
+    return Response(
+        analysis_setup.input_sources(
+            request.user, booking, q=qp.get("q") or "", page=_num("page", 1), page_size=_num("page_size", 20)
+        )
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_sync_status(request, booking_id: int):
+    """GET /api/v1/bookings/{id}/analysis/sync-status/"""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    return Response(analysis_setup.sync_status(booking, request.user))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_sync_now(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/sync-now/"""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    if not analysis_setup.sync_now(booking, request.user):
+        return Response(
+            {"detail": "No active analysis session for this booking.", "code": "no_active_session"},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response({"queued": True}, status=status.HTTP_202_ACCEPTED)

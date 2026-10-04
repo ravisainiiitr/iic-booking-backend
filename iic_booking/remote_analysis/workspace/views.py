@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -368,3 +369,136 @@ def agent_workspace_upload(request, workspace_id):
         )
     # Per-file upload must not finalize COLLECT lifecycle — command complete does that.
     return Response(WorkspaceFileSerializer(file_row).data, status=status.HTTP_201_CREATED)
+
+
+COLLECT_PLAN_MAX_FILES = 20000
+
+
+def _agent_workspace(request, workspace_id):
+    workspace = get_object_or_404(AnalysisWorkspace, pk=workspace_id)
+    agent_ws = getattr(request.user, "workstation", None)
+    if agent_ws is None or workspace.workstation_id != agent_ws.id:
+        return None
+    return workspace
+
+
+def _plan_files(raw) -> list[dict] | None:
+    if not isinstance(raw, list) or len(raw) > COLLECT_PLAN_MAX_FILES:
+        return None
+    files = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None
+        path = str(item.get("path") or "").replace("\\", "/").lstrip("/")
+        sha = str(item.get("sha256") or "").strip().lower()
+        if not path or ".." in path.split("/") or len(path) > 1024 or len(sha) not in (0, 64):
+            return None
+        try:
+            size = max(0, int(item.get("size") or 0))
+        except (TypeError, ValueError):
+            return None
+        files.append({"path": path, "size": size, "sha256": sha})
+    return files
+
+
+def _int(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+@api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT)
+def agent_workspace_collect_plan(request, workspace_id):
+    """POST /api/v1/analysis/workspaces/{id}/collect-plan/ — Output files the agent is about to upload."""
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import merge_state
+    from iic_booking.remote_analysis.constants import TransferDirection, TransferStatus
+    from iic_booking.remote_analysis.workspace.sync import COLLECT_PLAN_KIND
+
+    workspace = _agent_workspace(request, workspace_id)
+    if workspace is None:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    files = _plan_files(request.data.get("files"))
+    if files is None:
+        return Response({"detail": "Invalid files"}, status=status.HTTP_400_BAD_REQUEST)
+    now = timezone.now()
+    WorkspaceTransfer.objects.filter(
+        workspace=workspace,
+        details__kind=COLLECT_PLAN_KIND,
+        status__in=[TransferStatus.PENDING, TransferStatus.IN_PROGRESS],
+    ).update(status=TransferStatus.CANCELLED, completed_at=now)
+    total = _int(request.data.get("total_bytes")) or sum(f["size"] for f in files)
+    plan = WorkspaceTransfer.objects.create(
+        workspace=workspace,
+        direction=TransferDirection.AGENT_PUSH,
+        status=TransferStatus.IN_PROGRESS,
+        bytes_total=total,
+        started_at=now,
+        details={
+            "kind": COLLECT_PLAN_KIND,
+            "session_id": str(request.data.get("session_id") or "")[:64],
+            "files": files,
+            "files_total": len(files),
+        },
+    )
+    merge_state(
+        AnalysisWorkspace,
+        workspace.pk,
+        "transfer_state",
+        collect={
+            "transfer_id": str(plan.id),
+            "bytes_done": 0,
+            "bytes_total": total,
+            "files_done": 0,
+            "files_total": len(files),
+            "current_file": "",
+        },
+    )
+    return Response({"transfer_id": str(plan.id)}, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@authentication_classes(_AGENT_AUTH)
+@permission_classes(_AGENT)
+def agent_workspace_progress(request, workspace_id):
+    """POST /api/v1/analysis/workspaces/{id}/progress/ — byte progress for the current collect plan."""
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import merge_state
+    from iic_booking.remote_analysis.constants import TransferStatus
+
+    workspace = _agent_workspace(request, workspace_id)
+    if workspace is None:
+        return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+    transfer_id = str(request.data.get("transfer_id") or "")
+    try:
+        row = (
+            WorkspaceTransfer.objects.filter(workspace=workspace, pk=transfer_id)
+            .values_list("status", "bytes_total")
+            .first()
+        )
+    except (ValueError, DjangoValidationError):
+        row = None
+    if row is None:
+        return Response({"detail": "Unknown transfer"}, status=status.HTTP_400_BAD_REQUEST)
+    plan_status, plan_total = row
+    if plan_status not in {TransferStatus.PENDING, TransferStatus.IN_PROGRESS}:
+        return Response({"accepted": False, "status": plan_status})
+    bytes_done = _int(request.data.get("bytes_done"))
+    bytes_total = _int(request.data.get("bytes_total")) or plan_total
+    WorkspaceTransfer.objects.filter(pk=transfer_id).update(bytes_transferred=bytes_done, bytes_total=bytes_total)
+    previous = ((workspace.transfer_state or {}).get("collect") or {})
+    merge_state(
+        AnalysisWorkspace,
+        workspace.pk,
+        "transfer_state",
+        collect={
+            "transfer_id": transfer_id,
+            "bytes_done": bytes_done,
+            "bytes_total": bytes_total,
+            "files_done": _int(request.data.get("files_done")),
+            "files_total": _int(request.data.get("files_total")) or previous.get("files_total") or 0,
+            "current_file": str(request.data.get("current_file") or "")[:512],
+        },
+    )
+    return Response({"accepted": True})

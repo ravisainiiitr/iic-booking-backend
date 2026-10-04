@@ -353,6 +353,8 @@ class SessionOrchestrator:
                 from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
                 from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceFile
 
+                from iic_booking.remote_analysis.workspace_models import BookingAnalysisSetup
+
                 ws_obj = AnalysisWorkspace.objects.filter(reservation=session.reservation).first()
                 booking = getattr(session.reservation, "booking", None)
                 if (
@@ -360,9 +362,13 @@ class SessionOrchestrator:
                     and booking is not None
                     and WorkspaceSyncService().is_input_ready(ws_obj)
                     and (cmd is None or cmd.status != CommandStatus.FAILED)
-                    and not BookingRawStagingService().has_raw_files(booking)
                 ):
-                    prepare_ok = True
+                    if BookingAnalysisSetup.objects.filter(booking=booking).exists():
+                        prepare_ok = not WorkspaceFile.objects.filter(
+                            workspace=ws_obj, deleted=False, is_current=True, relative_path__startswith="RawData/"
+                        ).exists()
+                    else:
+                        prepare_ok = not BookingRawStagingService().has_raw_files(booking)
             except Exception:
                 logger.exception("Empty-input prepare shortcut failed")
         if not prepare_ok:
