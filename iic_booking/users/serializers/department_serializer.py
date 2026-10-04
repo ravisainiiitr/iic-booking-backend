@@ -59,6 +59,7 @@ class DepartmentListSerializer(serializers.ModelSerializer[Department]):
             "code",
             "department_type",
             "department_type_display",
+            "internal_subcategory",
             "access_enabled",
             "equipment_booking_enabled",
             "equipment_visibility_enabled",

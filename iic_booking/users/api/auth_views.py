@@ -2174,7 +2174,7 @@ def register(request):
     if department_id:
         try:
             from iic_booking.users.models import Department
-            from iic_booking.users.models.department import DepartmentType
+            from iic_booking.users.repositories import DepartmentRepository
             department = Department.objects.get(id=department_id)
         except Department.DoesNotExist:
             return Response(
@@ -2182,7 +2182,7 @@ def register(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         # IITR Post Doc / Research Associates / IITR Startup must pick an IIT Roorkee department or centre
-        if is_iitr_type and department.department_type != DepartmentType.INTERNAL:
+        if is_iitr_type and not DepartmentRepository.get_iitr_departments_and_centres().filter(pk=department.pk).exists():
             return Response(
                 {
                     "error": "Select your IIT Roorkee department or centre.",

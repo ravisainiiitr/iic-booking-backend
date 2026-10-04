@@ -16,6 +16,7 @@ from ..models.organization_request import OrganizationRequest
 from ..models.department import (
     DepartmentType,
     ExternalDepartmentSubcategory,
+    InternalDepartmentSubcategory,
 )
 
 
@@ -33,7 +34,9 @@ def department_list(request):
         - group_by_subcategory: When type=external and state is set, return separate lists per subcategory (Educational Institute, Govt R&D, Industry) for that state
         - external_subcategory: When type=external, filter by subcategory (educational_institute, govt_rnd, industries)
         - state: When type=external, filter by Indian state/UT value (e.g. andhra_pradesh)
-        - internal_subcategory: When type=internal, filter by subcategory (iit_roorkee_dept_centres, startups)
+        - internal_subcategory: When type=internal, filter by subcategory (iit_roorkee_dept_centres, startups).
+          iit_roorkee_dept_centres returns every IIT Roorkee department and centre (see
+          DepartmentRepository.get_iitr_departments_and_centres), not only rows tagged with it.
 
     Returns:
         Response: List of departments; or by_subcategory when group_by_subcategory=true (separate list per Educational Institute, Govt R&D, Industry per state).
@@ -96,9 +99,10 @@ def department_list(request):
                 departments = departments.filter(external_subcategory=external_subcategory)
             if state:
                 departments = departments.filter(state=state)
-        # For internal type, optionally filter by internal_subcategory (for signup: IITR Startups, Post Doc, Research Associates)
         elif department_type_filter == DepartmentType.INTERNAL:
-            if internal_subcategory:
+            if internal_subcategory == InternalDepartmentSubcategory.IIT_ROORKEE_DEPT_CENTRES:
+                departments = DepartmentRepository.get_iitr_departments_and_centres()
+            elif internal_subcategory:
                 departments = departments.filter(internal_subcategory=internal_subcategory)
     else:
         departments = DepartmentRepository.get_all()
