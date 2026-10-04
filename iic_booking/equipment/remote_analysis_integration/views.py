@@ -818,7 +818,7 @@ def booking_analysis_pc_browse_result(request, booking_id: int, request_id: str)
 @permission_classes([IsAuthenticated])
 @authentication_classes(_AUTH)
 def booking_analysis_pc_folders(request, booking_id: int):
-    """PUT /api/v1/bookings/{id}/analysis/pc-folders/ {folders} — result folders copied when the session ends."""
+    """PUT /api/v1/bookings/{id}/analysis/pc-folders/ {folders} — result folders/files copied when the session ends."""
     from iic_booking.equipment.remote_analysis_integration import pc_folders
 
     booking = _owned_booking(request, booking_id)
@@ -826,7 +826,7 @@ def booking_analysis_pc_folders(request, booking_id: int):
         return _forbidden()
     body = request.data if isinstance(request.data, dict) else {}
     try:
-        folders = pc_folders.select_folders(booking, request.user, body.get("folders"))
+        items = pc_folders.select_folders(booking, request.user, body.get("folders"))
     except pc_folders.PcFolderError as exc:
         return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
-    return Response({"folders": folders})
+    return Response({"folders": [i["path"] for i in items], "items": items})

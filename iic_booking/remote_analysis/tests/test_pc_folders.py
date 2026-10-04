@@ -165,7 +165,7 @@ def test_chosen_folders_are_collected_verified_and_cleaned(
     assert _client(ra_user).put(_url(booking, "pc-folders"), {"folders": chosen}, format="json").status_code == 200
 
     collect = _collect_after_end(session, ra_user, workspace)
-    assert collect.payload["extra_sources"] == [{"path": p} for p in chosen]
+    assert collect.payload["extra_sources"] == [{"path": p, "kind": "folder"} for p in chosen]
 
     out, extra = b"output result", b"run1 spectrum"
     files = [
@@ -183,14 +183,14 @@ def test_chosen_folders_are_collected_verified_and_cleaned(
     agent.post(f"{base}/progress/", {"transfer_id": plan.data["transfer_id"], "bytes_done": 3, "files_total": 2}, format="json")
 
     status = _client(ra_user).get(_url(booking, "sync-status")).data
-    assert status["extra_folders"] == sources
+    assert status["extra_folders"] == [{**s, "kind": "folder"} for s in sources]
 
     _upload_output(workspace, "result.csv", out)
     _upload_output(workspace, "Run1/spectra/s1.dat", extra)
     CommandService().complete(collect, success=True, message="Uploaded 2 files")
 
     clean = RemoteCommand.objects.get(command_type=CommandType.CLEAN_WORKSTATION, payload__reason="upload_verified")
-    assert clean.payload["extra_sources"] == [{"path": "D:\\Results\\Run1", "alias": "Run1"}]
+    assert clean.payload["extra_sources"] == [{"path": "D:\\Results\\Run1", "alias": "Run1", "kind": "folder"}]
     assert {f["path"] for f in clean.payload["verified_files"]} == {"result.csv", "Run1/spectra/s1.dat"}
 
     analysis_setup.run_bridge(str(workspace.id), str(session.id), [f["path"] for f in files], True)
@@ -204,6 +204,72 @@ def test_chosen_folders_are_collected_verified_and_cleaned(
     assert status["phase"] == "done" and status["pc_cleanup"] == "done" and status["pc_deleted"] == 2
     assert status["pc_removed_folders"] == ["D:\\Results\\Run1"]
     assert status["extra_folders"][1]["error"] == "The folder no longer exists."
+
+
+FILE_CAPS = [*FULL_CAPS, "extra_files_v1"]
+
+
+@pytest.mark.django_db
+def test_single_files_need_the_files_capability_and_allow_up_to_50_items(
+    ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path
+):
+    _caps(eligible_workstation, FULL_CAPS)
+    booking = _booking_for(ra_user)
+    _started_session(ra_user, reservation_window, ra_settings, tmp_path, booking=booking)
+    api = _client(ra_user)
+    url = _url(booking, "pc-folders")
+    item = {"path": "D:\\Results\\fit.csv", "kind": "file"}
+    assert api.put(url, {"folders": [item]}, format="json").data["code"] == "picker_unsupported"
+
+    _caps(eligible_workstation, FILE_CAPS)
+    for folders, code in (
+        ([{"path": "D:\\Results", "kind": "folder"}, item], "nested_folders"),
+        ([{"path": "D:\\x.csv", "kind": "link"}], "invalid_path"),
+        ([{"path": f"D:\\f{i}.csv", "kind": "file"} for i in range(51)], "too_many_folders"),
+    ):
+        resp = api.put(url, {"folders": folders}, format="json")
+        assert resp.status_code == 400 and resp.data["code"] == code, (folders, resp.data)
+    many = [{"path": f"D:\\Data\\f{i}.csv", "kind": "file"} for i in range(49)]
+    ok = api.put(url, {"folders": ["D:\\Results\\Run1", *many]}, format="json")
+    assert ok.status_code == 200, ok.data
+    assert ok.data["items"][0] == {"path": "D:\\Results\\Run1", "kind": "folder"}
+    assert ok.data["items"][1] == {"path": "D:\\Data\\f0.csv", "kind": "file"}
+    assert len(ok.data["folders"]) == 50
+
+
+@pytest.mark.django_db
+def test_chosen_files_are_collected_and_cleaned_by_alias(
+    ra_user, research_on, fake_s3, eligible_workstation, reservation_window, ra_settings, tmp_path
+):
+    _caps(eligible_workstation, FILE_CAPS)
+    booking = _booking_for(ra_user)
+    _, session, workspace = _linked_session(ra_user, booking, reservation_window, ra_settings, tmp_path)
+    chosen = [{"path": "C:\\Users\\lab\\Desktop\\result.csv", "kind": "file"}, {"path": "D:\\Runs\\R1", "kind": "folder"}]
+    assert _client(ra_user).put(_url(booking, "pc-folders"), {"folders": chosen}, format="json").status_code == 200
+    assert _client(ra_user).get(_url(booking, "sync-status")).data["extra_folders"] == chosen
+
+    collect = _collect_after_end(session, ra_user, workspace)
+    assert collect.payload["extra_sources"] == chosen
+
+    data = b"1,2,3"
+    files = [{"path": "result (2).csv", "size": len(data), "sha256": _sha_hex(data)}]
+    sources = [
+        {"path": chosen[0]["path"], "kind": "file", "alias": "result (2).csv", "files": 1, "bytes": len(data)},
+        {"path": "D:\\Runs\\R1", "kind": "folder", "alias": "", "files": 0, "bytes": 0, "error": "The folder no longer exists."},
+    ]
+    agent = _agent_client(eligible_workstation)
+    plan = agent.post(
+        f"/api/v1/analysis/workspaces/{workspace.id}/collect-plan/",
+        {"session_id": str(session.id), "files": files, "extra_sources": sources},
+        format="json",
+    )
+    assert plan.status_code == 201, plan.data
+    _upload_output(workspace, "result (2).csv", data)
+    CommandService().complete(collect, success=True, message="Uploaded 1 file")
+
+    clean = RemoteCommand.objects.get(command_type=CommandType.CLEAN_WORKSTATION, payload__reason="upload_verified")
+    assert clean.payload["extra_sources"] == [{"path": chosen[0]["path"], "alias": "result (2).csv", "kind": "file"}]
+    assert [f["path"] for f in clean.payload["verified_files"]] == ["result (2).csv"]
 
 
 @pytest.mark.django_db
@@ -238,7 +304,7 @@ def test_end_accepts_extra_folders_and_tolerates_old_agents(
     collect = RemoteCommand.objects.filter(
         command_type=CommandType.COLLECT_WORKSPACE, payload__workspace_id=str(workspace.id)
     ).latest("created_at")
-    assert collect.payload["extra_sources"] == [{"path": "D:\\Results"}]
+    assert collect.payload["extra_sources"] == [{"path": "D:\\Results", "kind": "folder"}]
 
 
 @pytest.mark.django_db
