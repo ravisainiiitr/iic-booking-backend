@@ -136,3 +136,22 @@ class TestProfileMobileApi:
         assert user.name == "Renamed"
         assert user.phone_number == "+44 20 7946 0000"
         assert resp.data["needs_mobile_number"] is True
+
+
+@pytest.mark.parametrize(
+    ("current", "primary", "secondary", "expected", "changed"),
+    [
+        ("", "+91 98765 43210", None, "9876543210", True),
+        (None, None, "7895245297", "7895245297", True),
+        ("0000000000", "9876543210", None, "9876543210", True),
+        ("", "12345", "", "", False),
+        ("", None, None, "", False),
+        ("9123456789", "9876543210", None, "9123456789", False),
+    ],
+)
+def test_fill_missing_mobile_from_channel_i(current, primary, secondary, expected, changed):
+    from iic_booking.users.mobile_number import fill_missing_mobile_from_channel_i
+
+    user = _U(UserType.STUDENT, current)
+    assert fill_missing_mobile_from_channel_i(user, primary, secondary) is changed
+    assert (user.phone_number or "") == expected
