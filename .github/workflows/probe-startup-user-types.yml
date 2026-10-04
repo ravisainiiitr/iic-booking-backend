@@ -1,0 +1,88 @@
+# Probe: compare "Startup Incubated at IIT Roorkee" (startup_incubated_iitr) with "IITR Startups"
+# (individual_student + alias). Read-only; prints counts and rate configuration only (no names or emails).
+name: Probe Startup User Types
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Compare users, charges, quotas and inputs
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, json, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.db.models import Count, Q
+          from iic_booking.users.models import User
+          from iic_booking.equipment.models import (
+              Booking, ChargeProfile, DynamicInputField, MultiParamDefinition, UserTypeQuota,
+          )
+
+          INC, IND, ALIAS = "startup_incubated_iitr", "individual_student", "IITR Startups"
+          groups = {
+              "incubated": Q(user_type=INC),
+              "iitr_startups_alias": Q(user_type=IND, user_type_alias=ALIAS),
+              "individual_student_other": Q(user_type=IND) & ~Q(user_type_alias=ALIAS),
+          }
+          out = {}
+          for key, q in groups.items():
+              qs = User.objects.filter(q)
+              out[key] = {
+                  "users": qs.count(),
+                  "active": qs.filter(is_active=True).count(),
+                  "admin_approved": qs.filter(admin_approved=True).count(),
+                  "with_supervisor": qs.filter(supervisor__isnull=False).count(),
+                  "with_programme_end": qs.filter(program_end_date__isnull=False).count(),
+                  "dept_types": dict(Counter(qs.values_list("department__department_type", flat=True))),
+                  "dept_subcategories": dict(Counter(qs.values_list("department__internal_subcategory", flat=True))),
+                  "bookings": Booking.objects.filter(user__in=qs).count(),
+              }
+          print("USERS", json.dumps(out, default=str, indent=1))
+
+          def rate(cp):
+              return (cp.pricing_profile, cp.effective_profile_type, str(cp.primary_unit_charge),
+                      str(cp.secondary_unit_charge), str(cp.breakpoint), cp.is_active)
+
+          prof = {}
+          for cp in ChargeProfile.objects.filter(user_type__in=[INC, IND]).select_related("equipment"):
+              prof.setdefault((cp.equipment_id, cp.pricing_profile), {})[cp.user_type] = rate(cp)
+          both = same = diff = only_inc = only_ind = 0
+          diff_examples = []
+          for (eq, pp), d in prof.items():
+              if INC in d and IND in d:
+                  both += 1
+                  if d[INC] == d[IND]:
+                      same += 1
+                  else:
+                      diff += 1
+                      if len(diff_examples) < 15:
+                          diff_examples.append({"equipment_id": eq, "pricing": pp, "incubated": d[INC][1:5], "individual_student": d[IND][1:5]})
+              elif INC in d:
+                  only_inc += 1
+              else:
+                  only_ind += 1
+          print("CHARGE_PROFILES", json.dumps({
+              "equipment_pricing_rows_with_both": both, "identical": same, "different": diff,
+              "only_incubated": only_inc, "only_individual_student": only_ind,
+              "active_standard_incubated": ChargeProfile.objects.filter(user_type=INC, is_active=True, pricing_profile="STANDARD").count(),
+              "active_standard_individual_student": ChargeProfile.objects.filter(user_type=IND, is_active=True, pricing_profile="STANDARD").count(),
+          }, indent=1))
+          print("CHARGE_DIFF_EXAMPLES", json.dumps(diff_examples, default=str))
+
+          for model in (UserTypeQuota, DynamicInputField, MultiParamDefinition):
+              c = dict(model.objects.filter(user_type__in=[INC, IND]).values_list("user_type").annotate(n=Count("pk")))
+              print(model.__name__, json.dumps(c))
+          q = {}
+          for row in UserTypeQuota.objects.filter(user_type__in=[INC, IND]).values():
+              key = (row.get("equipment_id"), row.get("quota_type"), row.get("limit_type"))
+              q.setdefault(key, {})[row["user_type"]] = (str(row.get("limit_value")), row.get("is_enforced"))
+          qd = sum(1 for d in q.values() if len(d) == 2 and d[INC] != d[IND])
+          print("QUOTA_ROWS_DIFFERENT", qd, "of", sum(1 for d in q.values() if len(d) == 2))
+          PY
