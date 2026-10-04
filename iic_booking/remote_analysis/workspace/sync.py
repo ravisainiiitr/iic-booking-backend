@@ -410,7 +410,18 @@ class WorkspaceSyncService:
         self._notify(workspace, NotificationType.WORKSPACE_SYNC_STARTED, "Synchronization Started", "Input download started.")
         return cmd
 
-    def issue_collect_command(self, workspace: AnalysisWorkspace, *, actor=None, session_id: str = "") -> Any:
+    def no_open_session_on(self, workspace: AnalysisWorkspace) -> bool:
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        return not RemoteDesktopSession.objects.filter(
+            workstation_id=workspace.workstation_id, status__in=OPEN_SESSION_STATUSES
+        ).exists()
+
+    def issue_collect_command(
+        self, workspace: AnalysisWorkspace, *, actor=None, session_id: str = "", end_of_session: bool = False
+    ) -> Any:
+        """``end_of_session``: the session is over, so the agent may sign its account out and save its profile."""
         if not workspace.workstation_id:
             return None
         session_id = self.resolve_session_id(workspace, session_id)
@@ -444,6 +455,7 @@ class WorkspaceSyncService:
             "compression_enabled": bool(getattr(self.settings, "compression_enabled", False)),
             "compression_min_bytes": int(getattr(self.settings, "compression_min_bytes", 0) or 0),
             "bandwidth_limit_kbps": int(getattr(self.settings, "bandwidth_limit_kbps", 0) or 0),
+            "end_of_session": bool(end_of_session and session_id),
         }
         from iic_booking.equipment.remote_analysis_integration.pc_folders import collect_sources
 
@@ -799,7 +811,9 @@ class WorkspaceSyncService:
         else:
             payload.update({"defer_output_cleanup": True, "delete_folders": ["Input", "Working", "Temp"]})
             pc_cleanup = "not_supported"
-        merge_state(AnalysisWorkspace, workspace.pk, "transfer_state", pc_cleanup=pc_cleanup, kept_files=[])
+        merge_state(
+            AnalysisWorkspace, workspace.pk, "transfer_state", pc_cleanup=pc_cleanup, kept_files=[], pc_profile_wiped=None
+        )
         self.set_sync_phase(workspace, WorkspaceSyncPhase.CLEANUP, percent=95, message="Cleaning workstation")
         try:
             CommandService().create_command(
@@ -824,8 +838,14 @@ class WorkspaceSyncService:
         )
         if workspace.status in {WorkspaceStatus.COLLECTING, WorkspaceStatus.FAILED, WorkspaceStatus.ACTIVE}:
             if workspace.workstation_id:
+                session_id = self.last_collect_session_id(workspace)
                 return self.issue_collect_command(
-                    workspace, actor=actor, session_id=self.last_collect_session_id(workspace)
+                    workspace,
+                    actor=actor,
+                    session_id=session_id,
+                    end_of_session=bool(session_id)
+                    and not self.session_is_open(session_id)
+                    and self.no_open_session_on(workspace),
                 )
         if workspace.workstation_id:
             return self.issue_sync_command(workspace, actor=actor)

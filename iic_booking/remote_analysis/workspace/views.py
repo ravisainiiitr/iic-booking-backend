@@ -455,6 +455,7 @@ def agent_workspace_collect_plan(request, workspace_id):
         "transfer_state",
         collect={
             "transfer_id": str(plan.id),
+            "session_id": plan.details["session_id"],
             "bytes_done": 0,
             "bytes_total": total,
             "files_done": 0,
@@ -507,6 +508,7 @@ def agent_workspace_progress(request, workspace_id):
             "files_total": _int(request.data.get("files_total")) or previous.get("files_total") or 0,
             "current_file": str(request.data.get("current_file") or "")[:512],
             "extra_sources": previous.get("extra_sources") or [],
+            **({"session_id": previous["session_id"]} if "session_id" in previous else {}),
         },
     )
     return Response({"accepted": True})

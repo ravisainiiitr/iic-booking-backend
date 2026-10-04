@@ -22,6 +22,8 @@ EXTRA_SOURCES_CAPABILITY = "extra_sources_v1"
 EXTRA_FILES_CAPABILITY = "extra_files_v1"
 MAX_FOLDERS = 10
 MAX_ITEMS = 50
+# Chosen items plus what the agent saved automatically from the session account's profile.
+MAX_PLAN_SOURCES = 80
 KINDS = ("folder", "file")
 MAX_PATH = 1024
 BROWSE_TIMEOUT = timedelta(seconds=90)
@@ -233,11 +235,12 @@ def plan_sources(raw: Any) -> list[dict[str, Any]] | None:
     """Validate ``extra_sources`` reported in a collect plan.
 
     Each entry is either collected (path + the alias its files were uploaded under) or skipped with an
-    ``error`` the agent explains to the user (no alias, nothing uploaded, nothing deleted).
+    ``error`` the agent explains to the user (no alias, nothing uploaded, nothing deleted). ``auto`` entries
+    were saved from the session account's profile at the end of the session without being chosen.
     """
     if raw in (None, ""):
         return []
-    if not isinstance(raw, list) or len(raw) > MAX_ITEMS:
+    if not isinstance(raw, list) or len(raw) > MAX_PLAN_SOURCES:
         return None
     out = []
     for item in raw:
@@ -250,23 +253,28 @@ def plan_sources(raw: Any) -> list[dict[str, Any]] | None:
         kind = item.get("kind") or "folder"
         if kind not in KINDS:
             return None
+        extra = {"auto": True} if item.get("auto") is True else {}
         error = item.get("error")
         if error not in (None, ""):
             if not isinstance(error, str):
                 return None
-            out.append({"path": path, "kind": kind, "alias": "", "files": 0, "bytes": 0, "error": _CONTROL.sub(" ", error)[:300]})
+            out.append(
+                {"path": path, "kind": kind, "alias": "", "files": 0, "bytes": 0, "error": _CONTROL.sub(" ", error)[:300], **extra}
+            )
             continue
         alias = str(item.get("alias") or "")
         if not alias or len(alias) > 255 or alias in {".", ".."} or "/" in alias or "\\" in alias or _CONTROL.search(alias):
             return None
-        out.append({"path": path, "kind": kind, "alias": alias, "files": _count(item.get("files")), "bytes": _count(item.get("bytes"))})
+        out.append(
+            {"path": path, "kind": kind, "alias": alias, "files": _count(item.get("files")), "bytes": _count(item.get("bytes")), **extra}
+        )
     return out
 
 
-def cleanup_sources(planned: Any) -> list[dict[str, str]]:
+def cleanup_sources(planned: Any) -> list[dict[str, Any]]:
     """Collected folders and files the agent may clean after verification (skipped ones are never touched)."""
     return [
-        {"path": s["path"], "alias": s["alias"], "kind": s.get("kind") or "folder"}
+        {"path": s["path"], "alias": s["alias"], "kind": s.get("kind") or "folder", **({"auto": True} if s.get("auto") else {})}
         for s in planned or []
         if isinstance(s, dict) and s.get("alias") and not s.get("error") and s.get("path")
     ]
@@ -281,11 +289,16 @@ def _count(value: Any) -> int:
 
 def status_folders(workspace, session_id: str) -> list[dict[str, Any]]:
     """Folders being collected for the finish screen: plan details once the agent reports them."""
+    if not session_id:
+        return []
     state = _state(workspace)
     selection = state.get("extra_sources") or {}
-    if not session_id or str(selection.get("session_id") or "") != str(session_id):
-        return []
-    planned = (state.get("collect") or {}).get("extra_sources")
-    if planned:
+    collect = state.get("collect") or {}
+    planned = collect.get("extra_sources")
+    selected = str(selection.get("session_id") or "") == str(session_id)
+    if planned and "session_id" in collect:
+        if str(collect.get("session_id") or "") == str(session_id):
+            return list(planned)
+    elif planned and selected:
         return list(planned)
-    return _selection_items(selection)
+    return _selection_items(selection) if selected else []

@@ -89,7 +89,10 @@ class SessionCleanupService:
                 sync_svc = WorkspaceSyncService()
                 try:
                     collect_issued = (
-                        sync_svc.issue_collect_command(ws_obj, actor=actor, session_id=str(session.id)) is not None
+                        sync_svc.issue_collect_command(
+                            ws_obj, actor=actor, session_id=str(session.id), end_of_session=True
+                        )
+                        is not None
                     )
                 except Exception:
                     logger.exception("COLLECT_WORKSPACE failed for session %s", session.id)

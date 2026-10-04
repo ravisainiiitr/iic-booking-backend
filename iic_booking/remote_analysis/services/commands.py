@@ -49,6 +49,8 @@ def record_verified_cleanup(payload: dict[str, Any], *, success: bool, result: d
         kept = [str(f.get("path") or "") for f in payload.get("verified_files") or []][:500]
     if isinstance(result, dict) and isinstance(result.get("removed_folders"), list):
         removed = [str(p)[:1024] for p in result["removed_folders"]][:20]
+    # True/False only when the agent tried to wipe the session account's profile; None otherwise.
+    wiped = result.get("profile_wiped") if isinstance(result, dict) else None
     merge_state(
         AnalysisWorkspace,
         payload["workspace_id"],
@@ -57,6 +59,7 @@ def record_verified_cleanup(payload: dict[str, Any], *, success: bool, result: d
         kept_files=kept,
         pc_deleted=int(result.get("deleted") or 0) if isinstance(result, dict) else 0,
         pc_removed_folders=removed,
+        pc_profile_wiped=wiped if isinstance(wiped, bool) else None,
     )
 
 

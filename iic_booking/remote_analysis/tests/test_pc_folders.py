@@ -273,6 +273,79 @@ def test_chosen_files_are_collected_and_cleaned_by_alias(
 
 
 @pytest.mark.django_db
+def test_session_profile_saved_automatically_is_shown_cleaned_and_wiped(
+    ra_user, research_on, fake_s3, eligible_workstation, reservation_window, ra_settings, tmp_path
+):
+    _caps(eligible_workstation, FILE_CAPS)
+    booking = _booking_for(ra_user)
+    _, session, workspace = _linked_session(ra_user, booking, reservation_window, ra_settings, tmp_path)
+
+    collect = _collect_after_end(session, ra_user, workspace)
+    assert collect.payload["end_of_session"] is True
+    assert "extra_sources" not in collect.payload
+
+    body = b"saved on the desktop"
+    files = [{"path": "Desktop/fit.csv", "size": len(body), "sha256": _sha_hex(body)}]
+    profile = "C:\\Users\\raa-session"
+    sources = [
+        {"path": f"{profile}\\Desktop", "kind": "folder", "alias": "Desktop", "files": 1, "bytes": len(body), "auto": True},
+        {"path": f"{profile}\\Downloads", "kind": "folder", "alias": "Downloads", "files": 0, "bytes": 0, "auto": True},
+        {"path": f"{profile}\\notes.txt", "kind": "file", "alias": "", "files": 0, "bytes": 0, "error": "Busy", "auto": True},
+    ]
+    agent = _agent_client(eligible_workstation)
+    plan = agent.post(
+        f"/api/v1/analysis/workspaces/{workspace.id}/collect-plan/",
+        {"session_id": str(session.id), "files": files, "extra_sources": sources},
+        format="json",
+    )
+    assert plan.status_code == 201, plan.data
+    agent.post(
+        f"/api/v1/analysis/workspaces/{workspace.id}/progress/",
+        {"transfer_id": plan.data["transfer_id"], "bytes_done": 3, "files_total": 1},
+        format="json",
+    )
+    status = _client(ra_user).get(_url(booking, "sync-status")).data
+    assert [(f["alias"], f.get("auto")) for f in status["extra_folders"]] == [("Desktop", True), ("Downloads", True), ("", True)]
+
+    _upload_output(workspace, "Desktop/fit.csv", body)
+    CommandService().complete(collect, success=True, message="Uploaded 1 file")
+    clean = RemoteCommand.objects.get(command_type=CommandType.CLEAN_WORKSTATION, payload__reason="upload_verified")
+    assert clean.payload["extra_sources"] == [
+        {"path": f"{profile}\\Desktop", "alias": "Desktop", "kind": "folder", "auto": True},
+        {"path": f"{profile}\\Downloads", "alias": "Downloads", "kind": "folder", "auto": True},
+    ]
+
+    CommandService().complete(
+        clean, success=True, message='Cleaned | result={"deleted":1,"kept":[],"removed_folders":[],"profile_wiped":true}'
+    )
+    status = _client(ra_user).get(_url(booking, "sync-status")).data
+    assert status["pc_cleanup"] == "done" and status["pc_profile_wiped"] is True
+
+
+def test_plan_sources_limits_and_auto_flag():
+    item = {"path": "C:\\Users\\raa-session\\Desktop", "alias": "Desktop", "auto": True}
+    assert pc_folders.plan_sources([item])[0]["auto"] is True
+    assert "auto" not in pc_folders.plan_sources([{**item, "auto": "yes"}])[0]
+    assert len(pc_folders.plan_sources([{**item, "alias": f"a{i}"} for i in range(pc_folders.MAX_PLAN_SOURCES)])) == 80
+    assert pc_folders.plan_sources([{**item, "alias": f"a{i}"} for i in range(pc_folders.MAX_PLAN_SOURCES + 1)]) is None
+
+
+@pytest.mark.django_db
+def test_mid_session_sync_never_signs_the_session_account_out(
+    ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path
+):
+    _caps(eligible_workstation, FILE_CAPS)
+    booking = _booking_for(ra_user)
+    reservation, _ = _started_session(ra_user, reservation_window, ra_settings, tmp_path, booking=booking)
+    assert analysis_setup.sync_now(booking, ra_user) is True
+    workspace = AnalysisWorkspace.objects.get(reservation=reservation)
+    collect = RemoteCommand.objects.filter(
+        command_type=CommandType.COLLECT_WORKSPACE, payload__workspace_id=str(workspace.id)
+    ).latest("created_at")
+    assert collect.payload["end_of_session"] is False
+
+
+@pytest.mark.django_db
 def test_selection_from_another_session_is_not_collected(
     ra_user, eligible_workstation, reservation_window, ra_settings, tmp_path
 ):

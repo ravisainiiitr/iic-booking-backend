@@ -558,7 +558,7 @@ def sync_status(booking, user) -> dict[str, Any]:
     else:
         destination = {"workspace_id": None, "folder_id": None, "path_label": BOOKING_DETAILS_LABEL}
     extra_folders: list[dict[str, Any]] = []
-    if workspace is not None and ts.get("extra_sources"):
+    if workspace is not None and (ts.get("extra_sources") or (ts.get("collect") or {}).get("extra_sources")):
         from iic_booking.equipment.remote_analysis_integration.pc_folders import status_folders
         from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 
@@ -575,6 +575,7 @@ def sync_status(booking, user) -> dict[str, Any]:
         "kept_files": list(ts.get("kept_files") or []),
         "pc_deleted": int(ts.get("pc_deleted") or 0),
         "pc_removed_folders": list(ts.get("pc_removed_folders") or []) if extra_folders else [],
+        "pc_profile_wiped": ts.get("pc_profile_wiped") if extra_folders else None,
         "extra_folders": extra_folders,
         "destination": destination,
         "updated_at": (max(stamps).isoformat() if stamps else _now_iso()),
