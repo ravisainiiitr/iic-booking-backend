@@ -93,6 +93,12 @@ def _client_ip(request) -> str | None:
     return request.META.get("REMOTE_ADDR")
 
 
+def _viewport(request) -> dict | None:
+    body = getattr(request, "data", None)
+    viewport = body.get("viewport") if isinstance(body, dict) else None
+    return viewport if isinstance(viewport, dict) else None
+
+
 def _absolute_builder(request):
     def build(path: str) -> str:
         return request.build_absolute_uri(path)
@@ -187,6 +193,7 @@ def booking_analysis_analyze(request, booking_id: int):
             request_absolute_uri_builder=_absolute_builder(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
             request=request,
+            viewport=_viewport(request),
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden", "booking_ineligible"} else status.HTTP_400_BAD_REQUEST
@@ -233,6 +240,7 @@ def booking_analysis_launch(request, booking_id: int):
             client_ip=_client_ip(request),
             request_absolute_uri_builder=_absolute_builder(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            viewport=_viewport(request),
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden", "booking_ineligible"} else status.HTTP_400_BAD_REQUEST
@@ -367,6 +375,7 @@ def booking_analysis_start(request, booking_id: int):
             client_ip=_client_ip(request),
             request_absolute_uri_builder=_absolute_builder(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            viewport=_viewport(request),
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden"} else status.HTTP_400_BAD_REQUEST

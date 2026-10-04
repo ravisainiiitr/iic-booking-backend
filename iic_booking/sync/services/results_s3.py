@@ -112,6 +112,56 @@ def download_results_s3_bytes(key: str) -> bytes | None:
         return None
 
 
+def open_results_s3_stream(key: str):
+    """Streaming body for a results object (caller reads in chunks and closes), or None."""
+    client, bucket = _s3_client()
+    if client is None or bucket is None or not key:
+        return None
+    try:
+        return client.get_object(Bucket=bucket, Key=key).get("Body")
+    except Exception:
+        logger.exception("Results S3 get_object failed | key=%s", key)
+        return None
+
+
+def list_results_s3_objects(virtual_booking_id: str) -> list[dict]:
+    """Objects under Results/ whose path has a segment equal to the virtual booking id.
+
+    Lists only the Results/{vid}/ prefix first; the full Results/ scan (legacy nested
+    Results/<year>/<lab>/{vid}/ layouts) runs only when that prefix is empty.
+    """
+    vid = (virtual_booking_id or "").strip().strip("/")
+    client, bucket = _s3_client()
+    if client is None or bucket is None or not vid:
+        return []
+    segment = f"/{vid}/"
+
+    def _scan(prefix: str) -> list[dict]:
+        found: list[dict] = []
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key") or ""
+                if not key or key.endswith("/") or segment not in f"/{key}":
+                    continue
+                found.append(
+                    {
+                        "key": key,
+                        "s3_key": key,
+                        "name": f"/{key}".split(segment, 1)[-1],
+                        "size_bytes": int(obj.get("Size") or 0),
+                        "etag": str(obj.get("ETag") or "").strip('"'),
+                        "source": "s3",
+                    }
+                )
+        return found
+
+    try:
+        return _scan(f"{S3_RESULTS_PREFIX}/{vid}/") or _scan(f"{S3_RESULTS_PREFIX}/")
+    except Exception:
+        logger.warning("Results S3 list failed | vid=%s", vid, exc_info=True)
+        raise
+
+
 def delete_local_upload_copy(local_path: Path) -> bool:
     """Remove portal sync_uploads temp file after successful S3 publish."""
     try:

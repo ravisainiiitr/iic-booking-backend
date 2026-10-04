@@ -809,6 +809,9 @@ MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=Fals
 MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
 MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
 MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
+# --- Remote Analysis RDP ---
+# Send disable-gfx=true to guacd (falls back from RDP GFX pipeline). Off by default: parameter not sent.
+REMOTE_ANALYSIS_RDP_DISABLE_GFX = env.bool("RA_RDP_DISABLE_GFX", default=False)
 # --- Training & Certification (demo requests, nominations, shortlisting, sessions, Trained badge) ---
 # Master switch. Disabling hides the UI and API; requests, nominations, awards and slot reservations are kept.
 TRAINING_MODULE_ENABLED = env.bool("TRAINING_MODULE_ENABLED", default=False)

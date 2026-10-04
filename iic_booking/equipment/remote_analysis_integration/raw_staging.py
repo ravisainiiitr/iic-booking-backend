@@ -4,58 +4,135 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator
 
-from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.cache import cache
+from django.core.files import File
 
 from iic_booking.equipment.booking_results_service import (
+    CONTROL_RESULT_FILE_NAMES,
     merge_booking_result_files,
     resolve_dsa_attachment_path,
 )
 from iic_booking.equipment.models import Booking, BookingResultFile
 from iic_booking.sync.models import ResultAttachment
-from iic_booking.sync.services.results_s3 import download_results_s3_bytes
+from iic_booking.sync.services.results_s3 import list_results_s3_objects, open_results_s3_stream
 
 logger = logging.getLogger(__name__)
+
+RESULTS_LISTING_CACHE_SECONDS = 120
+SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
+CHUNK_BYTES = 1024 * 1024
+
+
+def _listing_cache_key(virtual: str) -> str:
+    return "ra:results-s3:" + hashlib.sha1(virtual.encode("utf-8")).hexdigest()
+
+
+def cached_results_s3_objects(virtual: str, *, fresh: bool = False) -> list[dict[str, Any]]:
+    """S3 results for a virtual booking id, cached briefly so status polls never page the bucket."""
+    key = _listing_cache_key(virtual)
+    if not fresh:
+        hit = cache.get(key)
+        if hit is not None:
+            return list(hit)
+    try:
+        entries = list_results_s3_objects(virtual)
+    except Exception:  # noqa: BLE001
+        return []
+    cache.set(key, entries, RESULTS_LISTING_CACHE_SECONDS)
+    return list(entries)
+
+
+def is_material_entry(entry: dict[str, Any]) -> bool:
+    """Real instrument/user data (not a control marker or empty stub)."""
+    name = str(entry.get("name") or "").strip()
+    if not name:
+        return False
+    leaf = Path(name).name.strip().lower()
+    if leaf in CONTROL_RESULT_FILE_NAMES:
+        return False
+    size = int(entry.get("size_bytes") or 0)
+    # S3 listings may omit size; treat named non-control objects as material.
+    if size > 0 or (entry.get("key") or entry.get("download_url")):
+        return not (size == 0 and leaf.startswith("."))
+    return False
+
+
+def spool_stream(stream, *, close: bool = True) -> tuple[Any, str, int]:
+    """Copy a readable stream into a temp file (memory-bounded) while hashing it."""
+    spooled = tempfile.SpooledTemporaryFile(max_size=SPOOL_MEMORY_BYTES)
+    hasher = hashlib.sha256()
+    size = 0
+    try:
+        while True:
+            chunk = stream.read(CHUNK_BYTES)
+            if not chunk:
+                break
+            spooled.write(chunk)
+            hasher.update(chunk)
+            size += len(chunk)
+    except Exception:
+        spooled.close()
+        raise
+    finally:
+        if close:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+    spooled.seek(0)
+    return spooled, hasher.hexdigest(), size
+
+
+def sha256_path(path: Path) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(CHUNK_BYTES)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            size += len(chunk)
+    return hasher.hexdigest(), size
 
 
 class BookingRawStagingService:
     """Copy booking results (S3 / DSA / operator uploads) into workspace RawData."""
 
-    def list_raw_entries(self, booking: Booking, *, request=None) -> list[dict[str, Any]]:
-        s3_files: list[dict[str, Any]] = []
-        try:
-            from iic_booking.equipment.api_views import _list_booking_result_files_from_s3
+    @staticmethod
+    def _virtual(booking: Booking) -> str:
+        return (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
 
-            virtual = (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
-            ok, listed = _list_booking_result_files_from_s3(virtual)
-            if ok and listed:
-                s3_files = listed
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("S3 results list failed for booking %s: %s", booking.pk, exc)
-            s3_files = []
+    def list_raw_entries(self, booking: Booking, *, request=None, fresh: bool = False) -> list[dict[str, Any]]:
+        s3_files = cached_results_s3_objects(self._virtual(booking), fresh=fresh)
         return merge_booking_result_files(booking=booking, s3_files=s3_files, request=request)
 
     def has_raw_files(self, booking: Booking, *, request=None) -> bool:
-        """True when real instrument/user data files exist (ignore control markers / empty stubs)."""
-        from pathlib import Path
+        """True when real instrument/user data files exist (ignore control markers / empty stubs).
 
-        from iic_booking.equipment.booking_results_service import CONTROL_RESULT_FILE_NAMES
-
-        for entry in self.list_raw_entries(booking, request=request):
-            name = str(entry.get("name") or "").strip()
-            if not name:
-                continue
-            leaf = Path(name).name.strip().lower()
-            if leaf in CONTROL_RESULT_FILE_NAMES:
-                continue
-            size = int(entry.get("size_bytes") or 0)
-            # S3 listings often omit size; treat named non-control objects as material.
-            if size > 0 or (entry.get("key") or entry.get("download_url")):
-                if size == 0 and leaf.startswith("."):
-                    continue
+        Database-backed results are checked first; S3 comes from the short-lived listing cache.
+        """
+        for brf in BookingResultFile.objects.filter(booking_id=booking.pk).only("file", "original_name"):
+            if brf.file and is_material_entry(
+                {"name": brf.original_name or Path(brf.file.name).name, "key": f"booking_result:{brf.pk}"}
+            ):
                 return True
-        return False
+        for att in ResultAttachment.objects.filter(result__booking_id=booking.pk).select_related("upload_session"):
+            entry = {"name": att.file_name, "size_bytes": int(att.size_bytes or 0)}
+            if (att.s3_key or "").strip():
+                entry["key"] = att.s3_key
+            elif resolve_dsa_attachment_path(att) is not None:
+                entry["key"] = f"dsa:{att.id}"
+            else:
+                continue
+            if is_material_entry(entry):
+                return True
+        return any(is_material_entry(e) for e in cached_results_s3_objects(self._virtual(booking)))
 
     def stage_into_workspace(
         self,
@@ -75,7 +152,7 @@ class BookingRawStagingService:
         from iic_booking.remote_analysis.workspace_models import WorkspaceFile
 
         if entries is None:
-            entries = self.list_raw_entries(booking, request=request)
+            entries = self.list_raw_entries(booking, request=request, fresh=True)
         staged = 0
         skipped = 0
         errors: list[str] = []
@@ -87,43 +164,37 @@ class BookingRawStagingService:
                 errors.append(f"Rejected path: {name}")
                 continue
             try:
-                data, sha256 = self._load_bytes(booking, entry)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{name}: {exc}")
-                continue
-            if data is None:
-                errors.append(f"{name}: unavailable")
-                continue
-
-            existing = (
-                WorkspaceFile.objects.filter(
-                    workspace=workspace,
-                    relative_path=f"RawData/{name}",
-                    deleted=False,
-                    is_current=True,
-                )
-                .first()
-            )
-            if existing and existing.sha256 and existing.sha256.lower() == sha256.lower():
-                if (existing.source or "").strip().lower() in {"", "portal"}:
-                    existing.source = "booking_raw"
-                    existing.save(update_fields=["source", "modified_at"])
-                skipped += 1
-                continue
-
-            uploaded = SimpleUploadedFile(name.split("/")[-1], data)
-            try:
-                mgr.upload(
-                    workspace,
-                    uploaded,
-                    folder="RawData",
-                    actor=actor,
-                    expected_sha256=sha256,
-                    source="booking_raw",
-                    relative_name=name,
-                    override_quota=True,
-                )
-                staged += 1
+                with self.open_entry(booking, entry) as opened:
+                    if opened is None:
+                        errors.append(f"{name}: unavailable")
+                        continue
+                    fileobj, sha256, _size = opened
+                    existing = (
+                        WorkspaceFile.objects.filter(
+                            workspace=workspace,
+                            relative_path=f"RawData/{name}",
+                            deleted=False,
+                            is_current=True,
+                        )
+                        .first()
+                    )
+                    if existing and existing.sha256 and existing.sha256.lower() == sha256.lower():
+                        if (existing.source or "").strip().lower() in {"", "portal"}:
+                            existing.source = "booking_raw"
+                            existing.save(update_fields=["source", "modified_at"])
+                        skipped += 1
+                        continue
+                    mgr.upload(
+                        workspace,
+                        File(fileobj, name=name.split("/")[-1]),
+                        folder="RawData",
+                        actor=actor,
+                        expected_sha256=sha256,
+                        source="booking_raw",
+                        relative_name=name,
+                        override_quota=True,
+                    )
+                    staged += 1
             except TransferError as exc:
                 errors.append(f"{name}: {exc}")
             except Exception as exc:  # noqa: BLE001
@@ -138,14 +209,31 @@ class BookingRawStagingService:
             "success": len(errors) == 0 or staged > 0 or skipped > 0,
         }
 
-    def _load_bytes(self, booking: Booking, entry: dict[str, Any]) -> tuple[bytes | None, str]:
+    @contextmanager
+    def open_entry(self, booking: Booking, entry: dict[str, Any]) -> Iterator[tuple[Any, str, int] | None]:
+        """Yield (readable file positioned at 0, sha256, size) for a merged result entry, or None.
+
+        Never loads a whole file into memory: S3 / storage streams are spooled to a temp file.
+        """
+        opened = self._open(booking, entry)
+        try:
+            yield opened
+        finally:
+            if opened is not None:
+                try:
+                    opened[0].close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _open(self, booking: Booking, entry: dict[str, Any]) -> tuple[Any, str, int] | None:
         source = str(entry.get("source") or "")
         s3_key = (entry.get("s3_key") or entry.get("key") or "").strip()
+        plain_s3 = bool(s3_key) and not s3_key.startswith(("dsa:", "booking_result:"))
 
-        if source in {"s3", "dsa"} and s3_key and not s3_key.startswith("dsa:") and not s3_key.startswith("booking_result:"):
-            data = download_results_s3_bytes(s3_key)
-            if data is not None:
-                return data, hashlib.sha256(data).hexdigest()
+        if source in {"s3", "dsa"} and plain_s3:
+            body = open_results_s3_stream(s3_key)
+            if body is not None:
+                return spool_stream(body)
 
         attachment_id = entry.get("attachment_id")
         if attachment_id:
@@ -153,26 +241,23 @@ class BookingRawStagingService:
             if att:
                 s3 = (att.s3_key or "").strip()
                 if s3:
-                    data = download_results_s3_bytes(s3)
-                    if data is not None:
-                        return data, hashlib.sha256(data).hexdigest()
+                    body = open_results_s3_stream(s3)
+                    if body is not None:
+                        return spool_stream(body)
                 path = resolve_dsa_attachment_path(att)
                 if path is not None:
-                    data = path.read_bytes()
-                    return data, hashlib.sha256(data).hexdigest()
+                    digest, size = sha256_path(path)
+                    return open(path, "rb"), digest, size
 
         file_id = entry.get("file_id")
         if file_id:
             brf = BookingResultFile.objects.filter(pk=file_id, booking_id=booking.pk).first()
             if brf and brf.file:
-                with brf.file.open("rb") as fh:
-                    data = fh.read()
-                return data, hashlib.sha256(data).hexdigest()
+                return spool_stream(brf.file.open("rb"))
 
-        # Fallback: try key as S3
-        if s3_key and not s3_key.startswith("dsa:") and not s3_key.startswith("booking_result:"):
-            data = download_results_s3_bytes(s3_key)
-            if data is not None:
-                return data, hashlib.sha256(data).hexdigest()
+        if plain_s3:
+            body = open_results_s3_stream(s3_key)
+            if body is not None:
+                return spool_stream(body)
 
-        return None, ""
+        return None

@@ -21,8 +21,37 @@ from iic_booking.remote_analysis.session_models import (
 logger = logging.getLogger(__name__)
 
 
+VIEWPORT_MIN = (1024, 700)
+VIEWPORT_MAX = (2560, 1600)
+
+
 def _disable_flag(enabled: bool) -> str:
     return "" if enabled else "true"
+
+
+def clamp_viewport(viewport: Any) -> tuple[int, int] | None:
+    """Browser viewport {width, height, dpr} -> even RDP pixel size within limits, or None."""
+    if not isinstance(viewport, dict):
+        return None
+    try:
+        width = float(viewport.get("width"))
+        height = float(viewport.get("height"))
+        dpr = float(viewport.get("dpr") or 1)
+    except (TypeError, ValueError):
+        return None
+    if not (width > 0 and height > 0) or not (0 < dpr <= 8):
+        return None
+    out = []
+    for value, lo, hi in ((width * dpr, VIEWPORT_MIN[0], VIEWPORT_MAX[0]), (height * dpr, VIEWPORT_MIN[1], VIEWPORT_MAX[1])):
+        px = int(min(max(round(value), lo), hi))
+        out.append(px - (px % 2))
+    return out[0], out[1]
+
+
+def rdp_disable_gfx() -> bool:
+    from django.conf import settings
+
+    return bool(getattr(settings, "REMOTE_ANALYSIS_RDP_DISABLE_GFX", False))
 
 
 def build_rdp_parameters(
@@ -98,6 +127,8 @@ def build_rdp_parameters(
         # intentional empty — see comment above
         "resize-method": "",
     }
+    if rdp_disable_gfx():
+        params["disable-gfx"] = "true"
     if session.file_transfer_policy == "UPLOAD_ONLY":
         params["disable-download"] = "true"
     elif session.file_transfer_policy == "DOWNLOAD_ONLY":

@@ -334,15 +334,15 @@ class MaintenanceService:
         if required_software:
             from iic_booking.remote_analysis.models import InstalledSoftware
 
-            matched = []
-            for ws in qs.only("id"):
-                if all(
-                    InstalledSoftware.objects.filter(
-                        workstation_id=ws.id, is_present=True, software_name__icontains=name
-                    ).exists()
-                    for name in required_software
-                ):
-                    matched.append(ws.id)
+            installed: dict = {}
+            for ws_id, software_name in InstalledSoftware.objects.filter(
+                workstation__in=qs, is_present=True
+            ).values_list("workstation_id", "software_name"):
+                installed.setdefault(ws_id, []).append((software_name or "").lower())
+            wanted = [name.lower() for name in required_software]
+            matched = [
+                ws_id for ws_id, names in installed.items() if all(any(w in n for n in names) for w in wanted)
+            ]
             qs = qs.filter(id__in=matched) if matched else qs.none()
 
         operational = qs.exclude(

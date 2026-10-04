@@ -373,6 +373,7 @@ class BookingRemoteAnalysisService:
         request_absolute_uri_builder=None,
         user_agent: str = "",
         request=None,
+        viewport: dict | None = None,
     ) -> dict:
         """
         One-shot Analyze Data: resolve workflow (or legacy software) → allocate → stage RAW → launch.
@@ -585,6 +586,7 @@ class BookingRemoteAnalysisService:
             client_ip=client_ip,
             request_absolute_uri_builder=request_absolute_uri_builder,
             user_agent=user_agent,
+            viewport=viewport,
         )
         if job is not None:
             job_step = job.steps.filter(step_number=job.current_step_number).first()
@@ -620,6 +622,7 @@ class BookingRemoteAnalysisService:
         request_absolute_uri_builder=None,
         user_agent: str = "",
         wait_for_prepare: bool = False,
+        viewport: dict | None = None,
     ) -> dict:
         """
         Create (or reuse) a remote desktop session and issue a Portal launch URL.
@@ -699,6 +702,7 @@ class BookingRemoteAnalysisService:
                 user=user,
                 client_ip=client_ip,
                 wait_for_prepare=wait_for_prepare,
+                viewport=viewport,
             )
         except SessionError:
             if checked_in_this_call:
@@ -1045,6 +1049,7 @@ class BookingRemoteAnalysisService:
         client_ip: str | None = None,
         request_absolute_uri_builder=None,
         user_agent: str = "",
+        viewport: dict | None = None,
     ) -> dict:
         """Explicit Start Analysis Session after reservation check-in."""
         from iic_booking.remote_analysis.guacamole.session import SessionError
@@ -1066,6 +1071,7 @@ class BookingRemoteAnalysisService:
             client_ip=client_ip,
             request_absolute_uri_builder=request_absolute_uri_builder,
             user_agent=user_agent,
+            viewport=viewport,
         )
 
     def end_analysis(self, booking, *, user, reason: str = "Finished early by user") -> dict:
