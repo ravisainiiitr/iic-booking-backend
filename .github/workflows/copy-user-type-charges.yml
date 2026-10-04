@@ -1,0 +1,74 @@
+# Copy one user type's charges to another on production (default: IITR Student -> IITR Startup).
+# dry-run and list are read-only; apply needs confirm=APPLY; rollback needs confirm=ROLLBACK and a batch id.
+# Output has equipment codes and counts only (no rates).
+name: Copy User Type Charges
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply | rollback | list"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply, rollback, list]
+      source:
+        description: "Source user type"
+        required: false
+        default: "student"
+      target:
+        description: "Target user type"
+        required: false
+        default: "startup_incubated_iitr"
+      batch_id:
+        description: "Batch id (rollback only)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type APPLY for apply, ROLLBACK for rollback"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          CC_ACTION: ${{ inputs.action }}
+          CC_SOURCE: ${{ inputs.source }}
+          CC_TARGET: ${{ inputs.target }}
+          CC_BATCH: ${{ inputs.batch_id }}
+          CC_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          [[ "$CC_SOURCE" =~ ^[A-Za-z_]+$ && "$CC_TARGET" =~ ^[A-Za-z_]+$ ]] || { echo "invalid user type"; exit 1; }
+          case "$CC_ACTION" in
+            dry-run) ARGS=(--source "$CC_SOURCE" --target "$CC_TARGET") ;;
+            apply)
+              [[ "$CC_CONFIRM" == "APPLY" ]] || { echo "confirm=APPLY is required"; exit 1; }
+              ARGS=(--source "$CC_SOURCE" --target "$CC_TARGET" --apply) ;;
+            rollback)
+              [[ "$CC_CONFIRM" == "ROLLBACK" ]] || { echo "confirm=ROLLBACK is required"; exit 1; }
+              [[ "$CC_BATCH" =~ ^[0-9]+$ ]] || { echo "batch_id is required"; exit 1; }
+              ARGS=(--rollback "$CC_BATCH") ;;
+            list) ARGS=(--list-batches) ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                python manage.py copy_user_type_charges "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
