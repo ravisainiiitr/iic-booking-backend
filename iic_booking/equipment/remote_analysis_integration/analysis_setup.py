@@ -10,6 +10,7 @@ from django.db import transaction
 from django.db.models import Count, F, Min, Q
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import local_date
 from iic_booking.equipment.models import Booking, BookingResultFile
 from iic_booking.equipment.remote_analysis_integration import research
 from iic_booking.equipment.remote_analysis_integration.raw_staging import (
@@ -93,7 +94,8 @@ def _first_slot(booking):
     else:
         first = booking.daily_slots.aggregate(m=Min("start_datetime"))["m"]
     when = first or booking.created_at
-    return when.date().isoformat() if when else None
+    day = local_date(when)
+    return day.isoformat() if day else None
 
 
 def serialize_booking(booking) -> dict[str, Any]:

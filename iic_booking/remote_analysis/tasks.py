@@ -363,6 +363,7 @@ def send_reservation_reminders() -> dict:
 
     from django.utils import timezone
 
+    from iic_booking.communication.email_branding import format_local_dt
     from iic_booking.remote_analysis.collaboration_models import NotificationPreference
     from iic_booking.remote_analysis.constants import NotificationType, ReservationStatus
     from iic_booking.remote_analysis.notifications import NotificationEngine
@@ -398,7 +399,7 @@ def send_reservation_reminders() -> dict:
             reservation.user,
             NotificationType.RESERVATION_REMINDER,
             "Reservation reminder",
-            f"Your analysis reservation starts at {reservation.requested_start.isoformat()}",
+            f"Your analysis reservation starts at {format_local_dt(reservation.requested_start, '%d %b %Y, %I:%M %p')}",
             metadata={"reservation_id": str(reservation.id)},
         )
         sent += 1

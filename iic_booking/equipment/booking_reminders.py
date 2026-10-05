@@ -1,8 +1,9 @@
 """Booking reminder notifications (e.g. same-day reminder at 8:30 AM)."""
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
 from iic_booking.equipment.booking_events import (
@@ -18,15 +19,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def send_reminder_for_booking(booking: "Booking") -> None:
+def build_reminder_context(booking: "Booking") -> Optional[dict]:
     """
-    Send a reminder email for a single booking (e.g. "Your booking is today").
-    Uses template booking_reminder_email with context: user_name, booking_id, equipment_name,
-    start_time, end_time, total_hours, total_charge, link.
+    Template context for booking_reminder_email (user_name, booking_id, equipment_name, start_time,
+    end_time, total_hours, total_charge, link, ...). Slot times are shown in local time (IST).
+    Returns None for an invalid booking. Has no side effects.
     """
     if not booking or not booking.user or not booking.equipment:
-        logger.warning("Invalid booking, user, or equipment for reminder")
-        return
+        return None
 
     user = booking.user
     equipment = booking.equipment
@@ -40,13 +40,12 @@ def send_reminder_for_booking(booking: "Booking") -> None:
     )
 
     if hide_time_display and daily_slots:
-        first_slot = daily_slots[0]
-        start_time = first_slot.start_datetime.strftime("%Y-%m-%d") if first_slot.start_datetime else ""
+        start_time = format_local_dt(daily_slots[0].start_datetime, "%Y-%m-%d")
         end_time = ""
         total_hours = ""
     else:
-        start_time = daily_slots[0].start_datetime.strftime("%Y-%m-%d %H:%M:%S") if daily_slots else ""
-        end_time = daily_slots[-1].end_datetime.strftime("%Y-%m-%d %H:%M:%S") if daily_slots else ""
+        start_time = format_local_dt(daily_slots[0].start_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
+        end_time = format_local_dt(daily_slots[-1].end_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
         total_hours = str(round(booking.total_time_minutes / 60, 2)) if booking.total_time_minutes else "0"
 
     display_booking_ref = booking_display_id_for_email(booking)
@@ -75,7 +74,18 @@ def send_reminder_for_booking(booking: "Booking") -> None:
         template_context, user, equipment, also_append_to_comment=False
     )
     apply_booking_party_to_context(template_context, booking)
+    return template_context
 
+
+def send_reminder_for_booking(booking: "Booking") -> None:
+    """Send a reminder email for a single booking (e.g. "Your booking is today")."""
+    template_context = build_reminder_context(booking)
+    if template_context is None:
+        logger.warning("Invalid booking, user, or equipment for reminder")
+        return
+
+    display_booking_ref = booking_display_id_for_email(booking)
+    booking_link = get_frontend_absolute_url(f"/my-bookings?booking={display_booking_ref}")
     metadata = {
         "booking_id": display_booking_ref,
         "real_booking_id": booking.booking_id,
@@ -84,9 +94,9 @@ def send_reminder_for_booking(booking: "Booking") -> None:
     }
 
     CommunicationService.send_email(
-        recipient=user,
+        recipient=booking.user,
         template="booking_reminder_email",
         template_context=template_context,
         metadata=metadata,
     )
-    logger.info("Booking reminder email sent to %s for booking_id=%s", user.email, booking.booking_id)
+    logger.info("Booking reminder email sent to %s for booking_id=%s", booking.user.email, booking.booking_id)

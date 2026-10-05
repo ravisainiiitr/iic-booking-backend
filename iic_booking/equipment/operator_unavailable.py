@@ -4,6 +4,7 @@ import logging
 
 from django.db import transaction
 
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import booking_display_id_for_email
 from iic_booking.users.repositories.wallet_repository import WalletRepository
@@ -50,8 +51,8 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
     slots_ordered = list(booking.daily_slots.order_by("start_datetime"))
     start_dt = slots_ordered[0].start_datetime if slots_ordered else None
     end_dt = slots_ordered[-1].end_datetime if slots_ordered else None
-    start_time_str = start_dt.strftime("%Y-%m-%d %H:%M") if start_dt else ""
-    end_time_str = end_dt.strftime("%Y-%m-%d %H:%M") if end_dt else ""
+    start_time_str = format_local_dt(start_dt, "%Y-%m-%d %H:%M")
+    end_time_str = format_local_dt(end_dt, "%Y-%m-%d %H:%M")
 
     refund_description = f"Refund (Operator Unavailable) for Booking #{booking.booking_id} - {booking.equipment.code}"
     if absent_notes:

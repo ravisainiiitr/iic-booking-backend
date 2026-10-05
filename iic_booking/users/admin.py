@@ -3,6 +3,7 @@ from django.conf import settings
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter
 from django.contrib.auth import admin as auth_admin
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.communication.service import CommunicationService
 from django.urls import reverse
 from django.utils.html import format_html
@@ -2070,7 +2071,7 @@ Request Details:
 - Email: {recharge_request.user.email}
 - Amount: ₹{amount}
 {department_info}- Request ID: #{recharge_request.id}
-- Request Date: {recharge_request.created_at.strftime('%Y-%m-%d %H:%M:%S')}
+- Request Date: {format_local_dt(recharge_request.created_at, '%Y-%m-%d %H:%M:%S')}
 {f'- Project Details: {recharge_request.project_details}' if recharge_request.project_details else ''}
 
 To approve this request, use the API endpoint: {approve_url}
@@ -2146,7 +2147,7 @@ Request Details:
 - Email: {recharge_request.user.email}
 - Amount: ₹{amount}
 {department_info}- Request ID: #{recharge_request.id}
-- Request Date: {recharge_request.created_at.strftime('%Y-%m-%d %H:%M:%S')}
+- Request Date: {format_local_dt(recharge_request.created_at, '%Y-%m-%d %H:%M:%S')}
 {f'- Project Details: {recharge_request.project_details}' if recharge_request.project_details else ''}
 
 To approve this request, use the API endpoint: {approve_url}

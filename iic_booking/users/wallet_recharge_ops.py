@@ -13,6 +13,7 @@ from django.contrib.auth import get_user_model
 from django.core.mail import EmailMultiAlternatives
 from django.utils import timezone as django_timezone
 
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.communication.models import CommunicationLog, CommunicationTemplate
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url
@@ -94,11 +95,7 @@ def sric_faculty_recharge_email_context(
         "user_email": user.email,
         "amount": f"{amount:.2f}",
         "request_id": str(recharge_request.id),
-        "request_date": (
-            recharge_request.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            if recharge_request.created_at
-            else ""
-        ),
+        "request_date": format_local_dt(recharge_request.created_at, "%Y-%m-%d %H:%M:%S"),
         "request_date_display": _format_sric_request_date_display(recharge_request.created_at),
         "project_name": project_name,
         "project_code": project_code,

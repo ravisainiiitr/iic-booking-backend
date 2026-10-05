@@ -11,6 +11,7 @@ from iic_booking.communication.email_branding import (
     absolute_http_url,
     format_email_datetime,
     format_inr,
+    format_local_dt,
     user_display_name,
 )
 from iic_booking.users.models import WalletRechargeRequest
@@ -304,7 +305,7 @@ def send_wallet_recharge_request_notifications(
         "amount": f"{amount:.2f}",
         "balance": f"{balance:.2f}",
         "request_id": str(recharge_request.id),
-        "request_date": recharge_request.created_at.strftime("%Y-%m-%d %H:%M:%S") if recharge_request.created_at else "",
+        "request_date": format_local_dt(recharge_request.created_at, "%Y-%m-%d %H:%M:%S"),
         "project_details": recharge_request.project_details or "",
         "status": status,
         "response_message": recharge_request.response_message or "",
@@ -501,7 +502,7 @@ def send_wallet_credit_facility_activated_user_email(recharge_request: WalletRec
         "user_email": user.email,
         "amount": f"{amount:.2f}",
         "request_id": str(req.id),
-        "request_date": req.created_at.strftime("%Y-%m-%d %H:%M:%S") if req.created_at else "",
+        "request_date": format_local_dt(req.created_at, "%Y-%m-%d %H:%M:%S"),
         "department_name": department_name,
         "department_code_suffix": department_code_suffix,
         "project_lines_plain": project_lines_plain.rstrip(),

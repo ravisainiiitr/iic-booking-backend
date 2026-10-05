@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from iic_booking.users.models import UserType
 
+from .email_branding import format_local_dt
 from .models import Notice
 
 
@@ -187,7 +188,7 @@ def expire_equipment_linked_notices(*, equipment, actor=None) -> int:
             notice.review_comment = (
                 (notice.review_comment or "").strip()
                 + ("\n" if notice.review_comment else "")
-                + f"Auto-closed: equipment returned to Operational at {now.isoformat()}."
+                + f"Auto-closed: equipment returned to Operational at {format_local_dt(now, '%d %b %Y, %I:%M %p')}."
             ).strip()
             notice.reviewed_at = now
             if actor and getattr(actor, "is_authenticated", False):

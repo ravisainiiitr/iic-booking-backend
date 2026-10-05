@@ -15,6 +15,7 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.models.wallet import (
     SubWallet,
@@ -372,7 +373,7 @@ def peer_transfer_staff_emails(transfer: WalletPeerTransfer) -> list[str]:
 
 def notify_peer_transfer_completed(transfer: WalletPeerTransfer) -> None:
     """Email sender, recipient, department admin(s), and account in-charge(s)."""
-    when = (transfer.completed_at or timezone.now()).strftime("%Y-%m-%d %H:%M:%S")
+    when = format_local_dt(transfer.completed_at or timezone.now(), "%Y-%m-%d %H:%M:%S")
     subject = (
         f"Wallet Transfer {transfer.transaction_id}: "
         f"₹{transfer.amount} — {get_user_display_name(transfer.sender)} → "

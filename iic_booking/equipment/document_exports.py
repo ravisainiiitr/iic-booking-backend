@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Any, Dict, Tuple
 
 from django.conf import settings
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.users.display import get_user_display_name
 
 
@@ -323,7 +324,7 @@ def build_booking_invoice_pdf(*, booking, billing_profile) -> bytes:
 
     inv_no = getattr(booking, "virtual_booking_id", None) or f"BK-{getattr(booking, 'booking_id', '')}"
     inv_date = getattr(booking, "created_at", None)
-    inv_date_str = inv_date.strftime("%Y-%m-%d") if inv_date else ""
+    inv_date_str = format_local_dt(inv_date, "%Y-%m-%d")
 
     base, gst, total = _get_invoice_breakdown(booking)
 

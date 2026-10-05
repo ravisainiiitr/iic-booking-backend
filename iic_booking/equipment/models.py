@@ -2569,7 +2569,13 @@ class DailySlot(models.Model):
             equipment_code = 'N/A'
             slot_number = 'N/A'
         
-        time_str = f"({self.start_datetime.strftime('%H:%M')} - {self.end_datetime.strftime('%H:%M')})" if self.start_datetime and self.end_datetime else ""
+        from iic_booking.communication.email_branding import format_local_dt
+
+        time_str = (
+            f"({format_local_dt(self.start_datetime, '%H:%M')} - {format_local_dt(self.end_datetime, '%H:%M')})"
+            if self.start_datetime and self.end_datetime
+            else ""
+        )
         return f"{equipment_code} - Slot {slot_number} - {self.date} {time_str}".strip()
 
 

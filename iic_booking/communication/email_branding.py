@@ -315,6 +315,25 @@ def _to_local_dt(value: Any) -> Optional[datetime]:
         return dt
 
 
+def format_local_dt(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Format a datetime for people, in the portal time zone (settings.TIME_ZONE, IST).
+
+    Slot/booking datetimes are stored and loaded as aware UTC values, so calling ``strftime`` on them
+    directly prints UTC wall-clock time. Naive values are assumed to already be local. Returns "" for
+    empty or unparseable values. Use only for display strings, never for comparisons or API ISO fields.
+    """
+    dt = _to_local_dt(value)
+    if not dt:
+        return ""
+    return dt.strftime(fmt)
+
+
+def local_date(value: Any) -> Optional[date]:
+    """Calendar date of ``value`` in the portal time zone (a UTC date can be a day behind before 05:30 IST)."""
+    dt = _to_local_dt(value)
+    return dt.date() if dt else None
+
+
 def format_email_date(value: Any) -> str:
     """24 Jul 2026"""
     dt = _to_local_dt(value)

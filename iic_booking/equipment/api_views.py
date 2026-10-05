@@ -230,7 +230,7 @@ from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
 from iic_booking.equipment.results_sharing_service import is_active_share_recipient, mark_results_viewed
 from iic_booking.communication.styled_transactional_emails import send_return_shipping_tracking_email
-from iic_booking.communication.email_branding import build_booking_created_event_comment
+from iic_booking.communication.email_branding import build_booking_created_event_comment, format_local_dt
 from iic_booking.users.display import apply_faculty_name_prefix, get_user_display_name
 
 logger = logging.getLogger(__name__)
@@ -11554,8 +11554,8 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
     }
     daily_slots = booking.daily_slots.all().order_by('start_datetime')
     if daily_slots.exists():
-        context["start_time"] = daily_slots.first().start_datetime.strftime("%Y-%m-%d %H:%M:%S")
-        context["end_time"] = daily_slots.last().end_datetime.strftime("%Y-%m-%d %H:%M:%S")
+        context["start_time"] = format_local_dt(daily_slots.first().start_datetime, "%Y-%m-%d %H:%M:%S")
+        context["end_time"] = format_local_dt(daily_slots.last().end_datetime, "%Y-%m-%d %H:%M:%S")
     else:
         context["start_time"] = ""
         context["end_time"] = ""
@@ -11679,7 +11679,7 @@ def _build_sample_notice_context(booking):
     if timezone.is_naive(completed_at):
         completed_at = timezone.make_aware(completed_at)
     deadline = completed_at + timedelta(hours=hours)
-    deadline_display = deadline.strftime("%d %B %Y")
+    deadline_display = format_local_dt(deadline, "%d %B %Y")
     ctx.update(
         {
             "sample_collection_deadline_at": deadline.isoformat(),
@@ -12741,7 +12741,7 @@ def reschedule_booking(request, booking_id):
                 event_type=BookingEventType.RESCHEDULED,
                 previous_status=previous_status,
                 new_status=booking.status,
-                comment=f"Booking rescheduled to {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}",
+                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
             )
@@ -13533,7 +13533,7 @@ def user_reschedule_booking(request, booking_id):
                 event_type=BookingEventType.RESCHEDULED,
                 previous_status=previous_status,
                 new_status=booking.status,
-                comment=f"Booking rescheduled to {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}",
+                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
             )
@@ -13693,7 +13693,7 @@ def _get_s3_client_and_results_keys(virtual_booking_id):
 def _apply_results_available_event_and_completed_status(booking):
     """DB-only: audit that results are available. Caller must hold row lock and verified notified_at is unset."""
     detected_at = timezone.now()
-    detected_str = detected_at.strftime("%d %b %Y, %I:%M %p")
+    detected_str = format_local_dt(detected_at, "%d %b %Y, %I:%M %p")
     comment = f"Results are now available for this booking. Detected on {detected_str}."
     create_booking_event(
         booking=booking,
@@ -18555,9 +18555,9 @@ def _nomination_to_dict(nom):
     if nom.approved_at and nom.approved_by_id:
         approved_by_name = get_user_display_name(approved_by) if approved_by else None
         if nom.status == StudentEquipmentNominationStatus.APPROVED:
-            outcome_summary = f"Approved by {approved_by_name or '—'} on {nom.approved_at.strftime('%d %b %Y')}"
+            outcome_summary = f"Approved by {approved_by_name or '—'} on {format_local_dt(nom.approved_at, '%d %b %Y')}"
         elif nom.status == StudentEquipmentNominationStatus.REJECTED:
-            outcome_summary = f"Rejected by {approved_by_name or '—'} on {nom.approved_at.strftime('%d %b %Y')}"
+            outcome_summary = f"Rejected by {approved_by_name or '—'} on {format_local_dt(nom.approved_at, '%d %b %Y')}"
     resume_filename = None
     if nom.resume:
         resume_filename = nom.resume.name.split("/")[-1] if "/" in nom.resume.name else nom.resume.name
