@@ -478,12 +478,12 @@ def test_data_migration_on_production_shaped_families(egs_factory):
     for b in (apreo, nmr, xps):
         assert rows[b.pk].enable_multi_mode is True
     assert rows[plain.pk].enable_multi_mode is False
-    assert rows[ebsd.pk].mode_availability == ModeAvailability.ALWAYS
-    for child in (txi, depth, ups):
+    for child in (ebsd, txi, depth, ups):
         assert rows[child.pk].mode_availability == ModeAvailability.SCHEDULED_ONLY
     assert rows[ebsd.pk].parent_equipment_id == apreo.pk
     assert EquipmentModeSchedule.objects.count() == sched_count
     assert EquipmentModeAuditLog.objects.filter(action="MIGRATION_MODE_CLEANUP").count() == 4
+    assert not EquipmentModeAuditLog.objects.filter(action="MIGRATION_BASE_FLAG").exists()
 
     after = {
         "depth_in": bookable(depth, MONDAY),
@@ -494,8 +494,7 @@ def test_data_migration_on_production_shaped_families(egs_factory):
         "nmr_in": bookable(nmr, MONDAY),
         "ebsd": bookable(ebsd, MONDAY),
     }
-    assert {k: v for k, v in after.items() if k != "ebsd"} == {k: v for k, v in before.items() if k != "ebsd"}
-    assert after["ebsd"] is True
+    assert after == before
 
     migration.forward(django_apps, None)
     assert EquipmentModeAuditLog.objects.filter(action="MIGRATION_MODE_CLEANUP").count() == 4
@@ -511,3 +510,23 @@ def test_data_migration_on_production_shaped_families(egs_factory):
         Equipment.objects.exclude(pk__in=[apreo.pk, ebsd.pk, nmr.pk, txi.pk, xps.pk, depth.pk, ups.pk, plain.pk])
         .values_list("pk", "enable_multi_mode")
     ) == others_before
+
+
+def test_data_migration_keeps_modes_of_an_unflagged_base_bookable(egs_factory):
+    f = egs_factory
+    base = f.equipment(name="Unflagged base")
+    mode = f.equipment(name="Loose mode", parent_equipment=base)
+    assert mode_utils.equipment_bookable_on_date(mode, MONDAY, time(10))[0] is True
+
+    migration = importlib.import_module("iic_booking.equipment.migrations.0226_multimode_data_cleanup")
+    migration.forward(django_apps, None)
+
+    base.refresh_from_db()
+    mode.refresh_from_db()
+    assert base.enable_multi_mode is True
+    assert mode.mode_availability == ModeAvailability.ALWAYS
+    assert mode_utils.equipment_bookable_on_date(mode, MONDAY, time(10))[0] is True
+
+    migration.backward(django_apps, None)
+    base.refresh_from_db()
+    assert base.enable_multi_mode is False

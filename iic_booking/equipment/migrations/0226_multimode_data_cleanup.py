@@ -1,8 +1,10 @@
 """Audited multi-mode cleanup.
 
 * Modes (equipment with a parent) are never flagged as multi-mode bases: clear enable_multi_mode.
-* Modes that already have at least one schedule keep today's behaviour ("Only on scheduled days");
-  modes without schedules become "Always available".
+* Every mode keeps today's behaviour. Under a flagged base the old rule only let a mode be booked
+  inside one of its schedules, so those modes become "Only on scheduled days", including modes
+  with no schedule at all (e.g. EBSD stays unbookable). Under an unflagged base the old rule
+  treated modes as standalone, so those become "Always available".
 * A base is flagged exactly when it has at least one mode.
 
 Parent links and schedules are kept. Every change is recorded in EquipmentModeAuditLog so the
@@ -26,12 +28,11 @@ def _log(Log, eq, action, before, after, extra=None):
 
 def forward(apps, schema_editor):
     Equipment = apps.get_model("equipment", "Equipment")
-    Schedule = apps.get_model("equipment", "EquipmentModeSchedule")
     Log = apps.get_model("equipment", "EquipmentModeAuditLog")
 
-    scheduled_mode_ids = set(Schedule.objects.values_list("mode_equipment_id", flat=True))
+    flagged_base_ids = set(Equipment.objects.filter(enable_multi_mode=True).values_list("pk", flat=True))
     for mode in Equipment.objects.filter(parent_equipment__isnull=False).order_by("pk"):
-        availability = "SCHEDULED_ONLY" if mode.pk in scheduled_mode_ids else "ALWAYS"
+        availability = "SCHEDULED_ONLY" if mode.parent_equipment_id in flagged_base_ids else "ALWAYS"
         before = {"enable_multi_mode": mode.enable_multi_mode, "mode_availability": mode.mode_availability}
         after = {"enable_multi_mode": False, "mode_availability": availability}
         if before == after:
