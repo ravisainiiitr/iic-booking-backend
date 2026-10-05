@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.routers import SimpleRouter
 
+from iic_booking.department_modules import urls as department_modules_urls
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -129,6 +130,7 @@ from iic_booking.users.api.wallet_views import (
     legacy_wallet_balance_lookup,
     legacy_wallet_balance_list,
 )
+from iic_booking.users.api.faculty_wallet_sync_views import faculty_wallet_sync_deadline
 from iic_booking.users.api.legacy_user_sync_views import (
     legacy_user_sync_confirm,
     legacy_user_sync_preview,
@@ -253,7 +255,22 @@ from iic_booking.equipment.print_3d_views import (
     download_print_analysis_stl,
     presign_print_analysis_stl,
     update_booking_print_actuals,
+    update_print_analysis_part,
 )
+from iic_booking.equipment.laser_cut_views import (
+    download_laser_cut_dxf,
+    equipment_analyze_dxf,
+    equipment_laser_sheet_materials,
+    laser_cut_analysis_detail,
+    laser_cut_batch_detail,
+    presign_laser_cut_dxf,
+)
+from iic_booking.equipment.fabrication_materials_views import (
+    fabrication_material_equipment,
+    laser_sheet_material_detail,
+    laser_sheet_materials_manage,
+)
+from iic_booking.equipment.fabrication_reupload_views import booking_fabrication_files, booking_fabrication_reject
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
@@ -272,6 +289,7 @@ from iic_booking.equipment.booking_templates import (
     booking_template_preferred_slot,
     booking_templates,
 )
+from iic_booking.equipment import mode_family_views
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
@@ -412,9 +430,6 @@ from iic_booking.equipment.api_views import (
     oic_equipment_settings_update,
     oic_print_material_detail,
     oic_equipment_group_quotas,
-    oic_multi_mode_list,
-    oic_multi_mode_schedule_create,
-    oic_multi_mode_schedule_detail,
     admin_adjust_reward_points,
     inventory_items_list,
     equipment_inventory_stock,
@@ -612,6 +627,14 @@ urlpatterns = router.urls + [
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
+    # Procurement & Assets (per-department switch; default OFF)
+    path("v1/procurement/", include("iic_booking.procurement_management.urls")),
+    # Per-department module switches (Main Admin matrix + per-user availability)
+    path(
+        "v1/admin/department-modules/",
+        include((department_modules_urls.admin_urlpatterns, "department_modules_admin")),
+    ),
+    path("v1/department-modules/", include("iic_booking.department_modules.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
     path("v1/portal-migration/admin/state/", portal_migration_admin_state, name="portal-migration-admin-state-v1"),
     path("v1/portal-migration/admin/dashboard/", portal_migration_dashboard, name="portal-migration-admin-dashboard-v1"),
@@ -858,6 +881,33 @@ urlpatterns = router.urls + [
         booking_ra_views.booking_analysis_data_selection,
         name="booking-analysis-data-selection-legacy",
     ),
+    *[
+        path(
+            f"{prefix}bookings/<int:booking_id>/analysis/{segment}/",
+            view,
+            name=f"booking-analysis-{segment}{suffix}",
+        )
+        for prefix, suffix in (("v1/", ""), ("", "-legacy"))
+        for segment, view in (
+            ("setup", booking_ra_views.booking_analysis_setup),
+            ("input-sources", booking_ra_views.booking_analysis_input_sources),
+            ("sync-status", booking_ra_views.booking_analysis_sync_status),
+            ("sync-now", booking_ra_views.booking_analysis_sync_now),
+        )
+    ],
+    *[
+        path(f"{prefix}bookings/<int:booking_id>/analysis/{route}", view, name=f"booking-analysis-{name}{suffix}")
+        for prefix, suffix in (("v1/", ""), ("", "-legacy"))
+        for route, view, name in (
+            ("pc-folders/", booking_ra_views.booking_analysis_pc_folders, "pc-folders"),
+            ("pc-folders/browse/", booking_ra_views.booking_analysis_pc_browse, "pc-browse"),
+            (
+                "pc-folders/browse/<str:request_id>/",
+                booking_ra_views.booking_analysis_pc_browse_result,
+                "pc-browse-result",
+            ),
+        )
+    ],
     path("auth/logout/", logout, name="logout"),
     path("auth/mobile/enroll/", mobile_enroll, name="auth-mobile-enroll"),
     path("auth/mobile/refresh/", mobile_refresh, name="auth-mobile-refresh"),
@@ -1210,6 +1260,7 @@ urlpatterns = router.urls + [
     path("portal-migration/admin/legacy-user-sync/users/<int:user_id>/", legacy_user_sync_user_detail, name="legacy-user-sync-user-detail"),
     path("portal-migration/admin/legacy-user-sync/preview/", legacy_user_sync_preview, name="legacy-user-sync-preview"),
     path("portal-migration/admin/legacy-user-sync/confirm/", legacy_user_sync_confirm, name="legacy-user-sync-confirm"),
+    path("portal-migration/admin/faculty-wallet-sync/", faculty_wallet_sync_deadline, name="faculty-wallet-sync-deadline"),
     # Project endpoints
     path("projects/", project_list, name="project-list"),  # GET: List projects, POST: Create project
     path("projects/<int:project_id>/", project_detail, name="project-detail"),  # GET, PATCH, PUT: Get/Update project
@@ -1308,6 +1359,31 @@ urlpatterns = router.urls + [
         "print-analysis-batches/<uuid:batch_id>/recalculate/",
         recalculate_print_analysis_batch,
         name="print-analysis-batch-recalculate",
+    ),
+    path("print-analyses/<uuid:analysis_id>/part/", update_print_analysis_part, name="print-analysis-part"),
+    path(
+        "equipments/<int:pk>/laser-sheet-materials/",
+        equipment_laser_sheet_materials,
+        name="equipment-laser-sheet-materials",
+    ),
+    path("equipments/<int:pk>/analyze-dxf/", equipment_analyze_dxf, name="equipment-analyze-dxf"),
+    path("laser-cut-batches/<uuid:batch_id>/", laser_cut_batch_detail, name="laser-cut-batch-detail"),
+    path("laser-cut-analyses/<uuid:analysis_id>/", laser_cut_analysis_detail, name="laser-cut-analysis-detail"),
+    path("laser-cut-analyses/<uuid:analysis_id>/dxf/", download_laser_cut_dxf, name="laser-cut-dxf-download"),
+    path(
+        "laser-cut-analyses/<uuid:analysis_id>/dxf-presign/",
+        presign_laser_cut_dxf,
+        name="laser-cut-dxf-presign",
+    ),
+    path(
+        "bookings/<int:booking_id>/fabrication-files/",
+        booking_fabrication_files,
+        name="booking-fabrication-files",
+    ),
+    path(
+        "bookings/<int:booking_id>/fabrication-reject/",
+        booking_fabrication_reject,
+        name="booking-fabrication-reject",
     ),
     path("equipments/<int:equipment_id>/ratings/", equipment_ratings, name="equipment-ratings"),
     path("icpms/standards/min-cover/", icpms_min_standards_cover, name="icpms-min-standards-cover"),
@@ -1575,17 +1651,37 @@ urlpatterns = router.urls + [
         oic_print_material_detail,
         name="oic-print-material-detail",
     ),
+    path(
+        "oic/fabrication-materials/equipment/",
+        fabrication_material_equipment,
+        name="oic-fabrication-material-equipment",
+    ),
+    path("oic/laser-sheet-materials/", laser_sheet_materials_manage, name="oic-laser-sheet-materials"),
+    path(
+        "oic/laser-sheet-materials/<int:material_id>/",
+        laser_sheet_material_detail,
+        name="oic-laser-sheet-material-detail",
+    ),
     path("oic/equipment-group-quotas/", oic_equipment_group_quotas, name="oic-equipment-group-quotas"),
     path(
         "oic/equipment-group-quotas/<int:group_id>/",
         oic_equipment_group_quotas,
         name="oic-equipment-group-quotas-detail",
     ),
-    path("oic/multi-mode/", oic_multi_mode_list, name="oic-multi-mode-list"),
-    path("oic/multi-mode/schedules/", oic_multi_mode_schedule_create, name="oic-multi-mode-schedule-create"),
+    path("oic/multi-mode/", mode_family_views.oic_multi_mode_list, name="oic-multi-mode-list"),
+    path(
+        "oic/multi-mode/families/<int:base_id>/",
+        mode_family_views.oic_multi_mode_family,
+        name="oic-multi-mode-family",
+    ),
+    path(
+        "oic/multi-mode/schedules/",
+        mode_family_views.oic_multi_mode_schedule_create,
+        name="oic-multi-mode-schedule-create",
+    ),
     path(
         "oic/multi-mode/schedules/<int:schedule_id>/",
-        oic_multi_mode_schedule_detail,
+        mode_family_views.oic_multi_mode_schedule_detail,
         name="oic-multi-mode-schedule-detail",
     ),
     path("admin/rewards/adjust/", admin_adjust_reward_points, name="admin-rewards-adjust"),
@@ -1689,6 +1785,10 @@ urlpatterns = router.urls + [
     ),
     path("peak-window/status/", peak_window_status, name="peak-window-status"),
     path("admin/peak-window-settings/", PeakWindowSettingView.as_view(), name="admin-peak-window-settings"),
+    path(
+        "admin/equipment/<int:equipment_id>/slot-block-rules/",
+        include("iic_booking.equipment.slot_block_rules_urls"),
+    ),
     path("admin/", include(admin_api_router().urls)),
 ]
 

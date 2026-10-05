@@ -38,6 +38,12 @@ class BookingAnalysisEligibilityService:
             return EligibilityResult(False, "Remote Analysis is not enabled for this equipment", checks)
         checks["equipment_enabled"] = True
 
+        department_reason = self.department_block_reason(booking, equipment)
+        if department_reason:
+            checks["department_enabled"] = False
+            return EligibilityResult(False, department_reason, checks)
+        checks["department_enabled"] = True
+
         if booking.status in self.TERMINAL_BLOCK:
             checks["booking_active"] = False
             return EligibilityResult(False, f"Booking status {booking.status} blocks analysis", checks)
@@ -108,6 +114,31 @@ class BookingAnalysisEligibilityService:
         checks["session_limit"] = True
 
         return EligibilityResult(True, "Eligible for Remote Analysis", checks)
+
+    def department_block_reason(self, booking: Booking, equipment) -> str:
+        """Per-department switch: bookings made before it was turned off (or limited) and live reservations finish."""
+        dept_id = getattr(equipment, "internal_department_id", None)
+        if not dept_id:
+            return ""
+        from iic_booking.department_modules import access as dept_access
+        from iic_booking.department_modules.constants import ModuleKey
+
+        cell = dept_access.cell(dept_id, ModuleKey.REMOTE_ANALYSIS)
+        if not cell.restricted:
+            return ""
+        if cell.allows(is_test=dept_access.is_test(getattr(booking, "user", None)), started_at=getattr(booking, "created_at", None)):
+            return ""
+        try:
+            from iic_booking.remote_analysis.services.reservation import TERMINAL
+            from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
+
+            if AnalysisReservation.objects.filter(booking=booking).exclude(status__in=TERMINAL).exists():
+                return ""
+        except Exception:
+            pass
+        if not cell.enabled:
+            return "Remote Analysis is switched off for this equipment's department"
+        return "Remote Analysis for this equipment's department is open to test accounts only"
 
     def _sample_accepted(self, booking: Booking) -> bool:
         try:

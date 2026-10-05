@@ -27,6 +27,7 @@ from .models import (
     PrintAnalysisStatus,
     PrintMaterial,
 )
+from .fabrication import default_part_name, inject_print_parts, parse_quantity, strip_fabrication_keys
 from .print_3d_service import (
     analyze_stl_file,
     default_slicer_settings,
@@ -199,6 +200,7 @@ def _create_print_analysis(
         batch=batch,
         sequence=sequence,
         original_filename=filename,
+        part_name=default_part_name(filename),
         status=PrintAnalysisStatus.PENDING,
         slicer_settings=slicer_settings,
         material_code_snapshot=material.code if material else "",
@@ -477,6 +479,38 @@ def print_analysis_detail(request, analysis_id):
     return Response(PrintAnalysisSerializer(analysis, context={"request": request}).data)
 
 
+@api_view(["PATCH"])
+@permission_classes([AllowAny])
+def update_print_analysis_part(request, analysis_id):
+    """Set part name and/or number of copies for an uploaded STL before it is booked."""
+    try:
+        analysis = PrintAnalysis.objects.select_related("equipment", "material").get(pk=analysis_id)
+    except PrintAnalysis.DoesNotExist:
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not user_can_access_print_resource(request, analysis.user_id):
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+    if analysis.booking_id:
+        return Response(
+            {"error": "This file is already linked to a booking. Use 'Replace files' on the booking instead."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    update_fields = ["updated_at"]
+    if "part_name" in request.data:
+        analysis.part_name = str(request.data.get("part_name") or "").strip()[:255]
+        update_fields.append("part_name")
+    if "quantity" in request.data:
+        qty = parse_quantity(request.data.get("quantity"))
+        if qty is None:
+            return Response(
+                {"error": "Number of parts must be a whole number of at least 1."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        analysis.quantity = qty
+        update_fields.append("quantity")
+    analysis.save(update_fields=update_fields)
+    return Response(PrintAnalysisSerializer(analysis, context={"request": request}).data)
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def print_analysis_batch_detail(request, batch_id):
@@ -604,19 +638,59 @@ def download_print_analysis_stl(request, analysis_id):
     from .api_views import check_operator_permission
 
     try:
-        analysis = PrintAnalysis.objects.select_related("equipment", "material", "user").get(pk=analysis_id)
+        analysis = PrintAnalysis.objects.select_related("equipment", "material", "user", "booking").get(
+            pk=analysis_id
+        )
     except PrintAnalysis.DoesNotExist:
         return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    is_staff = check_operator_permission(request.user)
-    if not is_staff and analysis.user_id != request.user.id:
+    if not user_may_download_design_file(request.user, analysis, check_operator_permission):
         return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
 
-    if not analysis.stl_file or not analysis.stl_file.name:
-        return Response({"error": "No STL file available."}, status=status.HTTP_404_NOT_FOUND)
+    return stream_design_file(analysis.stl_file, analysis.original_filename, "model.stl")
 
-    file_name = analysis.stl_file.name
-    storage = getattr(analysis.stl_file, "storage", None) or default_storage
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def presign_print_analysis_stl(request, analysis_id):
+    """
+    Return a presigned URL for the STL file so browser can download immediately.
+    Allowed: analysis creator OR operator/manager/admin (lab staff).
+    """
+    from .api_views import check_operator_permission
+
+    try:
+        analysis = PrintAnalysis.objects.select_related("equipment", "material", "user", "booking").get(
+            pk=analysis_id
+        )
+    except PrintAnalysis.DoesNotExist:
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    if not user_may_download_design_file(request.user, analysis, check_operator_permission):
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    return presign_design_file(
+        analysis.stl_file,
+        analysis.original_filename,
+        "model.stl",
+        fallback_url=f"/api/print-analyses/{analysis.id}/stl/",
+    )
+
+
+def user_may_download_design_file(user, analysis, check_operator_permission) -> bool:
+    if check_operator_permission(user):
+        return True
+    if analysis.user_id == user.id:
+        return True
+    booking = getattr(analysis, "booking", None)
+    return bool(booking and booking.user_id == user.id)
+
+
+def _resolve_storage_name(file_field):
+    if not file_field or not file_field.name:
+        return None, None
+    storage = getattr(file_field, "storage", None) or default_storage
+    file_name = file_field.name
 
     def _exists(name: str) -> bool:
         try:
@@ -630,24 +704,35 @@ def download_print_analysis_stl(request, analysis_id):
         candidate_names.append(file_name[len("media/"):])
     else:
         candidate_names.append(f"media/{file_name}")
+    resolved = next((n for n in candidate_names if _exists(n)), None)
+    if not resolved:
+        logger.warning("Design file not found in storage. Tried: %s", candidate_names)
+    return storage, resolved
 
-    resolved_name = next((n for n in candidate_names if _exists(n)), None)
+
+def _safe_download_name(original_filename, default_name):
+    return (original_filename or default_name).replace('"', "").replace("\r", "").replace("\n", "")
+
+
+def stream_design_file(file_field, original_filename, default_name):
+    """Stream an uploaded STL/DXF through Django (works with S3 and avoids CORS)."""
+    if not file_field or not file_field.name:
+        return Response({"error": "No file available."}, status=status.HTTP_404_NOT_FOUND)
+    storage, resolved_name = _resolve_storage_name(file_field)
     if not resolved_name:
-        logging.warning("STL file not found in storage. Tried: %s", candidate_names)
         return Response({"error": "File not found in storage."}, status=status.HTTP_404_NOT_FOUND)
-
     try:
         with storage.open(resolved_name, "rb") as fh:
             content = fh.read()
     except Exception as e:
-        logging.exception("Error opening STL file %s: %s", resolved_name, e)
+        logger.exception("Error opening design file %s: %s", resolved_name, e)
         return Response({"error": "File not available."}, status=status.HTTP_404_NOT_FOUND)
 
-    content_type, _ = mimetypes.guess_type(analysis.original_filename or resolved_name)
+    content_type, _ = mimetypes.guess_type(original_filename or resolved_name)
     if not content_type:
         content_type = "application/octet-stream"
     response = HttpResponse(content, content_type=content_type)
-    safe_name = (analysis.original_filename or "model.stl").replace('"', "").replace("\r", "").replace("\n", "")
+    safe_name = _safe_download_name(original_filename, default_name)
     response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
     response["Cache-Control"] = "no-store"
     response["Pragma"] = "no-cache"
@@ -655,84 +740,51 @@ def download_print_analysis_stl(request, analysis_id):
     return response
 
 
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def presign_print_analysis_stl(request, analysis_id):
-    """
-    Return a presigned URL for the STL file so browser can download immediately.
-    Allowed: analysis creator OR operator/manager/admin (lab staff).
-    """
-    from .api_views import check_operator_permission
-    import boto3
-    from botocore.exceptions import ClientError
+def presigned_design_file_url(file_field, original_filename, default_name, *, expires_in=None):
+    """Presigned S3 GET URL, or None when storage is not S3 or the object is missing."""
+    from iic_booking.common_download import _boto3_presign, _resolve_s3_object_key
 
-    try:
-        analysis = PrintAnalysis.objects.select_related("equipment", "material", "user").get(pk=analysis_id)
-    except PrintAnalysis.DoesNotExist:
-        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    is_staff = check_operator_permission(request.user)
-    if not is_staff and analysis.user_id != request.user.id:
-        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    if not analysis.stl_file or not analysis.stl_file.name:
-        return Response({"error": "No STL file available."}, status=status.HTTP_404_NOT_FOUND)
-
-    # Only presign when storage is actually S3-backed; otherwise use streamed download endpoint.
-    storage_backend = getattr(settings, "STORAGES", {}).get("default", {}).get("BACKEND", "") if hasattr(settings, "STORAGES") else ""
-    if "s3" not in (storage_backend or "").lower():
-        return Response({"url": f"/api/print-analyses/{analysis.id}/stl/"}, status=status.HTTP_200_OK)
-
+    storage_backend = (
+        getattr(settings, "STORAGES", {}).get("default", {}).get("BACKEND", "")
+        if hasattr(settings, "STORAGES")
+        else ""
+    )
     bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", None)
-    if not bucket:
-        # Fallback: frontend can use the streamed endpoint.
-        return Response({"url": f"/api/print-analyses/{analysis.id}/stl/"}, status=status.HTTP_200_OK)
+    if "s3" not in (storage_backend or "").lower() or not bucket:
+        return None
+    storage, name = _resolve_storage_name(file_field)
+    if not name:
+        return None
+    # The storage name is relative to the storage location (e.g. "media/"); the bucket key is not.
+    url = _boto3_presign(
+        bucket=getattr(storage, "bucket_name", None) or bucket,
+        key=_resolve_s3_object_key(storage, name),
+        download_name=_safe_download_name(original_filename, default_name),
+        expires_in=int(expires_in or getattr(settings, "AWS_S3_QUERYSTRING_EXPIRE", 3600)),
+        use_accelerate=False,
+    )
+    if not url:
+        logger.error("Failed to generate presigned url for %s", file_field.name)
+    return url
 
-    storage = getattr(analysis.stl_file, "storage", None) or default_storage
-    file_name = analysis.stl_file.name
 
-    def _exists(name: str) -> bool:
-        try:
-            return bool(name) and storage.exists(name)
-        except Exception:
-            return False
-
-    candidate_names = [file_name]
-    if file_name.startswith("media/"):
-        candidate_names.append(file_name[len("media/"):])
-    else:
-        candidate_names.append(f"media/{file_name}")
-
-    key = next((n for n in candidate_names if _exists(n)), None)
+def presign_design_file(file_field, original_filename, default_name, *, fallback_url):
+    if not file_field or not file_field.name:
+        return Response({"error": "No file available."}, status=status.HTTP_404_NOT_FOUND)
+    storage_backend = (
+        getattr(settings, "STORAGES", {}).get("default", {}).get("BACKEND", "")
+        if hasattr(settings, "STORAGES")
+        else ""
+    )
+    if "s3" not in (storage_backend or "").lower() or not getattr(settings, "AWS_STORAGE_BUCKET_NAME", None):
+        return Response({"url": fallback_url}, status=status.HTTP_200_OK)
+    _storage, key = _resolve_storage_name(file_field)
     if not key:
         return Response({"error": "File not found in storage."}, status=status.HTTP_404_NOT_FOUND)
-
-    safe_name = (analysis.original_filename or "model.stl").replace('"', "").replace("\r", "").replace("\n", "")
-    content_type, _ = mimetypes.guess_type(safe_name)
-    if not content_type:
-        content_type = "application/octet-stream"
-
-    try:
-        client = boto3.client(
-            "s3",
-            region_name=getattr(settings, "AWS_S3_REGION_NAME", "ap-south-1"),
-            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None),
-            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None),
-        )
-        url = client.generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": bucket,
-                "Key": key,
-                "ResponseContentDisposition": f'attachment; filename="{safe_name}"',
-                "ResponseContentType": content_type,
-            },
-            ExpiresIn=int(getattr(settings, "AWS_S3_QUERYSTRING_EXPIRE", 3600)),
-        )
-        return Response({"url": url}, status=status.HTTP_200_OK)
-    except ClientError:
-        logger.exception("Failed to generate presigned STL url for %s", analysis_id)
+    url = presigned_design_file_url(file_field, original_filename, default_name)
+    if not url:
         return Response({"error": "Failed to generate download URL."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return Response({"url": url}, status=status.HTTP_200_OK)
 
 
 def _aggregate_print_analyses(analyses):
@@ -794,11 +846,7 @@ def merge_print_booking_into_input_values(
         if total_weight <= 0 or total_time <= 0:
             return input_values, "Batch has invalid weight or time estimates."
 
-        merged = dict(input_values)
-        merged["A"] = int(total_weight)
-        merged["B"] = material_code
-        merged["C"] = total_time
-        return merged, None
+        return inject_print_parts(strip_fabrication_keys(input_values), items), None
 
     if print_analysis_id:
         return merge_print_analysis_into_input_values(
@@ -836,12 +884,7 @@ def merge_print_analysis_into_input_values(equipment, analysis_id, input_values,
     if not material_code:
         return input_values, "Analysis has no material selected."
 
-    merged = dict(input_values)
-    weight, time_min = get_effective_print_weight_and_time_from_analysis(analysis)
-    merged["A"] = int(weight or 0)
-    merged["B"] = material_code
-    merged["C"] = int(time_min or 0)
-    return merged, None
+    return inject_print_parts(strip_fabrication_keys(input_values), [analysis]), None
 
 
 def link_print_analyses_to_booking(
@@ -892,30 +935,13 @@ def get_effective_print_weight_and_time_from_analysis(analysis):
 
 
 def apply_print_analysis_to_input_values(booking, input_values):
-    """Inject effective A/C from linked print analyses into input_values for charge calc."""
-    equipment = getattr(booking, "equipment", None)
-    if not equipment or equipment.profile_type != EquipmentProfileType.PRINT_3D:
-        return input_values
+    """Inject per-part fabrication values (A/B/C and reserved keys) from the booking's linked files.
 
-    analyses = list(
-        PrintAnalysis.objects.filter(booking=booking, cancelled_at__isnull=True)
-        .select_related("material")
-        .order_by("sequence", "created_at")
-    )
-    if not analyses:
-        analysis = getattr(booking, "print_analysis", None)
-        if analysis and not analysis.cancelled_at:
-            analyses = [analysis]
-    if not analyses:
-        return input_values
+    Covers 3D printing and 2D laser cutting; other profiles are returned unchanged.
+    """
+    from .fabrication import apply_fabrication_to_input_values
 
-    merged = dict(input_values or {})
-    total_weight, total_time, material_code = _aggregate_print_analyses(analyses)
-    merged["A"] = int(total_weight)
-    merged["C"] = total_time
-    if material_code:
-        merged["B"] = material_code
-    return merged
+    return apply_fabrication_to_input_values(booking, input_values)
 
 
 @api_view(["PATCH"])

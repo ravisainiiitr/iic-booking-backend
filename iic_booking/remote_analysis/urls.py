@@ -135,6 +135,16 @@ urlpatterns = [
         workspace_views.agent_workspace_upload,
         name="workspace-agent-upload",
     ),
+    path(
+        "workspaces/<uuid:workspace_id>/collect-plan/",
+        workspace_views.agent_workspace_collect_plan,
+        name="workspace-agent-collect-plan",
+    ),
+    path(
+        "workspaces/<uuid:workspace_id>/progress/",
+        workspace_views.agent_workspace_progress,
+        name="workspace-agent-progress",
+    ),
     # Milestone 6 — Operations Center
     path("operations/dashboard/", ops_views.operations_dashboard, name="operations-dashboard"),
     path("operations/diagnostics/", ops_views.deployment_diagnostics, name="operations-diagnostics"),
@@ -302,6 +312,7 @@ urlpatterns = [
     path("installer/equipment-tree/", installer_views.equipment_tree, name="installer-equipment-tree"),
     path("installer/link/", installer_views.link_equipment, name="installer-link"),
     path("installer/seed-inventory/", installer_views.seed_inventory, name="installer-seed-inventory"),
+    path("installer/rdp-secret/", installer_views.save_rdp_secret, name="installer-rdp-secret"),
     # Phase 2.5 — RAA update discovery/report (agent or enrollment auth)
     path("updates/report/", installer_views.agent_update_report, name="agent-update-report"),
     path("updates/discover/", installer_views.release_latest, name="agent-update-discover"),

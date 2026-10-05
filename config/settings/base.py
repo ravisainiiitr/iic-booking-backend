@@ -128,6 +128,8 @@ LOCAL_APPS = [
     "iic_booking.research_copilot.apps.ResearchCopilotConfig",
     "iic_booking.my_research.apps.MyResearchConfig",
     "iic_booking.training.apps.TrainingConfig",
+    "iic_booking.procurement_management.apps.ProcurementManagementConfig",
+    "iic_booking.department_modules.apps.DepartmentModulesConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -809,6 +811,9 @@ MY_RESEARCH_GROUPS_ENABLED = env.bool("MY_RESEARCH_GROUPS_ENABLED", default=Fals
 MY_RESEARCH_GROUPS_PILOT_EMAILS = env("MY_RESEARCH_GROUPS_PILOT_EMAILS", default="")
 MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE = env.int("MY_RESEARCH_GROUP_ATTACHMENT_MAX_SIZE", default=50 * 1024**2)
 MY_RESEARCH_GROUP_MAX_ATTACHMENTS = env.int("MY_RESEARCH_GROUP_MAX_ATTACHMENTS", default=10)
+# --- Remote Analysis RDP ---
+# Send disable-gfx=true to guacd (falls back from RDP GFX pipeline). Off by default: parameter not sent.
+REMOTE_ANALYSIS_RDP_DISABLE_GFX = env.bool("RA_RDP_DISABLE_GFX", default=False)
 # --- Training & Certification (demo requests, nominations, shortlisting, sessions, Trained badge) ---
 # Master switch. Disabling hides the UI and API; requests, nominations, awards and slot reservations are kept.
 TRAINING_MODULE_ENABLED = env.bool("TRAINING_MODULE_ENABLED", default=False)
@@ -892,3 +897,9 @@ CURAENGINE_PATH = env("CURAENGINE_PATH", default="")
 PRINT_3D_USE_CURAENGINE = env.bool("PRINT_3D_USE_CURAENGINE", default=True)
 PRINT_3D_MAX_STL_BYTES = env.int("PRINT_3D_MAX_STL_BYTES", default=100 * 1024 * 1024)
 PRINT_3D_USE_CELERY = env.bool("PRINT_3D_USE_CELERY", default=True)
+
+# 2D laser cutting / DXF analysis (parsed synchronously in the upload request)
+LASER_CUT_MAX_DXF_BYTES = env.int("LASER_CUT_MAX_DXF_BYTES", default=25 * 1024 * 1024)
+# Fabrication file emails attach files up to this combined size; larger files are sent as download links.
+FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES = env.int("FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES", default=10 * 1024 * 1024)
+FABRICATION_EMAIL_LINK_EXPIRY_SECONDS = env.int("FABRICATION_EMAIL_LINK_EXPIRY_SECONDS", default=7 * 24 * 3600)

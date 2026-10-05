@@ -1,6 +1,7 @@
 """Faculty login-time wallet sync from legacy MySQL into IIC SubWallet.
 
-Runs only while now < FACULTY_WALLET_SYNC_CUTOFF (4 Oct 2026 Asia/Kolkata).
+Runs only while faculty_wallet_sync_window_open(): before the Main Administrator deadline
+(Legacy user sync page), or the built-in FACULTY_WALLET_SYNC_CUTOFF when none is stored.
 Never raises to the caller — login must always succeed.
 """
 
@@ -53,7 +54,7 @@ def sync_faculty_wallet_from_legacy(
     """
     Import legacy ledger rows for this faculty user and reconcile IIC SubWallet balance.
 
-    Returns a status dict. Safe to call on every faculty login until cutover.
+    Returns a status dict. Safe to call on every faculty login until the sync deadline.
     """
     if getattr(user, "user_type", None) != UserType.FACULTY:
         return {"ok": False, "skipped": True, "reason": "not_faculty"}

@@ -162,16 +162,15 @@ class AnalysisExperienceBuilder:
         matching_ids: list = []
         matching_workstations: list[AnalysisWorkstation] = []
         if required_software:
+            installed: dict = {}
+            for ws_id, software_name in InstalledSoftware.objects.filter(
+                workstation__in=ws_qs, is_present=True, allocation_enabled=True
+            ).values_list("workstation_id", "software_name"):
+                installed.setdefault(ws_id, []).append((software_name or "").lower())
+            wanted = [name.lower() for name in required_software]
             for ws in ws_qs:
-                if all(
-                    InstalledSoftware.objects.filter(
-                        workstation_id=ws.id,
-                        is_present=True,
-                        allocation_enabled=True,
-                        software_name__icontains=name,
-                    ).exists()
-                    for name in required_software
-                ):
+                names = installed.get(ws.id, [])
+                if all(any(w in n for n in names) for w in wanted):
                     matching_ids.append(ws.id)
                     matching_workstations.append(ws)
             matching_qs = ws_qs.filter(id__in=matching_ids) if matching_ids else ws_qs.none()
@@ -304,17 +303,14 @@ class AnalysisExperienceBuilder:
         awaiting_checkin = bool(
             reservation and reservation.status == ReservationStatus.AWAITING_CHECKIN
         )
-        # Defensive: if Celery beat lag leaves a past-due hold, expire it before UX build.
+        # Past-due holds are released by the "RAA Expire Reservations" beat task (every minute);
+        # this read path must not lock and expire reservations itself.
         if (
             awaiting_checkin
             and reservation.checkin_expires_at
             and reservation.checkin_expires_at < now
         ):
-            from iic_booking.remote_analysis.services.checkin import CheckinService
-
-            CheckinService().expire_due(limit=50)
-            reservation.refresh_from_db()
-            awaiting_checkin = reservation.status == ReservationStatus.AWAITING_CHECKIN
+            awaiting_checkin = False
         journey = self._journey(
             booking=booking,
             reservation=reservation,

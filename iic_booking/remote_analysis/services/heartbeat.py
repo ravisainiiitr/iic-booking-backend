@@ -46,6 +46,16 @@ def _maybe_alert(workstation: AnalysisWorkstation, heartbeat: WorkstationHeartbe
     return alerts
 
 
+def _capabilities(data: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+    for source in (data, payload):
+        if not isinstance(source, dict):
+            continue
+        raw = source.get("capabilities", source.get("Capabilities"))
+        if isinstance(raw, list):
+            return sorted({str(c).strip()[:64] for c in raw if str(c).strip()})[:50]
+    return []
+
+
 class HeartbeatService:
     @transaction.atomic
     def process(self, workstation: AnalysisWorkstation, payload: dict[str, Any]) -> dict[str, Any]:
@@ -123,6 +133,10 @@ class HeartbeatService:
         if "diskLow" in data or "disk_low" in data:
             workstation.disk_low = bool(data.get("diskLow") if "diskLow" in data else data.get("disk_low"))
             update_fields.append("disk_low")
+        capabilities = _capabilities(data, payload)
+        if capabilities != (workstation.agent_capabilities or []):
+            workstation.agent_capabilities = capabilities
+            update_fields.append("agent_capabilities")
 
         agent_reported = (heartbeat.current_state or "").upper()
         # Sticky operational statuses must not block recovery when the agent is idle again.
@@ -300,11 +314,14 @@ def mark_stale_workstations_offline() -> int:
 
 
 def _workstation_has_active_hold(workstation: AnalysisWorkstation) -> bool:
-    """True when a live reservation or desktop session still owns this workstation."""
+    """True when a live reservation, desktop session or in-flight output collect still owns this workstation."""
     from iic_booking.remote_analysis.constants import ReservationStatus, SessionStatus
     from iic_booking.remote_analysis.scheduler_models import AnalysisReservation
     from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+    from iic_booking.remote_analysis.workspace.sync import collect_in_flight_for_workstation
 
+    if collect_in_flight_for_workstation(workstation):
+        return True
     if AnalysisReservation.objects.filter(
         workstation=workstation,
         status__in=[

@@ -109,7 +109,7 @@ def _search_slots(*, arguments: dict, user) -> dict:
         return _err("equipment_not_found", f"Equipment {equipment_id} not found")
 
     try:
-        day = date.fromisoformat(str(day_raw)) if day_raw else date.today() + timedelta(days=1)
+        day = date.fromisoformat(str(day_raw)) if day_raw else timezone.localdate() + timedelta(days=1)
     except ValueError:
         return _err("invalid_date", "date must be YYYY-MM-DD")
 

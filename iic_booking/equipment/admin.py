@@ -24,6 +24,7 @@ from .models import (
     EquipmentCategory,
     EquipmentGroup,
     EquipmentGroupQuota,
+    EquipmentModeAuditLog,
     EquipmentModeSchedule,
     EquipmentManager,
     EquipmentPI,
@@ -35,6 +36,9 @@ from .models import (
     EquipmentAdditionalAccessory,
     ChargeProfile, ChargeProfilePricingProfile, DynamicInputField, DynamicInputFieldType, MultiParamDefinition,
     PrintMaterial,
+    LaserSheetMaterial,
+    LaserCutAnalysis,
+    FabricationFileChange,
     SlotMaster,
     DailySlot,
     Booking,
@@ -643,6 +647,28 @@ class PrintMaterialInline(admin.TabularInline):
         "name",
         "density_g_per_cm3",
         "price_per_gram",
+        "source_rate",
+        "source_unit",
+        "user_type",
+        "display_order",
+        "is_active",
+    ]
+    ordering = ("display_order", "name")
+
+
+class LaserSheetMaterialInline(admin.TabularInline):
+    """Sheet material catalog for LASER_CUT_2D equipment."""
+    model = LaserSheetMaterial
+    extra = 1
+    fk_name = "equipment"
+    fields = [
+        "code",
+        "name",
+        "material_family",
+        "thickness_mm",
+        "sheet_width_mm",
+        "sheet_height_mm",
+        "sheet_rate",
         "user_type",
         "display_order",
         "is_active",
@@ -1367,10 +1393,8 @@ class EquipmentAdmin(admin.ModelAdmin):
                 department_type=DepartmentType.INTERNAL
             ).order_by('name')
         if db_field.name == 'parent_equipment':
-            # Only multi-mode-enabled base instruments can be parents; exclude self when editing
-            qs = Equipment.objects.filter(
-                parent_equipment__isnull=True, enable_multi_mode=True
-            ).order_by('code')
+            # Only base instruments (not themselves modes) can be parents; exclude self when editing
+            qs = Equipment.objects.filter(parent_equipment__isnull=True).order_by('code')
             obj_id = getattr(request.resolver_match, 'kwargs', {}).get('object_id') if request.resolver_match else None
             if obj_id:
                 qs = qs.exclude(pk=obj_id)
@@ -1512,12 +1536,13 @@ class EquipmentAdmin(admin.ModelAdmin):
                     inlines.insert(slot_index, MultiParamDefinitionInline)
                 except ValueError:
                     inlines.append(MultiParamDefinitionInline)
-            elif obj.profile_type == 'PRINT_3D':
+            elif obj.profile_type in ('PRINT_3D', 'LASER_CUT_2D'):
+                material_inline = PrintMaterialInline if obj.profile_type == 'PRINT_3D' else LaserSheetMaterialInline
                 try:
                     charge_index = inlines.index(ChargeProfileInline)
-                    inlines.insert(charge_index, PrintMaterialInline)
+                    inlines.insert(charge_index, material_inline)
                 except ValueError:
-                    inlines.append(PrintMaterialInline)
+                    inlines.append(material_inline)
         else:
             # Add view: always include so management form is present on submit
             try:
@@ -1533,7 +1558,7 @@ class EquipmentAdmin(admin.ModelAdmin):
             'fields': (
                 'name', 'code', 'category', 'equipment_group', 'alternative_priority',
                 'auto_allocate_alternative_default',
-                'enable_multi_mode', 'parent_equipment',
+                'enable_multi_mode', 'parent_equipment', 'mode_availability',
                 'internal_department', 'visibility_group', 'visible_to_test_accounts_only',
                 'profile_type', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
                 'office_address', 'alternate_phone_number',
@@ -1556,7 +1581,8 @@ class EquipmentAdmin(admin.ModelAdmin):
             'fields': (
                 'booking_email_extra_text',
                 'completion_email_extra_text',
-                'print_3d_stl_notification_email',
+                'fabrication_notification_emails',
+                'own_material_fixed_charge',
                 'istem_portal_url',
                 'istem_fbr_status_url',
             ),
@@ -1660,15 +1686,23 @@ class EquipmentAdmin(admin.ModelAdmin):
 
         old_time_from = None
         old_time_to = None
+        old_parent_id = None
         if change and obj.pk:
             try:
-                prev = Equipment.objects.only("weekly_view_time_from", "weekly_view_time_to").get(pk=obj.pk)
+                prev = Equipment.objects.only(
+                    "weekly_view_time_from", "weekly_view_time_to", "parent_equipment_id"
+                ).get(pk=obj.pk)
                 old_time_from = prev.weekly_view_time_from
                 old_time_to = prev.weekly_view_time_to
+                old_parent_id = prev.parent_equipment_id
             except Exception:
                 pass
 
         super().save_model(request, obj, form, change)
+
+        from .mode_family_service import sync_family_flags
+
+        sync_family_flags([obj.pk, obj.parent_equipment_id, old_parent_id], request.user, reason="django admin save")
 
         # Preserve existing image when admin saves without uploading a new file.
         # Always restore the previous DB path — do not gate on storage availability
@@ -2349,6 +2383,20 @@ class EquipmentModeScheduleAdmin(admin.ModelAdmin):
     ordering = ["-start_date", "-end_date"]
 
 
+@admin.register(EquipmentModeAuditLog)
+class EquipmentModeAuditLogAdmin(admin.ModelAdmin):
+    list_display = ["id", "created_at", "action", "equipment_code", "actor"]
+    list_filter = ["action"]
+    search_fields = ["equipment_code"]
+    readonly_fields = ["equipment", "equipment_code", "action", "details", "actor", "created_at"]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(DailySlot)
 class DailySlotAdmin(admin.ModelAdmin):
     """Admin configuration for Daily Slot."""
@@ -2967,6 +3015,26 @@ class BookingInputTemplateAdmin(admin.ModelAdmin):
 
         fields = equipment_field_items(obj.equipment_id, getattr(obj.user, "user_type", "") or "")
         return _readable_inputs_html(obj.input_values, fields)
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(LaserCutAnalysis)
+class LaserCutAnalysisAdmin(admin.ModelAdmin):
+    list_display = ["id", "equipment", "user", "display_part_name", "quantity", "material", "width_mm", "height_mm", "status", "booking", "created_at"]
+    list_filter = ["status", "equipment"]
+    search_fields = ["original_filename", "part_name", "user__email"]
+    raw_id_fields = ["batch", "equipment", "user", "material", "booking", "superseded_booking"]
+    readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(FabricationFileChange)
+class FabricationFileChangeAdmin(admin.ModelAdmin):
+    list_display = ["booking", "profile_type", "changed_by", "changed_at", "charge_before", "charge_after", "reverted_at"]
+    list_filter = ["profile_type"]
+    raw_id_fields = ["booking", "changed_by"]
+    readonly_fields = [f.name for f in FabricationFileChange._meta.fields]
 
     def has_add_permission(self, request):
         return False

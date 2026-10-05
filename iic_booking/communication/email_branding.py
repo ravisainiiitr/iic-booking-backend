@@ -315,6 +315,25 @@ def _to_local_dt(value: Any) -> Optional[datetime]:
         return dt
 
 
+def format_local_dt(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Format a datetime for people, in the portal time zone (settings.TIME_ZONE, IST).
+
+    Slot/booking datetimes are stored and loaded as aware UTC values, so calling ``strftime`` on them
+    directly prints UTC wall-clock time. Naive values are assumed to already be local. Returns "" for
+    empty or unparseable values. Use only for display strings, never for comparisons or API ISO fields.
+    """
+    dt = _to_local_dt(value)
+    if not dt:
+        return ""
+    return dt.strftime(fmt)
+
+
+def local_date(value: Any) -> Optional[date]:
+    """Calendar date of ``value`` in the portal time zone (a UTC date can be a day behind before 05:30 IST)."""
+    dt = _to_local_dt(value)
+    return dt.date() if dt else None
+
+
 def format_email_date(value: Any) -> str:
     """24 Jul 2026"""
     dt = _to_local_dt(value)
@@ -837,6 +856,44 @@ def build_standard_email(
         "description": description,
         "name": title,
     }
+
+
+FBR_NUMBER_LABEL = "FBR number"
+_BOOKING_ID_ROW_RE = re.compile(r">\s*Booking ID\s*</td>.*?</tr>", re.DOTALL)
+_BOOKING_ID_TEXT_RE = re.compile(r"^([ \t]*(?:[-•*][ \t]*)?)Booking ID:.*$", re.MULTILINE)
+
+
+def inject_fbr_number(rendered: dict, fbr_number: Any) -> dict:
+    """Add the "FBR number" row / line under Booking ID of a rendered email, once.
+
+    Used for every booking email so templates (including admin-edited rows) need no per-email change.
+    Without a Booking ID row the HTML line goes after the greeting and the text line after the first line.
+    """
+    number = str(fbr_number or "").strip()
+    if not number or not isinstance(rendered, dict):
+        return rendered
+    html_body = rendered.get("html_message") or ""
+    if html_body and FBR_NUMBER_LABEL not in html_body:
+        row = detail_row_html(FBR_NUMBER_LABEL, escape(number))
+        match = _BOOKING_ID_ROW_RE.search(html_body)
+        if match:
+            html_body = html_body[: match.end()] + row + html_body[match.end():]
+        else:
+            para = paragraph_html(f"{FBR_NUMBER_LABEL}: <strong>{escape(number)}</strong>")
+            idx = html_body.find("</p>")
+            html_body = html_body[: idx + 4] + para + html_body[idx + 4:] if idx >= 0 else para + html_body
+        rendered["html_message"] = html_body
+    text_body = rendered.get("message") or ""
+    if text_body and FBR_NUMBER_LABEL not in text_body:
+        match = _BOOKING_ID_TEXT_RE.search(text_body)
+        if match:
+            line = f"\n{match.group(1)}{FBR_NUMBER_LABEL}: {number}"
+            text_body = text_body[: match.end()] + line + text_body[match.end():]
+        else:
+            first, sep, rest = text_body.partition("\n")
+            text_body = f"{first}\n{FBR_NUMBER_LABEL}: {number}{sep}{rest}" if sep else f"{first}\n{FBR_NUMBER_LABEL}: {number}"
+        rendered["message"] = text_body
+    return rendered
 
 
 def sanitize_template_context(

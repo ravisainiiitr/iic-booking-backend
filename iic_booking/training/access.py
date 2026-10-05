@@ -17,7 +17,6 @@ import logging
 
 from django.conf import settings
 from django.db import DatabaseError, transaction
-from django.db.models import Q
 
 from iic_booking.users.models.user_type import UserType
 
@@ -74,26 +73,50 @@ def is_main_admin(user) -> bool:
 
 
 def in_audience(user) -> bool:
-    """Whether the user may see Training at all under the current audience setting."""
+    """Whether the user may see Training at all under the current audience setting and their department's switch.
+
+    Staff are not limited by their own department: their roles follow the equipment scope, which already drops the
+    equipment of departments where Training is off.
+    """
     if not user or not getattr(user, "is_authenticated", False):
         return False
+    from iic_booking.department_modules.access import user_department_allows
+    from iic_booking.department_modules.constants import ModuleKey
     from iic_booking.users.test_accounts import is_test_user
 
-    if is_test_user(user) or getattr(user, "is_superuser", False) or user.user_type in STAFF_TYPES:
+    if getattr(user, "is_superuser", False) or user.user_type in STAFF_TYPES:
+        return True
+    if not user_department_allows(user, ModuleKey.TRAINING):
+        return False
+    if is_test_user(user):
         return True
     return not test_accounts_only()
 
 
-def audience_users(qs):
-    """Narrow a User queryset to the audience (used for broadcast notifications)."""
-    if not test_accounts_only():
-        return qs
-    from iic_booking.users.test_accounts import FORCE_EMAIL_REDIRECT_ADDRESSES
+def equipment_allows_user(equipment, user) -> bool:
+    """On equipment of a test-users-only department only test accounts take part (staff manage it as usual)."""
+    if user is not None and (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) in STAFF_TYPES):
+        return True
+    from iic_booking.department_modules.access import equipment_allows
+    from iic_booking.department_modules.constants import ModuleKey
 
-    cond = Q(is_test_account=True)
-    for email in FORCE_EMAIL_REDIRECT_ADDRESSES:
-        cond |= Q(email__iexact=email)
-    return qs.filter(cond)
+    return equipment_allows(equipment, ModuleKey.TRAINING, user)
+
+
+def audience_users(qs, *, equipment=None):
+    """Narrow a User queryset to the audience (used for broadcast notifications)."""
+    from iic_booking.department_modules import access as dept_access
+    from iic_booking.department_modules.constants import ModuleKey
+
+    if test_accounts_only():
+        qs = qs.filter(dept_access.test_user_q())
+    allowed = dept_access.allowed_users_q(ModuleKey.TRAINING)
+    if allowed is not None:
+        qs = qs.filter(allowed)
+    dept_id = getattr(equipment, "internal_department_id", None)
+    if dept_id and dept_access.cell(dept_id, ModuleKey.TRAINING).test_users_only:
+        qs = qs.filter(dept_access.test_user_q())
+    return qs
 
 
 def _csv(raw: str, *, lower: bool = False, upper: bool = False) -> set[str]:
@@ -134,14 +157,35 @@ def env_pilot_equipment_ids() -> set[int]:
     return set(Equipment.objects.filter(code__in=codes).values_list("equipment_id", flat=True))
 
 
-def pilot_equipment_ids() -> set[int] | None:
-    """Equipment with Training enabled. None when every equipment is in scope (env switch, no list anywhere)."""
+def _base_pilot_equipment_ids() -> set[int] | None:
     ids = db_enabled_equipment_ids()
     if pilot_equipment_codes():
         return ids | env_pilot_equipment_ids()
     if not ids and env_module_enabled():
         return None
     return ids
+
+
+def pilot_equipment_ids() -> set[int] | None:
+    """Equipment with Training enabled. None when every equipment is in scope (env switch, no list anywhere).
+
+    Equipment of departments where the Main Administrator switched Training off is never in scope.
+    """
+    from iic_booking.department_modules.access import blocked_department_ids
+    from iic_booking.department_modules.constants import ModuleKey
+    from iic_booking.equipment.models import Equipment
+
+    ids = _base_pilot_equipment_ids()
+    blocked = blocked_department_ids(ModuleKey.TRAINING)
+    if not blocked:
+        return ids
+    if ids is None:
+        return set(Equipment.objects.exclude(internal_department_id__in=blocked).values_list("equipment_id", flat=True))
+    return ids - set(
+        Equipment.objects.filter(equipment_id__in=ids, internal_department_id__in=blocked).values_list(
+            "equipment_id", flat=True
+        )
+    )
 
 
 def pilot_equipment_queryset():

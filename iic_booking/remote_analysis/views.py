@@ -142,7 +142,14 @@ def command_complete(request, command_id):
     command = get_object_or_404(RemoteCommand, pk=command_id, workstation=workstation)
     success = bool(request.data.get("success", True))
     message = str(request.data.get("message") or "")
-    CommandService().complete(command, success=success, message=message)
+    result = request.data.get("result")
+    CommandService().complete(
+        command,
+        success=success,
+        message=message,
+        result=result if isinstance(result, dict) else None,
+        code=str(request.data.get("code") or "")[:64],
+    )
     return Response({"accepted": True, "status": command.status})
 
 

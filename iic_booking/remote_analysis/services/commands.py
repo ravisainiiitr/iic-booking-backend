@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import timedelta
 from typing import Any
@@ -21,6 +22,45 @@ from iic_booking.remote_analysis.services.audit import record_event
 logger = logging.getLogger(__name__)
 
 SUPPORTED_COMMANDS = {c.value for c in CommandType}
+RESULT_SUFFIX = " | result="
+
+
+def parse_result_suffix(message: str) -> dict[str, Any] | None:
+    """Agents on message-only portals append `` | result={json}`` to the command message."""
+    idx = (message or "").rfind(RESULT_SUFFIX)
+    if idx < 0:
+        return None
+    try:
+        parsed = json.loads(message[idx + len(RESULT_SUFFIX):])
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def record_verified_cleanup(payload: dict[str, Any], *, success: bool, result: dict[str, Any] | None) -> None:
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import merge_state
+    from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
+
+    kept = []
+    removed = []
+    if isinstance(result, dict) and isinstance(result.get("kept"), list):
+        kept = [str(p) for p in result["kept"]][:500]
+    elif not success:
+        kept = [str(f.get("path") or "") for f in payload.get("verified_files") or []][:500]
+    if isinstance(result, dict) and isinstance(result.get("removed_folders"), list):
+        removed = [str(p)[:1024] for p in result["removed_folders"]][:20]
+    # True/False only when the agent tried to wipe the session account's profile; None otherwise.
+    wiped = result.get("profile_wiped") if isinstance(result, dict) else None
+    merge_state(
+        AnalysisWorkspace,
+        payload["workspace_id"],
+        "transfer_state",
+        pc_cleanup="done" if success and not kept else "kept",
+        kept_files=kept,
+        pc_deleted=int(result.get("deleted") or 0) if isinstance(result, dict) else 0,
+        pc_removed_folders=removed,
+        pc_profile_wiped=wiped if isinstance(wiped, bool) else None,
+    )
 
 
 class CommandService:
@@ -98,7 +138,14 @@ class CommandService:
         *,
         success: bool,
         message: str = "",
+        result: dict[str, Any] | None = None,
+        code: str = "",
     ) -> RemoteCommand:
+        message = message or ""
+        if code and code.lower() not in message.lower():
+            message = f"{code}: {message}"
+        if result is None:
+            result = parse_result_suffix(message)
         now = timezone.now()
         command.status = CommandStatus.COMPLETED if success else CommandStatus.FAILED
         command.completed_at = now
@@ -125,42 +172,47 @@ class CommandService:
             duration_ms=duration,
         )
         ws = command.workstation
+        release_to = None
+        if success and command.command_type == CommandType.CLEAN_WORKSTATION and ws.status in {
+            WorkstationStatus.BUSY,
+            WorkstationStatus.CLEANING,
+            WorkstationStatus.PREPARING,
+            WorkstationStatus.RESERVED,
+        }:
+            from iic_booking.remote_analysis.workspace.sync import collect_in_flight_for_workstation
+
+            # Session Output still being collected: stay unavailable until the collect finishes.
+            release_to = (
+                WorkstationStatus.CLEANING
+                if collect_in_flight_for_workstation(ws)
+                else WorkstationStatus.AVAILABLE
+            )
+            if release_to == ws.status:
+                release_to = None
         if ws.current_command == command.command_type:
             ws.current_command = ""
             update_fields = ["current_command", "updated_at"]
             # Successful CLEAN must free the portal workstation even if the next
             # agent heartbeat still reports a sticky BUSY (see HeartbeatService).
-            if success and command.command_type == CommandType.CLEAN_WORKSTATION:
-                if ws.status in {
-                    WorkstationStatus.BUSY,
-                    WorkstationStatus.CLEANING,
-                    WorkstationStatus.PREPARING,
-                    WorkstationStatus.RESERVED,
-                }:
-                    WorkstationStateHistory.objects.create(
-                        workstation=ws,
-                        from_status=ws.status,
-                        to_status=WorkstationStatus.AVAILABLE,
-                        reason="CLEAN_WORKSTATION completed",
-                    )
-                    ws.status = WorkstationStatus.AVAILABLE
-                    update_fields.append("status")
-            ws.save(update_fields=update_fields)
-        elif success and command.command_type == CommandType.CLEAN_WORKSTATION:
-            if ws.status in {
-                WorkstationStatus.BUSY,
-                WorkstationStatus.CLEANING,
-                WorkstationStatus.PREPARING,
-                WorkstationStatus.RESERVED,
-            }:
+            if release_to:
                 WorkstationStateHistory.objects.create(
                     workstation=ws,
                     from_status=ws.status,
-                    to_status=WorkstationStatus.AVAILABLE,
+                    to_status=release_to,
                     reason="CLEAN_WORKSTATION completed",
                 )
-                ws.status = WorkstationStatus.AVAILABLE
-                ws.save(update_fields=["status", "updated_at"])
+                ws.status = release_to
+                update_fields.append("status")
+            ws.save(update_fields=update_fields)
+        elif release_to:
+            WorkstationStateHistory.objects.create(
+                workstation=ws,
+                from_status=ws.status,
+                to_status=release_to,
+                reason="CLEAN_WORKSTATION completed",
+            )
+            ws.status = release_to
+            ws.save(update_fields=["status", "updated_at"])
 
         record_event(
             category=AuditCategory.COMMANDS,
@@ -219,6 +271,7 @@ class CommandService:
                             ws_obj,
                             success=success,
                             message=message,
+                            session_id=str((command.payload or {}).get("session_id") or ""),
                         )
             except Exception:
                 logger.exception(
@@ -226,6 +279,23 @@ class CommandService:
                     command.command_type,
                     command.id,
                 )
+
+        if command.command_type == CommandType.BROWSE_PC_FOLDERS and success:
+            from iic_booking.equipment.remote_analysis_integration.pc_folders import store_browse_result
+
+            store_browse_result(command, result)
+
+        cmd_payload = command.payload or {}
+        if (
+            command.command_type == CommandType.CLEAN_WORKSTATION
+            and cmd_payload.get("reason") == "upload_verified"
+            and "verified_files" in cmd_payload
+            and cmd_payload.get("workspace_id")
+        ):
+            try:
+                record_verified_cleanup(cmd_payload, success=success, result=result)
+            except Exception:
+                logger.exception("Failed to record verified cleanup result (%s)", command.id)
 
         # Phase 4 RC1: JOIN_TUNNEL completion drives TunnelSession ACTIVE / FAILED
         if command.command_type == CommandType.JOIN_TUNNEL:

@@ -12,13 +12,15 @@ receipt, whichever is later".
   the anchor day. Hours are clock hours after the anchor.
 * An Admin / Officer In-Charge "Extend results deadline" on a booking (``operator_absent_hold_until``)
   moves that booking's deadline to the chosen time when it is later.
-* Results overdue = still Pending / Booked / Processing after the deadline, unless the sample is
-  waiting for the user (held at office or rejected). Lab Operators and the OIC see these bookings.
+* Results overdue = still Pending / Booked / Processing after the deadline, the lab has the sample
+  (see above), and the sample is not waiting for the user (held at office or rejected). Lab Operators
+  and the OIC see these bookings.
 * Safeguard (replaces the fixed-hour Auto Operator Unavailable / Auto Operator Absent Disruption timers):
   when ``ResultsDeadlinePolicy.automation_enabled`` is on, bookings whose last slot ends at or after
   ``automation_since`` are acted on at their results deadline; earlier bookings keep the old timers.
-  A booking whose sample was never received keeps the slot-end timing (``unreceived_safeguard_due_at``),
-  so the existing Operator Unavailable outcome for such samples is unchanged.
+  The safeguard uses ``safeguard_due_at``, never ``is_results_overdue``. A booking whose sample was never
+  received keeps the slot-end timing (``unreceived_safeguard_due_at``), so the existing Operator
+  Unavailable outcome for such samples is unchanged.
 """
 
 from __future__ import annotations

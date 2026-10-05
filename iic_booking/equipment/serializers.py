@@ -65,8 +65,18 @@ from .models import (
     EquipmentWriteOffActionLog,
     EquipmentProfileType,
     PrintMaterial,
+    PrintMaterialSourceUnit,
     PrintAnalysis,
     PrintAnalysisBatch,
+    LaserSheetMaterial,
+    LaserMaterialFamily,
+    LaserCutAnalysis,
+    LaserCutBatch,
+    FabricationFileChange,
+    DEFAULT_LASER_SHEET_WIDTH_MM,
+    DEFAULT_LASER_SHEET_HEIGHT_MM,
+    FABRICATION_PROFILE_TYPES,
+    price_per_gram_from_source,
     ContactHonorific,
 )
 from iic_booking.users.display import name_with_honorific
@@ -106,6 +116,15 @@ def _booking_sample_trace_events(booking):
     else:
         events = sorted(events, key=lambda e: e.created_at)
     return events
+
+
+FABRICATION_REJECTED_STATUS_DISPLAY = "Rejected – waiting for new files"
+
+
+def _booking_status_display(booking) -> str:
+    if booking.status == BookingStatus.BOOKED and getattr(booking, "fabrication_rejected_at", None) is not None:
+        return FABRICATION_REJECTED_STATUS_DISPLAY
+    return booking.get_status_display()
 
 
 def _viewer_user(serializer):
@@ -206,7 +225,8 @@ class _RescheduleBlockFieldsMixin:
         user = _viewer_user(self)
         if user is None:
             return None
-        if self._sample_locked(obj):
+        rejected_owner = obj.user_id == user.pk and getattr(obj, "fabrication_rejected_at", None) is not None
+        if self._sample_locked(obj) and not rejected_owner:
             return CANCEL_LOCKED_SAMPLE_ACCEPTED
         if obj.user_id != user.pk and not _viewer_bypasses_sample_lock(self):
             return CANCEL_OWNER_ONLY
@@ -937,6 +957,8 @@ class PrintMaterialSerializer(serializers.ModelSerializer):
             "name",
             "density_g_per_cm3",
             "price_per_gram",
+            "source_rate",
+            "source_unit",
             "user_type",
             "is_active",
             "display_order",
@@ -948,16 +970,154 @@ class PrintMaterialWriteSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=64)
     name = serializers.CharField(max_length=255)
     density_g_per_cm3 = serializers.DecimalField(max_digits=6, decimal_places=3, default=Decimal("1.240"))
-    price_per_gram = serializers.DecimalField(max_digits=10, decimal_places=2)
+    price_per_gram = serializers.DecimalField(max_digits=12, decimal_places=4, required=False, allow_null=True)
+    source_rate = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    source_unit = serializers.ChoiceField(
+        choices=[("", "")] + list(PrintMaterialSourceUnit.choices), required=False, allow_blank=True, default=""
+    )
     user_type = serializers.CharField(max_length=50, allow_blank=True, required=False, allow_null=True)
     is_active = serializers.BooleanField(default=True)
     display_order = serializers.IntegerField(default=0, required=False)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if attrs.get("source_rate") is not None and attrs.get("source_unit"):
+            derived = price_per_gram_from_source(
+                attrs["source_rate"], attrs["source_unit"], attrs.get("density_g_per_cm3")
+            )
+            if derived is None:
+                raise serializers.ValidationError(
+                    {"source_unit": "A density above zero is needed to convert a per-litre rate."}
+                )
+            attrs["price_per_gram"] = derived
+        elif attrs.get("source_rate") is None:
+            attrs["source_unit"] = attrs.get("source_unit") or ""
+        if attrs.get("price_per_gram") is None:
+            raise serializers.ValidationError(
+                {"price_per_gram": "Enter a price per gram, or a supplier rate with its unit."}
+            )
+        if attrs["price_per_gram"] < 0:
+            raise serializers.ValidationError({"price_per_gram": "Price cannot be negative."})
+        return attrs
+
+
+class LaserSheetMaterialSerializer(serializers.ModelSerializer):
+    material_family_display = serializers.CharField(source="get_material_family_display", read_only=True)
+
+    class Meta:
+        model = LaserSheetMaterial
+        fields = [
+            "id",
+            "code",
+            "name",
+            "material_family",
+            "material_family_display",
+            "thickness_mm",
+            "sheet_width_mm",
+            "sheet_height_mm",
+            "sheet_rate",
+            "user_type",
+            "is_active",
+            "display_order",
+        ]
+
+
+class LaserSheetMaterialWriteSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False, allow_null=True)
+    code = serializers.CharField(max_length=64)
+    name = serializers.CharField(max_length=255)
+    material_family = serializers.ChoiceField(choices=LaserMaterialFamily.choices, default=LaserMaterialFamily.OTHER)
+    thickness_mm = serializers.DecimalField(max_digits=6, decimal_places=2, min_value=Decimal("0.01"))
+    sheet_width_mm = serializers.DecimalField(
+        max_digits=8, decimal_places=1, default=DEFAULT_LASER_SHEET_WIDTH_MM, min_value=Decimal("1")
+    )
+    sheet_height_mm = serializers.DecimalField(
+        max_digits=8, decimal_places=1, default=DEFAULT_LASER_SHEET_HEIGHT_MM, min_value=Decimal("1")
+    )
+    sheet_rate = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0"))
+    user_type = serializers.CharField(max_length=50, allow_blank=True, required=False, allow_null=True)
+    is_active = serializers.BooleanField(default=True)
+    display_order = serializers.IntegerField(default=0, required=False)
+
+
+class LaserCutAnalysisSerializer(serializers.ModelSerializer):
+    material_name = serializers.CharField(source="material.name", read_only=True, default="")
+    material_id = serializers.IntegerField(read_only=True, allow_null=True)
+    display_part_name = serializers.CharField(read_only=True)
+    dxf_filename = serializers.CharField(source="original_filename", read_only=True)
+    dxf_download_url = serializers.SerializerMethodField()
+    fit_error = serializers.SerializerMethodField()
+    estimated_material_cost = serializers.SerializerMethodField()
+
+    def get_dxf_download_url(self, obj):
+        return f"/api/laser-cut-analyses/{obj.id}/dxf/"
+
+    def get_fit_error(self, obj):
+        from .laser_cut_service import sheet_fit_error
+
+        return sheet_fit_error(obj.width_mm, obj.height_mm, obj.material) if obj.material_id else None
+
+    def get_estimated_material_cost(self, obj):
+        from .laser_cut_service import laser_part_material_cost
+
+        m = obj.material
+        if not m or obj.area_mm2 is None:
+            return None
+        return str(
+            laser_part_material_cost(obj.area_mm2, obj.quantity, m.sheet_width_mm, m.sheet_height_mm, m.sheet_rate)
+        )
+
+    class Meta:
+        model = LaserCutAnalysis
+        fields = [
+            "id",
+            "batch_id",
+            "sequence",
+            "status",
+            "part_name",
+            "display_part_name",
+            "quantity",
+            "material_id",
+            "material_name",
+            "material_code_snapshot",
+            "detected_units",
+            "units",
+            "units_assumed",
+            "bbox_drawing_units",
+            "width_mm",
+            "height_mm",
+            "area_mm2",
+            "entity_count",
+            "warnings",
+            "error_message",
+            "dxf_filename",
+            "dxf_download_url",
+            "fit_error",
+            "estimated_material_cost",
+            "cancelled_at",
+            "superseded_at",
+            "created_at",
+            "updated_at",
+        ]
+
+
+class LaserCutBatchSerializer(serializers.ModelSerializer):
+    items = serializers.SerializerMethodField()
+
+    def get_items(self, obj):
+        qs = obj.items.filter(cancelled_at__isnull=True, superseded_at__isnull=True).select_related("material")
+        return LaserCutAnalysisSerializer(qs.order_by("sequence", "created_at"), many=True, context=self.context).data
+
+    class Meta:
+        model = LaserCutBatch
+        fields = ["id", "status", "original_filename", "error_message", "booking_id", "items", "created_at"]
 
 
 class PrintAnalysisSerializer(serializers.ModelSerializer):
     material_name = serializers.CharField(source="material.name", read_only=True, default="")
     stl_filename = serializers.CharField(source="original_filename", read_only=True)
     stl_download_url = serializers.SerializerMethodField()
+    display_part_name = serializers.CharField(read_only=True)
 
     def get_stl_download_url(self, obj):
         """Return API download URL for the STL (served via Django)."""
@@ -992,7 +1152,11 @@ class PrintAnalysisSerializer(serializers.ModelSerializer):
             "material_name",
             "stl_filename",
             "stl_download_url",
+            "part_name",
+            "display_part_name",
+            "quantity",
             "cancelled_at",
+            "superseded_at",
             "created_at",
             "updated_at",
         ]
@@ -1010,14 +1174,14 @@ class PrintAnalysisBatchSerializer(serializers.ModelSerializer):
         total = 0
         for item in obj.items.filter(cancelled_at__isnull=True):
             if item.weight_grams is not None:
-                total += int(ceil_weight_grams(item.weight_grams))
+                total += int(ceil_weight_grams(item.weight_grams)) * max(1, int(item.quantity or 1))
         return total
 
     def get_total_estimated_time_minutes(self, obj):
         total = 0
         for item in obj.items.filter(cancelled_at__isnull=True):
             if item.estimated_time_minutes is not None:
-                total += int(item.estimated_time_minutes)
+                total += int(item.estimated_time_minutes) * max(1, int(item.quantity or 1))
         return total
 
     def get_material_code_snapshot(self, obj):
@@ -1655,6 +1819,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     managers = EquipmentManagerSerializer(many=True, read_only=True, source='equipment_managers')
     base_charges_by_user_type = serializers.SerializerMethodField()
     print_materials = PrintMaterialSerializer(many=True, read_only=True)
+    laser_sheet_materials = LaserSheetMaterialSerializer(many=True, read_only=True)
     group_alternatives_enabled = serializers.SerializerMethodField()
     group_cross_reschedule_enabled = serializers.SerializerMethodField()
 
@@ -1686,7 +1851,9 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'show_model_on_card',
             'booking_email_extra_text',
             'completion_email_extra_text',
-            'print_3d_stl_notification_email',
+            'fabrication_notification_emails',
+            'own_material_fixed_charge',
+            'fabrication_replace_window_hours',
             'istem_portal_url',
             'istem_fbr_status_url',
             'image_url',
@@ -1773,6 +1940,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'allow_multiple_sample_sets',
             'sample_collect_deadline_hours',
             'print_materials',
+            'laser_sheet_materials',
             'skip_quota_check',
             'sample_preparation_by_user',
         ]
@@ -2200,6 +2368,12 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     pi_charge_profiles = PIChargeProfileWriteSerializer(many=True, required=False, default=list)
     slot_masters = SlotMasterWriteSerializer(many=True, required=False, default=list)
     print_materials = PrintMaterialWriteSerializer(many=True, required=False, default=list)
+    # No default: a form that does not send laser sheets leaves them unchanged.
+    laser_sheet_materials = LaserSheetMaterialWriteSerializer(many=True, required=False)
+    fabrication_notification_emails = serializers.ListField(
+        child=serializers.CharField(max_length=254, allow_blank=True), required=False
+    )
+    fabrication_replace_window_hours = serializers.CharField(required=False)
     # Accept either name; detail API exposes these as slot_options.
     param_definitions = MultiParamDefinitionWriteSerializer(many=True, required=False, default=list)
     slot_options = MultiParamDefinitionWriteSerializer(many=True, required=False, default=list)
@@ -2215,7 +2389,9 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'name', 'code', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
             'office_address', 'alternate_phone_number', 'important_instruction',
             'make', 'show_make_on_card', 'model_information', 'show_model_on_card',
-            'booking_email_extra_text', 'completion_email_extra_text', 'print_3d_stl_notification_email',
+            'booking_email_extra_text', 'completion_email_extra_text',
+            'fabrication_notification_emails', 'own_material_fixed_charge',
+            'fabrication_replace_window_hours',
             'istem_portal_url', 'istem_fbr_status_url',
             'profile_type', 'category', 'internal_department', 'visibility_group',
             'equipment_group', 'alternative_priority', 'auto_allocate_alternative_default',
@@ -2258,6 +2434,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_specifications', 'equipment_publications', 'equipment_accessories',
             'equipment_additional_accessories', 'input_fields',
             'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
+            'laser_sheet_materials',
             'param_definitions', 'slot_options',
         ]
 
@@ -2289,6 +2466,41 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         if error:
             raise serializers.ValidationError(error)
         return cleaned or None
+
+    def validate_fabrication_notification_emails(self, value):
+        from .fabrication_materials_views import clean_notification_emails
+
+        emails, error = clean_notification_emails(value)
+        if error:
+            raise serializers.ValidationError(error)
+        return emails
+
+    def validate_own_material_fixed_charge(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("The own-material charge cannot be negative.")
+        return value
+
+    def validate_fabrication_replace_window_hours(self, value):
+        from .fabrication_workflow import clean_replace_window_hours
+
+        hours, error = clean_replace_window_hours(value)
+        if error:
+            raise serializers.ValidationError(error)
+        return hours
+
+    def validate_laser_sheet_materials(self, value):
+        codes = [str(item.get("code") or "").strip().upper() for item in value or []]
+        dupes = sorted({c for c in codes if c and codes.count(c) > 1})
+        if dupes:
+            raise serializers.ValidationError(f"Sheet material codes must be unique: {', '.join(dupes)}.")
+        return value
+
+    def validate_print_materials(self, value):
+        codes = [str(item.get("code") or "").strip() for item in value or []]
+        dupes = sorted({c for c in codes if c and codes.count(c) > 1})
+        if dupes:
+            raise serializers.ValidationError(f"Material codes must be unique: {', '.join(dupes)}.")
+        return value
 
     def validate_internal_department(self, value):
         from iic_booking.users.models.department import DepartmentType
@@ -2336,10 +2548,6 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Parent must be a base instrument (it cannot itself be a child mode)."
             )
-        if not getattr(value, "enable_multi_mode", False):
-            raise serializers.ValidationError(
-                "Parent must have Multi-Mode Equipment enabled."
-            )
         instance = getattr(self, "instance", None)
         if instance and instance.pk and value.pk == instance.pk:
             raise serializers.ValidationError("Equipment cannot be its own parent.")
@@ -2356,15 +2564,15 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         attrs = super().validate(attrs)
         instance = getattr(self, "instance", None)
         self._validate_results_deadline(attrs, instance)
-        enable_multi = attrs.get(
-            "enable_multi_mode",
-            getattr(instance, "enable_multi_mode", False) if instance else False,
-        )
+        if "fabrication_notification_emails" in attrs:
+            # Deprecated single-address column, kept in step so a rollback to an older release still has it.
+            emails = attrs["fabrication_notification_emails"] or []
+            attrs["print_3d_stl_notification_email"] = emails[0] if emails else ""
         parent = attrs.get(
             "parent_equipment",
             getattr(instance, "parent_equipment", None) if instance else None,
         )
-        if enable_multi and parent:
+        if attrs.get("enable_multi_mode") and parent:
             raise serializers.ValidationError(
                 {
                     "enable_multi_mode": (
@@ -2373,6 +2581,21 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                     )
                 }
             )
+        if instance is not None and instance.parent_equipment_id and "parent_equipment" in attrs:
+            new_parent = attrs.get("parent_equipment")
+            if (new_parent.pk if new_parent else None) != instance.parent_equipment_id:
+                from .mode_family_service import future_usage_for_mode
+
+                usage = future_usage_for_mode(instance)
+                if usage["bookings"] or usage["schedules"]:
+                    raise serializers.ValidationError(
+                        {
+                            "parent_equipment": (
+                                "This mode still has upcoming bookings or current/future mode schedules. "
+                                "Change it from the Multi-mode equipment page after clearing them."
+                            )
+                        }
+                    )
         managers = attrs.get("equipment_managers")
         operators = attrs.get("equipment_operators")
         if managers is not None:
@@ -2466,7 +2689,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_publications',
             'equipment_accessories', 'equipment_additional_accessories',
             'input_fields', 'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
-            'param_definitions', 'slot_options',
+            'laser_sheet_materials', 'param_definitions', 'slot_options',
         ]}
         # Prefer explicit param_definitions; fall back to slot_options alias from the detail API.
         if not inlines.get('param_definitions') and inlines.get('slot_options'):
@@ -2475,6 +2698,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             equipment = Equipment.objects.create(**validated_data)
             _create_related(equipment, inlines, actor=actor)
+            _sync_mode_flags_after_save(equipment, None, actor)
         return equipment
 
     def update(self, instance, validated_data):
@@ -2486,17 +2710,36 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'equipment_publications',
             'equipment_accessories', 'equipment_additional_accessories',
             'input_fields', 'charge_profiles', 'pi_charge_profiles', 'slot_masters', 'print_materials',
-            'param_definitions', 'slot_options',
+            'laser_sheet_materials', 'param_definitions', 'slot_options',
         ]}
         if inlines.get('param_definitions') is None and inlines.get('slot_options') is not None:
             inlines['param_definitions'] = inlines['slot_options']
         inlines.pop('slot_options', None)
+        old_parent_id = instance.parent_equipment_id
         with transaction.atomic():
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()
             _sync_related(instance, inlines, actor=actor)
+            _sync_mode_flags_after_save(instance, old_parent_id, actor)
         return instance
+
+
+def _sync_mode_flags_after_save(equipment, old_parent_id, actor):
+    """enable_multi_mode is derived: a base is flagged iff it has modes; a mode is never flagged."""
+    from .mode_family_service import log_mode_change, sync_family_flags
+
+    if old_parent_id != equipment.parent_equipment_id:
+        log_mode_change(
+            equipment,
+            "MODE_LINKED" if equipment.parent_equipment_id else "MODE_UNLINKED",
+            {"base_equipment_id": equipment.parent_equipment_id or old_parent_id, "source": "equipment form"},
+            actor,
+        )
+    sync_family_flags(
+        [equipment.pk, equipment.parent_equipment_id, old_parent_id], actor, reason="equipment form save"
+    )
+    equipment.refresh_from_db(fields=["enable_multi_mode"])
 
 
 def _charge_profile_breakpoint(item, cp_type):
@@ -2519,6 +2762,83 @@ def _assignment_contact_fields(item, previous=None):
         elif previous is not None:
             out[field] = getattr(previous, field, "") or ""
     return out
+
+
+def _print_material_fields(item) -> dict:
+    return {
+        "code": str(item["code"]).strip(),
+        "name": item["name"],
+        "density_g_per_cm3": item.get("density_g_per_cm3", Decimal("1.240")),
+        "price_per_gram": item["price_per_gram"],
+        "source_rate": item.get("source_rate"),
+        "source_unit": item.get("source_unit") or "",
+        "user_type": (item.get("user_type") or "").strip() or None,
+        "is_active": item.get("is_active", True),
+        "display_order": item.get("display_order", 0) or 0,
+    }
+
+
+def _laser_sheet_material_fields(item) -> dict:
+    return {
+        "code": str(item["code"]).strip(),
+        "name": item["name"],
+        "material_family": item.get("material_family") or LaserMaterialFamily.OTHER,
+        "thickness_mm": item["thickness_mm"],
+        "sheet_width_mm": item.get("sheet_width_mm") or DEFAULT_LASER_SHEET_WIDTH_MM,
+        "sheet_height_mm": item.get("sheet_height_mm") or DEFAULT_LASER_SHEET_HEIGHT_MM,
+        "sheet_rate": item["sheet_rate"],
+        "user_type": (item.get("user_type") or "").strip() or None,
+        "is_active": item.get("is_active", True),
+        "display_order": item.get("display_order", 0) or 0,
+    }
+
+
+def _upsert_fabrication_materials(model, equipment, items, build_fields, *, referenced) -> None:
+    """Update materials in place (matched by id, then by code) so their IDs stay stable for uploads and
+    analyses that point at them. Removed materials are deleted, or disabled when files still use them."""
+    existing = {m.pk: m for m in model.objects.filter(equipment=equipment)}
+    by_code = {m.code: m for m in existing.values()}
+    plan = []
+    matched = set()
+    for item in items:
+        fields = build_fields(item)
+        obj = existing.get(item.get("id")) if item.get("id") else None
+        if obj is None or obj.pk in matched:
+            candidate = by_code.get(fields["code"])
+            obj = candidate if candidate is not None and candidate.pk not in matched else None
+        if obj is not None:
+            matched.add(obj.pk)
+        plan.append((obj, fields))
+
+    payload_codes = {fields["code"] for _obj, fields in plan}
+    for pk, obj in existing.items():
+        if pk in matched:
+            continue
+        if referenced(obj):
+            update_fields = []
+            if obj.is_active:
+                obj.is_active = False
+                update_fields.append("is_active")
+            if obj.code in payload_codes:
+                obj.code = f"{obj.code[:50]}-old-{obj.pk}"[:64]
+                update_fields.append("code")
+            if update_fields:
+                obj.save(update_fields=update_fields)
+        else:
+            obj.delete()
+
+    # Two passes so swapped codes do not trip the (equipment, code) unique constraint.
+    for obj, fields in plan:
+        if obj is not None and obj.code != fields["code"]:
+            obj.code = f"__tmp_{obj.pk}"
+            obj.save(update_fields=["code"])
+    for obj, fields in plan:
+        if obj is None:
+            model.objects.create(equipment=equipment, **fields)
+            continue
+        for name, value in fields.items():
+            setattr(obj, name, value)
+        obj.save()
 
 
 def _create_related(equipment, inlines, actor=None):
@@ -2670,17 +2990,10 @@ def _create_related(equipment, inlines, actor=None):
             equipment=equipment, slot_number=item['slot_number'], slot_name=item.get('slot_name') or '',
             open_time=item['open_time'], close_time=item['close_time'], is_active=item.get('is_active', True),
         )
-    for item in inlines.get('print_materials', []):
-        PrintMaterial.objects.create(
-            equipment=equipment,
-            code=item['code'],
-            name=item['name'],
-            density_g_per_cm3=item.get('density_g_per_cm3', Decimal('1.240')),
-            price_per_gram=item['price_per_gram'],
-            user_type=(item.get('user_type') or '').strip() or None,
-            is_active=item.get('is_active', True),
-            display_order=item.get('display_order', 0) or 0,
-        )
+    for item in inlines.get('print_materials') or []:
+        PrintMaterial.objects.create(equipment=equipment, **_print_material_fields(item))
+    for item in inlines.get('laser_sheet_materials') or []:
+        LaserSheetMaterial.objects.create(equipment=equipment, **_laser_sheet_material_fields(item))
     for item in inlines.get('param_definitions', []):
         MultiParamDefinition.objects.create(
             equipment=equipment,
@@ -3023,18 +3336,21 @@ def _sync_related(equipment, inlines, actor=None):
                 open_time=item['open_time'], close_time=item['close_time'], is_active=item.get('is_active', True),
             )
     if inlines.get('print_materials') is not None:
-        PrintMaterial.objects.filter(equipment=equipment).delete()
-        for item in inlines['print_materials']:
-            PrintMaterial.objects.create(
-                equipment=equipment,
-                code=item['code'],
-                name=item['name'],
-                density_g_per_cm3=item.get('density_g_per_cm3', Decimal('1.240')),
-                price_per_gram=item['price_per_gram'],
-                user_type=(item.get('user_type') or '').strip() or None,
-                is_active=item.get('is_active', True),
-                display_order=item.get('display_order', 0) or 0,
-            )
+        _upsert_fabrication_materials(
+            PrintMaterial,
+            equipment,
+            inlines['print_materials'],
+            _print_material_fields,
+            referenced=lambda m: m.analyses.exists() or m.analysis_batches.exists(),
+        )
+    if inlines.get('laser_sheet_materials') is not None:
+        _upsert_fabrication_materials(
+            LaserSheetMaterial,
+            equipment,
+            inlines['laser_sheet_materials'],
+            _laser_sheet_material_fields,
+            referenced=lambda m: m.analyses.exists(),
+        )
     if inlines.get('param_definitions') is not None:
         MultiParamDefinition.objects.filter(equipment=equipment).delete()
         for item in inlines['param_definitions']:
@@ -3123,6 +3439,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     oic_contacts = serializers.SerializerMethodField()
     charge_breakdown = serializers.SerializerMethodField()
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
     input_edit_refund_deadline = serializers.SerializerMethodField()
     input_edit_instant_refund_open = serializers.SerializerMethodField()
     can_reschedule = serializers.SerializerMethodField()
@@ -3143,8 +3460,19 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     print_analysis = PrintAnalysisSerializer(read_only=True)
     print_analysis_batch = PrintAnalysisBatchSerializer(read_only=True)
     print_analyses = serializers.SerializerMethodField()
+    laser_cut_analyses = serializers.SerializerMethodField()
+    fabrication_parts = serializers.SerializerMethodField()
+    fabrication_file_changes = serializers.SerializerMethodField()
+    fabrication_files_replaceable = serializers.SerializerMethodField()
+    fabrication_workflow = serializers.SerializerMethodField()
+    own_material_fixed_charge = serializers.SerializerMethodField()
+
+    def _is_fabrication(self, obj) -> bool:
+        return getattr(getattr(obj, "equipment", None), "profile_type", None) in FABRICATION_PROFILE_TYPES
 
     def get_print_analyses(self, obj):
+        if getattr(getattr(obj, "equipment", None), "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+            return []
         qs = PrintAnalysis.objects.filter(booking=obj, cancelled_at__isnull=True).order_by(
             "sequence", "created_at"
         )
@@ -3152,10 +3480,62 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             qs = PrintAnalysis.objects.filter(
                 batch_id=obj.print_analysis_batch_id,
                 cancelled_at__isnull=True,
+                superseded_at__isnull=True,
             ).order_by("sequence", "created_at")
         if not qs.exists() and getattr(obj, "print_analysis_id", None):
-            qs = PrintAnalysis.objects.filter(pk=obj.print_analysis_id)
+            qs = PrintAnalysis.objects.filter(pk=obj.print_analysis_id, superseded_at__isnull=True)
         return PrintAnalysisSerializer(qs, many=True, context=self.context).data
+
+    def get_laser_cut_analyses(self, obj):
+        if getattr(getattr(obj, "equipment", None), "profile_type", None) != EquipmentProfileType.LASER_CUT_2D:
+            return []
+        qs = (
+            LaserCutAnalysis.objects.filter(booking=obj, cancelled_at__isnull=True)
+            .select_related("material")
+            .order_by("sequence", "created_at")
+        )
+        return LaserCutAnalysisSerializer(qs, many=True, context=self.context).data
+
+    def get_fabrication_parts(self, obj):
+        if not self._is_fabrication(obj):
+            return []
+        from .fabrication import fabrication_parts_summary
+
+        return fabrication_parts_summary(obj)
+
+    def get_fabrication_file_changes(self, obj):
+        if not self._is_fabrication(obj):
+            return []
+        from .fabrication_reupload_views import _change_rows
+
+        return _change_rows(obj)
+
+    def get_fabrication_files_replaceable(self, obj):
+        """{"allowed": bool, "reason": str|None} for the requesting user; None for other equipment."""
+        if not self._is_fabrication(obj):
+            return None
+        from .fabrication_reupload_views import fabrication_reupload_block_reason, user_can_replace_fabrication_files
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user_can_replace_fabrication_files(user, obj):
+            return {"allowed": False, "reason": None}
+        reason = fabrication_reupload_block_reason(obj, user=user)
+        return {"allowed": reason is None, "reason": reason}
+
+    def get_fabrication_workflow(self, obj):
+        if not self._is_fabrication(obj):
+            return None
+        from .fabrication_workflow import fabrication_workflow_payload
+
+        request = self.context.get("request")
+        return fabrication_workflow_payload(obj, getattr(request, "user", None))
+
+    def get_own_material_fixed_charge(self, obj):
+        equipment = getattr(obj, "equipment", None)
+        if not self._is_fabrication(obj) or equipment.own_material_fixed_charge is None:
+            return None
+        return str(equipment.own_material_fixed_charge)
 
     def get_settlement_department_name(self, obj):
         dept = getattr(obj, "settlement_department", None)
@@ -3286,6 +3666,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'charge_recalculation_pending_amount',
             'charge_recalculation_pay_deadline',
             'charge_recalculation_pay_seconds_remaining',
+            'amount_paid',
             'input_edit_refund_deadline',
             'input_edit_instant_refund_open',
             'can_reschedule',
@@ -3328,9 +3709,17 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'print_analysis',
             'print_analysis_batch',
             'print_analyses',
+            'laser_cut_analyses',
+            'own_material',
+            'own_material_fixed_charge',
+            'fabrication_parts',
+            'fabrication_file_changes',
+            'fabrication_files_replaceable',
+            'fabrication_workflow',
         ]
         read_only_fields = [
             'booking_id',
+            'own_material',
             'real_booking_id',
             'virtual_booking_id',
             'charge_recalculation_pay_deadline',
@@ -3380,6 +3769,11 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
 
         return payment_seconds_remaining(obj)
 
+    def get_amount_paid(self, obj):
+        from .booking_paid_amount import booking_paid_charge
+
+        return str(booking_paid_charge(obj))
+
     def _input_edit_refund_window(self, obj):
         cache = self.context.setdefault("_input_edit_refund_window_cache", {})
         if obj.pk not in cache:
@@ -3421,7 +3815,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             from .print_3d_views import apply_print_analysis_to_input_values
             from .calculators import get_charge_profile_type
 
-            if get_charge_profile_type(cp) == EquipmentProfileType.PRINT_3D:
+            if get_charge_profile_type(cp) in FABRICATION_PROFILE_TYPES:
                 safe_inputs = apply_print_analysis_to_input_values(obj, safe_inputs)
             _, fresh_core = ChargeCalculationEngine.calculate_charge(
                 cp,
@@ -3430,7 +3824,11 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
                 selected_parameters=obj.selected_parameters,
             )
             refreshed = [
-                {"description": line["description"], "amount": float(line["amount"])}
+                {
+                    "description": line["description"],
+                    "amount": float(line["amount"]),
+                    **({"exact_amount": line["exact_amount"]} if "exact_amount" in line else {}),
+                }
                 for line in fresh_core
             ]
             stored_core_total = sum(float(line.get("amount") or 0) for line in stored[:idx] if isinstance(line, dict))
@@ -3619,7 +4017,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     
     def get_status_display(self, obj):
         """Return model's status display."""
-        return obj.get_status_display()
+        return _booking_status_display(obj)
     
     def get_total_hours(self, obj):
         """Convert total_time_minutes to hours."""
@@ -3794,6 +4192,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     oic_contacts = serializers.SerializerMethodField()
     charge_recalculation_pay_deadline = serializers.DateTimeField(read_only=True, allow_null=True)
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
     can_reschedule = serializers.SerializerMethodField()
     reschedule_block_reason = serializers.SerializerMethodField()
     reschedule_block_message = serializers.SerializerMethodField()
@@ -3807,6 +4206,11 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         from .input_edit_payment_window import payment_seconds_remaining
 
         return payment_seconds_remaining(obj)
+
+    def get_amount_paid(self, obj):
+        from .booking_paid_amount import booking_paid_charge
+
+        return str(booking_paid_charge(obj))
 
     def get_lab_questions_open(self, obj):
         """Lab questions awaiting the user's reply; counted once for the whole page."""
@@ -3850,7 +4254,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'user_type_snapshot_display', 'wallet_owner_name', 'created_by_name', 'repeat_sample_request_status',
             'has_results',
             'charge_recalculation_pending_amount', 'charge_recalculation_pay_deadline',
-            'charge_recalculation_pay_seconds_remaining', 'can_reschedule', 'reschedule_block_reason',
+            'charge_recalculation_pay_seconds_remaining', 'amount_paid', 'can_reschedule', 'reschedule_block_reason',
             'reschedule_block_message', 'can_cancel', 'cancel_block_reason', 'cancel_block_message',
             'created_at', 'updated_at', 'completed_at',
             'rating_on_time_operator_availability',
@@ -3863,6 +4267,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
             'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline',
+            'fabrication_rejected_at', 'fabrication_replace_deadline',
         ]
         read_only_fields = [
             'booking_id',
@@ -3938,7 +4343,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         return None
 
     def get_status_display(self, obj):
-        return obj.get_status_display() if hasattr(obj, 'get_status_display') else obj.status
+        return _booking_status_display(obj) if hasattr(obj, 'get_status_display') else obj.status
 
     def get_total_hours(self, obj):
         if obj.total_time_minutes is not None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from django.db.models import Prefetch, QuerySet
+from django.db.models import Prefetch, Q, QuerySet
 
 from iic_booking.equipment.models import Booking, Equipment
 from iic_booking.sync.models import AgentAssignment, DepartmentSyncAgent, EquipmentSyncProfile
@@ -58,10 +58,18 @@ def agent_may_access_booking(agent: DepartmentSyncAgent, booking: Booking) -> bo
 
 
 def bookings_for_agent(agent: DepartmentSyncAgent) -> QuerySet[Booking]:
+    from iic_booking.department_modules.access import allowed_bookings_q
+    from iic_booking.department_modules.constants import ModuleKey
+    from iic_booking.sync.models import BookingWorkspace
+
     ids = assigned_equipment_ids(agent)
+    qs = Booking.objects.filter(equipment_id__in=ids)
+    allowed = allowed_bookings_q(ModuleKey.DSA)
+    if allowed is not None:
+        # Department switched off / test-only: new bookings drop out, work already started keeps flowing.
+        qs = qs.filter(allowed | Q(pk__in=BookingWorkspace.objects.values("booking_id")))
     return (
-        Booking.objects.filter(equipment_id__in=ids)
-        .select_related(
+        qs.select_related(
             "equipment",
             "equipment__internal_department",
             "user",

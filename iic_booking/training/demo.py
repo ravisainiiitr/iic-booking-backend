@@ -228,6 +228,12 @@ def create_request(faculty, data: dict) -> DemoRequest:
         raise TrainingError("Equipment not found.", status=404) from None
     if not access.equipment_in_pilot(equipment):
         raise TrainingError("Demonstration requests are not open for this equipment yet.", code="not_in_pilot")
+    if not access.equipment_allows_user(equipment, faculty):
+        raise TrainingError(
+            "Demonstrations on this equipment are open to test accounts only for now.",
+            status=403,
+            code=access.AUDIENCE_CODE,
+        )
     policy = effective_policy(equipment)
     purpose = data.get("purpose") or DemoPurpose.COURSE
     if purpose not in DemoPurpose.values:

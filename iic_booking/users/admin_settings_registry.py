@@ -216,8 +216,8 @@ ADMIN_SETTINGS_MODULE_TREE: list[dict[str, Any]] = [
             },
             {
                 "key": "admin_settings.equipment.mode_schedules",
-                "label": "Equipment Mode Schedule",
-                "path": "/admin-settings/equipment/mode-schedules",
+                "label": "Multi-mode equipment",
+                "path": "/multi-mode-equipment",
             },
             {
                 "key": "admin_settings.equipment.booking_charge_settings",

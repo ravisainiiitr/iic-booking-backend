@@ -121,7 +121,9 @@ class TransferManager:
             if ".." in safe_rel.split("/"):
                 raise TransferError("Invalid relative path", code="path_traversal")
             original_name = safe_rel
-        self._extension_allowed(Path(original_name).name, workspace)
+        # Results saved on the Analysis PC are the user's own output; any file type may come back.
+        if source != "agent":
+            self._extension_allowed(Path(original_name).name, workspace)
         folder = (folder or "RawData").replace("\\", "/").strip("/")
         ws_folder = self._folder_writable(workspace, folder.split("/")[0])
 

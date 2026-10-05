@@ -93,6 +93,12 @@ def _client_ip(request) -> str | None:
     return request.META.get("REMOTE_ADDR")
 
 
+def _viewport(request) -> dict | None:
+    body = getattr(request, "data", None)
+    viewport = body.get("viewport") if isinstance(body, dict) else None
+    return viewport if isinstance(viewport, dict) else None
+
+
 def _absolute_builder(request):
     def build(path: str) -> str:
         return request.build_absolute_uri(path)
@@ -187,6 +193,7 @@ def booking_analysis_analyze(request, booking_id: int):
             request_absolute_uri_builder=_absolute_builder(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
             request=request,
+            viewport=_viewport(request),
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden", "booking_ineligible"} else status.HTTP_400_BAD_REQUEST
@@ -233,6 +240,7 @@ def booking_analysis_launch(request, booking_id: int):
             client_ip=_client_ip(request),
             request_absolute_uri_builder=_absolute_builder(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            viewport=_viewport(request),
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden", "booking_ineligible"} else status.HTTP_400_BAD_REQUEST
@@ -329,6 +337,16 @@ def booking_analysis_end(request, booking_id: int):
         )
     body = request.data if hasattr(request, "data") else {}
     reason = (body.get("reason") if isinstance(body, dict) else None) or "Finished early by user"
+    if isinstance(body, dict) and "extra_folders" in body and booking.user_id == request.user.pk:
+        from iic_booking.equipment.remote_analysis_integration import pc_folders
+
+        folders = body.get("extra_folders")
+        try:
+            pc_folders.select_folders(booking, request.user, folders)
+        except pc_folders.PcFolderError as exc:
+            # Nothing chosen: an agent without folder support must not block ending the session.
+            if folders or exc.code not in {"picker_unsupported", "no_active_session"}:
+                return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
     try:
         payload = BookingRemoteAnalysisService().end_analysis(
             booking, user=request.user, reason=str(reason)
@@ -367,6 +385,7 @@ def booking_analysis_start(request, booking_id: int):
             client_ip=_client_ip(request),
             request_absolute_uri_builder=_absolute_builder(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            viewport=_viewport(request),
         )
     except SessionError as exc:
         http = status.HTTP_403_FORBIDDEN if exc.code in {"forbidden"} else status.HTTP_400_BAD_REQUEST
@@ -667,3 +686,147 @@ def booking_analysis_job_resume(request, booking_id: int):
     except SessionError as exc:
         return Response({"detail": str(exc), "code": exc.code}, status=status.HTTP_400_BAD_REQUEST)
     return Response(payload)
+
+
+def _owned_booking(request, booking_id: int):
+    """Setup / sync endpoints are owner-only; never 404 (the frontend reads 404 as "not deployed")."""
+    booking = (
+        Booking.objects.select_related("equipment", "user", "analysis_reservation__workstation")
+        .filter(booking_id=booking_id)
+        .first()
+    )
+    if booking is None or booking.user_id != request.user.pk:
+        return None
+    return booking
+
+
+def _forbidden():
+    return Response({"detail": "Permission denied.", "code": "forbidden"}, status=status.HTTP_403_FORBIDDEN)
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_setup(request, booking_id: int):
+    """GET/POST /api/v1/bookings/{id}/analysis/setup/"""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    if request.method == "POST":
+        body = request.data if isinstance(request.data, dict) else {}
+        try:
+            analysis_setup.apply_setup(booking, request.user, body)
+        except analysis_setup.SetupError as exc:
+            return Response({"code": exc.code, "detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(analysis_setup.setup_payload(booking, request.user))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_input_sources(request, booking_id: int):
+    """GET /api/v1/bookings/{id}/analysis/input-sources/?q=&page=&page_size="""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    qp = request.query_params
+
+    def _num(name, default):
+        try:
+            return int(qp.get(name) or default)
+        except (TypeError, ValueError):
+            return default
+
+    return Response(
+        analysis_setup.input_sources(
+            request.user, booking, q=qp.get("q") or "", page=_num("page", 1), page_size=_num("page_size", 20)
+        )
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_sync_status(request, booking_id: int):
+    """GET /api/v1/bookings/{id}/analysis/sync-status/"""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    return Response(analysis_setup.sync_status(booking, request.user))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_sync_now(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/sync-now/"""
+    from iic_booking.equipment.remote_analysis_integration import analysis_setup
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    if not analysis_setup.sync_now(booking, request.user):
+        return Response(
+            {"detail": "No active analysis session for this booking.", "code": "no_active_session"},
+            status=status.HTTP_409_CONFLICT,
+        )
+    return Response({"queued": True}, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_pc_browse(request, booking_id: int):
+    """POST /api/v1/bookings/{id}/analysis/pc-folders/browse/ {path} — ask the Analysis PC for a folder listing."""
+    from iic_booking.equipment.remote_analysis_integration import pc_folders
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    body = request.data if isinstance(request.data, dict) else {}
+    try:
+        data = pc_folders.request_browse(booking, request.user, body.get("path"))
+    except pc_folders.PcFolderError as exc:
+        return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
+    return Response(data, status=status.HTTP_202_ACCEPTED)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_pc_browse_result(request, booking_id: int, request_id: str):
+    """GET /api/v1/bookings/{id}/analysis/pc-folders/browse/{request_id}/"""
+    from iic_booking.equipment.remote_analysis_integration import pc_folders
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    try:
+        data = pc_folders.browse_result(booking, request.user, request_id)
+    except pc_folders.PcFolderError as exc:
+        return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
+    return Response(data)
+
+
+@api_view(["PUT"])
+@permission_classes([IsAuthenticated])
+@authentication_classes(_AUTH)
+def booking_analysis_pc_folders(request, booking_id: int):
+    """PUT /api/v1/bookings/{id}/analysis/pc-folders/ {folders} — result folders/files copied when the session ends."""
+    from iic_booking.equipment.remote_analysis_integration import pc_folders
+
+    booking = _owned_booking(request, booking_id)
+    if booking is None:
+        return _forbidden()
+    body = request.data if isinstance(request.data, dict) else {}
+    try:
+        items = pc_folders.select_folders(booking, request.user, body.get("folders"))
+    except pc_folders.PcFolderError as exc:
+        return Response({"detail": exc.detail, "code": exc.code}, status=exc.status)
+    return Response({"folders": [i["path"] for i in items], "items": items})

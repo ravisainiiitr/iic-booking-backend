@@ -16,6 +16,7 @@ UNIT_BY_PROFILE_TYPE = {
     EquipmentProfileType.MULTI_PARAM: "sample",
     EquipmentProfileType.HOUR: "hour",
     EquipmentProfileType.PRINT_3D: "hour",
+    EquipmentProfileType.LASER_CUT_2D: "hour",
 }
 
 

@@ -90,7 +90,7 @@ def _unit_inputs(profile, equipment) -> dict | None:
     from iic_booking.equipment.models import ChargeProfileType, MultiParamDefinition
 
     ptype = get_charge_profile_type(profile)
-    if ptype == ChargeProfileType.PRINT_3D:
+    if ptype in (ChargeProfileType.PRINT_3D, ChargeProfileType.LASER_CUT_2D):
         return None
     if ptype == ChargeProfileType.MULTI_PARAM:
         code = (

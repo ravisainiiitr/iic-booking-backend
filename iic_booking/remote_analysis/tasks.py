@@ -258,7 +258,10 @@ def archive_old_metrics(days: int = 90) -> dict:
 
 @ra_periodic_task(name="remote_analysis.retry_failed_workspace_collects")
 def retry_failed_workspace_collects(limit: int = 20) -> dict:
-    """Re-issue COLLECT for workspaces stuck in FAILED/RETRYING with deferred Output."""
+    """Re-issue COLLECT for workspaces stuck in FAILED/RETRYING with deferred Output.
+
+    UploadFailed is terminal: retries were exhausted (transfer_max_retries) and the PC was released.
+    """
     from iic_booking.remote_analysis.constants import TransferDirection, TransferStatus, WorkspaceSyncPhase
     from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
     from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace
@@ -266,7 +269,6 @@ def retry_failed_workspace_collects(limit: int = 20) -> dict:
     qs = AnalysisWorkspace.objects.filter(
         sync_phase__in=[
             WorkspaceSyncPhase.PREPARATION_FAILED,
-            WorkspaceSyncPhase.UPLOAD_FAILED,
             WorkspaceSyncPhase.RETRY_PENDING,
             WorkspaceSyncPhase.UPLOADING_OUTPUT,
             # legacy rows before migration
@@ -280,12 +282,43 @@ def retry_failed_workspace_collects(limit: int = 20) -> dict:
     for ws in qs:
         last = ws.transfers.filter(direction=TransferDirection.AGENT_PUSH).order_by("-created_at").first()
         if last and last.status in {TransferStatus.FAILED, TransferStatus.RETRYING} and ws.workstation_id:
+            if svc.collect_retries_exhausted(ws):
+                continue
             try:
                 svc.retry_failed_transfers(ws)
                 retried += 1
             except Exception:
                 logger.exception("retry collect failed for workspace %s", ws.id)
-    return {"retried": retried}
+
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    bridged = 0
+    stale = (timezone.now() - timedelta(hours=72)).isoformat()
+    for ws in AnalysisWorkspace.objects.filter(
+        research_link__isnull=False,
+        transfer_state__bridge__phase="failed",
+        transfer_state__bridge__first_failed_at__gte=stale,
+    ).order_by("updated_at")[:limit]:
+        bridge = (ws.transfer_state or {}).get("bridge") or {}
+        bridge_workspace_output.delay(str(ws.id), bridge.get("session_id") or "", None, True)
+        bridged += 1
+    return {"retried": retried, "bridge_retried": bridged}
+
+
+@ra_periodic_task(name="remote_analysis.run_analysis_setup")
+def run_analysis_setup(setup_id: str) -> dict:
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import run_setup
+
+    return run_setup(setup_id)
+
+
+@ra_periodic_task(name="remote_analysis.bridge_workspace_output")
+def bridge_workspace_output(workspace_id: str, session_id: str = "", paths: list | None = None, session_ended: bool = True) -> dict:
+    from iic_booking.equipment.remote_analysis_integration.analysis_setup import run_bridge
+
+    return run_bridge(workspace_id, session_id, paths, session_ended)
 
 
 @ra_periodic_task(name="remote_analysis.interval_workspace_collect")
@@ -330,6 +363,7 @@ def send_reservation_reminders() -> dict:
 
     from django.utils import timezone
 
+    from iic_booking.communication.email_branding import format_local_dt
     from iic_booking.remote_analysis.collaboration_models import NotificationPreference
     from iic_booking.remote_analysis.constants import NotificationType, ReservationStatus
     from iic_booking.remote_analysis.notifications import NotificationEngine
@@ -365,7 +399,7 @@ def send_reservation_reminders() -> dict:
             reservation.user,
             NotificationType.RESERVATION_REMINDER,
             "Reservation reminder",
-            f"Your analysis reservation starts at {reservation.requested_start.isoformat()}",
+            f"Your analysis reservation starts at {format_local_dt(reservation.requested_start, '%d %b %Y, %I:%M %p')}",
             metadata={"reservation_id": str(reservation.id)},
         )
         sent += 1

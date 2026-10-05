@@ -230,7 +230,7 @@ from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
 from iic_booking.equipment.results_sharing_service import is_active_share_recipient, mark_results_viewed
 from iic_booking.communication.styled_transactional_emails import send_return_shipping_tracking_email
-from iic_booking.communication.email_branding import build_booking_created_event_comment
+from iic_booking.communication.email_branding import build_booking_created_event_comment, format_local_dt
 from iic_booking.users.display import apply_faculty_name_prefix, get_user_display_name
 
 logger = logging.getLogger(__name__)
@@ -1668,12 +1668,37 @@ def equipment_form_choices(request):
 
     categories = EquipmentCategory.objects.all().order_by('name')
     equipment_groups = EquipmentGroup.objects.all().order_by('name')
-    # Multi-mode bases only (enable_multi_mode + no parent) for parent linking
+    # Multi-mode bases (no parent, with modes or flagged); families are edited on the Multi-mode page.
     parent_equipment_choices = (
-        Equipment.objects.filter(parent_equipment__isnull=True, enable_multi_mode=True)
+        Equipment.objects.filter(parent_equipment__isnull=True)
+        .filter(Q(enable_multi_mode=True) | Q(mode_children__isnull=False))
+        .distinct()
         .order_by("code")
         .values("equipment_id", "code", "name")
     )
+    mode_families = {}
+    for child in (
+        Equipment.objects.filter(parent_equipment__isnull=False)
+        .select_related("parent_equipment")
+        .order_by("parent_equipment__code", "code")
+    ):
+        fam = mode_families.setdefault(
+            child.parent_equipment_id,
+            {
+                "base_equipment_id": child.parent_equipment_id,
+                "base_code": child.parent_equipment.code,
+                "base_name": child.parent_equipment.name,
+                "modes": [],
+            },
+        )
+        fam["modes"].append(
+            {
+                "equipment_id": child.equipment_id,
+                "code": child.code,
+                "name": child.name,
+                "mode_availability": child.mode_availability,
+            }
+        )
     internal_departments = Department.objects.filter(
         department_type=DepartmentType.INTERNAL
     ).order_by('name')
@@ -1720,6 +1745,7 @@ def equipment_form_choices(request):
         "categories": EquipmentCategorySerializer(categories, many=True).data,
         "equipment_groups": EquipmentGroupSerializer(equipment_groups, many=True).data,
         "parent_equipment_choices": list(parent_equipment_choices),
+        "mode_families": list(mode_families.values()),
         "internal_departments": [
             {"id": d.id, "name": d.name, "code": d.code or "", "department_type": DepartmentType.INTERNAL}
             for d in internal_departments
@@ -3099,7 +3125,24 @@ def equipment_calculate(request, pk):
         )
         if pa_err:
             return Response({"error": pa_err}, status=status.HTTP_400_BAD_REQUEST)
-    
+    elif getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        from .fabrication import merge_laser_booking_into_input_values
+        from .print_3d_views import get_charge_estimate_guest_user
+
+        laser_owner = request.user if user_is_authenticated else get_charge_estimate_guest_user()
+        input_values, laser_err, _batch = merge_laser_booking_into_input_values(
+            equipment,
+            input_values,
+            laser_owner,
+            laser_cut_batch_id=request.query_params.get("laser_cut_batch_id"),
+        )
+        if laser_err:
+            return Response({"error": laser_err}, status=status.HTTP_400_BAD_REQUEST)
+    from .fabrication import OWN_MATERIAL_KEY, is_fabrication_equipment, resolve_own_material
+
+    if is_fabrication_equipment(equipment):
+        input_values[OWN_MATERIAL_KEY] = resolve_own_material(equipment, request.query_params.get("own_material"))
+
     # Calculate time
     try:
         total_time_minutes = TimeCalculationEngine.calculate_time(
@@ -4137,6 +4180,37 @@ def _book_equipment_impl(request, pk):
         elif print_analysis_id:
             print_analysis_obj = PrintAnalysis.objects.filter(pk=print_analysis_id).first()
 
+    from .fabrication import (
+        OWN_MATERIAL_KEY,
+        is_fabrication_equipment,
+        merge_laser_booking_into_input_values,
+        resolve_own_material,
+        strip_fabrication_keys,
+    )
+
+    laser_cut_batch_obj = None
+    if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        input_values, laser_err, laser_cut_batch_obj = merge_laser_booking_into_input_values(
+            equipment,
+            strip_fabrication_keys(input_values),
+            request.user,
+            laser_cut_batch_id=request.data.get("laser_cut_batch_id"),
+        )
+        if laser_err:
+            _create_booking_attempt_log(
+                request, equipment, BookingAttemptOutcome.FAILED,
+                failure_reason=laser_err,
+                number_of_samples=request.data.get("number_of_samples") or 1,
+                additional_info=_get_additional_info_from_request(request, equipment),
+            )
+            return Response({"error": laser_err}, status=status.HTTP_400_BAD_REQUEST)
+    elif getattr(equipment, "profile_type", None) != EquipmentProfileType.PRINT_3D:
+        input_values = strip_fabrication_keys(input_values)
+    booking_own_material = False
+    if is_fabrication_equipment(equipment):
+        booking_own_material = resolve_own_material(equipment, request.data.get("own_material"))
+        input_values[OWN_MATERIAL_KEY] = booking_own_material
+
     numeric_limit_error = _validate_dynamic_numeric_input_limits(
         equipment, input_values, booking_user=booking_user
     )
@@ -5073,7 +5147,8 @@ def _book_equipment_impl(request, pk):
                     user_type_snapshot=user_type,
                     total_time_minutes=total_time_minutes,
                     total_charge=total_charge,
-                    input_values=input_values,
+                    input_values=strip_fabrication_keys(input_values),
+                    own_material=booking_own_material,
                     selected_parameters=None,
                     charge_breakdown=charge_breakdown,
                     status=booking_status_enum,
@@ -5099,6 +5174,10 @@ def _book_equipment_impl(request, pk):
                         print_analysis_obj=print_analysis_obj,
                         print_analysis_batch_obj=print_analysis_batch_obj,
                     )
+                if laser_cut_batch_obj is not None:
+                    from .fabrication import link_laser_batch_to_booking
+
+                    link_laser_batch_to_booking(booking, laser_cut_batch_obj)
                 perf.mark("booking_row_inserted")
                 _schedule_equipment_booking_requester_group_upsert(equipment.pk, booking_user.pk)
                 if reward_points_applied > 0 and reward_discount_amount > 0:
@@ -5818,7 +5897,8 @@ def _book_equipment_impl(request, pk):
                 user_type_snapshot=user_type,
                 total_time_minutes=total_time_minutes,
                 total_charge=total_charge,
-                input_values=input_values,
+                input_values=strip_fabrication_keys(input_values),
+                own_material=booking_own_material,
                 selected_parameters=None,
                 charge_breakdown=charge_breakdown,
                 status=booking_status_enum,
@@ -5835,6 +5915,10 @@ def _book_equipment_impl(request, pk):
                 print_analysis_obj=print_analysis_obj,
                 print_analysis_batch_obj=print_analysis_batch_obj,
             )
+            if laser_cut_batch_obj is not None:
+                from .fabrication import link_laser_batch_to_booking
+
+                link_laser_batch_to_booking(booking, laser_cut_batch_obj)
             
             # Update daily slots to link them to the booking and mark as booked (use locked slot IDs)
             DailySlot.objects.filter(id__in=slot_ids).update(booking=booking, status=SlotStatus.BOOKED)
@@ -11530,6 +11614,14 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
     _ = result_files  # accepted for call-site compatibility
     result_files = []
 
+    from .fabrication import is_fabrication_equipment
+
+    if is_fabrication_equipment(booking.equipment):
+        from .fabrication_workflow import send_pickup_email
+
+        send_pickup_email(booking)
+        return
+
     user = booking.user
     equipment = booking.equipment
     template_code = "booking_completed_email"
@@ -11561,8 +11653,8 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
     }
     daily_slots = booking.daily_slots.all().order_by('start_datetime')
     if daily_slots.exists():
-        context["start_time"] = daily_slots.first().start_datetime.strftime("%Y-%m-%d %H:%M:%S")
-        context["end_time"] = daily_slots.last().end_datetime.strftime("%Y-%m-%d %H:%M:%S")
+        context["start_time"] = format_local_dt(daily_slots.first().start_datetime, "%Y-%m-%d %H:%M:%S")
+        context["end_time"] = format_local_dt(daily_slots.last().end_datetime, "%Y-%m-%d %H:%M:%S")
     else:
         context["start_time"] = ""
         context["end_time"] = ""
@@ -11686,7 +11778,7 @@ def _build_sample_notice_context(booking):
     if timezone.is_naive(completed_at):
         completed_at = timezone.make_aware(completed_at)
     deadline = completed_at + timedelta(hours=hours)
-    deadline_display = deadline.strftime("%d %B %Y")
+    deadline_display = format_local_dt(deadline, "%d %B %Y")
     ctx.update(
         {
             "sample_collection_deadline_at": deadline.isoformat(),
@@ -11797,15 +11889,22 @@ def complete_booking(request, booking_id):
                     {"error": f"Cannot complete booking with status '{booking.status}'. Only PENDING or BOOKED bookings can be completed."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if booking.fabrication_rejected_at is not None:
+                return Response(
+                    {"error": "This booking was rejected and is waiting for new files from the user. It cannot be completed yet."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             previous_status = booking.status
             # Persist completion transition first so manual and scheduled paths stay race-safe.
             booking.status = BookingStatus.COMPLETED
             booking.completed_at = timezone.now()
             booking.save(update_fields=["status", "completed_at", "updated_at"])
 
-        # Mirror former Sample Lifecycle "Analyzed" milestone on Complete
+        # Mirror former Sample Lifecycle "Analyzed" milestone on Complete (fabrication has no sample lifecycle)
         try:
-            has_completed_trace = booking.sample_trace_events.filter(
+            from .fabrication import is_fabrication_equipment
+
+            has_completed_trace = is_fabrication_equipment(booking.equipment) or booking.sample_trace_events.filter(
                 status=SampleTraceStatus.COMPLETED
             ).exists()
             if not has_completed_trace:
@@ -11945,7 +12044,7 @@ def refund_booking(request, booking_id):
 
     refund_notes = request.data.get('notes', '')
     try:
-        refund_booking_internal(booking, refund_notes, request.user)
+        refunded = refund_booking_internal(booking, refund_notes, request.user)
     except ValueError as e:
         return Response(
             {"error": str(e)},
@@ -11964,9 +12063,9 @@ def refund_booking(request, booking_id):
     serializer = BookingSerializer(booking)
     return Response(
         {
-            "message": f"Booking refunded successfully. ₹{booking.total_charge} credited / refunded.",
+            "message": f"Booking refunded successfully. ₹{refunded} credited / refunded.",
             "booking": serializer.data,
-            "refund_amount": str(booking.total_charge),
+            "refund_amount": str(refunded),
             "wallet_balance": str(refund_target.balance),
         },
         status=status.HTTP_200_OK,
@@ -12120,8 +12219,10 @@ def refund_booking_internal(booking, refund_notes, performed_by):
 
     released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
 
+    from .booking_paid_amount import booking_paid_charge, clear_pending_charge_difference
+
     razorpay_payment = None
-    wallet_credit = Decimal(str(booking.total_charge or 0))
+    wallet_credit = booking_paid_charge(booking)
     try:
         from iic_booking.payments.razorpay_service import get_successful_booking_payment, create_refund
 
@@ -12169,7 +12270,10 @@ def refund_booking_internal(booking, refund_notes, performed_by):
                 related_user=booking.user,
             )
         booking.status = BookingStatus.REFUNDED
-        booking.save(update_fields=["status"])
+        refund_update_fields = ["status"]
+        if not razorpay_payment:
+            refund_update_fields += clear_pending_charge_difference(booking)
+        booking.save(update_fields=refund_update_fields)
 
         create_booking_event(
             booking=booking,
@@ -12201,6 +12305,7 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         )
     except Exception as e:
         logger.warning("Failed to notify waitlist after refund for equipment %s: %s", booking.equipment.code, e)
+    return Decimal(str(booking.total_charge or 0)) if razorpay_payment else wallet_credit
 
 def _reverse_reward_points_for_booking(booking, actor, note_prefix):
     points_used = Decimal(str(getattr(booking, "reward_points_used", 0) or "0"))
@@ -12748,7 +12853,7 @@ def reschedule_booking(request, booking_id):
                 event_type=BookingEventType.RESCHEDULED,
                 previous_status=previous_status,
                 new_status=booking.status,
-                comment=f"Booking rescheduled to {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}",
+                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
             )
@@ -12940,6 +13045,8 @@ def partial_cancel_preview(request, booking_id):
     preview["partial_cancel_mode"] = (
         "print_items"
         if (profile_type or "").strip().upper() == EquipmentProfileType.PRINT_3D
+        else "full_only"
+        if (profile_type or "").strip().upper() == EquipmentProfileType.LASER_CUT_2D
         else "input_reduction"
         if partial_cancel_uses_input_reduction(profile_type)
         else "slot_selection"
@@ -13019,15 +13126,23 @@ def user_cancel_booking(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    from .fabrication_workflow import is_rejection_active
     from .reschedule_lock import cancel_locked_for, cancel_locked_payload
 
-    if cancel_locked_for(request.user, booking):
+    # A booking the lab rejected as not feasible can always be cancelled by its user, with a full refund.
+    rejected_by_lab = is_rejection_active(booking)
+
+    if not rejected_by_lab and cancel_locked_for(request.user, booking):
         return Response(cancel_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
 
     # Enforce reschedule-hours threshold for user actions (normal case).
     # If now is strictly inside the threshold window before the allocated slot start time,
     # disallow cancel. (Maintenance disruption policy keeps cancel available.)
-    if not getattr(booking, "maintenance_disruption_flag", False) and booking.status != BookingStatus.DISRUPTION_PENDING:
+    if (
+        not rejected_by_lab
+        and not getattr(booking, "maintenance_disruption_flag", False)
+        and booking.status != BookingStatus.DISRUPTION_PENDING
+    ):
         equipment = booking.equipment
         threshold_hours = getattr(equipment, "reschedule_hours_threshold", None) or 48
         earliest_start = (
@@ -13059,11 +13174,17 @@ def user_cancel_booking(request, booking_id):
     cancel_notes = request.data.get("notes", "")
 
     try:
-        cancel_req = parse_cancellation_request(request.data, booking)
+        cancel_req = parse_cancellation_request({} if rejected_by_lab else request.data, booking)
     except CancellationValidationError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     allow_started_slots = user_may_cancel_started_slots(request.user)
+    if rejected_by_lab:
+        should_refund = True
+        allow_started_slots = True
+        cancel_notes = " ".join(
+            part for part in ["Cancelled after the lab rejected the files.", str(cancel_notes or "").strip()] if part
+        )
 
     try:
         with transaction.atomic():
@@ -13540,7 +13661,7 @@ def user_reschedule_booking(request, booking_id):
                 event_type=BookingEventType.RESCHEDULED,
                 previous_status=previous_status,
                 new_status=booking.status,
-                comment=f"Booking rescheduled to {start_time.strftime('%Y-%m-%d %H:%M')} - {end_time.strftime('%Y-%m-%d %H:%M')}",
+                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
             )
@@ -13700,7 +13821,7 @@ def _get_s3_client_and_results_keys(virtual_booking_id):
 def _apply_results_available_event_and_completed_status(booking):
     """DB-only: audit that results are available. Caller must hold row lock and verified notified_at is unset."""
     detected_at = timezone.now()
-    detected_str = detected_at.strftime("%d %b %Y, %I:%M %p")
+    detected_str = format_local_dt(detected_at, "%d %b %Y, %I:%M %p")
     comment = f"Results are now available for this booking. Detected on {detected_str}."
     create_booking_event(
         booking=booking,
@@ -14586,6 +14707,13 @@ def set_booking_sample_status(request, booking_id):
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    from .fabrication import is_fabrication_equipment
+
+    if is_fabrication_equipment(booking.equipment):
+        from .fabrication_workflow import SAMPLE_STATUS_REFUSED_MESSAGE
+
+        return Response({"error": SAMPLE_STATUS_REFUSED_MESSAGE}, status=status.HTTP_400_BAD_REQUEST)
+
     status_value = (request.data.get('status') or '').strip().upper()
     # Sample Returned / Archived removed; Analyzed (COMPLETED) and Disposed are no longer
     # manual UI actions — Complete covers analysis completion; disposal is out of portal workflow.
@@ -15287,6 +15415,19 @@ def _recalculate_booking_charge_and_adjust_wallet(
                 comment += f" Extra ₹{pending_amount:.2f} to pay — click Pay Now to debit wallet."
         else:
             comment += " No change in amount."
+        if current_pending_delta is not None and current_pending_delta != 0:
+            earlier = abs(current_pending_delta)
+            if current_pending_delta < 0:
+                comment += (
+                    f" Previous charge is the amount paid so far: the earlier refund of ₹{earlier:.2f} had not been "
+                    "approved yet, so this calculation replaces it."
+                )
+            else:
+                comment += (
+                    f" Previous charge is the amount paid so far: the earlier extra ₹{earlier:.2f} had not been "
+                    "paid yet, so this calculation replaces it."
+                )
+            metadata["replaced_pending_amount"] = str(current_pending_delta)
 
         create_booking_event(
             booking=booking,
@@ -17791,6 +17932,10 @@ def oic_equipment_settings_list(request):
             "equipments": rows,
             "can_edit_slot_window_reference": _is_admin_user(request.user),
             "has_print_3d_equipment": any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows),
+            "has_fabrication_equipment": any(
+                r["profile_type"] in (EquipmentProfileType.PRINT_3D, EquipmentProfileType.LASER_CUT_2D)
+                for r in rows
+            ),
             "instruction_user_types": [
                 {"value": code, "label": label} for code, label in instruction_user_type_choices()
             ],
@@ -17972,10 +18117,57 @@ def oic_equipment_settings_update(request, equipment_id):
 
 
 def _oic_can_manage_print_materials(user) -> bool:
-    return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
+    from .fabrication_materials_views import _dept_admin_department_id
+
+    return (
+        _is_admin_user(user)
+        or getattr(user, "user_type", None) == UserType.MANAGER
+        or _dept_admin_department_id(user) is not None
+    )
 
 def _oic_print_3d_equipment_qs(user):
-    return _oic_manageable_equipment_qs(user).filter(profile_type=EquipmentProfileType.PRINT_3D)
+    from .fabrication_materials_views import fabrication_manageable_equipment_qs
+
+    return fabrication_manageable_equipment_qs(user).filter(profile_type=EquipmentProfileType.PRINT_3D)
+
+
+def _user_can_manage_print_materials_for(user, equipment_id) -> bool:
+    return _oic_print_3d_equipment_qs(user).filter(pk=equipment_id).exists()
+
+
+def _print_material_price_from_request(data, density, current_price=None):
+    """Returns (price_per_gram, source_rate, source_unit, error). A supplier rate + unit wins over price_per_gram."""
+    from .models import PrintMaterialSourceUnit, price_per_gram_from_source
+
+    source_unit = str(data.get("source_unit") or "").strip()
+    raw_rate = data.get("source_rate")
+    source_rate = None
+    if raw_rate not in (None, ""):
+        try:
+            source_rate = Decimal(str(raw_rate)).quantize(Decimal("0.01"))
+        except Exception:
+            return None, None, "", "Supplier rate must be a number."
+        if source_rate < 0:
+            return None, None, "", "Supplier rate cannot be negative."
+    if source_unit and source_unit not in PrintMaterialSourceUnit.values:
+        return None, None, "", "Supplier rate unit must be per kg, per litre or per gram."
+    if source_rate is not None and source_unit:
+        price = price_per_gram_from_source(source_rate, source_unit, density)
+        if price is None:
+            return None, None, "", "A density above zero is needed to convert a per-litre rate."
+        return price, source_rate, source_unit, None
+    raw_price = data.get("price_per_gram")
+    if raw_price in (None, ""):
+        if current_price is None:
+            return None, None, "", "Enter a price per gram, or a supplier rate with its unit."
+        return current_price, source_rate, source_unit if source_rate is not None else "", None
+    try:
+        price = Decimal(str(raw_price))
+    except Exception:
+        return None, None, "", "price_per_gram must be a valid number."
+    if price < 0:
+        return None, None, "", "price_per_gram must be >= 0."
+    return price, source_rate, source_unit if source_rate is not None else "", None
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -17986,7 +18178,7 @@ def oic_print_materials(request):
     """
     if not _oic_can_manage_print_materials(request.user):
         return Response(
-            {"error": "Only Admin or Officer In Charge can manage 3D print materials."},
+            {"error": "Only Admin, Department Admin or Officer In Charge can manage 3D print materials."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -18001,7 +18193,7 @@ def oic_print_materials(request):
                 eq_id = int(equipment_id)
             except (TypeError, ValueError):
                 return Response({"error": "Invalid equipment_id."}, status=status.HTTP_400_BAD_REQUEST)
-            if not _user_can_manage_oic_equipment(request.user, eq_id):
+            if not _user_can_manage_print_materials_for(request.user, eq_id):
                 return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
             qs = qs.filter(equipment_id=eq_id)
 
@@ -18039,8 +18231,6 @@ def oic_print_materials(request):
         eq_id = int(data.get("equipment_id"))
     except (TypeError, ValueError):
         return Response({"error": "equipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-    if not _user_can_manage_oic_equipment(request.user, eq_id):
-        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     try:
         equipment = Equipment.objects.get(pk=eq_id)
     except Equipment.DoesNotExist:
@@ -18050,6 +18240,8 @@ def oic_print_materials(request):
             {"error": "Materials can only be managed for PRINT_3D equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not _user_can_manage_print_materials_for(request.user, eq_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
 
     code = str(data.get("code") or "").strip()
     name = str(data.get("name") or "").strip()
@@ -18063,17 +18255,16 @@ def oic_print_materials(request):
 
     try:
         density = Decimal(str(data.get("density_g_per_cm3") if data.get("density_g_per_cm3") not in (None, "") else "1.240"))
-        price = Decimal(str(data.get("price_per_gram")))
     except Exception:
         return Response(
-            {"error": "density_g_per_cm3 and price_per_gram must be valid numbers."},
+            {"error": "density_g_per_cm3 must be a valid number."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if price < 0 or density <= 0:
-        return Response(
-            {"error": "density must be > 0 and price_per_gram must be >= 0."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    if density <= 0:
+        return Response({"error": "density must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+    price, source_rate, source_unit, price_error = _print_material_price_from_request(data, density)
+    if price_error:
+        return Response({"error": price_error}, status=status.HTTP_400_BAD_REQUEST)
 
     user_type_raw = data.get("user_type")
     user_type = None
@@ -18099,6 +18290,8 @@ def oic_print_materials(request):
         name=name,
         density_g_per_cm3=density,
         price_per_gram=price,
+        source_rate=source_rate,
+        source_unit=source_unit,
         user_type=user_type,
         is_active=is_active,
         display_order=max(0, display_order),
@@ -18111,22 +18304,29 @@ def oic_print_material_detail(request, material_id):
     """Update or delete a single PrintMaterial on managed PRINT_3D equipment."""
     if not _oic_can_manage_print_materials(request.user):
         return Response(
-            {"error": "Only Admin or Officer In Charge can manage 3D print materials."},
+            {"error": "Only Admin, Department Admin or Officer In Charge can manage 3D print materials."},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
         material = PrintMaterial.objects.select_related("equipment").get(pk=material_id)
     except PrintMaterial.DoesNotExist:
         return Response({"error": "Material not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not _user_can_manage_oic_equipment(request.user, material.equipment_id):
-        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     if material.equipment.profile_type != EquipmentProfileType.PRINT_3D:
         return Response(
             {"error": "Materials can only be managed for PRINT_3D equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not _user_can_manage_print_materials_for(request.user, material.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "DELETE":
+        if material.analyses.exists() or material.analysis_batches.exists():
+            return Response(
+                {
+                    "error": "This material is used by uploaded files or bookings, so it cannot be deleted. Disable it instead."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             material.delete()
         except (IntegrityError, ProtectedError, RestrictedError):
@@ -18174,15 +18374,23 @@ def oic_print_material_detail(request, material_id):
         material.density_g_per_cm3 = density
         update_fields.append("density_g_per_cm3")
 
-    if "price_per_gram" in data and data.get("price_per_gram") not in (None, ""):
-        try:
-            price = Decimal(str(data.get("price_per_gram")))
-        except Exception:
-            return Response({"error": "Invalid price_per_gram."}, status=status.HTTP_400_BAD_REQUEST)
-        if price < 0:
-            return Response({"error": "price_per_gram must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+    if any(k in data for k in ("price_per_gram", "source_rate", "source_unit")) or (
+        "density_g_per_cm3" in update_fields and material.source_rate is not None and material.source_unit
+    ):
+        price_data = {
+            "price_per_gram": data.get("price_per_gram"),
+            "source_rate": data.get("source_rate", material.source_rate),
+            "source_unit": data.get("source_unit", material.source_unit),
+        }
+        price, source_rate, source_unit, price_error = _print_material_price_from_request(
+            price_data, material.density_g_per_cm3, current_price=material.price_per_gram
+        )
+        if price_error:
+            return Response({"error": price_error}, status=status.HTTP_400_BAD_REQUEST)
         material.price_per_gram = price
-        update_fields.append("price_per_gram")
+        material.source_rate = source_rate
+        material.source_unit = source_unit
+        update_fields += ["price_per_gram", "source_rate", "source_unit"]
 
     if "user_type" in data:
         raw = data.get("user_type")
@@ -18306,323 +18514,6 @@ def oic_equipment_group_quotas(request, group_id=None):
         }
     )
 
-def _serialize_mode_schedule(sched):
-    return {
-        "id": sched.id,
-        "parent_equipment_id": sched.parent_equipment_id,
-        "mode_equipment_id": sched.mode_equipment_id,
-        "mode_equipment_code": getattr(sched.mode_equipment, "code", None),
-        "mode_equipment_name": getattr(sched.mode_equipment, "name", None),
-        "start_date": sched.start_date.isoformat() if sched.start_date else None,
-        "end_date": sched.end_date.isoformat() if sched.end_date else None,
-        "start_time": sched.start_time.strftime("%H:%M") if sched.start_time else None,
-        "end_time": sched.end_time.strftime("%H:%M") if sched.end_time else None,
-        "behavior": sched.behavior,
-        "behavior_display": sched.get_behavior_display() if hasattr(sched, "get_behavior_display") else sched.behavior,
-        "unavailable_label": sched.unavailable_label or "Mode not scheduled",
-        "unavailable_color": sched.unavailable_color or "#9ca3af",
-        "exclusive_blocked_label": sched.exclusive_blocked_label or "Alternate mode active",
-        "exclusive_blocked_color": sched.exclusive_blocked_color or "#9ca3af",
-        "created_at": sched.created_at.isoformat() if sched.created_at else None,
-        "updated_at": sched.updated_at.isoformat() if sched.updated_at else None,
-    }
-
-def _parse_optional_time(raw):
-    if raw is None or raw == "":
-        return None
-    s = str(raw).strip()
-    if not s:
-        return None
-    from datetime import time as time_cls
-    for fmt in ("%H:%M", "%H:%M:%S"):
-        try:
-            return datetime.strptime(s[:len(fmt) + 2], fmt).time()
-        except ValueError:
-            continue
-    try:
-        parts = s.split(":")
-        return time_cls(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
-    except (TypeError, ValueError, IndexError):
-        return None
-
-def _apply_schedule_display_fields(sched, data):
-    if "unavailable_label" in data:
-        sched.unavailable_label = (str(data.get("unavailable_label") or "").strip() or "Mode not scheduled")[:120]
-    if "unavailable_color" in data:
-        color = str(data.get("unavailable_color") or "").strip() or "#9ca3af"
-        sched.unavailable_color = color[:20]
-    if "exclusive_blocked_label" in data:
-        sched.exclusive_blocked_label = (
-            str(data.get("exclusive_blocked_label") or "").strip() or "Alternate mode active"
-        )[:120]
-    if "exclusive_blocked_color" in data:
-        color = str(data.get("exclusive_blocked_color") or "").strip() or "#9ca3af"
-        sched.exclusive_blocked_color = color[:20]
-    if "start_time" in data:
-        sched.start_time = _parse_optional_time(data.get("start_time"))
-    if "end_time" in data:
-        sched.end_time = _parse_optional_time(data.get("end_time"))
-
-def _user_can_access_multimode_config(user) -> bool:
-    """Admin and Officer In Charge (manager) can open Multi-Mode config."""
-    if _is_admin_user(user):
-        return True
-    return getattr(user, "user_type", None) == UserType.MANAGER
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def oic_multi_mode_list(request):
-    """
-    List multi-mode-enabled parents managed by the OIC (or all for Admin),
-    with children and schedules. Only equipment with enable_multi_mode=True
-    appear for configuration.
-    """
-    if not _user_can_access_multimode_config(request.user):
-        return Response(
-            {"error": "Only Admin or Officer In Charge can configure Multi-Mode Equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    from .models import ModeScheduleBehavior
-
-    managed_qs = _oic_manageable_equipment_qs(request.user)
-
-    # Only base instruments with Multi-Mode enabled are configurable parents
-    parents = (
-        managed_qs.filter(enable_multi_mode=True, parent_equipment__isnull=True)
-        .prefetch_related("mode_children", "mode_schedules", "mode_schedules__mode_equipment")
-        .order_by("code", "name")
-    )
-
-    # Mode candidates: managed standalone equipment that are not multi-mode bases
-    linkable = list(
-        managed_qs.filter(parent_equipment__isnull=True, enable_multi_mode=False)
-        .order_by("code")
-        .values("equipment_id", "code", "name")
-    )
-
-    families = []
-    for parent in parents:
-        children = [
-            {
-                "equipment_id": c.equipment_id,
-                "code": c.code,
-                "name": c.name,
-                "status": c.status,
-            }
-            for c in parent.mode_children.all().order_by("code")
-        ]
-        schedules = [
-            _serialize_mode_schedule(s)
-            for s in parent.mode_schedules.all().order_by("-start_date", "-end_date")
-        ]
-        families.append(
-            {
-                "parent_equipment_id": parent.equipment_id,
-                "parent_code": parent.code,
-                "parent_name": parent.name,
-                "parent_status": parent.status,
-                "children": children,
-                "schedules": schedules,
-            }
-        )
-
-    return Response(
-        {
-            "multi_mode_enabled": True,
-            "families": families,
-            "linkable_equipment": linkable,
-            "behaviors": [
-                {"value": ModeScheduleBehavior.PARALLEL, "label": "Parallel"},
-                {"value": ModeScheduleBehavior.EXCLUSIVE, "label": "Mutually Exclusive"},
-            ],
-        }
-    )
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def oic_multi_mode_schedule_create(request):
-    """
-    Create a mode schedule.
-    Body: parent_equipment_id, mode_equipment_id, start_date, end_date, behavior,
-    optional start_time/end_time, unavailable_*, exclusive_blocked_*
-    """
-    if not _user_can_access_multimode_config(request.user):
-        return Response(
-            {"error": "Only Admin or Officer In Charge can configure Multi-Mode Equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    from django.core.exceptions import ValidationError as DjangoValidationError
-    from .models import EquipmentModeSchedule, ModeScheduleBehavior
-
-    data = request.data or {}
-    try:
-        parent_id = int(data.get("parent_equipment_id"))
-        mode_id = int(data.get("mode_equipment_id"))
-    except (TypeError, ValueError):
-        return Response(
-            {"error": "parent_equipment_id and mode_equipment_id are required integers."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not _user_can_manage_oic_equipment(request.user, parent_id):
-        return Response({"error": "Permission denied for parent equipment."}, status=status.HTTP_403_FORBIDDEN)
-    if not _user_can_manage_oic_equipment(request.user, mode_id):
-        return Response({"error": "Permission denied for mode equipment."}, status=status.HTTP_403_FORBIDDEN)
-
-    try:
-        parent = Equipment.objects.get(pk=parent_id)
-        mode = Equipment.objects.get(pk=mode_id)
-    except Equipment.DoesNotExist:
-        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    if not parent.enable_multi_mode:
-        return Response(
-            {
-                "error": (
-                    "Multi-Mode Equipment is not enabled for this instrument. "
-                    "Enable it on the equipment create/edit form first."
-                )
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if parent.parent_equipment_id:
-        return Response(
-            {"error": "Parent must be a base instrument (not itself a child mode)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if mode_id == parent_id:
-        return Response({"error": "Mode cannot be the same as the parent."}, status=status.HTTP_400_BAD_REQUEST)
-
-    if mode.parent_equipment_id and mode.parent_equipment_id != parent_id:
-        return Response(
-            {"error": "Mode equipment is already linked to a different parent."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if not mode.parent_equipment_id:
-        if mode.mode_children.exists():
-            return Response(
-                {"error": "Cannot link an equipment that already has child modes as a mode."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        mode.parent_equipment = parent
-        mode.save(update_fields=["parent_equipment", "updated_at"])
-
-    start_raw = (data.get("start_date") or "").strip()[:10]
-    end_raw = (data.get("end_date") or "").strip()[:10]
-    try:
-        start_d = date.fromisoformat(start_raw)
-        end_d = date.fromisoformat(end_raw)
-    except ValueError:
-        return Response(
-            {"error": "start_date and end_date must be YYYY-MM-DD."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    behavior = (data.get("behavior") or ModeScheduleBehavior.PARALLEL).strip().upper()
-    if behavior not in (ModeScheduleBehavior.PARALLEL, ModeScheduleBehavior.EXCLUSIVE):
-        return Response(
-            {"error": "behavior must be PARALLEL or EXCLUSIVE."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    sched = EquipmentModeSchedule(
-        parent_equipment=parent,
-        mode_equipment=mode,
-        start_date=start_d,
-        end_date=end_d,
-        behavior=behavior,
-        created_by=request.user,
-    )
-    _apply_schedule_display_fields(sched, data)
-    # Ensure defaults applied even if keys omitted
-    if not data.get("unavailable_label"):
-        sched.unavailable_label = sched.unavailable_label or "Mode not scheduled"
-    if not data.get("unavailable_color"):
-        sched.unavailable_color = sched.unavailable_color or "#9ca3af"
-    if not data.get("exclusive_blocked_label"):
-        sched.exclusive_blocked_label = sched.exclusive_blocked_label or "Alternate mode active"
-    if not data.get("exclusive_blocked_color"):
-        sched.exclusive_blocked_color = sched.exclusive_blocked_color or "#9ca3af"
-    try:
-        sched.full_clean()
-        sched.save()
-    except DjangoValidationError as e:
-        return Response({"error": e.message_dict if hasattr(e, "message_dict") else str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({"schedule": _serialize_mode_schedule(sched)}, status=status.HTTP_201_CREATED)
-
-@api_view(["PATCH", "DELETE"])
-@permission_classes([IsAuthenticated])
-def oic_multi_mode_schedule_detail(request, schedule_id):
-    """Update or delete a mode schedule."""
-    if not _user_can_access_multimode_config(request.user):
-        return Response(
-            {"error": "Only Admin or Officer In Charge can configure Multi-Mode Equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    from django.core.exceptions import ValidationError as DjangoValidationError
-    from .models import EquipmentModeSchedule, ModeScheduleBehavior
-
-    try:
-        sched = EquipmentModeSchedule.objects.select_related(
-            "parent_equipment", "mode_equipment"
-        ).get(pk=schedule_id)
-    except EquipmentModeSchedule.DoesNotExist:
-        return Response({"error": "Schedule not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    if not _user_can_manage_oic_equipment(request.user, sched.parent_equipment_id):
-        return Response({"error": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
-
-    if request.method == "DELETE":
-        sched.delete()
-        return Response({"message": "Schedule deleted."})
-
-    data = request.data or {}
-    if "start_date" in data:
-        try:
-            sched.start_date = date.fromisoformat(str(data.get("start_date")).strip()[:10])
-        except ValueError:
-            return Response({"error": "Invalid start_date."}, status=status.HTTP_400_BAD_REQUEST)
-    if "end_date" in data:
-        try:
-            sched.end_date = date.fromisoformat(str(data.get("end_date")).strip()[:10])
-        except ValueError:
-            return Response({"error": "Invalid end_date."}, status=status.HTTP_400_BAD_REQUEST)
-    if "behavior" in data:
-        behavior = str(data.get("behavior") or "").strip().upper()
-        if behavior not in (ModeScheduleBehavior.PARALLEL, ModeScheduleBehavior.EXCLUSIVE):
-            return Response({"error": "behavior must be PARALLEL or EXCLUSIVE."}, status=status.HTTP_400_BAD_REQUEST)
-        sched.behavior = behavior
-    if "mode_equipment_id" in data:
-        try:
-            mode_id = int(data.get("mode_equipment_id"))
-        except (TypeError, ValueError):
-            return Response({"error": "Invalid mode_equipment_id."}, status=status.HTTP_400_BAD_REQUEST)
-        if not _user_can_manage_oic_equipment(request.user, mode_id):
-            return Response({"error": "Permission denied for mode equipment."}, status=status.HTTP_403_FORBIDDEN)
-        try:
-            mode = Equipment.objects.get(pk=mode_id)
-        except Equipment.DoesNotExist:
-            return Response({"error": "Mode equipment not found."}, status=status.HTTP_404_NOT_FOUND)
-        if mode.parent_equipment_id != sched.parent_equipment_id:
-            return Response(
-                {"error": "Mode equipment must be a child of this parent."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        sched.mode_equipment = mode
-
-    _apply_schedule_display_fields(sched, data)
-
-    try:
-        sched.full_clean()
-        sched.save()
-    except DjangoValidationError as e:
-        return Response({"error": e.message_dict if hasattr(e, "message_dict") else str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({"schedule": _serialize_mode_schedule(sched)})
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -18699,9 +18590,9 @@ def _nomination_to_dict(nom):
     if nom.approved_at and nom.approved_by_id:
         approved_by_name = get_user_display_name(approved_by) if approved_by else None
         if nom.status == StudentEquipmentNominationStatus.APPROVED:
-            outcome_summary = f"Approved by {approved_by_name or '—'} on {nom.approved_at.strftime('%d %b %Y')}"
+            outcome_summary = f"Approved by {approved_by_name or '—'} on {format_local_dt(nom.approved_at, '%d %b %Y')}"
         elif nom.status == StudentEquipmentNominationStatus.REJECTED:
-            outcome_summary = f"Rejected by {approved_by_name or '—'} on {nom.approved_at.strftime('%d %b %Y')}"
+            outcome_summary = f"Rejected by {approved_by_name or '—'} on {format_local_dt(nom.approved_at, '%d %b %Y')}"
     resume_filename = None
     if nom.resume:
         resume_filename = nom.resume.name.split("/")[-1] if "/" in nom.resume.name else nom.resume.name

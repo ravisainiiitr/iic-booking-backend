@@ -210,4 +210,5 @@ dependencies = [
     "whitenoise==6.11.0",
     "pypdf>=6.19.0",
     "nh3==0.3.7",
+    "ezdxf==1.4.4",
 ]

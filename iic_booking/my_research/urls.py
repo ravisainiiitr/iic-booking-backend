@@ -13,6 +13,8 @@ urlpatterns = [
     path("workspaces/<uuid:workspace_id>/restore/", views.workspace_restore, name="workspace-restore"),
     path("workspaces/<uuid:workspace_id>/folders/", views.folders_collection, name="folders"),
     path("workspaces/<uuid:workspace_id>/files/", views.files_collection, name="files"),
+    path("workspaces/<uuid:workspace_id>/download-zip/", views.workspace_zip, name="workspace-zip"),
+    path("downloads/<str:token>/", views.zip_download, name="zip-download"),
     path("workspaces/<uuid:workspace_id>/uploads/initiate/", views.upload_initiate, name="upload-initiate"),
     path("workspaces/<uuid:workspace_id>/bookings/", views.bookings_collection, name="bookings"),
     path(

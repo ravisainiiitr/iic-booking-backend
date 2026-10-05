@@ -117,6 +117,18 @@ class SessionOrchestrator:
                 minutes = int(eq_minutes)
         session.expires_at = timezone.now() + timedelta(minutes=max(1, minutes))
 
+    @staticmethod
+    def apply_viewport(session: RemoteDesktopSession, viewport, *, save: bool = False) -> bool:
+        from iic_booking.remote_analysis.guacamole.connection import clamp_viewport
+
+        size = clamp_viewport(viewport)
+        if size is None or (session.display_width, session.display_height) == size:
+            return False
+        session.display_width, session.display_height = size
+        if save and session.pk:
+            session.save(update_fields=["display_width", "display_height", "updated_at"])
+        return True
+
     @transaction.atomic
     def create_session(
         self,
@@ -127,6 +139,7 @@ class SessionOrchestrator:
         browser: str = "",
         client_platform: str = "",
         wait_for_prepare: bool = False,
+        viewport: dict | None = None,
     ) -> RemoteDesktopSession:
         if not can_create_for_reservation(user, reservation):
             raise SessionError("Not authorized for this reservation", code="forbidden")
@@ -164,6 +177,7 @@ class SessionOrchestrator:
 
         existing = find_reusable_open_session(reservation, settings_obj=self.settings)
         if existing:
+            self.apply_viewport(existing, viewport, save=True)
             return existing
 
         # Fail fast: Guacamole cannot auto-login without stored Windows credentials.
@@ -194,6 +208,7 @@ class SessionOrchestrator:
             client_platform=(client_platform or "")[:255],
         )
         self._apply_policies(session)
+        self.apply_viewport(session, viewport)
         session.save()
         SessionStateHistory.objects.create(session=session, from_status="", to_status=SessionStatus.CREATED, reason="Created")
         SessionStatistics.objects.get_or_create(session=session)
@@ -338,6 +353,8 @@ class SessionOrchestrator:
                 from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
                 from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceFile
 
+                from iic_booking.remote_analysis.workspace_models import BookingAnalysisSetup
+
                 ws_obj = AnalysisWorkspace.objects.filter(reservation=session.reservation).first()
                 booking = getattr(session.reservation, "booking", None)
                 if (
@@ -345,9 +362,13 @@ class SessionOrchestrator:
                     and booking is not None
                     and WorkspaceSyncService().is_input_ready(ws_obj)
                     and (cmd is None or cmd.status != CommandStatus.FAILED)
-                    and not BookingRawStagingService().has_raw_files(booking)
                 ):
-                    prepare_ok = True
+                    if BookingAnalysisSetup.objects.filter(booking=booking).exists():
+                        prepare_ok = not WorkspaceFile.objects.filter(
+                            workspace=ws_obj, deleted=False, is_current=True, relative_path__startswith="RawData/"
+                        ).exists()
+                    else:
+                        prepare_ok = not BookingRawStagingService().has_raw_files(booking)
             except Exception:
                 logger.exception("Empty-input prepare shortcut failed")
         if not prepare_ok:

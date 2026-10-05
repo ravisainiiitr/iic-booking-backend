@@ -143,8 +143,10 @@ services:
   # --- Guacamole (browser RDP gateway) ---
   guacd:
     profiles: ["guacamole"]
-    image: guacamole/guacd:1.5.5
+    image: guacamole/guacd:1.6.0
     restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
     volumes:
       - guac_drive:/drive
       - guac_record:/record
@@ -181,7 +183,7 @@ services:
 
   guacamole:
     profiles: ["guacamole"]
-    image: guacamole/guacamole:1.5.5
+    image: guacamole/guacamole:1.6.0
     restart: unless-stopped
     depends_on:
       guacd:
@@ -194,6 +196,8 @@ services:
       POSTGRESQL_DATABASE: guacamole_db
       POSTGRESQL_USER: guacamole_user
       POSTGRESQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-change-me}
+      # auth-ban is on by default since 1.6.0; see docker-compose.guacamole.yml.
+      BAN_ENABLED: "false"
     ports:
       - "${GUACAMOLE_HOST_PORT:-8085}:8080"
     networks:

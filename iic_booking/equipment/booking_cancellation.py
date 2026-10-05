@@ -10,6 +10,13 @@ from iic_booking.users.models import UserType
 from iic_booking.users.repositories.wallet_repository import WalletRepository
 
 from .booking_events import create_booking_event
+from .booking_paid_amount import (
+    booking_paid_charge,
+    clear_pending_charge_difference,
+    drop_unpaid_extra,
+    net_refund_against_unpaid_extra,
+)
+from .input_edit_payment_window import has_payment_window
 from .waitlist import schedule_waitlist_slots_available_after_commit
 from .quota_utils import sync_booking_quota_fields_after_partial_cancel
 from .calculators import (
@@ -331,6 +338,7 @@ def compute_partial_cancel_plan(
         raise CancellationValidationError(f"Could not calculate charge for revised booking: {e}") from e
 
     refund_amount = max(Decimal("0.00"), (previous_charge - new_charge).quantize(Decimal("0.01")))
+    refund_amount, pending_after = net_refund_against_unpaid_extra(booking, refund_amount)
 
     return {
         "slots_to_keep": slots_to_keep,
@@ -340,22 +348,22 @@ def compute_partial_cancel_plan(
         "new_charge": new_charge,
         "new_breakdown": new_breakdown,
         "refund_amount": refund_amount,
+        "pending_amount_after": pending_after,
         "is_full_cancel": len(slots_to_keep) == 0,
     }
 
 
 def _print_item_input_values(analysis) -> dict[str, Any]:
-    from .print_3d_views import get_effective_print_weight_and_time_from_analysis
+    """Totals for one STL file, quantity included (A = grams, C = minutes, B = material code)."""
+    from .fabrication import build_print_parts, print_material_code
 
-    weight, time_min = get_effective_print_weight_and_time_from_analysis(analysis)
-    material_code = analysis.material_code_snapshot or (
-        analysis.material.code if analysis.material else ""
-    )
+    part = build_print_parts([analysis])[0]
     inputs: dict[str, Any] = {}
-    if weight is not None:
-        inputs["A"] = int(weight)
-    if time_min is not None:
-        inputs["C"] = int(time_min)
+    if analysis.weight_grams is not None or analysis.actual_weight_grams is not None:
+        inputs["A"] = int(part["weight_g_total"])
+    if analysis.estimated_time_minutes is not None or analysis.actual_time_minutes is not None:
+        inputs["C"] = int(part["time_min_total"])
+    material_code = print_material_code([analysis])
     if material_code:
         inputs["B"] = material_code
     return inputs
@@ -382,19 +390,23 @@ def _sum_print_items_charge(
     cp_proxy,
     items: list,
 ) -> tuple[Decimal, list]:
-    total = Decimal("0.00")
-    combined_breakdown: list = []
+    """Charge for a set of STL files priced together (per-part lines, own-material fixed charge once)."""
+    from .fabrication import OWN_MATERIAL_KEY, inject_print_parts, own_material_available
+
+    usable = []
     for item in items:
         inputs = _print_item_input_values(item)
-        time_min = int(inputs.get("C") or 0)
-        if time_min <= 0 or not inputs.get("B") or not inputs.get("A"):
+        if int(inputs.get("C") or 0) <= 0 or not inputs.get("B") or not inputs.get("A"):
             continue
-        item_charge, item_breakdown = _calculate_print_charge_for_inputs(
-            booking, cp_proxy, inputs, time_min
-        )
-        total += item_charge
-        combined_breakdown.extend(item_breakdown)
-    return total.quantize(Decimal("0.01")), combined_breakdown
+        usable.append(item)
+    if not usable:
+        return Decimal("0.00"), []
+    inputs = inject_print_parts({}, usable)
+    inputs[OWN_MATERIAL_KEY] = bool(getattr(booking, "own_material", False)) and own_material_available(
+        booking.equipment
+    )
+    total, breakdown = _calculate_print_charge_for_inputs(booking, cp_proxy, inputs, int(inputs.get("C") or 0))
+    return Decimal(str(total)).quantize(Decimal("0.01")), breakdown
 
 
 def compute_partial_cancel_print_items(
@@ -439,8 +451,6 @@ def compute_partial_cancel_print_items(
         )
 
     remaining = [item for item in active_items if str(item.id) not in cancel_ids]
-    cancelled = [item for item in active_items if str(item.id) in cancel_ids]
-
     total_weight = 0
     total_time = 0
     material_code = ""
@@ -477,7 +487,7 @@ def compute_partial_cancel_print_items(
 
     all_items_charge, _ = _sum_print_items_charge(booking, cp_proxy, active_items)
     new_charge, new_breakdown = _sum_print_items_charge(booking, cp_proxy, remaining)
-    cancelled_charge, _ = _sum_print_items_charge(booking, cp_proxy, cancelled)
+    cancelled_charge = max(Decimal("0.00"), all_items_charge - new_charge)
 
     if all_items_charge > 0 and previous_charge > 0:
         scale = previous_charge / all_items_charge
@@ -504,6 +514,7 @@ def compute_partial_cancel_print_items(
                 f"Could not calculate charge for revised booking: {e}"
             ) from e
         refund_amount = max(Decimal("0.00"), (previous_charge - new_charge).quantize(Decimal("0.01")))
+    refund_amount, pending_after = net_refund_against_unpaid_extra(booking, refund_amount)
 
     return {
         "slots_to_keep": slots_to_keep,
@@ -513,6 +524,7 @@ def compute_partial_cancel_print_items(
         "new_charge": new_charge,
         "new_breakdown": new_breakdown,
         "refund_amount": refund_amount,
+        "pending_amount_after": pending_after,
         "is_full_cancel": len(slots_to_keep) == 0,
         "print_analysis_ids_to_cancel": list(cancel_ids),
     }
@@ -631,6 +643,11 @@ def parse_cancellation_request(request_data, booking) -> dict[str, Any]:
     slot_ids = parse_cancellation_slot_ids(request_data, booking)
     if set(slot_ids) == set(all_ids):
         return {"mode": "full_slots", "slot_ids": slot_ids, "plan": None}
+
+    if (profile_type or "").strip().upper() == EquipmentProfileType.LASER_CUT_2D:
+        raise CancellationValidationError(
+            "Laser cutting bookings can only be cancelled in full. To change parts, replace the DXF files instead."
+        )
 
     if partial_cancel_uses_input_reduction(profile_type):
         raise CancellationValidationError(
@@ -771,6 +788,11 @@ def perform_booking_cancellation(
     # Call-site audit (admin cancel_booking + user cancel): both pass
     # partial_plan from parse_cancellation_request for every partial path.
     # Maintenance auto-cancel is full-only. Safety net below covers direct calls.
+    if is_partial and has_payment_window(booking):
+        raise CancellationValidationError(
+            "Pay or cancel the pending extra charge on this booking before cancelling part of it."
+        )
+
     if is_partial:
         partial_plan = ensure_partial_cancel_plan(
             booking, slot_ids=slot_ids, partial_plan=partial_plan
@@ -827,15 +849,21 @@ def perform_booking_cancellation(
         if cancel_notes:
             note_tag = "[Partial Cancellation Notes]"
             booking.notes = f"{booking.notes or ''}\n{note_tag}: {cancel_notes}".strip()
-        booking.save(
-            update_fields=[
-                "total_time_minutes",
-                "total_charge",
-                "notes",
-                "input_values",
-                "charge_breakdown",
-            ]
-        )
+        partial_update_fields = [
+            "total_time_minutes",
+            "total_charge",
+            "notes",
+            "input_values",
+            "charge_breakdown",
+        ]
+        if should_refund and "pending_amount_after" in partial_plan:
+            pending_after = partial_plan["pending_amount_after"]
+            if pending_after is None:
+                partial_update_fields += clear_pending_charge_difference(booking)
+            else:
+                booking.charge_recalculation_pending_amount = pending_after
+                partial_update_fields.append("charge_recalculation_pending_amount")
+        booking.save(update_fields=partial_update_fields)
 
         cancel_item_ids = partial_plan.get("print_analysis_ids_to_cancel")
         if cancel_item_ids:
@@ -934,7 +962,8 @@ def perform_booking_cancellation(
             booking.user, getattr(booking.equipment, "internal_department", None)
         )
         if refund_target:
-            refund_amount = Decimal(str(booking.total_charge or "0"))
+            refund_amount = booking_paid_charge(booking)
+            clear_pending_charge_difference(booking)
             eq_name = (
                 getattr(booking.equipment, "name", None)
                 or getattr(booking.equipment, "code", None)
@@ -972,11 +1001,17 @@ def perform_booking_cancellation(
                 booking.status = BookingStatus.REFUNDED
                 new_status = BookingStatus.REFUNDED
                 event_type = BookingEventType.REFUNDED
-            label = "admin" if cancelled_by_label == "admin" else "user"
-            event_comment = (
-                f"Booking cancelled and refunded by {label}. "
-                f"{cancel_notes if cancel_notes else ''}"
-            )
+            if cancelled_by_label == "system":
+                event_comment = (
+                    f"Booking cancelled automatically and refunded. "
+                    f"{cancel_notes if cancel_notes else ''}"
+                )
+            else:
+                label = "admin" if cancelled_by_label == "admin" else "user"
+                event_comment = (
+                    f"Booking cancelled and refunded by {label}. "
+                    f"{cancel_notes if cancel_notes else ''}"
+                )
             if reverse_reward_points_fn:
                 reverse_reward_points_fn(
                     booking,
@@ -1000,6 +1035,8 @@ def perform_booking_cancellation(
             f"Booking cancelled by {cancelled_by_label}. "
             f"{cancel_notes if cancel_notes else ''}"
         )
+    if new_status == BookingStatus.CANCELLED:
+        drop_unpaid_extra(booking)
 
     if getattr(booking, "maintenance_disruption_flag", False) or previous_status == BookingStatus.DISRUPTION_PENDING:
         clear_disruption_policy_fields(booking)
@@ -1014,6 +1051,8 @@ def perform_booking_cancellation(
         comment=event_comment.strip() if event_comment else None,
         created_by=actor,
         send_notification=True,
+        system_actor=cancelled_by_label == "system",
+        metadata={"refund_amount": str(refund_amount)} if refund_transaction else None,
     )
 
     return {

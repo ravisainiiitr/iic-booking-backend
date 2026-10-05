@@ -14,6 +14,12 @@
 # And run: python manage.py sync_remote_analysis_settings
 #
 # Agent (Windows Analysis PC) is documented in docs/deploy/AGENT_INSTALL.md — not a container.
+#
+# guacamole and guacd also join the portal stack's network (RA_BACKEND_NETWORK,
+# default iic-booking-backend_default): Django calls http://guacamole:8080 and guacd
+# must reach reverse-tunnel-gateway. The network must exist before `up`.
+# Upgrading from 1.5.x: see docs/runbooks/guacamole-1.6-upgrade.md (schema upgrade required).
+# GUACAMOLE_VERSION pins both guacamole and guacd (rollback: GUACAMOLE_VERSION=1.5.5).
 
 x-logging: &default-logging
   driver: json-file
@@ -23,13 +29,16 @@ x-logging: &default-logging
 
 services:
   guacd:
-    image: guacamole/guacd:1.5.5
+    image: guacamole/guacd:${GUACAMOLE_VERSION:-1.6.0}
     restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
     volumes:
       - guac_drive:/drive
       - guac_record:/record
     networks:
       - guac_net
+      - backend
     logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
@@ -58,7 +67,7 @@ services:
       start_period: 20s
 
   guacamole:
-    image: guacamole/guacamole:1.5.5
+    image: guacamole/guacamole:${GUACAMOLE_VERSION:-1.6.0}
     restart: unless-stopped
     depends_on:
       guacd:
@@ -69,13 +78,20 @@ services:
       GUACD_HOSTNAME: guacd
       POSTGRESQL_HOSTNAME: guacamole-db
       POSTGRESQL_DATABASE: guacamole_db
+      # 1.6 prefers POSTGRESQL_USERNAME (logs a deprecation warning for _USER), but the
+      # 1.5.5 image requires _USER, which keeps GUACAMOLE_VERSION=1.5.5 rollback working.
       POSTGRESQL_USER: guacamole_user
       POSTGRESQL_PASSWORD: ${GUACAMOLE_DB_PASSWORD:-change-me}
       # Terminate TLS at Traefik / reverse proxy in front of this service.
+      # The 1.6 image enables auth-ban by default (5 failed logins per IP -> 5 min ban).
+      # All browsers arrive from the Docker gateway IP and all backend logins from the
+      # Django container, so one IP's failures would block every user / all launches.
+      BAN_ENABLED: "false"
     ports:
       - "8085:8080"
     networks:
       - guac_net
+      - backend
     logging: *default-logging
     healthcheck:
       test:
@@ -91,6 +107,9 @@ services:
 networks:
   guac_net:
     driver: bridge
+  backend:
+    external: true
+    name: ${RA_BACKEND_NETWORK:-iic-booking-backend_default}
 
 volumes:
   guac_db:

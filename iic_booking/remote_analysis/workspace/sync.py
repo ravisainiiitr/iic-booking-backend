@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from iic_booking.remote_analysis.constants import (
@@ -34,6 +36,61 @@ from iic_booking.remote_analysis.workspace_models import (
 
 logger = logging.getLogger(__name__)
 
+# Legacy agents report a missing session folder as a successful no-op collect.
+MISSING_SESSION_FOLDER_MARKERS = ("no local session folder", "session_folder_missing")
+
+COLLECT_IN_FLIGHT_PHASES = frozenset(
+    {
+        WorkspaceSyncPhase.COLLECTING_OUTPUT,
+        WorkspaceSyncPhase.UPLOADING_OUTPUT,
+        WorkspaceSyncPhase.RETRY_PENDING,
+    }
+)
+COLLECT_HOLD_MAX = timedelta(hours=2)
+COLLECT_PLAN_KIND = "collect_plan"
+OUTPUT_PORTAL_FOLDER = "Processed"
+VERIFIED_CLEANUP_CAPABILITY = "verified_cleanup_v1"
+
+
+def is_missing_session_folder(message: str) -> bool:
+    text = (message or "").lower()
+    return any(marker in text for marker in MISSING_SESSION_FOLDER_MARKERS)
+
+
+def collect_in_flight_for_workstation(workstation) -> bool:
+    """A COLLECT (or its retry window) still owns this workstation's session Output."""
+    if workstation is None:
+        return False
+    return AnalysisWorkspace.objects.filter(
+        workstation=workstation,
+        sync_phase__in=list(COLLECT_IN_FLIGHT_PHASES),
+        updated_at__gte=timezone.now() - COLLECT_HOLD_MAX,
+    ).exists()
+
+
+def release_workstation_after_collect(workstation, *, reason: str = "Collect finished") -> bool:
+    """Free a CLEANING workstation once no collect, reservation or session holds it."""
+    from iic_booking.remote_analysis.constants import WorkstationStatus
+    from iic_booking.remote_analysis.models import AnalysisWorkstation, WorkstationStateHistory
+    from iic_booking.remote_analysis.services.heartbeat import _workstation_has_active_hold
+
+    if workstation is None:
+        return False
+    ws = AnalysisWorkstation.objects.filter(pk=workstation.pk).first()
+    if ws is None or ws.status != WorkstationStatus.CLEANING:
+        return False
+    if _workstation_has_active_hold(ws):
+        return False
+    WorkstationStateHistory.objects.create(
+        workstation=ws,
+        from_status=ws.status,
+        to_status=WorkstationStatus.AVAILABLE,
+        reason=reason[:500],
+    )
+    ws.status = WorkstationStatus.AVAILABLE
+    ws.save(update_fields=["status", "updated_at"])
+    return True
+
 
 class WorkspaceSyncService:
     """
@@ -50,10 +107,24 @@ class WorkspaceSyncService:
         if workspace.workstation_id is None and getattr(reservation, "workstation_id", None):
             workspace.workstation = reservation.workstation
             workspace.save(update_fields=["workstation", "updated_at"])
-        if ingest and (workspace.booking_id or getattr(reservation, "booking_id", None)):
+        booking_id = workspace.booking_id or getattr(reservation, "booking_id", None)
+        setup = None
+        if booking_id:
+            from iic_booking.remote_analysis.workspace_models import BookingAnalysisSetup
+
+            setup = BookingAnalysisSetup.objects.filter(booking_id=booking_id).only("research_link_id").first()
+            if setup is not None and setup.research_link_id and workspace.research_link_id is None:
+                workspace.research_link_id = setup.research_link_id
+                workspace.save(update_fields=["research_link", "updated_at"])
+        if ingest and booking_id:
             if not workspace.booking_id and reservation.booking_id:
                 workspace.booking = reservation.booking
                 workspace.save(update_fields=["booking", "updated_at"])
+            # The analysis setup / launch staging already chose and streamed the input files.
+            if setup is not None or WorkspaceFile.objects.filter(
+                workspace=workspace, source="booking_raw", deleted=False
+            ).exists():
+                return workspace
             try:
                 from iic_booking.remote_analysis.workspace.booking_ingest import BookingResultIngestService
 
@@ -61,6 +132,65 @@ class WorkspaceSyncService:
             except Exception:
                 logger.exception("Booking result ingest failed for workspace %s", workspace.id)
         return workspace
+
+    @staticmethod
+    def resolve_session_id(workspace: AnalysisWorkspace, session_id: str = "") -> str:
+        """Agent session folder id: the RemoteDesktopSession PREPARE used (reservation id only as last resort)."""
+        if session_id:
+            return str(session_id)
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        latest = (
+            RemoteDesktopSession.objects.filter(reservation_id=workspace.reservation_id)
+            .order_by("-created_at")
+            .values_list("id", flat=True)
+            .first()
+        )
+        return str(latest) if latest else str(workspace.reservation_id)
+
+    def last_collect_session_id(self, workspace: AnalysisWorkspace) -> str:
+        from iic_booking.remote_analysis.models import RemoteCommand
+
+        for payload in (
+            RemoteCommand.objects.filter(
+                workstation_id=workspace.workstation_id,
+                command_type=CommandType.COLLECT_WORKSPACE,
+                payload__workspace_id=str(workspace.id),
+            )
+            .order_by("-created_at")
+            .values_list("payload", flat=True)[:1]
+        ):
+            sid = str((payload or {}).get("session_id") or "")
+            if sid:
+                return sid
+        return self.resolve_session_id(workspace)
+
+    @staticmethod
+    def session_is_open(session_id: str) -> bool:
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        if not session_id:
+            return False
+        try:
+            return RemoteDesktopSession.objects.filter(pk=session_id, status__in=OPEN_SESSION_STATUSES).exists()
+        except (ValueError, TypeError, ValidationError):
+            return False
+
+    def collect_failures_since_success(self, workspace: AnalysisWorkspace) -> int:
+        # Collect outcomes only; per-file uploads carry a file or TransferHistory rows.
+        pushes = workspace.transfers.filter(
+            direction=TransferDirection.AGENT_PUSH, file__isnull=True, history__isnull=True
+        )
+        last_ok = pushes.filter(status=TransferStatus.COMPLETED).order_by("-created_at").first()
+        failed = pushes.filter(status=TransferStatus.FAILED)
+        if last_ok is not None:
+            failed = failed.filter(created_at__gt=last_ok.created_at)
+        return failed.count()
+
+    def collect_retries_exhausted(self, workspace: AnalysisWorkspace) -> bool:
+        max_retries = int(getattr(self.settings, "transfer_max_retries", 3) or 3)
+        return self.collect_failures_since_success(workspace) > max_retries
 
     def set_sync_phase(
         self,
@@ -240,9 +370,10 @@ class WorkspaceSyncService:
             ),
         }
 
-    def issue_sync_command(self, workspace: AnalysisWorkspace, *, actor=None) -> Any:
+    def issue_sync_command(self, workspace: AnalysisWorkspace, *, actor=None, session_id: str = "") -> Any:
         if not workspace.workstation_id:
             raise ValueError("Workspace has no workstation for sync")
+        session_id = self.resolve_session_id(workspace, session_id)
         workspace.status = WorkspaceStatus.SYNCING
         workspace.save(update_fields=["status", "updated_at"])
         self.set_sync_phase(
@@ -256,8 +387,8 @@ class WorkspaceSyncService:
             "workspace_id": str(workspace.id),
             "reservation_id": str(workspace.reservation_id),
             "local_path": workspace.local_agent_path,
-            "session_id": str(workspace.reservation_id),
-            "manifest": self.build_manifest(workspace, scope="input"),
+            "session_id": session_id,
+            "manifest": self.build_manifest(workspace, scope="input", session_id=session_id),
             "sync_action": "download_input",
             "agent_layout": list(AGENT_LAYOUT_FOLDERS),
             "transfer_max_retries": int(getattr(self.settings, "transfer_max_retries", 3) or 3),
@@ -279,9 +410,21 @@ class WorkspaceSyncService:
         self._notify(workspace, NotificationType.WORKSPACE_SYNC_STARTED, "Synchronization Started", "Input download started.")
         return cmd
 
-    def issue_collect_command(self, workspace: AnalysisWorkspace, *, actor=None) -> Any:
+    def no_open_session_on(self, workspace: AnalysisWorkspace) -> bool:
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        return not RemoteDesktopSession.objects.filter(
+            workstation_id=workspace.workstation_id, status__in=OPEN_SESSION_STATUSES
+        ).exists()
+
+    def issue_collect_command(
+        self, workspace: AnalysisWorkspace, *, actor=None, session_id: str = "", end_of_session: bool = False
+    ) -> Any:
+        """``end_of_session``: the session is over, so the agent may sign its account out and save its profile."""
         if not workspace.workstation_id:
             return None
+        session_id = self.resolve_session_id(workspace, session_id)
         workspace.status = WorkspaceStatus.COLLECTING
         workspace.save(update_fields=["status", "updated_at"])
         self.set_sync_phase(
@@ -302,17 +445,23 @@ class WorkspaceSyncService:
             "workspace_id": str(workspace.id),
             "reservation_id": str(workspace.reservation_id),
             "local_path": workspace.local_agent_path,
-            "session_id": str(workspace.reservation_id),
+            "session_id": session_id,
             "upload_folders": list(AGENT_LAYOUT_FOLDERS),
             "upload_agent_folders": ["Output", "Logs"],
             "portal_folder_map": {"Output": "Processed", "Logs": "Logs"},
             "sync_action": "upload_output",
-            "manifest": self.build_manifest(workspace, scope="output"),
+            "manifest": self.build_manifest(workspace, scope="output", session_id=session_id),
             "transfer_max_retries": int(getattr(self.settings, "transfer_max_retries", 3) or 3),
             "compression_enabled": bool(getattr(self.settings, "compression_enabled", False)),
             "compression_min_bytes": int(getattr(self.settings, "compression_min_bytes", 0) or 0),
             "bandwidth_limit_kbps": int(getattr(self.settings, "bandwidth_limit_kbps", 0) or 0),
+            "end_of_session": bool(end_of_session and session_id),
         }
+        from iic_booking.equipment.remote_analysis_integration.pc_folders import collect_sources
+
+        extra_sources = collect_sources(workspace, session_id)
+        if extra_sources:
+            payload["extra_sources"] = extra_sources
         payload.update(self._equipment_booking_paths(workspace))
         # When equipment RESULTS path is configured, agent uploads from that booking folder.
         if payload.get("results_booking_path"):
@@ -386,37 +535,89 @@ class WorkspaceSyncService:
                 workspace, WorkspaceSyncPhase.SESSION_ACTIVE, percent=58, message="Session active"
             )
 
-    def mark_synced(self, workspace: AnalysisWorkspace, *, success: bool = True, message: str = "") -> None:
+    def mark_synced(
+        self,
+        workspace: AnalysisWorkspace,
+        *,
+        success: bool = True,
+        message: str = "",
+        session_id: str = "",
+    ) -> None:
         """Finalize SYNC/COLLECT command (not per-file upload)."""
         workspace.last_synced_at = timezone.now()
         collecting = workspace.status == WorkspaceStatus.COLLECTING
         syncing = workspace.status == WorkspaceStatus.SYNCING
+        collect_finished = False
+        plan = None
+        if collecting and success and is_missing_session_folder(message):
+            success = False
+            message = f"SESSION_FOLDER_MISSING: session folder not found on the workstation ({message})"[:2000]
+        if collecting:
+            session_id = session_id or self.last_collect_session_id(workspace)
+            plan, problems = self.verify_collect_plan(workspace, session_id)
+            if success and problems:
+                success = False
+                total = len((plan.details or {}).get("files") or [])
+                message = (
+                    f"COLLECT_PLAN_MISMATCH: {len(problems)} of {total} planned files were not received intact "
+                    f"({', '.join(problems[:5])})"
+                )[:2000]
+            if plan is not None:
+                self._close_collect_plan(plan, success=success)
         if success:
             if collecting:
                 workspace.status = WorkspaceStatus.ACTIVE
                 workspace.upload_verified_at = timezone.now()
                 workspace.save(update_fields=["last_synced_at", "status", "upload_verified_at", "updated_at"])
-                self.set_sync_phase(
-                    workspace,
-                    WorkspaceSyncPhase.UPLOAD_VERIFIED,
-                    percent=90,
-                    message=message or "Upload verified",
-                )
-                self._notify(
-                    workspace,
-                    NotificationType.FILES_AVAILABLE,
-                    "Files Available",
-                    "Processed analysis files are available for download.",
-                )
-                self._issue_verified_cleanup(workspace)
-                workspace.refresh_from_db()
-                if workspace.sync_phase != WorkspaceSyncPhase.CLEANUP_FAILED:
+                verified = self.verified_output_files(workspace, plan)
+                session_open = self.session_is_open(session_id)
+                try:
+                    from iic_booking.equipment.remote_analysis_integration.analysis_setup import queue_bridge
+
+                    queue_bridge(
+                        workspace,
+                        session_id=session_id,
+                        paths=[f["path"] for f in verified] if plan is not None else None,
+                        session_ended=not session_open,
+                    )
+                except Exception:
+                    logger.exception("Queueing My Research bridge failed for workspace %s", workspace.id)
+                if session_open:
+                    # Mid-session sync: the user is still working in this folder — never clean it.
                     self.set_sync_phase(
                         workspace,
-                        WorkspaceSyncPhase.COMPLETED,
-                        percent=100,
-                        message=message or "Synchronization completed",
+                        WorkspaceSyncPhase.SESSION_ACTIVE,
+                        percent=58,
+                        message=message or "Results synced to portal",
                     )
+                else:
+                    collect_finished = True
+                    self.set_sync_phase(
+                        workspace,
+                        WorkspaceSyncPhase.UPLOAD_VERIFIED,
+                        percent=90,
+                        message=message or "Upload verified",
+                    )
+                    self._notify(
+                        workspace,
+                        NotificationType.FILES_AVAILABLE,
+                        "Files Available",
+                        "Processed analysis files are available for download.",
+                    )
+                    self._issue_verified_cleanup(
+                        workspace,
+                        session_id=session_id,
+                        verified_files=verified,
+                        extra_sources=(plan.details or {}).get("extra_sources") if plan is not None else None,
+                    )
+                    workspace.refresh_from_db()
+                    if workspace.sync_phase != WorkspaceSyncPhase.CLEANUP_FAILED:
+                        self.set_sync_phase(
+                            workspace,
+                            WorkspaceSyncPhase.COMPLETED,
+                            percent=100,
+                            message=message or "Synchronization completed",
+                        )
             elif syncing:
                 self.mark_prepared(workspace, success=True, message=message)
                 return
@@ -436,9 +637,25 @@ class WorkspaceSyncService:
             workspace.save(update_fields=["last_synced_at", "status", "updated_at"])
             phase = WorkspaceSyncPhase.UPLOAD_FAILED if collecting else WorkspaceSyncPhase.PREPARATION_FAILED
             if collecting:
-                self.set_sync_phase(
-                    workspace, WorkspaceSyncPhase.RETRY_PENDING, percent=workspace.sync_progress_percent, message=message
-                )
+                max_retries = int(getattr(self.settings, "transfer_max_retries", 3) or 3)
+                if self.collect_failures_since_success(workspace) + 1 > max_retries:
+                    collect_finished = True
+                    self.set_sync_phase(
+                        workspace,
+                        WorkspaceSyncPhase.UPLOAD_FAILED,
+                        percent=workspace.sync_progress_percent,
+                        message=(
+                            f"Results could not be collected after {max_retries + 1} attempts; "
+                            f"files were kept on the workstation. {message}"
+                        )[:512],
+                    )
+                else:
+                    self.set_sync_phase(
+                        workspace,
+                        WorkspaceSyncPhase.RETRY_PENDING,
+                        percent=workspace.sync_progress_percent,
+                        message=message,
+                    )
             else:
                 self.set_sync_phase(workspace, phase, percent=workspace.sync_progress_percent, message=message)
             self._notify(
@@ -456,6 +673,11 @@ class WorkspaceSyncService:
             started_at=timezone.now(),
             completed_at=timezone.now(),
         )
+        if collect_finished and workspace.workstation_id:
+            try:
+                release_workstation_after_collect(workspace.workstation, reason="Workspace collect finished")
+            except Exception:
+                logger.exception("Workstation release after collect failed for workspace %s", workspace.id)
         if success:
             try:
                 from iic_booking.remote_analysis.collaboration.hooks import on_workspace_synced
@@ -476,23 +698,128 @@ class WorkspaceSyncService:
             except Exception:
                 pass
 
-    def _issue_verified_cleanup(self, workspace: AnalysisWorkspace, *, actor=None) -> None:
-        """After UploadVerified, allow agent to delete Output (portal already has files)."""
+    def verify_collect_plan(self, workspace: AnalysisWorkspace, session_id: str = "") -> tuple[Any, list[str]]:
+        """Open collect plan for this session and the planned Output paths missing or different on the portal."""
+        plan = (
+            WorkspaceTransfer.objects.filter(
+                workspace=workspace,
+                details__kind=COLLECT_PLAN_KIND,
+                status__in=[TransferStatus.PENDING, TransferStatus.IN_PROGRESS],
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if plan is None:
+            return None, []
+        plan_session = str((plan.details or {}).get("session_id") or "")
+        if session_id and plan_session and plan_session != str(session_id):
+            return None, []
+        files = (plan.details or {}).get("files") or []
+        current = {
+            rel: (sha or "").lower()
+            for rel, sha in WorkspaceFile.objects.filter(
+                workspace=workspace,
+                deleted=False,
+                is_current=True,
+                relative_path__in=[f"{OUTPUT_PORTAL_FOLDER}/{f['path']}" for f in files],
+            ).values_list("relative_path", "sha256")
+        }
+        problems = []
+        for f in files:
+            got = current.get(f"{OUTPUT_PORTAL_FOLDER}/{f['path']}")
+            want = (f.get("sha256") or "").lower()
+            if got is None or (want and got != want):
+                problems.append(f["path"])
+        return plan, problems
+
+    @staticmethod
+    def _close_collect_plan(plan, *, success: bool) -> None:
+        details = dict(plan.details or {})
+        details["verified"] = success
+        plan.details = details
+        plan.status = TransferStatus.COMPLETED if success else TransferStatus.CANCELLED
+        plan.completed_at = timezone.now()
+        fields = ["details", "status", "completed_at"]
+        if success:
+            plan.bytes_transferred = plan.bytes_total
+            fields.append("bytes_transferred")
+        plan.save(update_fields=fields)
+
+    @staticmethod
+    def verified_output_files(workspace: AnalysisWorkspace, plan=None) -> list[dict[str, str]]:
+        """Output files (relative to Output) whose portal copy is verified, for verified CLEANUP."""
+        if plan is not None:
+            return [
+                {"path": f["path"], "sha256": (f.get("sha256") or "").lower()}
+                for f in (plan.details or {}).get("files") or []
+                if f.get("sha256")
+            ]
+        prefix = f"{OUTPUT_PORTAL_FOLDER}/"
+        return [
+            {"path": rel[len(prefix):], "sha256": (sha or "").lower()}
+            for rel, sha in WorkspaceFile.objects.filter(
+                workspace=workspace, deleted=False, is_current=True, relative_path__startswith=prefix
+            )
+            .exclude(sha256="")
+            .values_list("relative_path", "sha256")
+        ]
+
+    def _issue_verified_cleanup(
+        self,
+        workspace: AnalysisWorkspace,
+        *,
+        actor=None,
+        session_id: str = "",
+        verified_files: list[dict[str, str]] | None = None,
+        extra_sources: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """After UploadVerified, clean the session folder.
+
+        Agents advertising verified_cleanup_v1 delete only Output files matching ``verified_files``
+        (path + sha256). Older agents only drop scratch folders and keep Output for their stale cleanup.
+        Files from ``extra_sources`` folders are listed as ``<alias>/<path>`` and deleted the same way.
+        """
         if not workspace.workstation_id:
             return
+        from iic_booking.equipment.remote_analysis_integration.analysis_setup import merge_state
+
+        session_id = session_id or self.last_collect_session_id(workspace)
+        capabilities = set(workspace.workstation.agent_capabilities or [])
+        payload = {
+            "session_id": session_id,
+            "reservation_id": str(workspace.reservation_id),
+            "workspace_id": str(workspace.id),
+            "local_path": workspace.local_agent_path,
+            "reason": "upload_verified",
+        }
+        if VERIFIED_CLEANUP_CAPABILITY in capabilities:
+            if verified_files is None:
+                verified_files = self.verified_output_files(workspace)
+            payload.update(
+                {
+                    "defer_output_cleanup": False,
+                    "verified_files": verified_files,
+                    "delete_folders": ["Input", "Working", "Temp"],
+                }
+            )
+            from iic_booking.equipment.remote_analysis_integration.pc_folders import cleanup_sources
+
+            to_clean = cleanup_sources(extra_sources)
+            if to_clean:
+                payload["extra_sources"] = to_clean
+            pc_cleanup = "pending"
+        else:
+            payload.update({"defer_output_cleanup": True, "delete_folders": ["Input", "Working", "Temp"]})
+            pc_cleanup = "not_supported"
+        merge_state(
+            AnalysisWorkspace, workspace.pk, "transfer_state", pc_cleanup=pc_cleanup, kept_files=[], pc_profile_wiped=None
+        )
         self.set_sync_phase(workspace, WorkspaceSyncPhase.CLEANUP, percent=95, message="Cleaning workstation")
         try:
             CommandService().create_command(
                 workspace.workstation,
                 CommandType.CLEAN_WORKSTATION,
-                payload={
-                    "session_id": str(workspace.reservation_id),
-                    "workspace_id": str(workspace.id),
-                    "local_path": workspace.local_agent_path,
-                    "reason": "upload_verified",
-                    "defer_output_cleanup": False,
-                    "delete_folders": ["Input", "Working", "Output", "Logs", "Temp"],
-                },
+                payload=payload,
                 created_by=actor if actor is not None and getattr(actor, "pk", None) else None,
             )
         except Exception:
@@ -511,7 +838,15 @@ class WorkspaceSyncService:
         )
         if workspace.status in {WorkspaceStatus.COLLECTING, WorkspaceStatus.FAILED, WorkspaceStatus.ACTIVE}:
             if workspace.workstation_id:
-                return self.issue_collect_command(workspace, actor=actor)
+                session_id = self.last_collect_session_id(workspace)
+                return self.issue_collect_command(
+                    workspace,
+                    actor=actor,
+                    session_id=session_id,
+                    end_of_session=bool(session_id)
+                    and not self.session_is_open(session_id)
+                    and self.no_open_session_on(workspace),
+                )
         if workspace.workstation_id:
             return self.issue_sync_command(workspace, actor=actor)
         raise ValueError("Workspace has no workstation")
@@ -527,6 +862,8 @@ class WorkspaceSyncService:
     def defer_output_cleanup(self, workspace: AnalysisWorkspace) -> bool:
         """Never delete Output until upload is verified on the portal."""
         phase = normalize_sync_phase(workspace.sync_phase)
+        if phase in COLLECT_IN_FLIGHT_PHASES:
+            return True
         if phase in WORKSPACE_UPLOAD_VERIFIED_PHASES or workspace.upload_verified_at:
             return False
         return True

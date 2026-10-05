@@ -17,6 +17,9 @@ class UserType:
     FINANCE = "finance"
     ORG_ADMIN = "org_admin"
     EXTERNAL_RELATIONS = "external_relations"
+    # Procurement-only staff: no booking pricing, wallet, admin panel or Channel i sign-in.
+    OC_STORES = "oc_stores"
+    HOD = "hod"
 
     STUDENT = "student"
     INDIVIDUAL_STUDENT = "individual_student"
@@ -43,6 +46,8 @@ class UserType:
             (cls.FINANCE, _("Accounts In Charge")),
             (cls.ORG_ADMIN, _("Organization Administrator")),
             (cls.EXTERNAL_RELATIONS, _("External Relations Administrator")),
+            (cls.OC_STORES, _("Officer In Charge Stores")),
+            (cls.HOD, _("Head of Department")),
             (cls.STUDENT, _("IITR Student")),
             (cls.INDIVIDUAL_STUDENT, _("Individual Student")),
             (cls.FACULTY, _("IITR Faculty")),

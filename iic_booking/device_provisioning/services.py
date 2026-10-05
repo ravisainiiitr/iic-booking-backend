@@ -1062,7 +1062,13 @@ def list_unassigned_equipment(*, department_id: int | None, actor=None) -> list[
         .values_list("equipment_id", flat=True)
     )
 
-    qs = Equipment.objects.filter(dsa_enabled=True).exclude(id__in=blocking)
+    from iic_booking.department_modules.access import blocked_department_ids
+    from iic_booking.department_modules.constants import ModuleKey
+
+    qs = Equipment.objects.filter(dsa_enabled=True).exclude(pk__in=blocking)
+    dsa_off = blocked_department_ids(ModuleKey.DSA)
+    if dsa_off:
+        qs = qs.exclude(internal_department_id__in=dsa_off)
     if department_id is not None:
         qs = qs.filter(internal_department_id=department_id)
     elif actor is not None and getattr(actor, "department_id", None):
@@ -1077,8 +1083,8 @@ def list_unassigned_equipment(*, department_id: int | None, actor=None) -> list[
     for eq in qs:
         results.append(
             {
-                "id": eq.id,
-                "equipment_id": eq.id,
+                "id": eq.pk,
+                "equipment_id": eq.pk,
                 "code": getattr(eq, "code", None) or "",
                 "name": eq.name,
                 "department_id": eq.internal_department_id,

@@ -93,6 +93,14 @@ class AnalysisWorkspace(models.Model):
         blank=True,
         help_text=_("Set when collect upload checksums are verified on the portal."),
     )
+    research_link = models.ForeignKey(
+        "my_research.ResearchWorkspaceBooking",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_workspaces",
+    )
+    transfer_state = models.JSONField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -233,10 +241,33 @@ class WorkspaceTransfer(models.Model):
         on_delete=models.SET_NULL,
     )
     retry_count = models.PositiveIntegerField(default=0)
+    details = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class BookingAnalysisSetup(models.Model):
+    """Per-booking analysis setup (My Research project + input choice); outlives single reservations."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.OneToOneField("equipment.Booking", on_delete=models.CASCADE, related_name="analysis_setup")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="+")
+    research_link = models.ForeignKey(
+        "my_research.ResearchWorkspaceBooking",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="analysis_setups",
+    )
+    input_source = models.CharField(max_length=16, blank=True, default="booking")
+    input_booking = models.ForeignKey(
+        "equipment.Booking", null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
+    )
+    state = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
 
 class TransferHistory(models.Model):

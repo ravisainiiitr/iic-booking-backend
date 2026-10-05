@@ -48,6 +48,7 @@ class AnalysisWorkstation(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     mac_address = models.CharField(max_length=64, blank=True, default="")
     agent_version = models.CharField(max_length=64, blank=True, default="")
+    agent_capabilities = models.JSONField(null=True, blank=True)
     schema_version = models.PositiveIntegerField(default=SCHEMA_VERSION)
     registration_date = models.DateTimeField(null=True, blank=True)
     last_heartbeat = models.DateTimeField(null=True, blank=True)
@@ -484,6 +485,7 @@ from iic_booking.remote_analysis.tunnel_models import (  # noqa: E402,F401
 # Milestone 5 analysis workspace models
 from iic_booking.remote_analysis.workspace_models import (  # noqa: E402,F401
     AnalysisWorkspace,
+    BookingAnalysisSetup,
     TransferHistory,
     TransferPolicy,
     VirusScanResult,

@@ -68,6 +68,8 @@ def is_complex(user, eq) -> tuple[bool, list[str]]:
 
     if getattr(eq, "profile_type", None) == EquipmentProfileType.PRINT_3D:
         return True, ["3D print model upload"]
+    if getattr(eq, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        return True, ["DXF drawing upload"]
     blocking = [
         f.field_label or f.field_key
         for f in _fields(user, eq)
@@ -219,7 +221,8 @@ def form_reply(
         "fields": fields,
         "instruction": instruction,
         "sample_sets": {
-            "allowed": getattr(eq, "profile_type", None) != EquipmentProfileType.PRINT_3D
+            "allowed": getattr(eq, "profile_type", None)
+            not in (EquipmentProfileType.PRINT_3D, EquipmentProfileType.LASER_CUT_2D)
             and getattr(eq, "allow_multiple_sample_sets", True) is not False
             and bool(fields or samples_spec),
             "max": MAX_SAMPLE_SETS,

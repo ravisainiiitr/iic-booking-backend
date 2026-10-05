@@ -26,6 +26,7 @@ from iic_booking.remote_analysis.services.allocation import AllocationService
 from iic_booking.remote_analysis.services.audit import record_event
 from iic_booking.remote_analysis.services.availability import AvailabilityEngine
 from iic_booking.remote_analysis.services.conflicts import ConflictResolver
+from iic_booking.remote_analysis.services.department_switch import refused_workstation_department_ids
 from iic_booking.remote_analysis.services.health import update_workstation_health
 from iic_booking.remote_analysis.services.queue import QueueService
 from iic_booking.remote_analysis.services.reservation import ReservationService, TERMINAL
@@ -92,9 +93,16 @@ class SchedulerService:
         if required_software_names:
             eval_caps["required_software_names"] = list(required_software_names)
 
+        exclude_department_ids = None
+        if not reservation.booking_id:
+            exclude_department_ids = refused_workstation_department_ids(
+                reservation.user, started_at=reservation.created_at
+            )
+
         candidate = self.allocation.select_best(
             start=reservation.requested_start,
             end=reservation.requested_end,
+            exclude_department_ids=exclude_department_ids,
             department_id=reservation.department_id,
             requirement=requirement,
             requested_capabilities=eval_caps,

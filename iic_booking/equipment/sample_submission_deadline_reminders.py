@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional
 from django.db.models import Exists, OuterRef, Prefetch
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import format_local_dt
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import booking_display_id_for_email, get_frontend_absolute_url
 from iic_booking.equipment.booking_events import (
@@ -166,18 +167,18 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
         and not recipient_is_admin_oic
     )
     if hide_time_display and daily_slots:
-        start_time = daily_slots[0].start_datetime.strftime("%Y-%m-%d") if daily_slots[0].start_datetime else ""
+        start_time = format_local_dt(daily_slots[0].start_datetime, "%Y-%m-%d")
         end_time = ""
     else:
         start_time = (
-            daily_slots[0].start_datetime.strftime("%Y-%m-%d %H:%M:%S") if daily_slots else ""
+            format_local_dt(daily_slots[0].start_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
         )
         end_time = (
-            daily_slots[-1].end_datetime.strftime("%Y-%m-%d %H:%M:%S") if daily_slots else ""
+            format_local_dt(daily_slots[-1].end_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
         )
 
     lead_hours = effective_sample_submission_lead_hours(booking)
-    deadline_display = deadline.strftime("%Y-%m-%d %H:%M:%S")
+    deadline_display = format_local_dt(deadline, "%Y-%m-%d %H:%M:%S")
     remaining_hours = max(0, remaining // 3600)
     remaining_mins = max(0, (remaining % 3600) // 60)
     remaining_label = (
@@ -269,7 +270,7 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
 
 def iter_bookings_for_sample_submission_deadline_reminders():
     """BOOKED bookings that have not yet received the advance reminder."""
-    from .models import Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
+    from .models import FABRICATION_PROFILE_TYPES, Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
 
     now = timezone.now()
     # Bound scan: deadlines only apply for upcoming (or just-started) slots.
@@ -287,6 +288,7 @@ def iter_bookings_for_sample_submission_deadline_reminders():
             daily_slots__start_datetime__lte=horizon_end,
         )
         .exclude(Exists(accepted))
+        .exclude(equipment__profile_type__in=FABRICATION_PROFILE_TYPES)
         .select_related("user", "equipment")
         .prefetch_related(
             Prefetch("daily_slots", queryset=DailySlot.objects.order_by("start_datetime")),
@@ -298,7 +300,7 @@ def iter_bookings_for_sample_submission_deadline_reminders():
 
 def list_approaching_sample_submission_for_user(user) -> list[dict]:
     """Payload for login / dashboard alerts for the given user."""
-    from .models import Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
+    from .models import FABRICATION_PROFILE_TYPES, Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
 
     accepted = BookingSampleTrace.objects.filter(
         booking_id=OuterRef("pk"),
@@ -307,6 +309,7 @@ def list_approaching_sample_submission_for_user(user) -> list[dict]:
     qs = (
         Booking.objects.filter(user=user, status=BookingStatus.BOOKED, equipment__sample_submission_lead_hours__gt=0)
         .exclude(Exists(accepted))
+        .exclude(equipment__profile_type__in=FABRICATION_PROFILE_TYPES)
         .select_related("equipment")
         .prefetch_related(
             Prefetch("daily_slots", queryset=DailySlot.objects.order_by("start_datetime")),

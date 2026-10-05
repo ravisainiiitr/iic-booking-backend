@@ -34,7 +34,7 @@ from .slot_allocation import (
 from .slot_utils import SlotAvailabilityChecker
 from .quota_utils import QuotaService, booking_quota_should_skip
 from .booking_events import create_booking_event
-from .models import BookingEventType
+from .models import BookingEventType, EquipmentProfileType
 from iic_booking.users.models.user_type import UserType
 from iic_booking.users.repositories.wallet_repository import WalletRepository
 
@@ -258,6 +258,9 @@ def create_booking_for_waitlist_user(
     """
     if not slot_ids:
         return None, "No slot IDs provided"
+    if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        # Laser charges come from uploaded DXF parts, which a waitlist entry does not carry.
+        return None, "Waitlist booking is not available for 2D laser cutting. Please book a free slot directly."
     from iic_booking.users.legacy_ledger.booking_lock import (
         booking_is_locked,
         department_equipment_booking_blocked,

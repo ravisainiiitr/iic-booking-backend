@@ -301,6 +301,16 @@ class BookingRemoteAnalysisService:
         except Exception:  # noqa: BLE001
             logger.exception("raw_ready check failed for booking %s; retrying without request", booking.pk)
             raw_ready = staging.has_raw_files(booking, request=None)
+        if not raw_ready:
+            from iic_booking.remote_analysis.workspace_models import BookingAnalysisSetup
+
+            setup = BookingAnalysisSetup.objects.select_related("input_booking").filter(booking=booking).first()
+            if setup is not None:
+                raw_ready = setup.input_source == "upload" or bool(
+                    setup.input_booking_id
+                    and setup.input_booking_id != booking.pk
+                    and staging.has_raw_files(setup.input_booking, request=None)
+                )
         require_raw = bool(settings_obj.analyze_data_require_s3_files)
         software_configured = (
             bool(workflows)
@@ -373,12 +383,12 @@ class BookingRemoteAnalysisService:
         request_absolute_uri_builder=None,
         user_agent: str = "",
         request=None,
+        viewport: dict | None = None,
     ) -> dict:
         """
         One-shot Analyze Data: resolve workflow (or legacy software) → allocate → stage RAW → launch.
         Never exposes workstation identity to the caller.
         """
-        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
         from iic_booking.equipment.remote_analysis_integration.software import SoftwareMappingService
         from iic_booking.remote_analysis.guacamole.session import SessionError
         from iic_booking.remote_analysis.services.workflow_engine import WorkflowEngine, WorkflowEngineError
@@ -529,9 +539,9 @@ class BookingRemoteAnalysisService:
 
         staging_result = None
         if settings_obj.analyze_data_stage_raw_on_launch and workspace is not None:
-            staging_result = BookingRawStagingService().stage_into_workspace(
-                booking, workspace, actor=user, request=request
-            )
+            from iic_booking.equipment.remote_analysis_integration.analysis_setup import stage_input
+
+            staging_result = stage_input(booking, workspace, actor=user, request=request)
             self.audit.log(
                 booking,
                 "RawStaged",
@@ -585,6 +595,7 @@ class BookingRemoteAnalysisService:
             client_ip=client_ip,
             request_absolute_uri_builder=request_absolute_uri_builder,
             user_agent=user_agent,
+            viewport=viewport,
         )
         if job is not None:
             job_step = job.steps.filter(step_number=job.current_step_number).first()
@@ -620,6 +631,7 @@ class BookingRemoteAnalysisService:
         request_absolute_uri_builder=None,
         user_agent: str = "",
         wait_for_prepare: bool = False,
+        viewport: dict | None = None,
     ) -> dict:
         """
         Create (or reuse) a remote desktop session and issue a Portal launch URL.
@@ -640,7 +652,7 @@ class BookingRemoteAnalysisService:
         from iic_booking.remote_analysis.guacamole.services import GuacamoleIntegrationService
         from iic_booking.remote_analysis.guacamole.session import SessionError, SessionOrchestrator
         from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings, WorkstationRdpSecret
-        from iic_booking.equipment.remote_analysis_integration.raw_staging import BookingRawStagingService
+        from iic_booking.equipment.remote_analysis_integration.analysis_setup import stage_input
         from iic_booking.remote_analysis.workspace.sync import WorkspaceSyncService
 
         settings_obj = RemoteAnalysisSettings.get_solo()
@@ -682,21 +694,24 @@ class BookingRemoteAnalysisService:
             checked_in_this_call = True
             self.audit.log(booking, "CheckinAccepted", details=str(reservation.id), actor=user)
 
-        workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user)
-        if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
-            try:
-                BookingRawStagingService().stage_into_workspace(booking, workspace, actor=user)
-            except Exception:  # noqa: BLE001
-                logger.exception("RAW staging before launch failed for booking %s", booking.pk)
-
         orch = SessionOrchestrator()
         was_new = find_reusable_open_session(reservation, settings_obj=orch.settings) is None
+        # Repeat launch POSTs (polling, reconnects) reuse the open session: never re-ingest or
+        # re-stage there — that reset the sync phase and re-read every raw file per click.
+        if was_new:
+            workspace = WorkspaceSyncService().ensure_for_reservation(reservation, actor=user, ingest=False)
+            if getattr(settings_obj, "analyze_data_stage_raw_on_launch", True) and workspace is not None:
+                try:
+                    stage_input(booking, workspace, actor=user)
+                except Exception:  # noqa: BLE001
+                    logger.exception("RAW staging before launch failed for booking %s", booking.pk)
         try:
             session = orch.create_session(
                 reservation=reservation,
                 user=user,
                 client_ip=client_ip,
                 wait_for_prepare=wait_for_prepare,
+                viewport=viewport,
             )
         except SessionError:
             if checked_in_this_call:
@@ -1043,6 +1058,7 @@ class BookingRemoteAnalysisService:
         client_ip: str | None = None,
         request_absolute_uri_builder=None,
         user_agent: str = "",
+        viewport: dict | None = None,
     ) -> dict:
         """Explicit Start Analysis Session after reservation check-in."""
         from iic_booking.remote_analysis.guacamole.session import SessionError
@@ -1064,6 +1080,7 @@ class BookingRemoteAnalysisService:
             client_ip=client_ip,
             request_absolute_uri_builder=request_absolute_uri_builder,
             user_agent=user_agent,
+            viewport=viewport,
         )
 
     def end_analysis(self, booking, *, user, reason: str = "Finished early by user") -> dict:

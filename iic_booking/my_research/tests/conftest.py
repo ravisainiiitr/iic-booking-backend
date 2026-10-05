@@ -58,6 +58,12 @@ class FakeS3:
         if obj is None:
             raise self._missing("GetObject")
         body = obj["body"]
+        if Range and not body:
+            raise ClientError(
+                {"Error": {"Code": "InvalidRange", "Message": "The requested range is not satisfiable"},
+                 "ResponseMetadata": {"HTTPStatusCode": 416}},
+                "GetObject",
+            )
         if Range:
             end = int(Range.split("-")[1])
             body = body[: end + 1]

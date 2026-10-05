@@ -111,9 +111,10 @@ class CommunicationService:
         Returns:
             Dictionary with rendered 'subject', 'message', 'html_message', etc.
         """
-        from .email_branding import sanitize_template_context
+        from .email_branding import inject_fbr_number, sanitize_template_context
 
-        context = sanitize_template_context(context or {}, template_code=getattr(template, "code", None))
+        raw_context = context or {}
+        context = sanitize_template_context(raw_context, template_code=getattr(template, "code", None))
 
         def _truthy(value: Any) -> bool:
             if value is None:
@@ -189,6 +190,13 @@ class CommunicationService:
                 result["title"] = render_text(template.subject).strip()
             if template.body_text:
                 result["message"] = render_text(template.body_text)
+
+        if template.communication_type == CommunicationTemplate.CommunicationType.EMAIL and (
+            result.get("message") or result.get("html_message")
+        ):
+            from iic_booking.equipment.fbr_email import fbr_number_from_context
+
+            inject_fbr_number(result, fbr_number_from_context(raw_context))
 
         return result
 

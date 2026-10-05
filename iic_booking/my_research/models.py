@@ -31,6 +31,12 @@ class FileStatus(models.TextChoices):
     DELETED = "DELETED", "Deleted"
 
 
+class FileOrigin(models.TextChoices):
+    UPLOAD = "upload", "Upload"
+    BOOKING_RAW = "booking_raw", "Booking raw data"
+    ANALYSIS_OUTPUT = "analysis_output", "Analysis output"
+
+
 class ActivityAction(models.TextChoices):
     WORKSPACE_CREATED = "WORKSPACE_CREATED", "Workspace created"
     WORKSPACE_UPDATED = "WORKSPACE_UPDATED", "Workspace updated"
@@ -166,6 +172,7 @@ class ResearchFile(models.Model):
     etag_is_md5 = models.BooleanField(default=False)
     multipart_upload_id = models.CharField(max_length=1024, blank=True, default="")
     status = models.CharField(max_length=20, choices=FileStatus.choices, default=FileStatus.PENDING_UPLOAD)
+    origin = models.CharField(max_length=20, choices=FileOrigin.choices, default=FileOrigin.UPLOAD)
     failure_reason = models.CharField(max_length=255, blank=True, default="")
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="research_files"

@@ -2388,6 +2388,9 @@ def current_user(request):
     serializer = UserSerializer(request.user, context={"request": request})
     data = dict(serializer.data)
     data["auth_inactivity_timeout_seconds"] = get_inactivity_timeout_seconds(user=request.user)
+    from iic_booking.department_modules.access import availability_block
+
+    data["department_modules"] = availability_block(request.user)
     return Response(data, status=status.HTTP_200_OK)
 
 

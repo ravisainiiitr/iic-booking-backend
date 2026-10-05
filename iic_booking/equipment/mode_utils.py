@@ -16,6 +16,7 @@ from .models import (
     DailySlot,
     Equipment,
     EquipmentModeSchedule,
+    ModeAvailability,
     ModeScheduleBehavior,
 )
 
@@ -83,8 +84,16 @@ def _slot_local_time(slot: DailySlot) -> Optional[time]:
     return dt.time()
 
 
-def schedule_covers_datetime(sched: EquipmentModeSchedule, on_date: date, at_time: Optional[time] = None) -> bool:
+def schedule_covers_date(sched: EquipmentModeSchedule, on_date: date) -> bool:
+    """Date range plus the optional weekly repeat (empty weekdays = every day)."""
     if on_date < sched.start_date or on_date > sched.end_date:
+        return False
+    weekdays = sched.weekdays or []
+    return not weekdays or on_date.weekday() in weekdays
+
+
+def schedule_covers_datetime(sched: EquipmentModeSchedule, on_date: date, at_time: Optional[time] = None) -> bool:
+    if not schedule_covers_date(sched, on_date):
         return False
     if sched.start_time and sched.end_time and at_time is not None:
         return sched.start_time <= at_time <= sched.end_time
@@ -96,7 +105,9 @@ def schedules_covering_date(
     on_date: date,
     *,
     mode_equipment_id: Optional[int] = None,
-) -> QuerySet:
+    behavior: Optional[str] = None,
+) -> list[EquipmentModeSchedule]:
+    """Schedules of the family active on ``on_date`` (date range and weekly repeat), ordered by id."""
     qs = EquipmentModeSchedule.objects.filter(
         parent_equipment_id=parent_id,
         start_date__lte=on_date,
@@ -104,18 +115,21 @@ def schedules_covering_date(
     )
     if mode_equipment_id is not None:
         qs = qs.filter(mode_equipment_id=mode_equipment_id)
-    return qs
+    if behavior is not None:
+        qs = qs.filter(behavior=behavior)
+    return [s for s in qs.select_related("mode_equipment").order_by("id") if schedule_covers_date(s, on_date)]
 
 
 def exclusive_schedule_for_slot(
-    parent_id: int, on_date: date, at_time: Optional[time] = None
+    parent_id: int,
+    on_date: date,
+    at_time: Optional[time] = None,
+    *,
+    exclude_mode_id: Optional[int] = None,
 ) -> Optional[EquipmentModeSchedule]:
-    for sched in (
-        schedules_covering_date(parent_id, on_date)
-        .filter(behavior=ModeScheduleBehavior.EXCLUSIVE)
-        .select_related("mode_equipment")
-        .order_by("id")
-    ):
+    for sched in schedules_covering_date(parent_id, on_date, behavior=ModeScheduleBehavior.EXCLUSIVE):
+        if exclude_mode_id is not None and sched.mode_equipment_id == exclude_mode_id:
+            continue
         if schedule_covers_datetime(sched, on_date, at_time):
             return sched
     return None
@@ -131,12 +145,16 @@ def active_mode_schedule_for_child(
     if not equipment.parent_equipment_id:
         return None
     parent_id = equipment.parent_equipment_id
-    for sched in schedules_covering_date(
-        parent_id, on_date, mode_equipment_id=equipment.equipment_id
-    ).order_by("id"):
+    for sched in schedules_covering_date(parent_id, on_date, mode_equipment_id=equipment.equipment_id):
         if schedule_covers_datetime(sched, on_date, at_time):
             return sched
     return None
+
+
+def mode_requires_schedule(equipment: Equipment) -> bool:
+    return bool(equipment.parent_equipment_id) and (
+        getattr(equipment, "mode_availability", ModeAvailability.ALWAYS) == ModeAvailability.SCHEDULED_ONLY
+    )
 
 
 def is_equipment_visible_on_date(equipment: Equipment, on_date: date) -> bool:
@@ -158,9 +176,7 @@ def is_equipment_visible_on_date(equipment: Equipment, on_date: date) -> bool:
     if not Equipment.objects.filter(parent_equipment_id=parent_id).exists():
         return True
     # Hide parent from catalog on dates with any exclusive schedule covering that date
-    return not schedules_covering_date(parent_id, on_date).filter(
-        behavior=ModeScheduleBehavior.EXCLUSIVE
-    ).exists()
+    return not schedules_covering_date(parent_id, on_date, behavior=ModeScheduleBehavior.EXCLUSIVE)
 
 
 def equipment_bookable_on_date(
@@ -173,9 +189,13 @@ def equipment_bookable_on_date(
     parent_id = parent.equipment_id
 
     if equipment.parent_equipment_id:
-        active = active_mode_schedule_for_child(equipment, on_date, at_time)
-        if active is None:
+        if mode_requires_schedule(equipment) and active_mode_schedule_for_child(equipment, on_date, at_time) is None:
             return False, "This equipment mode is not scheduled for booking at the selected time."
+        if exclusive_schedule_for_slot(parent_id, on_date, at_time, exclude_mode_id=equipment.equipment_id):
+            return (
+                False,
+                "Another mode of this instrument is running exclusively at this time.",
+            )
         return True, ""
 
     excl = exclusive_schedule_for_slot(parent_id, on_date, at_time)
@@ -236,13 +256,15 @@ def filter_queryset_for_mode_catalog(queryset: QuerySet, user, *, on_date: Optio
     on_date = on_date or timezone.localdate()
 
     # Parents with exclusive schedule today AND multi-mode enabled for that parent
-    exclusive_parent_ids = list(
-        EquipmentModeSchedule.objects.filter(
+    exclusive_parent_ids = [
+        sched.parent_equipment_id
+        for sched in EquipmentModeSchedule.objects.filter(
             behavior=ModeScheduleBehavior.EXCLUSIVE,
             start_date__lte=on_date,
             end_date__gte=on_date,
-        ).values_list("parent_equipment_id", flat=True)
-    )
+        ).only("parent_equipment_id", "start_date", "end_date", "weekdays")
+        if schedule_covers_date(sched, on_date)
+    ]
     hide_parent_ids = []
     if exclusive_parent_ids:
         for pid in set(exclusive_parent_ids):
@@ -274,17 +296,23 @@ def slot_mode_overlay(equipment: Equipment, slot: DailySlot) -> Optional[dict[st
     on_date = slot.date
 
     if equipment.parent_equipment_id:
-        active = active_mode_schedule_for_child(equipment, on_date, at_time)
-        if active is not None:
-            return None
-        nearest = (
-            EquipmentModeSchedule.objects.filter(mode_equipment_id=equipment.equipment_id)
-            .order_by("-start_date")
-            .first()
+        if mode_requires_schedule(equipment) and active_mode_schedule_for_child(equipment, on_date, at_time) is None:
+            nearest = (
+                EquipmentModeSchedule.objects.filter(mode_equipment_id=equipment.equipment_id)
+                .order_by("-start_date")
+                .first()
+            )
+            label = (nearest.unavailable_label if nearest else None) or "Mode not scheduled"
+            color = (nearest.unavailable_color if nearest else None) or DEFAULT_GREY
+            return {"label": label, "color": color, "status": "BLOCKED", "mode_overlay": "child_unavailable"}
+        sibling_excl = exclusive_schedule_for_slot(
+            equipment.parent_equipment_id, on_date, at_time, exclude_mode_id=equipment.equipment_id
         )
-        label = (nearest.unavailable_label if nearest else None) or "Mode not scheduled"
-        color = (nearest.unavailable_color if nearest else None) or DEFAULT_GREY
-        return {"label": label, "color": color, "status": "BLOCKED", "mode_overlay": "child_unavailable"}
+        if sibling_excl is None:
+            return None
+        label = sibling_excl.exclusive_blocked_label or "Alternate mode active"
+        color = sibling_excl.exclusive_blocked_color or DEFAULT_GREY
+        return {"label": label, "color": color, "status": "BLOCKED", "mode_overlay": "exclusive_sibling"}
 
     parent_id = equipment.equipment_id
     excl = exclusive_schedule_for_slot(parent_id, on_date, at_time)
