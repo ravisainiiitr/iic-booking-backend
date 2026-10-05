@@ -895,3 +895,9 @@ CURAENGINE_PATH = env("CURAENGINE_PATH", default="")
 PRINT_3D_USE_CURAENGINE = env.bool("PRINT_3D_USE_CURAENGINE", default=True)
 PRINT_3D_MAX_STL_BYTES = env.int("PRINT_3D_MAX_STL_BYTES", default=100 * 1024 * 1024)
 PRINT_3D_USE_CELERY = env.bool("PRINT_3D_USE_CELERY", default=True)
+
+# 2D laser cutting / DXF analysis (parsed synchronously in the upload request)
+LASER_CUT_MAX_DXF_BYTES = env.int("LASER_CUT_MAX_DXF_BYTES", default=25 * 1024 * 1024)
+# Fabrication file emails attach files up to this combined size; larger files are sent as download links.
+FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES = env.int("FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES", default=10 * 1024 * 1024)
+FABRICATION_EMAIL_LINK_EXPIRY_SECONDS = env.int("FABRICATION_EMAIL_LINK_EXPIRY_SECONDS", default=7 * 24 * 3600)

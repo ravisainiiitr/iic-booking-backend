@@ -1,4 +1,9 @@
-"""Email lab inbox with STL attachments when a 3D print booking is confirmed."""
+"""Email the lab inboxes with design files (STL / DXF) when a fabrication booking is confirmed or its files change.
+
+Covers 3D printing (STL) and 2D laser cutting (DXF). Recipients come from
+``Equipment.fabrication_notification_emails``. Files are attached up to
+``FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES`` in total; the rest are sent as download links.
+"""
 
 import logging
 import re
@@ -12,6 +17,21 @@ from django.utils import timezone
 from iic_booking.communication.utils import booking_display_id_for_email
 
 logger = logging.getLogger(__name__)
+
+REASON_CONFIRMED = "confirmed"
+REASON_FILES_UPDATED = "files_updated"
+REASON_FILES_RESTORED = "files_restored"
+
+
+def notification_recipients(equipment) -> list[str]:
+    emails = []
+    seen = set()
+    for raw in getattr(equipment, "fabrication_notification_emails", None) or []:
+        email = str(raw or "").strip()
+        if email and email.lower() not in seen:
+            seen.add(email.lower())
+            emails.append(email)
+    return emails
 
 
 def should_send_print_3d_stl_notification(
@@ -34,31 +54,12 @@ def should_send_print_3d_stl_notification(
     return False
 
 
-def maybe_dispatch_print_3d_stl_notification(
-    booking,
-    event_type: str,
-    *,
-    previous_status: Optional[str] = None,
-    new_status: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> None:
-    """Queue STL notification after booking confirmation (on transaction commit)."""
-    from .models import EquipmentProfileType
-
-    if not should_send_print_3d_stl_notification(
-        event_type,
-        previous_status=previous_status,
-        new_status=new_status,
-        metadata=metadata,
-    ):
-        return
+def dispatch_fabrication_file_email(booking, *, reason: str = REASON_CONFIRMED) -> None:
+    """Queue the design-file email (after commit). Never raises."""
+    from .fabrication import is_fabrication_equipment
 
     equipment = getattr(booking, "equipment", None)
-    if not equipment or equipment.profile_type != EquipmentProfileType.PRINT_3D:
-        return
-
-    recipient = (getattr(equipment, "print_3d_stl_notification_email", None) or "").strip()
-    if not recipient:
+    if not is_fabrication_equipment(equipment) or not notification_recipients(equipment):
         return
 
     booking_id = booking.booking_id
@@ -71,38 +72,49 @@ def maybe_dispatch_print_3d_stl_notification(
                 try:
                     from iic_booking.equipment.tasks import send_print_3d_stl_booking_email_task
 
-                    send_print_3d_stl_booking_email_task.delay(booking_id)
+                    send_print_3d_stl_booking_email_task.delay(booking_id, reason=reason)
                     return
                 except Exception:
                     logger.warning(
-                        "Failed to queue print 3D STL email for booking_id=%s; sending inline",
+                        "Failed to queue fabrication file email for booking_id=%s; sending inline",
                         booking_id,
                         exc_info=True,
                     )
                 try:
-                    send_print_3d_stl_booking_email(booking_id)
+                    send_print_3d_stl_booking_email(booking_id, reason=reason)
                 except Exception:
                     # Never break booking flow for email/SMTP issues (e.g. SMTP 535 auth errors)
-                    logger.exception(
-                        "print_3d_stl_email: send failed for booking_id=%s (ignored)",
-                        booking_id,
-                    )
+                    logger.exception("fabrication_file_email: send failed for booking_id=%s (ignored)", booking_id)
             except Exception:
                 logger.exception(
-                    "print_3d_stl_email: unexpected dispatch failure for booking_id=%s (ignored)",
-                    booking_id,
+                    "fabrication_file_email: unexpected dispatch failure for booking_id=%s (ignored)", booking_id
                 )
 
-        threading.Thread(
-            target=_run,
-            name=f"print3d-notify-{booking_id}",
-            daemon=True,
-        ).start()
+        threading.Thread(target=_run, name=f"fabrication-notify-{booking_id}", daemon=True).start()
 
     if transaction.get_connection().in_atomic_block:
         transaction.on_commit(_dispatch)
     else:
         _dispatch()
+
+
+def maybe_dispatch_print_3d_stl_notification(
+    booking,
+    event_type: str,
+    *,
+    previous_status: Optional[str] = None,
+    new_status: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Queue the design-file notification after booking confirmation (on transaction commit)."""
+    if not should_send_print_3d_stl_notification(
+        event_type,
+        previous_status=previous_status,
+        new_status=new_status,
+        metadata=metadata,
+    ):
+        return
+    dispatch_fabrication_file_email(booking, reason=REASON_CONFIRMED)
 
 
 def should_cleanup_print_3d_stl_files(
@@ -125,14 +137,14 @@ def maybe_dispatch_print_3d_stl_cleanup(
     *,
     new_status: Optional[str] = None,
 ) -> None:
-    """Delete STL files from storage once a PRINT_3D booking is completed."""
-    from .models import EquipmentProfileType
+    """Delete STL/DXF files from storage once a fabrication booking is completed."""
+    from .fabrication import is_fabrication_equipment
 
     if not should_cleanup_print_3d_stl_files(event_type, new_status=new_status):
         return
 
     equipment = getattr(booking, "equipment", None)
-    if not equipment or equipment.profile_type != EquipmentProfileType.PRINT_3D:
+    if not is_fabrication_equipment(equipment):
         return
 
     booking_id = booking.booking_id
@@ -146,21 +158,17 @@ def maybe_dispatch_print_3d_stl_cleanup(
                 return
             except Exception:
                 logger.warning(
-                    "Failed to queue print 3D STL cleanup for booking_id=%s; running inline",
+                    "Failed to queue fabrication file cleanup for booking_id=%s; running inline",
                     booking_id,
                     exc_info=True,
                 )
             try:
                 delete_print_3d_booking_stl_files(booking_id)
             except Exception:
-                logger.exception(
-                    "print_3d_stl_cleanup: failed for booking_id=%s (ignored)",
-                    booking_id,
-                )
+                logger.exception("fabrication_file_cleanup: failed for booking_id=%s (ignored)", booking_id)
         except Exception:
             logger.exception(
-                "print_3d_stl_cleanup: unexpected dispatch failure for booking_id=%s (ignored)",
-                booking_id,
+                "fabrication_file_cleanup: unexpected dispatch failure for booking_id=%s (ignored)", booking_id
             )
 
     if transaction.get_connection().in_atomic_block:
@@ -169,15 +177,46 @@ def maybe_dispatch_print_3d_stl_cleanup(
         _dispatch()
 
 
+def _delete_stored_file(record, field_name: str) -> int:
+    from django.core.files.storage import default_storage
+
+    file_field = getattr(record, field_name, None)
+    if not file_field or not file_field.name:
+        return 0
+    storage = getattr(file_field, "storage", None) or default_storage
+    name = file_field.name
+    candidate_names = [name]
+    if name.startswith("media/"):
+        candidate_names.append(name[len("media/"):])
+    else:
+        candidate_names.append(f"media/{name}")
+    deleted = 0
+    try:
+        resolved = next((n for n in candidate_names if storage.exists(n)), None)
+        if resolved:
+            storage.delete(resolved)
+            deleted = 1
+    except Exception:
+        logger.exception("Failed deleting %s for %s", field_name, record.pk)
+    # Clear the DB field regardless (so we don't keep pointing at a deleted object)
+    try:
+        setattr(record, field_name, "")
+        record.save(update_fields=[field_name])
+    except Exception:
+        logger.exception("Failed clearing %s for %s", field_name, record.pk)
+    return deleted
+
+
 def delete_print_3d_booking_stl_files(booking_id: int) -> int:
     """
-    Delete STL objects from the configured storage (S3/local) for a completed booking,
-    and clear the DB FileField so the download endpoint won't leak/stale-reference.
+    Delete STL/DXF objects from the configured storage (S3/local) for a completed booking,
+    including files replaced by a re-upload, and clear the DB FileFields.
 
     Returns: number of deleted objects.
     """
-    from django.core.files.storage import default_storage
-    from .models import Booking, BookingStatus, PrintAnalysis
+    from django.db.models import Q
+
+    from .models import Booking, BookingStatus, LaserCutAnalysis, PrintAnalysis
 
     try:
         booking = Booking.objects.select_related("equipment").get(booking_id=booking_id)
@@ -186,46 +225,32 @@ def delete_print_3d_booking_stl_files(booking_id: int) -> int:
     if booking.status != BookingStatus.COMPLETED:
         return 0
 
-    analyses = list(
-        PrintAnalysis.objects.filter(booking=booking)
-        .only("id", "stl_file")
-        .order_by("sequence", "created_at")
-    )
-    if not analyses:
-        return 0
-
     deleted = 0
-    for analysis in analyses:
-        file_field = getattr(analysis, "stl_file", None)
-        if not file_field or not file_field.name:
-            continue
-        storage = getattr(file_field, "storage", None) or default_storage
-        name = file_field.name
-        candidate_names = [name]
-        if name.startswith("media/"):
-            candidate_names.append(name[len("media/"):])
-        else:
-            candidate_names.append(f"media/{name}")
-        resolved = next((n for n in candidate_names if storage.exists(n)), None)
-        if resolved:
-            try:
-                storage.delete(resolved)
-                deleted += 1
-            except Exception:
-                logger.exception("Failed deleting STL object for analysis=%s name=%s", analysis.id, resolved)
-        # Clear the DB field regardless (so we don't keep pointing at a deleted object)
-        try:
-            analysis.stl_file = ""
-            analysis.save(update_fields=["stl_file"])
-        except Exception:
-            logger.exception("Failed clearing stl_file for analysis=%s", analysis.id)
-
+    for analysis in PrintAnalysis.objects.filter(Q(booking=booking) | Q(superseded_booking=booking)).only(
+        "id", "stl_file"
+    ):
+        deleted += _delete_stored_file(analysis, "stl_file")
+    for analysis in LaserCutAnalysis.objects.filter(Q(booking=booking) | Q(superseded_booking=booking)).only(
+        "id", "dxf_file"
+    ):
+        deleted += _delete_stored_file(analysis, "dxf_file")
     return deleted
 
 
-def send_print_3d_stl_booking_email(booking_id: int) -> bool:
-    """Send booking details and STL attachment(s) to the equipment notification inbox."""
-    from .models import Booking, EquipmentProfileType, PrintAnalysis
+def _design_files_for_booking(booking):
+    """[(analysis, file_field, default_name)] for the booking's active design files."""
+    from .fabrication import active_laser_analyses_for_booking, active_print_analyses_for_booking
+    from .models import EquipmentProfileType
+
+    if booking.equipment.profile_type == EquipmentProfileType.LASER_CUT_2D:
+        return [(a, a.dxf_file, "part.dxf") for a in active_laser_analyses_for_booking(booking)]
+    return [(a, a.stl_file, "model.stl") for a in active_print_analyses_for_booking(booking)]
+
+
+def send_print_3d_stl_booking_email(booking_id: int, reason: str = REASON_CONFIRMED) -> bool:
+    """Send booking details and design file(s) to the equipment's fabrication notification inboxes."""
+    from .fabrication import is_fabrication_equipment
+    from .models import Booking, EquipmentProfileType
 
     try:
         booking = (
@@ -234,55 +259,50 @@ def send_print_3d_stl_booking_email(booking_id: int) -> bool:
             .get(booking_id=booking_id)
         )
     except Booking.DoesNotExist:
-        logger.warning("print_3d_stl_email: booking_id=%s not found", booking_id)
+        logger.warning("fabrication_file_email: booking_id=%s not found", booking_id)
         return False
 
     equipment = booking.equipment
-    if not equipment or equipment.profile_type != EquipmentProfileType.PRINT_3D:
+    if not is_fabrication_equipment(equipment):
+        return False
+    recipients = notification_recipients(equipment)
+    if not recipients:
         return False
 
-    recipient = (getattr(equipment, "print_3d_stl_notification_email", None) or "").strip()
-    if not recipient:
-        return False
-
-    analyses = list(
-        PrintAnalysis.objects.filter(booking=booking, cancelled_at__isnull=True)
-        .select_related("material")
-        .order_by("sequence", "created_at")
-    )
-    if not analyses and booking.print_analysis_id and not getattr(booking.print_analysis, "cancelled_at", None):
-        analyses = [booking.print_analysis]
-
-    attachments = _collect_stl_attachments(analyses)
-    body = _build_email_body(booking, analyses, attachments)
-    subject = (
-        f"3D print booking {booking_display_id_for_email(booking)} — "
-        f"{equipment.code or equipment.name}"
-    )
+    files = _design_files_for_booking(booking)
+    attachments, links = _collect_attachments_and_links(files)
+    is_laser = equipment.profile_type == EquipmentProfileType.LASER_CUT_2D
+    body = _build_email_body(booking, files, attachments, links, reason=reason, is_laser=is_laser)
+    kind = "Laser cutting" if is_laser else "3D print"
+    prefix = "UPDATED FILES — " if reason in (REASON_FILES_UPDATED, REASON_FILES_RESTORED) else ""
+    subject = f"{prefix}{kind} booking {booking_display_id_for_email(booking)} — {equipment.code or equipment.name}"
 
     email = EmailMessage(
         subject=subject,
         body=body,
         from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[recipient],
+        to=recipients,
     )
     for filename, content, mime in attachments:
         email.attach(filename, content, mime)
     email.send(fail_silently=False)
 
     logger.info(
-        "Sent print 3D STL notification for booking_id=%s to %s (%d attachment(s))",
+        "Sent fabrication file notification (%s) for booking_id=%s to %s (%d attachment(s), %d link(s))",
+        reason,
         booking_id,
-        recipient,
+        ", ".join(recipients),
         len(attachments),
+        len(links),
     )
     return True
 
 
-def _safe_attachment_name(filename: str, used: dict[str, int]) -> str:
-    base = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (filename or "model.stl").strip()) or "model.stl"
-    if not base.lower().endswith(".stl"):
-        base = f"{base}.stl"
+def _safe_attachment_name(filename: str, used: dict[str, int], default_ext: str = ".stl") -> str:
+    fallback = f"model{default_ext}"
+    base = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", (filename or fallback).strip()) or fallback
+    if not base.lower().endswith(default_ext):
+        base = f"{base}{default_ext}"
     count = used.get(base, 0)
     used[base] = count + 1
     if count == 0:
@@ -293,44 +313,92 @@ def _safe_attachment_name(filename: str, used: dict[str, int]) -> str:
     return f"{stem}_{count + 1}.{ext}"
 
 
-def _collect_stl_attachments(analyses) -> list[tuple[str, bytes, str]]:
+def _read_file(file_field):
     from django.core.files.storage import default_storage
 
+    if not file_field or not file_field.name:
+        return None
+    storage = getattr(file_field, "storage", None) or default_storage
+    resolved_name = file_field.name
+    try:
+        if not storage.exists(resolved_name):
+            alt = resolved_name[6:] if resolved_name.startswith("media/") else f"media/{resolved_name}"
+            if not storage.exists(alt):
+                return None
+            resolved_name = alt
+        with storage.open(resolved_name, "rb") as fh:
+            return fh.read()
+    except Exception:
+        logger.exception("Failed to read design file %s", file_field.name)
+        return None
+
+
+def _file_link(analysis, file_field, default_name: str) -> str:
+    from .print_3d_views import presigned_design_file_url
+
+    url = presigned_design_file_url(
+        file_field,
+        analysis.original_filename,
+        default_name,
+        expires_in=getattr(settings, "FABRICATION_EMAIL_LINK_EXPIRY_SECONDS", 7 * 24 * 3600),
+    )
+    if url:
+        return url
+    base = (getattr(settings, "FRONTEND_URL", "") or "").rstrip("/")
+    booking_id = getattr(analysis, "booking_id", None)
+    return f"{base}/bookings/{booking_id}" if booking_id else base
+
+
+def _collect_attachments_and_links(files):
+    """Attach files while the running total fits the cap; the rest become (filename, url) links."""
+    cap = int(getattr(settings, "FABRICATION_EMAIL_MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024))
     attachments: list[tuple[str, bytes, str]] = []
+    links: list[tuple[str, str]] = []
     used_names: dict[str, int] = {}
-
-    for analysis in analyses:
-        file_field = getattr(analysis, "stl_file", None)
-        if not file_field or not file_field.name:
-            continue
-        storage = getattr(file_field, "storage", None) or default_storage
-        resolved_name = file_field.name
+    total = 0
+    for analysis, file_field, default_name in files:
+        ext = "." + default_name.rsplit(".", 1)[-1]
+        name = _safe_attachment_name(
+            analysis.original_filename or (file_field.name or default_name).rsplit("/", 1)[-1], used_names, ext
+        )
+        size = None
         try:
-            if not storage.exists(resolved_name):
-                alt = resolved_name[6:] if resolved_name.startswith("media/") else f"media/{resolved_name}"
-                if storage.exists(alt):
-                    resolved_name = alt
-                else:
-                    logger.warning("STL file missing for analysis %s: %s", analysis.pk, file_field.name)
-                    continue
-            with storage.open(resolved_name, "rb") as fh:
-                content = fh.read()
+            size = file_field.size if file_field and file_field.name else None
         except Exception:
-            logger.exception("Failed to read STL for analysis %s", analysis.pk)
+            size = None
+        if size is not None and total + size > cap:
+            links.append((name, _file_link(analysis, file_field, default_name)))
             continue
+        content = _read_file(file_field)
+        if content is None:
+            logger.warning("Design file missing for analysis %s", analysis.pk)
+            continue
+        if total + len(content) > cap:
+            links.append((name, _file_link(analysis, file_field, default_name)))
+            continue
+        total += len(content)
+        attachments.append((name, content, "application/octet-stream"))
+    return attachments, links
 
-        filename = _safe_attachment_name(analysis.original_filename or resolved_name.rsplit("/", 1)[-1], used_names)
-        attachments.append((filename, content, "application/octet-stream"))
 
-    return attachments
+def _build_email_body(booking, files, attachments, links, *, reason: str, is_laser: bool) -> str:
+    from .fabrication import fabrication_parts_summary, format_part_line
 
-
-def _build_email_body(booking, analyses, attachments: list[tuple[str, bytes, str]]) -> str:
     user = booking.user
     equipment = booking.equipment
     display_id = booking_display_id_for_email(booking)
+    kind = "2D laser cutting" if is_laser else "3D print"
+    if reason == REASON_FILES_UPDATED:
+        intro = f"UPDATED: the design files of this {kind} booking were replaced. Use these files, not the earlier ones."
+    elif reason == REASON_FILES_RESTORED:
+        intro = (
+            f"UPDATED: a file replacement on this {kind} booking was cancelled (extra charge not paid). "
+            "The files below are the ones to use."
+        )
+    else:
+        intro = f"A new {kind} booking has been confirmed."
     lines = [
-        "A new 3D print booking has been confirmed.",
+        intro,
         "",
         f"Booking ID: {display_id}",
         f"Equipment: {equipment.name} ({equipment.code})",
@@ -342,43 +410,35 @@ def _build_email_body(booking, analyses, attachments: list[tuple[str, bytes, str
     if phone:
         lines.append(f"User phone: {phone}")
 
-    lines.extend(
-        [
-            f"Total charge: ₹{booking.total_charge}",
-            f"Estimated print time: {booking.total_time_minutes} minutes",
-            "",
-            "Print parameters:",
-        ]
+    lines.append(f"Total charge: ₹{booking.total_charge}")
+    if not is_laser:
+        lines.append(f"Estimated print time: {booking.total_time_minutes} minutes")
+    lines.append(
+        "Material: user brings own material" if getattr(booking, "own_material", False) else "Material: supplied by the lab"
     )
+
+    parts = fabrication_parts_summary(booking)
+    if parts:
+        lines.extend(["", "Parts:"])
+        for idx, part in enumerate(parts, start=1):
+            lines.append(f"  {idx}. {format_part_line(part)}")
+        if not is_laser:
+            material = ""
+            for analysis, _f, _d in files:
+                m = getattr(analysis, "material", None)
+                material = f"{m.name} ({m.code})" if m else (analysis.material_code_snapshot or "")
+                if material:
+                    break
+            if material:
+                lines.append(f"  Material: {material}")
 
     from .input_display import booking_input_fields, input_summary_lines
 
     summary = input_summary_lines(booking.input_values or {}, booking_input_fields(booking))
     if summary:
+        lines.extend(["", "Booking inputs:"])
         for label, text in summary:
             lines.append(f"  {label}: {text}")
-    else:
-        lines.append("  —")
-
-    if analyses:
-        lines.extend(["", "STL file(s):"])
-        for idx, analysis in enumerate(analyses, start=1):
-            material = getattr(analysis, "material", None)
-            material_label = ""
-            if material:
-                material_label = f"{material.name} ({material.code})"
-            elif analysis.material_code_snapshot:
-                material_label = analysis.material_code_snapshot
-            weight = analysis.actual_weight_grams if analysis.actual_weight_grams is not None else analysis.weight_grams
-            time_min = (
-                analysis.actual_time_minutes
-                if analysis.actual_time_minutes is not None
-                else analysis.estimated_time_minutes
-            )
-            lines.append(
-                f"  {idx}. {analysis.original_filename or 'model.stl'}"
-                f" — material: {material_label or '—'}, weight: {weight or '—'} g, time: {time_min or '—'} min"
-            )
 
     slots = list(booking.daily_slots.all().order_by("start_datetime"))
     if slots:
@@ -397,10 +457,15 @@ def _build_email_body(booking, analyses, attachments: list[tuple[str, bytes, str
             elif slot_label:
                 lines.append(f"  {slot_label}")
 
+    file_kind = "DXF" if is_laser else "STL"
     if attachments:
-        lines.extend(["", f"{len(attachments)} STL file(s) attached to this email."])
-    else:
-        lines.extend(["", "No STL files could be attached (files may be missing from storage)."])
+        lines.extend(["", f"{len(attachments)} {file_kind} file(s) attached to this email."])
+    if links:
+        lines.extend(["", f"{len(links)} {file_kind} file(s) are too large to attach. Download them here:"])
+        for name, url in links:
+            lines.append(f"  {name}: {url}")
+    if not attachments and not links:
+        lines.extend(["", f"No {file_kind} files could be attached (files may be missing from storage)."])
 
     lines.extend(["", "Institute Instrumentation Centre, IIT Roorkee."])
     return "\n".join(lines)

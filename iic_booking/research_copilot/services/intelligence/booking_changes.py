@@ -237,6 +237,8 @@ def _partial_mode(booking) -> str:
     profile = (getattr(booking.equipment, "profile_type", "") or "").strip().upper()
     if profile == "PRINT_3D":
         return "print_items"
+    if profile == "LASER_CUT_2D":
+        return "full_only"
     if partial_cancel_uses_input_reduction(profile):
         return "input_reduction"
     return "slot_selection"

@@ -362,8 +362,13 @@ def _build_safe_scalar_input_values(
     from .typed_table import filled_row_count, typed_table_keys
 
     table_keys = typed_table_keys(equipment)
+    from .fabrication import PARTS_KEY
+
     for key, value in normalized.items():
         if key.endswith("_elements"):
+            continue
+        if key == PARTS_KEY and isinstance(value, list):
+            safe[key] = [p for p in value if isinstance(p, dict)]
             continue
         if key in table_keys and isinstance(value, list):
             # An advanced table's key stands for its number of filled rows in formulas.
@@ -466,6 +471,10 @@ class TimeCalculationEngine:
             )
         elif profile_type == ChargeProfileType.PRINT_3D:
             return TimeCalculationEngine._calculate_print_3d_time(input_values)
+        elif profile_type == ChargeProfileType.LASER_CUT_2D:
+            return TimeCalculationEngine._calculate_laser_cut_2d_time(
+                charge_profile, input_values, slot_duration_minutes
+            )
         else:
             raise ValidationError(f"Unsupported profile type: {profile_type}")
     
@@ -560,6 +569,22 @@ class TimeCalculationEngine:
     def _calculate_print_3d_time(input_values: Dict[str, Any]) -> int:
         """PRINT_3D: time in minutes from field C (STL analysis result)."""
         return max(0, int(safe_float(input_values.get("C", 0), 0.0)))
+
+    @staticmethod
+    def _calculate_laser_cut_2d_time(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        slot_duration_minutes: Optional[int],
+    ) -> int:
+        """LASER_CUT_2D: booked duration once slots exist; otherwise the optional time formula or one slot."""
+        from .fabrication import BOOKED_MINUTES_KEY
+
+        booked = int(safe_float(input_values.get(BOOKED_MINUTES_KEY, 0), 0.0))
+        if booked > 0:
+            return booked
+        return TimeCalculationEngine._calculate_generic_time(
+            charge_profile, input_values, slot_duration_minutes
+        )
     
     @staticmethod
     def _calculate_formula_time(
@@ -723,6 +748,10 @@ class ChargeCalculationEngine:
             )
         elif profile_type == ChargeProfileType.PRINT_3D:
             total, breakdown = ChargeCalculationEngine._calculate_print_3d_charge(
+                charge_profile, input_values, total_time_minutes
+            )
+        elif profile_type == ChargeProfileType.LASER_CUT_2D:
+            total, breakdown = ChargeCalculationEngine._calculate_laser_cut_2d_charge(
                 charge_profile, input_values, total_time_minutes
             )
         else:
@@ -1261,7 +1290,8 @@ class ChargeCalculationEngine:
         input_values: Dict[str, Any],
         total_time_minutes: int,
     ) -> Tuple[Decimal, List[Dict[str, Any]]]:
-        """PRINT_3D: material cost (weight × price/gram) + machine time cost."""
+        """PRINT_3D: material cost (weight × price/gram, or the fixed own-material charge) + machine time cost."""
+        from .fabrication import OWN_MATERIAL_KEY, PARTS_KEY
         from .models import PrintMaterial
 
         breakdown: List[Dict[str, Any]] = []
@@ -1286,21 +1316,125 @@ class ChargeCalculationEngine:
         if not material:
             raise ValidationError(f"Unknown or inactive print material: {material_code}")
 
-        material_cost = weight_g * material.price_per_gram
-        breakdown.append({
-            "description": f"{weight_g} g × {material.name} @ {material.price_per_gram}/g",
-            "amount": float(material_cost),
-        })
-        total_charge = material_cost
-
-        hourly_rate = charge_profile.primary_unit_charge or Decimal("0.00")
-        if hourly_rate > 0 and total_time_minutes > 0:
-            machine_cost = (safe_decimal(total_time_minutes) / Decimal("60")) * hourly_rate
+        own_charge = _own_material_fixed_charge(charge_profile, input_values.get(OWN_MATERIAL_KEY))
+        rate_label = _format_rate(material.price_per_gram)
+        parts = [p for p in (input_values.get(PARTS_KEY) or []) if isinstance(p, dict)]
+        total_charge = Decimal("0.00")
+        if own_charge is not None:
             breakdown.append({
-                "description": f"{total_time_minutes} min machine time @ {hourly_rate}/hour",
-                "amount": float(machine_cost),
+                "description": f"Own material ({material.name}) — fixed charge",
+                "amount": float(own_charge),
             })
-            total_charge += machine_cost
+            total_charge += own_charge
+        elif parts:
+            for part in parts:
+                part_weight = Decimal(int(part.get("weight_g_total") or 0))
+                qty = int(part.get("quantity") or 1)
+                if part.get("actual_weight"):
+                    weight_text = f"{part_weight} g (actual)"
+                elif qty > 1:
+                    weight_text = f"{part.get('weight_g_each')} g × {qty}"
+                else:
+                    weight_text = f"{part_weight} g"
+                cost = part_weight * material.price_per_gram
+                breakdown.append({
+                    "description": f"{part.get('name') or 'Part'}: {weight_text} {material.name} @ {rate_label}/g",
+                    "amount": float(cost),
+                })
+                total_charge += cost
+        else:
+            material_cost = weight_g * material.price_per_gram
+            breakdown.append({
+                "description": f"{weight_g} g × {material.name} @ {rate_label}/g",
+                "amount": float(material_cost),
+            })
+            total_charge += material_cost
 
+        total_charge += _append_machine_time_line(charge_profile, total_time_minutes, breakdown)
         return total_charge, breakdown
+
+    @staticmethod
+    def _calculate_laser_cut_2d_charge(
+        charge_profile: ChargeProfile,
+        input_values: Dict[str, Any],
+        total_time_minutes: int,
+    ) -> Tuple[Decimal, List[Dict[str, Any]]]:
+        """LASER_CUT_2D: Σ (part area × qty / sheet area) × sheet rate per part, or the fixed
+        own-material charge, plus machine time only when the hourly rate is above zero."""
+        from .fabrication import OWN_MATERIAL_KEY, PARTS_KEY
+        from .laser_cut_service import laser_part_material_cost
+
+        breakdown: List[Dict[str, Any]] = []
+        parts = [p for p in (input_values.get(PARTS_KEY) or []) if isinstance(p, dict)]
+        if not parts:
+            return Decimal("0.00"), breakdown
+
+        total_charge = Decimal("0.00")
+        own_charge = _own_material_fixed_charge(charge_profile, input_values.get(OWN_MATERIAL_KEY))
+        if own_charge is not None:
+            breakdown.append({"description": "Own material — fixed charge", "amount": float(own_charge)})
+            total_charge += own_charge
+        else:
+            for part in parts:
+                name = part.get("name") or "Part"
+                if not part.get("sheet_rate") or not part.get("area_mm2") or not part.get("sheet_width_mm"):
+                    raise ValidationError(f"{name}: choose a sheet material.")
+                qty = int(part.get("quantity") or 1)
+                cost = laser_part_material_cost(
+                    part["area_mm2"],
+                    qty,
+                    part["sheet_width_mm"],
+                    part["sheet_height_mm"],
+                    part["sheet_rate"],
+                )
+                area_m2 = (safe_decimal(part["area_mm2"]) / Decimal("1000000")).quantize(Decimal("0.0001"))
+                sheet_m2 = (
+                    safe_decimal(part["sheet_width_mm"]) * safe_decimal(part["sheet_height_mm"]) / Decimal("1000000")
+                ).quantize(Decimal("0.0001"))
+                breakdown.append({
+                    "description": (
+                        f"{name}: {area_m2} m² × {qty} of {part.get('material_name') or part.get('material_code')} "
+                        f"({sheet_m2} m² sheet @ {_format_rate(part['sheet_rate'])}) = ₹{cost}"
+                    ),
+                    "amount": float(cost),
+                    "exact_amount": str(cost),
+                })
+                total_charge += cost
+
+        total_charge += _append_machine_time_line(charge_profile, total_time_minutes, breakdown)
+        return total_charge, breakdown
+
+
+def _format_rate(value: Any) -> str:
+    d = safe_decimal(value)
+    q = d.quantize(Decimal("0.01"))
+    return str(q) if q == d else str(d.normalize())
+
+
+def _own_material_fixed_charge(charge_profile: ChargeProfile, flag: Any) -> Optional[Decimal]:
+    from .fabrication import parse_bool
+
+    if not parse_bool(flag):
+        return None
+    equipment = getattr(charge_profile, "equipment", None)
+    fixed = getattr(equipment, "own_material_fixed_charge", None)
+    if fixed is None:
+        return None
+    return safe_decimal(fixed)
+
+
+def _append_machine_time_line(
+    charge_profile: ChargeProfile,
+    total_time_minutes: int,
+    breakdown: List[Dict[str, Any]],
+) -> Decimal:
+    hourly_rate = charge_profile.primary_unit_charge or Decimal("0.00")
+    if hourly_rate > 0 and total_time_minutes and total_time_minutes > 0:
+        machine_cost = (safe_decimal(total_time_minutes) / Decimal("60")) * hourly_rate
+        breakdown.append({
+            "description": f"{total_time_minutes} min machine time @ {hourly_rate}/hour",
+            "amount": float(machine_cost),
+        })
+        return machine_cost
+    return Decimal("0.00")
 

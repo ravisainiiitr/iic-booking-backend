@@ -3125,7 +3125,24 @@ def equipment_calculate(request, pk):
         )
         if pa_err:
             return Response({"error": pa_err}, status=status.HTTP_400_BAD_REQUEST)
-    
+    elif getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        from .fabrication import merge_laser_booking_into_input_values
+        from .print_3d_views import get_charge_estimate_guest_user
+
+        laser_owner = request.user if user_is_authenticated else get_charge_estimate_guest_user()
+        input_values, laser_err, _batch = merge_laser_booking_into_input_values(
+            equipment,
+            input_values,
+            laser_owner,
+            laser_cut_batch_id=request.query_params.get("laser_cut_batch_id"),
+        )
+        if laser_err:
+            return Response({"error": laser_err}, status=status.HTTP_400_BAD_REQUEST)
+    from .fabrication import OWN_MATERIAL_KEY, is_fabrication_equipment, resolve_own_material
+
+    if is_fabrication_equipment(equipment):
+        input_values[OWN_MATERIAL_KEY] = resolve_own_material(equipment, request.query_params.get("own_material"))
+
     # Calculate time
     try:
         total_time_minutes = TimeCalculationEngine.calculate_time(
@@ -4163,6 +4180,37 @@ def _book_equipment_impl(request, pk):
         elif print_analysis_id:
             print_analysis_obj = PrintAnalysis.objects.filter(pk=print_analysis_id).first()
 
+    from .fabrication import (
+        OWN_MATERIAL_KEY,
+        is_fabrication_equipment,
+        merge_laser_booking_into_input_values,
+        resolve_own_material,
+        strip_fabrication_keys,
+    )
+
+    laser_cut_batch_obj = None
+    if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        input_values, laser_err, laser_cut_batch_obj = merge_laser_booking_into_input_values(
+            equipment,
+            strip_fabrication_keys(input_values),
+            request.user,
+            laser_cut_batch_id=request.data.get("laser_cut_batch_id"),
+        )
+        if laser_err:
+            _create_booking_attempt_log(
+                request, equipment, BookingAttemptOutcome.FAILED,
+                failure_reason=laser_err,
+                number_of_samples=request.data.get("number_of_samples") or 1,
+                additional_info=_get_additional_info_from_request(request, equipment),
+            )
+            return Response({"error": laser_err}, status=status.HTTP_400_BAD_REQUEST)
+    elif getattr(equipment, "profile_type", None) != EquipmentProfileType.PRINT_3D:
+        input_values = strip_fabrication_keys(input_values)
+    booking_own_material = False
+    if is_fabrication_equipment(equipment):
+        booking_own_material = resolve_own_material(equipment, request.data.get("own_material"))
+        input_values[OWN_MATERIAL_KEY] = booking_own_material
+
     numeric_limit_error = _validate_dynamic_numeric_input_limits(
         equipment, input_values, booking_user=booking_user
     )
@@ -5099,7 +5147,8 @@ def _book_equipment_impl(request, pk):
                     user_type_snapshot=user_type,
                     total_time_minutes=total_time_minutes,
                     total_charge=total_charge,
-                    input_values=input_values,
+                    input_values=strip_fabrication_keys(input_values),
+                    own_material=booking_own_material,
                     selected_parameters=None,
                     charge_breakdown=charge_breakdown,
                     status=booking_status_enum,
@@ -5125,6 +5174,10 @@ def _book_equipment_impl(request, pk):
                         print_analysis_obj=print_analysis_obj,
                         print_analysis_batch_obj=print_analysis_batch_obj,
                     )
+                if laser_cut_batch_obj is not None:
+                    from .fabrication import link_laser_batch_to_booking
+
+                    link_laser_batch_to_booking(booking, laser_cut_batch_obj)
                 perf.mark("booking_row_inserted")
                 _schedule_equipment_booking_requester_group_upsert(equipment.pk, booking_user.pk)
                 if reward_points_applied > 0 and reward_discount_amount > 0:
@@ -5844,7 +5897,8 @@ def _book_equipment_impl(request, pk):
                 user_type_snapshot=user_type,
                 total_time_minutes=total_time_minutes,
                 total_charge=total_charge,
-                input_values=input_values,
+                input_values=strip_fabrication_keys(input_values),
+                own_material=booking_own_material,
                 selected_parameters=None,
                 charge_breakdown=charge_breakdown,
                 status=booking_status_enum,
@@ -5861,6 +5915,10 @@ def _book_equipment_impl(request, pk):
                 print_analysis_obj=print_analysis_obj,
                 print_analysis_batch_obj=print_analysis_batch_obj,
             )
+            if laser_cut_batch_obj is not None:
+                from .fabrication import link_laser_batch_to_booking
+
+                link_laser_batch_to_booking(booking, laser_cut_batch_obj)
             
             # Update daily slots to link them to the booking and mark as booked (use locked slot IDs)
             DailySlot.objects.filter(id__in=slot_ids).update(booking=booking, status=SlotStatus.BOOKED)
@@ -12959,6 +13017,8 @@ def partial_cancel_preview(request, booking_id):
     preview["partial_cancel_mode"] = (
         "print_items"
         if (profile_type or "").strip().upper() == EquipmentProfileType.PRINT_3D
+        else "full_only"
+        if (profile_type or "").strip().upper() == EquipmentProfileType.LASER_CUT_2D
         else "input_reduction"
         if partial_cancel_uses_input_reduction(profile_type)
         else "slot_selection"
@@ -17717,6 +17777,10 @@ def oic_equipment_settings_list(request):
         {
             "equipments": rows,
             "has_print_3d_equipment": any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows),
+            "has_fabrication_equipment": any(
+                r["profile_type"] in (EquipmentProfileType.PRINT_3D, EquipmentProfileType.LASER_CUT_2D)
+                for r in rows
+            ),
             "instruction_user_types": [
                 {"value": code, "label": label} for code, label in instruction_user_type_choices()
             ],
@@ -17854,10 +17918,57 @@ def oic_equipment_settings_update(request, equipment_id):
 
 
 def _oic_can_manage_print_materials(user) -> bool:
-    return _is_admin_user(user) or getattr(user, "user_type", None) == UserType.MANAGER
+    from .fabrication_materials_views import _dept_admin_department_id
+
+    return (
+        _is_admin_user(user)
+        or getattr(user, "user_type", None) == UserType.MANAGER
+        or _dept_admin_department_id(user) is not None
+    )
 
 def _oic_print_3d_equipment_qs(user):
-    return _oic_manageable_equipment_qs(user).filter(profile_type=EquipmentProfileType.PRINT_3D)
+    from .fabrication_materials_views import fabrication_manageable_equipment_qs
+
+    return fabrication_manageable_equipment_qs(user).filter(profile_type=EquipmentProfileType.PRINT_3D)
+
+
+def _user_can_manage_print_materials_for(user, equipment_id) -> bool:
+    return _oic_print_3d_equipment_qs(user).filter(pk=equipment_id).exists()
+
+
+def _print_material_price_from_request(data, density, current_price=None):
+    """Returns (price_per_gram, source_rate, source_unit, error). A supplier rate + unit wins over price_per_gram."""
+    from .models import PrintMaterialSourceUnit, price_per_gram_from_source
+
+    source_unit = str(data.get("source_unit") or "").strip()
+    raw_rate = data.get("source_rate")
+    source_rate = None
+    if raw_rate not in (None, ""):
+        try:
+            source_rate = Decimal(str(raw_rate)).quantize(Decimal("0.01"))
+        except Exception:
+            return None, None, "", "Supplier rate must be a number."
+        if source_rate < 0:
+            return None, None, "", "Supplier rate cannot be negative."
+    if source_unit and source_unit not in PrintMaterialSourceUnit.values:
+        return None, None, "", "Supplier rate unit must be per kg, per litre or per gram."
+    if source_rate is not None and source_unit:
+        price = price_per_gram_from_source(source_rate, source_unit, density)
+        if price is None:
+            return None, None, "", "A density above zero is needed to convert a per-litre rate."
+        return price, source_rate, source_unit, None
+    raw_price = data.get("price_per_gram")
+    if raw_price in (None, ""):
+        if current_price is None:
+            return None, None, "", "Enter a price per gram, or a supplier rate with its unit."
+        return current_price, source_rate, source_unit if source_rate is not None else "", None
+    try:
+        price = Decimal(str(raw_price))
+    except Exception:
+        return None, None, "", "price_per_gram must be a valid number."
+    if price < 0:
+        return None, None, "", "price_per_gram must be >= 0."
+    return price, source_rate, source_unit if source_rate is not None else "", None
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
@@ -17868,7 +17979,7 @@ def oic_print_materials(request):
     """
     if not _oic_can_manage_print_materials(request.user):
         return Response(
-            {"error": "Only Admin or Officer In Charge can manage 3D print materials."},
+            {"error": "Only Admin, Department Admin or Officer In Charge can manage 3D print materials."},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -17883,7 +17994,7 @@ def oic_print_materials(request):
                 eq_id = int(equipment_id)
             except (TypeError, ValueError):
                 return Response({"error": "Invalid equipment_id."}, status=status.HTTP_400_BAD_REQUEST)
-            if not _user_can_manage_oic_equipment(request.user, eq_id):
+            if not _user_can_manage_print_materials_for(request.user, eq_id):
                 return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
             qs = qs.filter(equipment_id=eq_id)
 
@@ -17921,8 +18032,6 @@ def oic_print_materials(request):
         eq_id = int(data.get("equipment_id"))
     except (TypeError, ValueError):
         return Response({"error": "equipment_id is required."}, status=status.HTTP_400_BAD_REQUEST)
-    if not _user_can_manage_oic_equipment(request.user, eq_id):
-        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     try:
         equipment = Equipment.objects.get(pk=eq_id)
     except Equipment.DoesNotExist:
@@ -17932,6 +18041,8 @@ def oic_print_materials(request):
             {"error": "Materials can only be managed for PRINT_3D equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not _user_can_manage_print_materials_for(request.user, eq_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
 
     code = str(data.get("code") or "").strip()
     name = str(data.get("name") or "").strip()
@@ -17945,17 +18056,16 @@ def oic_print_materials(request):
 
     try:
         density = Decimal(str(data.get("density_g_per_cm3") if data.get("density_g_per_cm3") not in (None, "") else "1.240"))
-        price = Decimal(str(data.get("price_per_gram")))
     except Exception:
         return Response(
-            {"error": "density_g_per_cm3 and price_per_gram must be valid numbers."},
+            {"error": "density_g_per_cm3 must be a valid number."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if price < 0 or density <= 0:
-        return Response(
-            {"error": "density must be > 0 and price_per_gram must be >= 0."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    if density <= 0:
+        return Response({"error": "density must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+    price, source_rate, source_unit, price_error = _print_material_price_from_request(data, density)
+    if price_error:
+        return Response({"error": price_error}, status=status.HTTP_400_BAD_REQUEST)
 
     user_type_raw = data.get("user_type")
     user_type = None
@@ -17981,6 +18091,8 @@ def oic_print_materials(request):
         name=name,
         density_g_per_cm3=density,
         price_per_gram=price,
+        source_rate=source_rate,
+        source_unit=source_unit,
         user_type=user_type,
         is_active=is_active,
         display_order=max(0, display_order),
@@ -17993,22 +18105,29 @@ def oic_print_material_detail(request, material_id):
     """Update or delete a single PrintMaterial on managed PRINT_3D equipment."""
     if not _oic_can_manage_print_materials(request.user):
         return Response(
-            {"error": "Only Admin or Officer In Charge can manage 3D print materials."},
+            {"error": "Only Admin, Department Admin or Officer In Charge can manage 3D print materials."},
             status=status.HTTP_403_FORBIDDEN,
         )
     try:
         material = PrintMaterial.objects.select_related("equipment").get(pk=material_id)
     except PrintMaterial.DoesNotExist:
         return Response({"error": "Material not found."}, status=status.HTTP_404_NOT_FOUND)
-    if not _user_can_manage_oic_equipment(request.user, material.equipment_id):
-        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
     if material.equipment.profile_type != EquipmentProfileType.PRINT_3D:
         return Response(
             {"error": "Materials can only be managed for PRINT_3D equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not _user_can_manage_print_materials_for(request.user, material.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "DELETE":
+        if material.analyses.exists() or material.analysis_batches.exists():
+            return Response(
+                {
+                    "error": "This material is used by uploaded files or bookings, so it cannot be deleted. Disable it instead."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             material.delete()
         except (IntegrityError, ProtectedError, RestrictedError):
@@ -18056,15 +18175,23 @@ def oic_print_material_detail(request, material_id):
         material.density_g_per_cm3 = density
         update_fields.append("density_g_per_cm3")
 
-    if "price_per_gram" in data and data.get("price_per_gram") not in (None, ""):
-        try:
-            price = Decimal(str(data.get("price_per_gram")))
-        except Exception:
-            return Response({"error": "Invalid price_per_gram."}, status=status.HTTP_400_BAD_REQUEST)
-        if price < 0:
-            return Response({"error": "price_per_gram must be >= 0."}, status=status.HTTP_400_BAD_REQUEST)
+    if any(k in data for k in ("price_per_gram", "source_rate", "source_unit")) or (
+        "density_g_per_cm3" in update_fields and material.source_rate is not None and material.source_unit
+    ):
+        price_data = {
+            "price_per_gram": data.get("price_per_gram"),
+            "source_rate": data.get("source_rate", material.source_rate),
+            "source_unit": data.get("source_unit", material.source_unit),
+        }
+        price, source_rate, source_unit, price_error = _print_material_price_from_request(
+            price_data, material.density_g_per_cm3, current_price=material.price_per_gram
+        )
+        if price_error:
+            return Response({"error": price_error}, status=status.HTTP_400_BAD_REQUEST)
         material.price_per_gram = price
-        update_fields.append("price_per_gram")
+        material.source_rate = source_rate
+        material.source_unit = source_unit
+        update_fields += ["price_per_gram", "source_rate", "source_unit"]
 
     if "user_type" in data:
         raw = data.get("user_type")

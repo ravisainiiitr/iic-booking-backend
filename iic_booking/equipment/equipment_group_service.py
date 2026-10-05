@@ -277,6 +277,8 @@ def equipment_eligibility_error(booking_user, equipment, *, user_type: Optional[
         return "Equipment is not operational."
     if getattr(equipment, "profile_type", None) == EquipmentProfileType.PRINT_3D:
         return "3D printing requests are tied to a specific printer."
+    if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
+        return "Laser cutting requests are tied to a specific laser cutter."
     if not user_can_see_equipment(booking_user, equipment):
         return "You are not authorized to access this equipment."
     blocked, message = department_equipment_booking_blocked(equipment, booking_user)

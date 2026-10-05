@@ -104,15 +104,17 @@ def revert_unpaid_input_edit(booking_pk, *, actor=None, reason: str = "expired")
         ] + clear_payment_window(booking)
         booking.save(update_fields=update_fields)
 
+        files_restored = _restore_fabrication_files(booking, snapshot)
+        restored_what = "files, inputs and charge" if files_restored else "inputs and charge"
         if reason == "expired":
             comment = (
                 f"Edit cancelled: the additional ₹{pending:.2f} was not paid within "
-                f"{INPUT_EDIT_PAYMENT_WINDOW_SECONDS} seconds. Previous inputs and charge "
+                f"{INPUT_EDIT_PAYMENT_WINDOW_SECONDS} seconds. Previous {restored_what} "
                 f"(₹{booking.total_charge:.2f}) have been restored."
             )
         else:
             comment = (
-                f"Edit cancelled before paying the additional ₹{pending:.2f}. Previous inputs and charge "
+                f"Edit cancelled before paying the additional ₹{pending:.2f}. Previous {restored_what} "
                 f"(₹{booking.total_charge:.2f}) have been restored."
             )
         try:
@@ -132,7 +134,30 @@ def revert_unpaid_input_edit(booking_pk, *, actor=None, reason: str = "expired")
             )
         except Exception:
             logger.exception("Failed to log input edit revert for booking %s", booking.pk)
+        if files_restored:
+            from .print_3d_notifications import REASON_FILES_RESTORED, dispatch_fabrication_file_email
+
+            dispatch_fabrication_file_email(booking, reason=REASON_FILES_RESTORED)
     return booking
+
+
+def _restore_fabrication_files(booking, snapshot) -> bool:
+    """Undo an unpaid design-file replacement recorded in the payment-window snapshot."""
+    from .fabrication_reupload import CHANGE_ID_KEY, STATE_KEY, restore_fabrication_state
+    from .models import FabricationFileChange
+
+    state = (snapshot or {}).get(STATE_KEY)
+    if not state:
+        return False
+    restored = restore_fabrication_state(booking, state)
+    change_ids = (snapshot or {}).get(CHANGE_ID_KEY) or []
+    if isinstance(change_ids, (int, str)):
+        change_ids = [change_ids]
+    if restored:
+        FabricationFileChange.objects.filter(booking=booking, pk__in=change_ids, reverted_at__isnull=True).update(
+            reverted_at=timezone.now()
+        )
+    return restored
 
 
 def expire_unpaid_input_edit(booking) -> bool:

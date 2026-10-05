@@ -631,7 +631,8 @@ def check_values(user, equipment, input_values, options=None, preferred=None, *,
 
     estimate_result = None
     blocked_inputs = any(i["code"] in ("required_missing", "too_many_sample_sets") for i in issues)
-    if not _is_staff(user) and not is_print_3d and not blocked_inputs:
+    is_laser = getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D
+    if not _is_staff(user) and not is_print_3d and not is_laser and not blocked_inputs:
         try:
             estimate_result = estimate(equipment, user, base, sets)
         except Exception:

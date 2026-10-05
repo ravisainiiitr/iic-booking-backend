@@ -36,6 +36,9 @@ from .models import (
     EquipmentAdditionalAccessory,
     ChargeProfile, ChargeProfilePricingProfile, DynamicInputField, DynamicInputFieldType, MultiParamDefinition,
     PrintMaterial,
+    LaserSheetMaterial,
+    LaserCutAnalysis,
+    FabricationFileChange,
     SlotMaster,
     DailySlot,
     Booking,
@@ -644,6 +647,28 @@ class PrintMaterialInline(admin.TabularInline):
         "name",
         "density_g_per_cm3",
         "price_per_gram",
+        "source_rate",
+        "source_unit",
+        "user_type",
+        "display_order",
+        "is_active",
+    ]
+    ordering = ("display_order", "name")
+
+
+class LaserSheetMaterialInline(admin.TabularInline):
+    """Sheet material catalog for LASER_CUT_2D equipment."""
+    model = LaserSheetMaterial
+    extra = 1
+    fk_name = "equipment"
+    fields = [
+        "code",
+        "name",
+        "material_family",
+        "thickness_mm",
+        "sheet_width_mm",
+        "sheet_height_mm",
+        "sheet_rate",
         "user_type",
         "display_order",
         "is_active",
@@ -1511,12 +1536,13 @@ class EquipmentAdmin(admin.ModelAdmin):
                     inlines.insert(slot_index, MultiParamDefinitionInline)
                 except ValueError:
                     inlines.append(MultiParamDefinitionInline)
-            elif obj.profile_type == 'PRINT_3D':
+            elif obj.profile_type in ('PRINT_3D', 'LASER_CUT_2D'):
+                material_inline = PrintMaterialInline if obj.profile_type == 'PRINT_3D' else LaserSheetMaterialInline
                 try:
                     charge_index = inlines.index(ChargeProfileInline)
-                    inlines.insert(charge_index, PrintMaterialInline)
+                    inlines.insert(charge_index, material_inline)
                 except ValueError:
-                    inlines.append(PrintMaterialInline)
+                    inlines.append(material_inline)
         else:
             # Add view: always include so management form is present on submit
             try:
@@ -1555,7 +1581,8 @@ class EquipmentAdmin(admin.ModelAdmin):
             'fields': (
                 'booking_email_extra_text',
                 'completion_email_extra_text',
-                'print_3d_stl_notification_email',
+                'fabrication_notification_emails',
+                'own_material_fixed_charge',
                 'istem_portal_url',
                 'istem_fbr_status_url',
             ),
@@ -2988,6 +3015,26 @@ class BookingInputTemplateAdmin(admin.ModelAdmin):
 
         fields = equipment_field_items(obj.equipment_id, getattr(obj.user, "user_type", "") or "")
         return _readable_inputs_html(obj.input_values, fields)
+
+    def has_add_permission(self, request):
+        return False
+
+
+@admin.register(LaserCutAnalysis)
+class LaserCutAnalysisAdmin(admin.ModelAdmin):
+    list_display = ["id", "equipment", "user", "display_part_name", "quantity", "material", "width_mm", "height_mm", "status", "booking", "created_at"]
+    list_filter = ["status", "equipment"]
+    search_fields = ["original_filename", "part_name", "user__email"]
+    raw_id_fields = ["batch", "equipment", "user", "material", "booking", "superseded_booking"]
+    readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(FabricationFileChange)
+class FabricationFileChangeAdmin(admin.ModelAdmin):
+    list_display = ["booking", "profile_type", "changed_by", "changed_at", "charge_before", "charge_after", "reverted_at"]
+    list_filter = ["profile_type"]
+    raw_id_fields = ["booking", "changed_by"]
+    readonly_fields = [f.name for f in FabricationFileChange._meta.fields]
 
     def has_add_permission(self, request):
         return False

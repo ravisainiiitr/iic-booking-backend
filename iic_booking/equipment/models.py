@@ -179,6 +179,10 @@ class EquipmentProfileType(models.TextChoices):
     GENERIC = 'GENERIC', _('Generic')
     MULTI_PARAM = 'MULTI_PARAM', _('Multi-parameter')
     PRINT_3D = 'PRINT_3D', _('3D Print')
+    LASER_CUT_2D = 'LASER_CUT_2D', _('2D Laser Cutting')
+
+
+FABRICATION_PROFILE_TYPES = (EquipmentProfileType.PRINT_3D, EquipmentProfileType.LASER_CUT_2D)
 
 # Alias for backward compatibility with calculators
 ChargeProfileType = EquipmentProfileType
@@ -409,14 +413,34 @@ class Equipment(models.Model):
         verbose_name=_("Extra text for completion emails"),
     )
 
+    # Deprecated: superseded by fabrication_notification_emails (copied there by migration 0228).
+    # Column kept for one release so a code rollback still finds the original address.
     print_3d_stl_notification_email = models.EmailField(
         blank=True,
         default="",
+        help_text=_("Deprecated. Use the fabrication notification email list instead."),
+        verbose_name=_("3D print STL notification email (deprecated)"),
+    )
+    fabrication_notification_emails = models.JSONField(
+        default=list,
+        blank=True,
         help_text=_(
-            "For 3D printing equipment only: when a booking is confirmed, the user's STL file(s) "
-            "and booking details are emailed to this address. Leave blank to disable."
+            "For 3D printing and 2D laser cutting equipment: when a booking is confirmed (or its files "
+            "are replaced), the uploaded design files and booking details are emailed to these addresses."
         ),
-        verbose_name=_("3D print STL notification email"),
+        verbose_name=_("Fabrication file notification emails"),
+    )
+    own_material_fixed_charge = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "For 3D printing and 2D laser cutting equipment: fixed charge (INR, once per booking) that "
+            "replaces the material cost when the user brings their own material. Leave blank to hide "
+            "the 'I will bring my own material' option."
+        ),
+        verbose_name=_("Own material fixed charge (INR)"),
     )
 
     make = models.CharField(
@@ -2253,6 +2277,31 @@ def print_stl_upload_to(instance, filename):
     return now.strftime(f"print_stl/%Y/%m/%d/{uid}{ext}")
 
 
+class PrintMaterialSourceUnit(models.TextChoices):
+    PER_KG = "PER_KG", _("per kg")
+    PER_LITRE = "PER_LITRE", _("per litre")
+    PER_GRAM = "PER_GRAM", _("per gram")
+
+
+def price_per_gram_from_source(source_rate, source_unit, density_g_per_cm3):
+    """Convert a supplier rate to INR/gram; per-litre rates need density (g/cm³ == kg/L)."""
+    if source_rate is None or not source_unit:
+        return None
+    rate = Decimal(str(source_rate))
+    if source_unit == PrintMaterialSourceUnit.PER_GRAM:
+        value = rate
+    elif source_unit == PrintMaterialSourceUnit.PER_KG:
+        value = rate / Decimal("1000")
+    elif source_unit == PrintMaterialSourceUnit.PER_LITRE:
+        density = Decimal(str(density_g_per_cm3 or 0))
+        if density <= 0:
+            return None
+        value = rate / (density * Decimal("1000"))
+    else:
+        return None
+    return value.quantize(Decimal("0.0001"))
+
+
 class PrintMaterial(models.Model):
     """Filament/material catalog for 3D printer equipment (dynamic pricing per gram)."""
 
@@ -2274,9 +2323,26 @@ class PrintMaterial(models.Model):
         help_text=_("Material density in g/cm³"),
     )
     price_per_gram = models.DecimalField(
-        max_digits=10,
-        decimal_places=2,
+        max_digits=12,
+        decimal_places=4,
         help_text=_("Charge per gram of filament (INR)"),
+    )
+    source_rate = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Optional: rate as quoted by the supplier (INR per source unit). When set together with a "
+            "source unit, the price per gram is calculated from it."
+        ),
+    )
+    source_unit = models.CharField(
+        max_length=16,
+        choices=PrintMaterialSourceUnit.choices,
+        blank=True,
+        default="",
+        help_text=_("Unit of the source rate (per kg, per litre or per gram)."),
     )
     user_type = models.CharField(
         max_length=50,
@@ -2288,6 +2354,9 @@ class PrintMaterial(models.Model):
     display_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def price_per_gram_from_source(self):
+        return price_per_gram_from_source(self.source_rate, self.source_unit, self.density_g_per_cm3)
 
     class Meta:
         ordering = ["equipment", "display_order", "name"]
@@ -2429,9 +2498,21 @@ class PrintAnalysis(models.Model):
     error_message = models.TextField(blank=True, default="")
     slicer_settings = models.JSONField(default=dict, blank=True)
     price_per_gram_snapshot = models.DecimalField(
-        max_digits=10, decimal_places=2, null=True, blank=True
+        max_digits=12, decimal_places=4, null=True, blank=True
     )
     material_code_snapshot = models.CharField(max_length=64, blank=True, default="")
+    part_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        db_default="",
+        help_text=_("Part name shown to staff; defaults to the file name."),
+    )
+    quantity = models.PositiveIntegerField(
+        default=1,
+        db_default=1,
+        help_text=_("Number of copies to print; material and time estimates are multiplied by this."),
+    )
     booking = models.ForeignKey(
         "Booking",
         on_delete=models.SET_NULL,
@@ -2444,6 +2525,15 @@ class PrintAnalysis(models.Model):
         blank=True,
         help_text=_("When set, this file was removed from the booking via partial cancellation."),
     )
+    superseded_booking = models.ForeignKey(
+        "Booking",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="superseded_print_analyses",
+        help_text=_("Booking this file belonged to before it was replaced by a re-upload."),
+    )
+    superseded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2454,6 +2544,253 @@ class PrintAnalysis(models.Model):
 
     def __str__(self):
         return f"PrintAnalysis {self.id} ({self.status})"
+
+    @property
+    def display_part_name(self) -> str:
+        return (self.part_name or "").strip() or self.original_filename or "Part"
+
+
+def laser_dxf_upload_to(instance, filename):
+    ext = os.path.splitext(filename)[1].lower() or ".dxf"
+    uid = uuid.uuid4().hex
+    return timezone.now().strftime(f"laser_dxf/%Y/%m/%d/{uid}{ext}")
+
+
+class LaserMaterialFamily(models.TextChoices):
+    MS = "MS", _("Mild steel (MS)")
+    SS = "SS", _("Stainless steel (SS)")
+    ACRYLIC = "ACRYLIC", _("Acrylic")
+    MDF = "MDF", _("MDF")
+    OTHER = "OTHER", _("Other")
+
+
+DEFAULT_LASER_SHEET_WIDTH_MM = Decimal("2438.4")
+DEFAULT_LASER_SHEET_HEIGHT_MM = Decimal("1219.2")
+
+
+class LaserSheetMaterial(models.Model):
+    """Sheet stock (family + thickness) offered on a 2D laser cutter, priced per full sheet."""
+
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="laser_sheet_materials",
+    )
+    code = models.CharField(max_length=64, help_text=_('Stable code (e.g. "ms_1mm")'))
+    name = models.CharField(max_length=255, help_text=_("Display name"))
+    material_family = models.CharField(
+        max_length=16,
+        choices=LaserMaterialFamily.choices,
+        default=LaserMaterialFamily.OTHER,
+    )
+    thickness_mm = models.DecimalField(max_digits=6, decimal_places=2)
+    sheet_width_mm = models.DecimalField(
+        max_digits=8, decimal_places=1, default=DEFAULT_LASER_SHEET_WIDTH_MM
+    )
+    sheet_height_mm = models.DecimalField(
+        max_digits=8, decimal_places=1, default=DEFAULT_LASER_SHEET_HEIGHT_MM
+    )
+    sheet_rate = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text=_("Price of one full sheet (INR)"),
+    )
+    user_type = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text=_("Optional: limit material to a user type; blank = all types"),
+    )
+    is_active = models.BooleanField(default=True)
+    display_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["equipment", "display_order", "name"]
+        verbose_name = _("Laser sheet material")
+        verbose_name_plural = _("Laser sheet materials")
+        unique_together = [["equipment", "code"]]
+
+    def __str__(self):
+        return f"{self.equipment.code} - {self.name}"
+
+    @property
+    def sheet_area_mm2(self) -> Decimal:
+        return Decimal(self.sheet_width_mm) * Decimal(self.sheet_height_mm)
+
+
+class LaserCutBatch(models.Model):
+    """One DXF/ZIP upload session grouping the parts of a 2D laser cutting booking."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="laser_cut_batches",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="laser_cut_batches",
+    )
+    original_filename = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=PrintAnalysisBatchStatus.choices,
+        default=PrintAnalysisBatchStatus.PENDING,
+    )
+    error_message = models.TextField(blank=True, default="")
+    booking = models.ForeignKey(
+        "Booking",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="laser_cut_batches",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = _("Laser cut upload batch")
+        verbose_name_plural = _("Laser cut upload batches")
+
+    def __str__(self):
+        return f"LaserCutBatch {self.id} ({self.status})"
+
+
+class LaserCutAnalysis(models.Model):
+    """One uploaded DXF part: parsed bounding box, quantity and chosen sheet material."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    batch = models.ForeignKey(
+        LaserCutBatch,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="items",
+    )
+    sequence = models.PositiveIntegerField(default=0)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.CASCADE,
+        related_name="laser_cut_analyses",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="laser_cut_analyses",
+    )
+    material = models.ForeignKey(
+        LaserSheetMaterial,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="analyses",
+    )
+    material_code_snapshot = models.CharField(max_length=64, blank=True, default="")
+    sheet_rate_snapshot = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    dxf_file = models.FileField(upload_to=laser_dxf_upload_to, max_length=512)
+    original_filename = models.CharField(max_length=255, blank=True, default="")
+    part_name = models.CharField(max_length=255, blank=True, default="")
+    quantity = models.PositiveIntegerField(default=1)
+    status = models.CharField(
+        max_length=20,
+        choices=PrintAnalysisStatus.choices,
+        default=PrintAnalysisStatus.PENDING,
+    )
+    detected_units = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text=_("Drawing units read from the DXF header ($INSUNITS); 'unitless' when not set."),
+    )
+    units = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text=_("Units used for sizing (detected, or chosen by the user for unitless drawings)."),
+    )
+    units_assumed = models.BooleanField(
+        default=False,
+        help_text=_("True when the drawing had no units and millimetres were assumed."),
+    )
+    bbox_drawing_units = models.JSONField(default=dict, blank=True)
+    width_mm = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    height_mm = models.DecimalField(max_digits=12, decimal_places=3, null=True, blank=True)
+    area_mm2 = models.DecimalField(max_digits=16, decimal_places=3, null=True, blank=True)
+    entity_count = models.PositiveIntegerField(default=0)
+    warnings = models.JSONField(default=list, blank=True)
+    error_message = models.TextField(blank=True, default="")
+    booking = models.ForeignKey(
+        "Booking",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="laser_cut_analyses",
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    superseded_booking = models.ForeignKey(
+        "Booking",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="superseded_laser_cut_analyses",
+    )
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sequence", "created_at"]
+        verbose_name = _("Laser cut part")
+        verbose_name_plural = _("Laser cut parts")
+
+    def __str__(self):
+        return f"LaserCutAnalysis {self.id} ({self.status})"
+
+    @property
+    def display_part_name(self) -> str:
+        return (self.part_name or "").strip() or self.original_filename or "Part"
+
+
+class FabricationFileChange(models.Model):
+    """Audit row written whenever the design files of a 3D print / laser booking are replaced."""
+
+    booking = models.ForeignKey(
+        "Booking",
+        on_delete=models.CASCADE,
+        related_name="fabrication_file_changes",
+    )
+    changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    changed_at = models.DateTimeField(auto_now_add=True)
+    profile_type = models.CharField(max_length=20, choices=EquipmentProfileType.choices)
+    previous_files = models.JSONField(default=list, blank=True)
+    new_files = models.JSONField(default=list, blank=True)
+    previous_own_material = models.BooleanField(default=False)
+    new_own_material = models.BooleanField(default=False)
+    charge_before = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    charge_after = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    reverted_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("Set when an unpaid extra charge window expired and the previous files were restored."),
+    )
+
+    class Meta:
+        ordering = ["-changed_at"]
+        verbose_name = _("Fabrication file change")
+        verbose_name_plural = _("Fabrication file changes")
+
+    def __str__(self):
+        return f"FabricationFileChange booking={self.booking_id} at {self.changed_at}"
 
 
 # ============================================================================
@@ -3015,6 +3352,15 @@ class Booking(models.Model):
         blank=True,
         related_name="linked_bookings",
         help_text=_("ZIP batch of STL analyses for multi-file 3D print bookings"),
+    )
+    own_material = models.BooleanField(
+        default=False,
+        db_default=False,
+        verbose_name=_("User brings own material"),
+        help_text=_(
+            "3D printing / 2D laser cutting: the user supplies the material, so the equipment's fixed "
+            "own-material charge replaces the material cost."
+        ),
     )
 
     # External-user logistics: return samples after analysis (adds return shipping fee).

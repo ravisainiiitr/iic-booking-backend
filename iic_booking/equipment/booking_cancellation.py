@@ -345,17 +345,16 @@ def compute_partial_cancel_plan(
 
 
 def _print_item_input_values(analysis) -> dict[str, Any]:
-    from .print_3d_views import get_effective_print_weight_and_time_from_analysis
+    """Totals for one STL file, quantity included (A = grams, C = minutes, B = material code)."""
+    from .fabrication import build_print_parts, print_material_code
 
-    weight, time_min = get_effective_print_weight_and_time_from_analysis(analysis)
-    material_code = analysis.material_code_snapshot or (
-        analysis.material.code if analysis.material else ""
-    )
+    part = build_print_parts([analysis])[0]
     inputs: dict[str, Any] = {}
-    if weight is not None:
-        inputs["A"] = int(weight)
-    if time_min is not None:
-        inputs["C"] = int(time_min)
+    if analysis.weight_grams is not None or analysis.actual_weight_grams is not None:
+        inputs["A"] = int(part["weight_g_total"])
+    if analysis.estimated_time_minutes is not None or analysis.actual_time_minutes is not None:
+        inputs["C"] = int(part["time_min_total"])
+    material_code = print_material_code([analysis])
     if material_code:
         inputs["B"] = material_code
     return inputs
@@ -382,19 +381,23 @@ def _sum_print_items_charge(
     cp_proxy,
     items: list,
 ) -> tuple[Decimal, list]:
-    total = Decimal("0.00")
-    combined_breakdown: list = []
+    """Charge for a set of STL files priced together (per-part lines, own-material fixed charge once)."""
+    from .fabrication import OWN_MATERIAL_KEY, inject_print_parts, own_material_available
+
+    usable = []
     for item in items:
         inputs = _print_item_input_values(item)
-        time_min = int(inputs.get("C") or 0)
-        if time_min <= 0 or not inputs.get("B") or not inputs.get("A"):
+        if int(inputs.get("C") or 0) <= 0 or not inputs.get("B") or not inputs.get("A"):
             continue
-        item_charge, item_breakdown = _calculate_print_charge_for_inputs(
-            booking, cp_proxy, inputs, time_min
-        )
-        total += item_charge
-        combined_breakdown.extend(item_breakdown)
-    return total.quantize(Decimal("0.01")), combined_breakdown
+        usable.append(item)
+    if not usable:
+        return Decimal("0.00"), []
+    inputs = inject_print_parts({}, usable)
+    inputs[OWN_MATERIAL_KEY] = bool(getattr(booking, "own_material", False)) and own_material_available(
+        booking.equipment
+    )
+    total, breakdown = _calculate_print_charge_for_inputs(booking, cp_proxy, inputs, int(inputs.get("C") or 0))
+    return Decimal(str(total)).quantize(Decimal("0.01")), breakdown
 
 
 def compute_partial_cancel_print_items(
@@ -439,8 +442,6 @@ def compute_partial_cancel_print_items(
         )
 
     remaining = [item for item in active_items if str(item.id) not in cancel_ids]
-    cancelled = [item for item in active_items if str(item.id) in cancel_ids]
-
     total_weight = 0
     total_time = 0
     material_code = ""
@@ -477,7 +478,7 @@ def compute_partial_cancel_print_items(
 
     all_items_charge, _ = _sum_print_items_charge(booking, cp_proxy, active_items)
     new_charge, new_breakdown = _sum_print_items_charge(booking, cp_proxy, remaining)
-    cancelled_charge, _ = _sum_print_items_charge(booking, cp_proxy, cancelled)
+    cancelled_charge = max(Decimal("0.00"), all_items_charge - new_charge)
 
     if all_items_charge > 0 and previous_charge > 0:
         scale = previous_charge / all_items_charge
@@ -631,6 +632,11 @@ def parse_cancellation_request(request_data, booking) -> dict[str, Any]:
     slot_ids = parse_cancellation_slot_ids(request_data, booking)
     if set(slot_ids) == set(all_ids):
         return {"mode": "full_slots", "slot_ids": slot_ids, "plan": None}
+
+    if (profile_type or "").strip().upper() == EquipmentProfileType.LASER_CUT_2D:
+        raise CancellationValidationError(
+            "Laser cutting bookings can only be cancelled in full. To change parts, replace the DXF files instead."
+        )
 
     if partial_cancel_uses_input_reduction(profile_type):
         raise CancellationValidationError(

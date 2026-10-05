@@ -1194,16 +1194,16 @@ def run_print_analysis_impl(analysis_id: str) -> None:
 
 
 @shared_task(name="equipment.send_print_3d_stl_booking_email")
-def send_print_3d_stl_booking_email_task(booking_id: int) -> bool:
-    """Email configured lab inbox with STL file(s) and booking details."""
+def send_print_3d_stl_booking_email_task(booking_id: int, reason: str = "confirmed") -> bool:
+    """Email the equipment's fabrication inboxes with the design file(s) and booking details."""
     from .print_3d_notifications import send_print_3d_stl_booking_email
 
-    return send_print_3d_stl_booking_email(booking_id)
+    return send_print_3d_stl_booking_email(booking_id, reason=reason)
 
 
 @shared_task(name="equipment.delete_print_3d_booking_stl_files")
 def delete_print_3d_booking_stl_files_task(booking_id: int) -> int:
-    """Delete STL files from storage for a completed 3D print booking."""
+    """Delete STL/DXF files from storage for a completed 3D print or laser cutting booking."""
     from .print_3d_notifications import delete_print_3d_booking_stl_files
 
     return delete_print_3d_booking_stl_files(booking_id)

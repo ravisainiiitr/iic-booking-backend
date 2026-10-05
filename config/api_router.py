@@ -255,7 +255,22 @@ from iic_booking.equipment.print_3d_views import (
     download_print_analysis_stl,
     presign_print_analysis_stl,
     update_booking_print_actuals,
+    update_print_analysis_part,
 )
+from iic_booking.equipment.laser_cut_views import (
+    download_laser_cut_dxf,
+    equipment_analyze_dxf,
+    equipment_laser_sheet_materials,
+    laser_cut_analysis_detail,
+    laser_cut_batch_detail,
+    presign_laser_cut_dxf,
+)
+from iic_booking.equipment.fabrication_materials_views import (
+    fabrication_material_equipment,
+    laser_sheet_material_detail,
+    laser_sheet_materials_manage,
+)
+from iic_booking.equipment.fabrication_reupload_views import booking_fabrication_files
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
@@ -1345,6 +1360,26 @@ urlpatterns = router.urls + [
         recalculate_print_analysis_batch,
         name="print-analysis-batch-recalculate",
     ),
+    path("print-analyses/<uuid:analysis_id>/part/", update_print_analysis_part, name="print-analysis-part"),
+    path(
+        "equipments/<int:pk>/laser-sheet-materials/",
+        equipment_laser_sheet_materials,
+        name="equipment-laser-sheet-materials",
+    ),
+    path("equipments/<int:pk>/analyze-dxf/", equipment_analyze_dxf, name="equipment-analyze-dxf"),
+    path("laser-cut-batches/<uuid:batch_id>/", laser_cut_batch_detail, name="laser-cut-batch-detail"),
+    path("laser-cut-analyses/<uuid:analysis_id>/", laser_cut_analysis_detail, name="laser-cut-analysis-detail"),
+    path("laser-cut-analyses/<uuid:analysis_id>/dxf/", download_laser_cut_dxf, name="laser-cut-dxf-download"),
+    path(
+        "laser-cut-analyses/<uuid:analysis_id>/dxf-presign/",
+        presign_laser_cut_dxf,
+        name="laser-cut-dxf-presign",
+    ),
+    path(
+        "bookings/<int:booking_id>/fabrication-files/",
+        booking_fabrication_files,
+        name="booking-fabrication-files",
+    ),
     path("equipments/<int:equipment_id>/ratings/", equipment_ratings, name="equipment-ratings"),
     path("icpms/standards/min-cover/", icpms_min_standards_cover, name="icpms-min-standards-cover"),
     path("icpms/standards/available/", icpms_available_standards, name="icpms-available-standards"),
@@ -1610,6 +1645,17 @@ urlpatterns = router.urls + [
         "oic/print-materials/<int:material_id>/",
         oic_print_material_detail,
         name="oic-print-material-detail",
+    ),
+    path(
+        "oic/fabrication-materials/equipment/",
+        fabrication_material_equipment,
+        name="oic-fabrication-material-equipment",
+    ),
+    path("oic/laser-sheet-materials/", laser_sheet_materials_manage, name="oic-laser-sheet-materials"),
+    path(
+        "oic/laser-sheet-materials/<int:material_id>/",
+        laser_sheet_material_detail,
+        name="oic-laser-sheet-material-detail",
     ),
     path("oic/equipment-group-quotas/", oic_equipment_group_quotas, name="oic-equipment-group-quotas"),
     path(
