@@ -78,7 +78,7 @@ def _is_external_snapshot(ut: str | None) -> bool:
 def _slot_in_weekly_time_window(eq: Equipment, start_dt, end_dt) -> bool:
     """
     True if slot lies within equipment weekly_view_time_from / weekly_view_time_to (inclusive).
-    Empty from/to means no limit.
+    Empty from/to means no limit. The window is in local (IST) time; slot datetimes are stored in UTC.
     """
     w_from = getattr(eq, "weekly_view_time_from", None)
     w_to = getattr(eq, "weekly_view_time_to", None)
@@ -86,8 +86,8 @@ def _slot_in_weekly_time_window(eq: Equipment, start_dt, end_dt) -> bool:
         return True
     if not start_dt or not end_dt:
         return True
-    t_start = start_dt.time()
-    t_end = end_dt.time()
+    t_start = (timezone.localtime(start_dt) if timezone.is_aware(start_dt) else start_dt).time()
+    t_end = (timezone.localtime(end_dt) if timezone.is_aware(end_dt) else end_dt).time()
     if w_from and t_start < w_from:
         return False
     if w_to and t_end > w_to:
