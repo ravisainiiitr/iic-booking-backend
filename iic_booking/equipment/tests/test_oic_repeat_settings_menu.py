@@ -354,11 +354,17 @@ def test_oic_equipment_settings_list_and_update():
     assert [r["equipment_id"] for r in listing.data["equipments"]] == [mine.pk]
     assert listing.data["has_print_3d_equipment"] is True
 
+    admin = _user(user_type=UserType.ADMIN)
+    ref = _client(admin).patch(
+        f"/api/oic/equipment-settings/{mine.pk}/",
+        {"slot_window_reference_weekday": 2, "slot_window_reference_time": "21:00"},
+        format="json",
+    )
+    assert ref.status_code == 200, ref.data
+
     res = _client(oic).patch(
         f"/api/oic/equipment-settings/{mine.pk}/",
         {
-            "slot_window_reference_weekday": 2,
-            "slot_window_reference_time": "21:00",
             "weekly_view_time_from": "09:00",
             "weekly_view_time_to": "18:00",
             "external_slot_quota_percent": 25,
@@ -382,7 +388,7 @@ def test_oic_equipment_settings_list_and_update():
     assert mine.sample_submission_lead_hours == 48
     assert mine.sample_collect_deadline_hours == 96
 
-    cleared = _client(oic).patch(
+    cleared = _client(admin).patch(
         f"/api/oic/equipment-settings/{mine.pk}/",
         {"slot_window_reference_weekday": None, "slot_window_reference_time": ""},
         format="json",
