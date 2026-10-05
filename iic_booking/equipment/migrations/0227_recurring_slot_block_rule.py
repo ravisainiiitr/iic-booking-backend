@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("equipment", "0224_charge_copy_batch"),
+        ("equipment", "0226_multimode_data_cleanup"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
