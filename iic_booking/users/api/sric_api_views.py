@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import functools
+import hmac
+
 from django.conf import settings
+from django.http import Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
@@ -18,7 +22,19 @@ def _check_sric_api_key(request) -> bool:
     if not expected:
         return False
     provided = (request.headers.get("X-SRIC-API-Key") or request.META.get("HTTP_X_SRIC_API_KEY") or "").strip()
-    return provided == expected
+    return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _legacy_endpoint_gate(view):
+    """Outermost wrapper so a disabled endpoint answers 404 for every method, before DRF method checks."""
+
+    @functools.wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if not getattr(settings, "SRIC_LEGACY_TRANSFER_ENDPOINT_ENABLED", False):
+            raise Http404
+        return view(request, *args, **kwargs)
+
+    return wrapped
 
 
 def _serialize_transfer(tr: SricTransferRequest) -> dict:
@@ -43,6 +59,7 @@ def _serialize_transfer(tr: SricTransferRequest) -> dict:
     }
 
 
+@_legacy_endpoint_gate
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def sric_transfer_requests_list(request):
@@ -63,6 +80,7 @@ def sric_transfer_requests_list(request):
     )
 
 
+@_legacy_endpoint_gate
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def sric_transfer_request_detail(request, transfer_id: int):
@@ -72,6 +90,7 @@ def sric_transfer_request_detail(request, transfer_id: int):
     return Response(_serialize_transfer(tr))
 
 
+@_legacy_endpoint_gate
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def sric_transfer_request_complete(request, transfer_id: int):
@@ -91,6 +110,7 @@ def sric_transfer_request_complete(request, transfer_id: int):
     return Response({"message": "Transfer recorded.", "transfer": _serialize_transfer(tr)})
 
 
+@_legacy_endpoint_gate
 @api_view(["POST"])
 @permission_classes([AllowAny])
 def sric_transfer_request_reject(request, transfer_id: int):
