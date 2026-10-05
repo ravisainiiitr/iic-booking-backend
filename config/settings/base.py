@@ -871,6 +871,8 @@ SBIEPAY_PUSH_URL = env("SBIEPAY_PUSH_URL", default="")
 # SRIC office integration API (replaces email when key is set)
 SRIC_API_KEY = env("SRIC_API_KEY", default="")
 SRIC_EMAIL_FALLBACK = env.bool("SRIC_EMAIL_FALLBACK", default=False)
+# Legacy /api/integrations/sric/transfer-requests/ API; when off every method on it returns 404.
+SRIC_LEGACY_TRANSFER_ENDPOINT_ENABLED = env.bool("SRIC_LEGACY_TRANSFER_ENDPOINT_ENABLED", default=False)
 
 # Accounts Email Configuration
 # ------------------------------------------------------------------------------
