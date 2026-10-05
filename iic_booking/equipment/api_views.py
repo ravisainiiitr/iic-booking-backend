@@ -1668,12 +1668,37 @@ def equipment_form_choices(request):
 
     categories = EquipmentCategory.objects.all().order_by('name')
     equipment_groups = EquipmentGroup.objects.all().order_by('name')
-    # Multi-mode bases only (enable_multi_mode + no parent) for parent linking
+    # Multi-mode bases (no parent, with modes or flagged); families are edited on the Multi-mode page.
     parent_equipment_choices = (
-        Equipment.objects.filter(parent_equipment__isnull=True, enable_multi_mode=True)
+        Equipment.objects.filter(parent_equipment__isnull=True)
+        .filter(Q(enable_multi_mode=True) | Q(mode_children__isnull=False))
+        .distinct()
         .order_by("code")
         .values("equipment_id", "code", "name")
     )
+    mode_families = {}
+    for child in (
+        Equipment.objects.filter(parent_equipment__isnull=False)
+        .select_related("parent_equipment")
+        .order_by("parent_equipment__code", "code")
+    ):
+        fam = mode_families.setdefault(
+            child.parent_equipment_id,
+            {
+                "base_equipment_id": child.parent_equipment_id,
+                "base_code": child.parent_equipment.code,
+                "base_name": child.parent_equipment.name,
+                "modes": [],
+            },
+        )
+        fam["modes"].append(
+            {
+                "equipment_id": child.equipment_id,
+                "code": child.code,
+                "name": child.name,
+                "mode_availability": child.mode_availability,
+            }
+        )
     internal_departments = Department.objects.filter(
         department_type=DepartmentType.INTERNAL
     ).order_by('name')
@@ -1720,6 +1745,7 @@ def equipment_form_choices(request):
         "categories": EquipmentCategorySerializer(categories, many=True).data,
         "equipment_groups": EquipmentGroupSerializer(equipment_groups, many=True).data,
         "parent_equipment_choices": list(parent_equipment_choices),
+        "mode_families": list(mode_families.values()),
         "internal_departments": [
             {"id": d.id, "name": d.name, "code": d.code or "", "department_type": DepartmentType.INTERNAL}
             for d in internal_departments
@@ -18162,323 +18188,6 @@ def oic_equipment_group_quotas(request, group_id=None):
         }
     )
 
-def _serialize_mode_schedule(sched):
-    return {
-        "id": sched.id,
-        "parent_equipment_id": sched.parent_equipment_id,
-        "mode_equipment_id": sched.mode_equipment_id,
-        "mode_equipment_code": getattr(sched.mode_equipment, "code", None),
-        "mode_equipment_name": getattr(sched.mode_equipment, "name", None),
-        "start_date": sched.start_date.isoformat() if sched.start_date else None,
-        "end_date": sched.end_date.isoformat() if sched.end_date else None,
-        "start_time": sched.start_time.strftime("%H:%M") if sched.start_time else None,
-        "end_time": sched.end_time.strftime("%H:%M") if sched.end_time else None,
-        "behavior": sched.behavior,
-        "behavior_display": sched.get_behavior_display() if hasattr(sched, "get_behavior_display") else sched.behavior,
-        "unavailable_label": sched.unavailable_label or "Mode not scheduled",
-        "unavailable_color": sched.unavailable_color or "#9ca3af",
-        "exclusive_blocked_label": sched.exclusive_blocked_label or "Alternate mode active",
-        "exclusive_blocked_color": sched.exclusive_blocked_color or "#9ca3af",
-        "created_at": sched.created_at.isoformat() if sched.created_at else None,
-        "updated_at": sched.updated_at.isoformat() if sched.updated_at else None,
-    }
-
-def _parse_optional_time(raw):
-    if raw is None or raw == "":
-        return None
-    s = str(raw).strip()
-    if not s:
-        return None
-    from datetime import time as time_cls
-    for fmt in ("%H:%M", "%H:%M:%S"):
-        try:
-            return datetime.strptime(s[:len(fmt) + 2], fmt).time()
-        except ValueError:
-            continue
-    try:
-        parts = s.split(":")
-        return time_cls(int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
-    except (TypeError, ValueError, IndexError):
-        return None
-
-def _apply_schedule_display_fields(sched, data):
-    if "unavailable_label" in data:
-        sched.unavailable_label = (str(data.get("unavailable_label") or "").strip() or "Mode not scheduled")[:120]
-    if "unavailable_color" in data:
-        color = str(data.get("unavailable_color") or "").strip() or "#9ca3af"
-        sched.unavailable_color = color[:20]
-    if "exclusive_blocked_label" in data:
-        sched.exclusive_blocked_label = (
-            str(data.get("exclusive_blocked_label") or "").strip() or "Alternate mode active"
-        )[:120]
-    if "exclusive_blocked_color" in data:
-        color = str(data.get("exclusive_blocked_color") or "").strip() or "#9ca3af"
-        sched.exclusive_blocked_color = color[:20]
-    if "start_time" in data:
-        sched.start_time = _parse_optional_time(data.get("start_time"))
-    if "end_time" in data:
-        sched.end_time = _parse_optional_time(data.get("end_time"))
-
-def _user_can_access_multimode_config(user) -> bool:
-    """Admin and Officer In Charge (manager) can open Multi-Mode config."""
-    if _is_admin_user(user):
-        return True
-    return getattr(user, "user_type", None) == UserType.MANAGER
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def oic_multi_mode_list(request):
-    """
-    List multi-mode-enabled parents managed by the OIC (or all for Admin),
-    with children and schedules. Only equipment with enable_multi_mode=True
-    appear for configuration.
-    """
-    if not _user_can_access_multimode_config(request.user):
-        return Response(
-            {"error": "Only Admin or Officer In Charge can configure Multi-Mode Equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    from .models import ModeScheduleBehavior
-
-    managed_qs = _oic_manageable_equipment_qs(request.user)
-
-    # Only base instruments with Multi-Mode enabled are configurable parents
-    parents = (
-        managed_qs.filter(enable_multi_mode=True, parent_equipment__isnull=True)
-        .prefetch_related("mode_children", "mode_schedules", "mode_schedules__mode_equipment")
-        .order_by("code", "name")
-    )
-
-    # Mode candidates: managed standalone equipment that are not multi-mode bases
-    linkable = list(
-        managed_qs.filter(parent_equipment__isnull=True, enable_multi_mode=False)
-        .order_by("code")
-        .values("equipment_id", "code", "name")
-    )
-
-    families = []
-    for parent in parents:
-        children = [
-            {
-                "equipment_id": c.equipment_id,
-                "code": c.code,
-                "name": c.name,
-                "status": c.status,
-            }
-            for c in parent.mode_children.all().order_by("code")
-        ]
-        schedules = [
-            _serialize_mode_schedule(s)
-            for s in parent.mode_schedules.all().order_by("-start_date", "-end_date")
-        ]
-        families.append(
-            {
-                "parent_equipment_id": parent.equipment_id,
-                "parent_code": parent.code,
-                "parent_name": parent.name,
-                "parent_status": parent.status,
-                "children": children,
-                "schedules": schedules,
-            }
-        )
-
-    return Response(
-        {
-            "multi_mode_enabled": True,
-            "families": families,
-            "linkable_equipment": linkable,
-            "behaviors": [
-                {"value": ModeScheduleBehavior.PARALLEL, "label": "Parallel"},
-                {"value": ModeScheduleBehavior.EXCLUSIVE, "label": "Mutually Exclusive"},
-            ],
-        }
-    )
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def oic_multi_mode_schedule_create(request):
-    """
-    Create a mode schedule.
-    Body: parent_equipment_id, mode_equipment_id, start_date, end_date, behavior,
-    optional start_time/end_time, unavailable_*, exclusive_blocked_*
-    """
-    if not _user_can_access_multimode_config(request.user):
-        return Response(
-            {"error": "Only Admin or Officer In Charge can configure Multi-Mode Equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    from django.core.exceptions import ValidationError as DjangoValidationError
-    from .models import EquipmentModeSchedule, ModeScheduleBehavior
-
-    data = request.data or {}
-    try:
-        parent_id = int(data.get("parent_equipment_id"))
-        mode_id = int(data.get("mode_equipment_id"))
-    except (TypeError, ValueError):
-        return Response(
-            {"error": "parent_equipment_id and mode_equipment_id are required integers."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not _user_can_manage_oic_equipment(request.user, parent_id):
-        return Response({"error": "Permission denied for parent equipment."}, status=status.HTTP_403_FORBIDDEN)
-    if not _user_can_manage_oic_equipment(request.user, mode_id):
-        return Response({"error": "Permission denied for mode equipment."}, status=status.HTTP_403_FORBIDDEN)
-
-    try:
-        parent = Equipment.objects.get(pk=parent_id)
-        mode = Equipment.objects.get(pk=mode_id)
-    except Equipment.DoesNotExist:
-        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    if not parent.enable_multi_mode:
-        return Response(
-            {
-                "error": (
-                    "Multi-Mode Equipment is not enabled for this instrument. "
-                    "Enable it on the equipment create/edit form first."
-                )
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if parent.parent_equipment_id:
-        return Response(
-            {"error": "Parent must be a base instrument (not itself a child mode)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if mode_id == parent_id:
-        return Response({"error": "Mode cannot be the same as the parent."}, status=status.HTTP_400_BAD_REQUEST)
-
-    if mode.parent_equipment_id and mode.parent_equipment_id != parent_id:
-        return Response(
-            {"error": "Mode equipment is already linked to a different parent."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if not mode.parent_equipment_id:
-        if mode.mode_children.exists():
-            return Response(
-                {"error": "Cannot link an equipment that already has child modes as a mode."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        mode.parent_equipment = parent
-        mode.save(update_fields=["parent_equipment", "updated_at"])
-
-    start_raw = (data.get("start_date") or "").strip()[:10]
-    end_raw = (data.get("end_date") or "").strip()[:10]
-    try:
-        start_d = date.fromisoformat(start_raw)
-        end_d = date.fromisoformat(end_raw)
-    except ValueError:
-        return Response(
-            {"error": "start_date and end_date must be YYYY-MM-DD."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    behavior = (data.get("behavior") or ModeScheduleBehavior.PARALLEL).strip().upper()
-    if behavior not in (ModeScheduleBehavior.PARALLEL, ModeScheduleBehavior.EXCLUSIVE):
-        return Response(
-            {"error": "behavior must be PARALLEL or EXCLUSIVE."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    sched = EquipmentModeSchedule(
-        parent_equipment=parent,
-        mode_equipment=mode,
-        start_date=start_d,
-        end_date=end_d,
-        behavior=behavior,
-        created_by=request.user,
-    )
-    _apply_schedule_display_fields(sched, data)
-    # Ensure defaults applied even if keys omitted
-    if not data.get("unavailable_label"):
-        sched.unavailable_label = sched.unavailable_label or "Mode not scheduled"
-    if not data.get("unavailable_color"):
-        sched.unavailable_color = sched.unavailable_color or "#9ca3af"
-    if not data.get("exclusive_blocked_label"):
-        sched.exclusive_blocked_label = sched.exclusive_blocked_label or "Alternate mode active"
-    if not data.get("exclusive_blocked_color"):
-        sched.exclusive_blocked_color = sched.exclusive_blocked_color or "#9ca3af"
-    try:
-        sched.full_clean()
-        sched.save()
-    except DjangoValidationError as e:
-        return Response({"error": e.message_dict if hasattr(e, "message_dict") else str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({"schedule": _serialize_mode_schedule(sched)}, status=status.HTTP_201_CREATED)
-
-@api_view(["PATCH", "DELETE"])
-@permission_classes([IsAuthenticated])
-def oic_multi_mode_schedule_detail(request, schedule_id):
-    """Update or delete a mode schedule."""
-    if not _user_can_access_multimode_config(request.user):
-        return Response(
-            {"error": "Only Admin or Officer In Charge can configure Multi-Mode Equipment."},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    from django.core.exceptions import ValidationError as DjangoValidationError
-    from .models import EquipmentModeSchedule, ModeScheduleBehavior
-
-    try:
-        sched = EquipmentModeSchedule.objects.select_related(
-            "parent_equipment", "mode_equipment"
-        ).get(pk=schedule_id)
-    except EquipmentModeSchedule.DoesNotExist:
-        return Response({"error": "Schedule not found."}, status=status.HTTP_404_NOT_FOUND)
-
-    if not _user_can_manage_oic_equipment(request.user, sched.parent_equipment_id):
-        return Response({"error": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
-
-    if request.method == "DELETE":
-        sched.delete()
-        return Response({"message": "Schedule deleted."})
-
-    data = request.data or {}
-    if "start_date" in data:
-        try:
-            sched.start_date = date.fromisoformat(str(data.get("start_date")).strip()[:10])
-        except ValueError:
-            return Response({"error": "Invalid start_date."}, status=status.HTTP_400_BAD_REQUEST)
-    if "end_date" in data:
-        try:
-            sched.end_date = date.fromisoformat(str(data.get("end_date")).strip()[:10])
-        except ValueError:
-            return Response({"error": "Invalid end_date."}, status=status.HTTP_400_BAD_REQUEST)
-    if "behavior" in data:
-        behavior = str(data.get("behavior") or "").strip().upper()
-        if behavior not in (ModeScheduleBehavior.PARALLEL, ModeScheduleBehavior.EXCLUSIVE):
-            return Response({"error": "behavior must be PARALLEL or EXCLUSIVE."}, status=status.HTTP_400_BAD_REQUEST)
-        sched.behavior = behavior
-    if "mode_equipment_id" in data:
-        try:
-            mode_id = int(data.get("mode_equipment_id"))
-        except (TypeError, ValueError):
-            return Response({"error": "Invalid mode_equipment_id."}, status=status.HTTP_400_BAD_REQUEST)
-        if not _user_can_manage_oic_equipment(request.user, mode_id):
-            return Response({"error": "Permission denied for mode equipment."}, status=status.HTTP_403_FORBIDDEN)
-        try:
-            mode = Equipment.objects.get(pk=mode_id)
-        except Equipment.DoesNotExist:
-            return Response({"error": "Mode equipment not found."}, status=status.HTTP_404_NOT_FOUND)
-        if mode.parent_equipment_id != sched.parent_equipment_id:
-            return Response(
-                {"error": "Mode equipment must be a child of this parent."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        sched.mode_equipment = mode
-
-    _apply_schedule_display_fields(sched, data)
-
-    try:
-        sched.full_clean()
-        sched.save()
-    except DjangoValidationError as e:
-        return Response({"error": e.message_dict if hasattr(e, "message_dict") else str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-    return Response({"schedule": _serialize_mode_schedule(sched)})
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])

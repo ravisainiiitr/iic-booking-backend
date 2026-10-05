@@ -274,6 +274,7 @@ from iic_booking.equipment.booking_templates import (
     booking_template_preferred_slot,
     booking_templates,
 )
+from iic_booking.equipment import mode_family_views
 from iic_booking.equipment.api_views import (
     equipment_list,
     equipment_catalog_departments,
@@ -414,9 +415,6 @@ from iic_booking.equipment.api_views import (
     oic_equipment_settings_update,
     oic_print_material_detail,
     oic_equipment_group_quotas,
-    oic_multi_mode_list,
-    oic_multi_mode_schedule_create,
-    oic_multi_mode_schedule_detail,
     admin_adjust_reward_points,
     inventory_items_list,
     equipment_inventory_stock,
@@ -1619,11 +1617,20 @@ urlpatterns = router.urls + [
         oic_equipment_group_quotas,
         name="oic-equipment-group-quotas-detail",
     ),
-    path("oic/multi-mode/", oic_multi_mode_list, name="oic-multi-mode-list"),
-    path("oic/multi-mode/schedules/", oic_multi_mode_schedule_create, name="oic-multi-mode-schedule-create"),
+    path("oic/multi-mode/", mode_family_views.oic_multi_mode_list, name="oic-multi-mode-list"),
+    path(
+        "oic/multi-mode/families/<int:base_id>/",
+        mode_family_views.oic_multi_mode_family,
+        name="oic-multi-mode-family",
+    ),
+    path(
+        "oic/multi-mode/schedules/",
+        mode_family_views.oic_multi_mode_schedule_create,
+        name="oic-multi-mode-schedule-create",
+    ),
     path(
         "oic/multi-mode/schedules/<int:schedule_id>/",
-        oic_multi_mode_schedule_detail,
+        mode_family_views.oic_multi_mode_schedule_detail,
         name="oic-multi-mode-schedule-detail",
     ),
     path("admin/rewards/adjust/", admin_adjust_reward_points, name="admin-rewards-adjust"),

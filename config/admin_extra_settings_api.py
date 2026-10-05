@@ -134,6 +134,7 @@ def register_extra_admin_routes(router):
                 "end_date",
                 "start_time",
                 "end_time",
+                "weekdays",
                 "behavior",
                 "unavailable_label",
                 "unavailable_color",
