@@ -32,6 +32,21 @@ _MANAGE = [IsAuthenticated, CanManageRemoteAnalysis]
 _VIEW = [IsAuthenticated, CanViewRemoteAnalysis]
 
 
+def _department_switch_reason(booking, user) -> str:
+    """Per-department Remote Analysis switch for a new reservation.
+
+    With a booking: the booked equipment's department. Without one: the departments that own the workstations
+    (allocation skips workstations whose department refuses the user; refuse up front if none would be left).
+    """
+    if booking is not None:
+        from iic_booking.equipment.remote_analysis_integration.eligibility import BookingAnalysisEligibilityService
+
+        return BookingAnalysisEligibilityService().department_block_reason(booking, booking.equipment)
+    from iic_booking.remote_analysis.services.department_switch import new_reservation_block_reason
+
+    return new_reservation_block_reason(user)
+
+
 def _department_scope(request):
     user = request.user
     user_type = str(getattr(user, "user_type", "") or "").lower()
@@ -84,6 +99,10 @@ def reservations_collection(request):
         from iic_booking.users.models import Department
 
         department = get_object_or_404(Department, pk=data["department_id"])
+
+    blocked = _department_switch_reason(booking, user)
+    if blocked:
+        return Response({"detail": blocked, "code": "department_module_disabled"}, status=status.HTTP_403_FORBIDDEN)
 
     software_profile = None
     if data.get("software_profile_id"):

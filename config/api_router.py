@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.routers import SimpleRouter
 
+from iic_booking.department_modules import urls as department_modules_urls
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -614,6 +615,12 @@ urlpatterns = router.urls + [
     path("v1/training/", include("iic_booking.training.urls")),
     # Procurement & Assets (per-department switch; default OFF)
     path("v1/procurement/", include("iic_booking.procurement_management.urls")),
+    # Per-department module switches (Main Admin matrix + per-user availability)
+    path(
+        "v1/admin/department-modules/",
+        include((department_modules_urls.admin_urlpatterns, "department_modules_admin")),
+    ),
+    path("v1/department-modules/", include("iic_booking.department_modules.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
     path("v1/portal-migration/admin/state/", portal_migration_admin_state, name="portal-migration-admin-state-v1"),
     path("v1/portal-migration/admin/dashboard/", portal_migration_dashboard, name="portal-migration-admin-dashboard-v1"),

@@ -129,6 +129,7 @@ LOCAL_APPS = [
     "iic_booking.my_research.apps.MyResearchConfig",
     "iic_booking.training.apps.TrainingConfig",
     "iic_booking.procurement_management.apps.ProcurementManagementConfig",
+    "iic_booking.department_modules.apps.DepartmentModulesConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps

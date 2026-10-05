@@ -48,6 +48,12 @@ class RevokedAgentError(SyncControlPlaneError):
     default_message = "Agent is revoked."
 
 
+class DepartmentModuleDisabledError(SyncControlPlaneError):
+    code = "DSA_DEPARTMENT_DISABLED"
+    status_code = 403
+    default_message = "Department Sync is not available for this booking's department."
+
+
 class EnrollmentFailedError(SyncControlPlaneError):
     code = "ENROLLMENT_FAILED"
     status_code = 400

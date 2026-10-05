@@ -11,8 +11,11 @@ from django.db.models import Max, Min, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.department_modules.access import booking_allows
+from iic_booking.department_modules.constants import ModuleKey
 from iic_booking.equipment.models import Booking, BookingStatus
 from iic_booking.sync.exceptions import (
+    DepartmentModuleDisabledError,
     SyncControlPlaneError,
 )
 from iic_booking.sync.models import (
@@ -309,6 +312,9 @@ class WorkspaceService:
                 json_payload={"booking_id": booking_id, "workspace_id": str(existing.id)},
             )
             return self._serialize(existing, created=False)
+
+        if not booking_allows(booking, ModuleKey.DSA):
+            raise DepartmentModuleDisabledError()
 
         with transaction.atomic():
             # Re-check inside transaction for races.

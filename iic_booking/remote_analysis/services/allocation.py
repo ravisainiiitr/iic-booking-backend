@@ -309,8 +309,11 @@ class AllocationService:
         software_name: str = "",
         required_software_names: list[str] | None = None,
         prefer_workstation_id=None,
+        exclude_department_ids=None,
     ) -> list[CandidateScore]:
         qs = AnalysisWorkstation.objects.select_related("capabilities", "department").filter(enabled=True)
+        if exclude_department_ids:
+            qs = qs.exclude(department_id__in=list(exclude_department_ids))
         pool_boost = self._pool_boost_map(equipment)
         # R11: RAA identity is NOT equipment-bound. Pool members get a soft score boost only.
         # Never hard-filter the candidate set to a single equipment pool — that would prevent

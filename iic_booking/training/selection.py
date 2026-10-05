@@ -181,6 +181,12 @@ def nominate(faculty, data: dict) -> TrainingNomination:
             status=403,
             code=access.AUDIENCE_CODE,
         )
+    if not (access.equipment_allows_user(call.equipment, faculty) and access.equipment_allows_user(call.equipment, student)):
+        raise TrainingError(
+            "Training on this equipment is open to test accounts only for now.",
+            status=403,
+            code=access.AUDIENCE_CODE,
+        )
     if not access.is_valid_nominator(faculty, student):
         raise TrainingError(
             "You can only nominate students you supervise or who have joined your wallet (approved).",
@@ -991,7 +997,8 @@ def _notify_call_open(call: NominationCall, actor) -> None:
     from iic_booking.users.models.department import DepartmentType
 
     faculty = access.audience_users(
-        User.objects.filter(user_type=UserType.FACULTY, is_active=True, department__department_type=DepartmentType.INTERNAL)
+        User.objects.filter(user_type=UserType.FACULTY, is_active=True, department__department_type=DepartmentType.INTERNAL),
+        equipment=call.equipment,
     )
     notify.send(
         "training_call_open_faculty_email",
