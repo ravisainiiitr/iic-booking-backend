@@ -344,13 +344,20 @@ def test_rejection_before_the_deadline_is_not_cancelled(lab, sent):
 
 @pytest.mark.django_db
 def test_expiry_task_is_registered_and_scheduled():
+    import importlib
+
+    from django.apps import apps as django_apps
     from django_celery_beat.models import PeriodicTask
 
     from iic_booking.equipment import tasks
 
     assert tasks.expire_fabrication_rejections.name == "equipment.expire_fabrication_rejections"
+    # --reuse-db databases may have been flushed by transactional tests, so run the migration step again.
+    migration = importlib.import_module("iic_booking.equipment.migrations.0230_fabrication_rejection_workflow")
+    migration.create_expire_fabrication_rejections_schedule(django_apps, None)
+    migration.create_expire_fabrication_rejections_schedule(django_apps, None)
     task = PeriodicTask.objects.get(task="equipment.expire_fabrication_rejections")
-    assert task.enabled and task.interval.every == 10
+    assert task.enabled and task.interval.every == 10 and task.interval.period == "minutes"
 
 
 @pytest.mark.django_db

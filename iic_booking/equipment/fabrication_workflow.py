@@ -216,7 +216,7 @@ def reject_fabrication_booking(booking_id, actor, reason, *, now=None) -> Bookin
     now = now or timezone.now()
     with transaction.atomic():
         booking = (
-            Booking.objects.select_for_update()
+            Booking.objects.select_for_update(of=("self",))
             .select_related("equipment", "user")
             .filter(booking_id=booking_id)
             .first()
@@ -327,7 +327,7 @@ def _expire_one(booking_id, now) -> bool:
 
     with transaction.atomic():
         booking = (
-            Booking.objects.select_for_update()
+            Booking.objects.select_for_update(of=("self",))
             .select_related("equipment", "user")
             .filter(booking_id=booking_id)
             .first()
