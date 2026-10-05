@@ -5,8 +5,9 @@ receipt, whichever is later".
 * The deadline exists only once the lab has received the sample: a ``SAMPLE_ACCEPTED`` sample-trace row
   (or any later stage). Walk-in equipment (no lead time, no collect deadline) never records receipt, so
   the sample counts as received at the slot.
+  A booking in Processing status also counts as received.
 * Anchor = max(last slot end, latest Sample Accepted time). A received booking without a Sample Accepted
-  row (later stage recorded directly) is anchored on the slot end. Working days skip Saturdays, Sundays
+  row (later stage recorded directly, or Processing status only) is anchored on the slot end. Working days skip Saturdays, Sundays
   and active ``Holiday`` rows; the deadline is the end (23:59:59 IST) of the N-th working day after
   the anchor day. Hours are clock hours after the anchor.
 * An Admin / Officer In-Charge "Extend results deadline" on a booking (``operator_absent_hold_until``)
@@ -235,7 +236,7 @@ def booking_sample_receipt(booking) -> SampleReceipt:
     """
     from django.db.models import Max
 
-    from .models import BookingSampleTrace, SampleTraceStatus
+    from .models import BookingSampleTrace, BookingStatus, SampleTraceStatus
     from .sample_lifecycle_policy import equipment_is_walk_in_sample
 
     annotated = getattr(booking, "_sample_received", None)
@@ -257,6 +258,8 @@ def booking_sample_receipt(booking) -> SampleReceipt:
             received, received_at = False, None
     if received:
         return SampleReceipt(True, received_at, RECEIPT_SAMPLE_ACCEPTED if received_at else RECEIPT_NO_TIMESTAMP)
+    if getattr(booking, "status", None) == BookingStatus.PROCESSING:
+        return SampleReceipt(True, None, RECEIPT_NO_TIMESTAMP)
     if equipment_is_walk_in_sample(getattr(booking, "equipment", None)):
         return SampleReceipt(True, None, RECEIPT_WALK_IN)
     return SampleReceipt(False)
@@ -281,12 +284,13 @@ def annotate_sample_receipt(queryset):
 
 
 def sample_received_q():
-    """Booking filter: sample received (Sample Accepted or later) or walk-in equipment. Needs ``annotate_sample_receipt``."""
+    """Booking filter: sample received (Sample Accepted or later, or Processing) or walk-in equipment. Needs ``annotate_sample_receipt``."""
     from django.db.models import Q
 
+    from .models import BookingStatus
     from .sample_lifecycle_policy import walk_in_sample_equipment_q
 
-    return Q(_sample_received=True) | walk_in_sample_equipment_q("equipment__")
+    return Q(_sample_received=True) | Q(status=BookingStatus.PROCESSING) | walk_in_sample_equipment_q("equipment__")
 
 
 def results_deadline_anchor(slot_end, receipt: SampleReceipt):
