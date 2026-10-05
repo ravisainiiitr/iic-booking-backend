@@ -9028,8 +9028,15 @@ def create_urgent_booking_request(request):
             status=UrgentBookingRequestStatus.PENDING,
         ).count()
         if pending_count >= equip.max_urgent_requests:
+            cap = equip.max_urgent_requests
             return Response(
-                {"error": "Maximum number of urgent requests for this equipment has been reached. Please try again later."},
+                {
+                    "error": (
+                        f"{equip.name} already has the maximum of {cap} open urgent request{'s' if cap != 1 else ''}. "
+                        "Please try again after the lab has decided on the pending requests."
+                    ),
+                    "code": "URGENT_OPEN_LIMIT_REACHED",
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
     cap_error = _urgent_weekly_cap_error(equip, request_type_val, include_pending=True)
@@ -11280,7 +11287,7 @@ def _enrich_failed_booking_response(
             depth = getattr(equipment, "waitlist_queue_depth", None) or 0
             if depth > 0:
                 from .models import WaitlistEntry
-                current_count = WaitlistEntry.objects.filter(equipment=equipment).count()
+                current_count = WaitlistEntry.objects.filter(equipment=equipment, status="ACTIVE").count()
                 if current_count >= depth:
                     # Keep error message stable; frontend uses waitlist_full / absence of waitlist_position
                     # to show either "waitlisted" message or "all slots occupied" message.
@@ -17786,9 +17793,93 @@ OIC_EQUIPMENT_SETTINGS_TIME_FIELDS = (
     "weekly_view_time_from",
     "weekly_view_time_to",
 )
+# Only the Main Administrator may move the weekly slot release; OICs see and send the other fields.
+OIC_SLOT_WINDOW_REFERENCE_FIELDS = ("slot_window_reference_weekday", "slot_window_reference_time")
+SLOT_WINDOW_REFERENCE_ADMIN_ONLY_MESSAGE = "Only the Main Administrator can change when next week's slots open."
+# Empty = today's behaviour: waitlist off (stored as 0), urgent limits uncapped (stored as NULL).
+OIC_EQUIPMENT_DEPTH_FIELDS = {
+    "waitlist_queue_depth": 500,
+    "max_urgent_requests": 100,
+    "max_rush_relief_requests_per_week": 100,
+    "max_surcharge_urgent_requests_per_week": 100,
+}
+OIC_EQUIPMENT_SETTINGS_AUDITED_FIELDS = (
+    *OIC_SLOT_WINDOW_REFERENCE_FIELDS,
+    "weekly_view_time_from",
+    "weekly_view_time_to",
+    *OIC_EQUIPMENT_SETTINGS_INT_FIELDS,
+    *OIC_EQUIPMENT_DEPTH_FIELDS,
+    "results_deadline_value",
+    "results_deadline_unit",
+    "show_results_deadline_to_users",
+)
 
 
-def _oic_equipment_settings_row(eq) -> dict:
+def _oic_booking_depth_usage(equipment_ids) -> dict[int, dict]:
+    """Current fill per equipment for the depth settings: active waitlist, open urgent requests, this week's Type A / B."""
+    from django.db.models import Count, Q
+
+    ids = [int(i) for i in equipment_ids]
+    usage = {
+        i: {"waitlist_active": 0, "urgent_pending": 0, "rush_relief_this_week": 0, "surcharge_this_week": 0}
+        for i in ids
+    }
+    if not ids:
+        return usage
+    for eq_id, n in (
+        WaitlistEntry.objects.filter(equipment_id__in=ids, status="ACTIVE")
+        .order_by()
+        .values_list("equipment_id")
+        .annotate(n=Count("id"))
+    ):
+        usage[eq_id]["waitlist_active"] = n
+    start, end = _current_week_bounds()
+    pending = Q(status=UrgentBookingRequestStatus.PENDING)
+    approved_this_week = Q(status=UrgentBookingRequestStatus.APPROVED, decided_at__gte=start, decided_at__lt=end)
+    rows = (
+        UrgentBookingRequest.objects.filter(equipment_id__in=ids)
+        .filter(pending | approved_this_week)
+        .order_by()
+        .values("equipment_id", "request_type")
+        .annotate(pending=Count("id", filter=pending), approved=Count("id", filter=approved_this_week))
+    )
+    for row in rows:
+        bucket = usage[row["equipment_id"]]
+        bucket["urgent_pending"] += row["pending"]
+        week_key = (
+            "rush_relief_this_week"
+            if row["request_type"] == UrgentBookingRequestType.NO_SLOT
+            else "surcharge_this_week"
+        )
+        bucket[week_key] += row["pending"] + row["approved"]
+    return usage
+
+
+def _slot_window_reference_changed(eq, name: str, raw) -> bool:
+    current = getattr(eq, name)
+    if raw in (None, ""):
+        return current is not None
+    if name == "slot_window_reference_weekday":
+        try:
+            return int(raw) != current
+        except (TypeError, ValueError):
+            return True
+    try:
+        hh, mm = str(raw).strip().split(":")[:2]
+        return current is None or (int(hh), int(mm)) != (current.hour, current.minute)
+    except (TypeError, ValueError):
+        return True
+
+
+def _audit_value(value):
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if hasattr(value, "strftime"):
+        return value.strftime("%H:%M")
+    return str(value)
+
+
+def _oic_equipment_settings_row(eq, usage: dict | None = None) -> dict:
     def _t(value):
         return value.strftime("%H:%M") if value else None
 
@@ -17797,12 +17888,18 @@ def _oic_equipment_settings_row(eq) -> dict:
         "equipment_code": eq.code,
         "equipment_name": eq.name,
         "profile_type": eq.profile_type,
+        "usage": usage
+        or {"waitlist_active": 0, "urgent_pending": 0, "rush_relief_this_week": 0, "surcharge_this_week": 0},
         "settings": {
             "slot_window_reference_weekday": eq.slot_window_reference_weekday,
             "slot_window_reference_time": _t(eq.slot_window_reference_time),
             "weekly_view_time_from": _t(eq.weekly_view_time_from),
             "weekly_view_time_to": _t(eq.weekly_view_time_to),
             **{name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_INT_FIELDS},
+            "waitlist_queue_depth": eq.waitlist_queue_depth or 0,
+            "max_urgent_requests": eq.max_urgent_requests,
+            "max_rush_relief_requests_per_week": eq.max_rush_relief_requests_per_week,
+            "max_surcharge_urgent_requests_per_week": eq.max_surcharge_urgent_requests_per_week,
             "results_deadline_value": eq.results_deadline_value,
             "results_deadline_unit": eq.results_deadline_unit,
             "show_results_deadline_to_users": bool(eq.show_results_deadline_to_users),
@@ -17827,10 +17924,13 @@ def oic_equipment_settings_list(request):
         )
     from .rich_text import instruction_user_type_choices
 
-    rows = [_oic_equipment_settings_row(eq) for eq in _oic_manageable_equipment_qs(request.user)]
+    equipments = list(_oic_manageable_equipment_qs(request.user))
+    usage = _oic_booking_depth_usage([eq.equipment_id for eq in equipments])
+    rows = [_oic_equipment_settings_row(eq, usage.get(eq.equipment_id)) for eq in equipments]
     return Response(
         {
             "equipments": rows,
+            "can_edit_slot_window_reference": _is_admin_user(request.user),
             "has_print_3d_equipment": any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows),
             "has_fabrication_equipment": any(
                 r["profile_type"] in (EquipmentProfileType.PRINT_3D, EquipmentProfileType.LASER_CUT_2D)
@@ -17858,6 +17958,14 @@ def oic_equipment_settings_update(request, equipment_id):
     data = request.data or {}
     errors: dict = {}
     changed: list[str] = []
+    before = {name: getattr(eq, name) for name in OIC_EQUIPMENT_SETTINGS_AUDITED_FIELDS}
+
+    if not _is_admin_user(request.user):
+        # Unchanged values (an older page sends the whole form) are ignored; real changes are refused.
+        for name in OIC_SLOT_WINDOW_REFERENCE_FIELDS:
+            if name in data and _slot_window_reference_changed(eq, name, data.get(name)):
+                errors[name] = SLOT_WINDOW_REFERENCE_ADMIN_ONLY_MESSAGE
+        data = {key: data.get(key) for key in data.keys() if key not in OIC_SLOT_WINDOW_REFERENCE_FIELDS}
 
     if "slot_window_reference_weekday" in data:
         raw = data.get("slot_window_reference_weekday")
@@ -17900,6 +18008,29 @@ def oic_equipment_settings_update(request, equipment_id):
             continue
         if not low <= value <= high:
             errors[name] = f"Enter a value between {low} and {high}."
+            continue
+        setattr(eq, name, value)
+        changed.append(name)
+
+    for name, high in OIC_EQUIPMENT_DEPTH_FIELDS.items():
+        if name not in data:
+            continue
+        raw = data.get(name)
+        is_waitlist = name == "waitlist_queue_depth"
+        if raw in (None, ""):
+            value = 0 if is_waitlist else None
+        else:
+            try:
+                value = int(str(raw).strip())
+            except (TypeError, ValueError):
+                errors[name] = "Enter a whole number, or leave empty."
+                continue
+        current = getattr(eq, name)
+        # An unchanged legacy value above the new maximum must not block saving other settings.
+        if value == ((current or 0) if is_waitlist else current):
+            continue
+        if value is not None and not 0 <= value <= high:
+            errors[name] = f"Enter a whole number from 0 to {high}, or leave empty."
             continue
         setattr(eq, name, value)
         changed.append(name)
@@ -17966,10 +18097,23 @@ def oic_equipment_settings_update(request, equipment_id):
     ):
         errors["weekly_view_time_to"] = "'Time to' must be later than 'Time from'."
     if errors:
+        if any(name in errors for name in OIC_SLOT_WINDOW_REFERENCE_FIELDS):
+            record_staff_action(request.user, "equipment_settings.slot_window_refused", equipment_id=eq.equipment_id)
         return Response({"error": "Please correct the highlighted settings.", "errors": errors}, status=status.HTTP_400_BAD_REQUEST)
     if changed:
         eq.save(update_fields=sorted(set(changed)))
-    return Response({"equipment": _oic_equipment_settings_row(eq)})
+        diff = {
+            name: [_audit_value(before[name]), _audit_value(getattr(eq, name))]
+            for name in OIC_EQUIPMENT_SETTINGS_AUDITED_FIELDS
+            if name in changed and before[name] != getattr(eq, name)
+        }
+        diff.update(
+            {name: "changed" for name in ("important_instruction", "important_instruction_by_user_type") if name in changed}
+        )
+        if diff:
+            record_staff_action(request.user, "equipment_settings.update", equipment_id=eq.equipment_id, changes=diff)
+    usage = _oic_booking_depth_usage([eq.equipment_id]).get(eq.equipment_id)
+    return Response({"equipment": _oic_equipment_settings_row(eq, usage)})
 
 
 def _oic_can_manage_print_materials(user) -> bool:
