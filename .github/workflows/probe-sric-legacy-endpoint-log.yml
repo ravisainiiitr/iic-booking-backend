@@ -1,0 +1,61 @@
+# Read-only: has anything called the legacy /api/integrations/sric/ endpoint recently?
+# Greps Apache access logs (incl. rotated) and django container logs, reports whether SRIC_API_KEY
+# is configured (yes/no only) and SricTransferRequest row counts. Makes no changes.
+name: Probe SRIC Legacy Endpoint Log
+
+on:
+  workflow_dispatch:
+    inputs:
+      since_hours:
+        description: django container log look-back in hours
+        required: true
+        default: "720"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Grep logs and report configuration
+        shell: bash
+        env:
+          SINCE_HOURS: ${{ github.event.inputs.since_hours }}
+        run: |
+          set +e
+          mask() { sed -E 's/(X-SRIC-API-Key|token|key|signature)([=:] *)[^&" ]*/\1\2***/Ig'; }
+          PAT="/api/integrations/sric/"
+          readf() {
+            case "$1" in
+              *.gz) zcat "$1" 2>/dev/null || sudo -n zcat "$1" 2>/dev/null ;;
+              *) cat "$1" 2>/dev/null || sudo -n cat "$1" 2>/dev/null ;;
+            esac
+          }
+          echo "=== apache access logs (current and rotated) ==="
+          ls -la /var/log/apache2/ 2>&1 | head -n 60
+          total=0
+          for f in /var/log/apache2/*access*.log* /var/log/apache2/other_vhosts*.log* /var/log/apache2/*ssl*.log*; do
+            [ -e "$f" ] || continue
+            case "$f" in *error*) continue;; esac
+            n=$(readf "$f" | grep -cF "$PAT")
+            echo "--- $f matches=${n:-0}"
+            total=$((total + ${n:-0}))
+            [ "${n:-0}" -gt 0 ] && readf "$f" | grep -F "$PAT" | tail -n 50 | mask
+          done
+          echo "TOTAL apache matches for $PAT: $total"
+          echo "=== django container log (last ${SINCE_HOURS}h) ==="
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          if [ -n "$CID" ]; then
+            dn=$(docker logs --since "${SINCE_HOURS}h" "$CID" 2>&1 | grep -cF "$PAT")
+            echo "django log matches=${dn:-0}"
+            docker logs --since "${SINCE_HOURS}h" "$CID" 2>&1 | grep -F "$PAT" | tail -n 50 | mask
+            echo "=== configuration and rows (read-only) ==="
+            docker exec -w /app "$CID" python manage.py shell -c "
+          from django.conf import settings
+          from django.db.models import Count
+          from iic_booking.users.models import SricTransferRequest
+          print('SRIC_API_KEY configured:', bool((getattr(settings, 'SRIC_API_KEY', '') or '').strip()))
+          print('SricTransferRequest by status:', list(SricTransferRequest.objects.values('status').annotate(n=Count('id')).order_by('status')))
+          " 2>&1 | tail -n 20
+          else
+            echo "django container not found"
+          fi
+          exit 0
