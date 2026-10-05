@@ -10,6 +10,7 @@ from iic_booking.communication.utils import booking_display_id_for_email
 from iic_booking.users.repositories.wallet_repository import WalletRepository
 
 from .booking_events import create_booking_event
+from .booking_paid_amount import booking_paid_charge, clear_pending_charge_difference
 from .maintenance_policy import released_slot_status_after_booking_freed
 from .models import BookingEventType, BookingSampleTrace, BookingStatus, SampleTraceStatus
 from .waitlist import notify_waitlist_slots_available
@@ -61,18 +62,21 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
 
     released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
     previous_status = booking.status
+    refund_amount = booking_paid_charge(booking)
     with transaction.atomic():
         booking.daily_slots.update(
             booking=None,
             status=released_slot_status_after_booking_freed(booking.equipment),
         )
-        refund_transaction = refund_target.credit(
-            amount=booking.total_charge,
-            description=refund_description,
-            related_user=booking.user,
-        )
+        refund_transaction = None
+        if refund_amount > 0:
+            refund_transaction = refund_target.credit(
+                amount=refund_amount,
+                description=refund_description,
+                related_user=booking.user,
+            )
         booking.status = BookingStatus.ABSENT
-        booking.save(update_fields=["status"])
+        booking.save(update_fields=["status"] + clear_pending_charge_difference(booking))
 
         create_booking_event(
             booking=booking,
@@ -81,7 +85,7 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
             new_status=BookingStatus.ABSENT,
             comment=absent_notes or "Operator unavailable. Full refund issued.",
             created_by=actor,
-            metadata={"refund_amount": str(booking.total_charge)},
+            metadata={"refund_amount": str(refund_amount)},
             send_notification=False,
         )
 
@@ -127,7 +131,7 @@ def apply_operator_unavailable_booking(booking, *, notes: str = "", actor):
         "equipment_code": getattr(booking.equipment, "code", "") or "",
         "start_time": start_time_str,
         "end_time": end_time_str,
-        "refund_amount": str(booking.total_charge),
+        "refund_amount": str(refund_amount),
         "comment": absent_notes or "Operator was unavailable. A full refund has been issued to your wallet.",
     }
     from iic_booking.equipment.booking_events import apply_booking_party_to_context

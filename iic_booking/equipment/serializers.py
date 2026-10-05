@@ -3439,6 +3439,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     oic_contacts = serializers.SerializerMethodField()
     charge_breakdown = serializers.SerializerMethodField()
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
     input_edit_refund_deadline = serializers.SerializerMethodField()
     input_edit_instant_refund_open = serializers.SerializerMethodField()
     can_reschedule = serializers.SerializerMethodField()
@@ -3665,6 +3666,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'charge_recalculation_pending_amount',
             'charge_recalculation_pay_deadline',
             'charge_recalculation_pay_seconds_remaining',
+            'amount_paid',
             'input_edit_refund_deadline',
             'input_edit_instant_refund_open',
             'can_reschedule',
@@ -3766,6 +3768,11 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         from .input_edit_payment_window import payment_seconds_remaining
 
         return payment_seconds_remaining(obj)
+
+    def get_amount_paid(self, obj):
+        from .booking_paid_amount import booking_paid_charge
+
+        return str(booking_paid_charge(obj))
 
     def _input_edit_refund_window(self, obj):
         cache = self.context.setdefault("_input_edit_refund_window_cache", {})
@@ -4185,6 +4192,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     oic_contacts = serializers.SerializerMethodField()
     charge_recalculation_pay_deadline = serializers.DateTimeField(read_only=True, allow_null=True)
     charge_recalculation_pay_seconds_remaining = serializers.SerializerMethodField()
+    amount_paid = serializers.SerializerMethodField()
     can_reschedule = serializers.SerializerMethodField()
     reschedule_block_reason = serializers.SerializerMethodField()
     reschedule_block_message = serializers.SerializerMethodField()
@@ -4198,6 +4206,11 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         from .input_edit_payment_window import payment_seconds_remaining
 
         return payment_seconds_remaining(obj)
+
+    def get_amount_paid(self, obj):
+        from .booking_paid_amount import booking_paid_charge
+
+        return str(booking_paid_charge(obj))
 
     def get_lab_questions_open(self, obj):
         """Lab questions awaiting the user's reply; counted once for the whole page."""
@@ -4241,7 +4254,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'user_type_snapshot_display', 'wallet_owner_name', 'created_by_name', 'repeat_sample_request_status',
             'has_results',
             'charge_recalculation_pending_amount', 'charge_recalculation_pay_deadline',
-            'charge_recalculation_pay_seconds_remaining', 'can_reschedule', 'reschedule_block_reason',
+            'charge_recalculation_pay_seconds_remaining', 'amount_paid', 'can_reschedule', 'reschedule_block_reason',
             'reschedule_block_message', 'can_cancel', 'cancel_block_reason', 'cancel_block_message',
             'created_at', 'updated_at', 'completed_at',
             'rating_on_time_operator_availability',

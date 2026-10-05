@@ -12037,7 +12037,7 @@ def refund_booking(request, booking_id):
 
     refund_notes = request.data.get('notes', '')
     try:
-        refund_booking_internal(booking, refund_notes, request.user)
+        refunded = refund_booking_internal(booking, refund_notes, request.user)
     except ValueError as e:
         return Response(
             {"error": str(e)},
@@ -12056,9 +12056,9 @@ def refund_booking(request, booking_id):
     serializer = BookingSerializer(booking)
     return Response(
         {
-            "message": f"Booking refunded successfully. ₹{booking.total_charge} credited / refunded.",
+            "message": f"Booking refunded successfully. ₹{refunded} credited / refunded.",
             "booking": serializer.data,
-            "refund_amount": str(booking.total_charge),
+            "refund_amount": str(refunded),
             "wallet_balance": str(refund_target.balance),
         },
         status=status.HTTP_200_OK,
@@ -12212,8 +12212,10 @@ def refund_booking_internal(booking, refund_notes, performed_by):
 
     released_slot_ids = list(booking.daily_slots.values_list("id", flat=True))
 
+    from .booking_paid_amount import booking_paid_charge, clear_pending_charge_difference
+
     razorpay_payment = None
-    wallet_credit = Decimal(str(booking.total_charge or 0))
+    wallet_credit = booking_paid_charge(booking)
     try:
         from iic_booking.payments.razorpay_service import get_successful_booking_payment, create_refund
 
@@ -12261,7 +12263,10 @@ def refund_booking_internal(booking, refund_notes, performed_by):
                 related_user=booking.user,
             )
         booking.status = BookingStatus.REFUNDED
-        booking.save(update_fields=["status"])
+        refund_update_fields = ["status"]
+        if not razorpay_payment:
+            refund_update_fields += clear_pending_charge_difference(booking)
+        booking.save(update_fields=refund_update_fields)
 
         create_booking_event(
             booking=booking,
@@ -12293,6 +12298,7 @@ def refund_booking_internal(booking, refund_notes, performed_by):
         )
     except Exception as e:
         logger.warning("Failed to notify waitlist after refund for equipment %s: %s", booking.equipment.code, e)
+    return Decimal(str(booking.total_charge or 0)) if razorpay_payment else wallet_credit
 
 def _reverse_reward_points_for_booking(booking, actor, note_prefix):
     points_used = Decimal(str(getattr(booking, "reward_points_used", 0) or "0"))
@@ -15402,6 +15408,19 @@ def _recalculate_booking_charge_and_adjust_wallet(
                 comment += f" Extra ₹{pending_amount:.2f} to pay — click Pay Now to debit wallet."
         else:
             comment += " No change in amount."
+        if current_pending_delta is not None and current_pending_delta != 0:
+            earlier = abs(current_pending_delta)
+            if current_pending_delta < 0:
+                comment += (
+                    f" Previous charge is the amount paid so far: the earlier refund of ₹{earlier:.2f} had not been "
+                    "approved yet, so this calculation replaces it."
+                )
+            else:
+                comment += (
+                    f" Previous charge is the amount paid so far: the earlier extra ₹{earlier:.2f} had not been "
+                    "paid yet, so this calculation replaces it."
+                )
+            metadata["replaced_pending_amount"] = str(current_pending_delta)
 
         create_booking_event(
             booking=booking,

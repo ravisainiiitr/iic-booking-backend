@@ -748,7 +748,10 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                     booking.user, getattr(booking.equipment, "internal_department", None)
                 )
                 if refund_target:
-                    refund_amount = Decimal(str(booking.total_charge or "0"))
+                    from .booking_paid_amount import booking_paid_charge, clear_pending_charge_difference
+
+                    refund_amount = booking_paid_charge(booking)
+                    clear_pending_charge_difference(booking)
                     from iic_booking.communication.utils import booking_display_id_for_email
 
                     desc = (

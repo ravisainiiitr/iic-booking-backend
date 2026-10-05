@@ -4808,11 +4808,19 @@ class BookingCancellationRequest(models.Model):
                 )
                 if self.notes:
                     refund_description += f" - {self.notes}"
-                refund_transaction = refund_target.credit(
-                    amount=self.booking.total_charge,
-                    description=refund_description,
-                    related_user=self.booking.user,
+                from iic_booking.equipment.booking_paid_amount import (
+                    booking_paid_charge,
+                    clear_pending_charge_difference,
                 )
+
+                refund_amount = booking_paid_charge(self.booking)
+                clear_pending_charge_difference(self.booking)
+                if refund_amount > 0:
+                    refund_transaction = refund_target.credit(
+                        amount=refund_amount,
+                        description=refund_description,
+                        related_user=self.booking.user,
+                    )
                 self.booking.status = BookingStatus.REFUNDED
             else:
                 self.booking.status = BookingStatus.CANCELLED
