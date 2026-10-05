@@ -75,7 +75,7 @@ def world(db):
     w.other_operator = make_user(user_type=UserType.OPERATOR, name="Other Operator", department=w.other_dept)
     w.stores = make_user(user_type=UserType.OPERATOR, name="OC Stores", department=w.dept)
     w.office = make_user(user_type=UserType.FINANCE, name="Office Clerk", department=w.dept)
-    w.hod = make_user(user_type=UserType.FACULTY, name="Prof. HOD", department=w.dept)
+    w.hod = make_user(user_type=UserType.HOD, name="Prof. HOD", department=w.dept)
     w.auditor = make_user(user_type=UserType.FINANCE, name="Auditor", department=w.dept)
     w.outsider = make_user(user_type=UserType.STUDENT, name="Student", department=w.dept)
     EquipmentManager.objects.create(equipment=w.equipment, manager=w.oic)

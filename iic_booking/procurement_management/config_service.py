@@ -8,7 +8,7 @@ from django.db import transaction
 
 from . import audit
 from . import constants as c
-from .access import is_main_admin
+from .access import is_main_admin, user_type_allowed
 from .defaults import ensure_department_defaults
 from .errors import ProcurementError, forbidden
 from .fy import is_valid_fy_label
@@ -134,11 +134,18 @@ def _set_pilot_users(actor, cfg, raw_ids, *, reason: str = "", request=None) -> 
         ids = sorted({int(str(x)) for x in raw_ids})
     except (TypeError, ValueError):
         raise ProcurementError("pilot_user_ids must be user ids.", code="invalid_pilot_users", field="pilot_user_ids")
-    found = set(User.objects.filter(pk__in=ids, is_active=True).values_list("pk", flat=True))
+    found = {u.pk: u for u in User.objects.filter(pk__in=ids, is_active=True)}
     missing = [i for i in ids if i not in found]
     if missing:
         raise ProcurementError(
             f"Unknown or inactive users: {', '.join(map(str, missing))}.", code="invalid_pilot_users", field="pilot_user_ids"
+        )
+    not_allowed = [i for i in ids if not user_type_allowed(found[i])]
+    if not_allowed:
+        raise ProcurementError(
+            f"These users' account types cannot use Procurement & Assets: {', '.join(map(str, not_allowed))}.",
+            code="user_type_not_allowed",
+            field="pilot_user_ids",
         )
     before = sorted(cfg.pilot_users.values_list("pk", flat=True))
     if before == ids:
@@ -169,6 +176,10 @@ def assign_role(actor, department, user, role: str, permissions=None, *, request
         raise forbidden("Only the Main Administrator can assign Procurement & Assets roles.")
     if role not in [r.value for r in c.ASSIGNABLE_ROLES]:
         raise ProcurementError("Unknown role.", code="invalid_role")
+    if not user_type_allowed(user):
+        raise ProcurementError(
+            "This user's account type cannot use Procurement & Assets.", code="user_type_not_allowed", field="user_id"
+        )
     perms = _clean_permissions(role, permissions)
     row, created = ProcurementRoleAssignment.objects.select_for_update().get_or_create(
         department=department, user=user, role=role, defaults={"permissions": perms, "assigned_by": actor}

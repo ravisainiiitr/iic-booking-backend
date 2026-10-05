@@ -86,6 +86,8 @@ class Command(BaseCommand):
                     UserType.OPERATOR,
                     UserType.ADMIN,
                     UserType.FINANCE,
+                    UserType.OC_STORES,
+                    UserType.HOD,
                     UserType.STARTUP_INCUBATED_IITR,
                 }:
                     if internal_dept:

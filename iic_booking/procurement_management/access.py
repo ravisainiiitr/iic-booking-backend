@@ -11,9 +11,11 @@ Roles are resolved per department:
 * OC Stores / Office / Auditor — ``ProcurementRoleAssignment`` rows (Office carries granular permissions).
 
 Everything is filtered to departments whose ``ProcurementManagementConfiguration.module_enabled`` is true, so a
-disabled department behaves as if the module did not exist. While a department is in pilot mode it only counts as
-enabled for its pilot users, and a user on no pilot list is refused everywhere (see ``pilot_blocked``). All checks run server-side; the frontend only
-receives the result for showing or hiding UI.
+disabled department behaves as if the module did not exist. Only ``MODULE_USER_TYPES`` (Main Admin, Department
+Administrator, OIC, Lab Operator, Accounts, OC Stores, HOD) may use it at all; everyone else is refused everywhere.
+While a department is in pilot mode it only counts as enabled for its pilot users, and a user on no pilot list is
+refused everywhere (see ``pilot_blocked``). All checks run server-side; the frontend only receives the result for
+showing or hiding UI.
 """
 
 from __future__ import annotations
@@ -34,12 +36,32 @@ P = c.OfficePermission
 DEPT_WIDE_ROLES = frozenset({R.OC_STORES, R.OFFICE, R.HOD, R.AUDITOR, R.MAIN_ADMIN})
 
 
+MODULE_USER_TYPES = frozenset(
+    {
+        UserType.ADMIN,
+        UserType.DEPT_ADMIN,
+        UserType.MANAGER,
+        UserType.OPERATOR,
+        UserType.FINANCE,
+        UserType.OC_STORES,
+        UserType.HOD,
+    }
+)
+
+
 def is_main_admin(user) -> bool:
     return bool(
         user
         and getattr(user, "is_authenticated", False)
         and (getattr(user, "is_superuser", False) or getattr(user, "user_type", None) == UserType.ADMIN)
     )
+
+
+def user_type_allowed(user) -> bool:
+    """Only staff types may ever use the module; students, faculty, external and other users never can."""
+    if user is None:
+        return False
+    return bool(getattr(user, "is_superuser", False)) or getattr(user, "user_type", None) in MODULE_USER_TYPES
 
 
 def get_config(department_or_id) -> ProcurementManagementConfiguration | None:
@@ -75,7 +97,7 @@ def pilot_blocked(user) -> bool:
 def pilot_audience(department_id, users) -> list:
     """Drop users who cannot see the module in this department (used before notifying anyone)."""
     cfg = get_config(department_id)
-    users = [u for u in users if u is not None]
+    users = [u for u in users if user_type_allowed(u)]
     if cfg is None or not cfg.module_enabled:
         return []
     if not cfg.pilot_mode:
@@ -217,7 +239,7 @@ class UserScope:
 
 
 def scope_for(user) -> UserScope:
-    if pilot_blocked(user):
+    if not user_type_allowed(user) or pilot_blocked(user):
         return UserScope(user=user, enabled=set(), blocked=True)
     return UserScope(user=user, enabled=enabled_department_ids(user))
 
