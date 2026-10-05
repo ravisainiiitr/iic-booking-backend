@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime
+
 from django.conf import settings
+from django.db import DatabaseError, transaction
 from django.utils import timezone
 
 from iic_booking.users.legacy_ledger.schema_gate import safe_portal_migration_state
 from iic_booking.users.models import UserType
 from iic_booking.users.models.portal_migration import PortalMigrationState
+
+logger = logging.getLogger(__name__)
 
 # Allow this test account to complete bookings (e.g. user-guide screenshots)
 # while portal hard-freeze / end-user lock remains for everyone else.
@@ -25,7 +31,8 @@ def user_bypasses_booking_lock(user) -> bool:
     return email in BOOKING_LOCK_BYPASS_EMAILS
 
 
-# Faculty login wallet sync stops at the same cutover instant as booking opens.
+# Built-in faculty login wallet sync deadline (the original cutover instant). Used only when the
+# Main Administrator has not stored PortalMigrationState.faculty_wallet_sync_cutoff.
 FACULTY_WALLET_SYNC_CUTOFF = timezone.datetime(
     2026, 10, 4, 0, 0, 0, tzinfo=timezone.get_fixed_timezone(330)
 )
@@ -298,6 +305,27 @@ def booking_status_payload(user=None) -> dict:
     }
 
 
+def stored_faculty_wallet_sync_cutoff() -> datetime | None:
+    """Main Administrator deadline, or None when unset or the column is not migrated yet.
+
+    Runs inside a savepoint so a missing column cannot poison an ATOMIC_REQUESTS transaction.
+    """
+    try:
+        with transaction.atomic():
+            return (
+                PortalMigrationState.objects.filter(singleton_key="default")
+                .values_list("faculty_wallet_sync_cutoff", flat=True)
+                .first()
+            )
+    except DatabaseError:
+        logger.warning("Faculty wallet sync deadline unreadable; using the built-in default", exc_info=True)
+        return None
+
+
+def faculty_wallet_sync_cutoff() -> datetime:
+    return stored_faculty_wallet_sync_cutoff() or FACULTY_WALLET_SYNC_CUTOFF
+
+
 def faculty_wallet_sync_window_open() -> bool:
-    """True until 4 October 2026 00:00 Asia/Kolkata."""
-    return timezone.now() < FACULTY_WALLET_SYNC_CUTOFF
+    """True while now is before the Main Administrator deadline (built-in default when unset)."""
+    return timezone.now() < faculty_wallet_sync_cutoff()

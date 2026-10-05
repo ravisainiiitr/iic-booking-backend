@@ -107,6 +107,9 @@ class PortalMigrationState(models.Model):
     sync_runs_total = models.PositiveIntegerField(default=0)
     sync_failures_total = models.PositiveIntegerField(default=0)
     transactions_imported_total = models.PositiveIntegerField(default=0)
+    # Null means the built-in booking_lock.FACULTY_WALLET_SYNC_CUTOFF applies.
+    # Change only through faculty_wallet_sync_deadline.set_faculty_wallet_sync_cutoff (audited).
+    faculty_wallet_sync_cutoff = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -254,6 +257,31 @@ class PortalMigrationPhaseTransition(models.Model):
 
     def __str__(self) -> str:
         return f"{self.from_phase} -> {self.to_phase}"
+
+
+class FacultyWalletSyncCutoffChange(models.Model):
+    """Audit row for every Main Administrator change to the faculty login wallet sync deadline."""
+
+    old_cutoff = models.DateTimeField(null=True, blank=True)
+    new_cutoff = models.DateTimeField()
+    actor = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="faculty_wallet_sync_cutoff_changes",
+    )
+    actor_email = models.CharField(max_length=255, blank=True, default="")
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        verbose_name = _("Faculty wallet sync deadline change")
+        verbose_name_plural = _("Faculty wallet sync deadline changes")
+
+    def __str__(self) -> str:
+        return f"{self.old_cutoff} -> {self.new_cutoff} by {self.actor_email}"
 
 
 class LegacyBookingHistoryRecord(models.Model):

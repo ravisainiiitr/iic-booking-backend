@@ -25,6 +25,7 @@ from iic_booking.users.models.portal_migration import (
     LegacyBookingHistoryRecord,
     LegacyWalletAccountMapping,
     LegacyWalletLedgerEntry,
+    PortalMigrationState,
 )
 from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
 from iic_booking.users.tests.factories import UserFactory
@@ -105,6 +106,11 @@ def _txn(tid, uid, amount, ttype):
 @pytest.mark.django_db
 class TestAdminLegacyUserSync(TestCase):
     def setUp(self):
+        # Login sync assertions below need the faculty wallet sync window open.
+        PortalMigrationState.objects.update_or_create(
+            singleton_key="default",
+            defaults={"faculty_wallet_sync_cutoff": timezone.now() + timedelta(days=30)},
+        )
         self.iic = Department.objects.create(name=IIC_DEPARTMENT_NAME, department_type=DepartmentType.INTERNAL)
         self.admin = UserFactory(email="main.admin@iitr.ac.in", user_type=UserType.ADMIN)
         self.faculty = UserFactory(

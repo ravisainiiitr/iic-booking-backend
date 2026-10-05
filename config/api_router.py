@@ -130,6 +130,7 @@ from iic_booking.users.api.wallet_views import (
     legacy_wallet_balance_lookup,
     legacy_wallet_balance_list,
 )
+from iic_booking.users.api.faculty_wallet_sync_views import faculty_wallet_sync_deadline
 from iic_booking.users.api.legacy_user_sync_views import (
     legacy_user_sync_confirm,
     legacy_user_sync_preview,
@@ -1246,6 +1247,7 @@ urlpatterns = router.urls + [
     path("portal-migration/admin/legacy-user-sync/users/<int:user_id>/", legacy_user_sync_user_detail, name="legacy-user-sync-user-detail"),
     path("portal-migration/admin/legacy-user-sync/preview/", legacy_user_sync_preview, name="legacy-user-sync-preview"),
     path("portal-migration/admin/legacy-user-sync/confirm/", legacy_user_sync_confirm, name="legacy-user-sync-confirm"),
+    path("portal-migration/admin/faculty-wallet-sync/", faculty_wallet_sync_deadline, name="faculty-wallet-sync-deadline"),
     # Project endpoints
     path("projects/", project_list, name="project-list"),  # GET: List projects, POST: Create project
     path("projects/<int:project_id>/", project_detail, name="project-detail"),  # GET, PATCH, PUT: Get/Update project

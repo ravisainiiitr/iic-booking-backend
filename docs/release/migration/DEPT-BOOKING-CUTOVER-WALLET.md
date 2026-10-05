@@ -29,7 +29,10 @@ If MySQL is not configured, login still succeeds; wallet sync is skipped.
 
 ## After 4 October 2026
 
-1. Login sync stops automatically (`faculty_wallet_sync_window_open()`).
+1. Login sync stops automatically at the sync deadline (`faculty_wallet_sync_window_open()`). The Main
+   Administrator can move the deadline on the Legacy user sync page ("Faculty login wallet sync" card,
+   `GET/PUT /api/portal-migration/admin/faculty-wallet-sync/`, reason required, audited in
+   `FacultyWalletSyncCutoffChange`). With no stored value the built-in default (4 Oct 2026 00:00 IST) applies.
 2. Hard freeze ends when `now >= booking_opens_at`.
 3. Main admin enables Equipment booking per department (`equipment_booking_enabled`).
 4. Optionally set New booking enabled (`end_user_booking_enabled=True`) under Portal Migration admin UI.
