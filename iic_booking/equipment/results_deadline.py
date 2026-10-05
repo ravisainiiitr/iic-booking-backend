@@ -6,11 +6,15 @@ Per-equipment results deadline: "results within N working days (or N hours) afte
   the slot day. Hours are clock hours after the slot end.
 * An Admin / Officer In-Charge "Extend results deadline" on a booking (``operator_absent_hold_until``)
   moves that booking's deadline to the chosen time when it is later.
-* Results overdue = still Pending / Booked / Processing after the deadline, unless the sample is
-  waiting for the user (held at office or rejected). Lab Operators and the OIC see these bookings.
+* Results overdue = still Pending / Booked / Processing after the deadline, the lab has the sample
+  (a Sample Accepted trace exists or the booking is Processing; same rule as the frontend's
+  ``sampleAcceptedForResults``), and the sample is not waiting for the user (held at office or
+  rejected). Lab Operators and the OIC see these bookings.
 * Safeguard (replaces the fixed-hour Auto Operator Unavailable / Auto Operator Absent Disruption timers):
   when ``ResultsDeadlinePolicy.automation_enabled`` is on, bookings whose last slot ends at or after
   ``automation_since`` are acted on at their results deadline; earlier bookings keep the old timers.
+  The safeguard uses ``safeguard_due_at`` and its own sample-trace checks, never ``is_results_overdue``,
+  so the Sample Accepted condition above does not change when it acts.
 """
 
 from __future__ import annotations
@@ -228,10 +232,32 @@ def _latest_stage(booking) -> Optional[str]:
     return getattr(latest, "status", None)
 
 
+def _sample_accepted(booking) -> bool:
+    annotated = getattr(booking, "_sample_accepted", None)
+    if annotated is not None:
+        return bool(annotated)
+    from .models import BookingSampleTrace, SampleTraceStatus
+
+    cache = getattr(booking, "_prefetched_objects_cache", {}) or {}
+    if "sample_trace_events" in cache:
+        return any(e.status == SampleTraceStatus.SAMPLE_ACCEPTED for e in cache["sample_trace_events"])
+    return BookingSampleTrace.objects.filter(
+        booking_id=booking.booking_id, status=SampleTraceStatus.SAMPLE_ACCEPTED
+    ).exists()
+
+
+def lab_has_sample(booking) -> bool:
+    from .models import BookingStatus
+
+    return booking.status == BookingStatus.PROCESSING or _sample_accepted(booking)
+
+
 def is_results_overdue(booking, deadline: Optional[BookingDeadline], now=None) -> bool:
     if deadline is None or booking.status not in _open_statuses():
         return False
     if (now or timezone.now()) <= deadline.due_at:
+        return False
+    if not lab_has_sample(booking):
         return False
     return _latest_stage(booking) not in _awaiting_user_stages()
 
@@ -254,9 +280,9 @@ def due_display(deadline: BookingDeadline) -> str:
 
 def overdue_bookings(queryset, now=None) -> list[tuple]:
     """[(booking, BookingDeadline)] for bookings in ``queryset`` whose results are overdue, oldest deadline first."""
-    from django.db.models import Max, OuterRef, Subquery
+    from django.db.models import Exists, Max, OuterRef, Q, Subquery
 
-    from .models import BookingSampleTrace
+    from .models import BookingSampleTrace, BookingStatus, SampleTraceStatus
 
     now = now or timezone.now()
     candidates = (
@@ -268,8 +294,12 @@ def overdue_bookings(queryset, now=None) -> list[tuple]:
                 .order_by("-created_at", "-id")
                 .values("status")[:1]
             ),
+            _sample_accepted=Exists(
+                BookingSampleTrace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.SAMPLE_ACCEPTED)
+            ),
         )
         .filter(last_slot_end__isnull=False, last_slot_end__lt=now, equipment__results_deadline_value__gt=0)
+        .filter(Q(status=BookingStatus.PROCESSING) | Q(_sample_accepted=True))
         .select_related("equipment", "user")
         .order_by()
     )
@@ -329,10 +359,10 @@ def booking_results_deadline_payload(booking, *, staff_view: bool, calendar=None
 
 
 def preload_page(bookings) -> None:
-    """Fill ``last_slot_end`` / ``_latest_stage`` on a page of bookings with two queries (avoids per-row lookups)."""
+    """Fill ``last_slot_end`` / ``_latest_stage`` / ``_sample_accepted`` on a page of bookings with two queries."""
     from django.db.models import Max
 
-    from .models import BookingSampleTrace, DailySlot
+    from .models import BookingSampleTrace, DailySlot, SampleTraceStatus
 
     rows = [
         b for b in bookings
@@ -348,17 +378,22 @@ def preload_page(bookings) -> None:
         .values_list("booking_id", "end")
     )
     latest: dict = {}
+    accepted: set = set()
     for booking_id, status in (
         BookingSampleTrace.objects.filter(booking_id__in=ids)
         .order_by("booking_id", "created_at", "id")
         .values_list("booking_id", "status")
     ):
         latest[booking_id] = status
+        if status == SampleTraceStatus.SAMPLE_ACCEPTED:
+            accepted.add(booking_id)
     for b in rows:
         if getattr(b, "last_slot_end", None) is None:
             b.last_slot_end = ends.get(b.booking_id)
         if getattr(b, "_latest_stage", None) is None:
             b._latest_stage = latest.get(b.booking_id, "")
+        if getattr(b, "_sample_accepted", None) is None:
+            b._sample_accepted = b.booking_id in accepted
 
 
 def public_equipment_deadline(equipment) -> Optional[dict]:

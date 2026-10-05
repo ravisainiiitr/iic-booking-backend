@@ -169,10 +169,55 @@ def test_overdue_detection(world):
 
 
 @pytest.mark.django_db
+def test_results_overdue_only_after_the_lab_has_the_sample(world):
+    f, now = world.f, world.now
+    ended = now - timedelta(days=20)
+
+    def past_deadline(*stages, status=None):
+        booking = f.booking(world.student, world.eq_a, ended)
+        for i, stage in enumerate(stages):
+            _trace(booking, stage, ended + timedelta(hours=i + 1))
+        if status:
+            Booking.objects.filter(pk=booking.pk).update(status=status)
+        return booking
+
+    no_trace = past_deadline()
+    sent = past_deadline(SampleTraceStatus.SAMPLE_SENT)
+    forwarded = past_deadline(SampleTraceStatus.SAMPLE_SENT, SampleTraceStatus.FORWARDED_TO_LAB)
+    accepted = past_deadline(SampleTraceStatus.FORWARDED_TO_LAB, SampleTraceStatus.SAMPLE_ACCEPTED)
+    accepted_then_processing = past_deadline(SampleTraceStatus.SAMPLE_ACCEPTED, SampleTraceStatus.PROCESSING)
+    processing_status = past_deadline(SampleTraceStatus.FORWARDED_TO_LAB, status=BookingStatus.PROCESSING)
+    accepted_then_rejected = past_deadline(SampleTraceStatus.SAMPLE_ACCEPTED, SampleTraceStatus.SAMPLE_REJECTED)
+    expected = {accepted.pk, accepted_then_processing.pk, processing_status.pk}
+
+    assert set(overdue_booking_ids(Booking.objects.all(), now)) == expected
+    for b in (no_trace, sent, forwarded, accepted, accepted_then_processing, processing_status, accepted_then_rejected):
+        fresh = _reload(b)
+        assert is_results_overdue(fresh, booking_results_deadline(fresh), now) is (b.pk in expected), b.pk
+
+    res = f.client_for(world.oic_a).get("/api/bookings/results-overdue/")
+    assert {r["booking_id"] for r in res.data["bookings"]} == expected
+
+    listing = f.client_for(world.admin).get("/api/bookings/", {"results_overdue": "1"})
+    assert {r["real_booking_id"] for r in listing.data["bookings"]} == expected
+
+    all_rows = f.client_for(world.admin).get("/api/bookings/").data["bookings"]
+    flags = {r["real_booking_id"]: r["results_deadline"]["overdue"] for r in all_rows if r.get("results_deadline")}
+    assert {pk for pk, overdue in flags.items() if overdue} == expected
+    assert flags[no_trace.pk] is False and flags[forwarded.pk] is False
+
+    today = f.client_for(world.operator_a).get("/api/staff-app/today/", {"refresh": "1"})
+    assert today.data["counts"]["results_overdue"] == len(expected)
+    assert set(today.data["results_overdue_booking_ids"]) == expected
+
+
+@pytest.mark.django_db
 def test_overdue_endpoint_list_filter_and_staff_today_are_scoped(world):
     f, now = world.f, world.now
     mine = f.booking(world.student, world.eq_a, now - timedelta(days=20))
     other = f.booking(world.student, world.eq_b, now - timedelta(days=20))
+    for b in (mine, other):
+        _trace(b, SampleTraceStatus.SAMPLE_ACCEPTED, now - timedelta(days=20))
     f.booking(world.student, world.eq_a, now - timedelta(hours=1))
 
     res = f.client_for(world.oic_a).get("/api/bookings/results-overdue/")
@@ -367,6 +412,20 @@ def test_extension_moves_the_safeguard(world, weekly_eq):
 
 
 @pytest.mark.django_db
+def test_safeguard_does_not_wait_for_sample_accepted(world, weekly_eq):
+    """The Operator Absent safeguard keeps its own rule (latest trace in lab); results overdue is not involved."""
+    set_automation(True)
+    ResultsDeadlinePolicy.objects.update(automation_since=world.now - timedelta(days=30))
+    booking = world.f.booking(world.student, weekly_eq, world.now - timedelta(days=5, hours=1))
+    _trace(booking, SampleTraceStatus.FORWARDED_TO_LAB, world.now - timedelta(days=5))
+    fresh = _reload(booking)
+    assert not is_results_overdue(fresh, booking_results_deadline(fresh), world.now)
+    with patch(ABSENT) as absent:
+        assert auto_mark_operator_absent_disruption_after_booking_end() == 1
+    assert [c.args[0].pk for c in absent.call_args_list] == [booking.pk]
+
+
+@pytest.mark.django_db
 def test_switching_off_then_on_starts_a_new_window(world):
     first = set_automation(True)
     since = first.automation_since
@@ -421,7 +480,12 @@ def test_completion_digest_and_card_show_results_due(world):
         serialize_awaiting_booking,
     )
 
-    world.f.booking(world.student, world.eq_a, world.now - timedelta(days=20))
+    booking = world.f.booking(world.student, world.eq_a, world.now - timedelta(days=20))
+    rows = list(bookings_awaiting_completion_for_user(world.oic_a))
+    card = serialize_awaiting_booking(rows[0], world.now)
+    assert card["results_overdue"] is False and card["results_due_display"]
+
+    _trace(booking, SampleTraceStatus.SAMPLE_ACCEPTED, world.now - timedelta(days=19))
     rows = list(bookings_awaiting_completion_for_user(world.oic_a))
     card = serialize_awaiting_booking(rows[0], world.now)
     assert card["results_overdue"] is True and card["results_due_display"]
