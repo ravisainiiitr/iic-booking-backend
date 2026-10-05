@@ -648,7 +648,13 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
     """
     from .models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
     from .operator_unavailable import apply_operator_unavailable_booking
-    from .results_deadline import MODE_LEGACY, WorkingCalendar, automation_state, safeguard_due_at
+    from .results_deadline import (
+        MODE_LEGACY,
+        WorkingCalendar,
+        automation_state,
+        booking_sample_receipt,
+        safeguard_due_at,
+    )
     from .sample_trace_policy import (
         OPERATOR_UNAVAILABLE_AUTO_REFUND_EXCLUDED_LATEST_STATUSES,
         latest_sample_trace,
@@ -709,16 +715,14 @@ def auto_mark_operator_unavailable_after_booking_end() -> int:
         if advanced:
             continue
 
+        if mode == MODE_LEGACY:
+            notes = "Automatically marked after booking end (scheduled job)."
+        elif booking_sample_receipt(booking).received:
+            notes = "Automatically marked: results deadline passed (scheduled job)."
+        else:
+            notes = "Automatically marked: sample not received by the lab after the slot (scheduled job)."
         try:
-            apply_operator_unavailable_booking(
-                booking,
-                notes=(
-                    "Automatically marked after booking end (scheduled job)."
-                    if mode == MODE_LEGACY
-                    else "Automatically marked: results deadline passed (scheduled job)."
-                ),
-                actor=None,
-            )
+            apply_operator_unavailable_booking(booking, notes=notes, actor=None)
         except ValueError as e:
             logger.warning(
                 "auto_mark_operator_unavailable_after_booking_end: skip booking_id=%s: %s",
@@ -849,7 +853,13 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
     """
     from .models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
     from .maintenance_policy import apply_operator_absent_disruption_for_booking
-    from .results_deadline import MODE_LEGACY, WorkingCalendar, automation_state, safeguard_due_at
+    from .results_deadline import (
+        MODE_LEGACY,
+        WorkingCalendar,
+        automation_state,
+        booking_sample_receipt,
+        safeguard_due_at,
+    )
     from .sample_trace_policy import SAMPLE_TRACE_IN_LAB_OR_ANALYSIS_STATUSES
 
     now = timezone.now()
@@ -895,11 +905,12 @@ def auto_mark_operator_absent_disruption_after_booking_end() -> int:
             continue
 
         try:
-            tag = (
-                "[Auto disruption: operator absent (stuck sample status)]"
-                if mode == MODE_LEGACY
-                else "[Auto disruption: operator absent (results deadline passed)]"
-            )
+            if mode == MODE_LEGACY:
+                tag = "[Auto disruption: operator absent (stuck sample status)]"
+            elif booking_sample_receipt(booking).received:
+                tag = "[Auto disruption: operator absent (results deadline passed)]"
+            else:
+                tag = "[Auto disruption: operator absent (sample not taken in by the lab)]"
             booking.notes = f"{(booking.notes or '').strip()}\n{tag}".strip()
             booking.save(update_fields=["notes"])
         except Exception:

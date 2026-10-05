@@ -1,4 +1,9 @@
-"""Bookings whose slot time is over but which staff have not marked Completed.
+"""Bookings whose slot time is over and whose sample the lab has received, but which staff have not marked Completed.
+
+A booking past its slot whose sample was never received is not awaiting completion: it follows the
+Booking Not Utilized / Operator Unavailable rules instead. Walk-in equipment never records receipt, so
+its bookings count as received at the slot. "Overdue by" and "Results due" are measured from
+max(slot end, sample receipt) (see ``results_deadline``).
 
 Officers in charge (including temporary OIC) and Lab in-charges (Lab Operators, respecting
 operator coverage) see them in the login popup and on the dashboard, and get one digest email
@@ -36,8 +41,11 @@ def awaiting_completion_statuses():
 
 
 def bookings_awaiting_completion(equipment_ids: Optional[Iterable[int]] = None, now=None):
-    """Ended (latest slot end in the past), not yet completed; ``equipment_ids=None`` means all equipment."""
+    """Ended (latest slot end in the past), sample received, not yet completed; ``equipment_ids=None`` means all equipment."""
+    from django.db.models.functions import Coalesce, Greatest
+
     from .models import Booking
+    from .results_deadline import annotate_sample_receipt, sample_received_q
 
     now = now or timezone.now()
     qs = Booking.objects.filter(status__in=awaiting_completion_statuses())
@@ -47,10 +55,13 @@ def bookings_awaiting_completion(equipment_ids: Optional[Iterable[int]] = None, 
             return qs.none()
         qs = qs.filter(equipment_id__in=ids)
     return (
-        qs.annotate(last_slot_end=Max("daily_slots__end_datetime"))
+        annotate_sample_receipt(qs)
+        .annotate(last_slot_end=Max("daily_slots__end_datetime"))
         .filter(last_slot_end__isnull=False, last_slot_end__lte=now)
+        .filter(sample_received_q())
+        .annotate(completion_anchor=Greatest("last_slot_end", Coalesce("_sample_received_at", "last_slot_end")))
         .select_related("equipment", "user")
-        .order_by("last_slot_end", "booking_id")
+        .order_by("completion_anchor", "booking_id")
     )
 
 
@@ -102,6 +113,24 @@ def _ended_display(last_slot_end) -> str:
     return timezone.localtime(last_slot_end).strftime("%d %b %Y, %I:%M %p")
 
 
+def completion_anchor(booking):
+    """(anchor, receipt): "Overdue by" counts from max(slot end, sample receipt)."""
+    from .results_deadline import booking_sample_receipt, results_deadline_anchor
+
+    receipt = booking_sample_receipt(booking)
+    return results_deadline_anchor(booking.last_slot_end, receipt) or booking.last_slot_end, receipt
+
+
+def received_display(receipt) -> str:
+    from .results_deadline import RECEIPT_SAMPLE_ACCEPTED, RECEIPT_WALK_IN
+
+    if receipt.source == RECEIPT_SAMPLE_ACCEPTED and receipt.received_at:
+        return _ended_display(receipt.received_at)
+    if receipt.source == RECEIPT_WALK_IN:
+        return "At the slot"
+    return "Recorded (time not available)"
+
+
 def booking_management_path(booking) -> str:
     return f"/booking-management?expand={booking.booking_id}"
 
@@ -123,7 +152,12 @@ def results_due(booking, now=None, calendar=None) -> tuple[str, bool]:
 def serialize_awaiting_booking(booking, now=None, calendar=None) -> dict[str, Any]:
     equipment = booking.equipment
     due, results_overdue = results_due(booking, now, calendar)
+    anchor, receipt = completion_anchor(booking)
     return {
+        "sample_received_at": receipt.received_at.isoformat() if receipt.received_at else None,
+        "sample_received_display": received_display(receipt),
+        "receipt_source": receipt.source,
+        "anchor_at": anchor.isoformat(),
         "results_due_display": due,
         "results_overdue": results_overdue,
         "booking_id": booking.booking_id,
@@ -135,7 +169,7 @@ def serialize_awaiting_booking(booking, now=None, calendar=None) -> dict[str, An
         "status": booking.status,
         "ended_at": booking.last_slot_end.isoformat(),
         "ended_display": _ended_display(booking.last_slot_end),
-        "overdue": overdue_label(booking.last_slot_end, now),
+        "overdue": overdue_label(anchor, now),
         "link": booking_management_path(booking),
     }
 
@@ -200,18 +234,20 @@ def _digest_context(user, bookings: list, now) -> dict[str, Any]:
     cell = "padding:6px 8px;border-bottom:1px solid #e2e8f0;font-size:13px;text-align:left;vertical-align:top;"
     head = "".join(
         f"<th style=\"{cell}background:#f1f5f9;font-weight:700;\">{label}</th>"
-        for label in ("Booking ID", "Equipment", "User", "Booking ended", "Overdue by", "Results due")
+        for label in ("Booking ID", "Equipment", "User", "Booking ended", "Sample received", "Overdue by", "Results due")
     )
     rows_html = []
     rows_text = []
     for b in shown:
         due, results_overdue = results_due(b, now, calendar)
+        anchor, receipt = completion_anchor(b)
         values = (
             _booking_ref(b),
             b.equipment.name,
             _person(b.user),
             _ended_display(b.last_slot_end),
-            overdue_label(b.last_slot_end, now),
+            received_display(receipt),
+            overdue_label(anchor, now),
             (f"{due} (results overdue)" if results_overdue else due) or "—",
         )
         link = absolute_http_url(get_frontend_absolute_url(booking_management_path(b)))
@@ -223,7 +259,8 @@ def _digest_context(user, bookings: list, now) -> dict[str, Any]:
             + "</tr>"
         )
         rows_text.append(
-            f"- {values[0]} | {values[1]} | {values[2]} | ended {values[3]} | overdue by {values[4]} | results due {values[5]}"
+            f"- {values[0]} | {values[1]} | {values[2]} | ended {values[3]} | sample received {values[4]} "
+            f"| overdue by {values[5]} | results due {values[6]}"
         )
     if more > 0:
         rows_text.append(f"... and {more} more (see your dashboard)")
@@ -248,7 +285,7 @@ def _digest_context(user, bookings: list, now) -> dict[str, Any]:
 
 
 def send_booking_completion_reminders(now=None) -> int:
-    """One digest per OIC / Lab in-charge listing every ended, not-completed booking they are responsible for."""
+    """One digest per OIC / Lab in-charge listing every ended, sample-received, not-completed booking they are responsible for."""
     from iic_booking.communication.service import CommunicationService
 
     now = now or timezone.now()
