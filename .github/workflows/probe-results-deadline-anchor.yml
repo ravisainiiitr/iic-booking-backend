@@ -1,0 +1,165 @@
+# Read-only, counts only (no booking ids, no names): effect of anchoring the results deadline on sample
+# receipt (max(last slot end, Sample Accepted time)) and of listing only received samples under
+# "Bookings awaiting completion". Computes the old and the new rule inline, and, once the new rule is
+# deployed, checks the deployed functions give the same counts.
+name: Probe Results Deadline Anchor
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.db.models import Max
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus
+          from iic_booking.equipment import results_deadline as rd
+          from iic_booking.equipment import completion_reminders as cr
+
+          now = timezone.now()
+          print(f"now={now.isoformat()}")
+          state = rd.automation_state()
+          print(f"automation_enabled={state.enabled} since_set={state.since is not None}")
+
+          RECEIVED = {
+              SampleTraceStatus.SAMPLE_ACCEPTED, SampleTraceStatus.PROCESSING, SampleTraceStatus.COMPLETED,
+              SampleTraceStatus.RETURNED, SampleTraceStatus.ARCHIVED, SampleTraceStatus.DISPOSED,
+          }
+
+          def aware(dt):
+              return timezone.make_aware(dt) if dt is not None and timezone.is_naive(dt) else dt
+
+          def walk_in(eq):
+              return int(eq.sample_submission_lead_hours or 0) == 0 and int(eq.sample_collect_deadline_hours or 0) == 0
+
+          old = list(
+              Booking.objects.filter(status__in=[BookingStatus.BOOKED, BookingStatus.PENDING])
+              .annotate(last_slot_end=Max("daily_slots__end_datetime"))
+              .filter(last_slot_end__isnull=False, last_slot_end__lte=now)
+              .select_related("equipment")
+          )
+          ids = [b.booking_id for b in old]
+          traces = {}
+          for bid, st, at in (
+              BookingSampleTrace.objects.filter(booking_id__in=ids).order_by("booking_id", "created_at", "id")
+              .values_list("booking_id", "status", "created_at")
+          ):
+              traces.setdefault(bid, []).append((st, aware(at)))
+
+          cal = rd.WorkingCalendar()
+          c = Counter()
+          drop_latest = Counter()
+          drop_age = Counter()
+          drop_by_eq_kind = Counter()
+          old_overdue = new_overdue = 0
+          for b in old:
+              rows = traces.get(b.booking_id, [])
+              statuses = {s for s, _ in rows}
+              latest = rows[-1][0] if rows else None
+              end = aware(b.last_slot_end)
+              received = bool(statuses & RECEIVED)
+              accepted_at = max((t for s, t in rows if s == SampleTraceStatus.SAMPLE_ACCEPTED), default=None)
+              wi = walk_in(b.equipment)
+              c["old_awaiting"] += 1
+              if received:
+                  c["new_received"] += 1
+                  if accepted_at is None:
+                      c["received_without_accepted_timestamp_fallback_slot_end"] += 1
+                  elif accepted_at > end:
+                      c["received_after_slot_end"] += 1
+              elif wi:
+                  c["new_walk_in_implicit_receipt"] += 1
+              else:
+                  c["drop_out_not_received"] += 1
+                  drop_latest[latest or "none"] += 1
+                  hours = (now - end).total_seconds() / 3600
+                  drop_age["<24h" if hours < 24 else ("24-72h" if hours < 72 else ">72h")] += 1
+                  drop_by_eq_kind["lead0_collect>0" if int(b.equipment.sample_submission_lead_hours or 0) == 0 else "lead>0"] += 1
+
+              cfg = rd.equipment_deadline_config(b.equipment)
+              if not cfg:
+                  continue
+              value, unit = cfg
+              hold = aware(getattr(b, "operator_absent_hold_until", None))
+              old_due = rd.compute_results_deadline(end, value, unit, cal)
+              old_due = max(old_due, hold) if hold else old_due
+              awaiting_user = latest in (SampleTraceStatus.HELD_AT_OFFICE, SampleTraceStatus.SAMPLE_REJECTED)
+              if now > old_due and not awaiting_user:
+                  old_overdue += 1
+              if received or wi:
+                  anchor = max(end, accepted_at) if (received and accepted_at) else end
+                  new_due = rd.compute_results_deadline(anchor, value, unit, cal)
+                  new_due = max(new_due, hold) if hold else new_due
+                  if new_due > old_due:
+                      c["received_later_deadline"] += 1
+                  if now > new_due and not awaiting_user:
+                      new_overdue += 1
+
+          print("== Bookings awaiting completion (Booked/Pending, last slot ended) ==")
+          for k in (
+              "old_awaiting", "new_received", "new_walk_in_implicit_receipt", "drop_out_not_received",
+              "received_after_slot_end", "received_later_deadline", "received_without_accepted_timestamp_fallback_slot_end",
+          ):
+              print(f"  {k}={c[k]}")
+          print(f"  new_awaiting={c['new_received'] + c['new_walk_in_implicit_receipt']}")
+          print(f"  drop_out by latest sample stage: {dict(drop_latest)}")
+          print(f"  drop_out by time since slot end: {dict(drop_age)}")
+          print(f"  drop_out by equipment kind: {dict(drop_by_eq_kind)}")
+          print("== Results overdue among them (Booked/Pending) ==")
+          print(f"  old_rule={old_overdue} new_rule={new_overdue}")
+
+          print("== Daily 9:00 digest recipients ==")
+          old_eq = {b.equipment_id for b in old}
+          new_eq = {
+              b.equipment_id for b in old
+              if ({s for s, _ in traces.get(b.booking_id, [])} & RECEIVED) or walk_in(b.equipment)
+          }
+          old_r = {u.id for u in cr._candidate_recipients(sorted(old_eq))} if old_eq else set()
+          new_r = {u.id for u in cr._candidate_recipients(sorted(new_eq))} if new_eq else set()
+          print(f"  equipment_with_rows old={len(old_eq)} new={len(new_eq)}")
+          print(f"  candidate_recipients old={len(old_r)} new={len(new_r)} no_longer_emailed={len(old_r - new_r)}")
+
+          if hasattr(rd, "booking_sample_receipt"):
+              deployed_awaiting = cr.bookings_awaiting_completion(now=now).count()
+              deployed_overdue = sum(
+                  1 for b, _d in rd.overdue_bookings(Booking.objects.filter(status__in=[BookingStatus.BOOKED, BookingStatus.PENDING]), now)
+              )
+              expected = c["new_received"] + c["new_walk_in_implicit_receipt"]
+              print("== Deployed new rule ==")
+              print(f"  awaiting={deployed_awaiting} matches_inline={deployed_awaiting == expected}")
+              print(f"  overdue_booked_pending={deployed_overdue} matches_inline={deployed_overdue == new_overdue}")
+              digest_rows = 0
+              for uid in sorted(new_r):
+                  from django.contrib.auth import get_user_model
+                  u = get_user_model().objects.get(pk=uid)
+                  for b in cr.bookings_awaiting_completion_for_user(u, now):
+                      if not (rd.booking_sample_receipt(b).received):
+                          digest_rows += 1
+              print(f"  digest_rows_without_receipt={digest_rows}")
+          else:
+              print("new rule not deployed yet")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
