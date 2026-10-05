@@ -1,20 +1,25 @@
 """
-Per-equipment results deadline: "results within N working days (or N hours) after the slot".
+Per-equipment results deadline: "results within N working days (or N hours) after the slot or sample
+receipt, whichever is later".
 
-* The deadline is computed from the booking's last slot end. Working days skip Saturdays, Sundays
+* The deadline exists only once the lab has received the sample: a ``SAMPLE_ACCEPTED`` sample-trace row
+  (or any later stage). Walk-in equipment (no lead time, no collect deadline) never records receipt, so
+  the sample counts as received at the slot.
+* Anchor = max(last slot end, latest Sample Accepted time). A received booking without a Sample Accepted
+  row (later stage recorded directly) is anchored on the slot end. Working days skip Saturdays, Sundays
   and active ``Holiday`` rows; the deadline is the end (23:59:59 IST) of the N-th working day after
-  the slot day. Hours are clock hours after the slot end.
+  the anchor day. Hours are clock hours after the anchor.
 * An Admin / Officer In-Charge "Extend results deadline" on a booking (``operator_absent_hold_until``)
   moves that booking's deadline to the chosen time when it is later.
 * Results overdue = still Pending / Booked / Processing after the deadline, the lab has the sample
-  (a Sample Accepted trace exists or the booking is Processing; same rule as the frontend's
-  ``sampleAcceptedForResults``), and the sample is not waiting for the user (held at office or
-  rejected). Lab Operators and the OIC see these bookings.
+  (see above), and the sample is not waiting for the user (held at office or rejected). Lab Operators
+  and the OIC see these bookings.
 * Safeguard (replaces the fixed-hour Auto Operator Unavailable / Auto Operator Absent Disruption timers):
   when ``ResultsDeadlinePolicy.automation_enabled`` is on, bookings whose last slot ends at or after
   ``automation_since`` are acted on at their results deadline; earlier bookings keep the old timers.
-  The safeguard uses ``safeguard_due_at`` and its own sample-trace checks, never ``is_results_overdue``,
-  so the Sample Accepted condition above does not change when it acts.
+  The safeguard uses ``safeguard_due_at``, never ``is_results_overdue``. A booking whose sample was never
+  received keeps the slot-end timing (``unreceived_safeguard_due_at``), so the existing Operator
+  Unavailable outcome for such samples is unchanged.
 """
 
 from __future__ import annotations
@@ -131,8 +136,10 @@ def equipment_deadline_config(equipment) -> Optional[tuple[int, str]]:
 
 def deadline_label(value: int, unit: str) -> str:
     if unit == UNIT_HOURS:
-        return f"within {value} hour{'s' if value != 1 else ''} after the slot"
-    return f"within {value} working day{'s' if value != 1 else ''} after the slot"
+        amount = f"{value} hour{'s' if value != 1 else ''}"
+    else:
+        amount = f"{value} working day{'s' if value != 1 else ''}"
+    return f"within {amount} after the slot or sample receipt, whichever is later"
 
 
 def validate_deadline(value, unit) -> tuple[Optional[int], Optional[str], dict]:
@@ -190,6 +197,108 @@ def _hold_until(booking):
     return _aware(getattr(booking, "operator_absent_hold_until", None))
 
 
+# --- sample receipt -----------------------------------------------------------------------------------------------
+
+RECEIPT_SAMPLE_ACCEPTED = "sample_accepted"
+RECEIPT_WALK_IN = "walk_in"
+RECEIPT_NO_TIMESTAMP = "no_timestamp"
+
+
+def received_statuses() -> frozenset:
+    from .reschedule_lock import SAMPLE_ACCEPTED_OR_LATER_STATUSES
+
+    return SAMPLE_ACCEPTED_OR_LATER_STATUSES
+
+
+@dataclass(frozen=True)
+class SampleReceipt:
+    received: bool
+    received_at: Optional[datetime] = None
+    source: Optional[str] = None
+
+
+def _receipt_from_events(events) -> tuple[bool, Optional[datetime]]:
+    from .models import SampleTraceStatus
+
+    statuses = received_statuses()
+    received = any(e.status in statuses for e in events)
+    accepted = [e.created_at for e in events if e.status == SampleTraceStatus.SAMPLE_ACCEPTED and e.created_at]
+    return received, (_aware(max(accepted)) if accepted else None)
+
+
+def booking_sample_receipt(booking) -> SampleReceipt:
+    """
+    Whether the lab has received the booking's sample, and when (latest Sample Accepted).
+
+    Reads ``_sample_received`` / ``_sample_received_at`` when annotated (lists, jobs), else prefetched
+    ``sample_trace_events``, else one query.
+    """
+    from django.db.models import Max
+
+    from .models import BookingSampleTrace, SampleTraceStatus
+    from .sample_lifecycle_policy import equipment_is_walk_in_sample
+
+    annotated = getattr(booking, "_sample_received", None)
+    if annotated is not None:
+        received, received_at = bool(annotated), _aware(getattr(booking, "_sample_received_at", None))
+    else:
+        cache = getattr(booking, "_prefetched_objects_cache", {}) or {}
+        if "sample_trace_events" in cache:
+            received, received_at = _receipt_from_events(cache["sample_trace_events"])
+        elif getattr(booking, "pk", None):
+            traces = BookingSampleTrace.objects.filter(booking_id=booking.pk)
+            received = traces.filter(status__in=received_statuses()).exists()
+            received_at = (
+                _aware(traces.filter(status=SampleTraceStatus.SAMPLE_ACCEPTED).aggregate(at=Max("created_at"))["at"])
+                if received
+                else None
+            )
+        else:
+            received, received_at = False, None
+    if received:
+        return SampleReceipt(True, received_at, RECEIPT_SAMPLE_ACCEPTED if received_at else RECEIPT_NO_TIMESTAMP)
+    if equipment_is_walk_in_sample(getattr(booking, "equipment", None)):
+        return SampleReceipt(True, None, RECEIPT_WALK_IN)
+    return SampleReceipt(False)
+
+
+def annotate_sample_receipt(queryset):
+    """Adds ``_sample_received`` (bool) and ``_sample_received_at`` (latest Sample Accepted) to a Booking queryset."""
+    from django.db.models import Exists, OuterRef, Subquery
+
+    from .models import BookingSampleTrace, SampleTraceStatus
+
+    return queryset.annotate(
+        _sample_received=Exists(
+            BookingSampleTrace.objects.filter(booking_id=OuterRef("pk"), status__in=received_statuses())
+        ),
+        _sample_received_at=Subquery(
+            BookingSampleTrace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.SAMPLE_ACCEPTED)
+            .order_by("-created_at", "-id")
+            .values("created_at")[:1]
+        ),
+    )
+
+
+def sample_received_q():
+    """Booking filter: sample received (Sample Accepted or later) or walk-in equipment. Needs ``annotate_sample_receipt``."""
+    from django.db.models import Q
+
+    from .sample_lifecycle_policy import walk_in_sample_equipment_q
+
+    return Q(_sample_received=True) | walk_in_sample_equipment_q("equipment__")
+
+
+def results_deadline_anchor(slot_end, receipt: SampleReceipt):
+    """max(slot end, receipt time); the slot end when the receipt time is unknown or the sample came to the slot."""
+    slot_end = _aware(slot_end)
+    if slot_end is None or not receipt.received:
+        return None
+    if receipt.received_at is not None and receipt.received_at > slot_end:
+        return receipt.received_at
+    return slot_end
+
+
 @dataclass
 class BookingDeadline:
     value: int
@@ -198,24 +307,39 @@ class BookingDeadline:
     base_due_at: datetime
     due_at: datetime
     extended: bool
+    anchor: Optional[datetime] = None
+    received_at: Optional[datetime] = None
+    receipt_source: Optional[str] = None
 
     @property
     def label(self) -> str:
         return deadline_label(self.value, self.unit)
 
+    @property
+    def counted_from_receipt(self) -> bool:
+        return self.anchor is not None and self.anchor > self.slot_end
+
 
 def booking_results_deadline(booking, calendar: Optional[WorkingCalendar] = None) -> Optional[BookingDeadline]:
+    """The booking's results deadline, or None when the equipment has none or the sample is not received yet."""
     cfg = equipment_deadline_config(getattr(booking, "equipment", None))
     if not cfg:
         return None
     slot_end = booking_last_slot_end(booking)
     if slot_end is None:
         return None
+    receipt = booking_sample_receipt(booking)
+    anchor = results_deadline_anchor(slot_end, receipt)
+    if anchor is None:
+        return None
     value, unit = cfg
-    base = compute_results_deadline(slot_end, value, unit, calendar)
+    base = compute_results_deadline(anchor, value, unit, calendar)
     hold = _hold_until(booking)
     due = max(base, hold) if hold else base
-    return BookingDeadline(value=value, unit=unit, slot_end=slot_end, base_due_at=base, due_at=due, extended=due > base)
+    return BookingDeadline(
+        value=value, unit=unit, slot_end=slot_end, base_due_at=base, due_at=due, extended=due > base,
+        anchor=anchor, received_at=receipt.received_at, receipt_source=receipt.source,
+    )
 
 
 def _latest_stage(booking) -> Optional[str]:
@@ -232,32 +356,10 @@ def _latest_stage(booking) -> Optional[str]:
     return getattr(latest, "status", None)
 
 
-def _sample_accepted(booking) -> bool:
-    annotated = getattr(booking, "_sample_accepted", None)
-    if annotated is not None:
-        return bool(annotated)
-    from .models import BookingSampleTrace, SampleTraceStatus
-
-    cache = getattr(booking, "_prefetched_objects_cache", {}) or {}
-    if "sample_trace_events" in cache:
-        return any(e.status == SampleTraceStatus.SAMPLE_ACCEPTED for e in cache["sample_trace_events"])
-    return BookingSampleTrace.objects.filter(
-        booking_id=booking.booking_id, status=SampleTraceStatus.SAMPLE_ACCEPTED
-    ).exists()
-
-
-def lab_has_sample(booking) -> bool:
-    from .models import BookingStatus
-
-    return booking.status == BookingStatus.PROCESSING or _sample_accepted(booking)
-
-
 def is_results_overdue(booking, deadline: Optional[BookingDeadline], now=None) -> bool:
     if deadline is None or booking.status not in _open_statuses():
         return False
     if (now or timezone.now()) <= deadline.due_at:
-        return False
-    if not lab_has_sample(booking):
         return False
     return _latest_stage(booking) not in _awaiting_user_stages()
 
@@ -280,13 +382,13 @@ def due_display(deadline: BookingDeadline) -> str:
 
 def overdue_bookings(queryset, now=None) -> list[tuple]:
     """[(booking, BookingDeadline)] for bookings in ``queryset`` whose results are overdue, oldest deadline first."""
-    from django.db.models import Exists, Max, OuterRef, Q, Subquery
+    from django.db.models import Max, OuterRef, Subquery
 
-    from .models import BookingSampleTrace, BookingStatus, SampleTraceStatus
+    from .models import BookingSampleTrace
 
     now = now or timezone.now()
     candidates = (
-        queryset.filter(status__in=_open_statuses())
+        annotate_sample_receipt(queryset.filter(status__in=_open_statuses()))
         .annotate(
             last_slot_end=Max("daily_slots__end_datetime"),
             _latest_stage=Subquery(
@@ -294,12 +396,9 @@ def overdue_bookings(queryset, now=None) -> list[tuple]:
                 .order_by("-created_at", "-id")
                 .values("status")[:1]
             ),
-            _sample_accepted=Exists(
-                BookingSampleTrace.objects.filter(booking_id=OuterRef("pk"), status=SampleTraceStatus.SAMPLE_ACCEPTED)
-            ),
         )
         .filter(last_slot_end__isnull=False, last_slot_end__lt=now, equipment__results_deadline_value__gt=0)
-        .filter(Q(status=BookingStatus.PROCESSING) | Q(_sample_accepted=True))
+        .filter(sample_received_q())
         .select_related("equipment", "user")
         .order_by()
     )
@@ -355,11 +454,15 @@ def booking_results_deadline_payload(booking, *, staff_view: bool, calendar=None
         "extended": deadline.extended,
         "overdue": is_results_overdue(booking, deadline, now) if staff_view else False,
         "visible_to_user": visible,
+        "anchor_at": deadline.anchor.isoformat(),
+        "sample_received_at": deadline.received_at.isoformat() if deadline.received_at else None,
+        "receipt_source": deadline.receipt_source,
+        "counted_from_receipt": deadline.counted_from_receipt,
     }
 
 
 def preload_page(bookings) -> None:
-    """Fill ``last_slot_end`` / ``_latest_stage`` / ``_sample_accepted`` on a page of bookings with two queries."""
+    """Fill ``last_slot_end`` / ``_latest_stage`` / sample receipt on a page of bookings with two queries."""
     from django.db.models import Max
 
     from .models import BookingSampleTrace, DailySlot, SampleTraceStatus
@@ -378,22 +481,27 @@ def preload_page(bookings) -> None:
         .values_list("booking_id", "end")
     )
     latest: dict = {}
-    accepted: set = set()
-    for booking_id, status in (
+    received: set = set()
+    accepted_at: dict = {}
+    statuses = received_statuses()
+    for booking_id, status, created_at in (
         BookingSampleTrace.objects.filter(booking_id__in=ids)
         .order_by("booking_id", "created_at", "id")
-        .values_list("booking_id", "status")
+        .values_list("booking_id", "status", "created_at")
     ):
         latest[booking_id] = status
+        if status in statuses:
+            received.add(booking_id)
         if status == SampleTraceStatus.SAMPLE_ACCEPTED:
-            accepted.add(booking_id)
+            accepted_at[booking_id] = created_at
     for b in rows:
         if getattr(b, "last_slot_end", None) is None:
             b.last_slot_end = ends.get(b.booking_id)
         if getattr(b, "_latest_stage", None) is None:
             b._latest_stage = latest.get(b.booking_id, "")
-        if getattr(b, "_sample_accepted", None) is None:
-            b._sample_accepted = b.booking_id in accepted
+        if getattr(b, "_sample_received", None) is None:
+            b._sample_received = b.booking_id in received
+            b._sample_received_at = accepted_at.get(b.booking_id)
 
 
 def public_equipment_deadline(equipment) -> Optional[dict]:
@@ -421,6 +529,9 @@ def serialize_overdue_booking(booking, deadline: BookingDeadline, now=None) -> d
         "user_name": person_label(booking.user),
         "status": booking.status,
         "slot_ended_at": deadline.slot_end.isoformat(),
+        "anchor_at": deadline.anchor.isoformat(),
+        "sample_received_at": deadline.received_at.isoformat() if deadline.received_at else None,
+        "receipt_source": deadline.receipt_source,
         "due_at": deadline.due_at.isoformat(),
         "due_display": due_display(deadline),
         "deadline_label": deadline.label,
@@ -489,11 +600,14 @@ def safeguard_due_at(booking, slot_end, *, legacy_hours, state: AutomationState,
     """
     (due_at, mode) for the scheduled safeguard jobs; due_at None means the safeguard is off for this booking.
 
-    Results-deadline mode: the equipment's results deadline (or the booking's later extension).
+    Results-deadline mode: the equipment's results deadline (or the booking's later extension); for a
+    sample the lab never received, the same period counted from the slot end (``unreceived_safeguard_due_at``).
     Legacy mode: the old ``max(slot end, extension) + N hours``.
     """
     slot_end = _aware(slot_end)
     if uses_results_deadline(slot_end, state):
+        if not booking_sample_receipt(booking).received:
+            return unreceived_safeguard_due_at(booking, slot_end, calendar), MODE_RESULTS_DEADLINE
         deadline = booking_results_deadline(booking, calendar)
         return (deadline.due_at if deadline else None), MODE_RESULTS_DEADLINE
     hours = int(legacy_hours or 0)
@@ -502,6 +616,22 @@ def safeguard_due_at(booking, slot_end, *, legacy_hours, state: AutomationState,
     hold = _hold_until(booking)
     base = max(slot_end, hold) if hold else slot_end
     return base + timedelta(hours=hours), MODE_LEGACY
+
+
+def unreceived_safeguard_due_at(booking, slot_end, calendar=None):
+    """
+    When the Operator Unavailable safeguard may act on a booking whose sample was never received: the
+    equipment's results period counted from the slot end (or the later extension). Not a results
+    deadline: it is never shown or emailed, and the booking is not listed as awaiting completion.
+    """
+    cfg = equipment_deadline_config(getattr(booking, "equipment", None))
+    slot_end = _aware(slot_end)
+    if not cfg or slot_end is None:
+        return None
+    value, unit = cfg
+    base = compute_results_deadline(slot_end, value, unit, calendar)
+    hold = _hold_until(booking)
+    return max(base, hold) if hold else base
 
 
 def set_automation(enabled: bool, *, user=None):

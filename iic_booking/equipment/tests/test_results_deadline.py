@@ -24,11 +24,15 @@ from iic_booking.equipment.models import (
     SampleTraceStatus,
 )
 from iic_booking.equipment.results_deadline import (
+    RECEIPT_NO_TIMESTAMP,
+    RECEIPT_SAMPLE_ACCEPTED,
+    RECEIPT_WALK_IN,
     UNIT_HOURS,
     UNIT_WORKING_DAYS,
     WorkingCalendar,
     automation_state,
     booking_results_deadline,
+    booking_sample_receipt,
     compute_results_deadline,
     dry_run,
     is_results_overdue,
@@ -64,6 +68,11 @@ def _trace(booking, status, at):
     row = BookingSampleTrace.objects.create(booking=booking, status=status)
     BookingSampleTrace.objects.filter(pk=row.pk).update(created_at=at)
     return row
+
+
+def _received(booking, at=None):
+    _trace(booking, SampleTraceStatus.SAMPLE_ACCEPTED, at or timezone.now() - timedelta(days=30))
+    return booking
 
 
 def _reload(booking):
@@ -146,22 +155,27 @@ def test_overdue_detection(world):
     f, now = world.f, world.now
     overdue = f.booking(world.student, world.eq_a, now - timedelta(days=20))
     _trace(overdue, SampleTraceStatus.SAMPLE_ACCEPTED, now - timedelta(days=20))
-    recent = f.booking(world.student, world.eq_a, now - timedelta(hours=2))
+    recent = _received(f.booking(world.student, world.eq_a, now - timedelta(hours=2)))
     waiting_user = f.booking(world.student, world.eq_a, now - timedelta(days=20))
+    _trace(waiting_user, SampleTraceStatus.SAMPLE_ACCEPTED, now - timedelta(days=20))
     _trace(waiting_user, SampleTraceStatus.HELD_AT_OFFICE, now - timedelta(days=19))
-    done = f.booking(world.student, world.eq_a, now - timedelta(days=20))
+    done = _received(f.booking(world.student, world.eq_a, now - timedelta(days=20)))
     Booking.objects.filter(pk=done.pk).update(status=BookingStatus.COMPLETED)
-    processing = f.booking(world.student, world.eq_a, now - timedelta(days=20))
+    processing = _received(f.booking(world.student, world.eq_a, now - timedelta(days=20)))
     Booking.objects.filter(pk=processing.pk).update(status=BookingStatus.PROCESSING)
-    extended = f.booking(world.student, world.eq_a, now - timedelta(days=20))
+    extended = _received(f.booking(world.student, world.eq_a, now - timedelta(days=20)))
     Booking.objects.filter(pk=extended.pk).update(operator_absent_hold_until=now + timedelta(days=1))
     no_deadline_eq = f.equipment(results_deadline_value=0)
-    no_deadline = f.booking(world.student, no_deadline_eq, now - timedelta(days=20))
+    no_deadline = _received(f.booking(world.student, no_deadline_eq, now - timedelta(days=20)))
+    never_received = f.booking(world.student, world.eq_a, now - timedelta(days=20))
+    forwarded_only = f.booking(world.student, world.eq_a, now - timedelta(days=20))
+    _trace(forwarded_only, SampleTraceStatus.FORWARDED_TO_LAB, now - timedelta(days=20))
 
     ids = set(overdue_booking_ids(Booking.objects.all(), now))
     assert ids == {overdue.pk, processing.pk}
     assert recent.pk not in ids and waiting_user.pk not in ids and extended.pk not in ids
     assert no_deadline.pk not in ids
+    assert never_received.pk not in ids and forwarded_only.pk not in ids
 
     b = _reload(extended)
     deadline = booking_results_deadline(b)
@@ -204,7 +218,7 @@ def test_results_overdue_only_after_the_lab_has_the_sample(world):
     all_rows = f.client_for(world.admin).get("/api/bookings/").data["bookings"]
     flags = {r["real_booking_id"]: r["results_deadline"]["overdue"] for r in all_rows if r.get("results_deadline")}
     assert {pk for pk, overdue in flags.items() if overdue} == expected
-    assert flags[no_trace.pk] is False and flags[forwarded.pk] is False
+    assert no_trace.pk not in flags and forwarded.pk not in flags  # no deadline before receipt
 
     today = f.client_for(world.operator_a).get("/api/staff-app/today/", {"refresh": "1"})
     assert today.data["counts"]["results_overdue"] == len(expected)
@@ -214,11 +228,10 @@ def test_results_overdue_only_after_the_lab_has_the_sample(world):
 @pytest.mark.django_db
 def test_overdue_endpoint_list_filter_and_staff_today_are_scoped(world):
     f, now = world.f, world.now
-    mine = f.booking(world.student, world.eq_a, now - timedelta(days=20))
-    other = f.booking(world.student, world.eq_b, now - timedelta(days=20))
-    for b in (mine, other):
-        _trace(b, SampleTraceStatus.SAMPLE_ACCEPTED, now - timedelta(days=20))
-    f.booking(world.student, world.eq_a, now - timedelta(hours=1))
+    mine = _received(f.booking(world.student, world.eq_a, now - timedelta(days=20)))
+    other = _received(f.booking(world.student, world.eq_b, now - timedelta(days=20)))
+    _received(f.booking(world.student, world.eq_a, now - timedelta(hours=1)))
+    f.booking(world.student, world.eq_a, now - timedelta(days=20))  # never received: not overdue
 
     res = f.client_for(world.oic_a).get("/api/bookings/results-overdue/")
     assert res.status_code == 200 and [r["booking_id"] for r in res.data["bookings"]] == [mine.pk]
@@ -311,7 +324,7 @@ def test_admin_equipment_form_only_admin_or_oic_change_the_deadline(world):
 
 @pytest.mark.django_db
 def test_users_see_the_deadline_only_when_the_oic_turns_it_on(world):
-    booking = world.f.booking(world.student, world.eq_a, world.now - timedelta(hours=3))
+    booking = _received(world.f.booking(world.student, world.eq_a, world.now - timedelta(hours=3)))
     booking = _reload(booking)
 
     def payload(user):
@@ -329,7 +342,87 @@ def test_users_see_the_deadline_only_when_the_oic_turns_it_on(world):
     user_view = payload(world.student)
     assert user_view["visible_to_user"] is True and user_view["due_display"] and user_view["overdue"] is False
     world.eq_a.refresh_from_db()
-    assert EquipmentListSerializer(world.eq_a).data["results_deadline_public"]["label"] == "within 2 working days after the slot"
+    assert EquipmentListSerializer(world.eq_a).data["results_deadline_public"]["label"] == (
+        "within 2 working days after the slot or sample receipt, whichever is later"
+    )
+
+
+# --- anchor: the deadline counts from max(slot end, sample receipt) and exists only after receipt -----------------
+
+
+@pytest.mark.django_db
+def test_received_before_slot_end_counts_from_the_slot(world):
+    friday_end = _local(2026, 10, 2, 15, 0)
+    booking = world.f.booking(world.student, world.eq_a, friday_end - timedelta(hours=1))
+    _trace(booking, SampleTraceStatus.SAMPLE_ACCEPTED, friday_end - timedelta(days=1))
+    deadline = booking_results_deadline(_reload(booking), WorkingCalendar())
+    assert deadline.anchor == friday_end and not deadline.counted_from_receipt
+    assert deadline.receipt_source == RECEIPT_SAMPLE_ACCEPTED
+    assert timezone.localtime(deadline.due_at) == _local(2026, 10, 6, 23, 59, 59)  # Mon + Tue
+
+
+@pytest.mark.django_db
+def test_received_after_slot_end_counts_from_receipt(world):
+    friday_end = _local(2026, 10, 2, 15, 0)
+    booking = world.f.booking(world.student, world.eq_a, friday_end - timedelta(hours=1))
+    received = _local(2026, 10, 6, 11, 30)  # the following Tuesday
+    _trace(booking, SampleTraceStatus.SAMPLE_REJECTED, friday_end - timedelta(hours=2))
+    _trace(booking, SampleTraceStatus.SAMPLE_ACCEPTED, received)
+    deadline = booking_results_deadline(_reload(booking), WorkingCalendar())
+    assert deadline.anchor == received and deadline.received_at == received and deadline.counted_from_receipt
+    assert timezone.localtime(deadline.due_at) == _local(2026, 10, 8, 23, 59, 59)  # Wed + Thu
+
+    type(world.eq_a).objects.filter(pk=world.eq_a.pk).update(results_deadline_value=36, results_deadline_unit=UNIT_HOURS)
+    assert booking_results_deadline(_reload(booking)).due_at == received + timedelta(hours=36)
+
+
+@pytest.mark.django_db
+def test_no_deadline_before_receipt(world):
+    end = world.now - timedelta(days=10)
+    booking = world.f.booking(world.student, world.eq_a, end)
+    assert booking_results_deadline(_reload(booking)) is None
+    for status in (SampleTraceStatus.SAMPLE_SENT, SampleTraceStatus.HELD_AT_OFFICE, SampleTraceStatus.FORWARDED_TO_LAB,
+                   SampleTraceStatus.SAMPLE_REJECTED):
+        _trace(booking, status, end)
+        assert booking_results_deadline(_reload(booking)) is None, status
+        assert booking_sample_receipt(_reload(booking)).received is False
+
+    type(world.eq_a).objects.filter(pk=world.eq_a.pk).update(show_results_deadline_to_users=True)
+    for viewer in (world.student, world.oic_a, world.operator_a):
+        s = BookingSerializer(_reload(booking), context={"request": SimpleNamespace(user=viewer)})
+        assert s.get_results_deadline(_reload(booking)) is None
+
+
+@pytest.mark.django_db
+def test_received_without_accepted_timestamp_falls_back_to_slot_end(world):
+    end = _local(2026, 10, 2, 15, 0)
+    booking = world.f.booking(world.student, world.eq_a, end - timedelta(hours=1))
+    _trace(booking, SampleTraceStatus.PROCESSING, end + timedelta(days=3))
+    deadline = booking_results_deadline(_reload(booking), WorkingCalendar())
+    assert deadline.receipt_source == RECEIPT_NO_TIMESTAMP and deadline.anchor == end
+
+
+@pytest.mark.django_db
+def test_walk_in_equipment_counts_as_received_at_the_slot(world):
+    walk_in = world.f.equipment(results_deadline_value=1, sample_submission_lead_hours=0, sample_collect_deadline_hours=0)
+    end = _local(2026, 10, 2, 15, 0)
+    booking = world.f.booking(world.student, walk_in, end - timedelta(hours=1))
+    deadline = booking_results_deadline(_reload(booking), WorkingCalendar())
+    assert deadline.receipt_source == RECEIPT_WALK_IN and deadline.anchor == end
+
+
+@pytest.mark.django_db
+def test_list_preload_and_api_payload_use_the_receipt_anchor(world):
+    end = world.now - timedelta(days=10)
+    late = world.f.booking(world.student, world.eq_a, end)
+    _trace(late, SampleTraceStatus.SAMPLE_ACCEPTED, world.now - timedelta(hours=1))
+    unreceived = world.f.booking(world.student, world.eq_a, end)
+    res = world.f.client_for(world.admin).get("/api/bookings/")
+    rows = {r["real_booking_id"]: r for r in res.data["bookings"]}
+    assert rows[unreceived.pk]["results_deadline"] is None
+    payload = rows[late.pk]["results_deadline"]
+    assert payload["counted_from_receipt"] is True and payload["overdue"] is False
+    assert payload["receipt_source"] == "sample_accepted" and payload["sample_received_at"]
 
 
 # --- safeguard jobs -----------------------------------------------------------------------------------------------
@@ -378,13 +471,25 @@ def test_switching_on_never_acts_on_bookings_that_ended_before(world, weekly_eq)
 def test_results_deadline_mode_acts_at_the_deadline_without_restart(world, weekly_eq):
     set_automation(True)
     ResultsDeadlinePolicy.objects.update(automation_since=world.now - timedelta(days=30))
-    due = _stuck_booking(world, 5, eq=weekly_eq, trace_age=timedelta(hours=1))  # recent status update: no restart
+    due = _stuck_booking(world, 5, eq=weekly_eq)
+    _trace(due, SampleTraceStatus.PROCESSING, world.now - timedelta(hours=1))  # recent status update: no restart
     before = world.f.booking(world.student, weekly_eq, world.now - timedelta(hours=2))
     _trace(before, SampleTraceStatus.SAMPLE_ACCEPTED, world.now - timedelta(hours=1))
     with patch(ABSENT) as absent:
         assert auto_mark_operator_absent_disruption_after_booking_end() == 1
     assert [c.args[0].pk for c in absent.call_args_list] == [due.pk]
     assert "(results deadline passed)" in _reload(due).notes
+
+
+@pytest.mark.django_db
+def test_results_deadline_mode_waits_for_a_sample_received_after_the_slot(world, weekly_eq):
+    set_automation(True)
+    ResultsDeadlinePolicy.objects.update(automation_since=world.now - timedelta(days=30))
+    late = _stuck_booking(world, 5, eq=weekly_eq, trace_age=timedelta(hours=1))
+    with patch(ABSENT) as absent:
+        assert auto_mark_operator_absent_disruption_after_booking_end() == 0
+    absent.assert_not_called()
+    assert not _reload(late).notes
 
 
 @pytest.mark.django_db
@@ -397,7 +502,9 @@ def test_results_deadline_mode_keeps_the_full_refund_case(world, weekly_eq):
     with patch(UNAVAILABLE) as unavailable:
         assert auto_mark_operator_unavailable_after_booking_end() == 1
     assert unavailable.call_args.args[0].pk == booking.pk
-    assert unavailable.call_args.kwargs["notes"] == "Automatically marked: results deadline passed (scheduled job)."
+    assert unavailable.call_args.kwargs["notes"] == (
+        "Automatically marked: sample not received by the lab after the slot (scheduled job)."
+    )
 
 
 @pytest.mark.django_db
@@ -480,14 +587,17 @@ def test_completion_digest_and_card_show_results_due(world):
         serialize_awaiting_booking,
     )
 
-    booking = world.f.booking(world.student, world.eq_a, world.now - timedelta(days=20))
+    _received(world.f.booking(world.student, world.eq_a, world.now - timedelta(days=20)))
+    late = world.f.booking(world.student, world.eq_a, world.now - timedelta(days=20))
+    _trace(late, SampleTraceStatus.SAMPLE_ACCEPTED, world.now - timedelta(hours=2))
+    world.f.booking(world.student, world.eq_a, world.now - timedelta(days=20))  # never received
     rows = list(bookings_awaiting_completion_for_user(world.oic_a))
-    card = serialize_awaiting_booking(rows[0], world.now)
-    assert card["results_overdue"] is False and card["results_due_display"]
-
-    _trace(booking, SampleTraceStatus.SAMPLE_ACCEPTED, world.now - timedelta(days=19))
-    rows = list(bookings_awaiting_completion_for_user(world.oic_a))
+    assert len(rows) == 2
     card = serialize_awaiting_booking(rows[0], world.now)
     assert card["results_overdue"] is True and card["results_due_display"]
+    late_card = serialize_awaiting_booking(rows[1], world.now)
+    assert late_card["booking_id"] == late.pk
+    assert late_card["results_overdue"] is False and late_card["overdue"] == "2 h"
     ctx = _digest_context(world.oic_a, rows, world.now)
     assert "Results due" in ctx["bookings_html"] and "results overdue" in ctx["bookings_text"]
+    assert "Sample received" in ctx["bookings_html"] and "overdue by 2 h" in ctx["bookings_text"]

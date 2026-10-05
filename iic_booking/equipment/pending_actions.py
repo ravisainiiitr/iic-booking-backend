@@ -580,8 +580,8 @@ def _completion_items(c: _Collector) -> None:
         "Bookings awaiting completion",
         bookings_awaiting_completion_for_user(c.user),
         DASHBOARD_PATH,
-        "The booking time of these bookings is over but they are not marked as completed yet. "
-        "Complete each booking (or take the appropriate action).",
+        "The booking time of these bookings is over and the lab has received the sample, but they are not "
+        "marked as completed yet. Complete each booking (or take the appropriate action).",
         pending_action_detail,
         max_details=MAX_COMPLETION_DETAILS,
     )

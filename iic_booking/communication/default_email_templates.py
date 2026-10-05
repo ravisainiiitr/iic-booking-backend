@@ -1928,14 +1928,15 @@ def _registration_and_support_templates() -> list[dict[str, Any]]:
             title="Bookings Awaiting Completion",
             subject="Reminder: {{ booking_count }} booking(s) awaiting completion",
             intro=(
-                "The booking time of the bookings below is over, but they have not yet been marked as "
-                "completed. Please complete them (or take the appropriate action) so users receive their "
-                "results and the sample lifecycle stays up to date."
+                "The booking time of the bookings below is over and the lab has received the sample, but they "
+                "have not yet been marked as completed. Please complete them (or take the appropriate action) "
+                "so users receive their results and the sample lifecycle stays up to date."
             ),
             description=(
                 "Daily 09:00 digest to each Officer in charge / Lab in-charge listing their bookings whose "
-                "slot time is over but which are not marked Completed. Schedule: "
-                "equipment.send_booking_completion_reminders."
+                "slot time is over and whose sample has been received (Sample Accepted, or walk-in equipment), "
+                "but which are not marked Completed. Overdue by and Results due count from the slot end or "
+                "the sample receipt, whichever is later. Schedule: equipment.send_booking_completion_reminders."
             ),
             post_details_html="{{ bookings_html }}",
             post_details_text="{{ bookings_text }}",
