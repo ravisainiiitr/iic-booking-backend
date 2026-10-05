@@ -258,6 +258,10 @@ class TestOpeningBalanceIicTarget(TestCase):
 @pytest.mark.django_db
 class TestFacultyLoginWalletSync(TestCase):
     def setUp(self):
+        PortalMigrationState.objects.update_or_create(
+            singleton_key="default",
+            defaults={"faculty_wallet_sync_cutoff": timezone.now() + timedelta(days=30)},
+        )
         self.iic = Department.objects.create(
             name=IIC_DEPARTMENT_NAME,
             department_type=DepartmentType.INTERNAL,
@@ -320,8 +324,10 @@ class TestFacultyLoginWalletSync(TestCase):
         self.assertTrue(result["skipped"])
         self.assertEqual(result["reason"], "not_faculty")
 
-    def test_cutoff_constant(self):
+    def test_cutoff_default_constant(self):
+        """Built-in fallback when the Main Administrator has not stored a deadline."""
         self.assertEqual(FACULTY_WALLET_SYNC_CUTOFF.year, 2026)
         self.assertEqual(FACULTY_WALLET_SYNC_CUTOFF.month, 10)
         self.assertEqual(FACULTY_WALLET_SYNC_CUTOFF.day, 4)
+        self.assertEqual(FACULTY_WALLET_SYNC_CUTOFF.utcoffset(), timedelta(hours=5, minutes=30))
         self.assertIsInstance(faculty_wallet_sync_window_open(), bool)
