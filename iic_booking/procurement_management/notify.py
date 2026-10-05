@@ -64,16 +64,11 @@ def department_role_users(department_id: int, role: str, *, permission: str | No
 
 
 def hod_users(department_id: int) -> list:
-    from iic_booking.users.models import Department, User
-    from iic_booking.users.models.channel_i_identity import HeadOfDepartmentAssignment
+    from iic_booking.users.models import User
 
-    ids = set(
-        HeadOfDepartmentAssignment.objects.filter(department_id=department_id, active=True).values_list("user_id", flat=True)
-    )
-    head = Department.objects.filter(pk=department_id).values_list("head_id", flat=True).first()
-    if head:
-        ids.add(head)
-    users = list(User.objects.filter(pk__in=ids, is_active=True))
+    from .access import department_hod_ids
+
+    users = list(User.objects.filter(pk__in=department_hod_ids(department_id), is_active=True))
     users += department_role_users(department_id, R.HOD)
     return users
 

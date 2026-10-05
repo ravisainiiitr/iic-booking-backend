@@ -6,16 +6,18 @@ Roles are resolved per department:
 * Officer in Charge   — ``EquipmentManager`` / active ``EquipmentTemporaryOIC`` for an equipment; department =
                         ``Equipment.internal_department``.
 * Lab Operator        — ``EquipmentOperator`` for an equipment.
-* HOD                 — active ``HeadOfDepartmentAssignment`` (falls back to ``Department.head``) or an explicit
-                        HOD / Competent Authority ``ProcurementRoleAssignment``.
+* HOD                 — the department's current ``HeadOfDepartmentAssignment`` (active and within its effective
+                        dates; ``Department.head`` only when the department has none, see ``hod_department_ids``) or an
+                        explicit HOD / Competent Authority ``ProcurementRoleAssignment``.
 * OC Stores / Office / Auditor — ``ProcurementRoleAssignment`` rows (Office carries granular permissions).
 
 Everything is filtered to departments whose ``ProcurementManagementConfiguration.module_enabled`` is true, so a
-disabled department behaves as if the module did not exist. Only ``MODULE_USER_TYPES`` (Main Admin, Department
-Administrator, OIC, Lab Operator, Accounts, OC Stores, HOD) may use it at all; everyone else is refused everywhere.
-While a department is in pilot mode it only counts as enabled for its pilot users, and a user on no pilot list is
-refused everywhere (see ``pilot_blocked``). All checks run server-side; the frontend only receives the result for
-showing or hiding UI.
+disabled department behaves as if the module did not exist. ``MODULE_USER_TYPES`` (Main Admin, Department
+Administrator, OIC, Lab Operator, Accounts, OC Stores, HOD) may use it in any department. Any other account type may
+use it only in the departments it heads (``hod_department_ids``); everyone else is refused everywhere. While a
+department is in pilot mode it only counts as enabled for its pilot users, and a user on no pilot list is refused
+everywhere (see ``pilot_blocked``). All checks run server-side; the frontend only receives the result for showing or
+hiding UI.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 
 from django.db.models import Q
+from django.utils import timezone
 
 from iic_booking.users.models.user_type import UserType
 
@@ -64,6 +67,72 @@ def user_type_allowed(user) -> bool:
     return bool(getattr(user, "is_superuser", False)) or getattr(user, "user_type", None) in MODULE_USER_TYPES
 
 
+def _current_hod_assignments():
+    from iic_booking.users.models.channel_i_identity import HeadOfDepartmentAssignment
+
+    today = timezone.localdate()
+    return HeadOfDepartmentAssignment.objects.filter(active=True, effective_from__lte=today).filter(
+        Q(effective_to__isnull=True) | Q(effective_to__gte=today)
+    )
+
+
+def hod_department_ids(user) -> set[int]:
+    """Departments ``user`` currently heads.
+
+    The current ``HeadOfDepartmentAssignment`` is authoritative; ``Department.head`` only counts for departments with
+    no current assignment, so a stale ``head`` never outlives a handover."""
+    from iic_booking.users.models import Department
+
+    uid = getattr(user, "pk", None)
+    if not uid:
+        return set()
+    current = _current_hod_assignments()
+    ids = set(current.filter(user_id=uid).values_list("department_id", flat=True))
+    ids |= set(
+        Department.objects.filter(head_id=uid).exclude(pk__in=current.values("department_id")).values_list("id", flat=True)
+    )
+    return ids
+
+
+def department_hod_ids(department_id) -> set[int]:
+    """User ids currently heading ``department_id`` (same rule as ``hod_department_ids``)."""
+    from iic_booking.users.models import Department
+
+    ids = set(_current_hod_assignments().filter(department_id=department_id).values_list("user_id", flat=True))
+    if not ids:
+        head = Department.objects.filter(pk=department_id).values_list("head_id", flat=True).first()
+        if head:
+            ids.add(head)
+    return ids
+
+
+def all_hod_user_ids() -> set[int]:
+    from iic_booking.users.models import Department
+
+    current = _current_hod_assignments()
+    ids = set(current.values_list("user_id", flat=True))
+    ids |= set(
+        Department.objects.exclude(head__isnull=True)
+        .exclude(pk__in=current.values("department_id"))
+        .values_list("head_id", flat=True)
+    )
+    return ids
+
+
+def allowed_department_ids(user) -> set[int] | None:
+    """Departments ``user`` may use the module in: ``None`` means any (staff types), else only the ones it heads."""
+    if user is None:
+        return set()
+    if user_type_allowed(user):
+        return None
+    return hod_department_ids(user)
+
+
+def user_allowed_in(user, department_id) -> bool:
+    allowed = allowed_department_ids(user)
+    return allowed is None or getattr(department_id, "pk", department_id) in allowed
+
+
 def get_config(department_or_id) -> ProcurementManagementConfiguration | None:
     dept_id = getattr(department_or_id, "pk", department_or_id)
     if not dept_id:
@@ -97,7 +166,7 @@ def pilot_blocked(user) -> bool:
 def pilot_audience(department_id, users) -> list:
     """Drop users who cannot see the module in this department (used before notifying anyone)."""
     cfg = get_config(department_id)
-    users = [u for u in users if user_type_allowed(u)]
+    users = [u for u in users if user_allowed_in(u, department_id)]
     if cfg is None or not cfg.module_enabled:
         return []
     if not cfg.pilot_mode:
@@ -156,14 +225,7 @@ class UserScope:
 
     @cached_property
     def hod_departments(self) -> set[int]:
-        from iic_booking.users.models import Department
-        from iic_booking.users.models.channel_i_identity import HeadOfDepartmentAssignment
-
-        ids = set(
-            HeadOfDepartmentAssignment.objects.filter(user=self.user, active=True).values_list("department_id", flat=True)
-        )
-        ids |= set(Department.objects.filter(head=self.user).values_list("id", flat=True))
-        return ids
+        return hod_department_ids(self.user)
 
     @cached_property
     def roles_by_department(self) -> dict[int, set[str]]:
@@ -239,9 +301,15 @@ class UserScope:
 
 
 def scope_for(user) -> UserScope:
-    if not user_type_allowed(user) or pilot_blocked(user):
+    allowed = allowed_department_ids(user)
+    if allowed == set() or pilot_blocked(user):
         return UserScope(user=user, enabled=set(), blocked=True)
-    return UserScope(user=user, enabled=enabled_department_ids(user))
+    enabled = enabled_department_ids(user)
+    if allowed is not None:
+        enabled &= allowed
+        if not enabled:
+            return UserScope(user=user, enabled=set(), blocked=True)
+    return UserScope(user=user, enabled=enabled)
 
 
 # ---------------------------------------------------------------------------
