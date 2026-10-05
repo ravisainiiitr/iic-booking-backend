@@ -24,6 +24,7 @@ from .models import (
     EquipmentCategory,
     EquipmentGroup,
     EquipmentGroupQuota,
+    EquipmentModeAuditLog,
     EquipmentModeSchedule,
     EquipmentManager,
     EquipmentPI,
@@ -1367,10 +1368,8 @@ class EquipmentAdmin(admin.ModelAdmin):
                 department_type=DepartmentType.INTERNAL
             ).order_by('name')
         if db_field.name == 'parent_equipment':
-            # Only multi-mode-enabled base instruments can be parents; exclude self when editing
-            qs = Equipment.objects.filter(
-                parent_equipment__isnull=True, enable_multi_mode=True
-            ).order_by('code')
+            # Only base instruments (not themselves modes) can be parents; exclude self when editing
+            qs = Equipment.objects.filter(parent_equipment__isnull=True).order_by('code')
             obj_id = getattr(request.resolver_match, 'kwargs', {}).get('object_id') if request.resolver_match else None
             if obj_id:
                 qs = qs.exclude(pk=obj_id)
@@ -1533,7 +1532,7 @@ class EquipmentAdmin(admin.ModelAdmin):
             'fields': (
                 'name', 'code', 'category', 'equipment_group', 'alternative_priority',
                 'auto_allocate_alternative_default',
-                'enable_multi_mode', 'parent_equipment',
+                'enable_multi_mode', 'parent_equipment', 'mode_availability',
                 'internal_department', 'visibility_group', 'visible_to_test_accounts_only',
                 'profile_type', 'description', 'status', 'location', 'latitude', 'longitude', 'google_maps_url',
                 'office_address', 'alternate_phone_number',
@@ -1660,15 +1659,23 @@ class EquipmentAdmin(admin.ModelAdmin):
 
         old_time_from = None
         old_time_to = None
+        old_parent_id = None
         if change and obj.pk:
             try:
-                prev = Equipment.objects.only("weekly_view_time_from", "weekly_view_time_to").get(pk=obj.pk)
+                prev = Equipment.objects.only(
+                    "weekly_view_time_from", "weekly_view_time_to", "parent_equipment_id"
+                ).get(pk=obj.pk)
                 old_time_from = prev.weekly_view_time_from
                 old_time_to = prev.weekly_view_time_to
+                old_parent_id = prev.parent_equipment_id
             except Exception:
                 pass
 
         super().save_model(request, obj, form, change)
+
+        from .mode_family_service import sync_family_flags
+
+        sync_family_flags([obj.pk, obj.parent_equipment_id, old_parent_id], request.user, reason="django admin save")
 
         # Preserve existing image when admin saves without uploading a new file.
         # Always restore the previous DB path — do not gate on storage availability
@@ -2347,6 +2354,20 @@ class EquipmentModeScheduleAdmin(admin.ModelAdmin):
     ]
     autocomplete_fields = ["parent_equipment", "mode_equipment", "created_by"]
     ordering = ["-start_date", "-end_date"]
+
+
+@admin.register(EquipmentModeAuditLog)
+class EquipmentModeAuditLogAdmin(admin.ModelAdmin):
+    list_display = ["id", "created_at", "action", "equipment_code", "actor"]
+    list_filter = ["action"]
+    search_fields = ["equipment_code"]
+    readonly_fields = ["equipment", "equipment_code", "action", "details", "actor", "created_at"]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(DailySlot)

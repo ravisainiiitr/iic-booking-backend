@@ -2336,10 +2336,6 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Parent must be a base instrument (it cannot itself be a child mode)."
             )
-        if not getattr(value, "enable_multi_mode", False):
-            raise serializers.ValidationError(
-                "Parent must have Multi-Mode Equipment enabled."
-            )
         instance = getattr(self, "instance", None)
         if instance and instance.pk and value.pk == instance.pk:
             raise serializers.ValidationError("Equipment cannot be its own parent.")
@@ -2356,15 +2352,11 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         attrs = super().validate(attrs)
         instance = getattr(self, "instance", None)
         self._validate_results_deadline(attrs, instance)
-        enable_multi = attrs.get(
-            "enable_multi_mode",
-            getattr(instance, "enable_multi_mode", False) if instance else False,
-        )
         parent = attrs.get(
             "parent_equipment",
             getattr(instance, "parent_equipment", None) if instance else None,
         )
-        if enable_multi and parent:
+        if attrs.get("enable_multi_mode") and parent:
             raise serializers.ValidationError(
                 {
                     "enable_multi_mode": (
@@ -2373,6 +2365,21 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
                     )
                 }
             )
+        if instance is not None and instance.parent_equipment_id and "parent_equipment" in attrs:
+            new_parent = attrs.get("parent_equipment")
+            if (new_parent.pk if new_parent else None) != instance.parent_equipment_id:
+                from .mode_family_service import future_usage_for_mode
+
+                usage = future_usage_for_mode(instance)
+                if usage["bookings"] or usage["schedules"]:
+                    raise serializers.ValidationError(
+                        {
+                            "parent_equipment": (
+                                "This mode still has upcoming bookings or current/future mode schedules. "
+                                "Change it from the Multi-mode equipment page after clearing them."
+                            )
+                        }
+                    )
         managers = attrs.get("equipment_managers")
         operators = attrs.get("equipment_operators")
         if managers is not None:
@@ -2475,6 +2482,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         with transaction.atomic():
             equipment = Equipment.objects.create(**validated_data)
             _create_related(equipment, inlines, actor=actor)
+            _sync_mode_flags_after_save(equipment, None, actor)
         return equipment
 
     def update(self, instance, validated_data):
@@ -2491,12 +2499,31 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         if inlines.get('param_definitions') is None and inlines.get('slot_options') is not None:
             inlines['param_definitions'] = inlines['slot_options']
         inlines.pop('slot_options', None)
+        old_parent_id = instance.parent_equipment_id
         with transaction.atomic():
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()
             _sync_related(instance, inlines, actor=actor)
+            _sync_mode_flags_after_save(instance, old_parent_id, actor)
         return instance
+
+
+def _sync_mode_flags_after_save(equipment, old_parent_id, actor):
+    """enable_multi_mode is derived: a base is flagged iff it has modes; a mode is never flagged."""
+    from .mode_family_service import log_mode_change, sync_family_flags
+
+    if old_parent_id != equipment.parent_equipment_id:
+        log_mode_change(
+            equipment,
+            "MODE_LINKED" if equipment.parent_equipment_id else "MODE_UNLINKED",
+            {"base_equipment_id": equipment.parent_equipment_id or old_parent_id, "source": "equipment form"},
+            actor,
+        )
+    sync_family_flags(
+        [equipment.pk, equipment.parent_equipment_id, old_parent_id], actor, reason="equipment form save"
+    )
+    equipment.refresh_from_db(fields=["enable_multi_mode"])
 
 
 def _charge_profile_breakpoint(item, cp_type):

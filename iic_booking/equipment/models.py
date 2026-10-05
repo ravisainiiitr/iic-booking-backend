@@ -195,6 +195,12 @@ def equipment_image_upload_to(instance, filename):
     return f"equipment_images/equipment_{eid}_{safe_code}_{unique}{ext}"
 
 
+class ModeAvailability(models.TextChoices):
+    """When a mode (child equipment) of a multi-mode base can be booked."""
+    ALWAYS = 'ALWAYS', _('Always available')
+    SCHEDULED_ONLY = 'SCHEDULED_ONLY', _('Only on scheduled days')
+
+
 class Equipment(models.Model):
     equipment_id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=255, help_text='Name of the equipment')
@@ -747,8 +753,19 @@ class Equipment(models.Model):
         verbose_name=_('Parent Equipment (multi-mode)'),
         help_text=_(
             'When set, this equipment is an alternate operating mode of the parent (base) instrument. '
-            'The parent must have Multi-Mode Equipment enabled. '
+            'Managed from the Multi-mode equipment page; the base is flagged automatically. '
             'Leave empty for standalone equipment or for the base/parent mode itself.'
+        ),
+    )
+    mode_availability = models.CharField(
+        max_length=20,
+        choices=ModeAvailability.choices,
+        default=ModeAvailability.ALWAYS,
+        verbose_name=_('Mode availability'),
+        help_text=_(
+            'Only used when this equipment is a mode of a base instrument. '
+            'Always available: bookable unless a mutually exclusive schedule of another mode is active. '
+            'Only on scheduled days: bookable only while one of its mode schedules is active.'
         ),
     )
 
@@ -961,6 +978,10 @@ class Equipment(models.Model):
             raise ValidationError({
                 'parent_equipment': _('This equipment already has child modes; it cannot become a child of another parent.'),
             })
+        if self.enable_multi_mode:
+            raise ValidationError({
+                'enable_multi_mode': _('A mode of another instrument cannot itself be a multi-mode base.'),
+            })
 
     class Meta:
         verbose_name = 'Equipment'
@@ -1010,6 +1031,15 @@ class EquipmentModeSchedule(models.Model):
         null=True,
         verbose_name=_('End Time'),
         help_text=_('Optional. If set with start time, only slots within this daily window are mode-active.'),
+    )
+    weekdays = models.JSONField(
+        default=list,
+        blank=True,
+        verbose_name=_('Repeat on weekdays'),
+        help_text=_(
+            'Optional list of weekdays within the date range (0 = Monday … 6 = Sunday). '
+            'Empty means every day.'
+        ),
     )
     behavior = models.CharField(
         max_length=20,
@@ -1073,12 +1103,49 @@ class EquipmentModeSchedule(models.Model):
             f"{self.start_date}–{self.end_date} ({self.behavior})"
         )
 
+    @staticmethod
+    def normalize_weekdays(raw) -> list[int]:
+        """Sorted unique weekday ints 0-6; raises ValueError for anything else."""
+        if raw in (None, ''):
+            return []
+        if not isinstance(raw, (list, tuple)):
+            raise ValueError('weekdays must be a list of integers 0-6.')
+        days = set()
+        for item in raw:
+            if isinstance(item, bool):
+                raise ValueError('weekdays must be a list of integers 0-6.')
+            day = int(item)
+            if day < 0 or day > 6:
+                raise ValueError('weekdays must be a list of integers 0-6.')
+            days.add(day)
+        return sorted(days)
+
+    def active_weekdays(self) -> set[int]:
+        return set(self.weekdays or []) or set(range(7))
+
+    def has_time_window(self) -> bool:
+        return bool(self.start_time and self.end_time)
+
+    def can_coexist_with(self, other: 'EquipmentModeSchedule') -> bool:
+        """True when the two schedules can never be active at the same moment."""
+        if self.start_date > other.end_date or other.start_date > self.end_date:
+            return True
+        if not (self.active_weekdays() & other.active_weekdays()):
+            return True
+        if self.has_time_window() and other.has_time_window():
+            return self.end_time < other.start_time or other.end_time < self.start_time
+        return False
+
     def clean(self):
         super().clean()
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValidationError({'end_date': _('End date must be on or after start date.')})
         if self.start_time and self.end_time and self.start_time > self.end_time:
             raise ValidationError({'end_time': _('End time must be on or after start time.')})
+        try:
+            self.weekdays = self.normalize_weekdays(self.weekdays)
+        except (TypeError, ValueError):
+            raise ValidationError({'weekdays': _('Repeat days must be weekdays 0 (Monday) to 6 (Sunday).')})
         parent = self.parent_equipment
         mode = self.mode_equipment
         if parent is None or mode is None:
@@ -1103,13 +1170,45 @@ class EquipmentModeSchedule(models.Model):
             )
             if self.pk:
                 qs = qs.exclude(pk=self.pk)
-            if qs.exists():
+            if any(not self.can_coexist_with(other) for other in qs):
                 raise ValidationError({
                     'behavior': _(
                         'Another mutually exclusive schedule already covers part of this date range '
                         'for this parent instrument.'
                     ),
                 })
+
+
+class EquipmentModeAuditLog(models.Model):
+    """Audit trail for multi-mode family changes (links, flags, availability) and their data migrations."""
+
+    id = models.BigAutoField(primary_key=True)
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='mode_audit_logs',
+    )
+    equipment_code = models.CharField(max_length=255, blank=True, default='')
+    action = models.CharField(max_length=40, db_index=True)
+    details = models.JSONField(default=dict, blank=True)
+    actor = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='equipment_mode_audit_logs',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _('Equipment Mode Audit Log')
+        verbose_name_plural = _('Equipment Mode Audit Logs')
+        ordering = ['-created_at', '-id']
+
+    def __str__(self):
+        return f"{self.action} {self.equipment_code}"
 
 
 class EquipmentUserGroupPurpose(models.TextChoices):
