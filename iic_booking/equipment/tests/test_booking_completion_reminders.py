@@ -1,4 +1,4 @@
-"""Ended-but-not-completed bookings: OIC / Lab in-charge digest email, login popup item and dashboard list."""
+"""Ended, sample-received, not-completed bookings: OIC / Lab in-charge digest email, login popup item and dashboard list."""
 
 from datetime import timedelta
 from unittest.mock import patch
@@ -15,10 +15,12 @@ from iic_booking.equipment.completion_reminders import (
     send_booking_completion_reminders,
 )
 from iic_booking.equipment.models import (
+    BookingSampleTrace,
     BookingStatus,
     EquipmentManager,
     EquipmentOperator,
     EquipmentOperatorCoverage,
+    SampleTraceStatus,
 )
 from iic_booking.equipment.pending_actions import collect_pending_actions
 from iic_booking.users.models.user_type import UserType
@@ -27,6 +29,18 @@ from iic_booking.users.tests.factories import UserFactory
 
 def _staff(user_type):
     return UserFactory(user_type=user_type, admin_approved=True)
+
+
+def _trace(booking, status, at=None):
+    row = BookingSampleTrace.objects.create(booking=booking, status=status)
+    if at is not None:
+        BookingSampleTrace.objects.filter(pk=row.pk).update(created_at=at)
+    return row
+
+
+def _received(booking, at=None):
+    _trace(booking, SampleTraceStatus.SAMPLE_ACCEPTED, at)
+    return booking
 
 
 @pytest.fixture
@@ -42,12 +56,18 @@ def setup(egs_factory):
 
     student = egs_factory.student()
     now = timezone.now()
-    ended_a = egs_factory.booking(student, eq_a, now - timedelta(days=2))
-    upcoming_a = egs_factory.booking(student, eq_a, now + timedelta(days=2))
-    completed_a = egs_factory.booking(student, eq_a, now - timedelta(days=3))
+    ended_a = _received(egs_factory.booking(student, eq_a, now - timedelta(days=2)), now - timedelta(days=3))
+    upcoming_a = _received(egs_factory.booking(student, eq_a, now + timedelta(days=2)))
+    completed_a = _received(egs_factory.booking(student, eq_a, now - timedelta(days=3)))
     type(completed_a).objects.filter(pk=completed_a.pk).update(status=BookingStatus.COMPLETED)
-    ended_b = egs_factory.booking(student, eq_b, now - timedelta(hours=5))
+    ended_b = _received(egs_factory.booking(student, eq_b, now - timedelta(hours=5)))
+    not_received_a = egs_factory.booking(student, eq_a, now - timedelta(hours=12))
+    sent_only_a = egs_factory.booking(student, eq_a, now - timedelta(hours=10))
+    _trace(sent_only_a, SampleTraceStatus.SAMPLE_SENT)
+    forwarded_a = egs_factory.booking(student, eq_a, now - timedelta(hours=8))
+    _trace(forwarded_a, SampleTraceStatus.FORWARDED_TO_LAB)
     return {
+        "not_received": [not_received_a, sent_only_a, forwarded_a],
         "eq_a": eq_a,
         "oic_a": oic_a,
         "operator_a": operator_a,
@@ -70,6 +90,46 @@ def test_each_person_sees_only_ended_uncompleted_bookings_of_their_equipment(set
     assert _ids(bookings_awaiting_completion_for_user(setup["operator_a"])) == [setup["ended_a"].pk]
     assert _ids(bookings_awaiting_completion_for_user(setup["oic_b"])) == [setup["ended_b"].pk]
     assert _ids(bookings_awaiting_completion_for_user(setup["student"])) == []
+
+
+@pytest.mark.django_db
+def test_bookings_whose_sample_was_not_received_are_not_awaiting_completion(setup):
+    listed = set(_ids(bookings_awaiting_completion_for_user(setup["oic_a"])))
+    assert not listed & {b.pk for b in setup["not_received"]}
+
+    late = setup["not_received"][0]
+    _received(late)
+    assert late.pk in _ids(bookings_awaiting_completion_for_user(setup["oic_a"]))
+
+
+@pytest.mark.django_db
+def test_walk_in_equipment_counts_as_received_at_the_slot(setup, egs_factory):
+    walk_in = egs_factory.equipment(sample_submission_lead_hours=0, sample_collect_deadline_hours=0)
+    at_slot_with_collect = egs_factory.equipment(sample_submission_lead_hours=0, sample_collect_deadline_hours=72)
+    EquipmentManager.objects.create(equipment=walk_in, manager=setup["oic_a"])
+    EquipmentManager.objects.create(equipment=at_slot_with_collect, manager=setup["oic_a"])
+    now = timezone.now()
+    walk_in_booking = egs_factory.booking(setup["student"], walk_in, now - timedelta(hours=6))
+    unrecorded = egs_factory.booking(setup["student"], at_slot_with_collect, now - timedelta(hours=6))
+
+    ids = _ids(bookings_awaiting_completion_for_user(setup["oic_a"]))
+    assert walk_in_booking.pk in ids
+    assert unrecorded.pk not in ids
+
+
+@pytest.mark.django_db
+def test_overdue_by_counts_from_sample_receipt_when_later(setup, egs_factory):
+    from iic_booking.equipment.completion_reminders import serialize_awaiting_booking
+
+    now = timezone.now()
+    late = _received(egs_factory.booking(setup["student"], setup["eq_a"], now - timedelta(days=2)), now - timedelta(hours=3))
+    rows = {b.pk: b for b in bookings_awaiting_completion_for_user(setup["oic_a"], now)}
+    early_row = serialize_awaiting_booking(rows[setup["ended_a"].pk], now)
+    late_row = serialize_awaiting_booking(rows[late.pk], now)
+    assert early_row["overdue"].startswith("1 day")  # slot ended ~47 h ago; received before the slot
+    assert late_row["overdue"] == "3 h"
+    assert late_row["receipt_source"] == "sample_accepted" and late_row["sample_received_display"]
+    assert list(rows)[-1] == late.pk  # ordered by the later of slot end and receipt
 
 
 @pytest.mark.django_db
@@ -108,7 +168,26 @@ def test_daily_digest_sends_one_email_per_responsible_person(setup):
     assert setup["ended_a"].virtual_booking_id in ctx["bookings_html"]
     assert setup["ended_a"].virtual_booking_id in ctx["bookings_text"]
     assert setup["upcoming_a"].virtual_booking_id not in ctx["bookings_html"]
+    for b in setup["not_received"]:
+        assert b.virtual_booking_id not in ctx["bookings_html"]
+        assert b.virtual_booking_id not in ctx["bookings_text"]
+    assert "Sample received" in ctx["bookings_html"]
     assert ctx["link"].endswith("/dashboard#bookings-awaiting-completion")
+    assert by_user[setup["oic_a"].pk]["metadata"]["booking_ids"] == [setup["ended_a"].pk]
+
+
+@pytest.mark.django_db
+def test_no_email_when_only_unreceived_bookings_have_ended(egs_factory):
+    eq = egs_factory.equipment()
+    EquipmentManager.objects.create(equipment=eq, manager=_staff(UserType.MANAGER))
+    student = egs_factory.student()
+    egs_factory.booking(student, eq, timezone.now() - timedelta(hours=12))
+    sent = egs_factory.booking(student, eq, timezone.now() - timedelta(hours=12))
+    _trace(sent, SampleTraceStatus.SAMPLE_SENT)
+
+    with patch.object(CommunicationService, "send_email") as send_email:
+        assert send_booking_completion_reminders() == 0
+    send_email.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -125,7 +204,7 @@ def test_no_email_when_nothing_is_overdue(egs_factory):
 @pytest.mark.django_db
 def test_login_popup_item_lists_all_overdue_bookings(setup, egs_factory):
     for days in (3, 4, 5, 6):
-        egs_factory.booking(setup["student"], setup["eq_a"], timezone.now() - timedelta(days=days))
+        _received(egs_factory.booking(setup["student"], setup["eq_a"], timezone.now() - timedelta(days=days)))
 
     items = {i["key"]: i for i in collect_pending_actions(setup["oic_a"])}
     item = items["bookings_awaiting_completion"]
