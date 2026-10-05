@@ -121,6 +121,9 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "training_appeal_decided_email",
     "training_session_scheduled_email",
     "certification_awarded_email",
+    "fabrication_booking_rejected_email",
+    "fabrication_files_replaced_email",
+    "fabrication_ready_for_pickup_email",
 ]
 
 
@@ -2256,6 +2259,84 @@ def _training_templates() -> list[dict[str, Any]]:
     ]
 
 
+_FABRICATION_HELP = (
+    "{{ user_name }}, {{ booking_id }}, {{ fbr_number }}, {{ equipment_name }}, {{ equipment_code }}, "
+    "{{ parts_display }}, {{ total_charge }}, {{ link }}"
+)
+
+
+def _fabrication_templates() -> list[dict[str, Any]]:
+    """3D printing / 2D laser cutting: lab rejection, replaced files and ready-for-pickup emails."""
+    base_rows = [
+        optional_detail_row("Booking ID", "booking_id"),
+        optional_detail_row("Equipment", "equipment_name"),
+        optional_detail_row("Parts", "parts_display"),
+    ]
+    parts_text = "{% if parts_text %}Parts:\n{{ parts_text }}\n{% endif %}"
+    return [
+        _simple_email(
+            code="fabrication_booking_rejected_email",
+            title="Files Need Changes",
+            subject="Action needed: replace your files – {{ booking_id }} – {{ equipment_name }}",
+            intro=(
+                "The lab has checked the files for your booking and cannot make the parts as uploaded. "
+                "Please upload corrected files by <strong>{{ replace_deadline_display }}</strong>. "
+                "Your slot is kept for you. If new files are not uploaded in time, the booking is cancelled "
+                "automatically with a full refund."
+            ),
+            description="Sent to the user when the lab rejects a 3D print or laser cutting booking as not feasible.",
+            detail_rows=[
+                *base_rows,
+                optional_detail_row("Rejected by", "rejected_by_display"),
+                optional_detail_row("Replace files by", "replace_deadline_display"),
+            ],
+            details_heading="Booking details",
+            post_details_text=parts_text,
+            note_vars=(("rejection_reason", "Reason from the lab"),),
+            cta_label="Replace files",
+            variable_help=_FABRICATION_HELP
+            + ", {{ rejection_reason }}, {{ replace_deadline_display }}, {{ replace_window_hours }}, {{ rejected_by_display }}",
+        ),
+        _simple_email(
+            code="fabrication_files_replaced_email",
+            title="New Files Received",
+            subject="New files received – {{ booking_id }} – {{ equipment_name }}",
+            intro=(
+                "We have received your new files. Your booking is active again with the same slot, "
+                "and the lab has been informed."
+            ),
+            description="Sent to the user after they replace the files of a rejected 3D print or laser cutting booking.",
+            detail_rows=[*base_rows, optional_detail_row("Total charges", "total_charge")],
+            details_heading="Booking details",
+            post_details_text=parts_text,
+            note_vars=(("comment", "Note"),),
+            cta_label="View booking",
+            variable_help=_FABRICATION_HELP + ", {{ comment }}",
+        ),
+        _simple_email(
+            code="fabrication_ready_for_pickup_email",
+            title="Your Parts Are Ready for Pickup",
+            subject="Your parts are ready for pickup – {{ booking_id }} – {{ equipment_name }}",
+            intro="Your parts have been made and are ready for pickup from the lab.",
+            description=(
+                "Completion email for 3D print and laser cutting bookings (replaces the standard completion email "
+                "for these equipment types)."
+            ),
+            detail_rows=[*base_rows, optional_detail_row("Total charges", "total_charge")],
+            details_heading="Booking details",
+            post_details_html=booking_location_contact_html(),
+            post_details_text=parts_text + booking_location_contact_text(),
+            note_vars=(
+                ("pickup_instructions", "Pickup instructions"),
+                ("equipment_completion_email_extra", "Additional information"),
+            ),
+            cta_label="View booking",
+            variable_help=_FABRICATION_HELP
+            + ", {{ pickup_instructions }}, {{ lab_location }}, {{ lab_incharge_contact }}, {{ oic_contact }}",
+        ),
+    ]
+
+
 def get_default_email_template(code: str) -> Optional[dict[str, Any]]:
     """Catalog spec for one code without building (and validating) the whole catalog."""
     for spec in _training_templates():
@@ -2281,6 +2362,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_registration_approval_templates())
     templates.extend(_nomination_and_leave_templates())
     templates.extend(_training_templates())
+    templates.extend(_fabrication_templates())
 
     by_code = {t["code"]: t for t in templates}
     missing = [c for c in DEFAULT_EMAIL_TEMPLATE_CODES if c not in by_code]

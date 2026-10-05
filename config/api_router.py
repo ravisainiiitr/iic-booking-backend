@@ -270,7 +270,7 @@ from iic_booking.equipment.fabrication_materials_views import (
     laser_sheet_material_detail,
     laser_sheet_materials_manage,
 )
-from iic_booking.equipment.fabrication_reupload_views import booking_fabrication_files
+from iic_booking.equipment.fabrication_reupload_views import booking_fabrication_files, booking_fabrication_reject
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
@@ -1379,6 +1379,11 @@ urlpatterns = router.urls + [
         "bookings/<int:booking_id>/fabrication-files/",
         booking_fabrication_files,
         name="booking-fabrication-files",
+    ),
+    path(
+        "bookings/<int:booking_id>/fabrication-reject/",
+        booking_fabrication_reject,
+        name="booking-fabrication-reject",
     ),
     path("equipments/<int:equipment_id>/ratings/", equipment_ratings, name="equipment-ratings"),
     path("icpms/standards/min-cover/", icpms_min_standards_cover, name="icpms-min-standards-cover"),

@@ -978,11 +978,17 @@ def perform_booking_cancellation(
                 booking.status = BookingStatus.REFUNDED
                 new_status = BookingStatus.REFUNDED
                 event_type = BookingEventType.REFUNDED
-            label = "admin" if cancelled_by_label == "admin" else "user"
-            event_comment = (
-                f"Booking cancelled and refunded by {label}. "
-                f"{cancel_notes if cancel_notes else ''}"
-            )
+            if cancelled_by_label == "system":
+                event_comment = (
+                    f"Booking cancelled automatically and refunded. "
+                    f"{cancel_notes if cancel_notes else ''}"
+                )
+            else:
+                label = "admin" if cancelled_by_label == "admin" else "user"
+                event_comment = (
+                    f"Booking cancelled and refunded by {label}. "
+                    f"{cancel_notes if cancel_notes else ''}"
+                )
             if reverse_reward_points_fn:
                 reverse_reward_points_fn(
                     booking,
@@ -1020,6 +1026,7 @@ def perform_booking_cancellation(
         comment=event_comment.strip() if event_comment else None,
         created_by=actor,
         send_notification=True,
+        system_actor=cancelled_by_label == "system",
     )
 
     return {

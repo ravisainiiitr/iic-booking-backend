@@ -146,6 +146,13 @@ def get_affected_booking_ids_for_equipment_today(equipment) -> set[int]:
     return ids
 
 
+def _fbr_block(booking) -> str:
+    from .fbr_email import fbr_text_line
+
+    line = fbr_text_line(booking)
+    return f"{line}\n\n" if line else ""
+
+
 def _send_maintenance_disruption_email(booking, deadline_at) -> None:
     from iic_booking.communication.utils import booking_display_id_for_email
 
@@ -167,7 +174,7 @@ def _send_maintenance_disruption_email(booking, deadline_at) -> None:
         f"Reschedule will then include an additional week in the booking calendar where applicable.\n\n"
         f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
         f"it will be cancelled with a full refund and the slot(s) released per our policy.\n\n"
-        f"— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
+        f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
         send_mail(
@@ -198,7 +205,7 @@ def _send_equipment_operational_email(booking) -> None:
         f"{eq_name} is operational again. You may reschedule your booking from My Bookings. "
         f"The calendar includes one additional week of availability for this reschedule.\n\n"
         f"{my_bookings}\n\n"
-        f"— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
+        f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
         send_mail(
@@ -226,7 +233,7 @@ def _send_auto_cancel_email(booking) -> None:
         f"Dear {getattr(user, 'name', None) or 'user'},\n\n"
         f"Your booking {bid} on {eq_name} was automatically cancelled because no choice (refund or reschedule) "
         f"was received before the disruption decision deadline. A full refund has been issued to your wallet where applicable.\n\n"
-        f"— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
+        f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
         send_mail(
@@ -263,7 +270,7 @@ def _send_operator_absent_disruption_email(booking, deadline_at) -> None:
         f"(b) Reschedule — pick a new time from My Bookings.\n\n"
         f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
         f"it will be cancelled with a full refund and the slot(s) released per our policy.\n\n"
-        f"— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
+        f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
         send_mail(
@@ -302,7 +309,7 @@ def _send_other_disruption_email(booking, deadline_at, reason: str) -> None:
         f"(b) Reschedule — pick a new time from My Bookings.\n\n"
         f"If you take no action before the decision deadline ({dl}), your booking will be treated as a refund request: "
         f"it will be cancelled with a full refund and the slot(s) released per our policy.\n\n"
-        f"— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
+        f"{_fbr_block(booking)}— {getattr(settings, 'SITE_NAME', 'IIC Booking')}"
     )
     try:
         send_mail(

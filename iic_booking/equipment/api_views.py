@@ -11607,6 +11607,14 @@ def _send_completion_email_with_attachments(booking, result_files, context_extra
     _ = result_files  # accepted for call-site compatibility
     result_files = []
 
+    from .fabrication import is_fabrication_equipment
+
+    if is_fabrication_equipment(booking.equipment):
+        from .fabrication_workflow import send_pickup_email
+
+        send_pickup_email(booking)
+        return
+
     user = booking.user
     equipment = booking.equipment
     template_code = "booking_completed_email"
@@ -11874,15 +11882,22 @@ def complete_booking(request, booking_id):
                     {"error": f"Cannot complete booking with status '{booking.status}'. Only PENDING or BOOKED bookings can be completed."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if booking.fabrication_rejected_at is not None:
+                return Response(
+                    {"error": "This booking was rejected and is waiting for new files from the user. It cannot be completed yet."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             previous_status = booking.status
             # Persist completion transition first so manual and scheduled paths stay race-safe.
             booking.status = BookingStatus.COMPLETED
             booking.completed_at = timezone.now()
             booking.save(update_fields=["status", "completed_at", "updated_at"])
 
-        # Mirror former Sample Lifecycle "Analyzed" milestone on Complete
+        # Mirror former Sample Lifecycle "Analyzed" milestone on Complete (fabrication has no sample lifecycle)
         try:
-            has_completed_trace = booking.sample_trace_events.filter(
+            from .fabrication import is_fabrication_equipment
+
+            has_completed_trace = is_fabrication_equipment(booking.equipment) or booking.sample_trace_events.filter(
                 status=SampleTraceStatus.COMPLETED
             ).exists()
             if not has_completed_trace:
@@ -13098,15 +13113,23 @@ def user_cancel_booking(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    from .fabrication_workflow import is_rejection_active
     from .reschedule_lock import cancel_locked_for, cancel_locked_payload
 
-    if cancel_locked_for(request.user, booking):
+    # A booking the lab rejected as not feasible can always be cancelled by its user, with a full refund.
+    rejected_by_lab = is_rejection_active(booking)
+
+    if not rejected_by_lab and cancel_locked_for(request.user, booking):
         return Response(cancel_locked_payload(), status=status.HTTP_400_BAD_REQUEST)
 
     # Enforce reschedule-hours threshold for user actions (normal case).
     # If now is strictly inside the threshold window before the allocated slot start time,
     # disallow cancel. (Maintenance disruption policy keeps cancel available.)
-    if not getattr(booking, "maintenance_disruption_flag", False) and booking.status != BookingStatus.DISRUPTION_PENDING:
+    if (
+        not rejected_by_lab
+        and not getattr(booking, "maintenance_disruption_flag", False)
+        and booking.status != BookingStatus.DISRUPTION_PENDING
+    ):
         equipment = booking.equipment
         threshold_hours = getattr(equipment, "reschedule_hours_threshold", None) or 48
         earliest_start = (
@@ -13138,11 +13161,17 @@ def user_cancel_booking(request, booking_id):
     cancel_notes = request.data.get("notes", "")
 
     try:
-        cancel_req = parse_cancellation_request(request.data, booking)
+        cancel_req = parse_cancellation_request({} if rejected_by_lab else request.data, booking)
     except CancellationValidationError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     allow_started_slots = user_may_cancel_started_slots(request.user)
+    if rejected_by_lab:
+        should_refund = True
+        allow_started_slots = True
+        cancel_notes = " ".join(
+            part for part in ["Cancelled after the lab rejected the files.", str(cancel_notes or "").strip()] if part
+        )
 
     try:
         with transaction.atomic():
@@ -14664,6 +14693,13 @@ def set_booking_sample_status(request, booking_id):
         booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    from .fabrication import is_fabrication_equipment
+
+    if is_fabrication_equipment(booking.equipment):
+        from .fabrication_workflow import SAMPLE_STATUS_REFUSED_MESSAGE
+
+        return Response({"error": SAMPLE_STATUS_REFUSED_MESSAGE}, status=status.HTTP_400_BAD_REQUEST)
 
     status_value = (request.data.get('status') or '').strip().upper()
     # Sample Returned / Archived removed; Analyzed (COMPLETED) and Disposed are no longer

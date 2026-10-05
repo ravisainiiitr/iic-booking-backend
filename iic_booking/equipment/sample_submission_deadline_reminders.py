@@ -270,7 +270,7 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
 
 def iter_bookings_for_sample_submission_deadline_reminders():
     """BOOKED bookings that have not yet received the advance reminder."""
-    from .models import Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
+    from .models import FABRICATION_PROFILE_TYPES, Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
 
     now = timezone.now()
     # Bound scan: deadlines only apply for upcoming (or just-started) slots.
@@ -288,6 +288,7 @@ def iter_bookings_for_sample_submission_deadline_reminders():
             daily_slots__start_datetime__lte=horizon_end,
         )
         .exclude(Exists(accepted))
+        .exclude(equipment__profile_type__in=FABRICATION_PROFILE_TYPES)
         .select_related("user", "equipment")
         .prefetch_related(
             Prefetch("daily_slots", queryset=DailySlot.objects.order_by("start_datetime")),
@@ -299,7 +300,7 @@ def iter_bookings_for_sample_submission_deadline_reminders():
 
 def list_approaching_sample_submission_for_user(user) -> list[dict]:
     """Payload for login / dashboard alerts for the given user."""
-    from .models import Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
+    from .models import FABRICATION_PROFILE_TYPES, Booking, BookingSampleTrace, BookingStatus, DailySlot, SampleTraceStatus
 
     accepted = BookingSampleTrace.objects.filter(
         booking_id=OuterRef("pk"),
@@ -308,6 +309,7 @@ def list_approaching_sample_submission_for_user(user) -> list[dict]:
     qs = (
         Booking.objects.filter(user=user, status=BookingStatus.BOOKED, equipment__sample_submission_lead_hours__gt=0)
         .exclude(Exists(accepted))
+        .exclude(equipment__profile_type__in=FABRICATION_PROFILE_TYPES)
         .select_related("equipment")
         .prefetch_related(
             Prefetch("daily_slots", queryset=DailySlot.objects.order_by("start_datetime")),

@@ -65,8 +65,14 @@ def _laser_item_state(a) -> dict:
 
 
 def fabrication_state_snapshot(booking) -> dict:
+    from .fabrication_workflow import rejection_snapshot
+
     profile = booking.equipment.profile_type
-    state = {"profile_type": profile, "own_material": bool(booking.own_material)}
+    state = {
+        "profile_type": profile,
+        "own_material": bool(booking.own_material),
+        "rejection": rejection_snapshot(booking),
+    }
     if profile == EquipmentProfileType.PRINT_3D:
         state["print_analysis_id"] = str(booking.print_analysis_id) if booking.print_analysis_id else None
         state["print_analysis_batch_id"] = (
@@ -326,6 +332,10 @@ def restore_fabrication_state(booking, state: dict) -> bool:
     """Put back the files / parts / own-material flag captured by ``fabrication_state_snapshot``."""
     if not state or not isinstance(state, dict):
         return False
+    from .fabrication_workflow import restore_rejection
+
+    if state.get("rejection") and booking.fabrication_rejected_at is None:
+        restore_rejection(booking, state["rejection"])
     profile = state.get("profile_type")
     now = timezone.now()
     item_ids = [i["id"] for i in state.get("items") or [] if i.get("id")]

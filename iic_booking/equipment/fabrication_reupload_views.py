@@ -34,9 +34,41 @@ def user_can_replace_fabrication_files(user, booking) -> bool:
     return EquipmentOperator.objects.filter(equipment_id=booking.equipment_id, operator=user).exists()
 
 
-def fabrication_reupload_block_reason(booking, now=None) -> str | None:
-    """Why files cannot be replaced right now (None when allowed)."""
+USER_CHANGE_AFTER_BOOKING_MESSAGE = (
+    "Files cannot be changed after booking. If the lab finds a problem with your files, "
+    "you will be asked to upload new ones."
+)
+
+
+def _staff_block_reason(booking, now) -> str | None:
     from .quota_utils import booking_first_slot_start
+
+    first_start = booking_first_slot_start(booking)
+    if first_start is None or now >= first_start:
+        return "Files can only be replaced before the booked slot starts."
+    return None
+
+
+def _owner_block_reason(booking, now) -> str | None:
+    """Booking users may replace files only while the lab's rejection is open (slot time does not matter)."""
+    from .fabrication_workflow import is_rejection_active
+
+    if not is_rejection_active(booking):
+        return USER_CHANGE_AFTER_BOOKING_MESSAGE
+    deadline = booking.fabrication_replace_deadline
+    if deadline is not None and now >= deadline:
+        return "The time to replace the files has ended."
+    return None
+
+
+def fabrication_reupload_block_reason(booking, now=None, user=None) -> str | None:
+    """Why ``user`` cannot replace the files right now (None when allowed).
+
+    Lab staff (admin, OIC, Lab Operator): while Booked, before the slot starts.
+    Booking user: only while the booking is rejected as not feasible and before the replace deadline.
+    Without a user, the lab staff rule is reported.
+    """
+    from .fabrication_workflow import user_is_fabrication_lab_staff
 
     if not is_fabrication_equipment(booking.equipment):
         return "Files can only be replaced on 3D print or laser cutting bookings."
@@ -44,10 +76,21 @@ def fabrication_reupload_block_reason(booking, now=None) -> str | None:
         return "Files can only be replaced while the booking is Booked."
     if booking.source_booking_id is not None:
         return "Files cannot be replaced on a repeat booking."
-    first_start = booking_first_slot_start(booking)
-    if first_start is None or (now or timezone.now()) >= first_start:
-        return "Files can only be replaced before the booked slot starts."
-    return None
+    now = now or timezone.now()
+    if user is None:
+        return _staff_block_reason(booking, now)
+    reasons = []
+    if user_is_fabrication_lab_staff(user, booking):
+        reason = _staff_block_reason(booking, now)
+        if reason is None:
+            return None
+        reasons.append(reason)
+    if booking.user_id == getattr(user, "pk", None):
+        reason = _owner_block_reason(booking, now)
+        if reason is None:
+            return None
+        reasons.append(reason)
+    return reasons[0] if reasons else "You don't have permission to change the files of this booking."
 
 
 def _change_rows(booking):
@@ -72,7 +115,7 @@ def _change_rows(booking):
 
 
 def _state_payload(request, booking):
-    block = fabrication_reupload_block_reason(booking)
+    block = fabrication_reupload_block_reason(booking, user=request.user)
     can_act = user_can_replace_fabrication_files(request.user, booking)
     return {
         "profile_type": booking.equipment.profile_type,
@@ -115,6 +158,7 @@ def booking_fabrication_files(request, booking_id):
         check_operator_permission,
     )
     from .booking_events import create_booking_event
+    from .fabrication_workflow import after_files_replaced
     from .input_edit_payment_window import (
         expire_unpaid_input_edit,
         has_payment_window,
@@ -145,7 +189,7 @@ def booking_fabrication_files(request, booking_id):
         )
 
     expire_unpaid_input_edit(booking)
-    block = fabrication_reupload_block_reason(booking)
+    block = fabrication_reupload_block_reason(booking, user=request.user)
     if block:
         return Response({"error": block}, status=status.HTTP_400_BAD_REQUEST)
     if has_payment_window(booking):
@@ -166,6 +210,9 @@ def booking_fabrication_files(request, booking_id):
             booking = Booking.objects.select_for_update().select_related("equipment", "charge_profile", "user").get(
                 pk=booking.pk
             )
+            locked_block = fabrication_reupload_block_reason(booking, user=request.user)
+            if locked_block:
+                raise ReuploadError(locked_block)
             payment_window_snapshot = snapshot_booking_charge_state(booking) if acting_as_booking_user else None
             if payment_window_snapshot is not None:
                 payment_window_snapshot[STATE_KEY] = fabrication_state_snapshot(booking)
@@ -229,7 +276,8 @@ def booking_fabrication_files(request, booking_id):
                 },
                 send_notification=False,
             )
-            dispatch_fabrication_file_email(booking, reason=REASON_FILES_UPDATED)
+            if not after_files_replaced(booking, request.user):
+                dispatch_fabrication_file_email(booking, reason=REASON_FILES_UPDATED)
     except ReuploadError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except _QuotaRejected as exc:
@@ -254,6 +302,34 @@ def booking_fabrication_files(request, booking_id):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def booking_fabrication_reject(request, booking_id):
+    """Lab staff: reject a booked 3D print / laser cutting job as not feasible. Body: {"reason": "..."}"""
+    from .api_views import BookingSerializer
+    from .fabrication_workflow import FabricationWorkflowError, reject_fabrication_booking
+
+    try:
+        booking = reject_fabrication_booking(booking_id, request.user, (request.data or {}).get("reason"))
+    except FabricationWorkflowError as exc:
+        return Response({"error": str(exc)}, status=exc.status_code)
+    booking = Booking.objects.select_related("equipment", "charge_profile", "user").get(pk=booking.pk)
+    return Response(
+        {
+            "message": "Booking rejected. The user has been emailed and can upload new files until "
+            f"{_deadline_display(booking)}.",
+            "booking": BookingSerializer(booking, context={"request": request}).data,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+def _deadline_display(booking) -> str:
+    from iic_booking.communication.email_branding import format_email_datetime
+
+    return format_email_datetime(booking.fabrication_replace_deadline)
 
 
 class _QuotaRejected(Exception):

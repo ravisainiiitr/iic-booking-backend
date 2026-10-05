@@ -147,6 +147,23 @@ def send_booking_completion_reminders() -> int:
     return sent
 
 
+@shared_task(name="equipment.expire_fabrication_rejections")
+def expire_fabrication_rejections() -> int:
+    """
+    Every 10 minutes: cancel 3D printing / laser cutting bookings that were rejected as not feasible
+    and whose files were not replaced before the deadline (full refund, slot released, emails sent).
+
+    Returns:
+        Number of bookings cancelled.
+    """
+    from .fabrication_workflow import expire_fabrication_rejections as expire_rejections
+
+    cancelled = expire_rejections()
+    if cancelled:
+        logger.info("expire_fabrication_rejections: cancelled=%d", cancelled)
+    return cancelled
+
+
 @shared_task(name="equipment.expire_unpaid_input_edits")
 def expire_unpaid_input_edits() -> int:
     """
@@ -558,6 +575,7 @@ def check_booking_not_utilized() -> int:
 
     from .booking_not_utilized_service import apply_booking_not_utilized
     from .models import (
+        FABRICATION_PROFILE_TYPES,
         Booking,
         BookingSampleTrace,
         BookingStatus,
@@ -607,6 +625,8 @@ def check_booking_not_utilized() -> int:
         # Walk-in equipment: samples are brought in person and never recorded as received,
         # so an empty sample lifecycle does not mean the booking went unused.
         .exclude(walk_in_sample_equipment_q("equipment__"))
+        # 3D printing / laser cutting have no sample lifecycle; the lab marks them complete or rejects them.
+        .exclude(equipment__profile_type__in=FABRICATION_PROFILE_TYPES)
         .select_related("user", "equipment")
     )
 

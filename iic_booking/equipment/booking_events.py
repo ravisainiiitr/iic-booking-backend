@@ -114,9 +114,12 @@ def booking_party_context(user, equipment) -> Dict[str, str]:
 
 
 def apply_booking_party_to_context(context: dict, booking) -> dict:
-    """Fill the booked-by / charged-to rows for any email built from a booking."""
+    """Fill the booked-by / charged-to rows (and the FBR number when mandatory) for any email built from a booking."""
     if isinstance(context, dict) and booking is not None:
+        from .fbr_email import apply_fbr_number_to_context
+
         context.update(booking_party_context(getattr(booking, "user", None), getattr(booking, "equipment", None)))
+        apply_fbr_number_to_context(context, booking)
     return context
 
 
@@ -611,6 +614,9 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         "link": "",
         **booking_party_context(user, equipment),
     }
+    from .fbr_email import apply_fbr_number_to_context
+
+    apply_fbr_number_to_context(context, booking)
     
     # Add status information if available
     if event.previous_status:
@@ -655,6 +661,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         "wallet_balance_after",
         "start_time",
         "end_time",
+        "fbr_number",
     }
     _INTERNAL_METADATA_KEYS = {
         "user_id",

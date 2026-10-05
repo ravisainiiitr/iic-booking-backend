@@ -118,6 +118,15 @@ def _booking_sample_trace_events(booking):
     return events
 
 
+FABRICATION_REJECTED_STATUS_DISPLAY = "Rejected – waiting for new files"
+
+
+def _booking_status_display(booking) -> str:
+    if booking.status == BookingStatus.BOOKED and getattr(booking, "fabrication_rejected_at", None) is not None:
+        return FABRICATION_REJECTED_STATUS_DISPLAY
+    return booking.get_status_display()
+
+
 def _viewer_user(serializer):
     user = getattr(serializer.context.get("request"), "user", None)
     return user if getattr(user, "is_authenticated", False) is True else None
@@ -216,7 +225,8 @@ class _RescheduleBlockFieldsMixin:
         user = _viewer_user(self)
         if user is None:
             return None
-        if self._sample_locked(obj):
+        rejected_owner = obj.user_id == user.pk and getattr(obj, "fabrication_rejected_at", None) is not None
+        if self._sample_locked(obj) and not rejected_owner:
             return CANCEL_LOCKED_SAMPLE_ACCEPTED
         if obj.user_id != user.pk and not _viewer_bypasses_sample_lock(self):
             return CANCEL_OWNER_ONLY
@@ -1843,6 +1853,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'completion_email_extra_text',
             'fabrication_notification_emails',
             'own_material_fixed_charge',
+            'fabrication_replace_window_hours',
             'istem_portal_url',
             'istem_fbr_status_url',
             'image_url',
@@ -2362,6 +2373,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
     fabrication_notification_emails = serializers.ListField(
         child=serializers.CharField(max_length=254, allow_blank=True), required=False
     )
+    fabrication_replace_window_hours = serializers.CharField(required=False)
     # Accept either name; detail API exposes these as slot_options.
     param_definitions = MultiParamDefinitionWriteSerializer(many=True, required=False, default=list)
     slot_options = MultiParamDefinitionWriteSerializer(many=True, required=False, default=list)
@@ -2379,6 +2391,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'make', 'show_make_on_card', 'model_information', 'show_model_on_card',
             'booking_email_extra_text', 'completion_email_extra_text',
             'fabrication_notification_emails', 'own_material_fixed_charge',
+            'fabrication_replace_window_hours',
             'istem_portal_url', 'istem_fbr_status_url',
             'profile_type', 'category', 'internal_department', 'visibility_group',
             'equipment_group', 'alternative_priority', 'auto_allocate_alternative_default',
@@ -2466,6 +2479,14 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         if value is not None and value < 0:
             raise serializers.ValidationError("The own-material charge cannot be negative.")
         return value
+
+    def validate_fabrication_replace_window_hours(self, value):
+        from .fabrication_workflow import clean_replace_window_hours
+
+        hours, error = clean_replace_window_hours(value)
+        if error:
+            raise serializers.ValidationError(error)
+        return hours
 
     def validate_laser_sheet_materials(self, value):
         codes = [str(item.get("code") or "").strip().upper() for item in value or []]
@@ -3442,6 +3463,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     fabrication_parts = serializers.SerializerMethodField()
     fabrication_file_changes = serializers.SerializerMethodField()
     fabrication_files_replaceable = serializers.SerializerMethodField()
+    fabrication_workflow = serializers.SerializerMethodField()
     own_material_fixed_charge = serializers.SerializerMethodField()
 
     def _is_fabrication(self, obj) -> bool:
@@ -3497,8 +3519,16 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
         user = getattr(request, "user", None)
         if not user_can_replace_fabrication_files(user, obj):
             return {"allowed": False, "reason": None}
-        reason = fabrication_reupload_block_reason(obj)
+        reason = fabrication_reupload_block_reason(obj, user=user)
         return {"allowed": reason is None, "reason": reason}
+
+    def get_fabrication_workflow(self, obj):
+        if not self._is_fabrication(obj):
+            return None
+        from .fabrication_workflow import fabrication_workflow_payload
+
+        request = self.context.get("request")
+        return fabrication_workflow_payload(obj, getattr(request, "user", None))
 
     def get_own_material_fixed_charge(self, obj):
         equipment = getattr(obj, "equipment", None)
@@ -3683,6 +3713,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'fabrication_parts',
             'fabrication_file_changes',
             'fabrication_files_replaceable',
+            'fabrication_workflow',
         ]
         read_only_fields = [
             'booking_id',
@@ -3979,7 +4010,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     
     def get_status_display(self, obj):
         """Return model's status display."""
-        return obj.get_status_display()
+        return _booking_status_display(obj)
     
     def get_total_hours(self, obj):
         """Convert total_time_minutes to hours."""
@@ -4223,6 +4254,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
             'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline',
+            'fabrication_rejected_at', 'fabrication_replace_deadline',
         ]
         read_only_fields = [
             'booking_id',
@@ -4298,7 +4330,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         return None
 
     def get_status_display(self, obj):
-        return obj.get_status_display() if hasattr(obj, 'get_status_display') else obj.status
+        return _booking_status_display(obj) if hasattr(obj, 'get_status_display') else obj.status
 
     def get_total_hours(self, obj):
         if obj.total_time_minutes is not None:

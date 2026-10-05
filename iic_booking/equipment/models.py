@@ -442,6 +442,16 @@ class Equipment(models.Model):
         ),
         verbose_name=_("Own material fixed charge (INR)"),
     )
+    fabrication_replace_window_hours = models.PositiveSmallIntegerField(
+        default=24,
+        validators=[MinValueValidator(1), MaxValueValidator(168)],
+        help_text=_(
+            "For 3D printing and 2D laser cutting equipment: after the lab rejects a booking as not "
+            "feasible, the user has this many hours to upload new files. Otherwise the booking is "
+            "cancelled with a full refund."
+        ),
+        verbose_name=_("Hours to replace rejected files"),
+    )
 
     make = models.CharField(
         max_length=255,
@@ -3731,6 +3741,37 @@ class Booking(models.Model):
         verbose_name=_('I-STEM FBR verified by'),
         help_text=_('OIC (or admin) who last verified or rejected the FBR.'),
     )
+    # Fabrication (3D print / laser cut) "not feasible" rejection. The booking stays BOOKED and keeps
+    # its slot while the user may replace the files until the deadline.
+    fabrication_rejected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Fabrication files rejected at'),
+    )
+    fabrication_rejected_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='bookings_fabrication_rejected',
+        verbose_name=_('Fabrication files rejected by'),
+    )
+    fabrication_rejection_reason = models.TextField(
+        blank=True,
+        default='',
+        verbose_name=_('Fabrication rejection reason'),
+    )
+    fabrication_replace_deadline = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_('Replace files by'),
+        help_text=_('After this time a rejected fabrication booking is cancelled with a full refund.'),
+    )
+
+    @property
+    def is_fabrication_rejected(self) -> bool:
+        return self.fabrication_rejected_at is not None
 
     class Meta:
         verbose_name = _('Booking')

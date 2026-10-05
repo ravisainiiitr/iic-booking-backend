@@ -122,6 +122,7 @@ def _equipment_row(eq):
         "own_material_fixed_charge": (
             str(eq.own_material_fixed_charge) if eq.own_material_fixed_charge is not None else None
         ),
+        "fabrication_replace_window_hours": eq.fabrication_replace_window_hours,
     }
     if eq.profile_type == EquipmentProfileType.PRINT_3D:
         row["print_materials"] = PrintMaterialSerializer(
@@ -139,7 +140,8 @@ def _equipment_row(eq):
 def fabrication_material_equipment(request):
     """
     GET: fabrication equipment the user manages, with all materials (active and disabled).
-    PATCH: {equipment_id, fabrication_notification_emails?, own_material_fixed_charge?}.
+    PATCH: {equipment_id, fabrication_notification_emails?, own_material_fixed_charge?,
+            fabrication_replace_window_hours?}.
     """
     qs = fabrication_manageable_equipment_qs(request.user).select_related("internal_department")
     if request.method == "GET":
@@ -178,6 +180,14 @@ def fabrication_material_equipment(request):
             return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
         eq.own_material_fixed_charge = value
         update_fields.append("own_material_fixed_charge")
+    if "fabrication_replace_window_hours" in data:
+        from .fabrication_workflow import clean_replace_window_hours
+
+        hours, err = clean_replace_window_hours(data.get("fabrication_replace_window_hours"))
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        eq.fabrication_replace_window_hours = hours
+        update_fields.append("fabrication_replace_window_hours")
     if update_fields:
         eq.save(update_fields=update_fields)
     return Response({"equipment": _equipment_row(eq)})

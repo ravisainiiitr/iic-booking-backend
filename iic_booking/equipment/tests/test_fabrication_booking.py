@@ -215,16 +215,29 @@ def _replace(egs_factory, user, booking, body):
     return egs_factory.client_for(user).post(f"/api/bookings/{booking.pk}/fabrication-files/", body, format="json")
 
 
+def _mark_rejected(booking, hours=24):
+    """Users can only replace files while the lab's "not feasible" rejection is open."""
+    now = timezone.now()
+    Booking.objects.filter(pk=booking.pk).update(
+        fabrication_rejected_at=now,
+        fabrication_replace_deadline=now + timedelta(hours=hours),
+        fabrication_rejection_reason="The walls are too thin to cut.",
+    )
+    booking.refresh_from_db()
+
+
 @pytest.mark.django_db
 def test_user_replacing_files_with_higher_charge_gets_pay_window_and_revert_restores_old_files(
     egs_factory, media_tmp
 ):
     eq, acr, student, _sub, booking, old = _booked_laser(egs_factory)
     batch, new = _new_batch(eq, student, acr, width="400", height="100", quantity=5, name="new")
+    _mark_rejected(booking)
 
     resp = _replace(egs_factory, student, booking, {"laser_cut_batch_id": str(batch.id)})
     assert resp.status_code == 200, resp.data
     booking.refresh_from_db()
+    assert booking.fabrication_rejected_at is None
     old.refresh_from_db()
     new.refresh_from_db()
     assert booking.total_charge == Decimal("405")  # 404.86
@@ -255,6 +268,8 @@ def test_user_replacing_files_with_higher_charge_gets_pay_window_and_revert_rest
     assert old.booking_id == booking.pk and old.superseded_at is None
     assert new.booking_id is None and new.superseded_booking_id == booking.pk
     assert change.reverted_at is not None
+    # Undoing the unpaid change puts the rejection back.
+    assert booking.fabrication_rejected_at is not None
 
 
 @pytest.mark.django_db
@@ -300,14 +315,21 @@ def test_reupload_permissions_and_time_limits(egs_factory, media_tmp):
     resp = _replace(egs_factory, operator, booking, {"laser_cut_batch_id": str(op_batch.id)})
     assert resp.status_code == 200, resp.data
 
-    # Once the slot has started, files are locked.
+    # The booking user cannot change files unless the lab rejected them.
+    resp = _replace(egs_factory, student, booking, body)
+    assert resp.status_code == 400
+    assert "cannot be changed after booking" in resp.data["error"]
+
+    # Once the slot has started, files are locked for lab staff.
     eq2, acr2, student2, _s2, started, _o2 = _booked_laser(egs_factory, start=timezone.now() - timedelta(minutes=5))
-    batch2, _p2 = _new_batch(eq2, student2, acr2, name="late")
-    resp = _replace(egs_factory, student2, started, {"laser_cut_batch_id": str(batch2.id)})
+    EquipmentOperator.objects.create(equipment=eq2, operator=operator)
+    batch2, _p2 = _new_batch(eq2, operator, acr2, name="late")
+    resp = _replace(egs_factory, operator, started, {"laser_cut_batch_id": str(batch2.id)})
     assert resp.status_code == 400
     assert "before the booked slot starts" in resp.data["error"]
 
     # Only while BOOKED.
+    _mark_rejected(booking)
     Booking.objects.filter(pk=booking.pk).update(status=BookingStatus.COMPLETED)
     batch3, _p3 = _new_batch(eq, student, acr, name="done")
     resp = _replace(egs_factory, student, booking, {"laser_cut_batch_id": str(batch3.id)})
@@ -327,6 +349,7 @@ def test_print_reupload_updates_weight_and_time_and_checks_slots(egs_factory, me
 
     batch = PrintAnalysisBatch.objects.create(equipment=eq, user=student, material=pla, status="COMPLETED")
     new = print_part(eq, student, pla, weight="20", minutes=40, quantity=2, name="new", batch=batch)
+    _mark_rejected(booking)
     resp = _replace(egs_factory, student, booking, {"print_analysis_batch_id": str(batch.id)})
     assert resp.status_code == 200, resp.data
     booking.refresh_from_db()
@@ -342,6 +365,7 @@ def test_print_reupload_updates_weight_and_time_and_checks_slots(egs_factory, me
         charge_recalculation_pay_deadline=None,
         charge_recalculation_revert_snapshot=None,
     )
+    _mark_rejected(booking)
     resp = _replace(egs_factory, student, booking, {"part_updates": [{"analysis_id": str(new.id), "quantity": 5}]})
     assert resp.status_code == 400
     assert "more than the booked slot" in resp.data["error"]

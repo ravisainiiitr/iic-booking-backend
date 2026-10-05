@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 REASON_CONFIRMED = "confirmed"
 REASON_FILES_UPDATED = "files_updated"
 REASON_FILES_RESTORED = "files_restored"
+REASON_FILES_REPLACED_AFTER_REJECTION = "files_replaced_after_rejection"
+UPDATED_FILE_REASONS = (REASON_FILES_UPDATED, REASON_FILES_RESTORED, REASON_FILES_REPLACED_AFTER_REJECTION)
 
 
 def notification_recipients(equipment) -> list[str]:
@@ -32,6 +34,33 @@ def notification_recipients(equipment) -> list[str]:
             seen.add(email.lower())
             emails.append(email)
     return emails
+
+
+def lab_team_recipients(equipment) -> list[str]:
+    """Notification list plus the equipment's Lab Operators and Officer(s) In Charge, deduplicated."""
+    from iic_booking.users.test_accounts import redirect_email_for_user
+
+    from .reports import get_equipment_staff_notify_users
+
+    emails = notification_recipients(equipment)
+    seen = {e.lower() for e in emails}
+    for staff in get_equipment_staff_notify_users(equipment):
+        original = (getattr(staff, "email", "") or "").strip()
+        if not original:
+            continue
+        delivery, _subject = redirect_email_for_user(staff, original_email=original)
+        for email in delivery or [original]:
+            email = (email or "").strip()
+            if email and email.lower() not in seen:
+                seen.add(email.lower())
+                emails.append(email)
+    return emails
+
+
+def recipients_for_reason(equipment, reason: str) -> list[str]:
+    if reason == REASON_FILES_REPLACED_AFTER_REJECTION:
+        return lab_team_recipients(equipment)
+    return notification_recipients(equipment)
 
 
 def should_send_print_3d_stl_notification(
@@ -59,7 +88,7 @@ def dispatch_fabrication_file_email(booking, *, reason: str = REASON_CONFIRMED) 
     from .fabrication import is_fabrication_equipment
 
     equipment = getattr(booking, "equipment", None)
-    if not is_fabrication_equipment(equipment) or not notification_recipients(equipment):
+    if not is_fabrication_equipment(equipment) or not recipients_for_reason(equipment, reason):
         return
 
     booking_id = booking.booking_id
@@ -265,7 +294,7 @@ def send_print_3d_stl_booking_email(booking_id: int, reason: str = REASON_CONFIR
     equipment = booking.equipment
     if not is_fabrication_equipment(equipment):
         return False
-    recipients = notification_recipients(equipment)
+    recipients = recipients_for_reason(equipment, reason)
     if not recipients:
         return False
 
@@ -274,7 +303,10 @@ def send_print_3d_stl_booking_email(booking_id: int, reason: str = REASON_CONFIR
     is_laser = equipment.profile_type == EquipmentProfileType.LASER_CUT_2D
     body = _build_email_body(booking, files, attachments, links, reason=reason, is_laser=is_laser)
     kind = "Laser cutting" if is_laser else "3D print"
-    prefix = "UPDATED FILES — " if reason in (REASON_FILES_UPDATED, REASON_FILES_RESTORED) else ""
+    if reason == REASON_FILES_REPLACED_AFTER_REJECTION:
+        prefix = "NEW FILES AFTER REJECTION — "
+    else:
+        prefix = "UPDATED FILES — " if reason in UPDATED_FILE_REASONS else ""
     subject = f"{prefix}{kind} booking {booking_display_id_for_email(booking)} — {equipment.code or equipment.name}"
 
     email = EmailMessage(
@@ -388,7 +420,12 @@ def _build_email_body(booking, files, attachments, links, *, reason: str, is_las
     equipment = booking.equipment
     display_id = booking_display_id_for_email(booking)
     kind = "2D laser cutting" if is_laser else "3D print"
-    if reason == REASON_FILES_UPDATED:
+    if reason == REASON_FILES_REPLACED_AFTER_REJECTION:
+        intro = (
+            f"The user has uploaded new files for this {kind} booking after the lab rejected it as not feasible. "
+            "The booking is active again with the same slot. Use these files, not the earlier ones."
+        )
+    elif reason == REASON_FILES_UPDATED:
         intro = f"UPDATED: the design files of this {kind} booking were replaced. Use these files, not the earlier ones."
     elif reason == REASON_FILES_RESTORED:
         intro = (
@@ -397,10 +434,17 @@ def _build_email_body(booking, files, attachments, links, *, reason: str, is_las
         )
     else:
         intro = f"A new {kind} booking has been confirmed."
+    from .fbr_email import fbr_text_line
+
     lines = [
         intro,
         "",
         f"Booking ID: {display_id}",
+    ]
+    fbr_line = fbr_text_line(booking)
+    if fbr_line:
+        lines.append(fbr_line)
+    lines += [
         f"Equipment: {equipment.name} ({equipment.code})",
         f"Booked by: {(getattr(user, 'name', None) or '').strip() or '—'}",
         f"User email: {(getattr(user, 'email', None) or '').strip() or '—'}",
