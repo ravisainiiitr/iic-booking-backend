@@ -295,7 +295,8 @@ def _window_hours_used(booking) -> int:
 
 
 def expiry_cancel_reason(booking) -> str:
-    return f"Files not replaced within {_window_hours_used(booking)} hours after rejection"
+    hours = _window_hours_used(booking)
+    return f"Files not replaced within {hours} hour{'' if hours == 1 else 's'} after rejection"
 
 
 def expire_fabrication_rejections(now=None, limit: int = 200) -> int:
