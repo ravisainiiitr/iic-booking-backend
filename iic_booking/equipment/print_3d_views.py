@@ -742,8 +742,7 @@ def stream_design_file(file_field, original_filename, default_name):
 
 def presigned_design_file_url(file_field, original_filename, default_name, *, expires_in=None):
     """Presigned S3 GET URL, or None when storage is not S3 or the object is missing."""
-    import boto3
-    from botocore.exceptions import ClientError
+    from iic_booking.common_download import _boto3_presign, _resolve_s3_object_key
 
     storage_backend = (
         getattr(settings, "STORAGES", {}).get("default", {}).get("BACKEND", "")
@@ -753,31 +752,20 @@ def presigned_design_file_url(file_field, original_filename, default_name, *, ex
     bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", None)
     if "s3" not in (storage_backend or "").lower() or not bucket:
         return None
-    _storage, key = _resolve_storage_name(file_field)
-    if not key:
+    storage, name = _resolve_storage_name(file_field)
+    if not name:
         return None
-    safe_name = _safe_download_name(original_filename, default_name)
-    content_type, _ = mimetypes.guess_type(safe_name)
-    try:
-        client = boto3.client(
-            "s3",
-            region_name=getattr(settings, "AWS_S3_REGION_NAME", "ap-south-1"),
-            aws_access_key_id=getattr(settings, "AWS_ACCESS_KEY_ID", None),
-            aws_secret_access_key=getattr(settings, "AWS_SECRET_ACCESS_KEY", None),
-        )
-        return client.generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": bucket,
-                "Key": key,
-                "ResponseContentDisposition": f'attachment; filename="{safe_name}"',
-                "ResponseContentType": content_type or "application/octet-stream",
-            },
-            ExpiresIn=int(expires_in or getattr(settings, "AWS_S3_QUERYSTRING_EXPIRE", 3600)),
-        )
-    except ClientError:
-        logger.exception("Failed to generate presigned url for %s", file_field.name)
-        return None
+    # The storage name is relative to the storage location (e.g. "media/"); the bucket key is not.
+    url = _boto3_presign(
+        bucket=getattr(storage, "bucket_name", None) or bucket,
+        key=_resolve_s3_object_key(storage, name),
+        download_name=_safe_download_name(original_filename, default_name),
+        expires_in=int(expires_in or getattr(settings, "AWS_S3_QUERYSTRING_EXPIRE", 3600)),
+        use_accelerate=False,
+    )
+    if not url:
+        logger.error("Failed to generate presigned url for %s", file_field.name)
+    return url
 
 
 def presign_design_file(file_field, original_filename, default_name, *, fallback_url):
