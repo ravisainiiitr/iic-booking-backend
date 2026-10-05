@@ -1727,6 +1727,10 @@ urlpatterns = router.urls + [
     ),
     path("peak-window/status/", peak_window_status, name="peak-window-status"),
     path("admin/peak-window-settings/", PeakWindowSettingView.as_view(), name="admin-peak-window-settings"),
+    path(
+        "admin/equipment/<int:equipment_id>/slot-block-rules/",
+        include("iic_booking.equipment.slot_block_rules_urls"),
+    ),
     path("admin/", include(admin_api_router().urls)),
 ]
 

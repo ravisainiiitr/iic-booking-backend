@@ -6782,3 +6782,9 @@ class ChargeCopyBatch(models.Model):
 
     def __str__(self):
         return f"Charge copy {self.pk}: {self.source_user_type} -> {self.target_user_type}"
+
+
+from iic_booking.equipment.slot_block_rule_models import (  # noqa: E402
+    RecurringSlotBlockRule,
+    RecurringSlotBlockRuleSlot,
+)

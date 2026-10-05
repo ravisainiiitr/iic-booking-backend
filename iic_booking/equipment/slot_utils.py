@@ -167,7 +167,9 @@ class SlotGenerator:
                 )
             )
         if to_create:
-            return list(DailySlot.objects.bulk_create(to_create, ignore_conflicts=True))
+            from .slot_block_rules import bulk_create_daily_slots
+
+            return bulk_create_daily_slots(equipment, to_create)
         return []
     
     @staticmethod
@@ -228,8 +230,10 @@ class SlotGenerator:
                 )
             current_date += timedelta(days=1)
         if to_create:
+            from .slot_block_rules import bulk_create_daily_slots
+
             # Concurrent first loads of the same week race on (slot_master, date); the loser skips its rows.
-            return list(DailySlot.objects.bulk_create(to_create, ignore_conflicts=True))
+            return bulk_create_daily_slots(equipment, to_create)
         return []
 
     @staticmethod
