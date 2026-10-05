@@ -184,7 +184,7 @@ def user_search(request):
         return Response({"results": []})
     qs = (
         User.objects.filter(is_active=True)
-        .filter(Q(user_type__in=access.MODULE_USER_TYPES) | Q(is_superuser=True))
+        .filter(Q(user_type__in=access.MODULE_USER_TYPES) | Q(is_superuser=True) | Q(pk__in=access.all_hod_user_ids()))
         .filter(Q(name__icontains=term) | Q(email__icontains=term))
         .order_by("name")[:20]
     )

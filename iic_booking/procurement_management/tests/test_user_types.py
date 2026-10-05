@@ -11,7 +11,7 @@ from iic_booking.procurement_management.models import ProcurementRoleAssignment
 from iic_booking.users.models import User
 from iic_booking.users.models.user_type import UserType
 
-from .conftest import API, client_for, config_of, make_department, make_user, new_request
+from .conftest import API, act, category, client_for, config_of, line, make_department, make_user, new_request
 
 pytestmark = pytest.mark.django_db
 
@@ -57,13 +57,6 @@ class TestAccessRule:
         for url in ("requests/", "approvals/", "reports/", "dashboard/", "assets/", "config/"):
             assert disabled(client_for(user).get(f"{API}/{url}")), (code, url)
 
-    def test_faculty_department_head_is_refused(self, world):
-        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
-        world.dept.head = prof
-        world.dept.save(update_fields=["head"])
-        assert client_for(prof).get(f"{API}/bootstrap/").json()["enabled"] is False
-        assert disabled(client_for(prof).get(f"{API}/requests/"))
-
     def test_faculty_oic_of_equipment_is_refused(self, world):
         from iic_booking.equipment.models import EquipmentManager
 
@@ -83,6 +76,136 @@ class TestAccessRule:
         assert client_for(world.oic).get(f"{API}/bootstrap/").json()["enabled"] is True
         assert client_for(world.oic2).get(f"{API}/bootstrap/").json()["enabled"] is False
         assert client_for(student).get(f"{API}/bootstrap/").json()["enabled"] is False
+
+
+def make_hod_assignment(user, department, *, active=True, start_days=-30, end_days=None):
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from iic_booking.users.models.channel_i_identity import HeadOfDepartmentAssignment
+
+    today = timezone.localdate()
+    return HeadOfDepartmentAssignment.objects.create(
+        user=user,
+        department=department,
+        active=active,
+        effective_from=today + timedelta(days=start_days),
+        effective_to=None if end_days is None else today + timedelta(days=end_days),
+    )
+
+
+def dept_roles(user):
+    body = client_for(user).get(f"{API}/bootstrap/").json()
+    return body, {d["department"]["id"]: set(d["roles"]) for d in body["departments"]}
+
+
+class TestHeadOfDepartmentException:
+    """Any account type heading a department may use the module there, and only there."""
+
+    @pytest.mark.parametrize("code", [UserType.FACULTY, UserType.STUDENT, UserType.EXTERNAL, None])
+    def test_hod_assignment_allows_any_type_in_that_department_only(self, world, code):
+        prof = make_user(user_type=code, department=world.dept)
+        make_hod_assignment(prof, world.dept)
+        body, roles = dept_roles(prof)
+        assert body["enabled"] is True and body["can_configure"] is False
+        assert roles == {world.dept.pk: {c.ModuleRole.HOD}}
+        for url in ("requests/", "approvals/", "reports/", "dashboard/", "assets/"):
+            assert client_for(prof).get(f"{API}/{url}").status_code == 200, url
+        assert client_for(prof).get(f"{API}/dashboard/", {"department_id": world.dept.pk}).status_code == 200
+        assert client_for(prof).get(f"{API}/dashboard/", {"department_id": world.other_dept.pk}).status_code == 404
+
+    def test_department_head_counts_when_department_has_no_assignment(self, world):
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        world.dept.head = prof
+        world.dept.save(update_fields=["head"])
+        assert dept_roles(prof)[1] == {world.dept.pk: {c.ModuleRole.HOD}}
+
+    def test_stale_department_head_is_ignored_once_an_assignment_exists(self, world):
+        old = make_user(user_type=UserType.FACULTY, department=world.dept)
+        new = make_user(user_type=UserType.FACULTY, department=world.dept)
+        world.dept.head = old
+        world.dept.save(update_fields=["head"])
+        make_hod_assignment(new, world.dept)
+        assert client_for(old).get(f"{API}/bootstrap/").json()["enabled"] is False
+        assert disabled(client_for(old).get(f"{API}/requests/"))
+        assert dept_roles(new)[1] == {world.dept.pk: {c.ModuleRole.HOD}}
+
+    @pytest.mark.parametrize(
+        "kwargs", [{"active": False}, {"end_days": -1}, {"start_days": 1}], ids=["inactive", "ended", "not_started"]
+    )
+    def test_non_current_assignment_does_not_count(self, world, kwargs):
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        make_hod_assignment(prof, world.dept, **kwargs)
+        assert client_for(prof).get(f"{API}/bootstrap/").json()["enabled"] is False
+        assert disabled(client_for(prof).get(f"{API}/requests/"))
+
+    def test_roles_elsewhere_do_not_leak(self, world):
+        from iic_booking.equipment.models import EquipmentManager
+
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        make_hod_assignment(prof, world.dept)
+        EquipmentManager.objects.create(equipment=world.other_equipment, manager=prof)
+        ProcurementRoleAssignment.objects.create(department=world.other_dept, user=prof, role=c.ModuleRole.OFFICE, permissions=[])
+        assert dept_roles(prof)[1] == {world.dept.pk: {c.ModuleRole.HOD}}
+
+    def test_department_switch_still_applies(self, world):
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        make_hod_assignment(prof, world.dept)
+        config_service.update_config(world.admin, world.dept, {"module_enabled": False})
+        body = client_for(prof).get(f"{API}/bootstrap/").json()
+        assert body["enabled"] is False and body["departments"] == []
+        for url in ("requests/", "config/"):
+            assert disabled(client_for(prof).get(f"{API}/{url}")), url
+
+    def test_pilot_allowlist_still_applies(self, world):
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        make_hod_assignment(prof, world.dept)
+        config_service.update_config(world.admin, world.other_dept, {"module_enabled": False})
+        config_service.update_config(world.admin, world.dept, {"pilot_mode": True, "pilot_user_ids": [world.oic.pk]})
+        assert disabled(client_for(prof).get(f"{API}/requests/"))
+        assert client_for(prof).get(f"{API}/bootstrap/").json()["enabled"] is False
+        config_service.update_config(world.admin, world.dept, {"pilot_user_ids": [world.oic.pk, prof.pk]})
+        assert dept_roles(prof)[1] == {world.dept.pk: {c.ModuleRole.HOD}}
+
+    def test_pilot_list_and_roles_accept_the_hod_only_for_their_department(self, world):
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        make_hod_assignment(prof, world.dept)
+        config_service.update_config(world.admin, world.dept, {"pilot_user_ids": [prof.pk]})
+        config_service.assign_role(world.admin, world.dept, prof, c.ModuleRole.HOD)
+        with pytest.raises(ProcurementError) as exc:
+            config_service.update_config(world.admin, world.other_dept, {"pilot_user_ids": [prof.pk]})
+        assert exc.value.code == "user_type_not_allowed"
+        with pytest.raises(ProcurementError) as exc:
+            config_service.assign_role(world.admin, world.other_dept, prof, c.ModuleRole.OFFICE)
+        assert exc.value.code == "user_type_not_allowed"
+
+    def test_user_search_includes_department_heads(self, world):
+        prof = make_user(user_type=UserType.FACULTY, name="Zeta Head Prof")
+        make_user(user_type=UserType.FACULTY, name="Zeta Plain Prof")
+        make_hod_assignment(prof, world.dept)
+        rows = client_for(world.admin).get(f"{API}/config/users/", {"q": "Zeta"}).json()["results"]
+        assert [r["id"] for r in rows] == [prof.pk]
+
+    def test_audience_and_hod_stage_notification(self, world, monkeypatch):
+        prof = make_user(user_type=UserType.FACULTY, department=world.dept)
+        make_hod_assignment(prof, world.dept)
+        assert access.pilot_audience(world.dept.pk, [prof]) == [prof]
+        assert access.pilot_audience(world.other_dept.pk, [prof]) == []
+        calls = []
+        monkeypatch.setattr(
+            "iic_booking.communication.in_app.notify_in_app", lambda recipients, **kw: calls.append({u.pk for u in recipients})
+        )
+        r = new_request(
+            world.operator, equipment=world.equipment, rt="MAJOR_ASSET", cat=category(world.dept, "MAJOR_ASSET"),
+            specification="Spec", lines=[line("100.00")], submit=True,
+        )
+        act(world.oic, r, "approve")
+        act(world.stores, r, "approve")
+        assert any(prof.pk in to for to in calls)
+        assert all(world.hod.pk not in to for to in calls)
+        act(prof, r, "approve")
+        assert r.status == "APPROVED"
 
 
 class TestServiceRefusesDisallowedTypes:

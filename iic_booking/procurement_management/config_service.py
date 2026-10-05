@@ -8,7 +8,7 @@ from django.db import transaction
 
 from . import audit
 from . import constants as c
-from .access import is_main_admin, user_type_allowed
+from .access import is_main_admin, user_allowed_in
 from .defaults import ensure_department_defaults
 from .errors import ProcurementError, forbidden
 from .fy import is_valid_fy_label
@@ -140,10 +140,11 @@ def _set_pilot_users(actor, cfg, raw_ids, *, reason: str = "", request=None) -> 
         raise ProcurementError(
             f"Unknown or inactive users: {', '.join(map(str, missing))}.", code="invalid_pilot_users", field="pilot_user_ids"
         )
-    not_allowed = [i for i in ids if not user_type_allowed(found[i])]
+    not_allowed = [i for i in ids if not user_allowed_in(found[i], cfg.department_id)]
     if not_allowed:
         raise ProcurementError(
-            f"These users' account types cannot use Procurement & Assets: {', '.join(map(str, not_allowed))}.",
+            "These users' account types cannot use Procurement & Assets and they do not head this department: "
+            f"{', '.join(map(str, not_allowed))}.",
             code="user_type_not_allowed",
             field="pilot_user_ids",
         )
@@ -176,9 +177,11 @@ def assign_role(actor, department, user, role: str, permissions=None, *, request
         raise forbidden("Only the Main Administrator can assign Procurement & Assets roles.")
     if role not in [r.value for r in c.ASSIGNABLE_ROLES]:
         raise ProcurementError("Unknown role.", code="invalid_role")
-    if not user_type_allowed(user):
+    if not user_allowed_in(user, department.pk):
         raise ProcurementError(
-            "This user's account type cannot use Procurement & Assets.", code="user_type_not_allowed", field="user_id"
+            "This user's account type cannot use Procurement & Assets and they do not head this department.",
+            code="user_type_not_allowed",
+            field="user_id",
         )
     perms = _clean_permissions(role, permissions)
     row, created = ProcurementRoleAssignment.objects.select_for_update().get_or_create(
