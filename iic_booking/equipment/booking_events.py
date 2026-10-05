@@ -719,6 +719,8 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 context["extra_amount"] = format_inr(event.metadata.get("extra_amount")) or ""
         context.setdefault("refund_amount", "")
         context.setdefault("extra_amount", "")
+    elif event.metadata and event.metadata.get("refund_amount") not in (None, ""):
+        context["refund_amount"] = format_inr(event.metadata.get("refund_amount")) or ""
     
     # Get start and end times from slots (for email/display)
     # When equipment has Hide time (SLOT_ID): for non-admin/OIC recipients show date only and hide duration; admin/OIC always get full time.
