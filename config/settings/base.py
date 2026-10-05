@@ -128,6 +128,7 @@ LOCAL_APPS = [
     "iic_booking.research_copilot.apps.ResearchCopilotConfig",
     "iic_booking.my_research.apps.MyResearchConfig",
     "iic_booking.training.apps.TrainingConfig",
+    "iic_booking.procurement_management.apps.ProcurementManagementConfig",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps

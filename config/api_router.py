@@ -612,6 +612,8 @@ urlpatterns = router.urls + [
     path("v1/research-copilot/", include("iic_booking.research_copilot.urls")),
     path("v1/my-research/", include("iic_booking.my_research.urls")),
     path("v1/training/", include("iic_booking.training.urls")),
+    # Procurement & Assets (per-department switch; default OFF)
+    path("v1/procurement/", include("iic_booking.procurement_management.urls")),
     path("v1/portal-migration/booking-status/", portal_booking_status, name="portal-migration-booking-status-v1"),
     path("v1/portal-migration/admin/state/", portal_migration_admin_state, name="portal-migration-admin-state-v1"),
     path("v1/portal-migration/admin/dashboard/", portal_migration_dashboard, name="portal-migration-admin-dashboard-v1"),
