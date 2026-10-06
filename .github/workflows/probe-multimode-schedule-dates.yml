@@ -1,0 +1,69 @@
+# Read-only, counts only (no names, no codes, no ids): multi-mode families, modes by availability and
+# schedules with/without dates. Also samples bookability of every family member for the next 28 days at
+# 09:00, 13:00 and 17:00, so the totals before and after the "blank dates = always available" change
+# can be compared.
+name: Probe Multi-mode Schedule Dates
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from datetime import time, timedelta
+          from django.utils import timezone
+          from iic_booking.equipment.models import Equipment, EquipmentModeSchedule
+          from iic_booking.equipment import mode_utils
+
+          today = timezone.localdate()
+          modes = list(Equipment.objects.filter(parent_equipment__isnull=False))
+          base_ids = {m.parent_equipment_id for m in modes}
+          print(f"families={len(base_ids)} modes={len(modes)}")
+          print(f"flagged_bases={Equipment.objects.filter(parent_equipment__isnull=True, enable_multi_mode=True).count()}")
+          print(f"modes_by_availability={dict(Counter(m.mode_availability for m in modes))}")
+          dates_nullable = EquipmentModeSchedule._meta.get_field("start_date").null
+          print(f"schedule_dates_nullable={dates_nullable}")
+          qs = EquipmentModeSchedule.objects.all()
+          print(f"schedules_total={qs.count()}")
+          print(f"schedules_by_behavior={dict(Counter(qs.values_list('behavior', flat=True)))}")
+          if dates_nullable:
+              print(f"schedules_blank_dates={qs.filter(start_date__isnull=True, end_date__isnull=True).count()}")
+          print(f"schedules_current_or_future={qs.filter(end_date__gte=today).count()}")
+          scheduled_mode_ids = set(qs.values_list('mode_equipment_id', flat=True))
+          print(f"modes_without_any_schedule={sum(1 for m in modes if m.equipment_id not in scheduled_mode_ids)}")
+
+          members = modes + list(Equipment.objects.filter(pk__in=base_ids))
+          ok = Counter()
+          for eq in members:
+              kind = "mode" if eq.parent_equipment_id else "base"
+              for offset in range(28):
+                  day = today + timedelta(days=offset)
+                  for hour in (9, 13, 17):
+                      bookable, _ = mode_utils.equipment_bookable_on_date(eq, day, time(hour))
+                      ok[f"{kind}_{'bookable' if bookable else 'blocked'}"] += 1
+          print(f"bookability_samples_next_28d={dict(sorted(ok.items()))}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
