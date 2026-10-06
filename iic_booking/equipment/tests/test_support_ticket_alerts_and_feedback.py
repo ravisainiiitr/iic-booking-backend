@@ -6,6 +6,7 @@ import pytest
 from django.core import mail
 from rest_framework.test import APIClient
 
+from iic_booking.communication.models import CommunicationLog
 from iic_booking.equipment.models import EquipmentManager
 from iic_booking.support import ticket_alerts
 from iic_booking.support.models import PortalFeedback, SupportNotificationSettings, Ticket
@@ -60,16 +61,23 @@ def _raise_ticket(client, django_capture_on_commit_callbacks, **extra):
     return response.json()["ticket_id"]
 
 
+def _alert_logs():
+    return CommunicationLog.objects.filter(metadata__kind=ticket_alerts.ALERT_LOG_KIND).order_by("pk")
+
+
 @pytest.mark.django_db
-def test_default_recipient_is_seeded():
+def test_no_recipient_is_hard_coded(people, inline_alerts, django_capture_on_commit_callbacks):
     cfg = SupportNotificationSettings.get_singleton()
     assert cfg.ticket_alert_enabled is True
-    assert cfg.ticket_alert_emails == "ravisaini.15@gmail.com"
-    assert ticket_alerts.configured_alert_emails() == ["ravisaini.15@gmail.com"]
+    assert cfg.ticket_alert_emails == ""
+    assert ticket_alerts.configured_alert_emails() == []
+    ticket_id = _raise_ticket(_client(people["student"]), django_capture_on_commit_callbacks)
+    assert Ticket.objects.filter(pk=ticket_id).exists()
+    assert _alerts() == []
 
 
 @pytest.mark.django_db
-def test_migration_seeds_default_recipient():
+def test_migration_seeds_row_without_recipients():
     import importlib
 
     from django.apps import apps
@@ -78,26 +86,29 @@ def test_migration_seeds_default_recipient():
     SupportNotificationSettings.objects.all().delete()
     migration.seed_singleton(apps, None)
     row = SupportNotificationSettings.objects.get(pk=1)
-    assert (row.ticket_alert_enabled, row.ticket_alert_emails) == (True, "ravisaini.15@gmail.com")
+    assert (row.ticket_alert_enabled, row.ticket_alert_emails) == (True, "")
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize("role", ["student", "dept_admin", "oic"])
 def test_notification_settings_are_main_admin_only(people, role):
+    _set_alert_emails("desk@example.org")
     client = _client(people[role])
     assert client.get(SETTINGS_URL).status_code == 403
     put = client.put(SETTINGS_URL, {"ticket_alert_emails": "x@example.org"}, format="json")
     assert put.status_code == 403
-    assert SupportNotificationSettings.get_singleton().ticket_alert_emails == "ravisaini.15@gmail.com"
+    assert SupportNotificationSettings.get_singleton().ticket_alert_emails == "desk@example.org"
     assert _client().get(SETTINGS_URL).status_code in (401, 403)
 
 
 @pytest.mark.django_db
 def test_main_admin_reads_and_updates_recipients(people):
+    _set_alert_emails("desk@example.org")
     client = _client(people["admin"])
     got = client.get(SETTINGS_URL)
     assert got.status_code == 200
-    assert got.json()["ticket_alert_emails"] == ["ravisaini.15@gmail.com"]
+    assert got.json()["ticket_alert_emails"] == ["desk@example.org"]
+    assert got.json()["default_ticket_alert_emails"] == []
 
     bad = client.put(SETTINGS_URL, {"ticket_alert_emails": "ok@example.org, not-an-email"}, format="json")
     assert bad.status_code == 400
@@ -131,17 +142,88 @@ def test_new_ticket_is_emailed_to_configured_recipients(people, egs_factory, inl
     ticket_id = _raise_ticket(_client(student), django_capture_on_commit_callbacks, related_equipment=equipment.pk)
 
     alerts = _alerts()
-    assert len(alerts) == 1
-    alert = alerts[0]
-    assert alert.to == ["desk@example.org", "lead@example.org"]
-    assert f"#{ticket_id}" in alert.subject and "[High]" in alert.subject
-    body = alert.body
-    for expected in (student.email, "Booking Issues", "Cannot see Monday slots.", equipment.code,
-                     f"https://portal.test/admin-settings/support?ticket={ticket_id}"):
-        assert expected in body
-    html = alert.alternatives[0][0]
-    assert "Open ticket in portal" in html
-    assert any(people["oic"].email in m.to for m in mail.outbox if m is not alert), "OIC assignment email still sent"
+    assert [a.to for a in alerts] == [["desk@example.org"], ["lead@example.org"]], "one separate copy per recipient"
+    for alert in alerts:
+        assert alert.cc == [] and alert.bcc == []
+        assert f"#{ticket_id}" in alert.subject and "[High]" in alert.subject
+        body = alert.body
+        for expected in (student.email, "Booking Issues", "Cannot see Monday slots.", equipment.code,
+                         f"https://portal.test/admin-settings/support?ticket={ticket_id}"):
+            assert expected in body
+        assert "Open ticket in portal" in alert.alternatives[0][0]
+    others = [m for m in mail.outbox if m not in alerts]
+    assert any(people["oic"].email in m.to for m in others), "OIC assignment email still sent"
+    for m in others:
+        assert not {"desk@example.org", "lead@example.org"} & {a.lower() for a in m.to + m.cc + m.bcc}
+
+    logs = list(_alert_logs())
+    assert [(l.recipient_email, l.status) for l in logs] == [
+        ("desk@example.org", CommunicationLog.CommunicationStatus.SENT),
+        ("lead@example.org", CommunicationLog.CommunicationStatus.SENT),
+    ]
+    assert all(l.metadata["ticket_id"] == ticket_id and l.sent_at for l in logs)
+
+
+@pytest.mark.django_db
+def test_invalid_stored_entries_are_skipped(people, inline_alerts, django_capture_on_commit_callbacks):
+    SupportNotificationSettings.get_singleton()
+    SupportNotificationSettings.objects.filter(pk=1).update(
+        ticket_alert_emails="not-an-email, desk@example.org; bad@", ticket_alert_enabled=True
+    )
+    assert ticket_alerts.configured_alert_emails() == ["desk@example.org"]
+    _raise_ticket(_client(people["student"]), django_capture_on_commit_callbacks)
+    assert [a.to for a in _alerts()] == [["desk@example.org"]]
+
+
+@pytest.mark.django_db
+def test_model_clean_rejects_invalid_addresses_and_normalises():
+    from django.core.exceptions import ValidationError
+
+    cfg = SupportNotificationSettings.get_singleton()
+    cfg.ticket_alert_emails = "desk@example.org, nope"
+    with pytest.raises(ValidationError):
+        cfg.full_clean()
+    cfg.ticket_alert_emails = "desk@example.org;\nDESK@example.org  lead@example.org"
+    cfg.full_clean()
+    assert cfg.ticket_alert_emails == "desk@example.org, lead@example.org"
+
+
+@pytest.mark.django_db
+def test_chat_agent_ticket_is_forwarded(inline_alerts, settings, django_capture_on_commit_callbacks, db):
+    settings.OPENAI_API_KEY = ""
+    _set_alert_emails("desk@example.org")
+    with django_capture_on_commit_callbacks(execute=True):
+        res = _client().post(
+            "/api/chat-agent/",
+            {"message": "Please let me talk to a human about my sample", "public_email": "guest@example.org"},
+            format="json",
+        )
+    assert res.status_code == 200
+    ticket_id = res.json()["ticket_id"]
+    assert ticket_id
+    (alert,) = _alerts()
+    assert alert.to == ["desk@example.org"] and f"#{ticket_id}" in alert.subject
+
+
+@pytest.mark.django_db
+def test_one_failed_copy_does_not_stop_the_others(people, inline_alerts, monkeypatch,
+                                                  django_capture_on_commit_callbacks):
+    _set_alert_emails("down@example.org, desk@example.org")
+    real_send = ticket_alerts.send_mail
+
+    def flaky(*args, **kwargs):
+        if kwargs["recipient_list"] == ["down@example.org"]:
+            raise ConnectionRefusedError("SMTP down")
+        return real_send(*args, **kwargs)
+
+    monkeypatch.setattr(ticket_alerts, "send_mail", flaky)
+    _raise_ticket(_client(people["student"]), django_capture_on_commit_callbacks)
+    assert [a.to for a in _alerts()] == [["desk@example.org"]]
+    statuses = {l.recipient_email: l.status for l in _alert_logs()}
+    assert statuses == {
+        "down@example.org": CommunicationLog.CommunicationStatus.FAILED,
+        "desk@example.org": CommunicationLog.CommunicationStatus.SENT,
+    }
 
 
 @pytest.mark.django_db
@@ -185,17 +267,22 @@ def test_disabled_alerts_send_nothing(people, inline_alerts, django_capture_on_c
     _set_alert_emails("desk@example.org", enabled=False)
     _raise_ticket(_client(people["student"]), django_capture_on_commit_callbacks)
     assert _alerts() == []
+    assert not _alert_logs().exists()
 
 
 @pytest.mark.django_db
 def test_ticket_is_created_when_alert_email_fails(people, inline_alerts, monkeypatch,
                                                   django_capture_on_commit_callbacks):
+    _set_alert_emails("desk@example.org")
+
     def boom(*args, **kwargs):
         raise ConnectionRefusedError("SMTP down")
 
     monkeypatch.setattr(ticket_alerts, "send_mail", boom)
     ticket_id = _raise_ticket(_client(people["student"]), django_capture_on_commit_callbacks)
     assert Ticket.objects.filter(pk=ticket_id).exists()
+    (log,) = _alert_logs()
+    assert log.status == CommunicationLog.CommunicationStatus.FAILED and "SMTP down" in log.error_message
 
 
 @pytest.mark.django_db

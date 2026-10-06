@@ -1,5 +1,6 @@
 """Support ticket models for managing user queries, requests, and complaints."""
 
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import (
     AutoField,
@@ -394,11 +395,13 @@ class PortalFeedback(models.Model):
         return round(sum(vals) / len(vals), 2)
 
 
-DEFAULT_TICKET_ALERT_EMAILS = "ravisaini.15@gmail.com"
-
-
 class SupportNotificationSettings(models.Model):
-    """Single-row settings for support desk notifications (edited by the Main Administrator)."""
+    """
+    Single-row settings for support desk notifications (edited by the Main Administrator).
+
+    Recipients are deliberately not defaulted in code: the repository is public, so addresses are only
+    ever stored in the database (Admin Settings → Support, Django admin, or `support_ticket_alerts`).
+    """
 
     ticket_alert_enabled = BooleanField(
         _("Email a copy of every new support ticket"),
@@ -407,7 +410,7 @@ class SupportNotificationSettings(models.Model):
     ticket_alert_emails = TextField(
         _("New ticket alert recipients"),
         blank=True,
-        default=DEFAULT_TICKET_ALERT_EMAILS,
+        default="",
         help_text=_(
             "Comma, semicolon or one-per-line list. Every listed address receives a copy of each new "
             "support ticket, in addition to the OIC / assignee notifications."
@@ -430,10 +433,18 @@ class SupportNotificationSettings(models.Model):
     def __str__(self) -> str:
         return "Support notification settings"
 
+    def clean(self):
+        from .email_lists import MAX_ALERT_RECIPIENTS, clean_email_list
+
+        super().clean()
+        valid, invalid = clean_email_list(self.ticket_alert_emails)
+        if invalid:
+            raise ValidationError({"ticket_alert_emails": f"Invalid email address: {', '.join(invalid[:5])}"})
+        if len(valid) > MAX_ALERT_RECIPIENTS:
+            raise ValidationError({"ticket_alert_emails": f"At most {MAX_ALERT_RECIPIENTS} recipients are allowed."})
+        self.ticket_alert_emails = ", ".join(valid)
+
     @classmethod
     def get_singleton(cls) -> "SupportNotificationSettings":
-        obj, _created = cls.objects.get_or_create(
-            pk=1,
-            defaults={"ticket_alert_emails": DEFAULT_TICKET_ALERT_EMAILS, "ticket_alert_enabled": True},
-        )
+        obj, _created = cls.objects.get_or_create(pk=1, defaults={"ticket_alert_enabled": True})
         return obj

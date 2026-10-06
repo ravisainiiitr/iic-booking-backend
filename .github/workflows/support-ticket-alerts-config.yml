@@ -1,0 +1,79 @@
+# Who receives a copy of every new support ticket. The list is stored in the database (the same one the
+# Main Admin edits in Admin Settings → Support → New ticket email alerts). No env edits and no restarts.
+#   status : read-only. Masked recipients, whether they match the SUPPORT_TICKET_ALERT_EMAILS repository
+#            secret, and who would get the copy for the latest existing ticket (nothing is sent).
+#   apply  : replace the list with the SUPPORT_TICKET_ALERT_EMAILS secret and switch the copy on. Needs confirm=ALERTS.
+# Addresses come from the secret, never from inputs, so they stay out of this public repository and its logs.
+name: Support Ticket Alerts Config
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status | apply"
+        required: true
+        default: status
+        type: choice
+        options: [status, apply]
+      confirm:
+        description: "Type ALERTS to apply (not needed for status)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  config:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
+    steps:
+      - name: Run support_ticket_alerts
+        env:
+          ACTION: ${{ inputs.action }}
+          CONFIRM: ${{ inputs.confirm }}
+          SUPPORT_TICKET_ALERT_EMAILS: ${{ secrets.SUPPORT_TICKET_ALERT_EMAILS }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          ARGS=(--json --dry-run-ticket latest)
+          if [ -n "${SUPPORT_TICKET_ALERT_EMAILS:-}" ]; then
+            ARGS+=(--expect-from-env SUPPORT_TICKET_ALERT_EMAILS)
+          fi
+          if [ "$ACTION" = "apply" ]; then
+            [ "$CONFIRM" = "ALERTS" ] || { echo "::error::Type ALERTS in the confirm box to apply."; exit 1; }
+            [ -n "${SUPPORT_TICKET_ALERT_EMAILS:-}" ] || { echo "::error::Set the SUPPORT_TICKET_ALERT_EMAILS repository secret first."; exit 1; }
+            ARGS+=(--set-from-env SUPPORT_TICKET_ALERT_EMAILS --enabled on --confirm ALERTS)
+          fi
+          docker exec -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production -e SUPPORT_TICKET_ALERT_EMAILS "$CID" \
+            python manage.py support_ticket_alerts "${ARGS[@]}" > "$RUNNER_TEMP/support-ticket-alerts.json"
+          python3 - "$RUNNER_TEMP/support-ticket-alerts.json" <<'PY'
+          import json
+          import os
+          import sys
+
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          st = report["state"]
+          lines = ["## Support ticket alerts", ""]
+          lines += [f"- Changed: {c}" for c in report["changes"]] or ["- No changes (read-only)."]
+          lines.append(f"- **New ticket copy: {'ON' if st['enabled'] else 'OFF'}**, {st['recipient_count']} recipient(s): "
+                       + (", ".join(st["recipients_masked"]) or "none"))
+          if st["invalid_count"]:
+              lines.append(f"- Invalid stored entries skipped: {st['invalid_count']}")
+          lines.append(f"- Last updated: {st['updated_at'] or '-'}")
+          if "matches_expected" in report:
+              lines.append(f"- Matches SUPPORT_TICKET_ALERT_EMAILS secret: **{report['matches_expected']}**")
+          dry = report.get("dry_run") or {}
+          if dry.get("ticket_id"):
+              lines.append(f"- Dry run for ticket #{dry['ticket_id']} (nothing sent): {dry['would_send']} separate copy/copies to "
+                           + (", ".join(dry["recipients_masked"]) or "nobody"))
+          text = "\n".join(lines) + "\n"
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write(text)
+          PY

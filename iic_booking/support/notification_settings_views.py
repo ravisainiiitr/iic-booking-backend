@@ -1,9 +1,5 @@
 """Main Administrator settings for support desk notifications."""
 
-import re
-
-from django.core.exceptions import ValidationError
-from django.core.validators import validate_email
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -11,21 +7,12 @@ from rest_framework.response import Response
 
 from iic_booking.users.models import UserType
 
-from .models import DEFAULT_TICKET_ALERT_EMAILS, SupportNotificationSettings
-
-MAX_ALERT_RECIPIENTS = 20
+from .email_lists import MAX_ALERT_RECIPIENTS, clean_email_list, split_emails
+from .models import SupportNotificationSettings
 
 
 def _is_main_admin(user) -> bool:
     return bool(user and getattr(user, "user_type", None) == UserType.ADMIN)
-
-
-def _split_emails(raw) -> list[str]:
-    if isinstance(raw, (list, tuple)):
-        parts = [str(p) for p in raw]
-    else:
-        parts = re.split(r"[\s,;]+", str(raw or ""))
-    return [p.strip() for p in parts if p and p.strip()]
 
 
 def _payload(cfg: SupportNotificationSettings) -> dict:
@@ -35,7 +22,7 @@ def _payload(cfg: SupportNotificationSettings) -> dict:
     return {
         "ticket_alert_enabled": bool(cfg.ticket_alert_enabled),
         "ticket_alert_emails": parse_email_list(cfg.ticket_alert_emails),
-        "default_ticket_alert_emails": parse_email_list(DEFAULT_TICKET_ALERT_EMAILS),
+        "default_ticket_alert_emails": [],
         "max_recipients": MAX_ALERT_RECIPIENTS,
         "updated_at": cfg.updated_at.isoformat() if cfg.updated_at else None,
         "updated_by_name": (updated_by.get_display_name() if updated_by else None),
@@ -63,18 +50,7 @@ def support_notification_settings(request):
             enabled = bool(raw_enabled)
 
     if "ticket_alert_emails" in data:
-        emails: list[str] = []
-        seen: set[str] = set()
-        invalid: list[str] = []
-        for addr in _split_emails(data.get("ticket_alert_emails")):
-            try:
-                validate_email(addr)
-            except ValidationError:
-                invalid.append(addr)
-                continue
-            if addr.lower() not in seen:
-                seen.add(addr.lower())
-                emails.append(addr)
+        emails, invalid = clean_email_list(data.get("ticket_alert_emails"))
         if invalid:
             return Response(
                 {"error": f"Invalid email address: {', '.join(invalid[:5])}", "invalid": invalid},
@@ -86,7 +62,7 @@ def support_notification_settings(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     else:
-        emails = _split_emails(cfg.ticket_alert_emails)
+        emails = split_emails(cfg.ticket_alert_emails)
 
     if enabled and not emails:
         return Response(

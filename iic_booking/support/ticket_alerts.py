@@ -9,23 +9,27 @@ from typing import Callable
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import close_old_connections, transaction
+from django.utils import timezone
 from django.utils.html import escape
 
+from .email_lists import clean_email_list
 from .models import SupportNotificationSettings, Ticket
 
 logger = logging.getLogger(__name__)
 
 PUBLIC_REQUESTER_LABEL = "Public (not signed in)"
+ALERT_LOG_KIND = "support_ticket_new_alert"
 
 
 def configured_alert_emails() -> list[str]:
-    """Addresses configured by the Main Administrator; empty when alerts are switched off."""
-    from iic_booking.users.test_accounts import parse_email_list
-
+    """Valid addresses configured by the Main Administrator; empty when alerts are switched off."""
     cfg = SupportNotificationSettings.get_singleton()
     if not cfg.ticket_alert_enabled:
         return []
-    return parse_email_list(cfg.ticket_alert_emails)
+    valid, invalid = clean_email_list(cfg.ticket_alert_emails)
+    if invalid:
+        logger.warning("Support ticket alert list has %d invalid address(es); they are skipped", len(invalid))
+    return valid
 
 
 def _dedupe(emails, *, exclude=()) -> list[str]:
@@ -167,25 +171,72 @@ def build_ticket_alert_email(ticket: Ticket) -> tuple[str, str, str]:
     return subject, text, html
 
 
+def _send_one(ticket: Ticket, address: str, subject: str, text: str, html: str) -> bool:
+    """One message per address so no recipient sees another; logged like other portal mail."""
+    from iic_booking.communication.models import CommunicationLog
+    from iic_booking.users.test_accounts import is_test_user
+
+    log = None
+    try:
+        metadata = {
+            "kind": ALERT_LOG_KIND,
+            "ticket_id": ticket.ticket_id,
+            "email_backend": getattr(settings, "EMAIL_BACKEND", ""),
+        }
+        if is_test_user(getattr(ticket, "user", None)):
+            metadata["test_account_email_redirect"] = address
+        log = CommunicationLog.objects.create(
+            communication_type=CommunicationLog.CommunicationType.EMAIL,
+            recipient_email=address[:255],
+            subject=subject[:255],
+            message=text,
+            status=CommunicationLog.CommunicationStatus.PENDING,
+            metadata=metadata,
+        )
+    except Exception:
+        logger.exception("Could not log new ticket alert for ticket #%s", ticket.ticket_id)
+
+    try:
+        send_mail(
+            subject=subject,
+            message=text,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[address],
+            html_message=html,
+            fail_silently=False,
+        )
+    except Exception as exc:
+        logger.exception("New ticket alert email failed for ticket #%s", ticket.ticket_id)
+        if log is not None:
+            try:
+                log.status = CommunicationLog.CommunicationStatus.FAILED
+                log.error_message = str(exc)[:2000]
+                log.save(update_fields=["status", "error_message", "updated_at"])
+            except Exception:
+                logger.exception("Could not update new ticket alert log for ticket #%s", ticket.ticket_id)
+        return False
+
+    if log is not None:
+        try:
+            log.status = CommunicationLog.CommunicationStatus.SENT
+            log.sent_at = timezone.now()
+            log.save(update_fields=["status", "sent_at", "updated_at"])
+        except Exception:
+            logger.exception("Could not update new ticket alert log for ticket #%s", ticket.ticket_id)
+    return True
+
+
 def send_new_ticket_alert(ticket: Ticket) -> list[str]:
-    """Send the copy now. Returns the addresses mailed; never raises."""
+    """Send the copies now. Returns the addresses mailed successfully; never raises."""
     try:
         recipients = alert_recipients_for(ticket)
         if not recipients:
             return []
         subject, text, html = build_ticket_alert_email(ticket)
-        send_mail(
-            subject=subject,
-            message=text,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=recipients,
-            html_message=html,
-            fail_silently=False,
-        )
-        return recipients
     except Exception:
-        logger.exception("New ticket alert email failed for ticket #%s", getattr(ticket, "ticket_id", None))
+        logger.exception("New ticket alert could not be prepared for ticket #%s", getattr(ticket, "ticket_id", None))
         return []
+    return [addr for addr in recipients if _send_one(ticket, addr, subject, text, html)]
 
 
 def _run_in_background(fn: Callable[[], None]) -> None:

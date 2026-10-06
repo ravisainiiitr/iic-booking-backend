@@ -2,15 +2,11 @@ import django.db.models.deletion
 from django.conf import settings
 from django.db import migrations, models
 
-DEFAULT_TICKET_ALERT_EMAILS = "ravisaini.15@gmail.com"
-
 
 def seed_singleton(apps, schema_editor):
+    # Recipients are set per environment (Admin Settings → Support or `manage.py support_ticket_alerts`).
     SupportNotificationSettings = apps.get_model("support", "SupportNotificationSettings")
-    SupportNotificationSettings.objects.get_or_create(
-        pk=1,
-        defaults={"ticket_alert_emails": DEFAULT_TICKET_ALERT_EMAILS, "ticket_alert_enabled": True},
-    )
+    SupportNotificationSettings.objects.get_or_create(pk=1, defaults={"ticket_alert_enabled": True})
 
 
 class Migration(migrations.Migration):
@@ -33,7 +29,7 @@ class Migration(migrations.Migration):
                     "ticket_alert_emails",
                     models.TextField(
                         blank=True,
-                        default=DEFAULT_TICKET_ALERT_EMAILS,
+                        default="",
                         help_text=(
                             "Comma, semicolon or one-per-line list. Every listed address receives a copy of each new "
                             "support ticket, in addition to the OIC / assignee notifications."
