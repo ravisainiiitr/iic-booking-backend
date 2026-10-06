@@ -1,0 +1,86 @@
+# Read-only: for every faculty mapped to a legacy wallet, compare the live legacy balance with the net legacy
+# credit already on the new portal, i.e. what the next login sync will post (credit or deduction). Also reports
+# legacy-portal activity after the new portal opened. Public logs: user ids and amounts only.
+name: Probe Legacy Wallet Pending Deltas
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from datetime import datetime
+          from decimal import Decimal
+          from django.utils import timezone
+          from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+          from iic_booking.users.legacy_ledger.opening_balance import net_credited_for_migration
+          from iic_booking.users.legacy_ledger.faculty_login_wallet_sync import faculty_login_migration_id
+          from iic_booking.users.models import UserType
+          from iic_booking.users.models.portal_migration import LegacyWalletAccountMapping
+
+          launch_naive = datetime(2026, 9, 30, 21, 0)
+          with OldMySQLReader() as r:
+              wallets = r.wallets_by_user_id()
+              totals = r.ledger_totals_by_user_id()
+              last = r.fetchone("SELECT MAX(create_date) AS t, MAX(id) AS id FROM wallet_transactions")
+              print("legacy wallet_transactions latest:", last["t"], "max id", last["id"])
+              wt = r.fetchall(
+                  "SELECT DATE(create_date) AS d, transaction_type AS k, COUNT(*) AS n, SUM(ABS(amount)) AS s "
+                  "FROM wallet_transactions WHERE create_date >= %s GROUP BY DATE(create_date), transaction_type ORDER BY d",
+                  (launch_naive,))
+              for row in wt:
+                  print("  legacy wallet txns on", row["d"], "type", row["k"], "n", row["n"], "sum", row["s"])
+              bk = r.fetchall(
+                  "SELECT DATE(create_date) AS d, COUNT(*) AS n, SUM(charge) AS s FROM booking "
+                  "WHERE create_date >= %s GROUP BY DATE(create_date) ORDER BY d", (launch_naive,))
+              for row in bk:
+                  print("  legacy bookings created on", row["d"], "n", row["n"], "charge sum", row["s"])
+              late_slots = r.fetchone(
+                  "SELECT COUNT(*) AS n FROM booking WHERE booking_date >= '2026-10-01' AND is_deleted = 0")
+              print("legacy bookings (not deleted) with booking_date on/after 1 Oct 2026:", late_slots["n"])
+
+          c = Counter()
+          pend_credit = []
+          pend_debit = []
+          for m in LegacyWalletAccountMapping.objects.select_related("new_user").exclude(new_user=None):
+              u = m.new_user
+              if u.user_type != UserType.FACULTY or not m.old_user_id:
+                  c["skipped_not_faculty_or_no_legacy_uid"] += 1
+                  continue
+              w = wallets.get(int(m.old_user_id))
+              cr, db = totals.get(int(m.old_user_id), (Decimal("0"), Decimal("0")))
+              live = Decimal(str(w["balance"])).quantize(Decimal("0.01")) if w and w.get("balance") is not None else (cr - db).quantize(Decimal("0.01"))
+              if live < 0:
+                  c["legacy_negative"] += 1
+              mid = faculty_login_migration_id(user_id=u.pk, employee_id=m.employee_id)
+              net = net_credited_for_migration(migration_id=mid)
+              delta = (live - net).quantize(Decimal("0.01"))
+              if net == 0 and live != 0:
+                  c["never_synced"] += 1
+              if delta == 0:
+                  c["in_sync"] += 1
+              elif delta > 0:
+                  c["pending_credit"] += 1
+                  pend_credit.append((u.pk, delta, net == 0, u.last_login))
+              else:
+                  c["pending_debit"] += 1
+                  pend_debit.append((u.pk, delta, net == 0, u.last_login))
+          print("faculty mappings:", dict(c))
+          print("pending credits total", sum((d for _, d, _, _ in pend_credit), Decimal("0")),
+                "| pending deductions total", sum((d for _, d, _, _ in pend_debit), Decimal("0")))
+          for label, rows in (("pending deduction", pend_debit), ("pending credit", pend_credit)):
+              for uid, d, never, ll in sorted(rows, key=lambda x: x[1]):
+                  ll_s = timezone.localtime(ll).strftime("%Y-%m-%d %H:%M") if ll else "-"
+                  print(f"  {label}: user={uid} delta={d} never_synced={never} last_login={ll_s}")
+          PY
