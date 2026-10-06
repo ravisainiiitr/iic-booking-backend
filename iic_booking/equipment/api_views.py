@@ -14711,6 +14711,7 @@ def set_booking_sample_status(request, booking_id):
     """Set a sample-trace status for a booking.
     - Sample Sent: only booking user if they are student/faculty/external; optional sample_identifiers.
     - Held at Office, Forwarded to Lab, Sample Accepted, Sample Rejected, Processing, Completed, Returned, Archived, Disposed: only Admin, Officer In Charge, Lab Operator.
+      Officers In Charge and Lab Operators only for equipment they are assigned to (same scope as their booking list).
     - When status is Completed (Analyzed), a PENDING or BOOKED booking is automatically marked COMPLETED (same as Actions → Complete), with completion email to the user.
     Body: { "status": "...", "sample_identifiers": "", "tracking_id": "", "reason": "" }
     Reason is mandatory for SAMPLE_REJECTED and HELD_AT_OFFICE.
@@ -14787,6 +14788,16 @@ def set_booking_sample_status(request, booking_id):
                 status=status.HTTP_403_FORBIDDEN,
             )
         else:
+            scope_denied = _oic_booking_scope_denied(request.user, booking)
+            if scope_denied:
+                return scope_denied
+            if request.user.user_type == UserType.OPERATOR and booking.equipment_id not in set(
+                _get_equipment_ids_for_log_access(request.user) or []
+            ):
+                return Response(
+                    {"error": "You can only manage bookings for equipment you are assigned to as Lab Operator."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             # External bookings: office Hold/Forward first; lab operators may then accept/reject/process.
             snap = (getattr(booking, "user_type_snapshot", None) or "").strip()
             if snap in UserType.get_external_user_codes():
