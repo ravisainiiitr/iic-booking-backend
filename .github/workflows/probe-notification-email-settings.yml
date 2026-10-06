@@ -1,0 +1,83 @@
+# Read-only: where the portal's personal notification addresses resolve in production.
+# Shows the stored DB values, the TEST_ACCOUNT_EMAIL_REDIRECT env setting and what the live resolvers return
+# (test-account redirect, forced test-login redirect, SRIC Bill Section routing, new support ticket copy).
+# Resolvers run inside a transaction that is always rolled back, so nothing is written.
+# Public logs: masked addresses (r***@gmail.com), counts, a short fingerprint of each value (to compare runs) and
+# whether the value contains the address in the PERSONAL_EMAIL_EXPECTED repository secret.
+name: Probe Notification Email Settings
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 10
+    steps:
+      - name: Probe
+        env:
+          PERSONAL_EMAIL_EXPECTED: ${{ secrets.PERSONAL_EMAIL_EXPECTED }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "::error::django container not found"; exit 1; }
+          docker exec -i -e PERSONAL_EMAIL_EXPECTED -w /app "$CID" python - <<'PY' | tee "$RUNNER_TEMP/probe.md"
+          import hashlib
+          import os
+          import re
+
+          import django
+
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from django.db import transaction
+
+          EXPECTED = (os.environ.pop("PERSONAL_EMAIL_EXPECTED", "") or "").strip().lower()
+
+          def parse(raw):
+              if isinstance(raw, (list, tuple)):
+                  raw = ",".join(raw)
+              return [p for p in re.split(r"[\s,;]+", str(raw or "").strip()) if "@" in p]
+
+          def mask(e):
+              local, _, domain = e.partition("@")
+              return f"{local[:1]}***@{domain}" if local and domain else "***"
+
+          def show(label, raw):
+              emails = parse(raw)
+              fp = hashlib.sha256(",".join(sorted(e.lower() for e in emails)).encode()).hexdigest()[:12] if emails else "-"
+              has = (EXPECTED in [e.lower() for e in emails]) if EXPECTED else "n/a"
+              print(f"- {label}: {len(emails)} address(es) {', '.join(mask(e) for e in emails) or 'none'} | fp={fp} | contains expected: {has}")
+
+          print("## Notification email settings (read-only)\n")
+          print("### Stored values")
+          from iic_booking.users.models.test_account_email_settings import TestAccountEmailSettings
+          from iic_booking.users.models.wallet_sric_settings import WalletSricSettings
+          from iic_booking.support.models import SupportNotificationSettings
+
+          row = TestAccountEmailSettings.objects.filter(pk=1).values("recipient_emails").first()
+          show("DB TestAccountEmailSettings.recipient_emails" + ("" if row else " (row missing)"), (row or {}).get("recipient_emails"))
+          row = WalletSricSettings.objects.filter(pk=1).values("bill_section_emails").first()
+          show("DB WalletSricSettings.bill_section_emails" + ("" if row else " (row missing)"), (row or {}).get("bill_section_emails"))
+          row = SupportNotificationSettings.objects.filter(pk=1).values("ticket_alert_emails").first()
+          show("DB SupportNotificationSettings.ticket_alert_emails" + ("" if row else " (row missing)"), (row or {}).get("ticket_alert_emails"))
+          print(f"- env TEST_ACCOUNT_EMAIL_REDIRECT set in container: {'TEST_ACCOUNT_EMAIL_REDIRECT' in os.environ}")
+          show("settings.TEST_ACCOUNT_EMAIL_REDIRECT (env or code default)", getattr(settings, "TEST_ACCOUNT_EMAIL_REDIRECT", ""))
+
+          print("\n### What the live code resolves (rolled back)")
+          with transaction.atomic():
+              from iic_booking.users.test_accounts import email_redirects, redirect_email_address
+              from iic_booking.users.wallet_recharge_workflow import get_sric_bill_section_emails
+              from iic_booking.support.ticket_alerts import configured_alert_emails
+
+              show("email_redirects() (test-account mail)", email_redirects())
+              show("redirect_email_address(test.student@iic-booking.test)", redirect_email_address("test.student@iic-booking.test")[0])
+              show("get_sric_bill_section_emails() (cash / bank transfer recharge)", get_sric_bill_section_emails())
+              show("configured_alert_emails() (new support ticket copy)", configured_alert_emails())
+              transaction.set_rollback(True)
+          PY
+          cat "$RUNNER_TEMP/probe.md" >> "$GITHUB_STEP_SUMMARY"
