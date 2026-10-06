@@ -79,8 +79,37 @@ jobs:
           print("faculty mappings:", dict(c))
           print("pending credits total", sum((d for _, d, _, _ in pend_credit), Decimal("0")),
                 "| pending deductions total", sum((d for _, d, _, _ in pend_debit), Decimal("0")))
-          for label, rows in (("pending deduction", pend_debit), ("pending credit", pend_credit)):
-              for uid, d, never, ll in sorted(rows, key=lambda x: x[1]):
-                  ll_s = timezone.localtime(ll).strftime("%Y-%m-%d %H:%M") if ll else "-"
-                  print(f"  {label}: user={uid} delta={d} never_synced={never} last_login={ll_s}")
+          import re
+          from django.db.models import Max
+          from iic_booking.users.models import SubWallet
+          from iic_booking.users.models.portal_migration import LegacyWalletLedgerEntry
+          from iic_booking.users.legacy_ledger.opening_balance import get_iic_department
+
+          WORDS = set("paid for booking refund recharge transfer receipt no wallet amount sric project grant credit debit "
+                      "by admin from to of the and with xrd pxrd xps sem fesem tem nmr ftir afm uv vis icp ms".split())
+
+          def mask(s):
+              out = []
+              for tok in re.split(r"(\W+)", str(s or "")):
+                  out.append(tok if (not tok or re.fullmatch(r"[\W\d.,:-]+", tok) or tok.lower() in WORDS) else "~")
+              return re.sub(r"(~\s*)+", "~ ", "".join(out))[:90]
+
+          iic = get_iic_department()
+          by_user = {m.new_user_id: m for m in LegacyWalletAccountMapping.objects.exclude(new_user=None)}
+          with OldMySQLReader() as r:
+              for label, rows in (("pending deduction", pend_debit), ("pending credit", pend_credit)):
+                  for uid, d, never, ll in sorted(rows, key=lambda x: x[1]):
+                      ll_s = timezone.localtime(ll).strftime("%Y-%m-%d %H:%M") if ll else "-"
+                      m = by_user[uid]
+                      sub = SubWallet.objects.filter(wallet__user_id=uid, department=iic).first()
+                      bal = sub.balance if sub else Decimal("0")
+                      after = bal + d
+                      flag = "  <-- WOULD GO NEGATIVE" if after < 0 else ""
+                      print(f"  {label}: user={uid} delta={d} last_login={ll_s} iic_balance_now={bal} after_sync={after}{flag}")
+                      last_imp = LegacyWalletLedgerEntry.objects.filter(employee_id=m.employee_id).aggregate(x=Max("source_transaction_id"))["x"] or 0
+                      for t in r.fetchall(
+                          "SELECT id, amount, transaction_type, create_date, description, created_by FROM wallet_transactions "
+                          "WHERE user_id = %s AND id > %s ORDER BY id", (int(m.old_user_id), int(last_imp))):
+                          typ = {"1": "credit", "2": "debit"}.get(str(t["transaction_type"]), str(t["transaction_type"]))
+                          print(f"      legacy src#{t['id']} {t['create_date']} {typ} {t['amount']} by={t['created_by']} | {mask(t['description'])}")
           PY
