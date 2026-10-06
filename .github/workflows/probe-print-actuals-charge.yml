@@ -1,0 +1,124 @@
+name: Probe 3D Print Actuals Charge (read-only)
+
+# Lists 3D print bookings whose STL files have an actual weight / time set by staff, with the stored
+# charge, the charge recomputed from the estimates and the charge recomputed from the actuals (same
+# engine and GST rule as the post-booking charge recalculation). Prints booking IDs, statuses and
+# amounts only (no names, no emails). Runs inside a READ ONLY transaction that is rolled back.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: 3D print bookings with actuals (SELECT only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import copy
+          import os
+          from decimal import Decimal
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment.api_views import get_external_gst_percent
+          from iic_booking.equipment.calculators import (
+              ChargeCalculationEngine,
+              TimeCalculationEngine,
+              build_safe_input_values_for_charge_calculation,
+              quantize_money,
+          )
+          from iic_booking.equipment.fabrication import (
+              OWN_MATERIAL_KEY,
+              active_print_analyses_for_booking,
+              inject_print_parts,
+              own_material_available,
+              strip_fabrication_keys,
+          )
+          from iic_booking.equipment.models import (
+              Booking,
+              BookingEvent,
+              BookingEventType,
+              Equipment,
+              EquipmentProfileType,
+              PrintAnalysis,
+          )
+          from iic_booking.users.models.user_type import UserType
+
+          def charge_for(b, analyses):
+              eq = b.equipment
+              cp = b.charge_profile
+              safe = build_safe_input_values_for_charge_calculation(b.input_values, equipment=eq)
+              merged = strip_fabrication_keys(dict(safe or {}))
+              if analyses:
+                  merged = inject_print_parts(merged, analyses)
+              merged[OWN_MATERIAL_KEY] = bool(getattr(b, "own_material", False)) and own_material_available(eq)
+              minutes = TimeCalculationEngine.calculate_time(cp, merged, slot_duration_minutes=eq.slot_duration_minutes)
+              charge, _ = ChargeCalculationEngine.calculate_charge(
+                  cp, merged, minutes, selected_parameters=b.selected_parameters
+              )
+              charge = quantize_money(charge)
+              if UserType.is_external_user(getattr(b.user, "user_type", None)):
+                  gst = get_external_gst_percent()
+                  if gst > 0:
+                      charge = quantize_money(charge + quantize_money(charge * gst / Decimal("100")))
+              return charge, minutes
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              print("== 3D print equipment (id, status, enable_charge_recalculation) ==")
+              for eq in Equipment.objects.filter(profile_type=EquipmentProfileType.PRINT_3D).order_by("equipment_id"):
+                  print(f"  equipment {eq.equipment_id} status={eq.status} enable_charge_recalculation={eq.enable_charge_recalculation}")
+
+              booking_ids = sorted(set(
+                  PrintAnalysis.objects.filter(booking__isnull=False)
+                  .exclude(actual_weight_grams__isnull=True, actual_time_minutes__isnull=True)
+                  .values_list("booking_id", flat=True)
+              ))
+              print(f"\n== bookings with actual weight/time set: {len(booking_ids)} ==")
+              print("booking | equipment | status | files | stored total | pending | estimate charge | actuals charge | "
+                    "difference vs paid | charge-recalculated events | verdict")
+              affected = 0
+              for b in Booking.objects.filter(pk__in=booking_ids).select_related("equipment", "charge_profile", "user").order_by("pk"):
+                  analyses = active_print_analyses_for_booking(b)
+                  try:
+                      actual_charge, _ = charge_for(b, analyses)
+                      est = []
+                      for a in analyses:
+                          c = copy.copy(a)
+                          c.actual_weight_grams = None
+                          c.actual_time_minutes = None
+                          est.append(c)
+                      estimate_charge, _ = charge_for(b, est)
+                  except Exception as exc:  # noqa: BLE001
+                      print(f"  {b.pk} | {b.equipment_id} | {b.status} | {len(analyses)} | charge error {type(exc).__name__}")
+                      continue
+                  stored = Decimal(b.total_charge or 0)
+                  pending = b.charge_recalculation_pending_amount
+                  paid_basis = quantize_money(stored - pending) if pending is not None else quantize_money(stored)
+                  events = BookingEvent.objects.filter(booking=b, event_type=BookingEventType.CHARGE_RECALCULATED).count()
+                  diff = quantize_money(actual_charge - paid_basis)
+                  if stored != actual_charge:
+                      verdict = "NOT ADJUSTED"
+                      affected += 1
+                  elif pending:
+                      verdict = "adjusted, refund/extra pending"
+                  else:
+                      verdict = "ok"
+                  print(f"  {b.pk} | {b.equipment_id} | {b.status} | {len(analyses)} | {stored} | {pending} | "
+                        f"{estimate_charge} | {actual_charge} | {diff} | {events} | {verdict}")
+              print(f"\nbookings whose stored charge does not match the actuals: {affected}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
