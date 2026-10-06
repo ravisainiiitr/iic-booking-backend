@@ -9,7 +9,6 @@ assignments. Everyone else gets 403, matching the slot status and repeat block e
 
 from __future__ import annotations
 
-from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -39,9 +38,7 @@ def slot_status_picker(request):
     temporary_ids = set()
     if user_type == UserType.MANAGER:
         temporary_ids = set(
-            EquipmentTemporaryOIC.objects.filter(temporary_oic=user, resume_at__gt=timezone.now()).values_list(
-                "equipment_id", flat=True
-            )
+            EquipmentTemporaryOIC.objects.active().filter(temporary_oic=user).values_list("equipment_id", flat=True)
         )
 
     status_labels = dict(EquipmentStatus.choices)
