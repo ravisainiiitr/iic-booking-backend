@@ -101,7 +101,7 @@ def releases_collection(request):
         release_notes=request.data.get("release_notes") or "",
         supported_windows=request.data.get("supported_windows")
         or "Windows 10 Pro, Windows 11 Pro, Windows Server 2019/2022",
-        min_ram_gb=int(request.data.get("min_ram_gb") or 8),
+        min_ram_gb=int(request.data.get("min_ram_gb") or 4),
         min_disk_gb=int(request.data.get("min_disk_gb") or 20),
         signature_status=(
             request.data.get("signature_status") or AgentInstallerRelease.SignatureStatus.UNSIGNED

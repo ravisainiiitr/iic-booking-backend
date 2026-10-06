@@ -31,7 +31,7 @@ class AgentInstallerRelease(models.Model):
         blank=True,
         default="Windows 10 Pro, Windows 11 Pro, Windows Server 2019/2022",
     )
-    min_ram_gb = models.PositiveIntegerField(default=8)
+    min_ram_gb = models.PositiveIntegerField(default=4)
     min_disk_gb = models.PositiveIntegerField(default=20)
     download_size_bytes = models.BigIntegerField(default=0)
     sha256 = models.CharField(max_length=64, blank=True, default="")
