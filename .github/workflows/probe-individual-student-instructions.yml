@@ -1,0 +1,71 @@
+name: Probe Individual Student Instructions (read-only)
+
+# Before individual students start seeing the IITR Student important instruction: how many equipment have an
+# instruction saved specifically for Individual Students, and how many of those also have an IITR Student
+# instruction. Runs inside a READ ONLY transaction that is rolled back; prints counts only (no equipment names,
+# instruction text, users or contact data).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Per-user-type important instructions (SELECT only, counts only)
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          CID=$(docker compose -f docker-compose.production.yml ps --format '{{.Name}}' | grep django | head -n1)
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os
+          from collections import Counter
+
+          import django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+
+          from django.db import connection, transaction
+
+          from iic_booking.equipment.models import Equipment, EquipmentStatus
+
+          IND = "individual_student"
+          STU = "student"
+
+          def has(m, key):
+              return isinstance(m, dict) and isinstance(m.get(key), str) and m.get(key).strip() != ""
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+
+              rows = list(Equipment.objects.values_list("status", "important_instruction", "important_instruction_by_user_type"))
+              per_type = Counter()
+              ind = ind_active = ind_with_student = ind_without_student_with_default = ind_only = 0
+              for st, default, m in rows:
+                  if isinstance(m, dict):
+                      for k, v in m.items():
+                          if isinstance(v, str) and v.strip():
+                              per_type[k] += 1
+                  if not has(m, IND):
+                      continue
+                  ind += 1
+                  ind_active += st == EquipmentStatus.ACTIVE
+                  if has(m, STU):
+                      ind_with_student += 1
+                  elif (default or "").strip():
+                      ind_without_student_with_default += 1
+                  else:
+                      ind_only += 1
+              print(f"equipment total={len(rows)}")
+              print(f"equipment with any per-user-type instruction={sum(1 for *_, m in rows if isinstance(m, dict) and any(isinstance(v, str) and v.strip() for v in m.values()))}")
+              print(f"per-user-type instruction counts={dict(per_type)}")
+              print(f"equipment with an Individual Student instruction={ind} (active={ind_active})")
+              print(f"  of which also have an IITR Student instruction={ind_with_student}")
+              print(f"  of which have no IITR Student instruction but a default={ind_without_student_with_default}")
+              print(f"  of which have neither (would show nothing)={ind_only}")
+
+              transaction.set_rollback(True)
+          print("\nDONE (read-only, rolled back)")
+          PY
