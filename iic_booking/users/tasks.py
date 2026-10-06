@@ -268,6 +268,22 @@ def registration_decision_timeouts() -> dict:
     return result
 
 
+@shared_task(name="users.faculty_wallet_daily_sync")
+def faculty_wallet_daily_sync() -> dict:
+    """Daily old-portal wallet sync for all faculty; does nothing once the Main Administrator deadline passes."""
+    from iic_booking.users.legacy_ledger.faculty_wallet_batch_sync import (
+        record_run,
+        run_faculty_wallet_batch_sync,
+        summary_log_line,
+    )
+
+    summary = run_faculty_wallet_batch_sync(apply=True, trigger="daily")
+    if summary["status"] != "already_running":
+        record_run(summary)
+    logger.info("faculty_wallet_daily_sync: %s", summary_log_line(summary))
+    return {k: v for k, v in summary.items() if k != "changes"}
+
+
 @shared_task(name="users.send_migration_notification_recipient", bind=True, max_retries=3)
 def send_migration_notification_recipient(self, recipient_id: int) -> dict:
     """Deliver one Phase 8C migration notification (staging/Mailpit). Never production."""

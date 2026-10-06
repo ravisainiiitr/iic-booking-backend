@@ -232,6 +232,7 @@ class ReconcileResult:
     target_balance: Decimal
     previous_credited: Decimal
     created: bool
+    blocked_below_floor: bool = False
 
 
 def net_credited_for_migration(*, migration_id: str, sub_wallet: SubWallet | None = None) -> Decimal:
@@ -264,12 +265,15 @@ def reconcile_legacy_balance_to_subwallet(
     wallet: Wallet | None = None,
     related_user=None,
     description_prefix: str = RECONCILE_PREFIX,
+    floor: Decimal | None = None,
 ) -> ReconcileResult:
     """
     Bring the SubWallet (default: user's own wallet, IIC department) net migration credit
     in line with target_balance using marker-based credit/debit deltas.
 
     Pass ``wallet`` to credit a wallet the user does not own (IITR Student → linked faculty wallet).
+    Pass ``floor`` to refuse a deduction that would leave the sub-wallet balance below it
+    (nothing is written; ``blocked_below_floor`` is set).
     Idempotent: a second call with the same target creates no new transaction.
     """
     migration_id = (migration_id or "").strip()
@@ -305,6 +309,16 @@ def reconcile_legacy_balance_to_subwallet(
                 target_balance=target,
                 previous_credited=previous,
                 created=False,
+            )
+        if delta < 0 and floor is not None and (sub.balance or Decimal("0.00")) + delta < floor:
+            return ReconcileResult(
+                sub_wallet=sub,
+                transaction=None,
+                delta=delta,
+                target_balance=target,
+                previous_credited=previous,
+                created=False,
+                blocked_below_floor=True,
             )
         txn_type = (
             SubWalletTransaction.TransactionType.CREDIT

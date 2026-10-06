@@ -110,6 +110,9 @@ class PortalMigrationState(models.Model):
     # Null means the built-in booking_lock.FACULTY_WALLET_SYNC_CUTOFF applies.
     # Change only through faculty_wallet_sync_deadline.set_faculty_wallet_sync_cutoff (audited).
     faculty_wallet_sync_cutoff = models.DateTimeField(null=True, blank=True)
+    # Written by faculty_wallet_batch_sync.record_run: counts, totals and user ids only.
+    faculty_wallet_last_batch_sync_at = models.DateTimeField(null=True, blank=True)
+    faculty_wallet_last_batch_sync_summary = models.JSONField(default=dict, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

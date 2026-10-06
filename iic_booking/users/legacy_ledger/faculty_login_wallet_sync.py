@@ -22,10 +22,11 @@ from iic_booking.users.legacy_ledger.mapping import (
 from iic_booking.users.legacy_ledger.opening_balance import (
     OpeningBalanceError,
     get_iic_department,
+    net_credited_for_migration,
     reconcile_legacy_balance_to_subwallet,
 )
 from iic_booking.users.legacy_ledger.reader import OldMySQLNotConfigured, OldMySQLReader
-from iic_booking.users.models import UserType
+from iic_booking.users.models import SubWallet, UserType
 from iic_booking.users.models.portal_migration import LegacyWalletAccountMapping, LegacyWalletMappingStatus
 
 logger = logging.getLogger(__name__)
@@ -46,15 +47,49 @@ def faculty_login_migration_id(*, user_id: int, employee_id: str) -> str:
     return f"faculty-wallet:{employee_id or user_id}"
 
 
+def _dry_run_result(user, *, emp: str, old_uid: int, balance: Decimal, floor: Decimal | None) -> dict:
+    """What the sync would post, without writing anything (no mapping, ledger import or wallet entry)."""
+    try:
+        dept = get_iic_department()
+    except OpeningBalanceError:
+        return {"ok": False, "skipped": False, "reason": "iic_department_missing", "employee_id": emp}
+    migration_id = faculty_login_migration_id(user_id=user.pk, employee_id=emp)
+    sub = SubWallet.objects.filter(wallet__user=user, department=dept).first()
+    previous = net_credited_for_migration(migration_id=migration_id, sub_wallet=sub) if sub else Decimal("0.00")
+    sub_balance = (sub.balance if sub else None) or Decimal("0.00")
+    delta = (balance - previous).quantize(Decimal("0.01"))
+    blocked = bool(delta < 0 and floor is not None and sub_balance + delta < floor)
+    return {
+        "ok": True,
+        "skipped": False,
+        "dry_run": True,
+        "employee_id": emp,
+        "legacy_user_id": old_uid,
+        "legacy_balance": str(balance),
+        "reconcile": {
+            "delta": str(delta),
+            "target": str(balance),
+            "previous_credited": str(previous),
+            "created": False,
+            "blocked_below_floor": blocked,
+            "sub_wallet_balance": str(sub_balance),
+        },
+    }
+
+
 def sync_faculty_wallet_from_legacy(
     user,
     *,
     reader: OldMySQLReader | None = None,
+    dry_run: bool = False,
+    floor: Decimal | None = None,
 ) -> dict:
     """
     Import legacy ledger rows for this faculty user and reconcile IIC SubWallet balance.
 
     Returns a status dict. Safe to call on every faculty login until the sync deadline.
+    ``dry_run`` reports the delta without writing; ``floor`` refuses deductions that would leave
+    the IIC sub-wallet below it (see reconcile_legacy_balance_to_subwallet).
     """
     if getattr(user, "user_type", None) != UserType.FACULTY:
         return {"ok": False, "skipped": True, "reason": "not_faculty"}
@@ -91,6 +126,8 @@ def sync_faculty_wallet_from_legacy(
             if wallet and wallet.get("balance") is not None
             else (credits - debits).quantize(Decimal("0.01"))
         )
+        if dry_run:
+            return _dry_run_result(user, emp=emp, old_uid=old_uid, balance=balance, floor=floor)
 
         row = MappingRow(
             old_user_id=old_uid,
@@ -156,6 +193,7 @@ def sync_faculty_wallet_from_legacy(
             department=dept,
             legacy_closing_balance=balance,
             reconciliation_reference=f"login-sync emp={emp}",
+            floor=floor,
         )
 
         return {
@@ -172,6 +210,8 @@ def sync_faculty_wallet_from_legacy(
                 "target": str(recon.target_balance),
                 "previous_credited": str(recon.previous_credited),
                 "created": recon.created,
+                "blocked_below_floor": recon.blocked_below_floor,
+                "sub_wallet_balance": str(recon.sub_wallet.balance),
             },
         }
     except OldMySQLNotConfigured:

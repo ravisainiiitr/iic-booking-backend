@@ -30,6 +30,8 @@ IST = ZoneInfo("Asia/Kolkata")
 MAX_AHEAD = timedelta(days=365)
 REASON_MAX_LENGTH = 1000
 HISTORY_LIMIT = 10
+# Matches the beat entry seeded by users migration 0132.
+DAILY_SYNC_TIME_IST = "02:30"
 
 
 class FacultyWalletSyncDeadlineError(ValueError):
@@ -88,12 +90,33 @@ def _recent_changes() -> list[dict]:
     return [_serialize_change(r) for r in rows]
 
 
+def _last_batch_sync() -> dict | None:
+    """Latest applied batch sync (daily 02:30 IST run or admin command): counts, totals, user ids."""
+    try:
+        with transaction.atomic():
+            state = (
+                PortalMigrationState.objects.filter(singleton_key="default")
+                .only("faculty_wallet_last_batch_sync_at", "faculty_wallet_last_batch_sync_summary")
+                .first()
+            )
+    except DatabaseError:
+        return None
+    if not state or not state.faculty_wallet_last_batch_sync_at:
+        return None
+    summary = dict(state.faculty_wallet_last_batch_sync_summary or {})
+    summary.pop("changes", None)
+    summary["ran_at"] = _iso(state.faculty_wallet_last_batch_sync_at)
+    return summary
+
+
 def faculty_wallet_sync_deadline_status(now: datetime | None = None) -> dict:
     now = now or timezone.now()
     stored = stored_faculty_wallet_sync_cutoff()
     effective = stored or FACULTY_WALLET_SYNC_CUTOFF
     history = _recent_changes()
     return {
+        "daily_sync_time_ist": DAILY_SYNC_TIME_IST,
+        "last_batch_sync": _last_batch_sync(),
         "cutoff": _iso(effective),
         "cutoff_ist": _ist_label(effective),
         "source": "setting" if stored else "default",

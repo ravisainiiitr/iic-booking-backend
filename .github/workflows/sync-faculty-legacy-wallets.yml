@@ -1,0 +1,63 @@
+# Bring faculty IIC wallets up to date with their old-portal balance (same path as the faculty login sync).
+# dry-run writes nothing; apply posts the wallet entries and needs confirm=SYNC WALLETS.
+# Deductions that would take an IIC sub-wallet below zero are refused and listed. Runs only while the
+# Main Administrator faculty wallet sync deadline is open. Public logs: user ids and amounts only.
+name: Sync Faculty Legacy Wallets
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run (no writes) or apply"
+        type: choice
+        options: [dry-run, apply]
+        default: dry-run
+      confirm:
+        description: "Type SYNC WALLETS to apply"
+        required: false
+        default: ""
+      user_ids:
+        description: "Comma-separated user ids (empty = all faculty)"
+        required: false
+        default: ""
+
+jobs:
+  sync:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Validate inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+          USER_IDS: ${{ inputs.user_ids }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "SYNC WALLETS" ]; then
+            echo "Refusing: apply needs confirm to be exactly SYNC WALLETS"
+            exit 1
+          fi
+          if ! printf '%s' "$USER_IDS" | grep -Eq '^[0-9, ]*$'; then
+            echo "Refusing: user_ids must be numbers separated by commas"
+            exit 1
+          fi
+
+      - name: Sync
+        env:
+          MODE: ${{ inputs.mode }}
+          USER_IDS: ${{ inputs.user_ids }}
+        run: |
+          set -uo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "django container not found"; exit 1; }
+          ARGS=()
+          [ "$MODE" = "apply" ] && ARGS+=(--apply)
+          IDS="$(printf '%s' "$USER_IDS" | tr -d ' ')"
+          [ -n "$IDS" ] && ARGS+=(--user-ids "$IDS")
+          ERR="$(mktemp)"
+          docker exec -w /app "$CID" python manage.py sync_faculty_legacy_wallets "${ARGS[@]}" 2>"$ERR"
+          RC=$?
+          # Application logs can carry personal data; show only the command's own error line.
+          grep -E '^CommandError' "$ERR" || true
+          echo "stderr lines suppressed: $(wc -l < "$ERR")"
+          rm -f "$ERR"
+          exit $RC
