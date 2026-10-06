@@ -1,0 +1,219 @@
+# Read-only: why did a faculty login wallet sync post a DEBIT ("Legacy faculty wallet sync ... delta=-...")?
+# Part A looks at one faculty (legacy emp id given as input): new-portal sub-wallet history, imported legacy
+# ledger rows, the live legacy wallet, legacy bookings and the emails logged around the sync.
+# Part B lists every legacy-sync DEBIT across all users and whether a matching legacy-portal debit exists.
+# Public logs: no names, emails or phone numbers; free text is reduced to a whitelist of common words.
+name: Probe Legacy Wallet Sync Debits
+
+on:
+  workflow_dispatch:
+    inputs:
+      emp_id:
+        description: "Legacy employee id of the faculty to inspect"
+        required: true
+        default: "100809"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          PROBE_EMP: ${{ github.event.inputs.emp_id }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -e PROBE_EMP="$PROBE_EMP" -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from datetime import datetime, timedelta
+          from decimal import Decimal
+          from django.utils import timezone
+          from iic_booking.users.models import SubWallet, SubWalletTransaction, User, Wallet
+          from iic_booking.users.models.portal_migration import (
+              LegacyWalletAccountMapping, LegacyWalletLedgerEntry, PortalMigrationState,
+          )
+          from iic_booking.users.legacy_ledger import booking_lock as bl
+
+          WORDS = set("""
+          a an and the of for to from by on at in with as is was be no not id ref amount balance wallet sub
+          booking bookings booked book charge charges charged cost fee fees extra additional total final
+          refund refunded refunds cancel cancelled canceled cancellation reverse reversed reversal adjust adjusted
+          adjustment recharge recharged credit credited debit debited deduct deducted deduction added add
+          sample samples hour hours hrs min mins minutes slot slots analysis analyses equipment instrument
+          project grant sric transfer transferred payment paid pay online offline cash neft upi utr receipt
+          admin legacy migration migrated portal sync faculty student opening closing delta recon login emp
+          source ts txn transaction user users supervisor gst tax rate rush urgent repeat waitlist hold
+          xrd pxrd sem fesem tem nmr ftir xps afm bet tga dsc icp ms lc gc hplc uv vis raman edx eds
+          completed complete processing pending approved approve rejected reject
+          """.split())
+
+          def mask(text, keep=160):
+              s = re.sub(r"[\w.+-]+@[\w-]+(\.[\w-]+)+", "<email>", str(text or ""))
+              s = re.sub(r"(?<!\d)\d{10,12}(?!\d)", "<phone>", s)
+              out = []
+              for tok in re.split(r"(\W+)", s):
+                  if not tok or re.fullmatch(r"\W+", tok) or re.fullmatch(r"[\d.,:-]+", tok):
+                      out.append(tok)
+                  elif tok.lower() in WORDS or tok.upper() in ("IIC", "IITR", "INR", "OIC") or tok.startswith("<"):
+                      out.append(tok)
+                  elif re.fullmatch(r"[A-Za-z]{1,3}\d[\w-]*", tok):
+                      out.append(tok)
+                  else:
+                      out.append("~")
+              return re.sub(r"(~\s*)+", "~ ", "".join(out))[:keep]
+
+          def ist(dt):
+              if dt is None:
+                  return "-"
+              if isinstance(dt, str):
+                  return dt
+              if timezone.is_naive(dt):
+                  return dt.strftime("%Y-%m-%d %H:%M:%S") + " (naive)"
+              return timezone.localtime(dt, timezone.get_fixed_timezone(330)).strftime("%Y-%m-%d %H:%M:%S IST")
+
+          now = timezone.now()
+          print("now", ist(now))
+          st = PortalMigrationState.get_solo()
+          print("phase", st.phase, "| booking_opens_at", ist(st.booking_opens_at),
+                "| stored faculty sync cutoff", ist(st.faculty_wallet_sync_cutoff),
+                "| effective cutoff", ist(bl.faculty_wallet_sync_cutoff()),
+                "| window_open", bl.faculty_wallet_sync_window_open(),
+                "| incremental_sync_enabled", st.incremental_sync_enabled,
+                "| legacy_ledger_frozen", st.legacy_ledger_frozen)
+          try:
+              from iic_booking.users.models.portal_migration import FacultyWalletSyncCutoffChange
+              for c in FacultyWalletSyncCutoffChange.objects.order_by("created_at"):
+                  print("  cutoff change at", ist(c.created_at), "old", ist(c.old_cutoff), "new", ist(c.new_cutoff),
+                        "reason:", mask(c.reason, 120))
+          except Exception as exc:
+              print("  cutoff history n/a", type(exc).__name__)
+
+          emp = (os.environ.get("PROBE_EMP") or "").strip()
+          SYNC_PREFIXES = ("Legacy faculty wallet sync", "Legacy wallet sync (admin)", "Legacy migration opening balance")
+          print()
+          print("=" * 20, "PART A emp", emp, "=" * 20)
+          users = list(User.objects.filter(emp_id__iexact=emp))
+          print("new users with this emp id:", [(u.pk, u.user_type, u.is_active) for u in users])
+          mapping = LegacyWalletAccountMapping.objects.filter(employee_id=emp).first()
+          if mapping:
+              print("mapping: old_user_id", mapping.old_user_id, "old_wallet_id", mapping.old_wallet_id,
+                    "new_user_id", mapping.new_user_id, "status", mapping.mapping_status,
+                    "| old credits/debits/balance", mapping.old_credits, mapping.old_debits, mapping.old_wallet_balance,
+                    "| imported credits/debits", mapping.imported_credits, mapping.imported_debits,
+                    "| batch", mapping.migration_batch, "| updated", ist(mapping.updated_at))
+          for u in users:
+              print(f"-- user {u.pk}: last_login {ist(u.last_login)} joined {ist(getattr(u, 'date_joined', None))}")
+              for sub in SubWallet.objects.filter(wallet__user=u).select_related("department"):
+                  txns = list(sub.transactions.order_by("created_at", "id"))
+                  calc = sum((t.amount if t.transaction_type == "credit" else -t.amount) for t in txns)
+                  print(f"   subwallet {sub.pk} dept={sub.department.name!r} stored_balance={sub.balance} "
+                        f"recomputed={calc} n_txn={len(txns)}")
+                  run = Decimal("0")
+                  for t in txns:
+                      run += t.amount if t.transaction_type == "credit" else -t.amount
+                      rel = f" rel_user={t.related_user_id}" if t.related_user_id else ""
+                      d = t.description or ""
+                      shown = d if d.startswith(SYNC_PREFIXES) else mask(d)
+                      print(f"     #{t.pk} {ist(t.created_at)} {t.transaction_type:6} {t.amount:>10} run={run:>10}{rel} | {shown[:230]}")
+              try:
+                  from iic_booking.communication.models import CommunicationLog
+                  logs = CommunicationLog.objects.filter(recipient=u, created_at__gte=now - timedelta(days=4)).order_by("created_at")
+                  print("   communications last 4 days:")
+                  for lg in logs:
+                      tpl = getattr(lg.template, "code", None) if lg.template_id else None
+                      print(f"     {ist(lg.created_at)} {lg.communication_type} {lg.status} tpl={tpl} subject={mask(lg.subject, 100)!r}")
+              except Exception as exc:
+                  print("   communications n/a", type(exc).__name__, exc)
+
+          print("-- imported legacy ledger rows (all, oldest first):")
+          for e in LegacyWalletLedgerEntry.objects.filter(employee_id=emp).order_by("source_transaction_id"):
+              print(f"   src#{e.source_transaction_id} occurred {ist(e.occurred_at)} {e.direction:6} {e.amount:>10} "
+                    f"run_src={e.running_balance_source} imported {ist(e.imported_at)} batch={e.migration_batch} | {mask(e.description)}")
+
+          print("-- live legacy portal:")
+          try:
+              from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+              from iic_booking.users.legacy_ledger.admin_user_sync import (
+                  _legacy_wallet_snapshot, fetch_legacy_bookings_for_user,
+              )
+              with OldMySQLReader() as r:
+                  ou = r.user_by_employee_id(emp)
+                  if not ou:
+                      print("   legacy user not found")
+                  else:
+                      uid = int(ou["id"])
+                      snap = _legacy_wallet_snapshot(r, uid)
+                      print("   legacy uid", uid, "| wallet_balance", snap["wallet_balance"], "| ledger_balance", snap["ledger_balance"],
+                            "| credits", snap["total_credits"], "| debits", snap["total_debits"], "| n", snap["transaction_count"])
+                      rows = r.fetchall(
+                          "SELECT id, amount, balance, transaction_type, create_date, description "
+                          "FROM wallet_transactions WHERE user_id = %s ORDER BY id DESC LIMIT 25", (uid,))
+                      for t in reversed(rows):
+                          typ = {"1": "credit", "2": "debit"}.get(str(t.get("transaction_type")), str(t.get("transaction_type")))
+                          print(f"     src#{t['id']} {t.get('create_date')} {typ:6} {str(t.get('amount')):>10} run={t.get('balance')} | {mask(t.get('description'))}")
+                      cols = [c["Field"] for c in r.fetchall("SHOW COLUMNS FROM `wallet_transactions`")]
+                      print("   wallet_transactions columns:", cols)
+                      try:
+                          w = r.fetchone("SELECT * FROM user_wallet WHERE user_id = %s LIMIT 1", (uid,))
+                          print("   user_wallet row (non-text cols):", {k: (str(v) if not isinstance(v, str) else "~") for k, v in (w or {}).items()})
+                      except Exception as exc:
+                          print("   user_wallet row n/a", exc)
+                      bk = fetch_legacy_bookings_for_user(r, uid)
+                      print("   legacy bookings (latest 25):")
+                      for b in (bk.get("rows") or [])[:25]:
+                          print(f"     lb#{b['legacy_booking_id']} eq={b['legacy_equipment_code'] or b['legacy_equipment_name']!s} "
+                                f"date={b['booking_date']} status={b['status']} charge={b['charge']} "
+                                f"deleted={b['is_deleted']} active={b['is_active']} created={b['created_at']}")
+                      raw = (bk.get("raw_rows") or [])[:1]
+                      if raw:
+                          print("   legacy booking columns:", list(raw[0].keys()))
+          except Exception as exc:
+              print("   legacy read failed:", type(exc).__name__, str(exc)[:200])
+
+          print()
+          print("=" * 20, "PART B all legacy-sync debits", "=" * 20)
+          launch = datetime(2026, 9, 30, 21, 0, tzinfo=timezone.get_fixed_timezone(330))
+          q = SubWalletTransaction.objects.filter(description__startswith="Legacy").select_related("sub_wallet__wallet")
+          kinds = Counter()
+          for t in q:
+              p = next((x for x in SYNC_PREFIXES if (t.description or "").startswith(x)), "other")
+              kinds[(p, t.transaction_type, "after_launch" if t.created_at >= launch else "before_launch")] += 1
+          for k, v in sorted(kinds.items()):
+              print("  ", k, v)
+          debits = list(q.filter(transaction_type="debit").order_by("created_at"))
+          print("legacy-sync DEBIT rows:", len(debits), "total", sum((t.amount for t in debits), Decimal("0")))
+          for t in debits:
+              m = re.search(r"migration_id=([^ |]+)", t.description or "")
+              mid = m.group(1) if m else "?"
+              emp_t = mid.split(":", 1)[1] if ":" in mid else ""
+              prev = (SubWalletTransaction.objects.filter(sub_wallet=t.sub_wallet, description__contains=f"migration_id={mid} |",
+                                                          created_at__lt=t.created_at).order_by("-created_at").first())
+              since = prev.created_at if prev else None
+              leg = LegacyWalletLedgerEntry.objects.filter(employee_id=emp_t)
+              leg_window = leg.filter(occurred_at__gte=since) if since else leg
+              leg_window = leg_window.filter(occurred_at__lte=t.created_at + timedelta(minutes=5))
+              ld = sum((e.amount for e in leg_window if e.direction == "DEBIT"), Decimal("0"))
+              lc = sum((e.amount for e in leg_window if e.direction == "CREDIT"), Decimal("0"))
+              same_amt_portal = SubWalletTransaction.objects.filter(
+                  sub_wallet__wallet=t.sub_wallet.wallet, transaction_type="debit", amount=t.amount,
+                  created_at__gte=t.created_at - timedelta(days=7), created_at__lte=t.created_at + timedelta(days=1),
+              ).exclude(description__startswith="Legacy").count()
+              dm = re.search(r"delta=(-?[\d.]+)", t.description or "")
+              print(f"  #{t.pk} {ist(t.created_at)} user={t.sub_wallet.wallet.user_id} amt={t.amount} delta={dm.group(1) if dm else '?'} "
+                    f"prev_sync={ist(since)} | legacy since prev: debits={ld} credits={lc} net={lc - ld} "
+                    f"| same-amount portal debits within -7d/+1d={same_amt_portal}")
+              for e in leg_window.order_by("source_transaction_id"):
+                  print(f"      legacy src#{e.source_transaction_id} {ist(e.occurred_at)} {e.direction} {e.amount} | {mask(e.description, 120)}")
+
+          print()
+          print("legacy ledger entries occurring after portal launch (30 Sep 21:00 IST), by direction:")
+          after = LegacyWalletLedgerEntry.objects.filter(occurred_at__gte=launch)
+          print("  ", dict(Counter(after.values_list("direction", flat=True))),
+                "employees", after.values("employee_id").distinct().count())
+          for e in after.order_by("occurred_at")[:80]:
+              print(f"   emp={e.employee_id[:3]}*** src#{e.source_transaction_id} {ist(e.occurred_at)} {e.direction} {e.amount} | {mask(e.description, 110)}")
+          PY
