@@ -948,10 +948,23 @@ def apply_print_analysis_to_input_values(booking, input_values):
 @permission_classes([IsAuthenticated])
 def update_booking_print_actuals(request, booking_id):
     """
-    Admin/OIC/operator: set post-print actual weight (g) and time (min) on a 3D print booking.
-    Recalculates charges when equipment.enable_charge_recalculation is enabled.
+    Admin/OIC/operator: set post-print actual weight (g) and time (min) of one STL file of a 3D print booking
+    (``analysis_id``; defaults to the booking's main file).
+
+    The charge is always re-priced from the actuals with the same engine and GST rule as the estimate, through
+    the post-booking charge recalculation: a higher charge becomes an extra amount collected with Pay Now /
+    Deduct Money, a lower one a refund the Officer In Charge confirms. Allowed while the booking is Booked, and
+    after completion for the equipment's Officer In Charge or an administrator.
     """
-    from .api_views import check_operator_permission
+    from .api_views import (
+        _calculate_input_values_charge,
+        _is_admin_user,
+        _oic_booking_scope_denied,
+        _recalculate_booking_charge_and_adjust_wallet,
+        _user_can_act_as_oic_for_equipment,
+        check_operator_permission,
+    )
+    from .fabrication import active_print_analyses_for_booking
     from .models import Booking, BookingStatus, EquipmentProfileType
     from .serializers import BookingSerializer
 
@@ -968,6 +981,10 @@ def update_booking_print_actuals(request, booking_id):
     except Booking.DoesNotExist:
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
 
+    denied = _oic_booking_scope_denied(request.user, booking)
+    if denied is not None:
+        return denied
+
     if booking.source_booking_id is not None:
         return Response(
             {"error": "Actuals cannot be modified for repeat sample bookings."},
@@ -981,20 +998,36 @@ def update_booking_print_actuals(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    analysis = booking.print_analysis
+    analyses = active_print_analyses_for_booking(booking)
+    analysis_id = str(request.data.get("analysis_id") or "").strip()
+    if analysis_id:
+        analysis = next((a for a in analyses if str(a.id) == analysis_id), None)
+        if analysis is None:
+            return Response(
+                {"error": "This STL file is not part of the booking."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        main = booking.print_analysis
+        analysis = next((a for a in analyses if main and a.id == main.id), None) or (analyses[0] if analyses else None)
     if not analysis:
         return Response(
             {"error": "No STL analysis linked to this booking."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if booking.status in (
-        BookingStatus.REFUNDED,
-        BookingStatus.ABSENT,
-        BookingStatus.BOOKING_NOT_UTILIZED,
-    ):
+    is_charge_manager = _user_can_act_as_oic_for_equipment(request.user, equipment) or _is_admin_user(request.user)
+    if booking.status == BookingStatus.COMPLETED and not is_charge_manager:
         return Response(
-            {"error": "Cannot update print actuals for this booking status."},
+            {
+                "error": "After the booking is completed, only the Officer In Charge can set the actual weight and "
+                "time, because it changes the charge."
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if booking.status not in (BookingStatus.BOOKED, BookingStatus.COMPLETED):
+        return Response(
+            {"error": "Actual weight and time can only be set on Booked or Completed bookings."},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -1006,7 +1039,7 @@ def update_booking_print_actuals(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    update_fields = ["updated_at"]
+    weight_val = None
     if weight_raw is not None:
         try:
             weight_val = float(weight_raw)
@@ -1020,11 +1053,8 @@ def update_booking_print_actuals(request, booking_id):
                 {"error": "actual_weight_grams must be greater than 0."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        from .print_3d_service import ceil_weight_grams
 
-        analysis.actual_weight_grams = ceil_weight_grams(weight_val)
-        update_fields.append("actual_weight_grams")
-
+    time_val = None
     if time_raw is not None:
         try:
             time_val = int(time_raw)
@@ -1038,45 +1068,74 @@ def update_booking_print_actuals(request, booking_id):
                 {"error": "actual_time_minutes must be greater than 0."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        analysis.actual_time_minutes = time_val
-        update_fields.append("actual_time_minutes")
 
-    analysis.save(update_fields=update_fields)
+    had_actuals = analysis.actual_weight_grams is not None or analysis.actual_time_minutes is not None
+    try:
+        charge_before = _calculate_input_values_charge(booking, booking.input_values) if booking.charge_profile_id else None
+    except Exception:
+        logger.exception("Could not price booking %s before print actuals update", booking.pk)
+        charge_before = None
 
-    current = dict(booking.input_values) if booking.input_values else {}
-    weight, time_min = get_effective_print_weight_and_time_from_analysis(analysis)
-    if weight is not None:
-        current["A"] = float(weight)
-    if time_min is not None:
-        current["C"] = int(time_min)
-    booking.input_values = current
-    booking.save(update_fields=["input_values", "updated_at"])
-
-    enable_recalc = getattr(equipment, "enable_charge_recalculation", False) and booking.status == BookingStatus.BOOKED
     summary = None
-    if enable_recalc:
-        from .api_views import _recalculate_booking_charge_and_adjust_wallet
+    try:
+        with transaction.atomic():
+            update_fields = ["updated_at"]
+            if weight_val is not None:
+                from .print_3d_service import ceil_weight_grams
 
-        try:
-            summary = _recalculate_booking_charge_and_adjust_wallet(request, booking)
-            booking.refresh_from_db()
-        except Exception:
-            logger.exception("Charge recalculation failed after print actuals update")
-            return Response(
-                {
-                    "error": "Actuals saved but charge recalculation failed.",
-                    "booking": BookingSerializer(booking).data,
-                    "print_analysis": PrintAnalysisSerializer(analysis).data,
-                },
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                analysis.actual_weight_grams = ceil_weight_grams(weight_val)
+                update_fields.append("actual_weight_grams")
+            if time_val is not None:
+                analysis.actual_time_minutes = time_val
+                update_fields.append("actual_time_minutes")
+            analysis.save(update_fields=update_fields)
+
+            booking.input_values = strip_fabrication_keys(
+                inject_print_parts(
+                    strip_fabrication_keys(dict(booking.input_values or {})),
+                    active_print_analyses_for_booking(booking),
+                )
             )
+            booking.save(update_fields=["input_values", "updated_at"])
 
+            # Actuals are a pricing input: re-price whenever they change the charge. Re-saving actuals that are
+            # already set also re-prices, so a charge that was never adjusted can still be corrected.
+            needs_recalc = bool(booking.charge_profile_id) and (
+                getattr(equipment, "enable_charge_recalculation", False)
+                or had_actuals
+                or charge_before is None
+                or _calculate_input_values_charge(booking, booking.input_values) != charge_before
+            )
+            if needs_recalc:
+                summary = _recalculate_booking_charge_and_adjust_wallet(request, booking)
+    except Exception:
+        logger.exception("Charge recalculation failed after print actuals update for booking %s", booking.pk)
+        return Response(
+            {"error": "The charge could not be recalculated, so the actual weight and time were not saved. Please try again."},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    booking.refresh_from_db()
+    analysis.refresh_from_db()
+    message = "Actual weight and time saved."
+    if summary:
+        if summary.get("refund_amount"):
+            message += (
+                f" The charge went down from ₹{summary['previous_charge']} to ₹{summary['new_charge']}; the refund of "
+                f"₹{summary['refund_amount']} is waiting for the Officer In Charge's confirmation."
+            )
+        elif summary.get("extra_amount"):
+            message += (
+                f" The charge went up from ₹{summary['previous_charge']} to ₹{summary['new_charge']}; the extra "
+                f"₹{summary['extra_amount']} is to be paid."
+            )
+        else:
+            message += " The charge is unchanged."
     return Response(
         {
-            "message": "Print actuals updated."
-            + (" Charges recalculated." if summary else ""),
-            "booking": BookingSerializer(booking).data,
-            "print_analysis": PrintAnalysisSerializer(analysis).data,
+            "message": message,
+            "booking": BookingSerializer(booking, context={"request": request}).data,
+            "print_analysis": PrintAnalysisSerializer(analysis, context={"request": request}).data,
             "charge_recalculation_summary": summary,
         },
         status=status.HTTP_200_OK,
