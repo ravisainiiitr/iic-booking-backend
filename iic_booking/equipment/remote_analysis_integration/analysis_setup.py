@@ -11,7 +11,7 @@ from django.db.models import Count, F, Min, Q
 from django.utils import timezone
 
 from iic_booking.communication.email_branding import local_date
-from iic_booking.equipment.models import Booking, BookingResultFile
+from iic_booking.equipment.models import Booking
 from iic_booking.equipment.remote_analysis_integration import research
 from iic_booking.equipment.remote_analysis_integration.raw_staging import (
     BookingRawStagingService,
@@ -128,15 +128,15 @@ def serialize_link(link) -> dict[str, Any] | None:
 
 
 def _db_file_counts(booking_ids: list[int]) -> dict[int, int]:
-    from iic_booking.sync.models import ResultAttachment
+    from iic_booking.equipment.booking_results_service import current_result_attachments, current_result_files
 
     counts: dict[int, int] = {}
     for booking_id, c in (
-        BookingResultFile.objects.filter(booking_id__in=booking_ids).values("booking_id").annotate(c=Count("pk")).values_list("booking_id", "c")
+        current_result_files().filter(booking_id__in=booking_ids).values("booking_id").annotate(c=Count("pk")).values_list("booking_id", "c")
     ):
         counts[booking_id] = counts.get(booking_id, 0) + c
     for booking_id, c in (
-        ResultAttachment.objects.filter(result__booking_id__in=booking_ids)
+        current_result_attachments().filter(result__booking_id__in=booking_ids)
         .values("result__booking_id")
         .annotate(c=Count("pk"))
         .values_list("result__booking_id", "c")
@@ -151,7 +151,7 @@ def booking_file_count(booking, db_counts: dict[int, int] | None = None) -> int:
     if db:
         return db
     vid = (booking.virtual_booking_id or "").strip()
-    return len(cached_results_s3_objects(vid, prefix_only=True)) if vid else 0
+    return len(cached_results_s3_objects(vid, prefix_only=True, not_before=booking.created_at)) if vid else 0
 
 
 def _selected_input(setup: BookingAnalysisSetup | None, link, workspace) -> dict[str, Any] | None:

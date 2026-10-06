@@ -14,12 +14,13 @@ from django.core.files import File
 
 from iic_booking.equipment.booking_results_service import (
     CONTROL_RESULT_FILE_NAMES,
+    booking_result_attachments_qs,
+    booking_result_files_qs,
     merge_booking_result_files,
     resolve_dsa_attachment_path,
 )
-from iic_booking.equipment.models import Booking, BookingResultFile
-from iic_booking.sync.models import ResultAttachment
-from iic_booking.sync.services.results_s3 import list_results_s3_objects, open_results_s3_stream
+from iic_booking.equipment.models import Booking
+from iic_booking.sync.services.results_s3 import list_results_s3_objects, open_results_s3_stream, uploaded_before
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +31,35 @@ CHUNK_BYTES = 1024 * 1024
 
 def _listing_cache_key(virtual: str, prefix_only: bool = False) -> str:
     digest = hashlib.sha1(virtual.encode("utf-8")).hexdigest()
-    return f"ra:results-s3{':p' if prefix_only else ''}:{digest}"
+    return f"ra:results-s3:v2{':p' if prefix_only else ''}:{digest}"
 
 
-def cached_results_s3_objects(virtual: str, *, fresh: bool = False, prefix_only: bool = False) -> list[dict[str, Any]]:
-    """S3 results for a virtual booking id, cached briefly so status polls never page the bucket."""
+def cached_results_s3_objects(
+    virtual: str, *, fresh: bool = False, prefix_only: bool = False, not_before=None
+) -> list[dict[str, Any]]:
+    """S3 results for a virtual booking id, cached briefly so status polls never page the bucket.
+
+    ``not_before`` (the booking's created_at) drops objects uploaded before the booking existed;
+    display IDs are reused after a booking wipe.
+    """
     key = _listing_cache_key(virtual, prefix_only)
+    entries = None
     if not fresh:
         hit = cache.get(key)
         if hit is None and prefix_only:
             hit = cache.get(_listing_cache_key(virtual))
-        if hit is not None:
-            return list(hit)
-    try:
-        entries = (
-            list_results_s3_objects(virtual, prefix_only=True) if prefix_only else list_results_s3_objects(virtual)
-        )
-    except Exception:  # noqa: BLE001
-        return []
-    cache.set(key, entries, RESULTS_LISTING_CACHE_SECONDS)
-    return list(entries)
+        entries = hit
+    if entries is None:
+        try:
+            entries = (
+                list_results_s3_objects(virtual, prefix_only=True) if prefix_only else list_results_s3_objects(virtual)
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        cache.set(key, entries, RESULTS_LISTING_CACHE_SECONDS)
+    if not_before is None:
+        return list(entries)
+    return [e for e in entries if not uploaded_before(e.get("last_modified"), not_before)]
 
 
 def is_material_entry(entry: dict[str, Any]) -> bool:
@@ -114,7 +124,7 @@ class BookingRawStagingService:
         return (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
 
     def list_raw_entries(self, booking: Booking, *, request=None, fresh: bool = False) -> list[dict[str, Any]]:
-        s3_files = cached_results_s3_objects(self._virtual(booking), fresh=fresh)
+        s3_files = cached_results_s3_objects(self._virtual(booking), fresh=fresh, not_before=booking.created_at)
         return merge_booking_result_files(booking=booking, s3_files=s3_files, request=request)
 
     def has_raw_files(self, booking: Booking, *, request=None) -> bool:
@@ -122,12 +132,12 @@ class BookingRawStagingService:
 
         Database-backed results are checked first; S3 comes from the short-lived listing cache.
         """
-        for brf in BookingResultFile.objects.filter(booking_id=booking.pk).only("file", "original_name"):
+        for brf in booking_result_files_qs(booking).only("file", "original_name"):
             if brf.file and is_material_entry(
                 {"name": brf.original_name or Path(brf.file.name).name, "key": f"booking_result:{brf.pk}"}
             ):
                 return True
-        for att in ResultAttachment.objects.filter(result__booking_id=booking.pk).select_related("upload_session"):
+        for att in booking_result_attachments_qs(booking).select_related("upload_session"):
             entry = {"name": att.file_name, "size_bytes": int(att.size_bytes or 0)}
             if (att.s3_key or "").strip():
                 entry["key"] = att.s3_key
@@ -137,7 +147,10 @@ class BookingRawStagingService:
                 continue
             if is_material_entry(entry):
                 return True
-        return any(is_material_entry(e) for e in cached_results_s3_objects(self._virtual(booking)))
+        return any(
+            is_material_entry(e)
+            for e in cached_results_s3_objects(self._virtual(booking), not_before=booking.created_at)
+        )
 
     def stage_into_workspace(
         self,
@@ -242,7 +255,7 @@ class BookingRawStagingService:
 
         attachment_id = entry.get("attachment_id")
         if attachment_id:
-            att = ResultAttachment.objects.filter(id=attachment_id, result__booking_id=booking.pk).first()
+            att = booking_result_attachments_qs(booking).filter(id=attachment_id).first()
             if att:
                 s3 = (att.s3_key or "").strip()
                 if s3:
@@ -256,7 +269,7 @@ class BookingRawStagingService:
 
         file_id = entry.get("file_id")
         if file_id:
-            brf = BookingResultFile.objects.filter(pk=file_id, booking_id=booking.pk).first()
+            brf = booking_result_files_qs(booking).filter(pk=file_id).first()
             if brf and brf.file:
                 return spool_stream(brf.file.open("rb"))
 

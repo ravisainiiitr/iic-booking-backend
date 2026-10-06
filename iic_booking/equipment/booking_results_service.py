@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, F, OuterRef
 from django.http import HttpRequest
 
 from iic_booking.equipment.models import Booking, BookingResultFile
@@ -25,10 +25,38 @@ CONTROL_RESULT_FILE_NAMES = {
 }
 
 
+def booking_result_files_qs(booking: Booking):
+    """Operator result files of this booking record; rows older than the booking are never its results."""
+    qs = BookingResultFile.objects.filter(booking_id=booking.pk)
+    if booking.created_at:
+        qs = qs.filter(created_at__gte=booking.created_at)
+    return qs
+
+
+def booking_result_attachments_qs(booking: Booking):
+    """DSA-imported attachments of this booking record (same created-after-booking guard)."""
+    qs = ResultAttachment.objects.filter(result__booking_id=booking.pk)
+    if booking.created_at:
+        qs = qs.filter(created_at__gte=booking.created_at)
+    return qs
+
+
+def current_result_files():
+    """BookingResultFile rows not older than their booking (for multi-booking queries)."""
+    return BookingResultFile.objects.filter(created_at__gte=F("booking__created_at"))
+
+
+def current_result_attachments():
+    """ResultAttachment rows not older than their booking (for multi-booking queries)."""
+    return ResultAttachment.objects.filter(created_at__gte=F("result__booking__created_at"))
+
+
 def booking_has_results_annotation():
     """ORM annotation: operator complete files OR DSA-imported attachments."""
-    return Exists(BookingResultFile.objects.filter(booking_id=OuterRef("pk"))) | Exists(
-        ResultAttachment.objects.filter(result__booking_id=OuterRef("pk"))
+    return Exists(
+        BookingResultFile.objects.filter(booking_id=OuterRef("pk"), created_at__gte=OuterRef("created_at"))
+    ) | Exists(
+        ResultAttachment.objects.filter(result__booking_id=OuterRef("pk"), created_at__gte=OuterRef("created_at"))
     )
 
 
@@ -59,7 +87,7 @@ def resolve_dsa_attachment_path(attachment: ResultAttachment) -> Path | None:
 def list_dsa_result_files(booking: Booking, request: HttpRequest | None = None) -> list[dict[str, Any]]:
     """Files imported by Department Sync Agent for this booking (S3 preferred, local fallback)."""
     attachments = (
-        ResultAttachment.objects.filter(result__booking_id=booking.pk)
+        booking_result_attachments_qs(booking)
         .select_related("result", "upload_session")
         .order_by("created_at")
     )
@@ -133,7 +161,7 @@ def list_booking_result_file_entries(
 ) -> list[dict[str, Any]]:
     """Operator Complete multipart uploads (BookingResultFile)."""
     files: list[dict[str, Any]] = []
-    for brf in BookingResultFile.objects.filter(booking_id=booking.pk).order_by("created_at"):
+    for brf in booking_result_files_qs(booking).order_by("created_at"):
         if not brf.file:
             continue
         name = (brf.original_name or Path(brf.file.name).name).strip() or Path(brf.file.name).name
@@ -170,7 +198,10 @@ def merge_booking_result_files(
     s3_files: list[dict[str, Any]] | None,
     request: HttpRequest | None = None,
 ) -> list[dict[str, Any]]:
-    """Union of S3 + DSA + operator complete files (dedupe by name+size when possible)."""
+    """Union of S3 + DSA + operator complete files (dedupe by name+size when possible).
+
+    S3 objects that belong to a DSA attachment of this booking are listed once, under the attachment's name.
+    """
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     seen_keys: set[str] = set()
@@ -190,15 +221,20 @@ def merge_booking_result_files(
             seen.add(fingerprint)
         merged.append(entry)
 
+    dsa_files = list_dsa_result_files(booking, request)
+    dsa_keys = {str(f.get("s3_key") or "") for f in dsa_files if f.get("s3_key")}
+
     for f in s3_files or []:
+        if str(f.get("s3_key") or f.get("key") or "") in dsa_keys:
+            continue
         enriched = dict(f)
         enriched.setdefault("source", "s3")
         enriched.setdefault("uploaded_by", "Lab results folder")
-        enriched.setdefault("uploaded_at", None)
+        enriched.setdefault("uploaded_at", enriched.get("last_modified"))
         enriched.setdefault("size_bytes", 0)
         _add(enriched)
 
-    for f in list_dsa_result_files(booking, request):
+    for f in dsa_files:
         _add(f)
 
     for f in list_booking_result_file_entries(booking, request):
@@ -236,7 +272,7 @@ def iter_dsa_zip_members(booking: Booking):
     """
     virtual = (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
     for att in (
-        ResultAttachment.objects.filter(result__booking_id=booking.pk)
+        booking_result_attachments_qs(booking)
         .select_related("upload_session")
         .order_by("created_at")
     ):
@@ -257,7 +293,7 @@ def iter_dsa_zip_members(booking: Booking):
 def iter_booking_result_zip_members(booking: Booking):
     """Yield (arcname, file handle opener) for BookingResultFile."""
     virtual = (booking.virtual_booking_id or f"booking-{booking.pk}").strip()
-    for brf in BookingResultFile.objects.filter(booking_id=booking.pk).order_by("created_at"):
+    for brf in booking_result_files_qs(booking).order_by("created_at"):
         if not brf.file:
             continue
         name = (brf.original_name or Path(brf.file.name).name).strip() or Path(brf.file.name).name

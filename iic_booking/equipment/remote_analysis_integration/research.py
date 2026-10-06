@@ -272,14 +272,14 @@ def _results_bucket() -> str:
 
 
 def _s3_source_key(booking, entry: dict[str, Any]) -> str:
-    from iic_booking.sync.models import ResultAttachment
+    from iic_booking.equipment.booking_results_service import booking_result_attachments_qs
 
     key = (entry.get("s3_key") or entry.get("key") or "").strip()
     if key and not key.startswith(("dsa:", "booking_result:")) and str(entry.get("source") or "") in {"s3", "dsa"}:
         return key
     attachment_id = entry.get("attachment_id")
     if attachment_id:
-        att = ResultAttachment.objects.filter(id=attachment_id, result__booking_id=booking.pk).only("s3_key").first()
+        att = booking_result_attachments_qs(booking).filter(id=attachment_id).only("s3_key").first()
         if att and (att.s3_key or "").strip():
             return att.s3_key.strip()
     return ""

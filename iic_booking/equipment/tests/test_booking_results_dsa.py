@@ -306,7 +306,8 @@ def test_import_publishes_to_s3_and_deletes_local_temp(tmp_path, settings, monke
     _publish_attachment_to_s3_and_cleanup(attachment.id, booking.pk)
 
     attachment.refresh_from_db()
-    assert attachment.s3_key == f"Results/{booking.virtual_booking_id}/pxrd.csv"
+    stamp = booking.created_at.strftime("%Y%m%d%H%M%S")
+    assert attachment.s3_key == f"Results/{booking.virtual_booking_id}/b{booking.pk}-{stamp}/pxrd.csv"
     assert uploaded["bytes"] == b"col1,col2\n"
     assert not local.exists()
     assert attachment.storage_path == ""

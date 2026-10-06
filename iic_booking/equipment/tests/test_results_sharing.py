@@ -90,6 +90,8 @@ def _result_file(booking, name="result.txt", created_at=None):
     )
     if created_at is not None:
         BookingResultFile.objects.filter(pk=brf.pk).update(created_at=created_at)
+        # Results never predate their booking (older rows are hidden as another booking's data).
+        Booking.objects.filter(pk=booking.pk, created_at__gt=created_at).update(created_at=created_at - timedelta(minutes=1))
     return brf
 
 

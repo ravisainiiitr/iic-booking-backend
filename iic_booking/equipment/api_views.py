@@ -13719,14 +13719,18 @@ def booking_reschedule_options(request, booking_id):
 # S3 prefix under which booking result folders live; search all subfolders for {virtual_booking_id}/
 S3_RESULTS_PREFIX = "Results"
 
-def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600):
+def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600, *, not_before=None):
     """List objects in S3 under Results/ (any folder/subfolder) where a path segment equals virtual_booking_id.
     E.g. Results/{id}/, Results/2026/Jan/{id}/, Results/lab1/run1/{id}/ are all included.
     Returns presigned download URLs for every matching object.
+    Display IDs restart after a booking wipe, so objects uploaded before ``not_before`` (the booking's
+    created_at) are skipped: they belong to an earlier booking that had the same display ID.
     """
     from django.conf import settings
     import boto3
     from botocore.exceptions import ClientError
+
+    from iic_booking.sync.services.results_s3 import uploaded_before
 
     bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", None)
     if not bucket:
@@ -13751,6 +13755,9 @@ def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600):
                 # Include only keys that contain a path segment exactly equal to virtual_booking_id
                 if folder_segment not in key:
                     continue
+                last_modified = obj.get("LastModified")
+                if uploaded_before(last_modified, not_before):
+                    continue
                 # Display name: path relative to the booking-id folder (keeps subfolder structure)
                 if folder_segment in key:
                     name = key.split(folder_segment, 1)[-1]
@@ -13762,7 +13769,15 @@ def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600):
                         Params={"Bucket": bucket, "Key": key},
                         ExpiresIn=expires_in,
                     )
-                    files.append({"key": key, "name": name, "download_url": url})
+                    files.append(
+                        {
+                            "key": key,
+                            "s3_key": key,
+                            "name": name,
+                            "download_url": url,
+                            "last_modified": last_modified.isoformat() if hasattr(last_modified, "isoformat") else None,
+                        }
+                    )
                 except ClientError:
                     continue
         return True, files
@@ -13770,10 +13785,15 @@ def _list_booking_result_files_from_s3(virtual_booking_id, expires_in=3600):
         logger.warning("S3 list Results for %s failed: %s", virtual_booking_id, e)
         return None, []
 
-def _get_s3_client_and_results_keys(virtual_booking_id):
-    """Return (client, bucket, list of (key, relative_name)) for streaming; (None, None, []) on error."""
+def _get_s3_client_and_results_keys(virtual_booking_id, *, not_before=None):
+    """Return (client, bucket, list of (key, relative_name)) for streaming; (None, None, []) on error.
+
+    Objects uploaded before ``not_before`` (the booking's created_at) are skipped.
+    """
     from django.conf import settings
     import boto3
+
+    from iic_booking.sync.services.results_s3 import uploaded_before
 
     bucket = getattr(settings, "AWS_STORAGE_BUCKET_NAME", None)
     if not bucket:
@@ -13795,6 +13815,8 @@ def _get_s3_client_and_results_keys(virtual_booking_id):
                 if not key or key.endswith("/"):
                     continue
                 if folder_segment not in key:
+                    continue
+                if uploaded_before(obj.get("LastModified"), not_before):
                     continue
                 name = key.split(folder_segment, 1)[-1]
                 keys_with_names.append((key, name))
@@ -13925,8 +13947,9 @@ def _notify_user_results_available_by_id(booking_id: int):
         virtual_booking_id = (locked.virtual_booking_id or "").strip()
         if not virtual_booking_id:
             return
+        booking_created_at = locked.created_at
 
-    ok, file_list = _list_booking_result_files_from_s3(virtual_booking_id)
+    ok, file_list = _list_booking_result_files_from_s3(virtual_booking_id, not_before=booking_created_at)
     if ok is None or len(file_list) == 0:
         return
 
@@ -14172,7 +14195,9 @@ def booking_results_download(request, booking_id):
 
     client, bucket, keys_with_names = (None, None, [])
     if (booking.virtual_booking_id or "").strip():
-        client, bucket, keys_with_names = _get_s3_client_and_results_keys(virtual_booking_id)
+        client, bucket, keys_with_names = _get_s3_client_and_results_keys(
+            virtual_booking_id, not_before=booking.created_at
+        )
 
     dsa_members = list(iter_dsa_zip_members(booking))
     brf_members = list(iter_booking_result_zip_members(booking))
@@ -14276,7 +14301,7 @@ def booking_results(request, booking_id):
     virtual_booking_id = (booking.virtual_booking_id or "").strip() or None
     s3_files: list = []
     if virtual_booking_id:
-        success, s3_files = _list_booking_result_files_from_s3(virtual_booking_id)
+        success, s3_files = _list_booking_result_files_from_s3(virtual_booking_id, not_before=booking.created_at)
         if success is None:
             s3_files = []
 
@@ -14351,10 +14376,11 @@ def booking_result_attachment_download(request, booking_id, attachment_id):
     if denied is not None:
         return denied
 
+    from iic_booking.equipment.booking_results_service import booking_result_attachments_qs
+
     try:
-        attachment = ResultAttachment.objects.select_related("upload_session", "result").get(
+        attachment = booking_result_attachments_qs(booking).select_related("upload_session", "result").get(
             id=attachment_id,
-            result__booking_id=booking.pk,
         )
     except ResultAttachment.DoesNotExist:
         return Response({"error": "Result file not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -14399,8 +14425,10 @@ def booking_result_file_download(request, booking_id, file_id):
     if denied is not None:
         return denied
 
+    from iic_booking.equipment.booking_results_service import booking_result_files_qs
+
     try:
-        brf = BookingResultFile.objects.get(pk=file_id, booking_id=booking.pk)
+        brf = booking_result_files_qs(booking).get(pk=file_id)
     except BookingResultFile.DoesNotExist:
         return Response({"error": "Result file not found."}, status=status.HTTP_404_NOT_FOUND)
 
