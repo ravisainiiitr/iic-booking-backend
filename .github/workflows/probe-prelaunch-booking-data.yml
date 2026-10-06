@@ -1,0 +1,274 @@
+# Read-only, counts only (no names, no emails, no file names or S3 keys): booking-linked result / analysis /
+# sample data created before booking opened (2026-09-30 21:00 IST) and whether it is reachable from a booking
+# created after that time. Display IDs restarted after the pre-launch wipe, so the S3 Results/ scan that matches
+# a path segment equal to the display ID can surface old objects on new bookings.
+name: Probe Pre-launch Booking Data
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from datetime import datetime, timezone as dtz
+          from pathlib import PurePosixPath
+          from django.apps import apps
+          from django.db import connection
+          from django.db.models import F, Max, Min
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking
+
+          CUTOFF = datetime(2026, 9, 30, 15, 30, tzinfo=dtz.utc)
+          TARGET = "IICPXRD[A]202600001"
+          print(f"now={timezone.now().isoformat()} cutoff={CUTOFF.isoformat()}")
+
+          def d(dt):
+              return dt.date().isoformat() if dt else None
+
+          print("== Bookings ==")
+          allb = Booking.objects.all()
+          post = allb.filter(created_at__gte=CUTOFF)
+          a = allb.aggregate(mn=Min("booking_id"), mx=Max("booking_id"), first=Min("created_at"))
+          p = post.aggregate(mn=Min("booking_id"), mx=Max("booking_id"), first=Min("created_at"))
+          print(f"  total={allb.count()} created_before_cutoff={allb.filter(created_at__lt=CUTOFF).count()} created_after={post.count()}")
+          print(f"  pk_range_all={a['mn']}..{a['mx']} first_created={d(a['first'])}")
+          print(f"  pk_range_post={p['mn']}..{p['mx']} first_created_post={p['first'].isoformat() if p['first'] else None}")
+          try:
+              with connection.cursor() as cur:
+                  cur.execute("SELECT pg_get_serial_sequence(%s, %s)", [Booking._meta.db_table, Booking._meta.pk.column])
+                  seq = cur.fetchone()[0]
+                  cur.execute(f"SELECT last_value, is_called FROM {seq}")
+                  lv, called = cur.fetchone()
+              print(f"  booking_pk_sequence_last_value={lv} is_called={called}")
+          except Exception as exc:
+              print(f"  booking_pk_sequence=unavailable ({type(exc).__name__})")
+          dup = Counter(v for v in allb.exclude(virtual_booking_id__isnull=True).values_list("virtual_booking_id", flat=True))
+          print(f"  duplicate_display_ids={sum(1 for c in dup.values() if c > 1)}")
+
+          TS = ("created_at", "uploaded_at", "added_at", "started_at", "first_viewed_at", "changed_at", "requested_at", "recorded_at")
+
+          def ts_field(model):
+              names = {f.name for f in model._meta.get_fields()}
+              return next((t for t in TS if t in names), None)
+
+          def counts(model, path, ts):
+              qs = model._default_manager.all()
+              pre = qs.filter(**{f"{ts}__lt": CUTOFF})
+              return {
+                  "total": qs.count(),
+                  "pre_cutoff": pre.count(),
+                  "pre_cutoff_linked": pre.filter(**{f"{path}__isnull": False}).count(),
+                  "pre_cutoff_on_post_booking": pre.filter(**{f"{path}__created_at__gte": CUTOFF}).count(),
+                  "older_than_its_booking": qs.filter(**{f"{ts}__lt": F(f"{path}__created_at")}).count(),
+              }
+
+          print("== DB rows with a direct booking FK (model.field: counts) ==")
+          rows = []
+          for model in apps.get_models():
+              for f in model._meta.get_fields():
+                  if getattr(f, "concrete", False) and f.is_relation and (f.many_to_one or f.one_to_one) and f.related_model is Booking and model is not Booking:
+                      ts = ts_field(model)
+                      if ts is None:
+                          rows.append((f"{model._meta.label}.{f.name}", None))
+                          continue
+                      try:
+                          rows.append((f"{model._meta.label}.{f.name}", counts(model, f.name, ts)))
+                      except Exception as exc:
+                          rows.append((f"{model._meta.label}.{f.name}", {"error": type(exc).__name__}))
+          for label, c in sorted(rows):
+              if c is None:
+                  print(f"  {label}: no timestamp field")
+              elif "error" in c or c["total"]:
+                  print(f"  {label}: {c}")
+          print(f"  (models with zero rows omitted; {sum(1 for _l, c in rows if c and not c.get('error') and not c['total'])} empty)")
+
+          print("== DB rows linked through a parent ==")
+          INDIRECT = [
+              ("sync.ResultAttachment", "result__booking"),
+              ("sync.EquipmentMeasurement", "result__booking"),
+              ("equipment.BookingSampleTraceReplyAttachment", "sample_trace__booking"),
+              ("remote_analysis.WorkspaceFile", "workspace__booking"),
+              ("remote_analysis.WorkspaceVersion", "file__workspace__booking"),
+              ("remote_analysis.WorkspaceArchive", "workspace__booking"),
+          ]
+          for label, path in INDIRECT:
+              try:
+                  model = apps.get_model(label)
+                  print(f"  {label} via {path}: {counts(model, path, ts_field(model))}")
+              except Exception as exc:
+                  print(f"  {label}: error {type(exc).__name__}")
+
+          print("== Detached pre-cutoff rows (booking FK nulled by the wipe) ==")
+          from iic_booking.my_research.models import ResearchFile
+          from iic_booking.remote_analysis.workspace_models import AnalysisWorkspace, WorkspaceFile
+          rf = ResearchFile.objects.filter(created_at__lt=CUTOFF)
+          print(f"  my_research.ResearchFile pre_cutoff={rf.count()} by_origin={dict(Counter(rf.values_list('origin', flat=True)))} "
+                f"by_status={dict(Counter(rf.values_list('status', flat=True)))} booking_null={rf.filter(booking__isnull=True).count()}")
+          ws = AnalysisWorkspace.objects.filter(created_at__lt=CUTOFF)
+          print(f"  remote_analysis.AnalysisWorkspace pre_cutoff={ws.count()} booking_null={ws.filter(booking__isnull=True).count()} "
+                f"by_status={dict(Counter(ws.values_list('status', flat=True)))}")
+          wf = WorkspaceFile.objects.filter(workspace__created_at__lt=CUTOFF, deleted=False)
+          print(f"  remote_analysis.WorkspaceFile in pre_cutoff workspaces (not deleted)={wf.count()}")
+
+          print("== S3 Results/ ==")
+          from iic_booking.sync.services.results_s3 import _s3_client
+          client, bucket = _s3_client()
+          objs = []
+          if client is None:
+              print("  s3 not configured")
+          else:
+              for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="Results/"):
+                  for o in page.get("Contents") or []:
+                      k = o.get("Key") or ""
+                      if k and not k.endswith("/"):
+                          objs.append((k, o["LastModified"], int(o.get("Size") or 0)))
+              pre_objs = [x for x in objs if x[1] < CUTOFF]
+              print(f"  objects_total={len(objs)} pre_cutoff={len(pre_objs)} post_cutoff={len(objs) - len(pre_objs)}")
+              print(f"  depth_histogram_pre={dict(sorted(Counter(len(k.split('/')) for k, _t, _s in pre_objs).items()))}")
+              print(f"  depth_histogram_post={dict(sorted(Counter(len(k.split('/')) for k, _t, _s in objs if _t >= CUTOFF).items()))}")
+              months = Counter(t.strftime("%Y-%m") for _k, t, _s in pre_objs)
+              print(f"  pre_cutoff_by_month={dict(sorted(months.items()))}")
+              seg_index = defaultdict(list)
+              for i, (k, _t, _s) in enumerate(objs):
+                  for seg in set(k.split("/")[1:-1]):
+                      seg_index[seg].append(i)
+
+              affected = 0
+              matched_old = set()
+              older_than_booking = 0
+              completed_affected = 0
+              notified_affected = 0
+              notified_only_old = 0
+              for b in post.only("booking_id", "virtual_booking_id", "created_at", "status", "results_available_notified_at"):
+                  vid = (b.virtual_booking_id or "").strip()
+                  idx = seg_index.get(vid, []) if vid else []
+                  old = [i for i in idx if objs[i][1] < CUTOFF]
+                  before = [i for i in idx if objs[i][1] < b.created_at]
+                  genuine = [i for i in idx if objs[i][1] >= b.created_at]
+                  older_than_booking += len(before)
+                  if before:
+                      affected += 1
+                      matched_old.update(old)
+                      if b.status == "COMPLETED":
+                          completed_affected += 1
+                      if b.results_available_notified_at:
+                          notified_affected += 1
+                          if not genuine:
+                              notified_only_old += 1
+              print(f"  post_cutoff_bookings_seeing_older_objects={affected}")
+              print(f"  pre_cutoff_objects_reachable_from_post_bookings={len(matched_old)}")
+              print(f"  objects_older_than_matching_booking={older_than_booking}")
+              print(f"  affected_bookings_completed={completed_affected} affected_bookings_notified={notified_affected} notified_with_only_old_objects={notified_only_old}")
+              live_vids = set(v for v in allb.values_list("virtual_booking_id", flat=True) if v)
+              unmatched_pre = sum(1 for k, t, _s in pre_objs if not (set(k.split("/")[1:-1]) & live_vids))
+              print(f"  pre_cutoff_objects_matching_no_current_booking={unmatched_pre}")
+
+          print("== Django media storage (orphans of wiped rows) ==")
+          from iic_booking.equipment.models import BookingResultFile, BookingSampleTraceReplyAttachment
+          if client is not None:
+              loc = "media"
+              for prefix, model in (("booking_results/", BookingResultFile), ("sample_trace_replies/", BookingSampleTraceReplyAttachment)):
+                  refs = set(n for n in model.objects.values_list("file", flat=True) if n)
+                  total = pre = pre_unref = 0
+                  for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=f"{loc}/{prefix}"):
+                      for o in page.get("Contents") or []:
+                          k = o.get("Key") or ""
+                          if not k or k.endswith("/"):
+                              continue
+                          total += 1
+                          if o["LastModified"] < CUTOFF:
+                              pre += 1
+                              if k[len(loc) + 1:] not in refs:
+                                  pre_unref += 1
+                  print(f"  {loc}/{prefix}: total={total} pre_cutoff={pre} pre_cutoff_unreferenced={pre_unref} db_rows={len(refs)}")
+
+          print(f"== Target booking {TARGET} ==")
+          tb = list(allb.filter(virtual_booking_id=TARGET))
+          print(f"  bookings_with_this_display_id={len(tb)}")
+          for b in tb:
+              print(f"  booking_pk={b.booking_id} created={b.created_at.isoformat()} status={b.status} "
+                    f"results_notified={'yes' if b.results_available_notified_at else 'no'}")
+              if client is not None:
+                  idx = seg_index.get(TARGET, [])
+                  print(f"  s3_matching_objects={len(idx)} older_than_booking={sum(1 for i in idx if objs[i][1] < b.created_at)} "
+                        f"pre_cutoff={sum(1 for i in idx if objs[i][1] < CUTOFF)}")
+                  print(f"  s3_matching_by_upload_date={dict(sorted(Counter(d(objs[i][1]) for i in idx).items()))}")
+                  print(f"  s3_matching_depths={dict(Counter(len(objs[i][0].split('/')) for i in idx))}")
+                  old_leaves = {PurePosixPath(objs[i][0]).name.lower() for i in idx if objs[i][1] < b.created_at}
+              else:
+                  old_leaves = set()
+              for label, c in sorted(rows):
+                  if not c or c.get("error"):
+                      continue
+                  model_label, field = label.rsplit(".", 1)
+                  model = apps.get_model(model_label)
+                  ts = ts_field(model)
+                  qs = model._default_manager.filter(**{field: b})
+                  n = qs.count()
+                  if n:
+                      dates = Counter(d(x) for x in qs.values_list(ts, flat=True))
+                      print(f"  db {label}: rows={n} by_date={dict(sorted(dates.items()))} older_than_booking={qs.filter(**{f'{ts}__lt': b.created_at}).count()}")
+              from iic_booking.sync.models import ResultAttachment
+              ra = ResultAttachment.objects.filter(result__booking=b)
+              print(f"  db sync.ResultAttachment: rows={ra.count()} older_than_booking={ra.filter(created_at__lt=b.created_at).count()}")
+              wfs = WorkspaceFile.objects.filter(workspace__booking=b, deleted=False)
+              print(f"  ra workspace files={wfs.count()} by_source={dict(Counter(wfs.values_list('source', flat=True)))} "
+                    f"rawdata_named_like_old_s3={sum(1 for n in wfs.values_list('original_name', flat=True) if (n or '').lower() in old_leaves)}")
+              rfs = ResearchFile.objects.filter(booking=b).exclude(status="DELETED")
+              print(f"  my_research files={rfs.count()} by_origin={dict(Counter(rfs.values_list('origin', flat=True)))} "
+                    f"named_like_old_s3={sum(1 for n in rfs.values_list('original_name', flat=True) if (n or '').lower() in old_leaves)}")
+
+          if client is not None:
+              print("== Copies of older S3 objects made into post-cutoff bookings ==")
+              ws_copies = rf_copies = bookings_with_copies = 0
+              for b in post.only("booking_id", "virtual_booking_id", "created_at"):
+                  vid = (b.virtual_booking_id or "").strip()
+                  leaves = {PurePosixPath(objs[i][0]).name.lower() for i in seg_index.get(vid, []) if objs[i][1] < b.created_at} if vid else set()
+                  if not leaves:
+                      continue
+                  w = sum(1 for n in WorkspaceFile.objects.filter(workspace__booking=b, deleted=False, source="booking_raw").values_list("original_name", flat=True) if (n or "").lower() in leaves)
+                  r = sum(1 for n in ResearchFile.objects.filter(booking=b, origin="booking_raw").exclude(status="DELETED").values_list("original_name", flat=True) if (n or "").lower() in leaves)
+                  ws_copies += w
+                  rf_copies += r
+                  bookings_with_copies += 1 if (w or r) else 0
+              print(f"  ra_workspace_rawdata_copies={ws_copies} my_research_raw_copies={rf_copies} bookings={bookings_with_copies}")
+
+          print("== Out of scope (report only) ==")
+          from iic_booking.communication.models import CommunicationLog
+          cl = CommunicationLog.objects.filter(created_at__lt=CUTOFF) if hasattr(CommunicationLog, "created_at") else CommunicationLog.objects.none()
+          print(f"  communication logs pre_cutoff={cl.count()}")
+          try:
+              from iic_booking.sync.models import ExperimentSession
+              print(f"  sync.ExperimentSession pre_cutoff_with_booking_ref={ExperimentSession.objects.filter(created_at__lt=CUTOFF).exclude(booking_id='').count()}")
+          except Exception as exc:
+              print(f"  sync.ExperimentSession: {type(exc).__name__}")
+          try:
+              from iic_booking.remote_analysis.operations_models import CommissioningRun
+              print(f"  remote_analysis.CommissioningRun pre_cutoff_with_booking_id={CommissioningRun.objects.filter(started_at__lt=CUTOFF, booking_id__isnull=False).count()}")
+          except Exception as exc:
+              print(f"  CommissioningRun: {type(exc).__name__}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
