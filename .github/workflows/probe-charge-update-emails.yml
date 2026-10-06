@@ -1,0 +1,115 @@
+# Read-only, counts only (no names, emails or booking ids): "Booking Charges Updated" emails and the
+# charge-recalculated booking events behind them over the last 3 days, plus the on/off state of the
+# charge-recalculated email and in-app templates.
+name: Probe Charge Update Emails
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from datetime import timedelta
+          from django.db.models import Q
+          from django.utils import timezone
+          from iic_booking.communication.models import CommunicationLog, CommunicationTemplate
+          from iic_booking.equipment.models import BookingEvent, BookingEventType
+          from iic_booking.equipment.fabrication import is_fabrication_equipment
+
+          now = timezone.now()
+          since = now - timedelta(days=3)
+          print(f"now={now.isoformat()} since={since.isoformat()}")
+
+          def subject_pattern(s):
+              head = re.split(r"\s[–-]\s", s or "", maxsplit=1)[0]
+              return re.sub(r"\d+", "#", head).strip()[:60]
+
+          print("== Templates with 'charge' in the code ==")
+          for code, ctype, active in (
+              CommunicationTemplate.objects.filter(code__icontains="charge")
+              .order_by("code").values_list("code", "communication_type", "is_active")
+          ):
+              print(f"  {code} type={ctype} is_active={active}")
+
+          emails = CommunicationLog.objects.filter(
+              communication_type=CommunicationLog.CommunicationType.EMAIL, created_at__gte=since
+          ).filter(Q(subject__icontains="charge") | Q(template__code__icontains="charge"))
+          print(f"== Emails with 'charge' in subject or template code (last 3 days): {emails.count()} ==")
+          by_kind = Counter()
+          by_day = Counter()
+          for code, subj, status, created, meta in emails.values_list(
+              "template__code", "subject", "status", "created_at", "metadata"
+          ):
+              by_kind[(code or "none", subject_pattern(subj), status)] += 1
+              by_day[(code or "none", timezone.localtime(created).date().isoformat())] += 1
+          for (code, pat, status), n in sorted(by_kind.items()):
+              print(f"  template={code} subject='{pat}' status={status} count={n}")
+          print("  -- by day --")
+          for (code, day), n in sorted(by_day.items()):
+              print(f"  {day} template={code} count={n}")
+
+          rec = CommunicationLog.objects.filter(
+              template__code="booking_charge_recalculated_email", created_at__gte=since
+          )
+          role = Counter()
+          events = set()
+          for meta in rec.values_list("metadata", flat=True):
+              meta = meta or {}
+              role["staff_copy" if meta.get("staff_recipient") else "booker_or_wallet_owner"] += 1
+              if meta.get("event_id"):
+                  events.add(meta["event_id"])
+          print(f"== booking_charge_recalculated_email recipients: {dict(role)} distinct_events={len(events)} ==")
+
+          push = CommunicationLog.objects.filter(
+              template__code="booking_charge_recalculated_push", created_at__gte=since
+          ).count()
+          print(f"== booking_charge_recalculated_push (in-app) last 3 days: {push} ==")
+
+          ev = BookingEvent.objects.filter(
+              event_type=BookingEventType.CHARGE_RECALCULATED, created_at__gte=since
+          ).select_related("booking", "booking__equipment")
+          trig = Counter()
+          outcome = Counter()
+          sent = Counter()
+          for e in ev:
+              md = e.metadata or {}
+              fab = is_fabrication_equipment(e.booking.equipment)
+              if md.get("input_edit_reverted"):
+                  t = "payment_window_revert"
+              elif e.created_by_id and e.created_by_id == e.booking.user_id:
+                  t = "user_input_edit"
+              else:
+                  t = "staff_edit_or_print_actuals"
+              trig[(t, "fabrication" if fab else "other")] += 1
+              outcome["extra_due" if md.get("extra_amount") else ("refund" if md.get("refund_amount") else "no_change_or_revert")] += 1
+              sent["notification_sent" if e.notification_sent else "not_marked_sent"] += 1
+          print(f"== CHARGE_RECALCULATED events last 3 days: {ev.count()} ==")
+          for (t, kind), n in sorted(trig.items()):
+              print(f"  trigger={t} equipment={kind} count={n}")
+          print(f"  outcome={dict(outcome)}")
+          print(f"  {dict(sent)}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
