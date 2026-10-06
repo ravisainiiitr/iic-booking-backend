@@ -9,7 +9,6 @@ from django.conf import settings
 from django.db.models import Q, QuerySet
 
 
-DEFAULT_TEST_EMAIL_REDIRECT = "ravisaini.15@gmail.com"
 TEST_USER_PASSWORD = "Test@IIC2026!"
 TEST_EMAIL_DOMAIN = "iic-booking.test"
 
@@ -45,7 +44,7 @@ def email_redirects() -> list[str]:
     """
     Addresses that receive mail for is_test_account users.
     Prefer Django admin TestAccountEmailSettings; else env TEST_ACCOUNT_EMAIL_REDIRECT
-    (comma/semicolon/newline separated); else DEFAULT_TEST_EMAIL_REDIRECT.
+    (comma/semicolon/newline separated); else none (no address may be hard-coded: public repository).
     """
     try:
         from iic_booking.users.models.test_account_email_settings import TestAccountEmailSettings
@@ -58,10 +57,7 @@ def email_redirects() -> list[str]:
         pass
 
     env_raw = getattr(settings, "TEST_ACCOUNT_EMAIL_REDIRECT", None) or ""
-    from_env = parse_email_list(env_raw)
-    if from_env:
-        return from_env
-    return parse_email_list(DEFAULT_TEST_EMAIL_REDIRECT)
+    return parse_email_list(env_raw)
 
 
 def email_redirect() -> str:
@@ -158,10 +154,8 @@ def redirect_email_address(email: str, *, subject: Optional[str] = None) -> tupl
     if not addr:
         return [], subject
     if should_force_email_redirect(addr):
-        redirects = email_redirects()
-        if redirects:
-            return redirects, subject
-        return [DEFAULT_TEST_EMAIL_REDIRECT], subject
+        # Seeded test logins have undeliverable addresses: with no redirect configured, send nothing.
+        return email_redirects(), subject
     from iic_booking.users.models import User
 
     user = User.objects.filter(email__iexact=addr).only("id", "email", "is_test_account").first()

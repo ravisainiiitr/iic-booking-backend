@@ -31,11 +31,5 @@ class TestAccountEmailSettings(models.Model):
 
     @classmethod
     def get_singleton(cls) -> "TestAccountEmailSettings":
-        obj, created = cls.objects.get_or_create(
-            pk=1,
-            defaults={"recipient_emails": "ravisaini.15@gmail.com"},
-        )
-        if not created and not (obj.recipient_emails or "").strip():
-            obj.recipient_emails = "ravisaini.15@gmail.com"
-            obj.save(update_fields=["recipient_emails"])
+        obj, _created = cls.objects.get_or_create(pk=1)
         return obj

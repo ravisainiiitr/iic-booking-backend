@@ -886,10 +886,7 @@ ACCOUNTS_EMAIL = env("ACCOUNTS_EMAIL", default="iicbooking@iitr.ac.in")
 
 # Outbound email for users with is_test_account=True is forced here when Django admin
 # TestAccountEmailSettings has no addresses. Supports multiple: comma / semicolon / newline.
-TEST_ACCOUNT_EMAIL_REDIRECT = env(
-    "TEST_ACCOUNT_EMAIL_REDIRECT",
-    default="ravisaini.15@gmail.com",
-)
+TEST_ACCOUNT_EMAIL_REDIRECT = env("TEST_ACCOUNT_EMAIL_REDIRECT", default="")
 
 # 3D printing / STL analysis
 # ------------------------------------------------------------------------------

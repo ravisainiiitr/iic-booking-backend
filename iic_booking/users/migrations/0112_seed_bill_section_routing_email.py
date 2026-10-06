@@ -1,29 +1,17 @@
 from django.db import migrations
 
 
-SEED_EMAIL = "ravisaini.15@gmail.com"
-
-
 def seed_bill_section_email(apps, schema_editor):
+    # Bill Section routing addresses are configured per environment (Main Admin settings); only the row is ensured.
     WalletSricSettings = apps.get_model("users", "WalletSricSettings")
-    obj, created = WalletSricSettings.objects.get_or_create(
+    WalletSricSettings.objects.get_or_create(
         pk=1,
         defaults={
             "recipient_emails": "",
-            "bill_section_emails": SEED_EMAIL,
+            "bill_section_emails": "",
             "grant_code_for_credit": "IIC-000-002",
         },
     )
-    if not created:
-        current = (obj.bill_section_emails or "").strip()
-        if not current:
-            obj.bill_section_emails = SEED_EMAIL
-            obj.save(update_fields=["bill_section_emails"])
-        elif SEED_EMAIL.lower() not in current.lower():
-            # Keep existing addresses; append seed if missing.
-            sep = "\n" if "\n" in current else ", "
-            obj.bill_section_emails = f"{current.rstrip()}{sep}{SEED_EMAIL}"
-            obj.save(update_fields=["bill_section_emails"])
 
 
 def noop_reverse(apps, schema_editor):

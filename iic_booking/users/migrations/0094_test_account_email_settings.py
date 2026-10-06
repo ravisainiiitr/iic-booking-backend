@@ -4,11 +4,9 @@ from django.db import migrations, models
 
 
 def seed_default_redirect(apps, schema_editor):
+    # Redirect addresses are configured per environment in Django admin; the row starts empty.
     TestAccountEmailSettings = apps.get_model("users", "TestAccountEmailSettings")
-    TestAccountEmailSettings.objects.get_or_create(
-        pk=1,
-        defaults={"recipient_emails": "ravisaini.15@gmail.com"},
-    )
+    TestAccountEmailSettings.objects.get_or_create(pk=1, defaults={"recipient_emails": ""})
 
 
 class Migration(migrations.Migration):

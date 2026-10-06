@@ -60,7 +60,12 @@ jobs:
           report = json.load(open(sys.argv[1], encoding="utf-8"))
           st = report["state"]
           lines = ["## Support ticket alerts", ""]
-          lines += [f"- Changed: {c}" for c in report["changes"]] or ["- No changes (read-only)."]
+          if report["changes"]:
+              lines += [f"- Changed: {c}" for c in report["changes"]]
+          elif os.environ.get("ACTION") == "apply":
+              lines.append("- Nothing to change: the stored list already matches the secret and the copy is on.")
+          else:
+              lines.append("- Status only, nothing changed.")
           lines.append(f"- **New ticket copy: {'ON' if st['enabled'] else 'OFF'}**, {st['recipient_count']} recipient(s): "
                        + (", ".join(st["recipients_masked"]) or "none"))
           if st["invalid_count"]:
