@@ -341,10 +341,9 @@ def notice_requests_mine(request):
 
     managed_ids = set(get_equipment_ids_managed_by_oic(request.user.id))
     temp_ids = set(
-        EquipmentTemporaryOIC.objects.filter(
-            temporary_oic=request.user,
-            resume_at__gt=timezone.now(),
-        ).values_list("equipment_id", flat=True)
+        EquipmentTemporaryOIC.objects.active()
+        .filter(temporary_oic=request.user)
+        .values_list("equipment_id", flat=True)
     )
     equipment_ids = managed_ids | temp_ids
 

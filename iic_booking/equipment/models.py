@@ -1514,12 +1514,37 @@ class EquipmentOperator(models.Model):
         ]
 
 
+class EquipmentTemporaryOICQuerySet(models.QuerySet):
+    def active(self, at=None):
+        """Delegations granting OIC access at ``at`` (default now): not ended, started and before resume_at."""
+        at = at or timezone.now()
+        return self.filter(
+            status=EquipmentTemporaryOIC.Status.ACTIVE,
+            resume_at__gt=at,
+        ).filter(models.Q(start_at__isnull=True) | models.Q(start_at__lte=at))
+
+    def open(self, at=None):
+        """Not ended and not past resume_at (currently active or scheduled to start later)."""
+        at = at or timezone.now()
+        return self.filter(status=EquipmentTemporaryOIC.Status.ACTIVE, resume_at__gt=at)
+
+
 class EquipmentTemporaryOIC(models.Model):
     """
-    Temporary OIC delegation: when the primary OIC goes on leave, they can assign
-    another OIC-type user to manage the equipment until resume_at. After resume_at,
-    the temporary OIC loses management access and the primary OIC resumes.
+    OIC substitute (temporary OIC delegation): the permanent OIC lets another OIC of the same
+    department manage the equipment from start_at until resume_at. The permanent OIC keeps access.
+    Access is evaluated at check time through ``EquipmentTemporaryOIC.objects.active()``; rows are
+    never deleted, ending a delegation only changes ``status`` (history in EquipmentTemporaryOICEvent).
     """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", _("Active or scheduled")
+        CANCELLED = "cancelled", _("Cancelled before start")
+        REVOKED = "revoked", _("Revoked early")
+        EXPIRED = "expired", _("Expired")
+
+    objects = EquipmentTemporaryOICQuerySet.as_manager()
+
     id = models.AutoField(primary_key=True)
     equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name='temporary_oic_delegations')
     primary_oic = models.ForeignKey(
@@ -1537,6 +1562,33 @@ class EquipmentTemporaryOIC(models.Model):
         help_text='The OIC who will temporarily manage the equipment until resume_at.',
     )
     resume_at = models.DateTimeField(help_text='Date and time after which the primary OIC resumes and the temporary OIC loses access.')
+    start_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='Access starts at this time; empty means from creation.',
+    )
+    reason = models.TextField(blank=True, default='', db_default='')
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+        db_default=Status.ACTIVE,
+        db_index=True,
+    )
+    batch_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Shared by the rows created in one request (several substitutes).',
+    )
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    ended_at = models.DateTimeField(null=True, blank=True)
+    ended_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    end_reason = models.TextField(blank=True, default='', db_default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1546,6 +1598,50 @@ class EquipmentTemporaryOIC(models.Model):
 
     def __str__(self):
         return f"{self.equipment.code}: {self.temporary_oic} until {self.resume_at}"
+
+    def effective_start(self):
+        return self.start_at or self.created_at
+
+    def display_status(self, at=None) -> str:
+        """scheduled / active / expired / cancelled / revoked as seen at ``at``."""
+        if self.status != self.Status.ACTIVE:
+            return self.status
+        at = at or timezone.now()
+        if self.resume_at <= at:
+            return self.Status.EXPIRED
+        if self.start_at and self.start_at > at:
+            return "scheduled"
+        return self.Status.ACTIVE
+
+
+class EquipmentTemporaryOICEvent(models.Model):
+    """Audit trail of an OIC substitute delegation (created, period changed, cancelled, revoked, expired)."""
+
+    class Action(models.TextChoices):
+        CREATED = "created", _("Created")
+        PERIOD_CHANGED = "period_changed", _("Period changed")
+        CANCELLED = "cancelled", _("Cancelled")
+        REVOKED = "revoked", _("Revoked")
+        EXPIRED = "expired", _("Expired")
+
+    delegation = models.ForeignKey(
+        EquipmentTemporaryOIC, on_delete=models.CASCADE, related_name='events',
+    )
+    action = models.CharField(max_length=20, choices=Action.choices)
+    actor = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    reason = models.TextField(blank=True, default='')
+    details = models.JSONField(blank=True, default=dict)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = _('Temporary OIC delegation event')
+        verbose_name_plural = _('Temporary OIC delegation events')
+        ordering = ['created_at', 'id']
+
+    def __str__(self):
+        return f"{self.delegation_id}: {self.action} at {self.created_at}"
 
 
 class EquipmentOperatorCoverage(models.Model):
@@ -6485,10 +6581,9 @@ class InventoryRequest(models.Model):
             return True
 
         # Active temporary OIC delegation where the primary OIC is still mapped to this equipment.
-        return EquipmentTemporaryOIC.objects.filter(
+        return EquipmentTemporaryOIC.objects.active(check_time).filter(
             equipment=equipment,
             temporary_oic=user,
-            resume_at__gt=check_time,
         ).filter(
             primary_oic__equipment_manager__equipment=equipment,
         ).exists()

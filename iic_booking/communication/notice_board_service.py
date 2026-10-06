@@ -51,10 +51,9 @@ def user_can_manage_notice_request(user, notice: Notice) -> bool:
             )
         if notice.equipment_id in managed:
             return True
-        return EquipmentTemporaryOIC.objects.filter(
+        return EquipmentTemporaryOIC.objects.active().filter(
             equipment_id=notice.equipment_id,
             temporary_oic=user,
-            resume_at__gt=timezone.now(),
         ).exists()
     return False
 

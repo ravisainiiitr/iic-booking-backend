@@ -76,17 +76,13 @@ def equipment_oic_users(equipment) -> list:
     """Officer in charge (managers) and active temporary OICs for the equipment."""
     if equipment is None:
         return []
-    from django.utils import timezone
-
     from iic_booking.equipment.models import EquipmentManager, EquipmentTemporaryOIC
 
     eid = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
     users = [em.manager for em in EquipmentManager.objects.filter(equipment_id=eid).select_related("manager")]
     users += [
         row.temporary_oic
-        for row in EquipmentTemporaryOIC.objects.filter(equipment_id=eid, resume_at__gt=timezone.now()).select_related(
-            "temporary_oic"
-        )
+        for row in EquipmentTemporaryOIC.objects.active().filter(equipment_id=eid).select_related("temporary_oic")
     ]
     return _unique_active(users)
 

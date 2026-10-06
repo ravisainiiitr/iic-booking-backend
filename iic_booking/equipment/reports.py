@@ -247,10 +247,7 @@ def get_equipment_staff_notify_users(equipment) -> list:
 
     for em in EquipmentManager.objects.filter(equipment_id=eid).select_related("manager"):
         _add(em.manager)
-    now = timezone.now()
-    for row in EquipmentTemporaryOIC.objects.filter(
-        equipment_id=eid, resume_at__gt=now
-    ).select_related("temporary_oic"):
+    for row in EquipmentTemporaryOIC.objects.active().filter(equipment_id=eid).select_related("temporary_oic"):
         _add(row.temporary_oic)
     for eo in EquipmentOperator.objects.filter(equipment_id=eid).select_related("operator"):
         _add(eo.operator)
@@ -284,9 +281,7 @@ def get_equipment_oic_users(equipment) -> list:
     ]
     temporary = [
         row.temporary_oic
-        for row in EquipmentTemporaryOIC.objects.filter(
-            equipment_id=eid, resume_at__gt=timezone.now()
-        ).select_related("temporary_oic")
+        for row in EquipmentTemporaryOIC.objects.active().filter(equipment_id=eid).select_related("temporary_oic")
     ]
     return _active_unique_users(managers + temporary)
 
@@ -304,18 +299,16 @@ def get_equipment_lab_incharge_users(equipment) -> list:
 
 
 def get_equipment_ids_managed_by_oic(user_id: int) -> list[int]:
-    """Return equipment IDs for which the user is OIC (manager) or temporary OIC (until resume_at)."""
+    """Return equipment IDs for which the user is OIC (manager) or an active OIC substitute (temporary OIC)."""
     from iic_booking.equipment.models import EquipmentTemporaryOIC
 
     primary_ids = set(
         EquipmentManager.objects.filter(manager_id=user_id).values_list("equipment_id", flat=True)
     )
-    now = timezone.now()
     temp_ids = set(
-        EquipmentTemporaryOIC.objects.filter(
-            temporary_oic_id=user_id,
-            resume_at__gt=now,
-        ).values_list("equipment_id", flat=True)
+        EquipmentTemporaryOIC.objects.active()
+        .filter(temporary_oic_id=user_id)
+        .values_list("equipment_id", flat=True)
     )
     return list(primary_ids | temp_ids)
 

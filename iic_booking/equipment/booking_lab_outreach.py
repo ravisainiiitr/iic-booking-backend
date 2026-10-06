@@ -126,9 +126,7 @@ def staff_sender_identity(sender, booking) -> tuple[str, str]:
     operator = EquipmentOperator.objects.filter(equipment_id=eq_id, operator_id=sender.pk).only("honorific").first()
     if operator is not None:
         return name_with_honorific(sender, operator.honorific, default=default), "Lab Operator"
-    if EquipmentTemporaryOIC.objects.filter(
-        equipment_id=eq_id, temporary_oic_id=sender.pk, resume_at__gt=timezone.now()
-    ).exists():
+    if EquipmentTemporaryOIC.objects.active().filter(equipment_id=eq_id, temporary_oic_id=sender.pk).exists():
         return default, "Officer In-Charge (temporary)"
     return default, sender_role_label(sender, booking)
 

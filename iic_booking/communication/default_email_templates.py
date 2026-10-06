@@ -124,6 +124,10 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "fabrication_booking_rejected_email",
     "fabrication_files_replaced_email",
     "fabrication_ready_for_pickup_email",
+    "oic_substitute_assigned_email",
+    "oic_substitute_ended_email",
+    "oic_substitute_lab_staff_email",
+    "oic_substitute_oic_copy_email",
 ]
 
 
@@ -2338,6 +2342,97 @@ def _fabrication_templates() -> list[dict[str, Any]]:
     ]
 
 
+_OIC_SUBSTITUTE_HELP = (
+    "{{ user_name }}, {{ equipment_name }}, {{ equipment_code }}, {{ oic_name }}, {{ granted_by_name }}, "
+    "{{ substitute_names }}, {{ start_display }}, {{ end_display }}, {{ period_display }}, {{ reason }}, {{ link }}"
+)
+_OIC_SUBSTITUTE_CHANGE_HELP = (
+    _OIC_SUBSTITUTE_HELP
+    + ", {{ change_title }}, {{ summary }}, {{ status_display }}, {{ ended_by_name }}, {{ ended_at_display }}, "
+    "{{ end_reason }}"
+)
+
+
+def _oic_substitute_templates() -> list[dict[str, Any]]:
+    """OIC Substitute: assignment, end (cancel / revoke / expiry), Lab in-charge notice and the OIC's copy."""
+    period_rows = [
+        optional_detail_row("Equipment", "equipment_name"),
+        optional_detail_row("Equipment code", "equipment_code"),
+        optional_detail_row("From", "start_display"),
+        optional_detail_row("Until", "end_display"),
+    ]
+    change_rows = [
+        *period_rows,
+        optional_detail_row("Officer in Charge", "oic_name"),
+        optional_detail_row("Substitute OIC(s)", "substitute_names"),
+        optional_detail_row("Status", "status_display"),
+        optional_detail_row("Ended by", "ended_by_name"),
+        optional_detail_row("Ended at", "ended_at_display"),
+    ]
+    change_notes = (("reason", "Reason for the substitution"), ("end_reason", "Reason for ending"))
+    return [
+        _simple_email(
+            code="oic_substitute_assigned_email",
+            title="You Are an OIC Substitute",
+            subject="OIC substitute for {{ equipment_name }} – {{ period_display }}",
+            intro=(
+                "{{ granted_by_name }} has made you an OIC substitute for the equipment below. During this period you "
+                "can manage its bookings, approvals, slots, waitlist, urgent requests and booking configuration with "
+                "the same permissions as the OIC. Your access ends automatically at the end of the period, or earlier "
+                "if the OIC revokes it."
+            ),
+            description="Sent to each substitute OIC when the OIC of an equipment assigns them (OIC Substitute).",
+            detail_rows=[
+                *period_rows,
+                optional_detail_row("Officer in Charge", "oic_name"),
+                optional_detail_row("Substitute OIC(s)", "substitute_names"),
+            ],
+            note_vars=(("reason", "Reason"),),
+            cta_label="Open OIC Substitute",
+            variable_help=_OIC_SUBSTITUTE_HELP,
+        ),
+        _simple_email(
+            code="oic_substitute_ended_email",
+            title="OIC Substitute Access Ended",
+            subject="{{ change_title }} – {{ equipment_name }}",
+            intro=(
+                "Your OIC substitute access to the equipment below {{ end_phrase }}. "
+                "The equipment is managed by {{ oic_name }} again."
+            ),
+            description="Sent to the substitute OIC when the substitution is cancelled, revoked or its period ends.",
+            detail_rows=change_rows,
+            note_vars=change_notes,
+            cta_label="Open OIC Substitute",
+            variable_help=_OIC_SUBSTITUTE_CHANGE_HELP + ", {{ end_phrase }}",
+        ),
+        _simple_email(
+            code="oic_substitute_lab_staff_email",
+            title="OIC Substitute Update",
+            subject="{{ change_title }} – {{ equipment_name }}",
+            intro="{{ summary }}",
+            description=(
+                "Sent to the Lab in-charges (Lab Operators) of the equipment when an OIC substitute is assigned, "
+                "cancelled, revoked or expires."
+            ),
+            detail_rows=change_rows,
+            note_vars=change_notes,
+            cta_label="Open portal",
+            variable_help=_OIC_SUBSTITUTE_CHANGE_HELP,
+        ),
+        _simple_email(
+            code="oic_substitute_oic_copy_email",
+            title="OIC Substitute Confirmation",
+            subject="{{ change_title }} – {{ equipment_name }}",
+            intro="{{ summary }}",
+            description="Copy to the OIC who assigned the substitute: assignment, cancellation, revocation or expiry.",
+            detail_rows=change_rows,
+            note_vars=change_notes,
+            cta_label="Open OIC Substitute",
+            variable_help=_OIC_SUBSTITUTE_CHANGE_HELP,
+        ),
+    ]
+
+
 def get_default_email_template(code: str) -> Optional[dict[str, Any]]:
     """Catalog spec for one code without building (and validating) the whole catalog."""
     for spec in _training_templates():
@@ -2364,6 +2459,7 @@ def get_default_email_templates() -> list[dict]:
     templates.extend(_nomination_and_leave_templates())
     templates.extend(_training_templates())
     templates.extend(_fabrication_templates())
+    templates.extend(_oic_substitute_templates())
 
     by_code = {t["code"]: t for t in templates}
     missing = [c for c in DEFAULT_EMAIL_TEMPLATE_CODES if c not in by_code]

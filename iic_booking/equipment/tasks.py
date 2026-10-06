@@ -164,6 +164,23 @@ def expire_fabrication_rejections() -> int:
     return cancelled
 
 
+@shared_task(name="equipment.expire_oic_substitutions")
+def expire_oic_substitutions() -> int:
+    """
+    Every 10 minutes: record OIC substitute delegations whose period has ended as expired and notify the
+    substitute, the Lab in-charges and the OIC. Access itself already stopped at the end of the period.
+
+    Returns:
+        Number of delegations marked expired.
+    """
+    from .oic_substitution import expire_due_substitutions
+
+    expired = expire_due_substitutions()
+    if expired:
+        logger.info("expire_oic_substitutions: expired=%d", expired)
+    return expired
+
+
 @shared_task(name="equipment.expire_unpaid_input_edits")
 def expire_unpaid_input_edits() -> int:
     """

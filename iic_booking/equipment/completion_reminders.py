@@ -204,9 +204,9 @@ def _candidate_recipients(equipment_ids: list[int]) -> list:
     now = timezone.now()
     user_ids = set(EquipmentManager.objects.filter(equipment_id__in=equipment_ids).values_list("manager_id", flat=True))
     user_ids |= set(
-        EquipmentTemporaryOIC.objects.filter(equipment_id__in=equipment_ids, resume_at__gt=now).values_list(
-            "temporary_oic_id", flat=True
-        )
+        EquipmentTemporaryOIC.objects.active(now)
+        .filter(equipment_id__in=equipment_ids)
+        .values_list("temporary_oic_id", flat=True)
     )
     user_ids |= set(
         EquipmentOperator.objects.filter(equipment_id__in=equipment_ids).values_list("operator_id", flat=True)

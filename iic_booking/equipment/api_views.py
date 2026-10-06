@@ -415,14 +415,7 @@ def _user_can_act_as_oic_for_equipment(user, equipment) -> bool:
     eq_id = getattr(equipment, "equipment_id", None) or getattr(equipment, "pk", None)
     if eq_id is None:
         return False
-    if eq_id in get_equipment_ids_managed_by_oic(user.id):
-        return True
-    now_ts = timezone.now()
-    return EquipmentTemporaryOIC.objects.filter(
-        equipment_id=eq_id,
-        temporary_oic=user,
-        resume_at__gt=now_ts,
-    ).exists()
+    return eq_id in get_equipment_ids_managed_by_oic(user.id)
 
 
 def _can_change_sample_sets_after_booking(user, equipment) -> bool:
@@ -1809,18 +1802,16 @@ def equipment_form_choices(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_list_oic_users(request):
-    """List OIC (manager) users for temporary OIC dropdown. Excludes current user. Manager only.
-    Optional query param: search — filter by name or email (case-insensitive)."""
+    """List OIC (manager) users of the current OIC's department for the temporary OIC dropdown.
+    Excludes current user. Manager only. Optional query param: search — filter by name or email."""
     if request.user.user_type != UserType.MANAGER:
         return Response(
             {"error": "Only Officer in Charge (OIC) can access this."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    from iic_booking.users.models.user import User
-    queryset = User.objects.filter(
-        user_type=UserType.MANAGER,
-        is_active=True,
-    ).exclude(pk=request.user.pk).order_by("name", "email")
+    from iic_booking.equipment.oic_substitution import same_department_oics
+
+    queryset = same_department_oics(request.user)
     search = (request.GET.get("search") or "").strip()
     if search:
         queryset = queryset.filter(
@@ -1858,14 +1849,17 @@ def temporary_oic_my_equipments(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_create(request):
-    """Create a temporary OIC delegation. Current user must be primary OIC for the equipment. Manager only."""
+    """Create a temporary OIC delegation starting now (legacy form of OIC Substitute). Current user must be
+    primary OIC for the equipment; the temporary OIC must be an OIC of the same department. Manager only."""
     if request.user.user_type != UserType.MANAGER:
         return Response(
             {"error": "Only Officer in Charge (OIC) can create temporary delegation."},
             status=status.HTTP_403_FORBIDDEN,
         )
     from django.utils import timezone
-    from iic_booking.users.models.user import User
+    from django.utils.dateparse import parse_datetime
+
+    from iic_booking.equipment.oic_substitution import SubstitutionError, create_substitution
 
     equipment_id = request.data.get("equipment_id")
     temporary_oic_id = request.data.get("temporary_oic_id")
@@ -1877,49 +1871,31 @@ def temporary_oic_create(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     try:
-        equipment = Equipment.objects.get(pk=int(equipment_id))
-    except (Equipment.DoesNotExist, ValueError, TypeError):
-        return Response({"error": "Invalid equipment."}, status=status.HTTP_404_NOT_FOUND)
-    if not EquipmentManager.objects.filter(equipment=equipment, manager=request.user).exists():
+        resume_at = parse_datetime(str(resume_at_str))
+    except (TypeError, ValueError):
+        resume_at = None
+    if resume_at is None:
         return Response(
-            {"error": "You are not the Officer in Charge for this equipment."},
-            status=status.HTTP_403_FORBIDDEN,
+            {"error": "resume_at must be a valid ISO datetime (e.g. 2025-03-10T18:00:00 or 2025-03-10T18:00:00+05:30)."},
+            status=status.HTTP_400_BAD_REQUEST,
         )
+    if timezone.is_naive(resume_at):
+        resume_at = timezone.make_aware(resume_at)
+    now = timezone.now()
     try:
-        temp_oic = User.objects.get(pk=int(temporary_oic_id), user_type=UserType.MANAGER, is_active=True)
-    except (User.DoesNotExist, ValueError, TypeError):
-        return Response({"error": "Invalid temporary OIC user."}, status=status.HTTP_400_BAD_REQUEST)
-    if temp_oic.pk == request.user.pk:
-        return Response(
-            {"error": "Temporary OIC cannot be yourself."},
-            status=status.HTTP_400_BAD_REQUEST,
+        rows = create_substitution(
+            primary=request.user,
+            equipment_id=equipment_id,
+            substitute_ids=[temporary_oic_id],
+            reason=request.data.get("reason"),
+            period=(now, resume_at),
+            now=now,
         )
-    try:
-        from django.utils.dateparse import parse_datetime
-        resume_at = parse_datetime(resume_at_str)
-        if resume_at is None:
-            return Response(
-                {"error": "resume_at must be a valid ISO datetime (e.g. 2025-03-10T18:00:00 or 2025-03-10T18:00:00+05:30)."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if timezone.is_naive(resume_at):
-            resume_at = timezone.make_aware(resume_at)
-    except Exception:
-        return Response(
-            {"error": "resume_at must be a valid ISO datetime."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if resume_at <= timezone.now():
-        return Response(
-            {"error": "Resume date and time must be in the future."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    delegation = EquipmentTemporaryOIC.objects.create(
-        equipment=equipment,
-        primary_oic=request.user,
-        temporary_oic=temp_oic,
-        resume_at=resume_at,
-    )
+    except SubstitutionError as exc:
+        return Response({"error": exc.message}, status=exc.status_code)
+    delegation = rows[0]
+    equipment = delegation.equipment
+    temp_oic = delegation.temporary_oic
     return Response({
         "id": delegation.id,
         "equipment_id": equipment.equipment_id,
@@ -1939,11 +1915,9 @@ def temporary_oic_list_mine(request):
             {"error": "Only Officer in Charge (OIC) can access this."},
             status=status.HTTP_403_FORBIDDEN,
         )
-    from django.utils import timezone
-    now = timezone.now()
     delegations = (
-        EquipmentTemporaryOIC.objects
-        .filter(primary_oic=request.user, resume_at__gt=now)
+        EquipmentTemporaryOIC.objects.open()
+        .filter(primary_oic=request.user)
         .select_related("equipment", "temporary_oic")
         .order_by("resume_at")
     )
@@ -1964,20 +1938,27 @@ def temporary_oic_list_mine(request):
         ],
     }, status=status.HTTP_200_OK)
 
-@api_view(["DELETE"])
+@api_view(["DELETE", "POST"])
 @permission_classes([IsAuthenticated])
 def temporary_oic_cancel(request, delegation_id):
-    """Cancel a temporary OIC delegation. Only the primary OIC can cancel. Manager only."""
+    """End a temporary OIC delegation with a reason (kept as history, never deleted). Only the primary OIC.
+    Manager only."""
     if request.user.user_type != UserType.MANAGER:
         return Response(
             {"error": "Only Officer in Charge (OIC) can cancel delegation."},
             status=status.HTTP_403_FORBIDDEN,
         )
+    from iic_booking.equipment.oic_substitution import SubstitutionError, end_substitution
+
     try:
         delegation = EquipmentTemporaryOIC.objects.get(pk=delegation_id, primary_oic=request.user)
     except EquipmentTemporaryOIC.DoesNotExist:
         return Response({"error": "Delegation not found or you are not the primary OIC."}, status=status.HTTP_404_NOT_FOUND)
-    delegation.delete()
+    reason = request.data.get("reason") if hasattr(request.data, "get") else None
+    try:
+        end_substitution(delegation=delegation, actor=request.user, reason=reason or request.GET.get("reason"))
+    except SubstitutionError as exc:
+        return Response({"error": exc.message}, status=exc.status_code)
     return Response({"message": "Temporary OIC delegation cancelled."}, status=status.HTTP_200_OK)
 
 @api_view(["PATCH"])
@@ -2006,19 +1987,24 @@ def temporary_oic_update(request, delegation_id):
         )
     from django.utils import timezone
     from django.utils.dateparse import parse_datetime
-    new_resume_at = parse_datetime(resume_at_str)
+
+    from iic_booking.equipment.oic_substitution import SubstitutionError, change_resume_at
+
+    try:
+        new_resume_at = parse_datetime(str(resume_at_str))
+    except (TypeError, ValueError):
+        new_resume_at = None
     if not new_resume_at:
         return Response(
             {"error": "Invalid resume_at format. Use ISO 8601 datetime."},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if new_resume_at <= timezone.now():
-        return Response(
-            {"error": "Resume date and time must be in the future."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    delegation.resume_at = new_resume_at
-    delegation.save(update_fields=["resume_at"])
+    if timezone.is_naive(new_resume_at):
+        new_resume_at = timezone.make_aware(new_resume_at)
+    try:
+        change_resume_at(delegation=delegation, actor=request.user, resume_at=new_resume_at)
+    except SubstitutionError as exc:
+        return Response({"error": exc.message}, status=exc.status_code)
     return Response({
         "message": "Delegation updated.",
         "id": delegation.id,
@@ -7069,9 +7055,9 @@ def _leave_request_oic_recipients_for_operator(operator_user: User):
             continue
         recipients[u.id] = u
 
-    now_ts = timezone.now()
     for t in (
-        EquipmentTemporaryOIC.objects.filter(equipment_id__in=equipment_ids, resume_at__gt=now_ts)
+        EquipmentTemporaryOIC.objects.active()
+        .filter(equipment_id__in=equipment_ids)
         .select_related("temporary_oic")
     ):
         u = getattr(t, "temporary_oic", None)
@@ -7257,12 +7243,11 @@ def _collect_oic_leave_intimation_recipients(oic_user: User) -> tuple[dict[int, 
 
     eq_ids = get_equipment_ids_managed_by_oic(oic_user.id)
     if eq_ids:
-        now_ts = timezone.now()
         for m in EquipmentManager.objects.filter(equipment_id__in=eq_ids).select_related("manager"):
             u = getattr(m, "manager", None)
             if u and u.id != oic_user.id and getattr(u, "is_active", False) and getattr(u, "email", ""):
                 recipients[u.id] = u
-        for t in EquipmentTemporaryOIC.objects.filter(equipment_id__in=eq_ids, resume_at__gt=now_ts).select_related(
+        for t in EquipmentTemporaryOIC.objects.active().filter(equipment_id__in=eq_ids).select_related(
             "temporary_oic", "primary_oic"
         ):
             for u in (getattr(t, "primary_oic", None), getattr(t, "temporary_oic", None)):
@@ -11398,12 +11383,6 @@ def _lifecycle_accessible_equipment_ids(user) -> set[int]:
     if ut in (UserType.ADMIN, UserType.FINANCE):
         return set(Equipment.objects.values_list("equipment_id", flat=True))
     ids = set(get_equipment_ids_managed_by_oic(user.id))
-    now_ts = timezone.now()
-    delegated_ids = EquipmentTemporaryOIC.objects.filter(
-        temporary_oic=user,
-        resume_at__gt=now_ts,
-    ).values_list("equipment_id", flat=True)
-    ids.update(delegated_ids)
     ids.update(EquipmentOperator.objects.filter(operator=user).values_list("equipment_id", flat=True))
     return ids
 
@@ -19328,14 +19307,7 @@ def _inventory_accessible_equipment_ids(user):
     if user.user_type == UserType.ADMIN:
         return set(Equipment.objects.values_list("equipment_id", flat=True))
 
-    ids = set(get_equipment_ids_managed_by_oic(user.id))
-    now_ts = timezone.now()
-    delegated_ids = EquipmentTemporaryOIC.objects.filter(
-        temporary_oic=user,
-        resume_at__gt=now_ts,
-    ).values_list("equipment_id", flat=True)
-    ids.update(delegated_ids)
-    return ids
+    return set(get_equipment_ids_managed_by_oic(user.id))
 
 @extend_schema(
     methods=["GET"],

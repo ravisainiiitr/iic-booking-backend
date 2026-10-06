@@ -271,6 +271,12 @@ from iic_booking.equipment.fabrication_materials_views import (
     laser_sheet_materials_manage,
 )
 from iic_booking.equipment.fabrication_reupload_views import booking_fabrication_files, booking_fabrication_reject
+from iic_booking.equipment.oic_substitution_views import (
+    oic_substitute_candidates,
+    oic_substitute_end,
+    oic_substitute_options,
+    oic_substitutes,
+)
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
@@ -1414,6 +1420,10 @@ urlpatterns = router.urls + [
     path("equipments/temporary-oic/mine/", temporary_oic_list_mine, name="temporary-oic-list-mine"),
     path("equipments/temporary-oic/<int:delegation_id>/", temporary_oic_update, name="temporary-oic-update"),
     path("equipments/temporary-oic/<int:delegation_id>/cancel/", temporary_oic_cancel, name="temporary-oic-cancel"),
+    path("equipments/oic-substitutes/", oic_substitutes, name="oic-substitutes"),
+    path("equipments/oic-substitutes/options/", oic_substitute_options, name="oic-substitute-options"),
+    path("equipments/oic-substitutes/candidates/", oic_substitute_candidates, name="oic-substitute-candidates"),
+    path("equipments/oic-substitutes/<int:delegation_id>/end/", oic_substitute_end, name="oic-substitute-end"),
     
     # Booking endpoints
     path("bookings/", list_bookings, name="list-bookings"),
