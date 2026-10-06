@@ -276,6 +276,8 @@ from iic_booking.equipment.oic_substitution_views import (
     oic_substitute_end,
     oic_substitute_options,
     oic_substitutes,
+    oic_substitutes_bulk,
+    oic_substitutes_bulk_end,
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
@@ -1424,6 +1426,8 @@ urlpatterns = router.urls + [
     path("equipments/oic-substitutes/", oic_substitutes, name="oic-substitutes"),
     path("equipments/oic-substitutes/options/", oic_substitute_options, name="oic-substitute-options"),
     path("equipments/oic-substitutes/candidates/", oic_substitute_candidates, name="oic-substitute-candidates"),
+    path("equipments/oic-substitutes/bulk/", oic_substitutes_bulk, name="oic-substitutes-bulk"),
+    path("equipments/oic-substitutes/bulk-end/", oic_substitutes_bulk_end, name="oic-substitutes-bulk-end"),
     path("equipments/oic-substitutes/<int:delegation_id>/end/", oic_substitute_end, name="oic-substitute-end"),
     
     # Booking endpoints

@@ -17904,6 +17904,8 @@ def _audit_value(value):
 
 
 def _oic_equipment_settings_row(eq, usage: dict | None = None) -> dict:
+    from .rich_text import instruction_user_type_aliases
+
     def _t(value):
         return value.strftime("%H:%M") if value else None
 
@@ -17931,7 +17933,7 @@ def _oic_equipment_settings_row(eq, usage: dict | None = None) -> dict:
             "important_instruction_by_user_type": {
                 k: v
                 for k, v in (eq.important_instruction_by_user_type or {}).items()
-                if isinstance(v, str) and v.strip()
+                if isinstance(v, str) and v.strip() and k not in instruction_user_type_aliases()
             },
         },
     }
@@ -18081,7 +18083,7 @@ def oic_equipment_settings_update(request, equipment_id):
         changed.append("show_results_deadline_to_users")
 
     from .rich_text import clean_important_instruction as _clean_instruction
-    from .rich_text import instruction_user_type_choices
+    from .rich_text import instruction_user_type_aliases, instruction_user_type_choices
 
     if "important_instruction" in data:
         text, error = _clean_instruction(data.get("important_instruction"))
@@ -18094,11 +18096,19 @@ def oic_equipment_settings_update(request, equipment_id):
     if "important_instruction_by_user_type" in data:
         raw_map = data.get("important_instruction_by_user_type") or {}
         allowed = {code for code, _label in instruction_user_type_choices()}
+        hidden = instruction_user_type_aliases()
         if not isinstance(raw_map, dict):
             errors["important_instruction_by_user_type"] = "Send an object keyed by user type."
         else:
-            cleaned: dict[str, str] = {}
+            # Instructions saved earlier for a hidden type are kept unchanged (unused, never deleted).
+            cleaned: dict[str, str] = {
+                k: v
+                for k, v in (eq.important_instruction_by_user_type or {}).items()
+                if k in hidden and isinstance(v, str) and v.strip()
+            }
             for user_type_code, raw in raw_map.items():
+                if user_type_code in hidden:
+                    continue
                 if user_type_code not in allowed:
                     errors["important_instruction_by_user_type"] = f"Unknown user type: {user_type_code}."
                     break

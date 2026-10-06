@@ -128,6 +128,10 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "oic_substitute_ended_email",
     "oic_substitute_lab_staff_email",
     "oic_substitute_oic_copy_email",
+    "oic_substitute_bulk_assigned_email",
+    "oic_substitute_bulk_ended_email",
+    "oic_substitute_bulk_lab_staff_email",
+    "oic_substitute_bulk_oic_copy_email",
 ]
 
 
@@ -2429,6 +2433,97 @@ def _oic_substitute_templates() -> list[dict[str, Any]]:
             note_vars=change_notes,
             cta_label="Open OIC Substitute",
             variable_help=_OIC_SUBSTITUTE_CHANGE_HELP,
+        ),
+        *_oic_substitute_bulk_templates(),
+    ]
+
+
+_OIC_SUBSTITUTE_BULK_HELP = (
+    "{{ user_name }}, {{ equipment_count }}, {{ equipment_list }}, {{ oic_name }}, {{ granted_by_name }}, "
+    "{{ period_display }}, {{ reason }}, {{ change_title }}, {{ summary }}, {{ ended_by_name }}, "
+    "{{ ended_at_display }}, {{ end_reason }}, {{ link }}"
+)
+
+
+def _oic_substitute_bulk_templates() -> list[dict[str, Any]]:
+    """OIC Substitute for several equipment at once: one message per recipient listing every equipment."""
+    change_rows = [
+        optional_detail_row("Officer in Charge", "oic_name"),
+        optional_detail_row("Period", "period_display"),
+        optional_detail_row("Ended by", "ended_by_name"),
+        optional_detail_row("Ended at", "ended_at_display"),
+    ]
+    change_notes = (
+        ("equipment_list", "Equipment"),
+        ("reason", "Reason for the substitution"),
+        ("end_reason", "Reason for ending"),
+    )
+    return [
+        _simple_email(
+            code="oic_substitute_bulk_assigned_email",
+            title="You Are an OIC Substitute",
+            subject="OIC substitute for {{ equipment_count }} equipment – assigned by {{ granted_by_name }}",
+            intro=(
+                "{{ granted_by_name }} has made you an OIC substitute for the {{ equipment_count }} equipment listed "
+                "below. During the period shown for each, you can manage its bookings, approvals, slots, waitlist, "
+                "urgent requests and booking configuration with the same permissions as the OIC. Your access ends "
+                "automatically at the end of each period, or earlier if the OIC revokes it."
+            ),
+            description=(
+                "Sent once to a substitute OIC who is assigned several equipment at the same time (OIC Substitute); "
+                "lists every equipment and its period."
+            ),
+            detail_rows=[
+                optional_detail_row("Officer in Charge", "oic_name"),
+                optional_detail_row("Period", "period_display"),
+            ],
+            note_vars=(("equipment_list", "Equipment and period"), ("reason", "Reason")),
+            cta_label="Open OIC Substitute",
+            variable_help=_OIC_SUBSTITUTE_BULK_HELP,
+        ),
+        _simple_email(
+            code="oic_substitute_bulk_ended_email",
+            title="OIC Substitute Access Ended",
+            subject="{{ change_title }} – {{ equipment_count }} equipment",
+            intro=(
+                "Your OIC substitute access to the equipment listed below has ended. "
+                "Each equipment is managed by its OIC again."
+            ),
+            description=(
+                "Sent once to a substitute OIC when several of their substitutions are cancelled, revoked or expire "
+                "together; lists every equipment."
+            ),
+            detail_rows=change_rows,
+            note_vars=(("equipment_list", "Equipment"), ("end_reason", "Reason for ending")),
+            cta_label="Open OIC Substitute",
+            variable_help=_OIC_SUBSTITUTE_BULK_HELP,
+        ),
+        _simple_email(
+            code="oic_substitute_bulk_lab_staff_email",
+            title="OIC Substitute Update",
+            subject="{{ change_title }} – {{ equipment_count }} equipment",
+            intro="{{ summary }}",
+            description=(
+                "Sent once to a Lab in-charge when OIC substitutes are assigned or ended for several of their "
+                "equipment at the same time; lists every equipment."
+            ),
+            detail_rows=change_rows,
+            note_vars=change_notes,
+            cta_label="Open portal",
+            variable_help=_OIC_SUBSTITUTE_BULK_HELP,
+        ),
+        _simple_email(
+            code="oic_substitute_bulk_oic_copy_email",
+            title="OIC Substitute Confirmation",
+            subject="{{ change_title }} – {{ equipment_count }} equipment",
+            intro="{{ summary }}",
+            description=(
+                "One summary to the OIC who assigned or ended OIC substitutes for several equipment at the same time."
+            ),
+            detail_rows=change_rows,
+            note_vars=change_notes,
+            cta_label="Open OIC Substitute",
+            variable_help=_OIC_SUBSTITUTE_BULK_HELP,
         ),
     ]
 

@@ -11,13 +11,17 @@ from rest_framework.response import Response
 
 from .models import EquipmentTemporaryOIC
 from .oic_substitution import (
+    MAX_BULK_END,
+    MAX_BULK_ROWS,
     MAX_PERIOD_DAYS,
     MAX_SUBSTITUTES,
     SubstitutionError,
     create_substitution,
+    create_substitutions_bulk,
     delegation_queryset,
     delegation_to_dict,
     end_substitution,
+    end_substitutions_bulk,
     is_main_admin,
     is_oic_user,
     permanent_oic_equipment_queryset,
@@ -31,7 +35,10 @@ _FORBIDDEN = {"error": "Only an Officer in Charge (OIC) or the Main Administrato
 
 
 def _error(exc: SubstitutionError) -> Response:
-    return Response({"error": exc.message}, status=exc.status_code)
+    body = {"error": exc.message}
+    if exc.row_errors:
+        body["row_errors"] = exc.row_errors
+    return Response(body, status=exc.status_code)
 
 
 def _department(user):
@@ -67,6 +74,7 @@ def oic_substitute_options(request):
             ],
             "max_substitutes": MAX_SUBSTITUTES,
             "max_period_days": MAX_PERIOD_DAYS,
+            "max_bulk_rows": MAX_BULK_ROWS,
             "today": timezone.localdate().isoformat(),
         }
     )
@@ -89,8 +97,94 @@ def oic_substitute_candidates(request):
             "department": _department(user),
             "candidates": [
                 {"id": u.pk, "name": get_user_display_name(u) or "", "email": u.email or ""}
-                for u in search_candidates(user, request.GET.get("search", ""))
+                for u in search_candidates(user, request.GET.get("search", ""), _int_param(request.GET.get("limit")))
             ],
+        }
+    )
+
+
+def _int_param(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def oic_substitutes_bulk(request):
+    """Assign substitutes for several equipment at once (all or nothing); per-row errors on failure."""
+    user = request.user
+    now = timezone.now()
+    try:
+        rows = create_substitutions_bulk(
+            primary=user,
+            assignments=request.data.get("assignments"),
+            start_date=request.data.get("start_date"),
+            end_date=request.data.get("end_date"),
+            reason=request.data.get("reason"),
+            now=now,
+        )
+    except SubstitutionError as exc:
+        return _error(exc)
+    items = [delegation_to_dict(d, viewer=user, now=now) for d in delegation_queryset().filter(pk__in=[r.pk for r in rows])]
+    equipment_count = len({i["equipment"]["id"] for i in items})
+    substitute_count = len({i["substitute"]["id"] for i in items})
+    return Response(
+        {
+            "items": items,
+            "message": (
+                f"Substitutes assigned for {equipment_count} equipment ({substitute_count} "
+                f"substitute{'s' if substitute_count != 1 else ''}). Each substitute, the Lab in-charges and you "
+                "receive one summary."
+            ),
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def oic_substitutes_bulk_end(request):
+    """Cancel / revoke several substitutions with one reason (all or nothing)."""
+    user = request.user
+    raw_ids = request.data.get("ids")
+    if not isinstance(raw_ids, (list, tuple)) or not raw_ids:
+        return Response({"error": "Select at least one substitution."}, status=status.HTTP_400_BAD_REQUEST)
+    ids = list(dict.fromkeys(i for i in (_int_param(x) for x in raw_ids) if i))
+    if len(ids) > MAX_BULK_END:
+        return Response(
+            {"error": f"End at most {MAX_BULK_END} substitutions at a time."}, status=status.HTTP_400_BAD_REQUEST
+        )
+    qs = delegation_queryset()
+    if not is_main_admin(user):
+        if not is_oic_user(user):
+            return Response(_FORBIDDEN, status=status.HTTP_403_FORBIDDEN)
+        qs = qs.filter(primary_oic=user)
+    found = {d.pk: d for d in qs.filter(pk__in=ids)}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        return Response(
+            {
+                "error": "Some selected substitutions were not found.",
+                "row_errors": [{"id": i, "message": "Substitution not found."} for i in missing],
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    try:
+        ended = end_substitutions_bulk(delegations=[found[i] for i in ids], actor=user, reason=request.data.get("reason"))
+    except SubstitutionError as exc:
+        return _error(exc)
+    now = timezone.now()
+    items = [delegation_to_dict(d, viewer=user, now=now) for d in delegation_queryset().filter(pk__in=[d.pk for d in ended])]
+    n = len(items)
+    return Response(
+        {
+            "items": items,
+            "message": (
+                f"{n} substitution{'s' if n != 1 else ''} ended. Access stopped immediately; each substitute, the Lab "
+                "in-charges and the OIC receive one summary."
+            ),
         }
     )
 

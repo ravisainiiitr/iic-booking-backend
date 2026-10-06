@@ -10,7 +10,9 @@ from iic_booking.equipment.models import EquipmentManager
 from iic_booking.equipment.rich_text import clean_important_instruction
 from iic_booking.equipment.rich_text import font_size_token
 from iic_booking.equipment.rich_text import font_token
+from iic_booking.equipment.rich_text import instruction_user_type_choices
 from iic_booking.equipment.rich_text import palette_color
+from iic_booking.equipment.rich_text import resolve_important_instruction
 from iic_booking.equipment.rich_text import rich_text_to_plain
 from iic_booking.equipment.rich_text import sanitize_rich_text
 from iic_booking.equipment.serializers import EquipmentAdminWriteSerializer
@@ -254,6 +256,67 @@ def test_per_user_type_instruction_saved_and_resolved(egs_factory):
     too_long = _client(oic).patch(url, {"important_instruction": "<p>" + "y" * 5001 + "</p>"}, format="json")
     assert too_long.status_code == 400
     assert set(too_long.data["errors"]) == {"important_instruction"}
+
+
+def test_individual_students_resolve_to_the_iitr_student_instruction():
+    from types import SimpleNamespace
+
+    eq = SimpleNamespace(
+        important_instruction="<p>Default</p>",
+        important_instruction_by_user_type={UserType.STUDENT: "<p>Students</p>", UserType.FACULTY: "<p>Faculty</p>"},
+    )
+    assert resolve_important_instruction(eq, UserType.INDIVIDUAL_STUDENT) == "<p>Students</p>"
+    assert resolve_important_instruction(eq, "Individual_Student") == "<p>Students</p>"
+    assert resolve_important_instruction(eq, UserType.STUDENT) == "<p>Students</p>"
+    assert resolve_important_instruction(eq, UserType.EXTERNAL) == "<p>Default</p>"
+
+    # A saved Individual Student instruction is no longer used.
+    eq.important_instruction_by_user_type = {UserType.INDIVIDUAL_STUDENT: "<p>Old individual</p>"}
+    assert resolve_important_instruction(eq, UserType.INDIVIDUAL_STUDENT) == "<p>Default</p>"
+    eq.important_instruction_by_user_type[UserType.STUDENT] = "<p>Students</p>"
+    assert resolve_important_instruction(eq, UserType.INDIVIDUAL_STUDENT) == "<p>Students</p>"
+
+    assert UserType.INDIVIDUAL_STUDENT not in {code for code, _ in instruction_user_type_choices()}
+    assert UserType.STUDENT in {code for code, _ in instruction_user_type_choices()}
+
+
+@pytest.mark.django_db
+def test_individual_student_option_hidden_and_saved_text_kept(egs_factory):
+    equipment = egs_factory.equipment()
+    equipment.important_instruction = "<p>Default</p>"
+    equipment.important_instruction_by_user_type = {
+        UserType.STUDENT: "<p>Students</p>",
+        UserType.INDIVIDUAL_STUDENT: "<p>Old individual</p>",
+    }
+    equipment.save(update_fields=["important_instruction", "important_instruction_by_user_type"])
+    oic = UserFactory(user_type=UserType.MANAGER, admin_approved=True)
+    EquipmentManager.objects.create(equipment=equipment, manager=oic)
+
+    listing = _client(oic).get("/api/oic/equipment-settings/").data
+    assert all(o["value"] != UserType.INDIVIDUAL_STUDENT for o in listing["instruction_user_types"])
+    row = next(r for r in listing["equipments"] if r["equipment_id"] == equipment.pk)
+    assert row["settings"]["important_instruction_by_user_type"] == {UserType.STUDENT: "<p>Students</p>"}
+
+    res = _client(oic).patch(
+        f"/api/oic/equipment-settings/{equipment.pk}/",
+        {
+            "important_instruction_by_user_type": {
+                UserType.STUDENT: "<p>Students v2</p>",
+                UserType.INDIVIDUAL_STUDENT: "<p>Ignored</p>",
+            }
+        },
+        format="json",
+    )
+    assert res.status_code == 200, res.data
+    equipment.refresh_from_db()
+    assert equipment.important_instruction_by_user_type == {
+        UserType.STUDENT: "<p>Students v2</p>",
+        UserType.INDIVIDUAL_STUDENT: "<p>Old individual</p>",
+    }
+
+    individual = UserFactory(user_type=UserType.INDIVIDUAL_STUDENT, admin_approved=True)
+    detail = _client(individual).get(f"/api/equipments/{equipment.pk}/")
+    assert detail.data["important_instruction"] == "<p>Students v2</p>"
 
 
 @pytest.mark.django_db

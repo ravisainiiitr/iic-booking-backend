@@ -400,23 +400,35 @@ def clean_important_instruction(raw) -> tuple[str | None, str | None]:
     return html, None
 
 
+def instruction_user_type_aliases() -> dict[str, str]:
+    """User types that see another type's instruction. A saved instruction for the aliased type is kept
+    in the data but no longer shown or offered."""
+    from iic_booking.users.models.user_type import UserType
+
+    return {UserType.INDIVIDUAL_STUDENT: UserType.STUDENT}
+
+
 def instruction_user_type_choices() -> list[tuple[str, str]]:
     """User types that can be given their own important instruction (booking users)."""
     from iic_booking.users.models.user_type import UserType
 
+    aliased = instruction_user_type_aliases()
     return [
         (code, str(label))
         for code, label in UserType.get_choices()
-        if UserType.is_end_user_booking_type(code) or code == UserType.OTHER
+        if (UserType.is_end_user_booking_type(code) or code == UserType.OTHER) and code not in aliased
     ]
 
 
 def resolve_important_instruction(equipment, user_type: str | None) -> str:
-    """Instruction for the user type, falling back to the default instruction."""
+    """Instruction for the user type (Individual Students use the IITR Student one), falling back to the
+    default instruction."""
     default = getattr(equipment, "important_instruction", None) or ""
     per_type = getattr(equipment, "important_instruction_by_user_type", None) or {}
     if user_type and isinstance(per_type, dict):
-        specific = per_type.get(str(user_type)) or per_type.get(str(user_type).lower())
+        code = str(user_type)
+        code = instruction_user_type_aliases().get(code.lower(), code)
+        specific = per_type.get(code) or per_type.get(code.lower())
         if isinstance(specific, str) and specific.strip():
             return specific
     return default
