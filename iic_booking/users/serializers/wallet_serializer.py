@@ -86,9 +86,14 @@ class SubWalletTransactionSerializer(serializers.ModelSerializer[SubWalletTransa
     def get_description_display(self, obj: SubWalletTransaction) -> str:
         """Description for UI: virtual ref first; strip duplicate Student line when related_user is set."""
         import re
+        from iic_booking.users.legacy_ledger.opening_balance import legacy_sync_display
+
         desc = (obj.description or "").strip()
         if not desc:
             return ""
+        legacy = legacy_sync_display(obj)
+        if legacy:
+            return legacy
         vid = self.get_virtual_booking_id(obj)
         if getattr(obj, "related_user_id", None):
             desc = re.sub(r"\s*-\s*Student:\s*.+$", "", desc, flags=re.I).strip()

@@ -9,13 +9,16 @@ which credits/debits deltas into a target department SubWallet using markers.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
 
 from iic_booking.users.models import Department, DepartmentType, SubWallet, SubWalletTransaction, Wallet
+from iic_booking.users.models.portal_migration import LegacyLedgerDirection, LegacyWalletLedgerEntry
 
 OPENING_SOURCE = "LEGACY_PORTAL_MIGRATION"
 DESC_PREFIX = "Legacy migration opening balance"
@@ -121,6 +124,104 @@ def create_migration_opening_balance(
             description=desc,
         )
     return txn
+
+
+_DELTA_RE = re.compile(r"\|\s*delta=(-?\d+(?:\.\d+)?)")
+_CLOSING_RE = re.compile(r"\|\s*legacy_closing=(-?\d+(?:\.\d+)?)")
+_EMP_MIGRATION_RE = re.compile(r"migration_id=faculty-wallet:([^\s|]+)\s*\|")
+# Ledger rows of one sync are imported just before its reconcile transaction is written.
+_SYNC_IMPORT_WINDOW = timedelta(minutes=5)
+
+
+def _inr(value: Decimal) -> str:
+    return f"₹{value.quantize(Decimal('0.01')):,.2f}"
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _same_sync_ledger_rows(txn: SubWalletTransaction, delta: Decimal) -> list | None:
+    """Old-portal ledger rows imported by the same sync run, when they account for the whole delta."""
+    m = _EMP_MIGRATION_RE.search(txn.description or "")
+    if not m or not txn.created_at:
+        return None
+    previous = (
+        SubWalletTransaction.objects.filter(
+            sub_wallet_id=txn.sub_wallet_id,
+            description__contains=f"migration_id=faculty-wallet:{m.group(1)} |",
+            id__lt=txn.id,
+        )
+        .order_by("-id")
+        .values_list("created_at", flat=True)
+        .first()
+    )
+    since = txn.created_at - _SYNC_IMPORT_WINDOW
+    if previous is not None and previous > since:
+        since = previous
+    rows = list(
+        LegacyWalletLedgerEntry.objects.filter(
+            employee_id=m.group(1),
+            imported_at__gt=since,
+            imported_at__lte=txn.created_at,
+        ).order_by("occurred_at", "source_transaction_id")
+    )
+    net = sum(
+        (r.amount if r.direction == LegacyLedgerDirection.CREDIT else -r.amount for r in rows),
+        Decimal("0.00"),
+    )
+    return rows if rows and net == delta else None
+
+
+def legacy_sync_display(txn: SubWalletTransaction) -> str | None:
+    """Plain-language description of a legacy-portal balance sync row; None for any other transaction.
+
+    The stored description keeps its machine markers (migration_id, delta) because idempotency relies on them.
+    """
+    desc = (txn.description or "").strip()
+    if not desc.startswith(LEGACY_CREDIT_PREFIXES):
+        return None
+    amount = Decimal(str(txn.amount or 0))
+    if desc.startswith(DESC_PREFIX):
+        return f"Opening balance carried over from the old IIC portal: {_inr(amount)}"
+
+    by_admin = " (synced by IIC)" if desc.startswith(ADMIN_SYNC_PREFIX) else ""
+    is_debit = txn.transaction_type == SubWalletTransaction.TransactionType.DEBIT
+    dm = _DELTA_RE.search(desc)
+    cm = _CLOSING_RE.search(desc)
+    delta = Decimal(dm.group(1)) if dm else (-amount if is_debit else amount)
+    closing = Decimal(cm.group(1)) if cm else None
+    closing_text = f" Old portal balance now {_inr(closing)}." if closing is not None else ""
+
+    if not is_debit and closing is not None and delta == closing:
+        return f"Balance carried over from the old IIC portal: {_inr(amount)}{by_admin}"
+
+    rows = _same_sync_ledger_rows(txn, delta)
+    if rows:
+        charges = [r for r in rows if r.direction == LegacyLedgerDirection.DEBIT]
+        credits = [r for r in rows if r.direction == LegacyLedgerDirection.CREDIT]
+        if charges and credits:
+            parts = [
+                f"{_plural(len(charges), 'charge')} of {_inr(sum((r.amount for r in charges), Decimal('0')))}",
+                f"{_plural(len(credits), 'credit')} of {_inr(sum((r.amount for r in credits), Decimal('0')))}",
+            ]
+        else:
+            parts = [_plural(len(charges), "charge") if charges else _plural(len(credits), "credit")]
+        first = timezone.localtime(rows[0].occurred_at).strftime("%d %b %Y")
+        last = timezone.localtime(rows[-1].occurred_at).strftime("%d %b %Y")
+        when = f"on {first}" if first == last else f"between {first} and {last}"
+        verb = "deducted" if is_debit else "added"
+        return (
+            f"Old IIC portal balance update{by_admin}: {_inr(amount)} {verb} for "
+            f"{' and '.join(parts)} made on the old portal {when}, after its balance was last copied here."
+            f"{closing_text}"
+        )
+
+    change = "fell" if is_debit else "rose"
+    return (
+        f"Old IIC portal balance update{by_admin}: the old portal balance {change} by {_inr(amount)} "
+        f"since it was last copied here.{closing_text}"
+    )
 
 
 @dataclass
