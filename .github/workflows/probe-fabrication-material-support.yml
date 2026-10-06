@@ -1,0 +1,92 @@
+# Read-only, counts and equipment ids only (no names, no material codes): per 3D print / 2D laser
+# equipment, how many materials it owns (and how many are enabled) and, once per-equipment material
+# support is migrated, how many master-list materials it supports and how many of those users can pick.
+# Run before and after the migration; "visible_now" (owned + enabled, the old rule) should equal
+# "visible_new" (supported + enabled) for every equipment right after the migration.
+name: Probe Fabrication Material Support
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.db import connection
+          from iic_booking.equipment.models import (
+              Equipment, EquipmentProfileType, LaserCutAnalysis, LaserSheetMaterial, PrintAnalysis, PrintMaterial,
+          )
+
+          has_links = hasattr(PrintMaterial, "supported_equipment") and hasattr(LaserSheetMaterial, "supported_equipment")
+          if has_links:
+              tables = set(connection.introspection.table_names())
+              has_links = (
+                  PrintMaterial.supported_equipment.through._meta.db_table in tables
+                  and LaserSheetMaterial.supported_equipment.through._meta.db_table in tables
+              )
+          print(f"links_table_present={has_links}")
+
+          kinds = (
+              (EquipmentProfileType.PRINT_3D, PrintMaterial, PrintAnalysis),
+              (EquipmentProfileType.LASER_CUT_2D, LaserSheetMaterial, LaserCutAnalysis),
+          )
+          for profile, Material, Analysis in kinds:
+              total = Material.objects.count()
+              active = Material.objects.filter(is_active=True).count()
+              codes = Counter(c.lower() for c in Material.objects.values_list("code", flat=True))
+              shared_codes = sum(1 for n in codes.values() if n > 1)
+              print(f"== {profile}: materials_total={total} enabled={active} codes_on_more_than_one_equipment={shared_codes}")
+              home_mismatch = Material.objects.exclude(equipment__profile_type=profile).count()
+              print(f"  materials_whose_owner_has_other_profile={home_mismatch}")
+              for eq in Equipment.objects.filter(profile_type=profile).order_by("pk"):
+                  own = Material.objects.filter(equipment=eq)
+                  own_total = own.count()
+                  own_enabled = own.filter(is_active=True).count()
+                  used = Analysis.objects.filter(equipment=eq, material__isnull=False)
+                  booked = used.filter(booking__isnull=False)
+                  line = (
+                      f"  eq={eq.pk} status={getattr(eq, 'status', '')} own_total={own_total} "
+                      f"own_enabled={own_enabled} visible_now={own_enabled} "
+                      f"analyses_with_material={used.count()} booked_analyses={booked.count()}"
+                  )
+                  if has_links:
+                      linked = Material.objects.filter(supported_equipment=eq)
+                      linked_total = linked.count()
+                      linked_enabled = linked.filter(is_active=True).count()
+                      foreign = linked.exclude(equipment=eq).count()
+                      own_unlinked = own.exclude(supported_equipment=eq).count()
+                      booked_unsupported = booked.exclude(material__supported_equipment=eq).count()
+                      line += (
+                          f" supported_total={linked_total} supported_enabled={linked_enabled} "
+                          f"visible_new={linked_enabled} supported_from_other_equipment={foreign} "
+                          f"own_not_supported={own_unlinked} booked_analyses_on_unsupported_material={booked_unsupported} "
+                          f"same_as_before={linked_enabled == own_enabled and foreign == 0 and own_unlinked == 0}"
+                      )
+                  print(line)
+              if has_links:
+                  wrong = Material.supported_equipment.through.objects.exclude(equipment__profile_type=profile).count()
+                  print(f"  links_to_equipment_of_other_profile={wrong}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
