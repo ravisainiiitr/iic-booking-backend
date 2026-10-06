@@ -166,6 +166,8 @@ jobs:
                   genuine = [i for i in idx if objs[i][1] >= b.created_at]
                   older_than_booking += len(before)
                   if before:
+                      print(f"    affected booking_pk={b.booking_id} status={b.status} older_objects={len(before)} genuine_objects={len(genuine)} "
+                            f"notified={'yes' if b.results_available_notified_at else 'no'}")
                       affected += 1
                       matched_old.update(old)
                       if b.status == "COMPLETED":
@@ -202,13 +204,20 @@ jobs:
                   print(f"  {loc}/{prefix}: total={total} pre_cutoff={pre} pre_cutoff_unreferenced={pre_unref} db_rows={len(refs)}")
 
           print(f"== Target booking {TARGET} ==")
-          tb = list(allb.filter(virtual_booking_id=TARGET))
+          import re
+          norm = lambda s: re.sub(r"[\s\-_]", "", s or "").upper()
+          tb = [b for b in allb.exclude(virtual_booking_id__isnull=True) if norm(b.virtual_booking_id) == norm(TARGET)]
           print(f"  bookings_with_this_display_id={len(tb)}")
+          if not tb:
+              cands = sorted(v for v in allb.filter(virtual_booking_id__icontains="PXRD").values_list("virtual_booking_id", flat=True) if v)
+              print(f"  pxrd_display_ids={cands}")
+              s3_pxrd = sorted({seg for seg in seg_index if "PXRD" in seg.upper()}) if client is not None else []
+              print(f"  s3_pxrd_segments={[s for s in s3_pxrd if re.fullmatch(r'[A-Za-z0-9\[\]()]+', s)]}")
           for b in tb:
               print(f"  booking_pk={b.booking_id} created={b.created_at.isoformat()} status={b.status} "
                     f"results_notified={'yes' if b.results_available_notified_at else 'no'}")
               if client is not None:
-                  idx = seg_index.get(TARGET, [])
+                  idx = seg_index.get((b.virtual_booking_id or "").strip(), [])
                   print(f"  s3_matching_objects={len(idx)} older_than_booking={sum(1 for i in idx if objs[i][1] < b.created_at)} "
                         f"pre_cutoff={sum(1 for i in idx if objs[i][1] < CUTOFF)}")
                   print(f"  s3_matching_by_upload_date={dict(sorted(Counter(d(objs[i][1]) for i in idx).items()))}")
