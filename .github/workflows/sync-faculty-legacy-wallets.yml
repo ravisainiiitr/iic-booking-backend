@@ -36,7 +36,7 @@ jobs:
             echo "Refusing: apply needs confirm to be exactly SYNC WALLETS"
             exit 1
           fi
-          if ! printf '%s' "$USER_IDS" | grep -Eq '^[0-9, ]*$'; then
+          if [[ ! "$USER_IDS" =~ ^[0-9,\ ]*$ ]]; then
             echo "Refusing: user_ids must be numbers separated by commas"
             exit 1
           fi
