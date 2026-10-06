@@ -3785,14 +3785,11 @@ def equipment_daily_slots(request, pk):
     slot_masters = list(slot_masters_qs)
     slot_master_times = [sm.open_time.strftime("%H:%M:%S") for sm in slot_masters]
 
-    # For weekly window display: show COMPLETED bookings with future slot date as BOOKED (internal + external users). Admin sees real status.
-    for_weekly_display = not is_admin
     for_external_user_ctx = bool(for_external_user)
     serializer = DailySlotSerializer(
         filtered_slots,
         many=True,
         context={
-            'for_weekly_display': for_weekly_display,
             'for_external_user': for_external_user_ctx,
             'holidays_in_range': set(holidays_in_range.keys()) if holidays_in_range else set(),
             'external_bookable_min_date': slot_window_min_date if for_external_user_ctx else None,

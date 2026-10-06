@@ -1296,6 +1296,23 @@ class SlotMasterSerializer(serializers.ModelSerializer):
 
 
 _SLOT_STATUS_LABELS = dict(SlotStatus.choices)
+SLOT_DISPLAY_COMPLETED = "COMPLETED"
+
+
+def slot_booking_completed(slot) -> bool:
+    """True when a Booked slot belongs to a completed booking.
+
+    The stored slot status stays BOOKED (occupancy: bookability, quotas and reports rely on it);
+    only what the slot is shown as changes.
+    """
+    if slot.status != SlotStatus.BOOKED or not slot.booking_id:
+        return False
+    booking = getattr(slot, "booking", None)
+    return booking is not None and booking.status == BookingStatus.COMPLETED
+
+
+def slot_display_status(slot) -> str:
+    return SLOT_DISPLAY_COMPLETED if slot_booking_completed(slot) else slot.status
 
 
 class DailySlotSerializer(serializers.ModelSerializer):
@@ -1306,6 +1323,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
     equipment_code = serializers.SerializerMethodField()
     booking_id = serializers.SerializerMethodField()
     real_booking_id = serializers.SerializerMethodField()
+    display_status = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
     booking_status = serializers.SerializerMethodField()
     booking_status_display = serializers.SerializerMethodField()
@@ -1334,6 +1352,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
             'start_datetime',
             'end_datetime',
             'status',
+            'display_status',
             'status_display',
             'blocked_label',
             'reserved_for_external',
@@ -1367,7 +1386,12 @@ class DailySlotSerializer(serializers.ModelSerializer):
     def get_real_booking_id(self, obj):
         return obj.booking_id
 
+    def get_display_status(self, obj):
+        return slot_display_status(obj)
+
     def get_status_display(self, obj):
+        if slot_booking_completed(obj):
+            return str(BookingStatus.COMPLETED.label)
         # Model.get_status_display() re-hashes the whole choices list on every call (hot on weekly grids).
         return str(_SLOT_STATUS_LABELS.get(obj.status, obj.status))
 
@@ -1441,23 +1465,9 @@ class DailySlotSerializer(serializers.ModelSerializer):
                     data['status_display'] = 'Home department only'
         return data
 
-    def _show_completed_as_booked_for_weekly(self, obj):
-        """True if this slot should display as BOOKED in the weekly window (display only)."""
-        if not self.context.get('for_weekly_display'):
-            return False
-        if not obj.booking_id or not obj.booking:
-            return False
-        if obj.booking.status != BookingStatus.COMPLETED:
-            return False
-        today = timezone.localdate()
-        return obj.date > today
-
     def get_booking_status(self, obj):
-        """Return booking status; for weekly display, show COMPLETED + future date as BOOKED."""
         if not obj.booking_id or not obj.booking:
             return None
-        if self._show_completed_as_booked_for_weekly(obj):
-            return BookingStatus.BOOKED
         return obj.booking.status
 
     def get_slot_number(self, obj):
@@ -1479,10 +1489,7 @@ class DailySlotSerializer(serializers.ModelSerializer):
         return None
     
     def get_booking_status_display(self, obj):
-        """Get human-readable booking status when slot has a booking. For weekly display, show COMPLETED + future date as 'Booked'."""
         if obj.booking_id and obj.booking:
-            if self._show_completed_as_booked_for_weekly(obj):
-                return "Booked"
             return obj.booking.get_status_display()
         return None
 

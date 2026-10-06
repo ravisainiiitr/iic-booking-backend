@@ -153,6 +153,25 @@ jobs:
           for k, v in sorted(linked_status.items(), key=lambda x: -x[1]):
               print(f"    booking={k[0]} slot={k[1]} -> {v}")
 
+          print("== G. Served slot payload for completed bookings (regular user view) ==")
+          by_eq = Counter()
+          for b in comp:
+              by_eq[eq_info(b.equipment_id)] += 1
+          print(f"  completed_bookings_by_equipment={dict(sorted(by_eq.items(), key=lambda x: -x[1]))}")
+          from iic_booking.equipment import serializers as eqs
+          slot_qs = DailySlot.objects.filter(booking__status=BookingStatus.COMPLETED).select_related("slot_master", "booking")
+          rows = eqs.DailySlotSerializer(list(slot_qs), many=True, context={"for_weekly_display": True}).data
+          served = Counter()
+          bad_by_eq = Counter()
+          for r in rows:
+              shown = r.get("display_status") or ("BOOKED" if r.get("booking_status") != "COMPLETED" else "COMPLETED_VIA_BOOKING_STATUS")
+              served[(r.get("status"), shown, r.get("status_display"), r.get("booking_status"))] += 1
+              if r.get("display_status") != "COMPLETED" or r.get("status_display") != "Completed" or r.get("booking_status") != "COMPLETED":
+                  bad_by_eq[r.get("equipment_code")] += 1
+          print(f"  deployed_has_display_status={hasattr(eqs, 'slot_display_status')}")
+          print(f"  served={dict(served)}")
+          print(f"  completed_slots_not_served_as_completed={sum(bad_by_eq.values())} by_eq={dict(bad_by_eq)}")
+
           print("== F. FE-SEM GEMINI 300 ==")
           gem = list(Equipment.objects.filter(Q(name__icontains="GEMINI") | Q(code__icontains="GEMINI")))
           for e in gem:
