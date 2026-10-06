@@ -18289,6 +18289,11 @@ def oic_print_materials(request):
             {"error": f"A material with code '{code}' already exists for this equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    from .fabrication_material_support import new_material_code_error
+
+    clash = new_material_code_error(equipment, code)
+    if clash:
+        return Response({"error": f"{clash} Use a different code."}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         density = Decimal(str(data.get("density_g_per_cm3") if data.get("density_g_per_cm3") not in (None, "") else "1.240"))
@@ -18391,6 +18396,11 @@ def oic_print_material_detail(request, material_id):
                 {"error": f"A material with code '{code}' already exists for this equipment."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        from .fabrication_material_support import code_change_error
+
+        clash = code_change_error(material, code)
+        if clash:
+            return Response({"error": f"{clash} Use a different code."}, status=status.HTTP_400_BAD_REQUEST)
         material.code = code
         update_fields.append("code")
 

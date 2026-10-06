@@ -1302,17 +1302,24 @@ class ChargeCalculationEngine:
         if weight_g <= 0 or not material_code:
             return Decimal("0.00"), breakdown
 
-        material_qs = PrintMaterial.objects.filter(
-            equipment=charge_profile.equipment,
-            code=material_code,
-            is_active=True,
-        )
+        equipment = charge_profile.equipment
+        active = PrintMaterial.objects.filter(code=material_code, is_active=True)
         user_type = getattr(charge_profile, "user_type", None)
-        material = (
-            material_qs.filter(user_type=user_type).first()
-            or material_qs.filter(user_type__isnull=True).first()
-            or material_qs.first()
-        )
+        material = None
+        # Supported materials first. New bookings are limited to those before pricing; the fallbacks keep
+        # existing bookings re-priceable after their material is no longer supported by the equipment.
+        for material_qs in (
+            active.filter(supported_equipment=equipment),
+            active.filter(equipment=equipment),
+            active.filter(analyses__equipment=equipment).distinct(),
+        ):
+            material = (
+                material_qs.filter(user_type=user_type).first()
+                or material_qs.filter(user_type__isnull=True).first()
+                or material_qs.first()
+            )
+            if material:
+                break
         if not material:
             raise ValidationError(f"Unknown or inactive print material: {material_code}")
 

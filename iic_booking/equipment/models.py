@@ -998,6 +998,13 @@ class Equipment(models.Model):
     def __str__(self):
         return self.code
 
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        # Lets the post_save handler in fabrication_material_support drop links when the profile type changes.
+        instance._loaded_profile_type = instance.__dict__.get("profile_type")
+        return instance
+
     def clean(self):
         super().clean()
         parent = self.parent_equipment
@@ -2501,6 +2508,15 @@ class PrintMaterial(models.Model):
     )
     is_active = models.BooleanField(default=True)
     display_order = models.PositiveIntegerField(default=0)
+    supported_equipment = models.ManyToManyField(
+        Equipment,
+        blank=True,
+        related_name="supported_print_materials",
+        help_text=_(
+            "3D printers that offer this master-list material. Users see it when it is supported by the "
+            "equipment and enabled."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2752,6 +2768,15 @@ class LaserSheetMaterial(models.Model):
     )
     is_active = models.BooleanField(default=True)
     display_order = models.PositiveIntegerField(default=0)
+    supported_equipment = models.ManyToManyField(
+        Equipment,
+        blank=True,
+        related_name="supported_laser_sheet_materials",
+        help_text=_(
+            "Laser cutters that offer this master-list sheet. Users see it when it is supported by the "
+            "equipment and enabled."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

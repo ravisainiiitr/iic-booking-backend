@@ -22,7 +22,6 @@ from .models import (
     EquipmentStatus,
     ExternalUserQuota,
     MultiParamDefinition,
-    PrintMaterial,
     SlotMaster,
     UserTypeQuota,
 )
@@ -40,7 +39,6 @@ CONFIG_MODELS = (
     ChargeProfile,
     DynamicInputField,
     MultiParamDefinition,
-    PrintMaterial,
     SlotMaster,
     UserTypeQuota,
     ExternalUserQuota,
@@ -141,6 +139,10 @@ def duplicate_equipment(
                 row._state.adding = True
                 row.equipment = new
                 row.save()
+
+        # Fabrication materials live in the master list; the copy supports the same ones as the source.
+        new.supported_print_materials.set(source.supported_print_materials.all())
+        new.supported_laser_sheet_materials.set(source.supported_laser_sheet_materials.all())
 
     if copy_image:
         msg = _copy_image(source, new)

@@ -28,6 +28,7 @@ from .models import (
     PrintMaterial,
 )
 from .fabrication import default_part_name, inject_print_parts, parse_quantity, strip_fabrication_keys
+from .fabrication_material_support import NO_MATERIALS_MESSAGE, bookable_material_or_none, bookable_materials
 from .print_3d_service import (
     analyze_stl_file,
     default_slicer_settings,
@@ -214,7 +215,7 @@ def _create_print_analysis(
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_print_materials(request, pk):
-    """List active print materials for a 3D printer equipment."""
+    """List the materials users can pick: supported by this 3D printer and enabled in the master list."""
     from .api_views import user_can_see_equipment, user_can_view_equipment_in_catalog
     try:
         equipment = Equipment.objects.get(pk=pk)
@@ -233,16 +234,16 @@ def equipment_print_materials(request, pk):
         user_type = request.user.user_type or UserType.STUDENT
     else:
         user_type = UserType.STUDENT
-    materials = PrintMaterial.objects.filter(equipment=equipment, is_active=True).order_by(
-        "display_order", "name"
-    )
+    if equipment.profile_type != EquipmentProfileType.PRINT_3D:
+        return Response({"materials": [], "no_materials_message": NO_MATERIALS_MESSAGE})
+    materials = bookable_materials(equipment)
     typed = materials.filter(user_type=user_type)
     if typed.exists():
         materials = typed
     else:
         materials = materials.filter(user_type__isnull=True) | materials.filter(user_type="")
     serializer = PrintMaterialSerializer(materials.distinct(), many=True)
-    return Response({"materials": serializer.data})
+    return Response({"materials": serializer.data, "no_materials_message": NO_MATERIALS_MESSAGE})
 
 
 @transaction.non_atomic_requests
@@ -290,9 +291,7 @@ def equipment_analyze_stl(request, pk):
     material_id = request.data.get("material_id")
     material = None
     if material_id:
-        material = PrintMaterial.objects.filter(
-            pk=material_id, equipment=equipment, is_active=True
-        ).first()
+        material = bookable_material_or_none(equipment, material_id)
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -410,9 +409,7 @@ def recalculate_print_analysis(request, analysis_id):
     material_id = request.data.get("material_id")
     material = analysis.material
     if material_id:
-        material = PrintMaterial.objects.filter(
-            pk=material_id, equipment=equipment, is_active=True
-        ).first()
+        material = bookable_material_or_none(equipment, material_id)
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -555,9 +552,7 @@ def recalculate_print_analysis_batch(request, batch_id):
     material_id = request.data.get("material_id")
     material = batch.material
     if material_id:
-        material = PrintMaterial.objects.filter(
-            pk=material_id, equipment=equipment, is_active=True
-        ).first()
+        material = bookable_material_or_none(equipment, material_id)
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -802,6 +797,23 @@ def _aggregate_print_analyses(analyses):
     return total_weight, total_time, material_code
 
 
+def print_material_error(equipment, analyses) -> str | None:
+    """New bookings and replaced files may only use materials the equipment supports and that are enabled."""
+    bookable = {m.pk: m.code for m in bookable_materials(equipment)}
+    codes = {(c or "").lower() for c in bookable.values()}
+    for a in analyses:
+        if a.material_id is None:
+            if a.material_code_snapshot and a.material_code_snapshot.lower() in codes:
+                continue
+            return f"{a.display_part_name}: choose a material."
+        if a.material_id not in bookable:
+            return (
+                f"{a.display_part_name}: the selected material is no longer available on this equipment. "
+                "Choose another one."
+            )
+    return None
+
+
 def merge_print_booking_into_input_values(
     equipment,
     input_values,
@@ -845,6 +857,9 @@ def merge_print_booking_into_input_values(
             return input_values, "Batch has no material selected."
         if total_weight <= 0 or total_time <= 0:
             return input_values, "Batch has invalid weight or time estimates."
+        err = print_material_error(equipment, items)
+        if err:
+            return input_values, err
 
         return inject_print_parts(strip_fabrication_keys(input_values), items), None
 
@@ -883,6 +898,9 @@ def merge_print_analysis_into_input_values(equipment, analysis_id, input_values,
     material_code = analysis.material_code_snapshot or (analysis.material.code if analysis.material else "")
     if not material_code:
         return input_values, "Analysis has no material selected."
+    err = print_material_error(equipment, [analysis])
+    if err:
+        return input_values, err
 
     return inject_print_parts(strip_fabrication_keys(input_values), [analysis]), None
 

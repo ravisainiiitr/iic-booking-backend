@@ -185,11 +185,19 @@ def build_laser_parts(analyses) -> list[dict]:
     return parts
 
 
-def validate_laser_analyses(analyses, *, require_active_material: bool) -> str | None:
+def validate_laser_analyses(analyses, *, require_active_material: bool, equipment=None) -> str | None:
+    """``require_active_material`` (new bookings): each sheet must be enabled and, when ``equipment`` is
+    given, supported by it. Existing bookings keep the sheets they were booked with."""
+    from .fabrication_material_support import bookable_materials
     from .laser_cut_service import sheet_fit_error
 
     if not analyses:
         return "Upload at least one DXF file."
+    bookable_ids = (
+        set(bookable_materials(equipment).values_list("pk", flat=True))
+        if require_active_material and equipment is not None
+        else None
+    )
     for a in analyses:
         label = a.display_part_name
         if a.status != PrintAnalysisStatus.COMPLETED:
@@ -198,6 +206,8 @@ def validate_laser_analyses(analyses, *, require_active_material: bool) -> str |
             return f"{label}: choose a sheet material."
         if require_active_material and not a.material.is_active:
             return f"{label}: the selected sheet material is no longer available. Choose another one."
+        if bookable_ids is not None and a.material_id not in bookable_ids:
+            return f"{label}: the selected sheet material is no longer available on this machine. Choose another one."
         err = sheet_fit_error(a.width_mm, a.height_mm, a.material)
         if err:
             return f"{label}: {err}"
@@ -242,7 +252,7 @@ def merge_laser_booking_into_input_values(equipment, input_values, user, *, lase
     for a in analyses:
         if a.booking_id:
             return input_values, f"{a.display_part_name} is already linked to a booking.", None
-    err = validate_laser_analyses(analyses, require_active_material=True)
+    err = validate_laser_analyses(analyses, require_active_material=True, equipment=equipment)
     if err:
         return input_values, err, None
     merged = dict(input_values or {})

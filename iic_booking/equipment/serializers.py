@@ -1827,6 +1827,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     base_charges_by_user_type = serializers.SerializerMethodField()
     print_materials = PrintMaterialSerializer(many=True, read_only=True)
     laser_sheet_materials = LaserSheetMaterialSerializer(many=True, read_only=True)
+    bookable_print_materials = serializers.SerializerMethodField()
+    bookable_laser_sheet_materials = serializers.SerializerMethodField()
     group_alternatives_enabled = serializers.SerializerMethodField()
     group_cross_reschedule_enabled = serializers.SerializerMethodField()
 
@@ -1948,6 +1950,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'sample_collect_deadline_hours',
             'print_materials',
             'laser_sheet_materials',
+            'bookable_print_materials',
+            'bookable_laser_sheet_materials',
             'skip_quota_check',
             'sample_preparation_by_user',
         ]
@@ -1977,6 +1981,21 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             request=self.context.get("request"),
             verify_storage=False,
         )
+
+    def get_bookable_print_materials(self, obj):
+        """Materials users can pick for a new booking: supported by this equipment and enabled."""
+        if obj.profile_type != EquipmentProfileType.PRINT_3D:
+            return []
+        from .fabrication_material_support import bookable_materials
+
+        return PrintMaterialSerializer(bookable_materials(obj), many=True).data
+
+    def get_bookable_laser_sheet_materials(self, obj):
+        if obj.profile_type != EquipmentProfileType.LASER_CUT_2D:
+            return []
+        from .fabrication_material_support import bookable_materials
+
+        return LaserSheetMaterialSerializer(bookable_materials(obj), many=True).data
 
     def get_publication_count(self, obj):
         """Number of publications that reference this instrument."""

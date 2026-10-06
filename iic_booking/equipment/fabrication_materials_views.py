@@ -8,7 +8,8 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Q
+from django.db import transaction
+from django.db.models import Count, Q
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -16,11 +17,18 @@ from rest_framework.response import Response
 
 from iic_booking.users.models.user_type import UserType
 
+from .fabrication_material_support import (
+    code_change_error,
+    new_material_code_error,
+    set_supported_materials,
+    supported_materials,
+)
 from .models import (
     FABRICATION_PROFILE_TYPES,
     Equipment,
     EquipmentProfileType,
     LaserSheetMaterial,
+    PrintMaterial,
 )
 from .serializers import LaserSheetMaterialSerializer, LaserSheetMaterialWriteSerializer, PrintMaterialSerializer
 
@@ -132,27 +140,60 @@ def _equipment_row(eq):
         row["laser_sheet_materials"] = LaserSheetMaterialSerializer(
             eq.laser_sheet_materials.all().order_by("display_order", "name"), many=True
         ).data
+    row["supported_material_ids"] = sorted(supported_materials(eq).values_list("pk", flat=True))
     return row
+
+
+def _master_list(model, serializer_cls, managed_ids):
+    """Every material of one category, with the equipment it was added for and who may edit it."""
+    rows = []
+    qs = (
+        model.objects.select_related("equipment")
+        .annotate(supported_equipment_count=Count("supported_equipment", distinct=True))
+        .order_by("display_order", "name", "pk")
+    )
+    for m in qs:
+        data = dict(serializer_cls(m).data)
+        data.update(
+            {
+                "home_equipment_id": m.equipment_id,
+                "home_equipment_code": m.equipment.code,
+                "home_equipment_name": m.equipment.name,
+                "can_edit": m.equipment_id in managed_ids,
+                "supported_equipment_count": m.supported_equipment_count,
+            }
+        )
+        rows.append(data)
+    return rows
 
 
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated])
 def fabrication_material_equipment(request):
     """
-    GET: fabrication equipment the user manages, with all materials (active and disabled).
+    GET: fabrication equipment the user manages, with all materials (active and disabled), each
+         equipment's supported_material_ids, and the master list of every category they manage.
     PATCH: {equipment_id, fabrication_notification_emails?, own_material_fixed_charge?,
-            fabrication_replace_window_hours?}.
+            fabrication_replace_window_hours?, supported_material_ids?}.
     """
     qs = fabrication_manageable_equipment_qs(request.user).select_related("internal_department")
     if request.method == "GET":
-        rows = [_equipment_row(eq) for eq in qs.prefetch_related("print_materials", "laser_sheet_materials")]
+        equipments = list(qs.prefetch_related("print_materials", "laser_sheet_materials"))
+        rows = [_equipment_row(eq) for eq in equipments]
+        managed_ids = {eq.pk for eq in equipments}
+        has_print = any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows)
+        has_laser = any(r["profile_type"] == EquipmentProfileType.LASER_CUT_2D for r in rows)
         return Response(
             {
                 "equipments": rows,
                 "has_fabrication_equipment": bool(rows),
-                "has_print_3d_equipment": any(r["profile_type"] == EquipmentProfileType.PRINT_3D for r in rows),
-                "has_laser_cut_equipment": any(
-                    r["profile_type"] == EquipmentProfileType.LASER_CUT_2D for r in rows
+                "has_print_3d_equipment": has_print,
+                "has_laser_cut_equipment": has_laser,
+                "master_print_materials": (
+                    _master_list(PrintMaterial, PrintMaterialSerializer, managed_ids) if has_print else []
+                ),
+                "master_laser_sheet_materials": (
+                    _master_list(LaserSheetMaterial, LaserSheetMaterialSerializer, managed_ids) if has_laser else []
                 ),
             }
         )
@@ -188,8 +229,15 @@ def fabrication_material_equipment(request):
             return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
         eq.fabrication_replace_window_hours = hours
         update_fields.append("fabrication_replace_window_hours")
-    if update_fields:
-        eq.save(update_fields=update_fields)
+    # A rejected material list rolls back the other settings sent in the same request.
+    with transaction.atomic():
+        if update_fields:
+            eq.save(update_fields=update_fields)
+        if "supported_material_ids" in data:
+            _materials, err = set_supported_materials(eq, data.get("supported_material_ids"))
+            if err:
+                transaction.set_rollback(True)
+                return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
     return Response({"equipment": _equipment_row(eq)})
 
 
@@ -238,6 +286,9 @@ def laser_sheet_materials_manage(request):
             {"error": f"A material with code '{vals['code']}' already exists for this equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    clash = new_material_code_error(eq, vals["code"])
+    if clash:
+        return Response({"error": f"{clash} Use a different code."}, status=status.HTTP_400_BAD_REQUEST)
     vals["user_type"] = (vals.get("user_type") or "").strip() or None
     material = LaserSheetMaterial.objects.create(equipment=eq, **vals)
     return Response({"material": LaserSheetMaterialSerializer(material).data}, status=status.HTTP_201_CREATED)
@@ -280,6 +331,9 @@ def laser_sheet_material_detail(request, material_id):
             {"error": f"A material with code '{vals['code']}' already exists for this equipment."},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    clash = code_change_error(material, vals["code"])
+    if clash:
+        return Response({"error": f"{clash} Use a different code."}, status=status.HTTP_400_BAD_REQUEST)
     vals["user_type"] = (vals.get("user_type") or "").strip() or None
     for key, value in vals.items():
         setattr(material, key, value)

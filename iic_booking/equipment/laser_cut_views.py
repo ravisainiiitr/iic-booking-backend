@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from iic_booking.users.models.user_type import UserType
 
 from .fabrication import default_part_name, parse_quantity
+from .fabrication_material_support import NO_MATERIALS_MESSAGE, bookable_material_or_none, bookable_materials
 from .laser_cut_service import UNIT_TO_MM, DxfParseError, analyze_dxf_bytes, bbox_to_mm, sheet_fit_error
 from .models import (
     Equipment,
@@ -45,9 +46,10 @@ def _mb(n: int) -> int:
 
 
 def visible_laser_materials(equipment, user_type):
-    materials = LaserSheetMaterial.objects.filter(equipment=equipment, is_active=True).order_by(
-        "display_order", "name"
-    )
+    """Sheets users can pick: supported by this laser cutter and enabled in the master list."""
+    if equipment.profile_type != EquipmentProfileType.LASER_CUT_2D:
+        return LaserSheetMaterial.objects.none()
+    materials = bookable_materials(equipment)
     typed = materials.filter(user_type=user_type)
     if user_type and typed.exists():
         return typed
@@ -82,6 +84,7 @@ def equipment_laser_sheet_materials(request, pk):
     return Response(
         {
             "materials": LaserSheetMaterialSerializer(materials, many=True).data,
+            "no_materials_message": NO_MATERIALS_MESSAGE,
             "own_material_fixed_charge": (
                 str(equipment.own_material_fixed_charge)
                 if equipment.own_material_fixed_charge is not None
@@ -257,7 +260,7 @@ def equipment_analyze_dxf(request, pk):
     material = None
     material_id = request.data.get("material_id")
     if material_id:
-        material = LaserSheetMaterial.objects.filter(pk=material_id, equipment=equipment, is_active=True).first()
+        material = bookable_material_or_none(equipment, material_id)
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -313,8 +316,9 @@ def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment) -> 
             analysis.material = None
             analysis.material_code_snapshot = ""
             analysis.sheet_rate_snapshot = None
-        else:
-            material = LaserSheetMaterial.objects.filter(pk=material_id, equipment=equipment, is_active=True).first()
+        elif str(material_id) != str(analysis.material_id):
+            # Re-sending a part's current sheet is allowed even if it was disabled or unsupported since.
+            material = bookable_material_or_none(equipment, material_id)
             if not material:
                 return "Choose one of the available sheet materials."
             analysis.material = material
