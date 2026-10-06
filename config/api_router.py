@@ -279,6 +279,7 @@ from iic_booking.equipment.oic_substitution_views import (
 )
 from iic_booking.equipment.remote_analysis_integration import views as booking_ra_views
 from iic_booking.equipment.server_time import server_time
+from iic_booking.equipment.slot_window_opening import slot_window_opening
 from iic_booking.equipment.booking_quota_summary import equipment_my_booking_quota
 from iic_booking.equipment.quota_breakdown import quota_breakdown_view
 from iic_booking.equipment.booking_lab_messages import booking_lab_message_reply, booking_lab_messages
@@ -1521,6 +1522,7 @@ urlpatterns = router.urls + [
         name="booking-reschedule-options",
     ),
     path("server-time/", server_time, name="server-time"),
+    path("slot-window/opening/", slot_window_opening, name="slot-window-opening"),
     path("booking-templates/", booking_templates, name="booking-templates"),
     path("booking-templates/check/", booking_template_check, name="booking-template-check"),
     path("booking-templates/attention/", booking_template_attention, name="booking-template-attention"),
