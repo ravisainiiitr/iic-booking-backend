@@ -492,6 +492,21 @@ BOOKING_CONFIRMATION_EMAIL_TEMPLATES = frozenset(
     }
 )
 
+# Emails switched off by deactivating their CommunicationTemplate. The booking event and the in-app
+# notice still go out; for other templates an inactive row stays an error.
+SWITCHABLE_EVENT_EMAIL_TEMPLATES = frozenset({"booking_charge_recalculated_email"})
+
+
+def event_email_switched_off(template_code: Optional[str]) -> bool:
+    if template_code not in SWITCHABLE_EVENT_EMAIL_TEMPLATES:
+        return False
+    from iic_booking.communication.models import CommunicationTemplate
+
+    rows = CommunicationTemplate.objects.filter(
+        code__iexact=template_code, communication_type=CommunicationTemplate.CommunicationType.EMAIL
+    )
+    return rows.exists() and not rows.filter(is_active=True).exists()
+
 
 def send_booking_event_notification(event: BookingEvent) -> None:
     """
@@ -588,6 +603,8 @@ def send_booking_event_notification(event: BookingEvent) -> None:
     if comment_recipients is not None and not comment_recipients["user"]:
         email_template_code = None
         push_template_code = None
+    if event_email_switched_off(email_template_code):
+        email_template_code = None
     
     # Prepare template context (use virtual / display id for any user-visible booking reference)
     display_booking_ref = booking_display_id_for_email(booking)

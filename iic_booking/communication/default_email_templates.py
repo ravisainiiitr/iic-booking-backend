@@ -617,7 +617,8 @@ def _booking_templates() -> list[dict[str, Any]]:
                 "{{ equipment_booking_email_extra }}, {{ equipment_booking_email_extra_html }}"
             ),
         ),
-        _simple_email(
+        # Switched off: the charge change is recorded on the booking and shown in-app.
+        {**_simple_email(
             code="booking_charge_recalculated_email",
             title="Charges Updated",
             subject="Booking Charges Updated – {{ equipment_name }}",
@@ -646,7 +647,7 @@ def _booking_templates() -> list[dict[str, Any]]:
                 "{{ equipment_name }}, {{ equipment_code }}, {{ previous_charge }}, {{ new_charge }}, "
                 "{{ charge_breakdown_text }}, {{ refund_amount }}, {{ extra_amount }}, {{ comment }}, {{ link }}"
             ),
-        ),
+        ), "is_active": False},
         _simple_email(
             code="booking_not_utilized_email",
             title="Booking Not Utilized",
