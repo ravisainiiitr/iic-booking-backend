@@ -2787,6 +2787,13 @@ def equipment_detail(request, pk):
                     {"error": "Only Admin or Officer In Charge can change equipment operational status."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
+            if request.user.user_type == UserType.MANAGER and not _user_can_act_as_oic_for_equipment(
+                request.user, equipment
+            ):
+                return Response(
+                    {"error": "You can only change the status of equipment you are Officer In-charge of."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             new_status = (request.data.get("status") or "").strip()
             if new_status == EquipmentStatus.MAINTENANCE:
                 return Response(
@@ -2832,9 +2839,11 @@ def equipment_detail(request, pk):
                     "notice_prompt_for_actor": bool(actor_is_oic and draft.needs_oic_expiry),
                 }
             elif new_status == EquipmentStatus.ACTIVE and previous_status != EquipmentStatus.ACTIVE:
-                closed = expire_equipment_linked_notices(
-                    equipment=equipment, actor=request.user
-                )
+                closed = getattr(equipment, "_status_notices_closed", None)
+                if closed is None:
+                    closed = expire_equipment_linked_notices(
+                        equipment=equipment, actor=request.user
+                    )
                 notice_side_effect = {
                     "notices_closed": closed,
                     "notice_closed_on_operational": closed > 0,

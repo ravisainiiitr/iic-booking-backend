@@ -1,0 +1,51 @@
+# Close automatic "Under Maintenance" notice-board notices whose equipment is Operational again.
+# dry-run writes nothing; apply needs confirm=EXPIRE NOTICES. Notices are kept (inactive / expired or
+# auto-rejected), never deleted; manual notices are not touched. Idempotent. Public logs: ids and
+# statuses only.
+name: Expire Stale Equipment Notices
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "dry-run (no writes) or apply"
+        type: choice
+        options: [dry-run, apply]
+        default: dry-run
+      confirm:
+        description: "Type EXPIRE NOTICES to apply"
+        required: false
+        default: ""
+
+jobs:
+  expire:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Validate inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "apply" ] && [ "$CONFIRM" != "EXPIRE NOTICES" ]; then
+            echo "Refusing: apply needs confirm to be exactly EXPIRE NOTICES"
+            exit 1
+          fi
+
+      - name: Expire
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -uo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID" || { echo "django container not found"; exit 1; }
+          ARGS=()
+          [ "$MODE" = "apply" ] && ARGS+=(--apply)
+          ERR="$(mktemp)"
+          docker exec -w /app "$CID" python manage.py expire_stale_equipment_notices "${ARGS[@]}" 2>"$ERR"
+          RC=$?
+          # Application logs can carry personal data; show only the command's own error line.
+          grep -E '^CommandError' "$ERR" || true
+          echo "stderr lines suppressed: $(wc -l < "$ERR")"
+          rm -f "$ERR"
+          exit $RC

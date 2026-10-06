@@ -1269,6 +1269,11 @@ urlpatterns = router.urls + [
     # Equipment endpoints
     path("equipments/", equipment_list, name="equipment-list"),
     path("equipments/catalog-departments/", equipment_catalog_departments, name="equipment-catalog-departments"),
+    path(
+        "equipments/slot-status-picker/",
+        __import__("iic_booking.equipment.slot_status_picker_views", fromlist=["slot_status_picker"]).slot_status_picker,
+        name="equipment-slot-status-picker",
+    ),
     path("equipments/analysis-charges/", equipment_analysis_charges, name="equipment-analysis-charges"),
 
     # Public equipment addition proposals (admin approves before create)

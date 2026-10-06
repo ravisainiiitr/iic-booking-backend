@@ -60,12 +60,40 @@ def user_can_manage_notice_request(user, notice: Notice) -> bool:
 
 
 def public_notices_queryset():
-    """Notices visible on the public notice board."""
+    """Notices visible on the public notice board.
+
+    An automatic "Under Maintenance" notice never shows once its equipment is Operational again,
+    even if it was not closed when the status changed.
+    """
+    from iic_booking.equipment.models import EquipmentStatus
+
     now = timezone.now()
-    return Notice.objects.filter(
-        is_active=True,
-        approval_status=Notice.ApprovalStatus.APPROVED,
-    ).filter(Q(expiry_date__isnull=True) | Q(expiry_date__gt=now))
+    return (
+        Notice.objects.filter(
+            is_active=True,
+            approval_status=Notice.ApprovalStatus.APPROVED,
+        )
+        .filter(Q(expiry_date__isnull=True) | Q(expiry_date__gt=now))
+        .exclude(
+            source=Notice.Source.EQUIPMENT_UNAVAILABLE,
+            equipment__status=EquipmentStatus.ACTIVE,
+        )
+    )
+
+
+def open_equipment_status_notices():
+    """Automatic equipment notices still open: published (active) or awaiting expiry / approval."""
+    return Notice.objects.filter(source=Notice.Source.EQUIPMENT_UNAVAILABLE).filter(
+        Q(approval_status=Notice.ApprovalStatus.APPROVED, is_active=True)
+        | Q(approval_status__in=[Notice.ApprovalStatus.DRAFT, Notice.ApprovalStatus.PENDING])
+    )
+
+
+def stale_equipment_status_notices():
+    """Open automatic equipment notices whose equipment is Operational again."""
+    from iic_booking.equipment.models import EquipmentStatus
+
+    return open_equipment_status_notices().filter(equipment__status=EquipmentStatus.ACTIVE)
 
 
 def equipment_display_label(equipment) -> str:
@@ -159,22 +187,16 @@ def create_or_reuse_equipment_unavailable_draft(*, equipment, actor) -> Notice:
 
 def expire_equipment_linked_notices(*, equipment, actor=None) -> int:
     """
-    When equipment returns to Operational: stamp expiry_date=now on linked
-    APPROVED / DRAFT / PENDING EQUIPMENT_UNAVAILABLE notices so they leave the board.
+    When equipment returns to Operational: close its open EQUIPMENT_UNAVAILABLE notices
+    (published ones become inactive and expire now; drafts / pending requests are auto-rejected)
+    so they leave the board. Rows are kept for the audit trail; already closed notices are untouched.
     """
     now = timezone.now()
-    qs = Notice.objects.filter(
-        equipment=equipment,
-        source=Notice.Source.EQUIPMENT_UNAVAILABLE,
-        approval_status__in=[
-            Notice.ApprovalStatus.DRAFT,
-            Notice.ApprovalStatus.PENDING,
-            Notice.ApprovalStatus.APPROVED,
-        ],
-    )
+    qs = open_equipment_status_notices().filter(equipment=equipment)
     count = 0
     for notice in qs:
-        notice.expiry_date = now
+        if notice.expiry_date is None or notice.expiry_date > now:
+            notice.expiry_date = now
         notice.expiry_unlimited = False
         notice.needs_oic_expiry = False
         # Keep APPROVED for audit but inactive + expired hides from board.

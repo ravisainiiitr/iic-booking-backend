@@ -56,3 +56,28 @@ def _equipment_status_maintenance_hook(sender, instance, created, **kwargs):
     from .maintenance_policy import on_equipment_status_changed
 
     on_equipment_status_changed(instance, old, instance.status)
+
+
+@receiver(post_save, sender=Equipment)
+def _equipment_operational_closes_status_notices(sender, instance, created, **kwargs):
+    """Back to Operational from any path (status menu, equipment settings, Django admin): close its
+    automatic "Under Maintenance" notices. The count is kept on the instance for the API response."""
+    from .models import EquipmentStatus
+
+    old = (getattr(instance, "_old_equipment_status", None) or "").strip()
+    new = (instance.status or "").strip()
+    if created or new != EquipmentStatus.ACTIVE or old == EquipmentStatus.ACTIVE:
+        return
+    import logging
+
+    from iic_booking.communication.notice_board_service import expire_equipment_linked_notices
+    from iic_booking.communication.utils import get_current_user
+
+    try:
+        instance._status_notices_closed = expire_equipment_linked_notices(
+            equipment=instance, actor=get_current_user()
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Closing status notices failed for equipment %s", instance.pk
+        )
