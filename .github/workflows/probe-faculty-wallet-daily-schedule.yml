@@ -1,0 +1,44 @@
+# Read-only by default: is the faculty wallet daily sync beat entry present and loaded by celerybeat?
+# refresh=yes marks the beat schedule as changed (same as saving the task in Django admin) so a running
+# celerybeat reloads entries that a data migration inserted without the change signal. No personal data.
+name: Probe Faculty Wallet Daily Schedule
+
+on:
+  workflow_dispatch:
+    inputs:
+      refresh:
+        description: "yes = mark the beat schedule changed so celerybeat reloads it"
+        required: false
+        default: "no"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          REFRESH: ${{ inputs.refresh }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          BEAT="$(docker ps --format '{{.Names}}' | grep -E 'celerybeat' | head -n 1 || true)"
+          test -n "$CID"
+          echo "celerybeat container: ${BEAT:-not found}"
+          [ -n "$BEAT" ] && docker inspect -f 'celerybeat started: {{.State.StartedAt}}' "$BEAT"
+          [ -n "$BEAT" ] && (docker logs --since 72h "$BEAT" 2>&1 | grep -Ei 'faculty_wallet|Schedule changed|Writing entries|beat: Starting' | tail -n 15 || true)
+          docker exec -i -e REFRESH="$REFRESH" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.conf import settings
+          from django_celery_beat.models import PeriodicTask, PeriodicTasks
+          print("CELERY_TIMEZONE:", getattr(settings, "CELERY_TIMEZONE", None))
+          for t in PeriodicTask.objects.filter(task="users.faculty_wallet_daily_sync"):
+              c = t.crontab
+              print("task:", t.name, "| enabled:", t.enabled, "| crontab:", c and f"{c.minute} {c.hour} {c.day_of_month} {c.month_of_year} {c.day_of_week} tz={c.timezone}",
+                    "| last_run_at:", t.last_run_at, "| date_changed:", t.date_changed)
+          print("beat last_update:", PeriodicTasks.last_change())
+          if os.environ.get("REFRESH") == "yes":
+              PeriodicTasks.update_changed()
+              print("beat schedule marked changed:", PeriodicTasks.last_change())
+          PY
