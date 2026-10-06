@@ -1,0 +1,187 @@
+# Read-only: bookings that are completed (booking status and/or sample lifecycle) while their slots are
+# still stored or served as Booked. Prints counts, booking ids, equipment codes and statuses only
+# (no names, no emails).
+name: Probe Completed Slot Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from django.db.models import Q
+          from django.utils import timezone
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, BookingSampleTrace, BookingStatus, DailySlot, Equipment,
+              SampleTraceStatus, SlotStatus,
+          )
+          from iic_booking.equipment.fabrication import is_fabrication_equipment
+          from iic_booking.equipment.mode_utils import multimode_enabled_for_equipment
+          from iic_booking.equipment.sample_lifecycle_policy import equipment_is_walk_in_sample
+          from iic_booking.users.models.user_type import UserType
+
+          now = timezone.now()
+          today = timezone.localdate()
+          print(f"now={now.isoformat()} today={today}")
+          ext_codes = set(UserType.get_external_user_codes())
+
+          latest = {}
+          completed_trace = set()
+          for bid, st in BookingSampleTrace.objects.order_by("booking_id", "created_at", "id").values_list("booking_id", "status"):
+              latest[bid] = st
+              if st == SampleTraceStatus.COMPLETED:
+                  completed_trace.add(bid)
+
+          eq_cache = {}
+          def eq_info(eid):
+              if eid not in eq_cache:
+                  e = Equipment.objects.get(pk=eid)
+                  flags = []
+                  if is_fabrication_equipment(e): flags.append("fab")
+                  if multimode_enabled_for_equipment(e): flags.append("multimode")
+                  if e.equipment_group_id: flags.append("group")
+                  if equipment_is_walk_in_sample(e): flags.append("walkin")
+                  eq_cache[eid] = (e.code, "+".join(flags) or "plain")
+              return eq_cache[eid]
+
+          slots_by_booking = defaultdict(list)
+          for bid, st, dt, seq in DailySlot.objects.filter(booking__isnull=False).values_list(
+              "booking_id", "status", "date", "slot_master__equipment_id"
+          ):
+              slots_by_booking[bid].append((st, dt, seq))
+
+          def btype(b):
+              parts = ["ext" if (b.user_type_snapshot or "") in ext_codes else "int"]
+              if b.source_booking_id: parts.append("repeat")
+              if any(seq != b.equipment_id for _s, _d, seq in slots_by_booking.get(b.booking_id, [])):
+                  parts.append("cross_eq_slots")
+              return "+".join(parts)
+
+          print("== A. Booking status COMPLETED: stored slot statuses ==")
+          comp = list(Booking.objects.filter(status=BookingStatus.COMPLETED).only(
+              "booking_id", "equipment_id", "user_type_snapshot", "source_booking_id", "completed_at"))
+          print(f"  completed_bookings={len(comp)}")
+          st_counter = Counter()
+          no_slots = 0
+          future_bookings = Counter()
+          future_slots = 0
+          completed_before_slot = 0
+          for b in comp:
+              rows = slots_by_booking.get(b.booking_id, [])
+              if not rows:
+                  no_slots += 1
+              for st, dt, _seq in rows:
+                  st_counter[st] += 1
+              fut = [r for r in rows if r[1] > today]
+              if fut:
+                  future_slots += len(fut)
+                  code, flags = eq_info(b.equipment_id)
+                  future_bookings[(code, flags, btype(b))] += 1
+              if rows and b.completed_at and timezone.localtime(b.completed_at).date() < min(r[1] for r in rows):
+                  completed_before_slot += 1
+          print(f"  slot_status_counts={dict(st_counter)}")
+          print(f"  completed_without_linked_slots={no_slots}")
+          print(f"  completed_before_first_slot_date={completed_before_slot}")
+          print(f"  completed_with_future_slots bookings={sum(future_bookings.values())} slots={future_slots} (served as BOOKED to non-staff weekly view)")
+          for k, v in sorted(future_bookings.items(), key=lambda x: -x[1]):
+              print(f"    {k} -> {v}")
+
+          print("== B. Sample lifecycle Completed but booking not COMPLETED ==")
+          mism = Counter()
+          mism_status = Counter()
+          mism_ids = []
+          for b in Booking.objects.filter(booking_id__in=completed_trace).exclude(status=BookingStatus.COMPLETED).only(
+              "booking_id", "status", "equipment_id", "user_type_snapshot", "source_booking_id"
+          ):
+              code, flags = eq_info(b.equipment_id)
+              mism[(code, flags, b.status, btype(b))] += 1
+              mism_status[b.status] += 1
+              slot_sts = Counter(s for s, _d, _q in slots_by_booking.get(b.booking_id, []))
+              mism_ids.append((b.booking_id, code, b.status, latest.get(b.booking_id), dict(slot_sts)))
+          print(f"  total={sum(mism.values())} by_booking_status={dict(mism_status)}")
+          for k, v in sorted(mism.items(), key=lambda x: -x[1]):
+              print(f"    {k} -> {v}")
+          for row in sorted(mism_ids)[-40:]:
+              print(f"    id={row[0]} eq={row[1]} status={row[2]} latest_trace={row[3]} slots={row[4]}")
+
+          print("== C. Latest trace terminal (Completed/Returned/Archived/Disposed), booking still open ==")
+          TERMINAL = {SampleTraceStatus.COMPLETED, SampleTraceStatus.RETURNED, SampleTraceStatus.ARCHIVED, SampleTraceStatus.DISPOSED}
+          OPEN = [BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING, BookingStatus.HOLD]
+          c = Counter()
+          for b in Booking.objects.filter(booking_id__in=[k for k, v in latest.items() if v in TERMINAL], status__in=OPEN).only("booking_id", "status", "equipment_id"):
+              c[(eq_info(b.equipment_id)[0], b.status, latest[b.booking_id])] += 1
+          print(f"  total={sum(c.values())}")
+          for k, v in sorted(c.items(), key=lambda x: -x[1]):
+              print(f"    {k} -> {v}")
+
+          print("== D. Past slots of PROCESSING bookings / bookings with a COMPLETED event but other status now ==")
+          proc = Counter()
+          for b in Booking.objects.filter(status=BookingStatus.PROCESSING).only("booking_id", "equipment_id"):
+              proc[eq_info(b.equipment_id)[0]] += 1
+          print(f"  processing_bookings={sum(proc.values())} by_eq={dict(proc)}")
+          ev_completed = set(BookingEvent.objects.filter(Q(event_type="COMPLETED") | Q(new_status=BookingStatus.COMPLETED)).values_list("booking_id", flat=True))
+          reverted = Counter(Booking.objects.filter(booking_id__in=ev_completed).exclude(status=BookingStatus.COMPLETED).values_list("status", flat=True))
+          print(f"  completed_event_but_status_now={dict(reverted)}")
+
+          print("== E. Stored slot status vs linked booking ==")
+          orphan = Counter()
+          for seq, dt in DailySlot.objects.filter(status=SlotStatus.BOOKED, booking__isnull=True).values_list("slot_master__equipment_id", "date"):
+              orphan[(eq_info(seq)[0], "past" if dt <= today else "future")] += 1
+          print(f"  BOOKED_slots_without_booking={sum(orphan.values())}")
+          for k, v in sorted(orphan.items(), key=lambda x: -x[1])[:30]:
+              print(f"    {k} -> {v}")
+          linked_status = Counter(DailySlot.objects.filter(booking__isnull=False).values_list("booking__status", "status"))
+          for k, v in sorted(linked_status.items(), key=lambda x: -x[1]):
+              print(f"    booking={k[0]} slot={k[1]} -> {v}")
+
+          print("== F. FE-SEM GEMINI 300 ==")
+          gem = list(Equipment.objects.filter(Q(name__icontains="GEMINI") | Q(code__icontains="GEMINI")))
+          for e in gem:
+              code, flags = eq_info(e.equipment_id)
+              print(
+                  f"  eq_id={e.equipment_id} code={code} flags={flags} parent={e.parent_equipment_id} group={e.equipment_group_id}"
+                  f" lead_h={e.sample_submission_lead_hours} collect_h={e.sample_collect_deadline_hours}"
+                  f" profile={getattr(e, 'profile_type', None)}"
+              )
+              qs = Booking.objects.filter(equipment=e).order_by("-booking_id")
+              print(f"    bookings_by_status={dict(Counter(qs.values_list('status', flat=True)))}")
+              n = 0
+              for b in qs:
+                  rows = sorted(slots_by_booking.get(b.booking_id, []), key=lambda r: r[1])
+                  if not rows:
+                      continue
+                  if b.status not in (BookingStatus.COMPLETED, BookingStatus.BOOKED, BookingStatus.PENDING, BookingStatus.PROCESSING):
+                      continue
+                  comp_d = timezone.localtime(b.completed_at).date() if b.completed_at else None
+                  print(
+                      f"    id={b.booking_id} status={b.status} latest_trace={latest.get(b.booking_id)}"
+                      f" completed_on={comp_d} slots={[(s, str(d)) for s, d, _q in rows]}"
+                  )
+                  n += 1
+                  if n >= 15:
+                      break
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
