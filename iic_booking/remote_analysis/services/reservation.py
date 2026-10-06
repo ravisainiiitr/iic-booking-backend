@@ -84,6 +84,29 @@ class ReservationService:
             return agg["start"], agg["end"]
         return None
 
+    def _post_slot_window(self, booking, requested_start: datetime, requested_end: datetime) -> tuple[datetime, datetime]:
+        """Window for Analyze Data after the booked slots ended: one session from now, never past analysis_expiry.
+
+        Bounded to check-in + one session (not the full analysis_access_duration) so the PC
+        hold never blocks other bookings on the same workstation for days.
+        """
+        from iic_booking.remote_analysis.session_models import RemoteAnalysisSettings
+
+        equipment = getattr(booking, "equipment", None)
+        checkin_minutes = max(1, min(int(getattr(equipment, "analysis_checkin_minutes", None) or 10), 120))
+        session_minutes = int(
+            getattr(equipment, "analysis_default_session_minutes", None)
+            or RemoteAnalysisSettings.get_solo().session_timeout
+            or 30
+        )
+        start = max(requested_start, timezone.now())
+        end = min(requested_end, start + timedelta(minutes=checkin_minutes + max(1, session_minutes)))
+        if booking.analysis_expiry:
+            end = min(end, booking.analysis_expiry)
+        if end <= start:
+            raise ValueError("Analysis access for this booking has ended")
+        return start, end
+
     @transaction.atomic
     def create_reservation(
         self,
@@ -108,8 +131,10 @@ class ReservationService:
             if existing:
                 raise ValueError("An active analysis reservation already exists for this booking")
             window = self._booking_window(booking)
-            if window:
+            if window and window[1] > timezone.now():
                 requested_start, requested_end = window
+            elif window:
+                requested_start, requested_end = self._post_slot_window(booking, requested_start, requested_end)
             if department is None:
                 department = getattr(booking.user, "department", None) or getattr(
                     booking.equipment, "internal_department", None

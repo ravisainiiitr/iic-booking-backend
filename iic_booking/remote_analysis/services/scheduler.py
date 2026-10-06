@@ -48,6 +48,13 @@ class SchedulerService:
     @transaction.atomic
     def allocate(self, reservation: AnalysisReservation, *, actor=None) -> AnalysisReservation:
         started = timezone.now()
+        # Missed check-in requeues straight back here; never re-hold a PC for a window that already ended.
+        if reservation.requested_end and reservation.requested_end <= started:
+            self.reservations.transition(
+                reservation, ReservationStatus.EXPIRED, reason="Reservation window ended", actor=actor
+            )
+            self.queue.expire(reservation)
+            return reservation
         self.reservations.transition(
             reservation, ReservationStatus.VALIDATING, reason="Allocation started", actor=actor
         )
