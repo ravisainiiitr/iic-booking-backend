@@ -1,0 +1,36 @@
+# Read-only: print the wallet description_display of legacy-portal sync transactions (amounts and dates only).
+name: Probe Legacy Sync Display
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from iic_booking.users.models import SubWalletTransaction
+          from iic_booking.users.serializers.wallet_serializer import SubWalletTransactionSerializer
+
+          qs = SubWalletTransaction.objects.filter(description__startswith="Legacy").select_related("sub_wallet__department")
+          kinds = Counter()
+          for t in qs.filter(transaction_type="debit").order_by("id"):
+              print(f"#{t.pk} debit {t.amount}: {SubWalletTransactionSerializer(t).data['description_display']}")
+          for t in qs.order_by("id"):
+              text = SubWalletTransactionSerializer(t).data["description_display"]
+              kinds[text.split(":")[0]] += 1
+              if text.startswith("Legacy"):
+                  print(f"#{t.pk} still raw")
+          print(dict(kinds))
+          for t in qs.filter(transaction_type="credit").exclude(description__contains="delta=").order_by("id")[:3]:
+              print(f"#{t.pk} credit {t.amount}: {SubWalletTransactionSerializer(t).data['description_display']}")
+          PY
