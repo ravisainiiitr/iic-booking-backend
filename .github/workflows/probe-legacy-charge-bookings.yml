@@ -1,0 +1,82 @@
+# Read-only: match legacy-portal wallet debits (by legacy wallet_transactions id) to the legacy booking that
+# caused them, the new-portal slot block created for it (if the slot is after cutover), and any new-portal
+# booking by the same person on the same equipment around that slot (possible double booking).
+# Public logs: ids, dates, amounts and equipment codes only; no names or emails.
+name: Probe Legacy Charge Bookings
+
+on:
+  workflow_dispatch:
+    inputs:
+      txn_ids:
+        description: "Comma-separated legacy wallet_transactions ids"
+        required: true
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          PROBE_TXNS: ${{ github.event.inputs.txn_ids }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -e PROBE_TXNS="$PROBE_TXNS" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.users.legacy_ledger.reader import OldMySQLReader
+          from iic_booking.users.models.portal_migration import LegacyBookingBlock
+          from iic_booking.users.models import User
+          from iic_booking.equipment.models import Booking
+
+          ids = [int(x) for x in os.environ["PROBE_TXNS"].replace(" ", "").split(",") if x]
+          IST = timezone.get_fixed_timezone(330)
+          SAFE = ("id", "user_id", "uid", "equipment_id", "instrument_id", "booking_date", "date", "start_time",
+                  "end_time", "slot_id", "time_required", "duration", "status", "booking_status", "charge", "amount",
+                  "total_charge", "is_deleted", "is_active", "create_date", "created_at", "update_date", "payment_status",
+                  "slot_date", "from_time", "to_time", "samples", "no_of_samples", "booked_by", "created_by")
+          with OldMySQLReader() as r:
+              bcols = [c["Field"] for c in r.fetchall("SHOW COLUMNS FROM `booking`")]
+              print("legacy booking columns:", bcols)
+              for tid in ids:
+                  t = r.fetchone("SELECT id, user_id, amount, transaction_type, create_date, created_by FROM wallet_transactions WHERE id = %s", (tid,))
+                  if not t:
+                      print(f"txn {tid}: not found"); continue
+                  print(f"\n== txn {tid}: wallet_user={t['user_id']} amount={t['amount']} type={t['transaction_type']} at={t['create_date']} created_by={t['created_by']}")
+                  who = [x for x in {t.get("created_by"), t.get("user_id")} if x]
+                  ucol = "user_id" if "user_id" in bcols else "uid"
+                  tcol = "create_date" if "create_date" in bcols else ("created_at" if "created_at" in bcols else None)
+                  if not tcol:
+                      print("  no booking time column"); continue
+                  ph = ",".join(["%s"] * len(who))
+                  rows = r.fetchall(
+                      f"SELECT * FROM `booking` WHERE `{ucol}` IN ({ph}) AND `{tcol}` BETWEEN %s AND %s ORDER BY id",
+                      (*who, t["create_date"] - timedelta(minutes=10), t["create_date"] + timedelta(minutes=10)),
+                  )
+                  if not rows:
+                      rows = r.fetchall(
+                          f"SELECT * FROM `booking` WHERE `{tcol}` BETWEEN %s AND %s ORDER BY id",
+                          (t["create_date"] - timedelta(minutes=2), t["create_date"] + timedelta(minutes=2)),
+                      )
+                      print(f"  (no booking by wallet user/created_by; {len(rows)} bookings by anyone within 2 min)")
+                  for b in rows[:6]:
+                      shown = {k: str(b[k]) for k in SAFE if k in b}
+                      print("  legacy booking:", shown)
+                      for blk in LegacyBookingBlock.objects.filter(legacy_booking_id=int(b["id"])).select_related("new_equipment"):
+                          print(f"    new-portal block #{blk.pk} status={blk.status} eq={blk.new_equipment.code} "
+                                f"{timezone.localtime(blk.start_at, IST):%Y-%m-%d %H:%M}-{timezone.localtime(blk.end_at, IST):%H:%M} IST "
+                                f"resolved_user={blk.resolved_user_id} released={blk.released_at} reason={blk.released_reason[:60]!r}")
+                          near = Booking.objects.filter(
+                              equipment=blk.new_equipment,
+                              daily_slots__start_datetime__gte=blk.start_at - timedelta(days=3),
+                              daily_slots__start_datetime__lte=blk.end_at + timedelta(days=3),
+                          ).distinct()
+                          if blk.resolved_user_id:
+                              near = near.filter(user_id=blk.resolved_user_id)
+                          for nb in near[:5]:
+                              print(f"      new-portal booking #{nb.pk} user={nb.user_id} status={nb.status} created={timezone.localtime(nb.created_at, IST):%Y-%m-%d %H:%M}")
+          PY
