@@ -1696,6 +1696,11 @@ urlpatterns = router.urls + [
         name="oic-multi-mode-family",
     ),
     path(
+        "oic/multi-mode/families/<int:base_id>/modes/<int:mode_id>/",
+        mode_family_views.oic_multi_mode_remove_mode,
+        name="oic-multi-mode-remove-mode",
+    ),
+    path(
         "oic/multi-mode/schedules/",
         mode_family_views.oic_multi_mode_schedule_create,
         name="oic-multi-mode-schedule-create",

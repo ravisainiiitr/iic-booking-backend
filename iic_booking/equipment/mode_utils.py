@@ -85,11 +85,8 @@ def _slot_local_time(slot: DailySlot) -> Optional[time]:
 
 
 def schedule_covers_date(sched: EquipmentModeSchedule, on_date: date) -> bool:
-    """Date range plus the optional weekly repeat (empty weekdays = every day)."""
-    if on_date < sched.start_date or on_date > sched.end_date:
-        return False
-    weekdays = sched.weekdays or []
-    return not weekdays or on_date.weekday() in weekdays
+    """Date range (blank dates = no limit) plus the optional weekly repeat (empty weekdays = every day)."""
+    return sched.covers_date(on_date)
 
 
 def schedule_covers_datetime(sched: EquipmentModeSchedule, on_date: date, at_time: Optional[time] = None) -> bool:
@@ -109,9 +106,8 @@ def schedules_covering_date(
 ) -> list[EquipmentModeSchedule]:
     """Schedules of the family active on ``on_date`` (date range and weekly repeat), ordered by id."""
     qs = EquipmentModeSchedule.objects.filter(
+        EquipmentModeSchedule.covering_date_q(on_date),
         parent_equipment_id=parent_id,
-        start_date__lte=on_date,
-        end_date__gte=on_date,
     )
     if mode_equipment_id is not None:
         qs = qs.filter(mode_equipment_id=mode_equipment_id)
@@ -259,9 +255,8 @@ def filter_queryset_for_mode_catalog(queryset: QuerySet, user, *, on_date: Optio
     exclusive_parent_ids = [
         sched.parent_equipment_id
         for sched in EquipmentModeSchedule.objects.filter(
+            EquipmentModeSchedule.covering_date_q(on_date),
             behavior=ModeScheduleBehavior.EXCLUSIVE,
-            start_date__lte=on_date,
-            end_date__gte=on_date,
         ).only("parent_equipment_id", "start_date", "end_date", "weekdays")
         if schedule_covers_date(sched, on_date)
     ]
@@ -280,10 +275,41 @@ def filter_queryset_for_mode_catalog(queryset: QuerySet, user, *, on_date: Optio
     return queryset
 
 
-def slot_mode_overlay(equipment: Equipment, slot: DailySlot) -> Optional[dict[str, Any]]:
+def _family_schedules(equipment: Equipment) -> list[EquipmentModeSchedule]:
+    parent_id = equipment.parent_equipment_id or equipment.equipment_id
+    return list(EquipmentModeSchedule.objects.filter(parent_equipment_id=parent_id).order_by("id"))
+
+
+def _first_active(
+    schedules: Sequence[EquipmentModeSchedule],
+    on_date: date,
+    at_time: Optional[time],
+    *,
+    mode_id: Optional[int] = None,
+    exclude_mode_id: Optional[int] = None,
+    behavior: Optional[str] = None,
+) -> Optional[EquipmentModeSchedule]:
+    for sched in schedules:
+        if mode_id is not None and sched.mode_equipment_id != mode_id:
+            continue
+        if exclude_mode_id is not None and sched.mode_equipment_id == exclude_mode_id:
+            continue
+        if behavior is not None and sched.behavior != behavior:
+            continue
+        if schedule_covers_datetime(sched, on_date, at_time):
+            return sched
+    return None
+
+
+def slot_mode_overlay(
+    equipment: Equipment,
+    slot: DailySlot,
+    schedules: Optional[Sequence[EquipmentModeSchedule]] = None,
+) -> Optional[dict[str, Any]]:
     """
     Display overlay for end users when a slot is not bookable due to multi-mode rules.
-    Returns {label, color, status} or None if no overlay.
+    Returns {label, color, status} or None if no overlay. ``schedules`` (all schedules of the family,
+    ordered by id) can be passed to avoid reloading them for every slot.
     """
     from .models import SlotStatus
 
@@ -291,31 +317,29 @@ def slot_mode_overlay(equipment: Equipment, slot: DailySlot) -> Optional[dict[st
         return None
     if slot.status != SlotStatus.AVAILABLE:
         return None
+    if schedules is None:
+        schedules = _family_schedules(equipment)
 
     at_time = _slot_local_time(slot)
     on_date = slot.date
+    exclusive = ModeScheduleBehavior.EXCLUSIVE
 
     if equipment.parent_equipment_id:
-        if mode_requires_schedule(equipment) and active_mode_schedule_for_child(equipment, on_date, at_time) is None:
-            nearest = (
-                EquipmentModeSchedule.objects.filter(mode_equipment_id=equipment.equipment_id)
-                .order_by("-start_date")
-                .first()
-            )
+        mode_id = equipment.equipment_id
+        if mode_requires_schedule(equipment) and _first_active(schedules, on_date, at_time, mode_id=mode_id) is None:
+            own = [s for s in schedules if s.mode_equipment_id == mode_id]
+            nearest = max(own, key=lambda s: (s.start_date is not None, s.start_date or date.min, s.id), default=None)
             label = (nearest.unavailable_label if nearest else None) or "Mode not scheduled"
             color = (nearest.unavailable_color if nearest else None) or DEFAULT_GREY
             return {"label": label, "color": color, "status": "BLOCKED", "mode_overlay": "child_unavailable"}
-        sibling_excl = exclusive_schedule_for_slot(
-            equipment.parent_equipment_id, on_date, at_time, exclude_mode_id=equipment.equipment_id
-        )
+        sibling_excl = _first_active(schedules, on_date, at_time, exclude_mode_id=mode_id, behavior=exclusive)
         if sibling_excl is None:
             return None
         label = sibling_excl.exclusive_blocked_label or "Alternate mode active"
         color = sibling_excl.exclusive_blocked_color or DEFAULT_GREY
         return {"label": label, "color": color, "status": "BLOCKED", "mode_overlay": "exclusive_sibling"}
 
-    parent_id = equipment.equipment_id
-    excl = exclusive_schedule_for_slot(parent_id, on_date, at_time)
+    excl = _first_active(schedules, on_date, at_time, behavior=exclusive)
     if excl is None:
         return None
     label = excl.exclusive_blocked_label or "Alternate mode active"
@@ -323,17 +347,25 @@ def slot_mode_overlay(equipment: Equipment, slot: DailySlot) -> Optional[dict[st
     return {"label": label, "color": color, "status": "BLOCKED", "mode_overlay": "exclusive_parent"}
 
 
+def _overlays_by_slot_id(equipment: Equipment, slots: list[DailySlot]) -> dict[int, dict[str, Any]]:
+    if not slots or not multimode_enabled_for_equipment(equipment):
+        return {}
+    schedules = _family_schedules(equipment)
+    out = {}
+    for slot in slots:
+        overlay = slot_mode_overlay(equipment, slot, schedules)
+        if overlay:
+            out[slot.id] = overlay
+    return out
+
+
 def apply_mode_overlays_to_slot_payloads(
     equipment: Equipment, slots: list[DailySlot], serialized: list[dict]
 ) -> list[dict]:
     """Mutate serialized slot dicts with multi-mode display overlays (keep cells non-blank)."""
-    by_id = {s.id: s for s in slots}
+    overlays = _overlays_by_slot_id(equipment, slots)
     for row in serialized:
-        sid = row.get("id")
-        slot = by_id.get(sid)
-        if slot is None:
-            continue
-        overlay = slot_mode_overlay(equipment, slot)
+        overlay = overlays.get(row.get("id"))
         if not overlay:
             continue
         row["status"] = overlay["status"]
@@ -342,6 +374,30 @@ def apply_mode_overlays_to_slot_payloads(
         row["mode_overlay_color"] = overlay["color"]
         row["mode_overlay"] = overlay.get("mode_overlay")
         row["available_for_external"] = False
+    return serialized
+
+
+_USER_BLOCK_REASONS = {
+    "child_unavailable": "No schedule of this mode covers this time, so users cannot book it.",
+    "exclusive_sibling": "Another mode of this instrument runs on its own at this time, so users cannot book this mode.",
+    "exclusive_parent": "A mode of this instrument runs on its own at this time, so users cannot book the base instrument.",
+}
+
+
+def annotate_user_mode_blocks_for_staff(
+    equipment: Equipment, slots: list[DailySlot], serialized: list[dict]
+) -> list[dict]:
+    """
+    Staff keep the real slot status; Available slots that users cannot book because of the multi-mode
+    setup get ``users_blocked_label`` (the label users see) and ``users_blocked_reason``.
+    """
+    overlays = _overlays_by_slot_id(equipment, slots)
+    for row in serialized:
+        overlay = overlays.get(row.get("id"))
+        if not overlay:
+            continue
+        row["users_blocked_label"] = overlay["label"]
+        row["users_blocked_reason"] = _USER_BLOCK_REASONS.get(overlay.get("mode_overlay") or "", overlay["label"])
     return serialized
 
 

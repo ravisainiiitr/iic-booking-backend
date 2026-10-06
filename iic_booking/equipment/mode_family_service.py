@@ -125,7 +125,7 @@ def future_usage_for_mode(mode: Equipment) -> dict[str, list[dict[str, Any]]]:
         .order_by("booking_id")
     )
     schedules = EquipmentModeSchedule.objects.filter(
-        mode_equipment_id=mode.equipment_id, end_date__gte=today
+        Q(end_date__isnull=True) | Q(end_date__gte=today), mode_equipment_id=mode.equipment_id
     ).order_by("start_date", "id")
     return {
         "bookings": [
@@ -133,10 +133,20 @@ def future_usage_for_mode(mode: Equipment) -> dict[str, list[dict[str, Any]]]:
             for b in bookings[:50]
         ],
         "schedules": [
-            {"id": s.id, "start_date": s.start_date.isoformat(), "end_date": s.end_date.isoformat()}
+            {
+                "id": s.id,
+                "start_date": s.start_date.isoformat() if s.start_date else None,
+                "end_date": s.end_date.isoformat() if s.end_date else None,
+            }
             for s in schedules[:50]
         ],
     }
+
+
+def _schedule_range_text(item: dict) -> str:
+    if not item.get("start_date") and not item.get("end_date"):
+        return "always (no dates)"
+    return f"{item['start_date']} to {item['end_date']}"
 
 
 def sync_family_flags(equipment_ids: Iterable[int], actor=None, *, reason: str = "") -> None:
@@ -243,7 +253,7 @@ def set_family_modes(base: Equipment, raw_modes, user) -> FamilyChangeResult:
             if b["schedules"]:
                 bits.append(
                     f"{len(b['schedules'])} current or future schedule(s): "
-                    + ", ".join(f"{x['start_date']} to {x['end_date']}" for x in b["schedules"][:10])
+                    + ", ".join(_schedule_range_text(x) for x in b["schedules"][:10])
                 )
             parts.append(f"{b['code']} has " + " and ".join(bits))
         raise FamilyChangeError(
@@ -297,3 +307,95 @@ def set_family_modes(base: Equipment, raw_modes, user) -> FamilyChangeResult:
 
     sync_family_flags([base.equipment_id, *to_add, *to_remove], user, reason="family update")
     return result
+
+
+# Mode membership follows the schedules: adding a schedule for eligible equipment makes it a mode of the
+# base, and a mode with no schedule left is unlinked (unless it still has upcoming bookings). A linked mode
+# is bookable only while one of its schedules is active; a schedule with blank dates means always.
+
+
+def link_mode_for_schedule(base: Equipment, mode: Equipment, user) -> bool:
+    """Make ``mode`` a mode of ``base`` (scheduled-only). Returns True when a link was created."""
+    if mode.parent_equipment_id == base.equipment_id:
+        return False
+    if base.parent_equipment_id:
+        raise FamilyChangeError(f"{base.code} is itself a mode of another instrument and cannot be a base.")
+    if mode.equipment_id not in {e.equipment_id for e in mode_candidates(base, user)}:
+        if mode.parent_equipment_id:
+            raise FamilyChangeError(f"{mode.code} is already a mode of another instrument.")
+        if Equipment.objects.filter(parent_equipment_id=mode.equipment_id).exists():
+            raise FamilyChangeError(f"{mode.code} is a base with its own modes and cannot be a mode.")
+        if mode.internal_department_id != base.internal_department_id:
+            raise FamilyChangeError(f"{mode.code} belongs to a different department than {base.code}.")
+        raise FamilyChangeError(f"{mode.code} cannot be a mode of {base.code}.")
+    before = {"enable_multi_mode": mode.enable_multi_mode, "mode_availability": mode.mode_availability}
+    Equipment.objects.filter(pk=mode.pk).update(
+        parent_equipment_id=base.equipment_id,
+        enable_multi_mode=False,
+        mode_availability=ModeAvailability.SCHEDULED_ONLY,
+        updated_at=timezone.now(),
+    )
+    mode.parent_equipment_id = base.equipment_id
+    mode.enable_multi_mode = False
+    mode.mode_availability = ModeAvailability.SCHEDULED_ONLY
+    log_mode_change(
+        mode,
+        "MODE_LINKED",
+        {"base_equipment_id": base.equipment_id, "base_code": base.code, "via": "schedule",
+         "before": before, "after": {"enable_multi_mode": False, "mode_availability": ModeAvailability.SCHEDULED_ONLY}},
+        user,
+    )
+    sync_family_flags([base.equipment_id, mode.equipment_id], user, reason="mode linked by schedule")
+    return True
+
+
+def _unlink(base_id: int, mode: Equipment, user, reason: str) -> None:
+    Equipment.objects.filter(pk=mode.pk).update(parent_equipment=None, enable_multi_mode=False, updated_at=timezone.now())
+    log_mode_change(
+        mode,
+        "MODE_UNLINKED",
+        {"base_equipment_id": base_id, "reason": reason,
+         "before": {"enable_multi_mode": mode.enable_multi_mode, "mode_availability": mode.mode_availability}},
+        user,
+    )
+    sync_family_flags([base_id, mode.equipment_id], user, reason=reason)
+
+
+def unlink_mode_if_unscheduled(base_id: int, mode_id: int, user) -> bool:
+    """After a schedule is removed: unlink the mode when no current/future schedule and no upcoming booking is left."""
+    mode = Equipment.objects.filter(pk=mode_id, parent_equipment_id=base_id).first()
+    if mode is None:
+        return False
+    usage = future_usage_for_mode(mode)
+    if usage["schedules"] or usage["bookings"]:
+        return False
+    _unlink(base_id, mode, user, "last schedule removed")
+    return True
+
+
+@transaction.atomic
+def remove_mode(base: Equipment, mode: Equipment, user) -> int:
+    """
+    Unlink ``mode`` from ``base`` and delete its current and future schedules (past ones stay as history).
+    Refused while the mode has upcoming bookings. Returns the number of schedules deleted.
+    """
+    if not can_manage_equipment(user, base.equipment_id) or not can_manage_equipment(user, mode.equipment_id):
+        raise FamilyChangeError("You can only change modes of equipment you manage.", status_code=403)
+    if mode.parent_equipment_id != base.equipment_id:
+        raise FamilyChangeError(f"{mode.code} is not a mode of {base.code}.", status_code=404)
+    bookings = future_usage_for_mode(mode)["bookings"]
+    if bookings:
+        refs = ", ".join(b["reference"] for b in bookings[:10])
+        raise FamilyChangeError(
+            f"{mode.code} has {len(bookings)} upcoming booking(s): {refs}. Finish or move them before removing the mode.",
+            status_code=409,
+            details={"bookings": bookings},
+        )
+    today = timezone.localdate()
+    deleted, _ = EquipmentModeSchedule.objects.filter(
+        Q(end_date__isnull=True) | Q(end_date__gte=today),
+        parent_equipment_id=base.equipment_id,
+        mode_equipment_id=mode.equipment_id,
+    ).delete()
+    _unlink(base.equipment_id, mode, user, "mode removed")
+    return deleted

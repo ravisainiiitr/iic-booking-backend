@@ -392,10 +392,12 @@ def test_department_admin_with_permission_is_scoped_to_department(family, egs_fa
 # --- schedules API -------------------------------------------------------------------------------------------------------
 
 
-def test_schedule_api_weekdays_and_requires_linked_mode(family, egs_factory):
+def test_schedule_api_weekdays_and_links_eligible_mode(family, egs_factory):
     f = egs_factory
     base, depth, _ = family
     loose = f.equipment(name="Loose")
+    other_base = f.equipment(name="Other base", enable_multi_mode=True)
+    taken = f.equipment(name="Taken", parent_equipment=other_base)
     client = f.client_for(_admin())
     payload = {
         "parent_equipment_id": base.pk,
@@ -416,10 +418,17 @@ def test_schedule_api_weekdays_and_requires_linked_mode(family, egs_factory):
     res = client.patch(f"/api/oic/multi-mode/schedules/{sid}/", {"weekdays": [9]}, format="json")
     assert res.status_code == 400
 
-    res = client.post("/api/oic/multi-mode/schedules/", {**payload, "mode_equipment_id": loose.pk}, format="json")
+    res = client.post("/api/oic/multi-mode/schedules/", {**payload, "mode_equipment_id": taken.pk}, format="json")
     assert res.status_code == 400
+    taken.refresh_from_db()
+    assert taken.parent_equipment_id == other_base.pk
+
+    res = client.post(
+        "/api/oic/multi-mode/schedules/", {**payload, "mode_equipment_id": loose.pk, "behavior": "PARALLEL"}, format="json"
+    )
+    assert res.status_code == 201, res.data
     loose.refresh_from_db()
-    assert loose.parent_equipment_id is None
+    assert loose.parent_equipment_id == base.pk
 
     listing = client.get("/api/oic/multi-mode/").data
     fam = next(x for x in listing["families"] if x["parent_equipment_id"] == base.pk)

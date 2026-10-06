@@ -4,7 +4,9 @@ from __future__ import annotations
 from datetime import date, datetime, time as time_cls
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -14,9 +16,12 @@ from .mode_family_service import (
     FamilyChangeError,
     access_scope,
     can_manage_equipment,
+    link_mode_for_schedule,
     manageable_equipment_qs,
     mode_candidates,
+    remove_mode,
     set_family_modes,
+    unlink_mode_if_unscheduled,
 )
 from .models import Equipment, EquipmentModeSchedule, ModeAvailability, ModeScheduleBehavior
 
@@ -36,6 +41,7 @@ def _serialize_schedule(sched: EquipmentModeSchedule) -> dict:
         "mode_equipment_name": getattr(sched.mode_equipment, "name", None),
         "start_date": sched.start_date.isoformat() if sched.start_date else None,
         "end_date": sched.end_date.isoformat() if sched.end_date else None,
+        "always": not sched.has_dates(),
         "start_time": sched.start_time.strftime("%H:%M") if sched.start_time else None,
         "end_time": sched.end_time.strftime("%H:%M") if sched.end_time else None,
         "weekdays": list(sched.weekdays or []),
@@ -64,11 +70,24 @@ def _equipment_row(eq: Equipment) -> dict:
     return row
 
 
+def _schedule_sort_key(s: EquipmentModeSchedule):
+    # Newest first, with schedules that have no dates (always) at the top.
+    return (s.start_date is None, s.start_date or date.min, s.end_date or date.max, s.id)
+
+
 def _serialize_family(base: Equipment) -> dict:
     modes = sorted(base.mode_children.all(), key=lambda c: (c.code or "", c.name or ""))
-    schedules = sorted(
-        base.mode_schedules.all(), key=lambda s: (s.start_date, s.end_date, s.id), reverse=True
-    )
+    schedules = sorted(base.mode_schedules.all(), key=_schedule_sort_key, reverse=True)
+    today = timezone.localdate()
+    current = {}
+    for s in schedules:
+        if s.end_date is None or s.end_date >= today:
+            current[s.mode_equipment_id] = current.get(s.mode_equipment_id, 0) + 1
+    children = []
+    for c in modes:
+        row = _equipment_row(c)
+        row["current_schedule_count"] = current.get(c.equipment_id, 0)
+        children.append(row)
     return {
         "parent_equipment_id": base.equipment_id,
         "parent_code": base.code,
@@ -76,7 +95,7 @@ def _serialize_family(base: Equipment) -> dict:
         "parent_status": base.status,
         "department_id": base.internal_department_id,
         "department_name": getattr(base.internal_department, "name", None) if base.internal_department_id else None,
-        "children": [_equipment_row(c) for c in modes],
+        "children": children,
         "schedules": [_serialize_schedule(s) for s in schedules],
     }
 
@@ -284,9 +303,9 @@ def _validation_error_response(exc: DjangoValidationError) -> Response:
 @permission_classes([IsAuthenticated])
 def oic_multi_mode_schedule_create(request):
     """
-    Create a mode schedule. Body: parent_equipment_id, mode_equipment_id, start_date, end_date,
-    behavior, optional weekdays (0=Mon..6=Sun), start_time/end_time and label/colour overrides.
-    The mode must already be linked to the base on the family setup.
+    Create a mode schedule. Body: parent_equipment_id, mode_equipment_id, optional start_date/end_date
+    (both blank = always available), behavior, optional weekdays (0=Mon..6=Sun), start_time/end_time and
+    label/colour overrides. Eligible equipment that is not yet a mode of the base becomes one.
     """
     if access_scope(request.user) is None:
         return Response(_FORBIDDEN, status=status.HTTP_403_FORBIDDEN)
@@ -310,50 +329,59 @@ def oic_multi_mode_schedule_create(request):
         mode = Equipment.objects.get(pk=mode_id)
     except Equipment.DoesNotExist:
         return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
-    if mode.parent_equipment_id != parent.equipment_id:
-        return Response(
-            {"error": f"Add {mode.code} as a mode of {parent.code} first (Modes of this instrument)."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
 
     try:
-        start_d = date.fromisoformat(str(data.get("start_date") or "").strip()[:10])
-        end_d = date.fromisoformat(str(data.get("end_date") or "").strip()[:10])
+        start_d = _parse_optional_date(data.get("start_date"))
+        end_d = _parse_optional_date(data.get("end_date"))
     except ValueError:
-        return Response({"error": "start_date and end_date must be YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "start_date and end_date must be YYYY-MM-DD or blank."}, status=status.HTTP_400_BAD_REQUEST)
     try:
         behavior = _parse_behavior(data.get("behavior"))
     except ValueError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-    sched = EquipmentModeSchedule(
-        parent_equipment=parent,
-        mode_equipment=mode,
-        start_date=start_d,
-        end_date=end_d,
-        behavior=behavior,
-        created_by=request.user,
-        unavailable_label=DEFAULT_UNAVAILABLE_LABEL,
-        unavailable_color=DEFAULT_GREY,
-        exclusive_blocked_label=DEFAULT_EXCLUSIVE_LABEL,
-        exclusive_blocked_color=DEFAULT_GREY,
-    )
     try:
-        _apply_schedule_fields(sched, data)
+        with transaction.atomic():
+            linked = link_mode_for_schedule(parent, mode, request.user)
+            sched = EquipmentModeSchedule(
+                parent_equipment=parent,
+                mode_equipment=mode,
+                start_date=start_d,
+                end_date=end_d,
+                behavior=behavior,
+                created_by=request.user,
+                unavailable_label=DEFAULT_UNAVAILABLE_LABEL,
+                unavailable_color=DEFAULT_GREY,
+                exclusive_blocked_label=DEFAULT_EXCLUSIVE_LABEL,
+                exclusive_blocked_color=DEFAULT_GREY,
+            )
+            _apply_schedule_fields(sched, data)
+            sched.full_clean()
+            sched.save()
+    except FamilyChangeError as exc:
+        return Response({"error": exc.message, **exc.details}, status=exc.status_code)
     except (TypeError, ValueError):
         return Response({"error": "Repeat days must be weekdays 0 (Monday) to 6 (Sunday)."}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        sched.full_clean()
-        sched.save()
     except DjangoValidationError as exc:
         return _validation_error_response(exc)
-    return Response({"schedule": _serialize_schedule(sched)}, status=status.HTTP_201_CREATED)
+    return Response({"schedule": _serialize_schedule(sched), "mode_linked": linked}, status=status.HTTP_201_CREATED)
+
+
+def _parse_optional_date(raw):
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return date.fromisoformat(s[:10]) if s else None
 
 
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def oic_multi_mode_schedule_detail(request, schedule_id: int):
-    """Update or delete a mode schedule."""
+    """
+    Update or delete a mode schedule. Blank start_date and end_date mean always available. Changing the
+    mode to eligible equipment links it; a mode left without current or future schedules (and with no
+    upcoming bookings) is unlinked.
+    """
     if access_scope(request.user) is None:
         return Response(_FORBIDDEN, status=status.HTTP_403_FORBIDDEN)
     try:
@@ -363,15 +391,19 @@ def oic_multi_mode_schedule_detail(request, schedule_id: int):
     if not can_manage_equipment(request.user, sched.parent_equipment_id):
         return Response({"error": "Permission denied."}, status=status.HTTP_403_FORBIDDEN)
 
+    parent_id = sched.parent_equipment_id
+    old_mode_id = sched.mode_equipment_id
     if request.method == "DELETE":
-        sched.delete()
-        return Response({"message": "Schedule deleted."})
+        with transaction.atomic():
+            sched.delete()
+            unlinked = unlink_mode_if_unscheduled(parent_id, old_mode_id, request.user)
+        return Response({"message": "Schedule deleted.", "mode_unlinked": unlinked})
 
     data = request.data or {}
     for key in ("start_date", "end_date"):
         if key in data:
             try:
-                setattr(sched, key, date.fromisoformat(str(data.get(key)).strip()[:10]))
+                setattr(sched, key, _parse_optional_date(data.get(key)))
             except ValueError:
                 return Response({"error": f"Invalid {key}."}, status=status.HTTP_400_BAD_REQUEST)
     if "behavior" in data:
@@ -379,6 +411,7 @@ def oic_multi_mode_schedule_detail(request, schedule_id: int):
             sched.behavior = _parse_behavior(data.get("behavior"))
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    new_mode = None
     if "mode_equipment_id" in data:
         try:
             mode_id = int(data.get("mode_equipment_id"))
@@ -387,19 +420,43 @@ def oic_multi_mode_schedule_detail(request, schedule_id: int):
         if not can_manage_equipment(request.user, mode_id):
             return Response({"error": "Permission denied for mode equipment."}, status=status.HTTP_403_FORBIDDEN)
         try:
-            mode = Equipment.objects.get(pk=mode_id)
+            new_mode = Equipment.objects.get(pk=mode_id)
         except Equipment.DoesNotExist:
             return Response({"error": "Mode equipment not found."}, status=status.HTTP_404_NOT_FOUND)
-        if mode.parent_equipment_id != sched.parent_equipment_id:
-            return Response({"error": "Mode equipment must be a mode of this instrument."}, status=status.HTTP_400_BAD_REQUEST)
-        sched.mode_equipment = mode
+    linked = unlinked = False
     try:
-        _apply_schedule_fields(sched, data)
+        with transaction.atomic():
+            if new_mode is not None and new_mode.pk != old_mode_id:
+                linked = link_mode_for_schedule(sched.parent_equipment, new_mode, request.user)
+                sched.mode_equipment = new_mode
+            _apply_schedule_fields(sched, data)
+            sched.full_clean()
+            sched.save()
+            if sched.mode_equipment_id != old_mode_id:
+                unlinked = unlink_mode_if_unscheduled(parent_id, old_mode_id, request.user)
+    except FamilyChangeError as exc:
+        return Response({"error": exc.message, **exc.details}, status=exc.status_code)
     except (TypeError, ValueError):
         return Response({"error": "Repeat days must be weekdays 0 (Monday) to 6 (Sunday)."}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        sched.full_clean()
-        sched.save()
     except DjangoValidationError as exc:
         return _validation_error_response(exc)
-    return Response({"schedule": _serialize_schedule(sched)})
+    return Response({"schedule": _serialize_schedule(sched), "mode_linked": linked, "mode_unlinked": unlinked})
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def oic_multi_mode_remove_mode(request, base_id: int, mode_id: int):
+    """Stop ``mode_id`` being a mode of ``base_id``: deletes its current/future schedules. Refused (409) with upcoming bookings."""
+    if access_scope(request.user) is None:
+        return Response(_FORBIDDEN, status=status.HTTP_403_FORBIDDEN)
+    base = Equipment.objects.filter(pk=base_id).first()
+    mode = Equipment.objects.filter(pk=mode_id).first()
+    if base is None or mode is None:
+        return Response({"error": "Equipment not found."}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        deleted = remove_mode(base, mode, request.user)
+    except FamilyChangeError as exc:
+        return Response({"error": exc.message, **exc.details}, status=exc.status_code)
+    payload = _family_detail(base, request.user)
+    payload["schedules_deleted"] = deleted
+    return Response(payload)

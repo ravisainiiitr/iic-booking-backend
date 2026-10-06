@@ -3767,6 +3767,7 @@ def equipment_daily_slots(request, pk):
 
     # Multi-mode: keep all slots (no blank cells). Overlay label/color for end users.
     from .mode_utils import (
+        annotate_user_mode_blocks_for_staff,
         apply_mode_overlays_to_slot_payloads,
         is_staff_bypass_user,
         bypasses_multimode_restrictions,
@@ -3796,6 +3797,8 @@ def equipment_daily_slots(request, pk):
     slots_payload = list(serializer.data)
     if not (is_staff_bypass_user(user) or bypasses_multimode_restrictions(user)):
         slots_payload = apply_mode_overlays_to_slot_payloads(equipment, filtered_slots, slots_payload)
+    else:
+        slots_payload = annotate_user_mode_blocks_for_staff(equipment, filtered_slots, slots_payload)
     if outside_window_slot_ids:
         for row in slots_payload:
             row["outside_visibility_window"] = row.get("id") in outside_window_slot_ids

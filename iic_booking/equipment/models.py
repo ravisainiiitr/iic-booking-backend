@@ -797,9 +797,10 @@ class Equipment(models.Model):
         default=ModeAvailability.ALWAYS,
         verbose_name=_('Mode availability'),
         help_text=_(
-            'Only used when this equipment is a mode of a base instrument. '
-            'Always available: bookable unless a mutually exclusive schedule of another mode is active. '
-            'Only on scheduled days: bookable only while one of its mode schedules is active.'
+            'Only used when this equipment is a mode of a base instrument. Modes linked from the Multi-mode '
+            'page are "Only on scheduled days": bookable while one of their schedules is active, and a schedule '
+            'with blank dates means always available. "Always available" is the legacy setting (bookable '
+            'unless a mutually exclusive schedule of another mode is active).'
         ),
     )
 
@@ -1052,8 +1053,18 @@ class EquipmentModeSchedule(models.Model):
         verbose_name=_('Mode Equipment'),
         help_text=_('Child mode equipment being enabled for the date range.'),
     )
-    start_date = models.DateField(verbose_name=_('Start Date'))
-    end_date = models.DateField(verbose_name=_('End Date'))
+    start_date = models.DateField(
+        blank=True,
+        null=True,
+        verbose_name=_('Start Date'),
+        help_text=_('Leave both dates blank for a schedule with no date limits (the mode is always available).'),
+    )
+    end_date = models.DateField(
+        blank=True,
+        null=True,
+        verbose_name=_('End Date'),
+        help_text=_('Leave both dates blank for a schedule with no date limits (the mode is always available).'),
+    )
     start_time = models.TimeField(
         blank=True,
         null=True,
@@ -1132,10 +1143,35 @@ class EquipmentModeSchedule(models.Model):
         ]
 
     def __str__(self):
-        return (
-            f"{self.mode_equipment_id} @ {self.parent_equipment_id} "
-            f"{self.start_date}–{self.end_date} ({self.behavior})"
+        dates = f"{self.start_date}–{self.end_date}" if self.has_dates() else "always"
+        return f"{self.mode_equipment_id} @ {self.parent_equipment_id} {dates} ({self.behavior})"
+
+    def has_dates(self) -> bool:
+        return self.start_date is not None or self.end_date is not None
+
+    def covers_date(self, on_date) -> bool:
+        """Date range (blank = no limit) plus the optional weekly repeat (empty weekdays = every day)."""
+        if self.start_date is not None and on_date < self.start_date:
+            return False
+        if self.end_date is not None and on_date > self.end_date:
+            return False
+        return not self.weekdays or on_date.weekday() in self.weekdays
+
+    @staticmethod
+    def covering_date_q(on_date) -> models.Q:
+        return (models.Q(start_date__isnull=True) | models.Q(start_date__lte=on_date)) & (
+            models.Q(end_date__isnull=True) | models.Q(end_date__gte=on_date)
         )
+
+    @staticmethod
+    def overlapping_range_q(start, end) -> models.Q:
+        """Schedules whose date range (blank = no limit) overlaps [start, end] (either may be None)."""
+        q = models.Q()
+        if end is not None:
+            q &= models.Q(start_date__isnull=True) | models.Q(start_date__lte=end)
+        if start is not None:
+            q &= models.Q(end_date__isnull=True) | models.Q(end_date__gte=start)
+        return q
 
     @staticmethod
     def normalize_weekdays(raw) -> list[int]:
@@ -1162,7 +1198,9 @@ class EquipmentModeSchedule(models.Model):
 
     def can_coexist_with(self, other: 'EquipmentModeSchedule') -> bool:
         """True when the two schedules can never be active at the same moment."""
-        if self.start_date > other.end_date or other.start_date > self.end_date:
+        if self.start_date and other.end_date and self.start_date > other.end_date:
+            return True
+        if other.start_date and self.end_date and other.start_date > self.end_date:
             return True
         if not (self.active_weekdays() & other.active_weekdays()):
             return True
@@ -1172,6 +1210,12 @@ class EquipmentModeSchedule(models.Model):
 
     def clean(self):
         super().clean()
+        if (self.start_date is None) != (self.end_date is None):
+            raise ValidationError({
+                'end_date' if self.end_date is None else 'start_date': _(
+                    'Enter both dates, or leave both blank to make this mode always available.'
+                ),
+            })
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValidationError({'end_date': _('End date must be on or after start date.')})
         if self.start_time and self.end_time and self.start_time > self.end_time:
@@ -1195,12 +1239,11 @@ class EquipmentModeSchedule(models.Model):
                 'mode_equipment': _('Mode equipment must be linked as a child of the parent first.'),
             })
         # No overlapping EXCLUSIVE schedules for the same parent on overlapping dates
-        if self.behavior == ModeScheduleBehavior.EXCLUSIVE and self.start_date and self.end_date:
+        if self.behavior == ModeScheduleBehavior.EXCLUSIVE:
             qs = EquipmentModeSchedule.objects.filter(
+                self.overlapping_range_q(self.start_date, self.end_date),
                 parent_equipment_id=parent.pk,
                 behavior=ModeScheduleBehavior.EXCLUSIVE,
-                start_date__lte=self.end_date,
-                end_date__gte=self.start_date,
             )
             if self.pk:
                 qs = qs.exclude(pk=self.pk)
