@@ -1,0 +1,125 @@
+# Read-only, counts / ids / statuses only (no titles, names or emails): notice-board notices that still
+# show for equipment that is Operational again. Covers auto "Under Maintenance" notices
+# (source EQUIPMENT_UNAVAILABLE), manual notices linked to an equipment, and unlinked manual notices
+# that look like equipment-status messages. Once the fix is deployed, also reports what the cleanup
+# command would change (dry run).
+name: Probe Stale Equipment Notices
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.db.models import Q
+          from django.utils import timezone
+          from iic_booking.communication.models import Notice
+          from iic_booking.equipment.models import Equipment, EquipmentStatus
+
+          now = timezone.now()
+          print(f"now={now.isoformat()}")
+          public = Notice.objects.filter(is_active=True, approval_status=Notice.ApprovalStatus.APPROVED).filter(
+              Q(expiry_date__isnull=True) | Q(expiry_date__gt=now)
+          )
+          print(f"public_total={public.count()}")
+          print(f"public_by_source={dict(Counter(public.values_list('source', flat=True)))}")
+
+          def rows(qs):
+              out = []
+              for n in qs.select_related("equipment").order_by("notice_id"):
+                  eq = n.equipment
+                  out.append(
+                      f"  notice={n.notice_id} source={n.source} approval={n.approval_status} active={n.is_active} "
+                      f"expiry_set={n.expiry_date is not None} unlimited={n.expiry_unlimited} "
+                      f"created={n.created_at:%Y-%m-%d} updated={n.updated_at:%Y-%m-%d} "
+                      f"equipment={getattr(eq, 'pk', None)} equipment_status={getattr(eq, 'status', None)}"
+                  )
+              return out
+
+          auto_public = public.filter(source=Notice.Source.EQUIPMENT_UNAVAILABLE)
+          print(f"auto_public_by_equipment_status={dict(Counter(auto_public.values_list('equipment__status', flat=True)))}")
+          stale_auto = auto_public.filter(equipment__status=EquipmentStatus.ACTIVE)
+          print(f"STALE_auto_public_equipment_operational={stale_auto.count()}")
+          print("\n".join(rows(stale_auto)))
+          orphan_auto = auto_public.filter(equipment__isnull=True)
+          print(f"auto_public_without_equipment={orphan_auto.count()}")
+
+          manual_linked = public.filter(source=Notice.Source.MANUAL, equipment__isnull=False)
+          print(f"manual_public_linked_to_equipment={manual_linked.count()}")
+          print("\n".join(rows(manual_linked)))
+
+          pattern = re.compile(r"under\s+maintenance|not\s+available|unavailable|out\s+of\s+order|under\s+repair|breakdown|not\s+working|shut\s*down", re.I)
+          equipment = list(Equipment.objects.values_list("equipment_id", "code", "status"))
+          unlinked = []
+          for n in public.filter(source=Notice.Source.MANUAL, equipment__isnull=True).order_by("notice_id"):
+              text = f"{n.title}\n{n.description}"
+              if not pattern.search(text):
+                  continue
+              hits = [
+                  (eid, st) for eid, code, st in equipment
+                  if code and len(code) >= 3 and re.search(rf"(?<![A-Za-z0-9]){re.escape(code)}(?![A-Za-z0-9])", text, re.I)
+              ]
+              unlinked.append((n, hits))
+          print(f"manual_public_unlinked_status_like={len(unlinked)}")
+          for n, hits in unlinked:
+              print(
+                  f"  notice={n.notice_id} approval={n.approval_status} expiry_set={n.expiry_date is not None} "
+                  f"created={n.created_at:%Y-%m-%d} code_matches={[(e, s) for e, s in hits]}"
+              )
+
+          all_auto = Notice.objects.filter(source=Notice.Source.EQUIPMENT_UNAVAILABLE)
+          print(
+              "auto_all_by_approval_active="
+              f"{dict(Counter((a, bool(b)) for a, b in all_auto.values_list('approval_status', 'is_active')))}"
+          )
+          open_auto_operational = all_auto.filter(
+              equipment__status=EquipmentStatus.ACTIVE,
+              approval_status__in=[Notice.ApprovalStatus.DRAFT, Notice.ApprovalStatus.PENDING],
+          )
+          print(f"auto_draft_or_pending_equipment_operational={open_auto_operational.count()}")
+          print("\n".join(rows(open_auto_operational)))
+
+          try:
+              from django.contrib.admin.models import LogEntry
+              from django.contrib.contenttypes.models import ContentType
+              ct = ContentType.objects.get_for_model(Equipment)
+              ids = {str(n.equipment_id) for n in stale_auto}
+              hits = LogEntry.objects.filter(content_type=ct, object_id__in=ids, change_message__icontains="status").count()
+              print(f"django_admin_status_edits_for_stale_equipment={hits}")
+          except Exception as exc:
+              print(f"logentry_check_failed={type(exc).__name__}")
+
+          try:
+              from io import StringIO
+              from django.core.management import call_command
+              buf = StringIO()
+              call_command("expire_stale_equipment_notices", stdout=buf)
+              print("== cleanup dry run ==")
+              print(buf.getvalue())
+          except Exception as exc:
+              print(f"cleanup command not deployed yet ({type(exc).__name__})")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
