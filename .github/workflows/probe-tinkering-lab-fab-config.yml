@@ -5,12 +5,24 @@ name: Probe Tinkering Lab Fabrication Config
 
 on:
   workflow_dispatch:
+    inputs:
+      booking_ids:
+        description: "Booking ids to check (comma separated)"
+        required: false
+        default: "694,692"
+      txn_ids:
+        description: "Sub-wallet transaction ids to check (comma separated)"
+        required: false
+        default: ""
 
 jobs:
   probe:
     runs-on: [self-hosted, Linux]
     steps:
       - name: Probe
+        env:
+          TL_BOOKING_IDS: ${{ inputs.booking_ids }}
+          TL_TXN_IDS: ${{ inputs.txn_ids }}
         run: |
           set -euo pipefail
           for d in \
@@ -23,7 +35,7 @@ jobs:
               echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
-              docker exec -i -w /app "$CID" python - <<'PY'
+              docker exec -i -w /app -e TL_BOOKING_IDS="$TL_BOOKING_IDS" -e TL_TXN_IDS="$TL_TXN_IDS" "$CID" python - <<'PY'
           import os, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
@@ -133,7 +145,65 @@ jobs:
               print(f"== {label} duplicate codes: {len(dups)}")
               for k, v in sorted(dups.items()):
                   print(f"  {k}: {v}")
+
+          print("== verification")
+          import re
+          from iic_booking.equipment.models import PrintAnalysis
+          from iic_booking.users.models.wallet import SubWalletTransaction
+          old_codes = {"m1", "m2", "c1", "pla"}
+          if dep:
+              printers = Equipment.objects.filter(internal_department=dep, category__name__iexact="3D Printers")
+              cncs = Equipment.objects.filter(internal_department=dep, category__name__iexact="CNC Machine Tools").order_by("pk")
+              owned = PrintMaterial.objects.filter(equipment__in=printers).order_by("pk")
+              print(f"  print material rows owned by lab printers: {owned.count()} {list(owned.values_list('pk', 'code'))}")
+              pb = Booking.objects.filter(equipment__in=printers)
+              refs = {pk for pk, iv in pb.values_list("pk", "input_values") if isinstance(iv, dict) and str(iv.get("B") or "").strip().lower() in old_codes}
+              refs |= {pk for pk, s in PrintAnalysis.objects.filter(booking__in=pb).values_list("booking_id", "material_code_snapshot") if (s or "").strip().lower() in old_codes}
+              print(f"  lab-printer bookings referring to old codes {sorted(old_codes)}: {sorted(refs)}")
+              by_status = defaultdict(int)
+              for s in pb.values_list("status", flat=True):
+                  by_status[s] += 1
+              print(f"  lab-printer bookings by status: {dict(sorted(by_status.items()))}")
+              try:
+                  from iic_booking.equipment.management.commands.cleanup_tinkering_lab_fabrication import (
+                      Command as Cleanup, money_snapshot, refund_credits,
+                  )
+              except ImportError:
+                  Cleanup = None
+              if Cleanup:
+                  cmd = Cleanup()
+                  for eq in cncs:
+                      print(f"  -- charge preview {eq.code}#{eq.pk}")
+                      cmd._laser_previews(eq)
+                  print(f"  wallet/payment totals: {money_snapshot()}")
+              for raw in re.split(r"[,\s]+", os.environ.get("TL_BOOKING_IDS", "").strip()):
+                  if not raw.isdigit():
+                      continue
+                  b = Booking.objects.filter(pk=int(raw)).select_related("equipment").first()
+                  if b is None:
+                      print(f"  booking {raw}: not found (deleted)")
+                      continue
+                  refunded, txns = refund_credits(b) if Cleanup else (None, [])
+                  ev = b.events.order_by("-pk").values_list("event_type", "new_status").first() if hasattr(b, "events") else None
+                  print(
+                      f"  booking {b.pk} eq={b.equipment.code}#{b.equipment_id} status={b.status} charge={b.total_charge} "
+                      f"wallet_applied={b.wallet_amount_applied} refunded={refunded} refund_txns={txns} last_event={ev} "
+                      f"slots={b.daily_slots.count()}"
+                  )
+              for raw in re.split(r"[,\s]+", os.environ.get("TL_TXN_IDS", "").strip()):
+                  if not raw.isdigit():
+                      continue
+                  t = SubWalletTransaction.objects.filter(pk=int(raw)).select_related("sub_wallet").first()
+                  if t is None:
+                      print(f"  txn {raw}: not found")
+                      continue
+                  print(
+                      f"  txn {t.pk} type={t.transaction_type} amount={t.amount} dept_id={t.sub_wallet.department_id} "
+                      f"created={t.created_at:%Y-%m-%d %H:%M} cancellation_refund={t.description.startswith('Refund for cancelled Booking')}"
+                  )
           PY
+              echo "== server backups (run ids)"
+              ls -1 /home/ubuntu/backups/tinkering-lab-material-purge 2>/dev/null || echo "  none"
               exit 0
             fi
           done

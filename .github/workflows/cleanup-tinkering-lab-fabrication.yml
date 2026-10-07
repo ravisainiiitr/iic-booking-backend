@@ -1,0 +1,120 @@
+# "Rethink ! The Tinkering Lab" fabrication clean-up (cleanup_tinkering_lab_fabrication):
+#   - cancel open bookings through the standard admin cancellation (refund of the amount paid, standard notice);
+#   - finish the CNC switch to 2D laser cutting, delete the old "No. of Parts" / "Number of Slots" inputs, clear
+#     the formulas that used them;
+#   - 3D printers keep only the IIC master-list materials; the rows owned by lab printers are deleted with the
+#     bookings that refer to them, after a JSON backup copied to
+#     /home/ubuntu/backups/tinkering-lab-material-purge/<run id>/ on the server. Media files move to
+#     archive/tinkering-lab-material-purge/<run id>/ in storage.
+# Dry run by default. apply needs confirm=TINKERING-LAB-PURGE, restore needs confirm=TINKERING-LAB-RESTORE.
+# Output has ids, codes, statuses and amounts only; the backup files are never printed.
+name: Cleanup Tinkering Lab Fabrication
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply | restore-dry-run | restore"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply, restore-dry-run, restore]
+      confirm:
+        description: "TINKERING-LAB-PURGE for apply, TINKERING-LAB-RESTORE for restore"
+        required: false
+        default: ""
+      backup_run_id:
+        description: "Run id of the backup to restore (restore only)"
+        required: false
+        default: ""
+      actor_id:
+        description: "Main administrator user id for the cancellations (optional)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          TL_ACTION: ${{ inputs.action }}
+          TL_CONFIRM: ${{ inputs.confirm }}
+          TL_RESTORE_ID: ${{ inputs.backup_run_id }}
+          TL_ACTOR: ${{ inputs.actor_id }}
+          TL_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          HOST_ROOT=/home/ubuntu/backups/tinkering-lab-material-purge
+          CMD=(python manage.py cleanup_tinkering_lab_fabrication)
+          ACTOR=()
+          if [[ -n "$TL_ACTOR" ]]; then
+            [[ "$TL_ACTOR" =~ ^[0-9]+$ ]] || { echo "actor_id must be a number"; exit 1; }
+            ACTOR=(--actor-id "$TL_ACTOR")
+          fi
+          case "$TL_ACTION" in
+            dry-run) ;;
+            apply) [[ "$TL_CONFIRM" == "TINKERING-LAB-PURGE" ]] || { echo "confirm=TINKERING-LAB-PURGE is required"; exit 1; } ;;
+            restore-dry-run|restore)
+              [[ "$TL_RESTORE_ID" =~ ^[0-9A-Za-z_-]+$ ]] || { echo "backup_run_id is required"; exit 1; }
+              if [[ "$TL_ACTION" == "restore" ]]; then
+                [[ "$TL_CONFIRM" == "TINKERING-LAB-RESTORE" ]] || { echo "confirm=TINKERING-LAB-RESTORE is required"; exit 1; }
+              fi ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+
+          CID=""
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              break
+            fi
+          done
+          test -n "$CID" || { echo "No production django container found"; exit 1; }
+          dexec() { docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" "$@"; }
+
+          case "$TL_ACTION" in
+            dry-run)
+              dexec "${CMD[@]}" --stage all "${ACTOR[@]}"
+              ;;
+            apply)
+              CDIR="/tmp/tinkering-lab-material-purge/$TL_RUN_ID"
+              HDIR="$HOST_ROOT/$TL_RUN_ID"
+              echo "== stage config"
+              dexec "${CMD[@]}" --stage config --apply --backup-dir "$CDIR" --run-id "$TL_RUN_ID" "${ACTOR[@]}"
+              echo "== stage backup"
+              dexec "${CMD[@]}" --stage backup --backup-dir "$CDIR" --run-id "$TL_RUN_ID"
+              mkdir -p "$HDIR"
+              docker cp "$CID:$CDIR/." "$HDIR/"
+              chmod -R go-rwx "$HOST_ROOT"
+              (cd "$HDIR" && sha256sum --quiet -c SHA256SUMS)
+              echo "backup copied to $HDIR ($(du -sh "$HDIR" | cut -f1)): $(cd "$HDIR" && ls | tr '\n' ' ')"
+              echo "== stage delete"
+              dexec "${CMD[@]}" --stage delete --apply --backup-dir "$CDIR"
+              docker cp "$CID:$CDIR/delete-result.json" "$HDIR/" 2>/dev/null || echo "no delete-result.json (nothing deleted)"
+              chmod -R go-rwx "$HOST_ROOT"
+              dexec rm -rf "$CDIR"
+              echo "BACKUP_DIR=$HDIR"
+              ;;
+            restore-dry-run|restore)
+              HDIR="$HOST_ROOT/$TL_RESTORE_ID"
+              test -f "$HDIR/manifest.json" || { echo "No backup at $HDIR"; exit 1; }
+              (cd "$HDIR" && sha256sum --quiet -c SHA256SUMS)
+              CDIR="/tmp/tinkering-lab-material-purge/restore-$TL_RESTORE_ID"
+              dexec mkdir -p "$CDIR"
+              docker cp "$HDIR/." "$CID:$CDIR/"
+              APP_UID="$(docker exec "$CID" id -u)"; APP_GID="$(docker exec "$CID" id -g)"
+              docker exec -u 0 "$CID" chown -R "$APP_UID:$APP_GID" "$CDIR"
+              ARGS=(--stage restore --backup-dir "$CDIR")
+              if [[ "$TL_ACTION" == "restore" ]]; then ARGS+=(--apply); fi
+              dexec "${CMD[@]}" "${ARGS[@]}"
+              dexec rm -rf "$CDIR"
+              ;;
+          esac
