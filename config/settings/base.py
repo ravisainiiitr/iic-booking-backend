@@ -632,7 +632,12 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:8080",
 ]
 CORS_ALLOW_CREDENTIALS = True
-CORS_EXPOSE_HEADERS = ["X-Booking-Perf", "x-booking-perf"]
+CORS_EXPOSE_HEADERS = [
+    "X-Booking-Perf",
+    "x-booking-perf",
+    "Content-Disposition",
+    "X-Export-Row-Count",
+]
 
 # By Default swagger ui is available only to admin user(s). You can change permission classes to change that
 # See more configuration options at https://drf-spectacular.readthedocs.io/en/latest/settings.html#settings

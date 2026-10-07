@@ -6108,258 +6108,9 @@ def list_bookings(request):
     Returns:
         Response: List of bookings with count, total_count, limit, offset
     """
-    from datetime import date
-    from django.utils.dateparse import parse_date
-    
-    # Start with base queryset
-    # Regular users see only their own bookings, operators/managers/admins can see all
-    queryset = Booking.objects.all()
-    
-    # Check if user is operator, manager, or admin
-    is_operator_or_manager = check_operator_permission(request.user)
-    
-    # Filter by user_id if provided
-    user_id_filter = request.query_params.get('user_id')
-    if user_id_filter:
-        if _user_is_accounts_finance_user(request.user):
-            return Response(
-                {"error": "Accounts In Charge cannot filter bookings by user_id."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        # Only operators/managers/admins can filter by any user_id
-        if not is_operator_or_manager:
-            return Response(
-                {"error": "You don't have permission to filter by user_id. Only operators, managers, and admins can filter bookings by user."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        try:
-            queryset = queryset.filter(user_id=int(user_id_filter))
-        except (ValueError, TypeError):
-            return Response(
-                {"error": "Invalid user_id parameter."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-    elif _user_is_accounts_finance_user(request.user):
-        queryset = queryset.filter(
-            user_type_snapshot__in=list(UserType.get_external_user_codes()),
-            status__in=[BookingStatus.BOOKED, BookingStatus.COMPLETED],
-        )
-    elif request.user.user_type == UserType.DEPT_ADMIN:
-        # Department Administrator: bookings on equipment in their assigned department only.
-        dept_id = getattr(request.user, "department_id", None)
-        if not dept_id:
-            queryset = queryset.none()
-        else:
-            queryset = queryset.filter(equipment__internal_department_id=dept_id)
-    elif not is_operator_or_manager:
-        # Regular users see their own bookings.
-        # Wallet owners (Faculty/Supervisor) also see bookings made by internal students who use their wallet.
-        from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
-        student_ids_using_my_wallet = list(
-            WalletJoinRequest.objects.filter(
-                faculty=request.user,
-                status=WalletJoinRequestStatus.APPROVED,
-            ).values_list("student_id", flat=True)
-        )
-        if student_ids_using_my_wallet:
-            queryset = queryset.filter(
-                Q(user=request.user) | Q(user_id__in=student_ids_using_my_wallet)
-            ).distinct()
-        else:
-            queryset = queryset.filter(user=request.user)
-    else:
-        # Operator/manager/admin scope:
-        # - manager (OIC): managed equipment only
-        # - operator (Lab Operator): mapped equipment only
-        if request.user.user_type == UserType.MANAGER:
-            oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
-            if not oic_equipment_ids:
-                queryset = queryset.none()
-            else:
-                queryset = queryset.filter(equipment_id__in=oic_equipment_ids)
-        elif request.user.user_type == UserType.OPERATOR:
-            operator_equipment_ids = _get_equipment_ids_for_log_access(request.user) or []
-            if not operator_equipment_ids:
-                queryset = queryset.none()
-            else:
-                queryset = queryset.filter(equipment_id__in=operator_equipment_ids)
-
-    # Filter by equipment_id if provided
-    equipment_id = request.query_params.get('equipment_id')
-    if equipment_id:
-        try:
-            queryset = queryset.filter(equipment_id=int(equipment_id))
-        except (ValueError, TypeError):
-            return Response(
-                {"error": "Invalid equipment_id parameter."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-    # Filter by booking_id if provided (any user can filter by booking_id to fetch one booking – for non-admin, queryset is already restricted to own bookings)
-    booking_id_filter = request.query_params.get('booking_id')
-    if booking_id_filter:
-        try:
-            queryset = queryset.filter(booking_id=int(booking_id_filter))
-        except (ValueError, TypeError):
-            pass
-
-    from .input_edit_payment_window import expire_unpaid_input_edits
-    expire_unpaid_input_edits(queryset)
-    
-    # Filter by status if provided
-    status_filter = request.query_params.get('status')
-    if status_filter:
-        # Validate status
-        valid_statuses = [choice[0] for choice in BookingStatus.choices]
-        if status_filter.upper() not in valid_statuses:
-            return Response(
-                {"error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        queryset = queryset.filter(status=status_filter.upper())
-
-    if str(request.query_params.get("results_overdue") or "").strip().lower() in ("1", "true", "yes"):
-        from .results_deadline import overdue_booking_ids, viewer_is_staff
-
-        if viewer_is_staff(request.user):
-            scope_ids = list(
-                queryset.filter(status__in=[BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING])
-                .values_list("booking_id", flat=True)
-                .distinct()
-            )
-            queryset = queryset.filter(
-                booking_id__in=overdue_booking_ids(Booking.objects.filter(booking_id__in=scope_ids))
-            )
-        else:
-            queryset = queryset.none()
-
-    # Search across booking ID, equipment name, user name/email/phone (single query param)
-    search = request.query_params.get('search', '').strip()
-    if search:
-        search_q = (
-            Q(virtual_booking_id__icontains=search)
-            | Q(equipment__name__icontains=search)
-            | Q(user__name__icontains=search)
-            | Q(user__email__icontains=search)
-            | Q(user__phone_number__icontains=search)
-        )
-        # Match numeric primary key (display id can be CODE-pk when no virtual_booking_id)
-        if search.isdigit():
-            try:
-                search_q |= Q(booking_id=int(search))
-            except (ValueError, TypeError):
-                pass
-        # Match "{equipment_code}-{booking_id}" style display references
-        if "-" in search:
-            head, _, tail = search.rpartition("-")
-            if head and tail.isdigit():
-                try:
-                    pk = int(tail)
-                    search_q |= Q(equipment__code__iexact=head) & Q(booking_id=pk)
-                except (ValueError, TypeError):
-                    pass
-        queryset = queryset.filter(search_q).distinct()
-
-    # Filter by user name (booking user's name) – if specified
-    user_name_filter = request.query_params.get('user_name', '').strip()
-    if user_name_filter:
-        queryset = queryset.filter(user__name__icontains=user_name_filter)
-
-    # Filter by Supervisor name – if specified
-    supervisor_name_filter = request.query_params.get('supervisor_name', '').strip()
-    if supervisor_name_filter:
-        from django.contrib.auth import get_user_model
-        from iic_booking.users.models.wallet import WalletJoinRequestStatus
-        User = get_user_model()
-        # Supervisors (users who have a wallet) whose name/email contains the filter
-        supervisor_owner_ids = list(
-            User.objects.filter(wallet__isnull=False).filter(
-                Q(name__icontains=supervisor_name_filter) | Q(email__icontains=supervisor_name_filter)
-            ).values_list('pk', flat=True)
-        )
-        if supervisor_owner_ids:
-            from iic_booking.users.models.wallet import WalletJoinRequest
-            queryset = queryset.filter(
-                Q(user_id__in=supervisor_owner_ids)
-                | Q(
-                    user__wallet_join_requests__status=WalletJoinRequestStatus.APPROVED,
-                    user__wallet_join_requests__faculty_id__in=supervisor_owner_ids,
-                )
-            ).distinct()
-        else:
-            queryset = queryset.none()
-
-    # Filter by user type (internal vs external) – based on booking user_type_snapshot
-    user_type_filter = (request.query_params.get('user_type_filter') or '').strip().lower()
-    if user_type_filter in ('internal', 'external'):
-        if user_type_filter == 'internal':
-            internal_codes = list(UserType.get_internal_user_codes())
-            queryset = queryset.filter(user_type_snapshot__in=internal_codes)
-        else:
-            external_codes = list(UserType.get_external_user_codes())
-            queryset = queryset.filter(user_type_snapshot__in=external_codes)
-
-    # Filter by rating (admin/OIC/lab only) – unrated, or 2/3/4 stars and below, or 5 stars
-    rating_filter = (request.query_params.get('rating') or '').strip().lower()
-    if rating_filter and is_operator_or_manager:
-        if rating_filter == 'unrated':
-            queryset = queryset.filter(rating__isnull=True)
-        elif rating_filter == '2_and_below':
-            queryset = queryset.filter(rating__isnull=False, rating__lte=2)
-        elif rating_filter == '3_and_below':
-            queryset = queryset.filter(rating__isnull=False, rating__lte=3)
-        elif rating_filter == '4_and_below':
-            queryset = queryset.filter(rating__isnull=False, rating__lte=4)
-        elif rating_filter == '5':
-            queryset = queryset.filter(rating=5)
-
-    # Filter by I-STEM FBR verification (admin/OIC only)
-    istem_fbr_filter = (request.query_params.get('istem_fbr') or '').strip().lower()
-    if istem_fbr_filter in ('verified', 'unverified') and is_operator_or_manager:
-        istem_fbr_applicable = Q(charge_profile__require_istem_fbr=True) | Q(istem_fbr_status__isnull=False)
-        if istem_fbr_filter == 'verified':
-            queryset = queryset.filter(istem_fbr_status=IstemFbrStatus.EXECUTED)
-        else:
-            queryset = queryset.filter(istem_fbr_applicable).exclude(
-                istem_fbr_status=IstemFbrStatus.EXECUTED
-            )
-
-    # Filter by date range if provided
-    start_date_param = request.query_params.get('start_date')
-    end_date_param = request.query_params.get('end_date')
-    
-    if start_date_param:
-        try:
-            start_date = parse_date(start_date_param)
-            if start_date:
-                # Filter by bookings that have slots starting on or after this date
-                queryset = queryset.filter(
-                    daily_slots__date__gte=start_date
-                ).distinct()
-        except (ValueError, TypeError):
-            return Response(
-                {"error": "Invalid start_date format. Use YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-    
-    if end_date_param:
-        try:
-            end_date = parse_date(end_date_param)
-            if end_date:
-                # Filter by bookings that have slots ending on or before this date
-                queryset = queryset.filter(
-                    daily_slots__date__lte=end_date
-                ).distinct()
-        except (ValueError, TypeError):
-            return Response(
-                {"error": "Invalid end_date format. Use YYYY-MM-DD."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-    
-    # Ordering (whitelisted keys, incl. View Booking column sorts such as start_time / user_name)
-    from .booking_list_ordering import apply_booking_list_ordering
-
-    queryset = apply_booking_list_ordering(queryset, request.query_params.get('ordering', '-created_at'))
+    queryset, error = _booking_list_queryset(request)
+    if error is not None:
+        return error
 
     list_view = request.query_params.get('list_view', '').strip().lower() in ('1', 'true', 'yes')
     # Fast flag for UI: operator complete files OR DSA-imported result attachments.
@@ -6433,6 +6184,311 @@ def list_bookings(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def export_bookings(request):
+    """Download every booking the View Booking list would show, as xlsx / csv / pdf.
+
+    Takes the same filter, search and ordering parameters as ``list_bookings`` (and the same
+    role scope) plus ``export_format`` (xlsx, csv or pdf) and ``view``: ``staff`` for
+    View Booking (/booking-management) or ``my`` for My Bookings. Searches shorter than two
+    characters are ignored, as on the page.
+    """
+    from .booking_list_export import ExportTooLarge, export_booking_list
+
+    export_format = (request.query_params.get("export_format") or "").strip().lower()
+    if export_format not in ("xlsx", "csv", "pdf"):
+        return Response(
+            {"error": "Choose an export format: xlsx, csv or pdf."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    view = (request.query_params.get("view") or "my").strip().lower()
+    if view not in ("staff", "my"):
+        return Response({"error": "view must be staff or my."}, status=status.HTTP_400_BAD_REQUEST)
+    if view == "staff" and getattr(request.user, "user_type", None) not in (
+        UserType.OPERATOR,
+        UserType.MANAGER,
+        UserType.DEPT_ADMIN,
+        UserType.ADMIN,
+    ):
+        return Response(
+            {"error": "Only Lab Operator, Officer In-charge, Department Administrators and Admins can export View Booking."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    queryset, error = _booking_list_queryset(request, min_search_chars=2)
+    if error is not None:
+        return error
+    try:
+        return export_booking_list(request, queryset, view=view, export_format=export_format)
+    except ExportTooLarge as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _booking_list_queryset(request, *, min_search_chars: int = 0):
+    """Bookings ``list_bookings`` would list for this request: role scope, filters, search and ordering.
+
+    Returns ``(queryset, None)`` or ``(None, error_response)``. Text searches shorter than
+    ``min_search_chars`` are ignored.
+    """
+    from django.utils.dateparse import parse_date
+
+    # Start with base queryset
+    # Regular users see only their own bookings, operators/managers/admins can see all
+    queryset = Booking.objects.all()
+    
+    # Check if user is operator, manager, or admin
+    is_operator_or_manager = check_operator_permission(request.user)
+    
+    # Filter by user_id if provided
+    user_id_filter = request.query_params.get('user_id')
+    if user_id_filter:
+        if _user_is_accounts_finance_user(request.user):
+            return None, Response(
+                {"error": "Accounts In Charge cannot filter bookings by user_id."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        # Only operators/managers/admins can filter by any user_id
+        if not is_operator_or_manager:
+            return None, Response(
+                {"error": "You don't have permission to filter by user_id. Only operators, managers, and admins can filter bookings by user."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        try:
+            queryset = queryset.filter(user_id=int(user_id_filter))
+        except (ValueError, TypeError):
+            return None, Response(
+                {"error": "Invalid user_id parameter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    elif _user_is_accounts_finance_user(request.user):
+        queryset = queryset.filter(
+            user_type_snapshot__in=list(UserType.get_external_user_codes()),
+            status__in=[BookingStatus.BOOKED, BookingStatus.COMPLETED],
+        )
+    elif request.user.user_type == UserType.DEPT_ADMIN:
+        # Department Administrator: bookings on equipment in their assigned department only.
+        dept_id = getattr(request.user, "department_id", None)
+        if not dept_id:
+            queryset = queryset.none()
+        else:
+            queryset = queryset.filter(equipment__internal_department_id=dept_id)
+    elif not is_operator_or_manager:
+        # Regular users see their own bookings.
+        # Wallet owners (Faculty/Supervisor) also see bookings made by internal students who use their wallet.
+        from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+        student_ids_using_my_wallet = list(
+            WalletJoinRequest.objects.filter(
+                faculty=request.user,
+                status=WalletJoinRequestStatus.APPROVED,
+            ).values_list("student_id", flat=True)
+        )
+        if student_ids_using_my_wallet:
+            queryset = queryset.filter(
+                Q(user=request.user) | Q(user_id__in=student_ids_using_my_wallet)
+            ).distinct()
+        else:
+            queryset = queryset.filter(user=request.user)
+    else:
+        # Operator/manager/admin scope:
+        # - manager (OIC): managed equipment only
+        # - operator (Lab Operator): mapped equipment only
+        if request.user.user_type == UserType.MANAGER:
+            oic_equipment_ids = get_equipment_ids_managed_by_oic(request.user.id)
+            if not oic_equipment_ids:
+                queryset = queryset.none()
+            else:
+                queryset = queryset.filter(equipment_id__in=oic_equipment_ids)
+        elif request.user.user_type == UserType.OPERATOR:
+            operator_equipment_ids = _get_equipment_ids_for_log_access(request.user) or []
+            if not operator_equipment_ids:
+                queryset = queryset.none()
+            else:
+                queryset = queryset.filter(equipment_id__in=operator_equipment_ids)
+
+    # Filter by equipment_id if provided
+    equipment_id = request.query_params.get('equipment_id')
+    if equipment_id:
+        try:
+            queryset = queryset.filter(equipment_id=int(equipment_id))
+        except (ValueError, TypeError):
+            return None, Response(
+                {"error": "Invalid equipment_id parameter."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    # Filter by booking_id if provided (any user can filter by booking_id to fetch one booking – for non-admin, queryset is already restricted to own bookings)
+    booking_id_filter = request.query_params.get('booking_id')
+    if booking_id_filter:
+        try:
+            queryset = queryset.filter(booking_id=int(booking_id_filter))
+        except (ValueError, TypeError):
+            pass
+
+    from .input_edit_payment_window import expire_unpaid_input_edits
+    expire_unpaid_input_edits(queryset)
+    
+    # Filter by status if provided
+    status_filter = request.query_params.get('status')
+    if status_filter:
+        # Validate status
+        valid_statuses = [choice[0] for choice in BookingStatus.choices]
+        if status_filter.upper() not in valid_statuses:
+            return None, Response(
+                {"error": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = queryset.filter(status=status_filter.upper())
+
+    if str(request.query_params.get("results_overdue") or "").strip().lower() in ("1", "true", "yes"):
+        from .results_deadline import overdue_booking_ids, viewer_is_staff
+
+        if viewer_is_staff(request.user):
+            scope_ids = list(
+                queryset.filter(status__in=[BookingStatus.PENDING, BookingStatus.BOOKED, BookingStatus.PROCESSING])
+                .values_list("booking_id", flat=True)
+                .distinct()
+            )
+            queryset = queryset.filter(
+                booking_id__in=overdue_booking_ids(Booking.objects.filter(booking_id__in=scope_ids))
+            )
+        else:
+            queryset = queryset.none()
+
+    def _text_param(name):
+        value = (request.query_params.get(name) or '').strip()
+        return value if len(value) >= min_search_chars else ''
+
+    # Search across booking ID, equipment name, user name/email/phone (single query param)
+    search = _text_param('search')
+    if search:
+        search_q = (
+            Q(virtual_booking_id__icontains=search)
+            | Q(equipment__name__icontains=search)
+            | Q(user__name__icontains=search)
+            | Q(user__email__icontains=search)
+            | Q(user__phone_number__icontains=search)
+        )
+        # Match numeric primary key (display id can be CODE-pk when no virtual_booking_id)
+        if search.isdigit():
+            try:
+                search_q |= Q(booking_id=int(search))
+            except (ValueError, TypeError):
+                pass
+        # Match "{equipment_code}-{booking_id}" style display references
+        if "-" in search:
+            head, _, tail = search.rpartition("-")
+            if head and tail.isdigit():
+                try:
+                    pk = int(tail)
+                    search_q |= Q(equipment__code__iexact=head) & Q(booking_id=pk)
+                except (ValueError, TypeError):
+                    pass
+        queryset = queryset.filter(search_q).distinct()
+
+    # Filter by user name (booking user's name) – if specified
+    user_name_filter = _text_param('user_name')
+    if user_name_filter:
+        queryset = queryset.filter(user__name__icontains=user_name_filter)
+
+    # Filter by Supervisor name – if specified
+    supervisor_name_filter = _text_param('supervisor_name')
+    if supervisor_name_filter:
+        from django.contrib.auth import get_user_model
+        from iic_booking.users.models.wallet import WalletJoinRequestStatus
+        User = get_user_model()
+        # Supervisors (users who have a wallet) whose name/email contains the filter
+        supervisor_owner_ids = list(
+            User.objects.filter(wallet__isnull=False).filter(
+                Q(name__icontains=supervisor_name_filter) | Q(email__icontains=supervisor_name_filter)
+            ).values_list('pk', flat=True)
+        )
+        if supervisor_owner_ids:
+            from iic_booking.users.models.wallet import WalletJoinRequest
+            queryset = queryset.filter(
+                Q(user_id__in=supervisor_owner_ids)
+                | Q(
+                    user__wallet_join_requests__status=WalletJoinRequestStatus.APPROVED,
+                    user__wallet_join_requests__faculty_id__in=supervisor_owner_ids,
+                )
+            ).distinct()
+        else:
+            queryset = queryset.none()
+
+    # Filter by user type (internal vs external) – based on booking user_type_snapshot
+    user_type_filter = (request.query_params.get('user_type_filter') or '').strip().lower()
+    if user_type_filter in ('internal', 'external'):
+        if user_type_filter == 'internal':
+            internal_codes = list(UserType.get_internal_user_codes())
+            queryset = queryset.filter(user_type_snapshot__in=internal_codes)
+        else:
+            external_codes = list(UserType.get_external_user_codes())
+            queryset = queryset.filter(user_type_snapshot__in=external_codes)
+
+    # Filter by rating (admin/OIC/lab only) – unrated, or 2/3/4 stars and below, or 5 stars
+    rating_filter = (request.query_params.get('rating') or '').strip().lower()
+    if rating_filter and is_operator_or_manager:
+        if rating_filter == 'unrated':
+            queryset = queryset.filter(rating__isnull=True)
+        elif rating_filter == '2_and_below':
+            queryset = queryset.filter(rating__isnull=False, rating__lte=2)
+        elif rating_filter == '3_and_below':
+            queryset = queryset.filter(rating__isnull=False, rating__lte=3)
+        elif rating_filter == '4_and_below':
+            queryset = queryset.filter(rating__isnull=False, rating__lte=4)
+        elif rating_filter == '5':
+            queryset = queryset.filter(rating=5)
+
+    # Filter by I-STEM FBR verification (admin/OIC only)
+    istem_fbr_filter = (request.query_params.get('istem_fbr') or '').strip().lower()
+    if istem_fbr_filter in ('verified', 'unverified') and is_operator_or_manager:
+        istem_fbr_applicable = Q(charge_profile__require_istem_fbr=True) | Q(istem_fbr_status__isnull=False)
+        if istem_fbr_filter == 'verified':
+            queryset = queryset.filter(istem_fbr_status=IstemFbrStatus.EXECUTED)
+        else:
+            queryset = queryset.filter(istem_fbr_applicable).exclude(
+                istem_fbr_status=IstemFbrStatus.EXECUTED
+            )
+
+    # Filter by date range if provided
+    start_date_param = request.query_params.get('start_date')
+    end_date_param = request.query_params.get('end_date')
+    
+    if start_date_param:
+        try:
+            start_date = parse_date(start_date_param)
+            if start_date:
+                # Filter by bookings that have slots starting on or after this date
+                queryset = queryset.filter(
+                    daily_slots__date__gte=start_date
+                ).distinct()
+        except (ValueError, TypeError):
+            return None, Response(
+                {"error": "Invalid start_date format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+    if end_date_param:
+        try:
+            end_date = parse_date(end_date_param)
+            if end_date:
+                # Filter by bookings that have slots ending on or before this date
+                queryset = queryset.filter(
+                    daily_slots__date__lte=end_date
+                ).distinct()
+        except (ValueError, TypeError):
+            return None, Response(
+                {"error": "Invalid end_date format. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    
+    # Ordering (whitelisted keys, incl. View Booking column sorts such as start_time / user_name)
+    from .booking_list_ordering import apply_booking_list_ordering
+
+    queryset = apply_booking_list_ordering(queryset, request.query_params.get('ordering', '-created_at'))
+    return queryset, None
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])

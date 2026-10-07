@@ -328,6 +328,7 @@ from iic_booking.equipment.api_views import (
     temporary_oic_cancel,
     temporary_oic_update,
     list_bookings,
+    export_bookings,
     approaching_sample_submission_deadlines,
     booking_stats,
     lab_operator_dashboard,
@@ -1437,6 +1438,7 @@ urlpatterns = router.urls + [
     
     # Booking endpoints
     path("bookings/", list_bookings, name="list-bookings"),
+    path("bookings/export/", export_bookings, name="export-bookings"),
     path(
         "bookings/approaching-sample-submission/",
         approaching_sample_submission_deadlines,
