@@ -1,0 +1,60 @@
+# "Rethink ! The Tinkering Lab": switch CNC Machine Tools to 2D laser cutting and link the enabled Fabrication
+# Materials (laser sheets to CNC, 3D print materials to 3D printers). Dry run by default; apply needs
+# confirm=TINKERING-LAB-FAB. Output has equipment / material ids, codes and rates only.
+name: Apply Tinkering Lab Fabrication Materials
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply]
+      skip_equipment_with_upcoming:
+        description: "Leave CNC equipment with upcoming bookings on its current profile"
+        type: boolean
+        default: false
+      confirm:
+        description: "Type TINKERING-LAB-FAB for apply"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          TL_ACTION: ${{ inputs.action }}
+          TL_SKIP_UPCOMING: ${{ inputs.skip_equipment_with_upcoming }}
+          TL_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          case "$TL_ACTION" in
+            dry-run) ;;
+            apply)
+              [[ "$TL_CONFIRM" == "TINKERING-LAB-FAB" ]] || { echo "confirm=TINKERING-LAB-FAB is required"; exit 1; }
+              ARGS+=(--apply) ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          if [[ "$TL_SKIP_UPCOMING" == "true" ]]; then ARGS+=(--skip-equipment-with-upcoming); fi
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                python manage.py apply_tinkering_lab_fab_materials "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
