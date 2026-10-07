@@ -155,14 +155,16 @@ def money_snapshot() -> dict:
 
 
 def refund_credits(booking) -> tuple[Decimal, list[int]]:
-    """Wallet refunds made by the standard cancellation for this booking (matched by its reference)."""
+    """Wallet credits whose description names this booking's reference (cancellation and other refunds)."""
     from iic_booking.users.models.wallet import SubWalletTransaction
 
     ref = booking_display_id_for_email(booking)
+    if not ref:
+        return Decimal("0.00"), []
     rows = list(
         SubWalletTransaction.objects.filter(
             transaction_type=SubWalletTransaction.TransactionType.CREDIT,
-            description__startswith=f"Refund for cancelled Booking {ref}-",
+            description__regex=rf"(^|[^0-9A-Za-z]){re.escape(ref)}([^0-9A-Za-z]|$)",
         ).values_list("pk", "amount")
     )
     return sum((money(a) for _, a in rows), Decimal("0.00")), [pk for pk, _ in rows]
