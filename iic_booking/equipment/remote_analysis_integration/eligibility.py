@@ -29,7 +29,8 @@ class BookingAnalysisEligibilityService:
         BookingStatus.BOOKING_NOT_UTILIZED,
     }
 
-    def evaluate(self, booking: Booking) -> EligibilityResult:
+    def evaluate(self, booking: Booking, *, close_from_history: bool = True) -> EligibilityResult:
+        """``close_from_history=False`` keeps the check read-only (no lazy ``analysis_closed_at`` write)."""
         equipment = booking.equipment
         checks: dict[str, bool | str] = {}
 
@@ -94,7 +95,7 @@ class BookingAnalysisEligibilityService:
                 ensure_analysis_closed_from_history,
             )
 
-            if ensure_analysis_closed_from_history(booking):
+            if close_from_history and ensure_analysis_closed_from_history(booking):
                 booking.refresh_from_db(fields=["analysis_closed_at"])
                 if getattr(booking, "analysis_closed_at", None):
                     checks["analysis_open"] = False

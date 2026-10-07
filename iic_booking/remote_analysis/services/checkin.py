@@ -209,7 +209,7 @@ class CheckinService:
             ReservationService().transition(
                 reservation, ReservationStatus.QUEUED, reason=reason, actor=actor
             )
-            SchedulerService().queue.enqueue(reservation)
+            SchedulerService().queue.enqueue(reservation, to_back=True)
             action = "retry_queued"
             self._notify(
                 reservation,
@@ -221,7 +221,7 @@ class CheckinService:
             ReservationService().transition(
                 reservation, ReservationStatus.QUEUED, reason=reason, actor=actor
             )
-            SchedulerService().queue.enqueue(reservation)
+            SchedulerService().queue.enqueue(reservation, to_back=True)
             action = "end_of_queue"
             self._notify(
                 reservation,

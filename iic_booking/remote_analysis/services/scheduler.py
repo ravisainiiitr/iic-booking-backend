@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from iic_booking.remote_analysis.constants import (
@@ -31,6 +33,17 @@ from iic_booking.remote_analysis.services.health import update_workstation_healt
 from iic_booking.remote_analysis.services.queue import QueueService
 from iic_booking.remote_analysis.services.reservation import ReservationService, TERMINAL
 
+logger = logging.getLogger(__name__)
+
+# Holds with no desktop yet: safe to drop when the booking can no longer launch.
+IDLE_HOLD_STATUSES = (
+    ReservationStatus.REQUESTED,
+    ReservationStatus.VALIDATING,
+    ReservationStatus.QUEUED,
+    ReservationStatus.RESERVED,
+    ReservationStatus.AWAITING_CHECKIN,
+)
+
 
 class SchedulerService:
     """Intelligent workstation scheduler — allocates only; never launches sessions."""
@@ -45,9 +58,48 @@ class SchedulerService:
     def _record_metric(self, name: str, value: float, unit: str = "", **tags):
         SchedulerTelemetry.objects.create(metric_name=name, value=value, unit=unit, tags=tags or {})
 
+    def cancel_if_booking_ineligible(self, reservation: AnalysisReservation, *, actor=None) -> bool:
+        """Cancel an idle hold whose booking can no longer start Remote Analysis.
+
+        Reservation-only: the booking is evaluated read-only and never modified here.
+        Leaves anything with an open desktop session alone.
+        """
+        if not reservation.booking_id or reservation.status not in IDLE_HOLD_STATUSES:
+            return False
+        from iic_booking.equipment.remote_analysis_integration.eligibility import (
+            BookingAnalysisEligibilityService,
+        )
+        from iic_booking.remote_analysis.guacamole.authorization import OPEN_SESSION_STATUSES
+        from iic_booking.remote_analysis.session_models import RemoteDesktopSession
+
+        elig = BookingAnalysisEligibilityService().evaluate(reservation.booking, close_from_history=False)
+        if elig.eligible:
+            return False
+        live = RemoteDesktopSession.objects.filter(status__in=OPEN_SESSION_STATUSES).filter(
+            Q(reservation_id=reservation.pk) | Q(booking_id=reservation.booking_id)
+        )
+        if live.exists():
+            logger.warning(
+                "Ineligible booking %s keeps reservation %s: open desktop session (%s)",
+                reservation.booking_id,
+                reservation.pk,
+                elig.reason,
+            )
+            return False
+        self.reservations.cancel(
+            reservation,
+            actor=actor,
+            reason=f"Booking no longer eligible for Remote Analysis: {elig.reason}"[:512],
+        )
+        self._free_workstation(reservation)
+        self._record_metric("reservation_failures", 1, tags={"reason": "booking_ineligible"})
+        return True
+
     @transaction.atomic
     def allocate(self, reservation: AnalysisReservation, *, actor=None) -> AnalysisReservation:
         started = timezone.now()
+        if self.cancel_if_booking_ineligible(reservation, actor=actor):
+            return reservation
         # Missed check-in requeues straight back here; never re-hold a PC for a window that already ended.
         if reservation.requested_end and reservation.requested_end <= started:
             self.reservations.transition(
@@ -298,6 +350,19 @@ class SchedulerService:
         grace = timedelta(minutes=DEFAULT_RESERVATION_GRACE_MINUTES)
         unused = timedelta(minutes=DEFAULT_UNUSED_RESERVATION_MINUTES)
         expired = 0
+        cancelled_ineligible = 0
+
+        # Refunded / cancelled / otherwise ineligible bookings: drop idle holds first.
+        for reservation in AnalysisReservation.objects.filter(
+            status__in=IDLE_HOLD_STATUSES,
+            booking__isnull=False,
+        ).select_related("booking", "booking__equipment", "workstation"):
+            try:
+                with transaction.atomic():
+                    if self.cancel_if_booking_ineligible(reservation):
+                        cancelled_ineligible += 1
+            except Exception:
+                logger.exception("Ineligible-booking sweep failed for reservation %s", reservation.pk)
 
         # Missed start time
         for reservation in AnalysisReservation.objects.filter(
@@ -378,7 +443,7 @@ class SchedulerService:
             self._free_workstation(reservation)
             expired += 1
 
-        return {"expired": expired}
+        return {"expired": expired, "cancelled_ineligible": cancelled_ineligible}
 
     def _free_workstation(self, reservation: AnalysisReservation) -> None:
         ws = reservation.workstation

@@ -1240,7 +1240,18 @@ class BookingRemoteAnalysisService:
 
         minutes = int(getattr(booking.equipment, "analysis_extension_minutes", None) or 15)
         base = session.expires_at if session.expires_at and session.expires_at > timezone.now() else timezone.now()
-        session.expires_at = base + timedelta(minutes=max(1, minutes))
+        new_expires = base + timedelta(minutes=max(1, minutes))
+        if booking.analysis_expiry and new_expires > booking.analysis_expiry:
+            new_expires = booking.analysis_expiry
+            if new_expires <= base:
+                raise SessionError(
+                    "Analysis access for this booking has reached its end time. "
+                    "The session cannot be extended further.",
+                    code="analysis_expired",
+                )
+            minutes = max(1, int((new_expires - base).total_seconds() // 60))
+        self._extend_reservation_for_session(session, new_expires, user=user)
+        session.expires_at = new_expires
         session.save(update_fields=["expires_at", "updated_at"])
         self.audit.log(
             booking,
@@ -1255,6 +1266,32 @@ class BookingRemoteAnalysisService:
             "remaining_seconds": max(0, int((session.expires_at - timezone.now()).total_seconds())),
             "message": "No users are waiting. Your analysis session has been extended.",
         }
+
+    def _extend_reservation_for_session(self, session, new_end, *, user) -> None:
+        """Keep the PC hold covering the session, else the end-of-window sweep frees it mid-session."""
+        from iic_booking.remote_analysis.constants import ReservationStatus
+        from iic_booking.remote_analysis.guacamole.session import SessionError
+        from iic_booking.remote_analysis.services.reservation import ReservationService
+
+        reservation = session.reservation if session.reservation_id else None
+        if reservation is None or reservation.status not in {
+            ReservationStatus.RESERVED,
+            ReservationStatus.PREPARING,
+            ReservationStatus.READY,
+            ReservationStatus.ACTIVE,
+        }:
+            return
+        current_end = reservation.reserved_end or reservation.requested_end
+        if current_end and new_end <= current_end:
+            return
+        try:
+            ReservationService().extend(reservation, new_end, actor=user)
+        except ValueError as exc:
+            raise SessionError(
+                "This Analysis PC is not free after your session (next reservation or maintenance), "
+                "so the session cannot be extended.",
+                code="extension_conflict",
+            ) from exc
 
     def upload_past_data(self, booking, *, user, uploaded_file, folder: str = "RawData") -> dict:
         """Upload extra/past files into workspace RawData and sync to agent Input when possible."""

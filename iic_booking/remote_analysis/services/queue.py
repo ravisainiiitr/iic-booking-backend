@@ -12,7 +12,8 @@ from iic_booking.remote_analysis.services.audit import record_event
 
 class QueueService:
     @transaction.atomic
-    def enqueue(self, reservation: AnalysisReservation) -> ReservationQueue:
+    def enqueue(self, reservation: AnalysisReservation, *, to_back: bool = False) -> ReservationQueue:
+        """``to_back`` drops any earlier queue position (released / missed check-in holds)."""
         entry, created = ReservationQueue.objects.get_or_create(
             reservation=reservation,
             defaults={
@@ -24,7 +25,11 @@ class QueueService:
             entry.status = QueueEntryStatus.WAITING
             entry.priority = reservation.priority
             entry.dequeued_at = None
-            entry.save(update_fields=["status", "priority", "dequeued_at"])
+            update_fields = ["status", "priority", "dequeued_at"]
+            if to_back:
+                entry.enqueued_at = timezone.now()
+                update_fields.append("enqueued_at")
+            entry.save(update_fields=update_fields)
         ReservationAudit.objects.create(
             reservation=reservation,
             action="Queued",
