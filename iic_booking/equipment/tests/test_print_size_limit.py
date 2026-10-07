@@ -335,3 +335,93 @@ def test_booking_and_file_replacement_recheck_the_size(egs_factory, media_tmp, m
     assert "wide.stl is 260 × 30 × 30 mm" in resp.data["error"]
     old.refresh_from_db()
     assert old.booking_id == booking.pk
+
+
+def _limited_printer(egs_factory, monkeypatch, size=220):
+    from iic_booking.users.legacy_ledger import booking_lock
+
+    monkeypatch.setattr(booking_lock, "booking_is_locked", lambda user: (False, ""))
+    monkeypatch.setattr(booking_lock, "department_equipment_booking_blocked", lambda equipment, user: (False, ""))
+    eq = print_equipment(egs_factory)
+    eq.max_print_size_x_mm = eq.max_print_size_y_mm = eq.max_print_size_z_mm = Decimal(size)
+    eq.save()
+    return eq, print_material(eq)
+
+
+def _book_body(slot, **ids):
+    return {
+        "slot_ids": [slot.pk],
+        "start_time": slot.start_datetime.isoformat(),
+        "end_time": slot.end_datetime.isoformat(),
+        "input_values": {},
+        **ids,
+    }
+
+
+@pytest.mark.django_db
+def test_multi_file_booking_names_every_oversized_file(egs_factory, media_tmp, monkeypatch):
+    eq, pla = _limited_printer(egs_factory, monkeypatch)
+    student, _sub = funded_student(egs_factory)
+    batch = PrintAnalysisBatch.objects.create(equipment=eq, user=student, material=pla, status="COMPLETED")
+    print_part(eq, student, pla, name="fine", batch=batch)
+    _oversize_part(eq, student, pla, name="wide", batch=batch, sequence=1)
+    _oversize_part(eq, student, pla, name="long", batch=batch, sequence=2)
+    slot = egs_factory.slot(eq, egs_factory.future(days=2))
+
+    resp = egs_factory.client_for(student).post(
+        f"/api/equipments/{eq.pk}/book/", _book_body(slot, print_analysis_batch_id=str(batch.id)), format="json"
+    )
+    assert resp.status_code == 400
+    error = str(resp.data["error"])
+    assert error.startswith("2 STL files are larger than this printer's maximum print size.")
+    assert "wide.stl is 260 × 30 × 30 mm" in error and "220 × 220 × 220 mm" in error
+    assert not Booking.objects.filter(equipment=eq).exists()
+    batch.refresh_from_db()
+    assert batch.booking_id is None
+
+
+@pytest.mark.django_db
+def test_charge_preview_refuses_an_oversized_part(egs_factory, media_tmp, monkeypatch):
+    eq, pla = _limited_printer(egs_factory, monkeypatch)
+    student, _sub = funded_student(egs_factory)
+    client = egs_factory.client_for(student)
+    huge = _oversize_part(eq, student, pla)
+    fine = print_part(eq, student, pla, name="fine")
+
+    resp = client.get(f"/api/equipments/{eq.pk}/calculate/", {"print_analysis_id": str(huge.id)})
+    assert resp.status_code == 400
+    assert "huge.stl is 260 × 30 × 30 mm" in resp.data["error"]
+    resp = client.get(f"/api/equipments/{eq.pk}/calculate/", {"print_analysis_id": str(fine.id)})
+    assert resp.status_code == 200, resp.data
+
+
+@pytest.mark.django_db
+def test_oic_booking_on_behalf_refuses_an_oversized_part(egs_factory, media_tmp, monkeypatch):
+    eq, pla = _limited_printer(egs_factory, monkeypatch)
+    student, _sub = funded_student(egs_factory)
+    oic = UserFactory(user_type=UserType.MANAGER, department=egs_factory.department, admin_approved=True)
+    EquipmentManager.objects.create(equipment=eq, manager=oic)
+    huge = _oversize_part(eq, oic, pla)
+    slot = egs_factory.slot(eq, egs_factory.future(days=2))
+
+    resp = egs_factory.client_for(oic).post(
+        f"/api/equipments/{eq.pk}/book/",
+        _book_body(slot, print_analysis_id=str(huge.id), user_id=student.pk),
+        format="json",
+    )
+    assert resp.status_code == 400
+    assert "larger than this printer's maximum print size" in str(resp.data)
+    assert not Booking.objects.filter(equipment=eq).exists()
+
+
+@pytest.mark.django_db
+def test_waitlist_never_books_a_3d_printer(egs_factory, media_tmp, monkeypatch):
+    from iic_booking.equipment import waitlist_booking
+
+    eq, _pla = _limited_printer(egs_factory, monkeypatch)
+    student, _sub = funded_student(egs_factory)
+    free = egs_factory.slot(eq, egs_factory.future(days=5))
+    created, err = waitlist_booking.create_booking_for_waitlist_user(eq, student, [free.pk], input_values={"A": 1})
+    assert created is None
+    assert "not available for 3D printing" in err
+    assert not Booking.objects.filter(equipment=eq).exists()

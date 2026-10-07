@@ -261,6 +261,10 @@ def create_booking_for_waitlist_user(
     if getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
         # Laser charges come from uploaded DXF parts, which a waitlist entry does not carry.
         return None, "Waitlist booking is not available for 2D laser cutting. Please book a free slot directly."
+    if getattr(equipment, "profile_type", None) == EquipmentProfileType.PRINT_3D:
+        # A waitlist entry carries no STL files, so the parts could not be priced or checked against the
+        # printer's maximum print size.
+        return None, "Waitlist booking is not available for 3D printing. Please book a free slot directly."
     from iic_booking.users.legacy_ledger.booking_lock import (
         booking_is_locked,
         department_equipment_booking_blocked,

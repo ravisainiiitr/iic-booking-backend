@@ -171,10 +171,14 @@ def analysis_size_mm(analysis) -> Optional[Size3]:
 
 
 def analyses_size_error(equipment, analyses) -> Optional[str]:
-    """First size error among already-analysed STL files (booking creation and file replacement)."""
+    """Size error for already-analysed STL files (booking creation and file replacement), else None.
+
+    Every file is checked; the message names the first one too large and counts the others.
+    """
     limit = equipment_print_size_limit(equipment)
     if limit is None:
         return None
+    messages = []
     for analysis in analyses:
         size = analysis_size_mm(analysis)
         if size is None:
@@ -182,8 +186,12 @@ def analyses_size_error(equipment, analyses) -> Optional[str]:
         name = getattr(analysis, "original_filename", "") or getattr(analysis, "display_part_name", "") or "model.stl"
         message = print_size_error(name, size, limit)
         if message:
-            return message
-    return None
+            messages.append(message)
+    if not messages:
+        return None
+    if len(messages) > 1:
+        return f"{len(messages)} STL files are larger than this printer's maximum print size. {messages[0]}"
+    return messages[0]
 
 
 def print_size_limit_payload(equipment) -> Optional[Dict[str, object]]:
