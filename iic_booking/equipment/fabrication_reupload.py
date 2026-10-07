@@ -147,11 +147,11 @@ def _replace_print_files(booking, actor, *, print_analysis_id, print_analysis_ba
         link_print_analyses_to_booking(booking, print_analysis_obj=analysis)
 
 
-def _replace_laser_files(booking, actor, *, laser_cut_batch_id, now) -> None:
+def _replace_laser_files(booking, actor, *, laser_cut_batch_id, now, own_material) -> None:
     from .fabrication import link_laser_batch_to_booking
 
     _merged, err, batch = merge_laser_booking_into_input_values(
-        booking.equipment, {}, actor, laser_cut_batch_id=laser_cut_batch_id
+        booking.equipment, {}, actor, laser_cut_batch_id=laser_cut_batch_id, own_material=own_material
     )
     if err:
         raise ReuploadError(err)
@@ -160,7 +160,7 @@ def _replace_laser_files(booking, actor, *, laser_cut_batch_id, now) -> None:
     link_laser_batch_to_booking(booking, batch)
 
 
-def _apply_part_updates(booking, part_updates) -> bool:
+def _apply_part_updates(booking, part_updates, *, own_material=False) -> bool:
     """Apply [{analysis_id, part_name?, quantity?, material_id?, units?}] to active parts. Returns True if any."""
     from .laser_cut_views import apply_laser_part_changes
 
@@ -185,7 +185,9 @@ def _apply_part_updates(booking, part_updates) -> bool:
             if not fields:
                 continue
             before = _laser_item_state(analysis)
-            err = apply_laser_part_changes(analysis, fields, equipment=booking.equipment)
+            err = apply_laser_part_changes(
+                analysis, fields, equipment=booking.equipment, own_material=own_material
+            )
             if err:
                 raise ReuploadError(f"{analysis.display_part_name}: {err}")
             changed = changed or before != _laser_item_state(analysis)
@@ -255,11 +257,16 @@ def replace_booking_files(
     previous_rows = file_rows(booking)
     previous_state = fabrication_state_snapshot(booking)
     previous_own = bool(booking.own_material)
+    # The own-material choice in the same request decides whether parts must fit the IIC sheet.
+    requested_own = previous_own if own_material is None else parse_bool(own_material)
+    skip_sheet_fit = requested_own and own_material_available(equipment)
 
     files_replaced = bool(print_analysis_id or print_analysis_batch_id or laser_cut_batch_id)
     if files_replaced:
         if is_laser:
-            _replace_laser_files(booking, actor, laser_cut_batch_id=laser_cut_batch_id, now=now)
+            _replace_laser_files(
+                booking, actor, laser_cut_batch_id=laser_cut_batch_id, now=now, own_material=skip_sheet_fit
+            )
         else:
             _replace_print_files(
                 booking,
@@ -269,7 +276,7 @@ def replace_booking_files(
                 now=now,
             )
 
-    parts_changed = _apply_part_updates(booking, part_updates)
+    parts_changed = _apply_part_updates(booking, part_updates, own_material=skip_sheet_fit)
 
     own_changed = False
     if own_material is not None:
@@ -285,7 +292,11 @@ def replace_booking_files(
         raise ReuploadError("Nothing to change.")
 
     if is_laser:
-        err = validate_laser_analyses(active_laser_analyses_for_booking(booking), require_active_material=False)
+        err = validate_laser_analyses(
+            active_laser_analyses_for_booking(booking),
+            require_active_material=False,
+            own_material=bool(booking.own_material) and own_material_available(equipment),
+        )
         if err:
             raise ReuploadError(err)
     else:

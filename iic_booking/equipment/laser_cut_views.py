@@ -13,7 +13,7 @@ from rest_framework.response import Response
 
 from iic_booking.users.models.user_type import UserType
 
-from .fabrication import default_part_name, parse_quantity
+from .fabrication import default_part_name, parse_quantity, resolve_own_material
 from .fabrication_material_support import NO_MATERIALS_MESSAGE, bookable_material_or_none, bookable_materials
 from .laser_cut_service import UNIT_TO_MM, DxfParseError, analyze_dxf_bytes, bbox_to_mm, sheet_fit_error
 from .models import (
@@ -286,8 +286,10 @@ def laser_cut_batch_detail(request, batch_id):
     return Response(LaserCutBatchSerializer(batch, context={"request": request}).data)
 
 
-def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment) -> str | None:
-    """Apply part_name / quantity / material_id / units from ``data``. Returns an error message or None."""
+def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment, own_material=False) -> str | None:
+    """Apply part_name / quantity / material_id / units from ``data``. Returns an error message or None.
+
+    With ``own_material`` (already resolved against the equipment) the part is not checked against the sheet size."""
     update_fields = ["updated_at"]
     if "part_name" in data:
         analysis.part_name = str(data.get("part_name") or "").strip()[:255]
@@ -327,7 +329,12 @@ def apply_laser_part_changes(analysis: LaserCutAnalysis, data, *, equipment) -> 
         update_fields += ["material", "material_code_snapshot", "sheet_rate_snapshot"]
     # Booking re-checks the fit, so a name/quantity edit on a part whose sheet is too small is still allowed.
     fit_inputs_changed = "material_id" in data or "units" in data
-    if fit_inputs_changed and analysis.material_id and analysis.status == PrintAnalysisStatus.COMPLETED:
+    if (
+        fit_inputs_changed
+        and not own_material
+        and analysis.material_id
+        and analysis.status == PrintAnalysisStatus.COMPLETED
+    ):
         err = sheet_fit_error(analysis.width_mm, analysis.height_mm, analysis.material)
         if err:
             return err
@@ -359,7 +366,9 @@ def laser_cut_analysis_detail(request, analysis_id):
             refresh_laser_batch_status(batch)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-    err = apply_laser_part_changes(analysis, request.data, equipment=analysis.equipment)
+    # The booking form sends own_material while "I will bring my own sheet material" is ticked; booking re-checks.
+    own_material = resolve_own_material(analysis.equipment, request.data.get("own_material"))
+    err = apply_laser_part_changes(analysis, request.data, equipment=analysis.equipment, own_material=own_material)
     if err:
         return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
     analysis.refresh_from_db()

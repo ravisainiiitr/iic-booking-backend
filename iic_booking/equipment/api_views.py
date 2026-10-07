@@ -3121,7 +3121,7 @@ def equipment_calculate(request, pk):
         if pa_err:
             return Response({"error": pa_err}, status=status.HTTP_400_BAD_REQUEST)
     elif getattr(equipment, "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
-        from .fabrication import merge_laser_booking_into_input_values
+        from .fabrication import merge_laser_booking_into_input_values, resolve_own_material
         from .print_3d_views import get_charge_estimate_guest_user
 
         laser_owner = request.user if user_is_authenticated else get_charge_estimate_guest_user()
@@ -3130,6 +3130,7 @@ def equipment_calculate(request, pk):
             input_values,
             laser_owner,
             laser_cut_batch_id=request.query_params.get("laser_cut_batch_id"),
+            own_material=resolve_own_material(equipment, request.query_params.get("own_material")),
         )
         if laser_err:
             return Response({"error": laser_err}, status=status.HTTP_400_BAD_REQUEST)
@@ -4190,6 +4191,7 @@ def _book_equipment_impl(request, pk):
             strip_fabrication_keys(input_values),
             request.user,
             laser_cut_batch_id=request.data.get("laser_cut_batch_id"),
+            own_material=resolve_own_material(equipment, request.data.get("own_material")),
         )
         if laser_err:
             _create_booking_attempt_log(

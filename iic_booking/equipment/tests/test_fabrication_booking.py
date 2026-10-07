@@ -174,6 +174,67 @@ def test_non_fitting_part_can_still_be_renamed_but_not_moved_to_a_small_sheet(eg
 
 
 @pytest.mark.django_db
+def test_oversize_part_is_accepted_when_the_user_brings_own_sheet(egs_factory, media_tmp, no_portal_lock):
+    eq = laser_equipment(egs_factory, own_charge="250")
+    acr = acrylic_3mm(eq)
+    student, _sub = funded_student(egs_factory)
+    client = egs_factory.client_for(student)
+    batch = _upload(client, eq, "huge.dxf", dxf_bytes(rects=((0, 0, 3000, 1500),)), material_id=acr.pk).data
+    assert batch["items"][0]["fit_error"]
+
+    calc = f"/api/equipments/{eq.pk}/calculate/?laser_cut_batch_id={batch['id']}"
+    resp = client.get(calc)
+    assert resp.status_code == 400 and "does not fit" in resp.data["error"]
+    resp = client.get(f"{calc}&own_material=true")
+    assert resp.status_code == 200, resp.data
+
+    slot = egs_factory.slot(eq, egs_factory.future(days=2))
+    resp = client.post(f"/api/equipments/{eq.pk}/book/", _book_body(slot, laser_cut_batch_id=batch["id"]), format="json")
+    assert resp.status_code == 400 and "does not fit" in resp.data["error"]
+    resp = client.post(
+        f"/api/equipments/{eq.pk}/book/",
+        _book_body(slot, laser_cut_batch_id=batch["id"], own_material=True),
+        format="json",
+    )
+    assert resp.status_code in (200, 201), resp.data
+    booking = Booking.objects.get(user=student, equipment=eq)
+    assert booking.own_material and booking.total_charge == Decimal("250")
+
+
+@pytest.mark.django_db
+def test_own_material_flag_is_ignored_for_size_when_the_equipment_does_not_offer_it(
+    egs_factory, media_tmp, no_portal_lock
+):
+    eq = laser_equipment(egs_factory)
+    acr = acrylic_3mm(eq)
+    student, _sub = funded_student(egs_factory)
+    client = egs_factory.client_for(student)
+    batch_id = _upload(client, eq, "huge.dxf", dxf_bytes(rects=((0, 0, 3000, 100),)), material_id=acr.pk).data["id"]
+    slot = egs_factory.slot(eq, egs_factory.future(days=2))
+    resp = client.post(
+        f"/api/equipments/{eq.pk}/book/", _book_body(slot, laser_cut_batch_id=batch_id, own_material=True), format="json"
+    )
+    assert resp.status_code == 400 and "does not fit" in resp.data["error"]
+
+
+@pytest.mark.django_db
+def test_part_can_move_to_a_small_sheet_while_own_material_is_ticked(egs_factory, media_tmp):
+    eq = laser_equipment(egs_factory, own_charge="250")
+    acr = acrylic_3mm(eq)
+    student, _sub = funded_student(egs_factory)
+    client = egs_factory.client_for(student)
+    item = _upload(client, eq, "huge.dxf", dxf_bytes(rects=((0, 0, 3000, 100),))).data["items"][0]
+    url = f"/api/laser-cut-analyses/{item['id']}/"
+
+    resp = client.patch(url, {"material_id": acr.pk}, format="json")
+    assert resp.status_code == 400 and "does not fit" in resp.data["error"]
+    resp = client.patch(url, {"material_id": acr.pk, "own_material": True}, format="json")
+    assert resp.status_code == 200, resp.data
+    # The part still reports the mismatch so the form can re-apply the check if the box is unticked.
+    assert resp.data["material_id"] == acr.pk and resp.data["fit_error"]
+
+
+@pytest.mark.django_db
 def test_unitless_upload_offers_unit_change(egs_factory, media_tmp):
     eq = laser_equipment(egs_factory)
     acrylic_3mm(eq)
@@ -295,6 +356,29 @@ def test_part_quantity_and_own_material_can_change_without_new_files(egs_factory
     assert booking.own_material and booking.total_charge == Decimal("250")
 
     assert _replace(egs_factory, oic, booking, {"own_material": True}).status_code == 400  # nothing to change
+
+
+@pytest.mark.django_db
+def test_replacing_with_oversize_parts_depends_on_own_material(egs_factory, media_tmp):
+    eq, acr, _student, _sub, booking, _old = _booked_laser(egs_factory)
+    oic = UserFactory(user_type=UserType.MANAGER, department=egs_factory.department, admin_approved=True)
+    EquipmentManager.objects.create(equipment=eq, manager=oic)
+
+    batch, big = _new_batch(eq, oic, acr, width="3000", height="1500", name="big")
+    resp = _replace(egs_factory, oic, booking, {"laser_cut_batch_id": str(batch.id)})
+    assert resp.status_code == 400 and "does not fit" in resp.data["error"]
+
+    resp = _replace(egs_factory, oic, booking, {"laser_cut_batch_id": str(batch.id), "own_material": True})
+    assert resp.status_code == 200, resp.data
+    booking.refresh_from_db()
+    big.refresh_from_db()
+    assert booking.own_material and big.booking_id == booking.pk
+
+    # Unticking own material re-applies the sheet check.
+    resp = _replace(egs_factory, oic, booking, {"own_material": False})
+    assert resp.status_code == 400 and "does not fit" in resp.data["error"]
+    booking.refresh_from_db()
+    assert booking.own_material
 
 
 @pytest.mark.django_db

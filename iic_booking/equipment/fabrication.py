@@ -185,9 +185,13 @@ def build_laser_parts(analyses) -> list[dict]:
     return parts
 
 
-def validate_laser_analyses(analyses, *, require_active_material: bool, equipment=None) -> str | None:
+def validate_laser_analyses(
+    analyses, *, require_active_material: bool, equipment=None, own_material: bool = False
+) -> str | None:
     """``require_active_material`` (new bookings): each sheet must be enabled and, when ``equipment`` is
-    given, supported by it. Existing bookings keep the sheets they were booked with."""
+    given, supported by it. Existing bookings keep the sheets they were booked with.
+
+    ``own_material``: the user supplies the sheet, so parts are not checked against the IIC sheet size."""
     from .fabrication_material_support import bookable_materials
     from .laser_cut_service import sheet_fit_error
 
@@ -208,9 +212,10 @@ def validate_laser_analyses(analyses, *, require_active_material: bool, equipmen
             return f"{label}: the selected sheet material is no longer available. Choose another one."
         if bookable_ids is not None and a.material_id not in bookable_ids:
             return f"{label}: the selected sheet material is no longer available on this machine. Choose another one."
-        err = sheet_fit_error(a.width_mm, a.height_mm, a.material)
-        if err:
-            return f"{label}: {err}"
+        if not own_material:
+            err = sheet_fit_error(a.width_mm, a.height_mm, a.material)
+            if err:
+                return f"{label}: {err}"
     return None
 
 
@@ -230,8 +235,10 @@ def active_laser_analyses_for_booking(booking) -> list:
     )
 
 
-def merge_laser_booking_into_input_values(equipment, input_values, user, *, laser_cut_batch_id):
-    """Validate an unlinked laser batch and inject its parts. Returns (input_values, error, batch)."""
+def merge_laser_booking_into_input_values(equipment, input_values, user, *, laser_cut_batch_id, own_material=False):
+    """Validate an unlinked laser batch and inject its parts. Returns (input_values, error, batch).
+
+    ``own_material`` must already be resolved against the equipment (``resolve_own_material``)."""
     from .print_3d_views import print_analysis_actor_owns
 
     if not laser_cut_batch_id:
@@ -252,7 +259,9 @@ def merge_laser_booking_into_input_values(equipment, input_values, user, *, lase
     for a in analyses:
         if a.booking_id:
             return input_values, f"{a.display_part_name} is already linked to a booking.", None
-    err = validate_laser_analyses(analyses, require_active_material=True, equipment=equipment)
+    err = validate_laser_analyses(
+        analyses, require_active_material=True, equipment=equipment, own_material=own_material
+    )
     if err:
         return input_values, err, None
     merged = dict(input_values or {})
