@@ -2724,9 +2724,9 @@ class BookingAdmin(admin.ModelAdmin):
     def readable_inputs(self, obj):
         if obj is None or not obj.pk:
             return '-'
-        from .input_display import booking_input_fields
+        from .input_display import booking_display_values, booking_input_fields
 
-        return _readable_inputs_html(obj.input_values, booking_input_fields(obj))
+        return _readable_inputs_html(booking_display_values(obj), booking_input_fields(obj))
     
     inlines = [DailySlotInline]
     

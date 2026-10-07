@@ -11,6 +11,7 @@ from iic_booking.equipment.fabrication import (
     BOOKED_MINUTES_KEY,
     OWN_MATERIAL_KEY,
     PARTS_KEY,
+    PRINT_WEIGHT_KEY,
     apply_fabrication_to_input_values,
     build_laser_parts,
     inject_print_parts,
@@ -122,7 +123,8 @@ def test_print_quantity_multiplies_material_and_time(egs_factory, media_tmp):
     part = print_part(eq, owner, pla, weight="10.2", minutes=30, quantity=3)
 
     inputs = inject_print_parts({}, [part])
-    assert inputs["A"] == 33  # ceil(10.2) = 11 g each x 3
+    assert inputs[PRINT_WEIGHT_KEY] == 33  # ceil(10.2) = 11 g each x 3
+    assert "A" not in inputs
     assert inputs["C"] == 90
     assert inputs["B"] == "PLA-FDM"
     minutes = TimeCalculationEngine.calculate_time(_cp(eq), inputs, slot_duration_minutes=60)
@@ -142,7 +144,10 @@ def test_print_actual_weight_is_a_total_and_not_multiplied(egs_factory, media_tm
     part.actual_time_minutes = 100
     part.save()
     inputs = inject_print_parts({}, [part])
-    assert (inputs["A"], inputs["C"]) == (40, 100)
+    assert (inputs[PRINT_WEIGHT_KEY], inputs["C"]) == (40, 100)
+    # Actuals are the total of every copy, so Quantity Required does not multiply them either.
+    inputs = inject_print_parts({}, [part], 4)
+    assert (inputs[PRINT_WEIGHT_KEY], inputs["C"]) == (40, 100)
 
 
 @pytest.mark.django_db

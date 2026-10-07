@@ -15,12 +15,13 @@ from django.utils import timezone
 from .fabrication import (
     active_laser_analyses_for_booking,
     active_print_analyses_for_booking,
+    booking_job_quantity,
     inject_print_parts,
     merge_laser_booking_into_input_values,
     own_material_available,
     parse_bool,
     parse_quantity,
-    strip_fabrication_keys,
+    stored_print_input_values,
     validate_laser_analyses,
 )
 from .models import (
@@ -211,18 +212,24 @@ def _apply_part_updates(booking, part_updates, *, own_material=False) -> bool:
     return changed
 
 
-def _check_print_time_fits_slots(booking, analyses) -> None:
+def print_time_exceeds_slots(booking, analyses, job_quantity: int) -> int | None:
+    """Print minutes of ``analyses`` × ``job_quantity`` when they need more than the booked slots, else None."""
     from .booking_cancellation import _booking_slot_duration_minutes
     from .slot_allocation import slot_tolerance_minutes_for, slots_needed_for_analysis_time
 
-    total_time = int(inject_print_parts({}, analyses).get("C") or 0)
+    total_time = int(inject_print_parts({}, analyses, job_quantity).get("C") or 0)
     slot_count = booking.daily_slots.count()
     if total_time <= 0 or slot_count <= 0:
-        return
+        return None
     needed = slots_needed_for_analysis_time(
         total_time, _booking_slot_duration_minutes(booking), slot_tolerance_minutes_for(booking.equipment)
     )
-    if needed > slot_count:
+    return total_time if needed > slot_count else None
+
+
+def _check_print_time_fits_slots(booking, analyses) -> None:
+    total_time = print_time_exceeds_slots(booking, analyses, booking_job_quantity(booking))
+    if total_time is not None:
         raise ReuploadError(
             f"The new files need about {total_time} minutes of printing, which is more than the booked slot(s). "
             "Reduce the quantity or cancel and book more slots."
@@ -304,7 +311,7 @@ def replace_booking_files(
         if not analyses:
             raise ReuploadError("Upload at least one STL file.")
         _check_print_time_fits_slots(booking, analyses)
-        booking.input_values = strip_fabrication_keys(inject_print_parts(booking.input_values, analyses))
+        booking.input_values = stored_print_input_values(booking, analyses)
         booking.save(update_fields=["input_values", "updated_at"])
 
     change = FabricationFileChange.objects.create(

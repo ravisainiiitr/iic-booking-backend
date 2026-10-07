@@ -476,9 +476,9 @@ def _build_email_body(booking, files, attachments, links, *, reason: str, is_las
             if material:
                 lines.append(f"  Material: {material}")
 
-    from .input_display import booking_input_fields, input_summary_lines
+    from .input_display import booking_display_values, booking_input_fields, input_summary_lines
 
-    summary = input_summary_lines(booking.input_values or {}, booking_input_fields(booking))
+    summary = input_summary_lines(booking_display_values(booking), booking_input_fields(booking))
     if summary:
         lines.extend(["", "Booking inputs:"])
         for label, text in summary:

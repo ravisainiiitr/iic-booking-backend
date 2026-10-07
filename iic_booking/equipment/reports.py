@@ -581,9 +581,13 @@ def get_equipment_report_data(
             "user_type_snapshot",
             "total_time_minutes",
             "input_values",
+            "equipment__profile_type",
         )
         .iterator(chunk_size=500)
     )
+    from .fabrication import job_quantity_from_values
+    from .models import FABRICATION_PROFILE_TYPES
+
     for row in served_bookings:
         eid = mode_rollup.get(row["equipment_id"], row["equipment_id"])
         if eid not in user_sets:
@@ -597,7 +601,12 @@ def get_equipment_report_data(
             user_int[eid].add(uid)
         elif _is_external_snapshot(ut):
             user_ext[eid].add(uid)
-        sc = _parse_sample_count_from_input_values(row["input_values"])
+        profile_type = row["equipment__profile_type"]
+        if profile_type in FABRICATION_PROFILE_TYPES:
+            # A is Quantity Required (older 3D print bookings stored the weight there).
+            sc = job_quantity_from_values(profile_type, row["input_values"])
+        else:
+            sc = _parse_sample_count_from_input_values(row["input_values"])
         samples_total[eid] += sc
         if _is_internal_snapshot(ut):
             samples_int[eid] += sc

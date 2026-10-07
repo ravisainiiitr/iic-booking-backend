@@ -1290,12 +1290,17 @@ class ChargeCalculationEngine:
         input_values: Dict[str, Any],
         total_time_minutes: int,
     ) -> Tuple[Decimal, List[Dict[str, Any]]]:
-        """PRINT_3D: material cost (weight × price/gram, or the fixed own-material charge) + machine time cost."""
-        from .fabrication import OWN_MATERIAL_KEY, PARTS_KEY
+        """PRINT_3D: material cost (weight × price/gram, or the fixed own-material charge) + machine time cost.
+        Weight and time are the totals for every file and every copy (Quantity Required)."""
+        from .fabrication import OWN_MATERIAL_KEY, PARTS_KEY, PRINT_WEIGHT_KEY, QUANTITY_MARKER_KEY, parse_bool
         from .models import PrintMaterial
 
         breakdown: List[Dict[str, Any]] = []
-        weight_g = safe_decimal(input_values.get("A", 0))
+        raw_weight = input_values.get(PRINT_WEIGHT_KEY)
+        if raw_weight is None and not parse_bool(input_values.get(QUANTITY_MARKER_KEY)):
+            # Inputs saved before Quantity Required kept the weight in A.
+            raw_weight = input_values.get("A", 0)
+        weight_g = safe_decimal(raw_weight or 0)
         if weight_g > 0:
             weight_g = Decimal(int(math.ceil(float(weight_g))))
         material_code = str(input_values.get("B", "") or "").strip()
@@ -1337,10 +1342,13 @@ class ChargeCalculationEngine:
             for part in parts:
                 part_weight = Decimal(int(part.get("weight_g_total") or 0))
                 qty = int(part.get("quantity") or 1)
+                job_quantity = int(part.get("job_quantity") or 1)
                 if part.get("actual_weight"):
                     weight_text = f"{part_weight} g (actual)"
-                elif qty > 1:
+                elif qty > 1 or job_quantity > 1:
                     weight_text = f"{part.get('weight_g_each')} g × {qty}"
+                    if job_quantity > 1:
+                        weight_text += f" × {job_quantity} sets"
                 else:
                     weight_text = f"{part_weight} g"
                 cost = part_weight * material.price_per_gram
@@ -1387,9 +1395,10 @@ class ChargeCalculationEngine:
                 if not part.get("sheet_rate") or not part.get("area_mm2") or not part.get("sheet_width_mm"):
                     raise ValidationError(f"{name}: choose a sheet material.")
                 qty = int(part.get("quantity") or 1)
+                job_quantity = int(part.get("job_quantity") or 1)
                 cost = laser_part_material_cost(
                     part["area_mm2"],
-                    qty,
+                    qty * job_quantity,
                     part["sheet_width_mm"],
                     part["sheet_height_mm"],
                     part["sheet_rate"],
@@ -1398,9 +1407,10 @@ class ChargeCalculationEngine:
                 sheet_m2 = (
                     safe_decimal(part["sheet_width_mm"]) * safe_decimal(part["sheet_height_mm"]) / Decimal("1000000")
                 ).quantize(Decimal("0.0001"))
+                count_text = f"{qty} × {job_quantity} sets" if job_quantity > 1 else f"{qty}"
                 breakdown.append({
                     "description": (
-                        f"{name}: {area_m2} m² × {qty} of {part.get('material_name') or part.get('material_code')} "
+                        f"{name}: {area_m2} m² × {count_text} of {part.get('material_name') or part.get('material_code')} "
                         f"({sheet_m2} m² sheet @ {_format_rate(part['sheet_rate'])}) = ₹{cost}"
                     ),
                     "amount": float(cost),

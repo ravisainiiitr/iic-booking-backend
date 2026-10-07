@@ -3,12 +3,16 @@
 Per-part details reach the charge engine through reserved input_values keys. They are always
 rebuilt server-side from the linked analyses (never trusted from the client) and are stripped
 before input_values are stored on the booking.
+
+Input A is "Quantity Required": how many times the whole job (every file / part with its own count) is
+made. It multiplies the 3D print weight and time and the laser sheet share. Bookings saved before it carry
+no ``QUANTITY_MARKER_KEY`` and count as quantity 1 (3D print bookings stored the total weight in A).
 """
 
 from __future__ import annotations
 
 import math
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from .models import (
     FABRICATION_PROFILE_TYPES,
@@ -22,9 +26,17 @@ from .models import (
 PARTS_KEY = "_fabrication_parts"
 OWN_MATERIAL_KEY = "_own_material"
 BOOKED_MINUTES_KEY = "_booked_minutes"
-RESERVED_KEYS = (PARTS_KEY, OWN_MATERIAL_KEY, BOOKED_MINUTES_KEY)
+PRINT_WEIGHT_KEY = "_print_weight_g"
+JOB_QUANTITY_KEY = "_job_quantity"
+RESERVED_KEYS = (PARTS_KEY, OWN_MATERIAL_KEY, BOOKED_MINUTES_KEY, PRINT_WEIGHT_KEY, JOB_QUANTITY_KEY)
+
+# Stored with the booking's inputs (not reserved): A holds Quantity Required.
+QUANTITY_MARKER_KEY = "_quantity_in_a"
+QUANTITY_KEY = "A"
+QUANTITY_LABEL = "Quantity Required"
 
 MAX_PART_QUANTITY = 10_000
+MAX_JOB_QUANTITY = 1_000
 
 
 def is_fabrication_equipment(equipment) -> bool:
@@ -75,6 +87,119 @@ def parse_quantity(value) -> int | None:
     return qty
 
 
+def parse_job_quantity(value) -> int | None:
+    """Whole number from 1 to MAX_JOB_QUANTITY (2, 2.0 and "2" are accepted)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = Decimal(str(value).strip())
+        if number != number.to_integral_value():
+            return None
+        qty = int(number)
+    except (InvalidOperation, ValueError, OverflowError):
+        return None
+    if qty < 1 or qty > MAX_JOB_QUANTITY:
+        return None
+    return qty
+
+
+def job_quantity_from_values(profile, input_values) -> int:
+    """Quantity Required of saved / submitted inputs; 1 when missing and for bookings saved before it (their A
+    is the 3D print weight, or another input of an equipment that later moved to a fabrication profile)."""
+    if profile not in FABRICATION_PROFILE_TYPES or not isinstance(input_values, dict):
+        return 1
+    if not parse_bool(input_values.get(QUANTITY_MARKER_KEY)):
+        return 1
+    return parse_job_quantity(input_values.get(QUANTITY_KEY)) or 1
+
+
+def booking_job_quantity(booking) -> int:
+    return job_quantity_from_values(
+        getattr(getattr(booking, "equipment", None), "profile_type", None), getattr(booking, "input_values", None)
+    )
+
+
+def drop_pre_quantity_print_weight(profile, input_values):
+    """A page loaded before Quantity Required sends A = 3D print weight with C = print time; ignore that A so
+    it is neither checked against the Quantity Required limits nor read as a quantity."""
+    if (
+        profile == EquipmentProfileType.PRINT_3D
+        and isinstance(input_values, dict)
+        and "C" in input_values
+        and not parse_bool(input_values.get(QUANTITY_MARKER_KEY))
+    ):
+        return {k: v for k, v in input_values.items() if k not in (QUANTITY_KEY, "B", "C")}
+    return input_values
+
+
+def prepare_new_job_quantity(profile, input_values) -> tuple[dict, str | None]:
+    """Inputs of a new fabrication booking with A set to Quantity Required (default 1). Returns (values, error)."""
+    merged = dict(drop_pre_quantity_print_weight(profile, input_values) or {})
+    raw = merged.get(QUANTITY_KEY)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        qty = 1
+    else:
+        qty = parse_job_quantity(raw)
+        if qty is None:
+            return merged, f"{QUANTITY_LABEL} must be a whole number from 1 to {MAX_JOB_QUANTITY}."
+    merged[QUANTITY_KEY] = qty
+    merged[QUANTITY_MARKER_KEY] = True
+    return merged, None
+
+
+def display_input_values(equipment, input_values):
+    """Inputs as shown and reported: fabrication bookings always show their Quantity Required under A."""
+    profile = getattr(equipment, "profile_type", None)
+    if profile not in FABRICATION_PROFILE_TYPES or not isinstance(input_values, dict):
+        return input_values
+    return {**input_values, QUANTITY_KEY: job_quantity_from_values(profile, input_values)}
+
+
+QUANTITY_FIELD_SPEC = {
+    "field_label": QUANTITY_LABEL,
+    "field_type": "NUMERIC",
+    "is_required": True,
+    "default_value": "1",
+    # NUMERIC help_text: minimum / maximum / step.
+    "help_text": f"1\n{MAX_JOB_QUANTITY}\n1",
+}
+
+
+def _is_quantity_label(label) -> bool:
+    return str(label or "").strip().rstrip(":").strip().lower() == QUANTITY_LABEL.lower()
+
+
+def ensure_fabrication_quantity_inputs(equipment, *, apply: bool = True) -> dict:
+    """Give a 3D print / laser equipment the Quantity Required input (key A) for every user type.
+
+    A user type with its own input rows gets its own A row; every other user type reads the shared rows, so a
+    shared A row is added too. An existing A row is never changed: Quantity Required is left as it is and any
+    other meaning is reported in ``conflicts``. Returns {"created": [user types], "existing": [...],
+    "conflicts": [(user type, field type)]}; ``apply=False`` only reports.
+    """
+    from .models import DynamicInputField
+
+    result = {"created": [], "existing": [], "conflicts": []}
+    if getattr(equipment, "profile_type", None) not in FABRICATION_PROFILE_TYPES:
+        return result
+    rows = list(DynamicInputField.objects.filter(equipment=equipment))
+    user_types = [""] + sorted({r.user_type for r in rows if r.user_type})
+    a_rows = {r.user_type or "": r for r in rows if r.field_key == QUANTITY_KEY}
+    for user_type in user_types:
+        row = a_rows.get(user_type)
+        if row is None:
+            if apply:
+                DynamicInputField.objects.create(
+                    equipment=equipment, user_type=user_type, field_key=QUANTITY_KEY, **QUANTITY_FIELD_SPEC
+                )
+            result["created"].append(user_type)
+        elif _is_quantity_label(row.field_label) and row.field_type == "NUMERIC":
+            result["existing"].append(user_type)
+        else:
+            result["conflicts"].append((user_type, row.field_type))
+    return result
+
+
 def booked_minutes(booking) -> int:
     return sum(
         int((s.end_datetime - s.start_datetime).total_seconds() // 60)
@@ -92,8 +217,10 @@ def _ceil_grams(value) -> int:
     return int(math.ceil(float(value)))
 
 
-def build_print_parts(analyses) -> list[dict]:
-    """Per-file totals. Estimates are multiplied by quantity; staff-entered actuals are totals already."""
+def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
+    """Per-file totals. Estimates are multiplied by the file's copies and the job quantity; staff-entered
+    actuals are the totals of all those copies already."""
+    job_quantity = max(1, int(job_quantity or 1))
     parts = []
     for a in analyses:
         qty = max(1, int(getattr(a, "quantity", 1) or 1))
@@ -101,8 +228,9 @@ def build_print_parts(analyses) -> list[dict]:
         time_each = int(a.estimated_time_minutes or 0)
         has_actual_weight = a.actual_weight_grams is not None
         has_actual_time = a.actual_time_minutes is not None
-        weight_total = _ceil_grams(a.actual_weight_grams) if has_actual_weight else weight_each * qty
-        time_total = int(a.actual_time_minutes) if has_actual_time else time_each * qty
+        copies = qty * job_quantity
+        weight_total = _ceil_grams(a.actual_weight_grams) if has_actual_weight else weight_each * copies
+        time_total = int(a.actual_time_minutes) if has_actual_time else time_each * copies
         parts.append(
             {
                 "kind": "print",
@@ -110,6 +238,7 @@ def build_print_parts(analyses) -> list[dict]:
                 "name": a.display_part_name,
                 "filename": a.original_filename,
                 "quantity": qty,
+                "job_quantity": job_quantity,
                 "weight_g_each": weight_each,
                 "time_min_each": time_each,
                 "weight_g_total": weight_total,
@@ -129,14 +258,17 @@ def print_material_code(analyses) -> str:
     return ""
 
 
-def inject_print_parts(input_values, analyses) -> dict:
+def inject_print_parts(input_values, analyses, job_quantity: int = 1) -> dict:
+    """Total weight (reserved key), B = material code and C = print minutes for all files and copies.
+    A (Quantity Required) is left as it is."""
     merged = dict(input_values or {})
-    parts = build_print_parts(analyses)
-    merged["A"] = sum(p["weight_g_total"] for p in parts)
+    parts = build_print_parts(analyses, job_quantity)
+    merged[PRINT_WEIGHT_KEY] = sum(p["weight_g_total"] for p in parts)
     merged["C"] = sum(p["time_min_total"] for p in parts)
     code = print_material_code(analyses)
     if code:
         merged["B"] = code
+    merged[JOB_QUANTITY_KEY] = max(1, int(job_quantity or 1))
     merged[PARTS_KEY] = parts
     return merged
 
@@ -157,7 +289,19 @@ def active_print_analyses_for_booking(booking) -> list:
 # --------------------------------------------------------------------------- 2D laser cutting
 
 
-def build_laser_parts(analyses) -> list[dict]:
+def stored_print_input_values(booking, analyses) -> dict:
+    """The booking's inputs to store after its files or actuals change: B / C refreshed, A kept as the
+    Quantity Required (bookings saved before it keep the weight in A)."""
+    current = strip_fabrication_keys(dict(booking.input_values or {}))
+    merged = inject_print_parts(current, analyses, booking_job_quantity(booking))
+    if not parse_bool(current.get(QUANTITY_MARKER_KEY)):
+        merged[QUANTITY_KEY] = merged[PRINT_WEIGHT_KEY]
+    return strip_fabrication_keys(merged)
+
+
+def build_laser_parts(analyses, job_quantity: int = 1) -> list[dict]:
+    """``quantity`` is the part's count in one job; the job is made ``job_quantity`` times."""
+    job_quantity = max(1, int(job_quantity or 1))
     parts = []
     for a in analyses:
         m = a.material
@@ -168,6 +312,7 @@ def build_laser_parts(analyses) -> list[dict]:
                 "name": a.display_part_name,
                 "filename": a.original_filename,
                 "quantity": max(1, int(a.quantity or 1)),
+                "job_quantity": job_quantity,
                 "width_mm": str(a.width_mm) if a.width_mm is not None else None,
                 "height_mm": str(a.height_mm) if a.height_mm is not None else None,
                 "area_mm2": str(a.area_mm2) if a.area_mm2 is not None else None,
@@ -264,8 +409,11 @@ def merge_laser_booking_into_input_values(equipment, input_values, user, *, lase
     )
     if err:
         return input_values, err, None
-    merged = dict(input_values or {})
-    merged[PARTS_KEY] = build_laser_parts(analyses)
+    merged, qty_err = prepare_new_job_quantity(EquipmentProfileType.LASER_CUT_2D, input_values)
+    if qty_err:
+        return input_values, qty_err, None
+    merged[PARTS_KEY] = build_laser_parts(analyses, merged[QUANTITY_KEY])
+    merged[JOB_QUANTITY_KEY] = merged[QUANTITY_KEY]
     return merged, None, batch
 
 
@@ -287,12 +435,14 @@ def apply_fabrication_to_input_values(booking, input_values) -> dict:
     if profile not in FABRICATION_PROFILE_TYPES:
         return input_values
     merged = strip_fabrication_keys(dict(input_values or {}))
+    job_quantity = job_quantity_from_values(profile, merged)
     if profile == EquipmentProfileType.PRINT_3D:
         analyses = active_print_analyses_for_booking(booking)
         if analyses:
-            merged = inject_print_parts(merged, analyses)
+            merged = inject_print_parts(merged, analyses, job_quantity)
     else:
-        merged[PARTS_KEY] = build_laser_parts(active_laser_analyses_for_booking(booking))
+        merged[PARTS_KEY] = build_laser_parts(active_laser_analyses_for_booking(booking), job_quantity)
+        merged[JOB_QUANTITY_KEY] = job_quantity
         minutes = booked_minutes(booking) if getattr(booking, "pk", None) else 0
         if minutes > 0:
             merged[BOOKED_MINUTES_KEY] = minutes
@@ -305,14 +455,17 @@ def fabrication_parts_summary(booking) -> list[dict]:
     equipment = getattr(booking, "equipment", None)
     profile = getattr(equipment, "profile_type", None)
     if profile == EquipmentProfileType.PRINT_3D:
-        return build_print_parts(active_print_analyses_for_booking(booking))
+        return build_print_parts(active_print_analyses_for_booking(booking), booking_job_quantity(booking))
     if profile == EquipmentProfileType.LASER_CUT_2D:
-        return build_laser_parts(active_laser_analyses_for_booking(booking))
+        return build_laser_parts(active_laser_analyses_for_booking(booking), booking_job_quantity(booking))
     return []
 
 
 def format_part_line(part: dict) -> str:
     qty = part.get("quantity") or 1
+    job_quantity = int(part.get("job_quantity") or 1)
+    if job_quantity > 1:
+        qty = f"{qty} × {job_quantity} sets"
     if part.get("kind") == "laser":
         size = ""
         if part.get("width_mm") and part.get("height_mm"):

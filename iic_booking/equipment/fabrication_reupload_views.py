@@ -134,9 +134,10 @@ def _state_payload(request, booking):
 
 
 def _new_print_minutes(booking):
-    from .fabrication import active_print_analyses_for_booking, inject_print_parts
+    from .fabrication import active_print_analyses_for_booking, booking_job_quantity, inject_print_parts
 
-    return int(inject_print_parts({}, active_print_analyses_for_booking(booking)).get("C") or 0)
+    analyses = active_print_analyses_for_booking(booking)
+    return int(inject_print_parts({}, analyses, booking_job_quantity(booking)).get("C") or 0)
 
 
 @api_view(["GET", "POST"])

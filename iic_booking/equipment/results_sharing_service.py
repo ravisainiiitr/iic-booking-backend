@@ -107,9 +107,9 @@ def booking_input_summary(booking: Booking) -> list[dict[str, Any]]:
     values = booking.input_values or {}
     if not isinstance(values, dict) or not values:
         return []
-    from .input_display import booking_input_fields, input_summary_items
+    from .input_display import booking_display_values, booking_input_fields, input_summary_items
 
-    return input_summary_items(values, booking_input_fields(booking), max_rows=50)
+    return input_summary_items(booking_display_values(booking), booking_input_fields(booking), max_rows=50)
 
 
 def notify_share_recipient(share: BookingDataShare) -> None:

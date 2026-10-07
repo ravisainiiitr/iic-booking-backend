@@ -356,14 +356,15 @@ def compute_partial_cancel_plan(
     }
 
 
-def _print_item_input_values(analysis) -> dict[str, Any]:
-    """Totals for one STL file, quantity included (A = grams, C = minutes, B = material code)."""
+def _print_item_input_values(analysis, job_quantity: int = 1) -> dict[str, Any]:
+    """Totals for one STL file, its copies and the booking's Quantity Required included
+    (weight = grams, C = minutes, B = material code)."""
     from .fabrication import build_print_parts, print_material_code
 
-    part = build_print_parts([analysis])[0]
+    part = build_print_parts([analysis], job_quantity)[0]
     inputs: dict[str, Any] = {}
     if analysis.weight_grams is not None or analysis.actual_weight_grams is not None:
-        inputs["A"] = int(part["weight_g_total"])
+        inputs["weight"] = int(part["weight_g_total"])
     if analysis.estimated_time_minutes is not None or analysis.actual_time_minutes is not None:
         inputs["C"] = int(part["time_min_total"])
     material_code = print_material_code([analysis])
@@ -394,17 +395,18 @@ def _sum_print_items_charge(
     items: list,
 ) -> tuple[Decimal, list]:
     """Charge for a set of STL files priced together (per-part lines, own-material fixed charge once)."""
-    from .fabrication import OWN_MATERIAL_KEY, inject_print_parts, own_material_available
+    from .fabrication import OWN_MATERIAL_KEY, booking_job_quantity, inject_print_parts, own_material_available
 
+    job_quantity = booking_job_quantity(booking)
     usable = []
     for item in items:
-        inputs = _print_item_input_values(item)
-        if int(inputs.get("C") or 0) <= 0 or not inputs.get("B") or not inputs.get("A"):
+        inputs = _print_item_input_values(item, job_quantity)
+        if int(inputs.get("C") or 0) <= 0 or not inputs.get("B") or not inputs.get("weight"):
             continue
         usable.append(item)
     if not usable:
         return Decimal("0.00"), []
-    inputs = inject_print_parts({}, usable)
+    inputs = inject_print_parts({}, usable, job_quantity)
     inputs[OWN_MATERIAL_KEY] = bool(getattr(booking, "own_material", False)) and own_material_available(
         booking.equipment
     )
@@ -453,13 +455,16 @@ def compute_partial_cancel_print_items(
             "To cancel all print files, cancel the entire booking instead."
         )
 
+    from .fabrication import PRINT_WEIGHT_KEY, QUANTITY_MARKER_KEY, booking_job_quantity, parse_bool
+
     remaining = [item for item in active_items if str(item.id) not in cancel_ids]
+    job_quantity = booking_job_quantity(booking)
     total_weight = 0
     total_time = 0
     material_code = ""
     for item in remaining:
-        inputs = _print_item_input_values(item)
-        total_weight += int(inputs.get("A") or 0)
+        inputs = _print_item_input_values(item, job_quantity)
+        total_weight += int(inputs.get("weight") or 0)
         total_time += int(inputs.get("C") or 0)
         if not material_code:
             material_code = str(inputs.get("B") or "")
@@ -475,7 +480,9 @@ def compute_partial_cancel_print_items(
     previous_charge = Decimal(str(booking.total_charge or "0")) - active_material_charges_total(booking)
 
     new_input_values = dict(booking.input_values or {})
-    new_input_values["A"] = int(total_weight)
+    if not parse_bool(new_input_values.get(QUANTITY_MARKER_KEY)):
+        # Saved before Quantity Required: A is the weight.
+        new_input_values["A"] = int(total_weight)
     new_input_values["C"] = total_time
     if material_code:
         new_input_values["B"] = material_code
@@ -507,7 +514,9 @@ def compute_partial_cancel_print_items(
         new_charge = max(Decimal("0.00"), (previous_charge - refund_amount).quantize(Decimal("0.01")))
     else:
         try:
-            safe_inputs = build_safe_input_values_for_charge_calculation(new_input_values, equipment=booking.equipment)
+            safe_inputs = build_safe_input_values_for_charge_calculation(
+                {**new_input_values, PRINT_WEIGHT_KEY: int(total_weight)}, equipment=booking.equipment
+            )
             base_charge, breakdown = ChargeCalculationEngine.calculate_charge(
                 cp_proxy,
                 safe_inputs,
@@ -920,9 +929,10 @@ def perform_booking_cancellation(
                 "booking inputs and charge revised (no slots released)."
             )
         if partial_plan.get("new_input_values"):
+            from .fabrication import display_input_values
             from .input_display import booking_input_fields, input_summary_lines
 
-            revised = partial_plan["new_input_values"]
+            revised = display_input_values(booking.equipment, partial_plan["new_input_values"])
             fields = booking_input_fields(booking)
             known = {f["field_key"] for f in fields}
             parts = [

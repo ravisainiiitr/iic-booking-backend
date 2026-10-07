@@ -2739,6 +2739,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             equipment = Equipment.objects.create(**validated_data)
             _create_related(equipment, inlines, actor=actor)
             _sync_mode_flags_after_save(equipment, None, actor)
+            _add_fabrication_quantity_input(equipment, None)
         return equipment
 
     def update(self, instance, validated_data):
@@ -2756,13 +2757,25 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             inlines['param_definitions'] = inlines['slot_options']
         inlines.pop('slot_options', None)
         old_parent_id = instance.parent_equipment_id
+        old_profile_type = instance.profile_type
         with transaction.atomic():
             for attr, value in validated_data.items():
                 setattr(instance, attr, value)
             instance.save()
             _sync_related(instance, inlines, actor=actor)
             _sync_mode_flags_after_save(instance, old_parent_id, actor)
+            _add_fabrication_quantity_input(instance, old_profile_type)
         return instance
+
+
+def _add_fabrication_quantity_input(equipment, old_profile_type):
+    """An equipment created as, or switched to, 3D printing / laser cutting gets Quantity Required (A).
+    Saving it again does not bring the input back once the Officer In Charge removes it."""
+    if old_profile_type in FABRICATION_PROFILE_TYPES or equipment.profile_type not in FABRICATION_PROFILE_TYPES:
+        return
+    from .fabrication import ensure_fabrication_quantity_inputs
+
+    ensure_fabrication_quantity_inputs(equipment)
 
 
 def _sync_mode_flags_after_save(equipment, old_parent_id, actor):
@@ -3502,6 +3515,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     print_analyses = serializers.SerializerMethodField()
     laser_cut_analyses = serializers.SerializerMethodField()
     fabrication_parts = serializers.SerializerMethodField()
+    fabrication_quantity = serializers.SerializerMethodField()
     fabrication_file_changes = serializers.SerializerMethodField()
     fabrication_files_replaceable = serializers.SerializerMethodField()
     fabrication_workflow = serializers.SerializerMethodField()
@@ -3509,6 +3523,22 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
 
     def _is_fabrication(self, obj) -> bool:
         return getattr(getattr(obj, "equipment", None), "profile_type", None) in FABRICATION_PROFILE_TYPES
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if self._is_fabrication(instance) and isinstance(data.get("input_values"), dict):
+            from .fabrication import display_input_values
+
+            data["input_values"] = display_input_values(instance.equipment, data["input_values"])
+        return data
+
+    def get_fabrication_quantity(self, obj):
+        """Quantity Required (input A) of a 3D print / laser booking; 1 for bookings made before it."""
+        if not self._is_fabrication(obj):
+            return None
+        from .fabrication import booking_job_quantity
+
+        return booking_job_quantity(obj)
 
     def get_print_analyses(self, obj):
         if getattr(getattr(obj, "equipment", None), "profile_type", None) == EquipmentProfileType.LASER_CUT_2D:
@@ -3753,6 +3783,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'own_material',
             'own_material_fixed_charge',
             'fabrication_parts',
+            'fabrication_quantity',
             'fabrication_file_changes',
             'fabrication_files_replaceable',
             'fabrication_workflow',
@@ -4088,7 +4119,9 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             else:
                 fields = qs.filter(user_type="").order_by("field_key")
             cache[cache_key] = [self._build_input_field_item(f) for f in fields]
-        result = list(cache[cache_key])
+        from .input_display import with_fabrication_quantity_field
+
+        result = list(with_fabrication_quantity_field(getattr(obj, "equipment", None), cache[cache_key]))
         # Universal free-text comments field must be shown as the last input.
         result.append(_comments_input_field_schema())
         return result

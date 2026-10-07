@@ -1,0 +1,55 @@
+# Give every 3D print / 2D laser cutting equipment the "Quantity Required" input (key A) for all user types.
+# Dry run by default (it lists each equipment's inputs and charge profile formulas, so it is also the read-only
+# probe); apply needs confirm=FAB-QUANTITY. Existing A inputs are never changed. Output has equipment ids,
+# codes, user types, labels, formulas and counts only.
+name: Add Fabrication Quantity Input
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply]
+      confirm:
+        description: "Type FAB-QUANTITY for apply"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          FQ_ACTION: ${{ inputs.action }}
+          FQ_CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          ARGS=()
+          case "$FQ_ACTION" in
+            dry-run) ;;
+            apply)
+              [[ "$FQ_CONFIRM" == "FAB-QUANTITY" ]] || { echo "confirm=FAB-QUANTITY is required"; exit 1; }
+              ARGS+=(--apply) ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" \
+                python manage.py add_fabrication_quantity_input "${ARGS[@]}"
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

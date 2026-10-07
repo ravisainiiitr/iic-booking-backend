@@ -349,6 +349,25 @@ def input_summary_lines(values: Any, fields: Iterable[dict], *, max_rows: Option
     ]
 
 
+def with_fabrication_quantity_field(equipment: Any, items: list[dict]) -> list[dict]:
+    """3D print / laser equipment always shows Quantity Required under A, even without that input row."""
+    from .fabrication import QUANTITY_KEY, QUANTITY_LABEL
+    from .models import FABRICATION_PROFILE_TYPES
+
+    if getattr(equipment, "profile_type", None) not in FABRICATION_PROFILE_TYPES:
+        return items
+    if any(i.get("field_key") == QUANTITY_KEY for i in items):
+        return items
+    return [{"field_key": QUANTITY_KEY, "field_label": QUANTITY_LABEL, "field_type": "NUMERIC"}, *items]
+
+
+def booking_display_values(booking: Any) -> dict:
+    """Stored inputs as shown and reported (a fabrication booking's A is its Quantity Required, 1 if missing)."""
+    from .fabrication import display_input_values
+
+    return display_input_values(getattr(booking, "equipment", None), getattr(booking, "input_values", None) or {})
+
+
 def booking_input_fields(booking: Any, *, cache: Optional[dict] = None) -> list[dict]:
     """Field definitions for a booking's user type (snapshot, charge profile, then the user's type)."""
     user_type = (
@@ -356,14 +375,15 @@ def booking_input_fields(booking: Any, *, cache: Optional[dict] = None) -> list[
         or (getattr(getattr(booking, "charge_profile", None), "user_type", None) or "").strip()
         or (getattr(getattr(booking, "user", None), "user_type", None) or "").strip()
     )
-    return equipment_field_items(getattr(booking, "equipment_id", None), user_type, cache=cache)
+    items = equipment_field_items(getattr(booking, "equipment_id", None), user_type, cache=cache)
+    return with_fabrication_quantity_field(getattr(booking, "equipment", None), items)
 
 
 def booking_input_summary_text(booking: Any, *, separator: str = " | ", max_rows: Optional[int] = 20,
                                cache: Optional[dict] = None, include_comments: bool = True) -> str:
     """"Label: value | Label: value" for a booking's inputs."""
     lines = input_summary_lines(
-        getattr(booking, "input_values", None) or {}, booking_input_fields(booking, cache=cache),
+        booking_display_values(booking), booking_input_fields(booking, cache=cache),
         max_rows=max_rows, include_comments=include_comments,
     )
     return separator.join(f"{label}: {text}" for label, text in lines)

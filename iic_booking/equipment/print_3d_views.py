@@ -27,7 +27,15 @@ from .models import (
     PrintAnalysisStatus,
     PrintMaterial,
 )
-from .fabrication import default_part_name, inject_print_parts, parse_quantity, strip_fabrication_keys
+from .fabrication import (
+    QUANTITY_KEY,
+    default_part_name,
+    inject_print_parts,
+    parse_quantity,
+    prepare_new_job_quantity,
+    stored_print_input_values,
+    strip_fabrication_keys,
+)
 from .fabrication_material_support import NO_MATERIALS_MESSAGE, bookable_material_or_none, bookable_materials
 from .print_3d_service import (
     analyze_stl_file,
@@ -893,7 +901,7 @@ def merge_print_booking_into_input_values(
         if err:
             return input_values, err
 
-        return inject_print_parts(strip_fabrication_keys(input_values), items), None
+        return _inject_new_print_job(input_values, items)
 
     if print_analysis_id:
         return merge_print_analysis_into_input_values(
@@ -934,7 +942,14 @@ def merge_print_analysis_into_input_values(equipment, analysis_id, input_values,
     if err:
         return input_values, err
 
-    return inject_print_parts(strip_fabrication_keys(input_values), [analysis]), None
+    return _inject_new_print_job(input_values, [analysis])
+
+
+def _inject_new_print_job(input_values, analyses):
+    merged, err = prepare_new_job_quantity(EquipmentProfileType.PRINT_3D, strip_fabrication_keys(input_values))
+    if err:
+        return input_values, err
+    return inject_print_parts(merged, analyses, merged[QUANTITY_KEY]), None
 
 
 def link_print_analyses_to_booking(
@@ -1140,12 +1155,7 @@ def update_booking_print_actuals(request, booking_id):
                 update_fields.append("actual_time_minutes")
             analysis.save(update_fields=update_fields)
 
-            booking.input_values = strip_fabrication_keys(
-                inject_print_parts(
-                    strip_fabrication_keys(dict(booking.input_values or {})),
-                    active_print_analyses_for_booking(booking),
-                )
-            )
+            booking.input_values = stored_print_input_values(booking, active_print_analyses_for_booking(booking))
             booking.save(update_fields=["input_values", "updated_at"])
 
             # Actuals are a pricing input: re-price whenever they change the charge. Re-saving actuals that are

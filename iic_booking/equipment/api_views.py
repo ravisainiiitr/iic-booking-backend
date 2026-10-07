@@ -3082,7 +3082,10 @@ def equipment_calculate(request, pk):
             input_values[elements_key] = elements_val
 
     from .calculators import normalize_periodic_table_billable_counts
+    from .fabrication import drop_pre_quantity_print_weight
+
     input_values = normalize_periodic_table_billable_counts(equipment, input_values)
+    input_values = drop_pre_quantity_print_weight(getattr(equipment, "profile_type", None), input_values)
 
     numeric_limit_error = _validate_dynamic_numeric_input_limits(
         equipment, input_values, booking_user=booking_user, user_type=user_type
@@ -15592,6 +15595,25 @@ def update_booking_input_values(request, booking_id):
     sample_sets_submitted = SAMPLE_SETS_KEY in raw
     raw_sample_sets = raw.pop(SAMPLE_SETS_KEY, None)
 
+    from .fabrication import (
+        MAX_JOB_QUANTITY,
+        QUANTITY_KEY,
+        QUANTITY_LABEL,
+        QUANTITY_MARKER_KEY,
+        job_quantity_from_values,
+        parse_job_quantity,
+    )
+    from .fabrication import parse_bool as fabrication_flag
+    from .models import FABRICATION_PROFILE_TYPES
+
+    profile_type = getattr(equipment, "profile_type", None)
+    is_fabrication = profile_type in FABRICATION_PROFILE_TYPES
+    raw.pop(QUANTITY_MARKER_KEY, None)
+    if is_fabrication and QUANTITY_KEY in raw and not fabrication_flag(current.get(QUANTITY_MARKER_KEY)):
+        # Saved before Quantity Required: its A is shown as quantity 1, so 1 means "unchanged".
+        if parse_job_quantity(raw[QUANTITY_KEY]) == 1:
+            raw.pop(QUANTITY_KEY)
+
     # Clients often send the full input_values object; only block changes to non-editable keys.
     disallowed_keys = []
     for key, value in raw.items():
@@ -15625,6 +15647,33 @@ def update_booking_input_values(request, booking_id):
             del current[key]
         elif cleaned is not None:
             current[key] = cleaned
+
+    if is_fabrication and QUANTITY_KEY in raw:
+        new_job_quantity = parse_job_quantity(current.get(QUANTITY_KEY))
+        if new_job_quantity is None:
+            return Response(
+                {"error": f"{QUANTITY_LABEL} must be a whole number from 1 to {MAX_JOB_QUANTITY}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        current[QUANTITY_KEY] = new_job_quantity
+        current[QUANTITY_MARKER_KEY] = True
+        if (
+            profile_type == EquipmentProfileType.PRINT_3D
+            and new_job_quantity != job_quantity_from_values(profile_type, booking.input_values)
+        ):
+            from .fabrication import active_print_analyses_for_booking
+            from .fabrication_reupload import print_time_exceeds_slots
+
+            too_long = print_time_exceeds_slots(booking, active_print_analyses_for_booking(booking), new_job_quantity)
+            if too_long is not None:
+                return Response(
+                    {
+                        "error": f"{QUANTITY_LABEL} {new_job_quantity} needs about {too_long} minutes of printing, "
+                        f"which is more than the booked slot(s). Reduce the {QUANTITY_LABEL} or cancel and book "
+                        "more slots."
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
     from .calculators import normalize_periodic_table_billable_counts
     current = normalize_periodic_table_billable_counts(equipment, current)
