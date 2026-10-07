@@ -1,0 +1,79 @@
+# Read-only, counts and ids only (no names, emails or file names): per 3D print equipment, whether a maximum
+# print size is set, whether its specification rows mention a bed / build size, and how many booked STL parts
+# are larger than the current limit (rotation rule and 0.5 mm allowance), plus 3D print bookings without STL
+# analyses and open waitlist entries on 3D printers.
+name: Probe Print Size Limits
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from iic_booking.equipment.models import (
+              Booking, Equipment, EquipmentProfileType, EquipmentSpecification, PrintAnalysis, WaitlistEntry,
+          )
+          from iic_booking.equipment.print_size_limit import analysis_size_mm, equipment_print_size_limit, fits_print_size
+
+          SIZE_KEY = re.compile(r"bed|build|print\s*(size|area|volume)|volume|dimension|max", re.I)
+          NUMS = re.compile(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*[x×\*]\s*(\d+(?:\.\d+)?)\s*(?:mm)?\s*[x×\*]\s*(\d+(?:\.\d+)?)", re.I)
+          printers = Equipment.objects.filter(profile_type=EquipmentProfileType.PRINT_3D).order_by("pk")
+          print(f"printers_total={printers.count()}")
+          status_counts = Counter()
+          no_limit = []
+          for eq in printers:
+              limit = equipment_print_size_limit(eq)
+              axes_set = sum(1 for a in "xyz" if getattr(eq, f"max_print_size_{a}_mm", None))
+              specs = list(EquipmentSpecification.objects.filter(equipment=eq).values_list("spec_key", "spec_value"))
+              size_specs = [(k, v) for k, v in specs if SIZE_KEY.search(k or "")]
+              parsed = [NUMS.search(v or "") for _k, v in size_specs]
+              parsed = [tuple(float(x) for x in m.groups()) for m in parsed if m]
+              desc_xyz = NUMS.search(eq.description or "")
+              analyses = PrintAnalysis.objects.filter(equipment=eq, booking__isnull=False)
+              over = []
+              if limit is not None:
+                  for a in analyses.only("pk", "bounding_box", "booking_id"):
+                      size = analysis_size_mm(a)
+                      if size is not None and not fits_print_size(size, limit):
+                          over.append(a.booking_id)
+              bookings = Booking.objects.filter(equipment=eq)
+              no_stl = bookings.filter(print_analysis__isnull=True, print_analysis_batch__isnull=True).count()
+              waitlist = WaitlistEntry.objects.filter(equipment=eq).count()
+              status_counts[(eq.status, limit is not None)] += 1
+              if limit is None:
+                  no_limit.append(eq.pk)
+              print(
+                  f"  eq={eq.pk} status={eq.status} test_only={getattr(eq, 'visible_to_test_accounts_only', None)} "
+                  f"limit_axes_set={axes_set} rotation={getattr(eq, 'allow_print_rotation_to_fit', None)} "
+                  f"limit={(limit.as_tuple() if limit else None)} spec_rows={len(specs)} size_spec_rows={len(size_specs)} "
+                  f"size_spec_keys={[k for k, _v in size_specs]} size_spec_xyz={parsed} description_has_xyz={bool(desc_xyz)} "
+                  f"bookings={bookings.count()} bookings_without_stl={no_stl} booked_parts={analyses.count()} "
+                  f"booked_parts_over_limit={len(over)} over_limit_booking_ids={sorted(set(over))} waitlist_entries={waitlist}"
+              )
+          print(f"printers_without_limit={len(no_limit)} ids={no_limit}")
+          print(f"by_status_and_limit={dict(status_counts)}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
