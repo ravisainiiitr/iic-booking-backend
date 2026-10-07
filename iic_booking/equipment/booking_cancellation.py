@@ -336,6 +336,9 @@ def compute_partial_cancel_plan(
         new_charge, new_breakdown = _finalize_charge_for_booking(booking, base_charge, breakdown)
     except Exception as e:
         raise CancellationValidationError(f"Could not calculate charge for revised booking: {e}") from e
+    from .own_material_charges import add_material_charges
+
+    new_charge, new_breakdown = add_material_charges(booking, new_charge, new_breakdown)
 
     refund_amount = max(Decimal("0.00"), (previous_charge - new_charge).quantize(Decimal("0.01")))
     refund_amount, pending_after = net_refund_against_unpaid_extra(booking, refund_amount)
@@ -466,7 +469,10 @@ def compute_partial_cancel_print_items(
 
     slot_dur = _booking_slot_duration_minutes(booking)
     cp_proxy = _charge_profile_proxy(booking)
-    previous_charge = Decimal(str(booking.total_charge or "0"))
+    from .own_material_charges import active_material_charges_total, add_material_charges
+
+    # IIC material charges stay with the booking; only the print files' share is prorated and refunded.
+    previous_charge = Decimal(str(booking.total_charge or "0")) - active_material_charges_total(booking)
 
     new_input_values = dict(booking.input_values or {})
     new_input_values["A"] = int(total_weight)
@@ -514,6 +520,7 @@ def compute_partial_cancel_print_items(
                 f"Could not calculate charge for revised booking: {e}"
             ) from e
         refund_amount = max(Decimal("0.00"), (previous_charge - new_charge).quantize(Decimal("0.01")))
+    new_charge, new_breakdown = add_material_charges(booking, new_charge, new_breakdown)
     refund_amount, pending_after = net_refund_against_unpaid_extra(booking, refund_amount)
 
     return {

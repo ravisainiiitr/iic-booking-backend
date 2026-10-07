@@ -15351,6 +15351,9 @@ def _recalculate_booking_charge_and_adjust_wallet(
             charge_breakdown = list(charge_breakdown) + [
                 {"description": f"GST ({gst_percent}%)", "amount": float(gst_amount)},
             ]
+    from .own_material_charges import add_material_charges
+
+    new_charge, charge_breakdown = add_material_charges(booking, new_charge, charge_breakdown)
     refund_txn = None
     with transaction.atomic():
         # Read the charge state under a row lock so concurrent edits net against the same baseline.
@@ -16132,6 +16135,31 @@ def process_charge_recalculation_refund(request, booking_id):
         status=status.HTTP_200_OK,
     )
 
+def _debit_charge_recalculation_extra(booking, wallet_target, amount, description, *, locked_check=None):
+    """Debit the pending extra amount of ``booking`` (Pay Now / Deduct Money) and clear it.
+
+    Must run inside a transaction. Raises ValueError when the pending amount changed, the payment window
+    is over, ``locked_check`` fails or the wallet balance is insufficient.
+    """
+    from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit
+    from .input_edit_payment_window import clear_payment_window, payment_window_expired
+
+    locked = Booking.objects.select_for_update().get(pk=booking.pk)
+    if locked.charge_recalculation_pending_amount != amount or payment_window_expired(locked):
+        raise ValueError("The amount to pay has changed or the time to pay has passed. Please refresh the booking.")
+    if locked_check is not None:
+        locked_check()
+    txn = wallet_target.debit(
+        amount=amount,
+        description=description,
+        related_user=booking.user,
+        minimum_balance_after=subwallet_minimum_balance_after_debit(wallet_target),
+    )
+    booking.charge_recalculation_pending_amount = None
+    booking.save(update_fields=["charge_recalculation_pending_amount"] + clear_payment_window(booking))
+    return txn
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def process_charge_recalculation_pay_now(request, booking_id):
@@ -16140,7 +16168,7 @@ def process_charge_recalculation_pay_now(request, booking_id):
     """
     from iic_booking.users.repositories.wallet_repository import WalletRepository
     from iic_booking.communication.wallet_notifications import send_sub_wallet_transaction_notifications
-    from .input_edit_payment_window import clear_payment_window, expire_unpaid_input_edit, payment_window_expired
+    from .input_edit_payment_window import expire_unpaid_input_edit
 
     try:
         booking = Booking.objects.select_related("equipment", "user").get(booking_id=booking_id)
@@ -16203,32 +16231,25 @@ def process_charge_recalculation_pay_now(request, booking_id):
             return Response(
                 {"error": limit_err, "code": SPENDING_LIMIT_ERROR_CODE}, status=status.HTTP_400_BAD_REQUEST
             )
+    def _locked_limit_check():
+        if not enforce_limit:
+            return
+        limit_err = spending_limit_error(
+            booking.user,
+            wallet_target,
+            amount,
+            attribution_at=booking.created_at,
+            charge_label="additional charge",
+            lock=True,
+        )
+        if limit_err:
+            raise ValueError(limit_err)
+
     try:
         with transaction.atomic():
-            from iic_booking.users.wallet_credit_facility import subwallet_minimum_balance_after_debit
-
-            locked = Booking.objects.select_for_update().get(pk=booking.pk)
-            if locked.charge_recalculation_pending_amount != amount or payment_window_expired(locked):
-                raise ValueError("The amount to pay has changed or the time to pay has passed. Please refresh the booking.")
-            if enforce_limit:
-                limit_err = spending_limit_error(
-                    booking.user,
-                    wallet_target,
-                    amount,
-                    attribution_at=booking.created_at,
-                    charge_label="additional charge",
-                    lock=True,
-                )
-                if limit_err:
-                    raise ValueError(limit_err)
-            txn = wallet_target.debit(
-                amount=amount,
-                description=description,
-                related_user=booking.user,
-                minimum_balance_after=subwallet_minimum_balance_after_debit(wallet_target),
+            txn = _debit_charge_recalculation_extra(
+                booking, wallet_target, amount, description, locked_check=_locked_limit_check
             )
-            booking.charge_recalculation_pending_amount = None
-            booking.save(update_fields=["charge_recalculation_pending_amount"] + clear_payment_window(booking))
             send_sub_wallet_transaction_notifications(transaction=txn, booking=booking)
     except ValueError as e:
         return Response(

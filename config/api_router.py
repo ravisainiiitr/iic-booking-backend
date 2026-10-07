@@ -257,6 +257,11 @@ from iic_booking.equipment.print_3d_views import (
     update_booking_print_actuals,
     update_print_analysis_part,
 )
+from iic_booking.equipment.own_material_charges import (
+    booking_material_charge_preview,
+    booking_material_charges,
+    reverse_booking_material_charge,
+)
 from iic_booking.equipment.laser_cut_views import (
     download_laser_cut_dxf,
     equipment_analyze_dxf,
@@ -1576,6 +1581,17 @@ urlpatterns = router.urls + [
         name="update-booking-atmosphere-sensitive-sample",
     ),
     path("bookings/<int:booking_id>/print-actuals/", update_booking_print_actuals, name="update-booking-print-actuals"),
+    path("bookings/<int:booking_id>/material-charges/", booking_material_charges, name="booking-material-charges"),
+    path(
+        "bookings/<int:booking_id>/material-charges/preview/",
+        booking_material_charge_preview,
+        name="booking-material-charge-preview",
+    ),
+    path(
+        "bookings/<int:booking_id>/material-charges/<int:charge_id>/reverse/",
+        reverse_booking_material_charge,
+        name="reverse-booking-material-charge",
+    ),
     path("bookings/<int:booking_id>/rate/", rate_booking, name="rate-booking"),
     path("bookings/<int:booking_id>/rating/remove/", remove_booking_rating, name="remove-booking-rating"),
     path("bookings/<int:booking_id>/process-charge-recalculation-refund/", process_charge_recalculation_refund, name="process-charge-recalculation-refund"),

@@ -4747,6 +4747,51 @@ class BookingEvent(models.Model):
         return f"Event #{self.event_id} - {self.get_event_type_display()} - Booking #{self.booking.booking_id}"
 
 
+class BookingMaterialCharge(models.Model):
+    """IIC material used on an own-material fabrication booking (the user's material was not enough).
+
+    Each row is one charge posted by the Officer In Charge or the Main Administrator. Active (not reversed)
+    rows are part of the booking's total charge; every recalculation adds them back.
+    """
+
+    booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name="material_charges")
+    profile_type = models.CharField(max_length=32, help_text=_("PRINT_3D or LASER_CUT_2D at the time of the charge"))
+    print_material = models.ForeignKey(
+        PrintMaterial, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    laser_material = models.ForeignKey(
+        LaserSheetMaterial, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    material_code = models.CharField(max_length=64)
+    material_name = models.CharField(max_length=255)
+    quantity = models.DecimalField(max_digits=12, decimal_places=3)
+    unit = models.CharField(max_length=16, help_text=_('"sheet" or "g"'))
+    unit_price = models.DecimalField(max_digits=12, decimal_places=4)
+    base_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal("0.00"))
+    gst_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal("0.00"))
+    computed_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, help_text=_("Amount charged (GST included)"))
+    amount_overridden = models.BooleanField(default=False)
+    reason = models.TextField()
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+    wallet_transaction_id = models.PositiveBigIntegerField(
+        null=True, blank=True, help_text=_("Wallet debit made when the charge was posted, if any")
+    )
+    reversed_at = models.DateTimeField(null=True, blank=True)
+    reversed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    reversal_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+        verbose_name = _("Booking material charge")
+        verbose_name_plural = _("Booking material charges")
+
+    def __str__(self):
+        return f"Booking #{self.booking_id}: {self.material_name} × {self.quantity} {self.unit}"
+
+
 class BookingSlotRange(models.Model):
     """Booking's slot time range captured when its slots were last released.
 
