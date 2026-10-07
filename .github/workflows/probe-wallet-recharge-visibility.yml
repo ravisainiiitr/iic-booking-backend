@@ -71,6 +71,10 @@ jobs:
           internal = Department.objects.filter(department_type=DepartmentType.INTERNAL)
           print(f"  recharge_departments={base.count()} with_student_flag={base.filter(enable_student_wallet_recharge=True).count()}")
           print(f"  internal_departments={internal.count()} internal_with_student_flag={internal.filter(enable_student_wallet_recharge=True).count()}")
+          base_ids = set(base.values_list("id", flat=True))
+          for did, states in sorted(rows.items()):
+              off = sorted(str(o) for o, v in states.items() if v == "disabled")
+              print(f"  override dept_id={did} recharge_department={did in base_ids} disabled={off}")
 
           print("== Faculty legacy wallet sync window ==")
           try:
