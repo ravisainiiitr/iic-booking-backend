@@ -1,0 +1,141 @@
+# Read-only: fabrication setup of the "Rethink ! The Tinkering Lab" department (CNC Machine Tools and 3D printer
+# equipment) and the Fabrication Materials master lists. Prints ids, codes, category names, rates and counts only
+# (no user names or emails).
+name: Probe Tinkering Lab Fabrication Config
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import defaultdict
+          from django.db.models import Q
+          from django.utils import timezone
+          from iic_booking.equipment.models import (
+              Booking, ChargeProfile, DynamicInputField, Equipment, EquipmentCategory, LaserSheetMaterial,
+              PrintMaterial, SlotMaster,
+          )
+          from iic_booking.users.models.department import Department
+
+          OPEN = ["PENDING", "PENDING_PAYMENT", "WAITLISTED", "BOOKED", "DISRUPTION_PENDING", "UNDER_MAINTENANCE",
+                  "OTHER_DISRUPTION", "HOLD", "PROCESSING"]
+          now = timezone.now()
+
+          print("== departments matching 'tinker'")
+          for dep in Department.objects.filter(name__icontains="tinker").order_by("pk"):
+              print(f"  dept id={dep.pk} name={dep.name!r} code={dep.code!r} type={dep.department_type}")
+          print("== categories matching cnc / 3d / print / laser")
+          for cat in EquipmentCategory.objects.filter(
+              Q(name__icontains="cnc") | Q(name__icontains="3d") | Q(name__icontains="print") | Q(name__icontains="laser")
+          ).order_by("pk"):
+              print(f"  cat id={cat.pk} name={cat.name!r} code={cat.code!r} equipment={cat.equipment.count()}")
+
+          def charge_summary(eq):
+              rows = []
+              for cp in ChargeProfile.objects.filter(equipment=eq).order_by("user_type", "pricing_profile"):
+                  rows.append(
+                      f"{cp.user_type}/{cp.pricing_profile}:{cp.profile_type or '-'}:"
+                      f"{'on' if cp.is_active else 'off'}:pc={cp.primary_unit_charge}:sc={cp.secondary_unit_charge}:"
+                      f"bp={cp.breakpoint}:tf={(cp.time_formula or '').strip()[:40]!r}:cf={'y' if (cp.charge_formula or '').strip() else 'n'}"
+                  )
+              return rows
+
+          def booking_counts(eq):
+              qs = Booking.objects.filter(equipment=eq)
+              open_qs = qs.filter(status__in=OPEN)
+              upcoming = open_qs.filter(daily_slots__end_datetime__gte=now).distinct()
+              return qs.count(), open_qs.count(), upcoming.count(), list(upcoming.values_list("booking_id", "status"))
+
+          def describe(eq):
+              total, open_n, upcoming_n, upcoming = booking_counts(eq)
+              fields = list(
+                  DynamicInputField.objects.filter(equipment=eq)
+                  .order_by("user_type", "field_key")
+                  .values_list("user_type", "field_key", "field_type", "is_required")
+              )
+              print(
+                  f"  eq id={eq.pk} code={eq.code} cat={eq.category.name if eq.category else None!r} profile={eq.profile_type} "
+                  f"status={eq.status} test_only={eq.visible_to_test_accounts_only} vis_group={eq.visibility_group_id} "
+                  f"parent={eq.parent_equipment_id} multimode={eq.enable_multi_mode} slot_min={eq.slot_duration_minutes} "
+                  f"slots={SlotMaster.objects.filter(equipment=eq, is_active=True).count()} "
+                  f"recalc={eq.enable_charge_recalculation} own_material_charge={eq.own_material_fixed_charge} "
+                  f"fab_emails={len(eq.fabrication_notification_emails or [])} replace_h={eq.fabrication_replace_window_hours}"
+              )
+              print(f"    bookings total={total} open={open_n} upcoming={upcoming_n} upcoming_ids={upcoming}")
+              for r in charge_summary(eq):
+                  print(f"    cp {r}")
+              print(f"    input_fields={[(u or '*', k, t, req) for u, k, t, req in fields]}")
+              pm = list(PrintMaterial.objects.filter(supported_equipment=eq).order_by("pk").values_list("pk", "code", "equipment_id", "is_active"))
+              ls = list(LaserSheetMaterial.objects.filter(supported_equipment=eq).order_by("pk").values_list("pk", "code", "equipment_id", "is_active"))
+              print(f"    supported_print={pm}")
+              print(f"    supported_laser={ls}")
+
+          dep = Department.objects.filter(name__iexact="Rethink ! The Tinkering Lab").first()
+          print(f"== exact department match: {(dep.pk, dep.name) if dep else None}")
+          if dep:
+              eqs = Equipment.objects.filter(internal_department=dep).select_related("category").order_by("category__name", "pk")
+              print(f"== equipment in department: {eqs.count()}")
+              by_cat = defaultdict(list)
+              for eq in eqs:
+                  by_cat[eq.category.name if eq.category else None].append(eq)
+              for cat_name, rows in by_cat.items():
+                  print(f"-- category {cat_name!r} ({len(rows)})")
+                  for eq in rows:
+                      describe(eq)
+
+          print("== reference: equipment already on a fabrication profile")
+          for eq in Equipment.objects.filter(profile_type__in=["PRINT_3D", "LASER_CUT_2D"]).select_related("category", "internal_department").order_by("pk"):
+              print(f"  eq id={eq.pk} code={eq.code} profile={eq.profile_type} dept_id={eq.internal_department_id} cat={eq.category.name if eq.category else None!r}")
+          for ref_id in (342,):
+              ref = Equipment.objects.filter(pk=ref_id).first()
+              if ref:
+                  print(f"-- reference laser equipment {ref_id}")
+                  describe(ref)
+
+          print("== laser sheet master list")
+          for m in LaserSheetMaterial.objects.order_by("pk"):
+              links = list(m.supported_equipment.values_list("pk", flat=True))
+              print(
+                  f"  ls id={m.pk} code={m.code} family={m.material_family} t={m.thickness_mm} size={m.sheet_width_mm}x{m.sheet_height_mm} "
+                  f"rate={m.sheet_rate} owner={m.equipment_id} active={m.is_active} user_type={m.user_type!r} order={m.display_order} supported_by={links}"
+              )
+          print("== 3D print material master list")
+          for m in PrintMaterial.objects.order_by("pk"):
+              links = list(m.supported_equipment.values_list("pk", flat=True))
+              print(
+                  f"  pm id={m.pk} code={m.code} owner={m.equipment_id} active={m.is_active} price_g={m.price_per_gram} "
+                  f"density={m.density_g_per_cm3} user_type={m.user_type!r} order={m.display_order} supported_by={links}"
+              )
+          for label, model in (("laser", LaserSheetMaterial), ("print", PrintMaterial)):
+              groups = defaultdict(list)
+              for pk, code, owner, active in model.objects.values_list("pk", "code", "equipment_id", "is_active"):
+                  groups[(code or "").strip().lower()].append((pk, owner, active))
+              dups = {k: v for k, v in groups.items() if len(v) > 1}
+              print(f"== {label} duplicate codes: {len(dups)}")
+              for k, v in sorted(dups.items()):
+                  print(f"  {k}: {v}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
