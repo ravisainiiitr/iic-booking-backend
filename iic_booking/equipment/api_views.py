@@ -16541,6 +16541,186 @@ def get_repeat_sample_eligibility(request, booking_id):
         "extra_week_granted": bool(approved_req and approved_req.extra_week_granted),
     }, status=status.HTTP_200_OK)
 
+def _repeat_sample_edited_inputs(orig_booking, raw):
+    """Inputs for a staff-booked repeat after the OIC edited the original's parameters.
+
+    Same cleaning and limits as a booking-input edit (numeric min/max and formula maximums, sample sets,
+    advanced tables, Quantity Required) with the original booking as the baseline. Keys that are not input
+    fields of the equipment keep the original's values. Returns (input_values, error).
+    """
+    from .calculators import SAMPLE_SETS_KEY, normalize_periodic_table_billable_counts
+    from .fabrication import (
+        MAX_JOB_QUANTITY,
+        QUANTITY_KEY,
+        QUANTITY_LABEL,
+        QUANTITY_MARKER_KEY,
+        apply_fabrication_to_input_values,
+        is_fabrication_equipment,
+        parse_job_quantity,
+        strip_fabrication_keys,
+    )
+    from .fabrication import parse_bool as fabrication_flag
+    from .sample_set_limits import booking_field_user_type, combined_max_error
+    from .typed_table import clean_typed_tables
+
+    if not isinstance(raw, dict):
+        return None, "input_values must be an object."
+    equipment = orig_booking.equipment
+    original = dict(orig_booking.input_values or {})
+    current = dict(original)
+    field_keys = set(DynamicInputField.objects.filter(equipment=equipment).values_list("field_key", flat=True))
+    allowed_keys = field_keys | {"comments"} | {f"{k}_elements" for k in field_keys}
+
+    raw = dict(raw)
+    sample_sets_submitted = SAMPLE_SETS_KEY in raw
+    raw_sample_sets = raw.pop(SAMPLE_SETS_KEY, None)
+    raw.pop(QUANTITY_MARKER_KEY, None)
+    fabrication = is_fabrication_equipment(equipment)
+    if fabrication and QUANTITY_KEY in raw and not fabrication_flag(original.get(QUANTITY_MARKER_KEY)):
+        if parse_job_quantity(raw[QUANTITY_KEY]) == 1:
+            raw.pop(QUANTITY_KEY)
+    if fabrication:
+        allowed_keys.add(QUANTITY_KEY)
+
+    for key, value in raw.items():
+        if key not in allowed_keys:
+            continue
+        cleaned = _clean_single_input_value(value)
+        if cleaned is None or cleaned == []:
+            current.pop(key, None)
+        else:
+            current[key] = cleaned
+
+    if fabrication and QUANTITY_KEY in raw:
+        job_quantity = parse_job_quantity(current.get(QUANTITY_KEY))
+        if job_quantity is None:
+            return None, f"{QUANTITY_LABEL} must be a whole number from 1 to {MAX_JOB_QUANTITY}."
+        current[QUANTITY_KEY] = job_quantity
+        current[QUANTITY_MARKER_KEY] = True
+
+    current = normalize_periodic_table_billable_counts(equipment, current)
+    user_type = booking_field_user_type(orig_booking)
+    if sample_sets_submitted:
+        current, error = _normalize_sample_sets_input(
+            equipment,
+            current,
+            raw_sample_sets,
+            booking_user=orig_booking.user,
+            check_combined_max=False,
+            user_type=user_type,
+            baseline=original,
+        )
+        if error:
+            return None, error
+
+    error = _validate_dynamic_numeric_input_limits(
+        equipment, current, booking_user=orig_booking.user, user_type=user_type, baseline=original
+    ) or combined_max_error(equipment, current, user_type=user_type, baseline=original)
+    if error:
+        return None, error
+    current, table_problem = clean_typed_tables(equipment, current, user_type=user_type, baseline=original)
+    if table_problem:
+        return None, table_problem["message"]
+
+    if fabrication and current != original:
+        current = strip_fabrication_keys(apply_fabrication_to_input_values(orig_booking, current))
+    return current, None
+
+
+def _repeat_sample_input_changes(orig_booking, new_values) -> list[dict]:
+    """[{key, label, old, new}] for each input shown differently on the repeat than on the original."""
+    from .fabrication import display_input_values
+    from .input_display import booking_input_fields, input_summary_items, sample_sets_of
+
+    equipment = orig_booking.equipment
+    fields = booking_input_fields(orig_booking)
+    old_values = display_input_values(equipment, orig_booking.input_values or {})
+    new_display = display_input_values(equipment, new_values or {})
+    old_items = {i["key"]: i for i in input_summary_items(old_values, fields)}
+    new_items = {i["key"]: i for i in input_summary_items(new_display, fields)}
+    changes = []
+    old_sets, new_sets = len(sample_sets_of(old_values)), len(sample_sets_of(new_display))
+    if old_sets != new_sets:
+        changes.append({"key": "_sample_sets", "label": "Sample sets", "old": str(old_sets), "new": str(new_sets)})
+    for key in list(old_items) + [k for k in new_items if k not in old_items]:
+        old_text = (old_items.get(key) or {}).get("value") or ""
+        new_text = (new_items.get(key) or {}).get("value") or ""
+        if old_text != new_text:
+            label = (new_items.get(key) or old_items.get(key))["label"]
+            changes.append({"key": key, "label": label, "old": old_text or "—", "new": new_text or "—"})
+    return changes
+
+
+def _resolve_repeat_sample_inputs(orig_booking, raw):
+    """(input_values, input_changes, total_time_minutes, error) of a repeat of ``orig_booking``.
+
+    ``raw`` None keeps the original's parameters and duration. Edited parameters get the duration of the
+    equipment's formula; a staff-adjusted duration of the original is kept when the edit leaves the formula's
+    result unchanged.
+    """
+    equipment = orig_booking.equipment
+    original_values = orig_booking.input_values or {}
+    minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
+    if raw is None:
+        return original_values, [], minutes, None
+    edited, error = _repeat_sample_edited_inputs(orig_booking, raw)
+    if error:
+        return None, [], None, error
+    changes = _repeat_sample_input_changes(orig_booking, edited)
+    if not changes:
+        return original_values, [], minutes, None
+    if not orig_booking.charge_profile_id:
+        return None, [], None, "The original booking has no charge profile, so its parameters cannot be changed."
+    try:
+        new_minutes = _calculate_input_values_minutes(orig_booking, edited)
+    except Exception:
+        logger.exception("Could not compute minutes for edited repeat of booking %s", orig_booking.pk)
+        return None, [], None, "Could not work out the analysis time for these parameters."
+    try:
+        original_minutes = _calculate_input_values_minutes(orig_booking, original_values)
+    except Exception:
+        original_minutes = None
+    if new_minutes != original_minutes:
+        minutes = new_minutes or (equipment.slot_duration_minutes or 60)
+    return edited, changes, minutes, None
+
+
+def _repeat_sample_staff_denied(user, orig_booking):
+    """403 response unless ``user`` may book a repeat of ``orig_booking`` for its user, else None."""
+    if not _is_repeat_sample_manager(user):
+        return Response({"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
+    if not _can_manage_repeat_for_equipment(user, orig_booking.equipment_id):
+        return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+    return None
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def preview_repeat_booking(request, booking_id):
+    """Analysis time of a staff-booked repeat with the given (edited) parameters, before slots are chosen.
+
+    Body: { "input_values": {...} }. Same validation as create-repeat-booking; nothing is saved.
+    Returns { total_time_minutes, input_changes, total_charge: "0" }.
+    """
+    try:
+        orig_booking = Booking.objects.select_related("user", "equipment", "charge_profile").get(booking_id=booking_id)
+    except Booking.DoesNotExist:
+        return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
+    denied = _repeat_sample_staff_denied(request.user, orig_booking)
+    if denied:
+        return denied
+    if orig_booking.status != BookingStatus.COMPLETED:
+        return Response({"error": "Only completed bookings can have a repeat sample."}, status=status.HTTP_400_BAD_REQUEST)
+    raw = request.data.get("input_values") if request.data else None
+    _values, changes, minutes, error = _resolve_repeat_sample_inputs(orig_booking, raw)
+    if error:
+        return Response({"error": error}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(
+        {"total_time_minutes": minutes, "input_changes": changes, "total_charge": "0"},
+        status=status.HTTP_200_OK,
+    )
+
+
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def create_repeat_booking(request, booking_id):
@@ -16549,8 +16729,12 @@ def create_repeat_booking(request, booking_id):
 
     - OIC of the equipment / Department Administrator of its department / Main Administrator: marks the
       completed booking as a repeat and books it for the booking user in one step (no user request needed;
-      approval is recorded). Body: slot_ids?, admin_notes?.
-    - Booking user: only when a repeat was already granted before repeat samples became OIC-only.
+      approval is recorded). Body: slot_ids?, admin_notes?, input_values? (the original's parameters as
+      edited by the staff member, incl. ``_sample_sets``; validated like a booking-input edit, the analysis
+      time follows them and every change is recorded on the repeat's history). Still free and excluded
+      from the user's limits.
+    - Booking user: only when a repeat was already granted before repeat samples became OIC-only (the
+      original's parameters are used as they are).
     """
     try:
         orig_booking = Booking.objects.select_related("user", "equipment", "charge_profile").get(booking_id=booking_id)
@@ -16558,10 +16742,9 @@ def create_repeat_booking(request, booking_id):
         return Response({"error": "Booking not found."}, status=status.HTTP_404_NOT_FOUND)
     staff_path = orig_booking.user_id != request.user.id
     if staff_path:
-        if not _is_repeat_sample_manager(request.user):
-            return Response({"error": REPEAT_SAMPLE_MANAGER_ONLY_MESSAGE}, status=status.HTTP_403_FORBIDDEN)
-        if not _can_manage_repeat_for_equipment(request.user, orig_booking.equipment_id):
-            return Response({"error": "Permission denied for this equipment."}, status=status.HTTP_403_FORBIDDEN)
+        denied = _repeat_sample_staff_denied(request.user, orig_booking)
+        if denied:
+            return denied
     if orig_booking.status != BookingStatus.COMPLETED:
         return Response({"error": "Only completed bookings can have a repeat sample."}, status=status.HTTP_400_BAD_REQUEST)
     if not staff_path and not getattr(orig_booking, "repeat_sample_enabled", False):
@@ -16588,7 +16771,12 @@ def create_repeat_booking(request, booking_id):
             {"error": dept_message, "code": "DEPARTMENT_BOOKING_DISABLED"},
             status=status.HTTP_403_FORBIDDEN,
         )
-    total_time_minutes = orig_booking.total_time_minutes or (equipment.slot_duration_minutes or 60)
+    raw_inputs = request.data.get("input_values") if (staff_path and request.data) else None
+    repeat_input_values, input_changes, total_time_minutes, edit_error = _resolve_repeat_sample_inputs(
+        orig_booking, raw_inputs
+    )
+    if edit_error:
+        return Response({"error": edit_error}, status=status.HTTP_400_BAD_REQUEST)
 
     approved_req = _approved_repeat_request_awaiting_booking(orig_booking)
     earliest_start = approved_req.bookable_from if (approved_req and not staff_path) else None
@@ -16751,7 +16939,7 @@ def create_repeat_booking(request, booking_id):
             user_type_snapshot=orig_booking.user_type_snapshot or "",
             total_time_minutes=total_time_minutes,
             total_charge=Decimal("0"),
-            input_values=orig_booking.input_values or {},
+            input_values=repeat_input_values,
             selected_parameters=orig_booking.selected_parameters,
             charge_breakdown=charge_breakdown,
             status=BookingStatus.BOOKED,
@@ -16762,6 +16950,18 @@ def create_repeat_booking(request, booking_id):
         )
         daily_slots.update(booking=new_booking, status=SlotStatus.BOOKED)
         booked_by = f"by {staff_role} " if staff_path else ""
+        changes_text = "; ".join(f"{c['label']}: {c['old']} → {c['new']}" for c in input_changes)
+        event_metadata = (
+            {"repeat_sample_request_id": approved_req.id, "booked_by_staff": staff_path} if approved_req else {}
+        )
+        if input_changes:
+            event_metadata.update(
+                {
+                    "input_changes": input_changes,
+                    "original_input_values": orig_booking.input_values or {},
+                    "inputs_changed_by_id": request.user.pk,
+                }
+            )
         create_booking_event(
             booking=new_booking,
             event_type=BookingEventType.REPEAT_SAMPLE_CREATED,
@@ -16769,10 +16969,11 @@ def create_repeat_booking(request, booking_id):
             comment=(
                 f"Repeat sample booking created {booked_by}for {equipment.name} ({total_time_minutes} min). "
                 f"Original booking: {orig_vid}. No charge; excluded from weekly/monthly limits."
+                + (f" Parameters changed from the original booking: {changes_text}." if changes_text else "")
                 + (f" Note: {staff_notes}" if staff_notes else "")
             ),
             new_status=BookingStatus.BOOKED,
-            metadata={"repeat_sample_request_id": approved_req.id, "booked_by_staff": staff_path} if approved_req else None,
+            metadata=event_metadata or None,
             send_notification=True,
         )
         orig_booking.repeat_sample_enabled = False
@@ -16788,6 +16989,7 @@ def create_repeat_booking(request, booking_id):
             equipment_id=equipment.equipment_id,
             booking_id=orig_booking.booking_id,
             new_booking_id=new_booking.booking_id,
+            changed_inputs=[c["key"] for c in input_changes],
         )
 
     return Response({
