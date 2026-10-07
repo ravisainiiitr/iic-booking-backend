@@ -729,17 +729,20 @@ def transfer_between_sub_wallets(request):
 @permission_classes([IsAuthenticated])
 def get_departments_for_recharge(request):
     """List internal departments valid for sub-wallet recharge (equipment-linked + existing sub-wallets)."""
-    wallet = request.user.get_accessible_wallet()
-    if not wallet and request.user.can_have_wallet():
-        wallet, _ = WalletRepository.get_or_create(request.user)
-    departments = get_departments_for_wallet_recharge(wallet)
-    from iic_booking.users.student_wallet_recharge import is_iitr_student
+    from iic_booking.users.student_wallet_recharge import (
+        is_iitr_student,
+        student_recharge_departments,
+    )
 
-    # IITR Students only see departments explicitly enabled by main administrator.
     if is_iitr_student(request.user):
-        departments = departments.filter(enable_student_wallet_recharge=True)
-    # Hide internal ADMIN department from recharge picker.
-    departments = departments.exclude(name__iexact="ADMIN").exclude(code__iexact="ADMIN")
+        departments = student_recharge_departments(request.user)
+    else:
+        wallet = request.user.get_accessible_wallet()
+        if not wallet and request.user.can_have_wallet():
+            wallet, _ = WalletRepository.get_or_create(request.user)
+        departments = get_departments_for_wallet_recharge(wallet)
+        # Hide internal ADMIN department from recharge picker.
+        departments = departments.exclude(name__iexact="ADMIN").exclude(code__iexact="ADMIN")
     from ..serializers import DepartmentListSerializer
     return Response({
         "departments": DepartmentListSerializer(departments, many=True).data,
@@ -3027,7 +3030,8 @@ def wallet_student_recharge_settings_view(request):
     )
 
     is_student = is_iitr_student(request.user)
-    # Department-wise flags are authoritative; legacy global flag still surfaced for admin UI.
+    # Students on a supervisor's wallet always may recharge; the legacy global flag is surfaced
+    # only for API compatibility and no longer gates anything.
     global_enabled = iitr_student_recharge_enabled()
     dept_enabled = student_has_any_recharge_department(request.user) if is_student else False
     enabled = bool(dept_enabled) if is_student else bool(global_enabled)

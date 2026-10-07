@@ -1002,19 +1002,20 @@ class FacultyDepartmentCreditFacilityAuditLogAdmin(admin.ModelAdmin):
 
 @admin.register(WalletStudentRechargeSettings)
 class WalletStudentRechargeSettingsAdmin(admin.ModelAdmin):
-    """Singleton: allow IITR Students to recharge the faculty shared wallet."""
+    """Singleton: legacy IITR Student recharge switch, kept for compatibility only."""
 
     list_display = ["__str__", "enable_iitr_student_wallet_recharge"]
 
     fieldsets = (
         (
-            _("IITR Student recharge"),
+            _("IITR Student recharge (not used)"),
             {
                 "fields": ("enable_iitr_student_wallet_recharge",),
                 "description": _(
-                    "When enabled, IITR Students may recharge via Direct Cash Deposit / Bank "
-                    "Transfer (or Pay online when switched on). Funds are parked in the faculty "
-                    "wallet they are linked to. Individual Students are not affected by this setting."
+                    "Not used. Every IITR Student linked to a supervisor's wallet sees Recharge "
+                    "Wallet; the methods follow Wallet Payment Modes (Project Grant stays "
+                    "faculty-only). This switch and the per-department Student wallet recharge "
+                    "flag no longer change anything."
                 ),
             },
         ),
@@ -1226,7 +1227,6 @@ class DepartmentAdmin(admin.ModelAdmin):
                     "equipment_booking_enabled",
                     "equipment_visibility_enabled",
                     "enable_wallet_credit",
-                    "enable_student_wallet_recharge",
                 )
             },
         ),
