@@ -733,20 +733,11 @@ def get_departments_for_recharge(request):
     if not wallet and request.user.can_have_wallet():
         wallet, _ = WalletRepository.get_or_create(request.user)
     departments = get_departments_for_wallet_recharge(wallet)
-    from iic_booking.users.student_wallet_recharge import (
-        is_iitr_student,
-        student_on_recharge_allowlist,
-        STUDENT_WALLET_RECHARGE_EMAIL_ALLOWLIST,
-    )
+    from iic_booking.users.student_wallet_recharge import is_iitr_student
 
-    # IITR Students: department flag, unless temporary email allowlist is active
-    # (allowlisted test accounts see all normal recharge departments).
+    # IITR Students only see departments explicitly enabled by main administrator.
     if is_iitr_student(request.user):
-        if STUDENT_WALLET_RECHARGE_EMAIL_ALLOWLIST:
-            if not student_on_recharge_allowlist(request.user):
-                departments = departments.none()
-        else:
-            departments = departments.filter(enable_student_wallet_recharge=True)
+        departments = departments.filter(enable_student_wallet_recharge=True)
     # Hide internal ADMIN department from recharge picker.
     departments = departments.exclude(name__iexact="ADMIN").exclude(code__iexact="ADMIN")
     from ..serializers import DepartmentListSerializer
