@@ -1,0 +1,119 @@
+# Read-only, counts and flags only (no names, no emails): what decides whether each user type sees
+# "Recharge Wallet" in production. Prints the wallet funding switches, department overrides, the IITR
+# student recharge gates (department flags and the code allowlist size), the faculty legacy wallet sync
+# window, and per user type how many real (non-test) users reach an own or a shared wallet.
+name: Probe Wallet Recharge Visibility
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from django.contrib.auth import get_user_model
+          from iic_booking.users.models import Department
+          from iic_booking.users.models.department import DepartmentType
+          from iic_booking.users.models.wallet import Wallet
+          from iic_booking.users.models.wallet_sric_settings import WalletSricSettings
+          from iic_booking.users.models.user_type import UserType
+          from iic_booking.users import student_wallet_recharge as swr
+          from iic_booking.users import wallet_payment_modes as wpm
+          from iic_booking.users.repositories.wallet_repository import get_departments_for_wallet_recharge
+
+          User = get_user_model()
+          s = WalletSricSettings.get_singleton()
+          print("== Wallet funding switches (Admin settings > Wallet Payment Modes) ==")
+          for f in ("project_grant_recharge_enabled", "direct_cash_recharge_enabled",
+                    "online_gateway_recharge_enabled", "peer_transfer_enabled"):
+              print(f"  {f}={bool(getattr(s, f))}")
+          try:
+              from iic_booking.users.wallet_credit_facility_v2 import feature_enabled
+              print(f"  credit_facility_enabled={bool(feature_enabled())}")
+          except Exception as exc:
+              print(f"  credit_facility_enabled=ERR {type(exc).__name__}")
+          print(f"  direct_recharge_master={wpm.direct_recharge_master_enabled()}")
+          rows = wpm.department_state_rows()
+          disabled = Counter()
+          for states in rows.values():
+              for opt, st in states.items():
+                  if st == "disabled":
+                      disabled[opt] += 1
+          print(f"  departments_with_overrides={len(rows)} disabled_by_option={dict(disabled)}")
+
+          print("== IITR student recharge ==")
+          st = swr.get_student_recharge_settings()
+          print(f"  global_enable_iitr_student_wallet_recharge={bool(st.enable_iitr_student_wallet_recharge)}")
+          allow = getattr(swr, "STUDENT_WALLET_RECHARGE_EMAIL_ALLOWLIST", frozenset())
+          print(f"  code_allowlist_size={len(allow)}")
+          if allow:
+              listed = User.objects.filter(email__in=list(allow))
+              print(f"  allowlisted_accounts={listed.count()} allowlisted_test_accounts={listed.filter(is_test_account=True).count()}")
+          base = get_departments_for_wallet_recharge(None)
+          internal = Department.objects.filter(department_type=DepartmentType.INTERNAL)
+          print(f"  recharge_departments={base.count()} with_student_flag={base.filter(enable_student_wallet_recharge=True).count()}")
+          print(f"  internal_departments={internal.count()} internal_with_student_flag={internal.filter(enable_student_wallet_recharge=True).count()}")
+
+          print("== Faculty legacy wallet sync window ==")
+          try:
+              from iic_booking.users.legacy_ledger.booking_lock import faculty_wallet_sync_window_open, faculty_wallet_sync_cutoff
+              print(f"  window_open={faculty_wallet_sync_window_open()} cutoff_date={faculty_wallet_sync_cutoff().date().isoformat()}")
+          except Exception as exc:
+              print(f"  window=ERR {type(exc).__name__}")
+
+          print("== Real (non-test, active) users by type ==")
+          real = User.objects.filter(is_active=True, is_test_account=False)
+          owners = set(Wallet.objects.values_list("user_id", flat=True))
+          by_type = Counter(real.values_list("user_type", flat=True))
+          tests = Counter(User.objects.filter(is_active=True, is_test_account=True).values_list("user_type", flat=True))
+          for ut, n in sorted(by_type.items(), key=lambda x: str(x[0])):
+              print(f"  {ut}: real={n} test={tests.get(ut, 0)}")
+          print("== Wallet reach per wallet user type (real users) ==")
+          for ut in (UserType.FACULTY, UserType.STUDENT, UserType.INDIVIDUAL_STUDENT, UserType.EXTERNAL,
+                     UserType.RND, UserType.INSTITUTE, UserType.STARTUP_INCUBATED_IITR,
+                     UserType.EXTERNAL_STARTUP_MSME, UserType.OTHER):
+              c = Counter()
+              for u in real.filter(user_type=ut).iterator():
+                  c["users"] += 1
+                  own = u.can_have_wallet()
+                  if own:
+                      c["own_wallet_eligible"] += 1
+                  if u.pk in owners:
+                      c["has_own_wallet_row"] += 1
+                  if ut in (UserType.STUDENT, UserType.OTHER):
+                      try:
+                          w = u.get_accessible_wallet()
+                      except Exception:
+                          w = None
+                      if w is not None and w.user_id != u.pk:
+                          c["on_shared_wallet"] += 1
+                          if ut == UserType.STUDENT:
+                              if get_departments_for_wallet_recharge(w).filter(enable_student_wallet_recharge=True).exists():
+                                  c["shared_student_with_flagged_dept"] += 1
+                              if swr.student_has_any_recharge_department(u):
+                                  c["shared_student_sees_recharge_now"] += 1
+              print(f"  {ut}: {dict(c)}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
