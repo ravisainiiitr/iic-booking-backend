@@ -1831,6 +1831,7 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     bookable_laser_sheet_materials = serializers.SerializerMethodField()
     group_alternatives_enabled = serializers.SerializerMethodField()
     group_cross_reschedule_enabled = serializers.SerializerMethodField()
+    max_print_size = serializers.SerializerMethodField()
 
     class Meta:
         model = Equipment
@@ -1863,6 +1864,11 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'fabrication_notification_emails',
             'own_material_fixed_charge',
             'fabrication_replace_window_hours',
+            'max_print_size_x_mm',
+            'max_print_size_y_mm',
+            'max_print_size_z_mm',
+            'allow_print_rotation_to_fit',
+            'max_print_size',
             'istem_portal_url',
             'istem_fbr_status_url',
             'image_url',
@@ -1989,6 +1995,14 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
         from .fabrication_material_support import bookable_materials
 
         return PrintMaterialSerializer(bookable_materials(obj), many=True).data
+
+    def get_max_print_size(self, obj):
+        """{x, y, z, allow_rotation, tolerance_mm} for 3D printers with a size limit; null means no limit."""
+        if obj.profile_type != EquipmentProfileType.PRINT_3D:
+            return None
+        from .print_size_limit import print_size_limit_payload
+
+        return print_size_limit_payload(obj)
 
     def get_bookable_laser_sheet_materials(self, obj):
         if obj.profile_type != EquipmentProfileType.LASER_CUT_2D:

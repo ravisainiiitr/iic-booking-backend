@@ -34,6 +34,7 @@ from .print_3d_service import (
     default_slicer_settings,
     recalculate_print_estimate,
 )
+from .print_size_limit import analyses_size_error, check_stl_files, print_size_limit_payload
 from .serializers import (
     PrintAnalysisBatchSerializer,
     PrintAnalysisSerializer,
@@ -212,6 +213,25 @@ def _create_print_analysis(
     return analysis
 
 
+def _print_size_rejection(equipment, files):
+    """400 response listing every STL larger than the equipment's maximum print size, else None."""
+    too_large, limit = check_stl_files(equipment, files)
+    if not too_large:
+        return None
+    error = too_large[0]["message"]
+    if len(too_large) > 1:
+        error = f"{len(too_large)} STL files are larger than this printer's maximum print size. {error}"
+    return Response(
+        {
+            "error": error,
+            "code": "PRINT_SIZE_EXCEEDED",
+            "too_large_files": too_large,
+            "max_print_size": print_size_limit_payload(equipment),
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def equipment_print_materials(request, pk):
@@ -235,7 +255,7 @@ def equipment_print_materials(request, pk):
     else:
         user_type = UserType.STUDENT
     if equipment.profile_type != EquipmentProfileType.PRINT_3D:
-        return Response({"materials": [], "no_materials_message": NO_MATERIALS_MESSAGE})
+        return Response({"materials": [], "no_materials_message": NO_MATERIALS_MESSAGE, "max_print_size": None})
     materials = bookable_materials(equipment)
     typed = materials.filter(user_type=user_type)
     if typed.exists():
@@ -243,7 +263,13 @@ def equipment_print_materials(request, pk):
     else:
         materials = materials.filter(user_type__isnull=True) | materials.filter(user_type="")
     serializer = PrintMaterialSerializer(materials.distinct(), many=True)
-    return Response({"materials": serializer.data, "no_materials_message": NO_MATERIALS_MESSAGE})
+    return Response(
+        {
+            "materials": serializer.data,
+            "no_materials_message": NO_MATERIALS_MESSAGE,
+            "max_print_size": print_size_limit_payload(equipment),
+        }
+    )
 
 
 @transaction.non_atomic_requests
@@ -300,6 +326,9 @@ def equipment_analyze_stl(request, pk):
 
     if is_stl:
         file_bytes = upload.read()
+        too_large = _print_size_rejection(equipment, [(upload.name or "model.stl", file_bytes)])
+        if too_large:
+            return too_large
         analysis = _create_print_analysis(
             equipment=equipment,
             user=print_user,
@@ -333,6 +362,9 @@ def equipment_analyze_stl(request, pk):
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except zipfile.BadZipFile:
         return Response({"error": "Invalid ZIP file."}, status=status.HTTP_400_BAD_REQUEST)
+    too_large = _print_size_rejection(equipment, stl_entries)
+    if too_large:
+        return too_large
 
     batch = PrintAnalysisBatch.objects.create(
         equipment=equipment,
@@ -857,7 +889,7 @@ def merge_print_booking_into_input_values(
             return input_values, "Batch has no material selected."
         if total_weight <= 0 or total_time <= 0:
             return input_values, "Batch has invalid weight or time estimates."
-        err = print_material_error(equipment, items)
+        err = print_material_error(equipment, items) or analyses_size_error(equipment, items)
         if err:
             return input_values, err
 
@@ -898,7 +930,7 @@ def merge_print_analysis_into_input_values(equipment, analysis_id, input_values,
     material_code = analysis.material_code_snapshot or (analysis.material.code if analysis.material else "")
     if not material_code:
         return input_values, "Analysis has no material selected."
-    err = print_material_error(equipment, [analysis])
+    err = print_material_error(equipment, [analysis]) or analyses_size_error(equipment, [analysis])
     if err:
         return input_values, err
 

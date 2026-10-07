@@ -452,6 +452,44 @@ class Equipment(models.Model):
         ),
         verbose_name=_("Hours to replace rejected files"),
     )
+    max_print_size_x_mm = models.DecimalField(
+        max_digits=7,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.1"))],
+        help_text=_("For 3D printing equipment: largest printable width (X) in mm. Leave blank for no limit."),
+        verbose_name=_("Maximum print size X (mm)"),
+    )
+    max_print_size_y_mm = models.DecimalField(
+        max_digits=7,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.1"))],
+        help_text=_("For 3D printing equipment: largest printable depth (Y) in mm. Leave blank for no limit."),
+        verbose_name=_("Maximum print size Y (mm)"),
+    )
+    max_print_size_z_mm = models.DecimalField(
+        max_digits=7,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(Decimal("0.1"))],
+        help_text=_("For 3D printing equipment: largest printable height (Z) in mm. Leave blank for no limit."),
+        verbose_name=_("Maximum print size Z (mm)"),
+    )
+    # Nullable so a code rollback can still insert rows; None behaves as True.
+    allow_print_rotation_to_fit = models.BooleanField(
+        null=True,
+        blank=True,
+        default=True,
+        help_text=_(
+            "For 3D printing equipment: accept a model that fits the maximum print size only after turning it "
+            "(the lab can re-orient it on the plate)."
+        ),
+        verbose_name=_("Allow rotation to fit"),
+    )
 
     make = models.CharField(
         max_length=255,

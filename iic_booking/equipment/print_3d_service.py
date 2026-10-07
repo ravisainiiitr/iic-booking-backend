@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from django.conf import settings
 
+from .print_size_limit import tiny_model_warning
+
 logger = logging.getLogger(__name__)
 
 Vec3 = Tuple[float, float, float]
@@ -68,6 +70,8 @@ def _signed_tetra_volume(v1: Vec3, v2: Vec3, v3: Vec3) -> float:
 
 
 def _is_ascii_stl(data: bytes) -> bool:
+    if len(data) >= 84 and 84 + struct.unpack_from("<I", data, 80)[0] * 50 == len(data):
+        return False
     preview = data[:256].decode("utf-8", errors="ignore")
     return preview.lstrip().lower().startswith("solid") and "facet" in preview
 
@@ -147,6 +151,9 @@ def compute_mesh_metrics(triangles: List[Triangle], bed_size_mm: Optional[Dict[s
         warnings.append("Computed volume is near zero — mesh may be open or invalid.")
     if len(triangles) < 12:
         warnings.append("Very low triangle count — model may be overly simplified.")
+    tiny = tiny_model_warning((size["x"], size["y"], size["z"]))
+    if tiny:
+        warnings.append(tiny)
     if bed_size_mm:
         if size["x"] > bed_size_mm.get("x", 0) or size["y"] > bed_size_mm.get("y", 0) or size["z"] > bed_size_mm.get("z", 0):
             warnings.append(

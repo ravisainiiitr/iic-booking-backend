@@ -1148,6 +1148,7 @@ def run_print_analysis_impl(analysis_id: str) -> None:
 
     from .models import PrintAnalysis, PrintAnalysisMethod, PrintAnalysisStatus
     from .print_3d_service import analyze_stl_file
+    from .print_size_limit import equipment_print_size_limit
 
     close_old_connections()
     try:
@@ -1165,11 +1166,11 @@ def run_print_analysis_impl(analysis_id: str) -> None:
         density = float(analysis.material.density_g_per_cm3) if analysis.material else 1.24
         slicer_settings = analysis.slicer_settings or {}
         equipment = analysis.equipment
-        bed_size_mm = {
-            "x": float(getattr(equipment, "print_bed_width_mm", None) or 220),
-            "y": float(getattr(equipment, "print_bed_depth_mm", None) or 220),
-            "z": float(getattr(equipment, "print_bed_height_mm", None) or 250),
-        }
+        # A configured maximum print size is enforced on upload (with the rotation rule), so the
+        # generic bed warning only applies to printers without one.
+        bed_size_mm = None
+        if equipment_print_size_limit(equipment) is None:
+            bed_size_mm = {"x": 220.0, "y": 220.0, "z": 250.0}
     except Exception as exc:
         logger.exception("Failed to load STL for print analysis %s", analysis_id)
         close_old_connections()

@@ -119,6 +119,29 @@ def clean_own_material_fixed_charge(raw):
     return value, None
 
 
+MAX_PRINT_SIZE_LIMIT_MM = Decimal("10000")
+PRINT_SIZE_FIELDS = ("max_print_size_x_mm", "max_print_size_y_mm", "max_print_size_z_mm")
+
+
+def clean_max_print_size(raw, axis: str):
+    """Returns (Decimal_or_None, error). Blank means no limit on this axis."""
+    if raw in (None, ""):
+        return None, None
+    try:
+        value = Decimal(str(raw).strip()).quantize(Decimal("0.1"))
+    except (InvalidOperation, ValueError, TypeError):
+        return None, f"Enter the maximum print size {axis} in mm as a number, or leave it empty for no limit."
+    if value <= 0:
+        return None, f"The maximum print size {axis} must be more than 0 mm."
+    if value > MAX_PRINT_SIZE_LIMIT_MM:
+        return None, f"The maximum print size {axis} must be at most {MAX_PRINT_SIZE_LIMIT_MM} mm."
+    return value, None
+
+
+def _decimal_or_none(value):
+    return str(value) if value is not None else None
+
+
 def _equipment_row(eq):
     row = {
         "equipment_id": eq.equipment_id,
@@ -133,6 +156,9 @@ def _equipment_row(eq):
         "fabrication_replace_window_hours": eq.fabrication_replace_window_hours,
     }
     if eq.profile_type == EquipmentProfileType.PRINT_3D:
+        for field in PRINT_SIZE_FIELDS:
+            row[field] = _decimal_or_none(getattr(eq, field))
+        row["allow_print_rotation_to_fit"] = eq.allow_print_rotation_to_fit is not False
         row["print_materials"] = PrintMaterialSerializer(
             eq.print_materials.all().order_by("display_order", "name"), many=True
         ).data
@@ -174,7 +200,8 @@ def fabrication_material_equipment(request):
     GET: fabrication equipment the user manages, with all materials (active and disabled), each
          equipment's supported_material_ids, and the master list of every category they manage.
     PATCH: {equipment_id, fabrication_notification_emails?, own_material_fixed_charge?,
-            fabrication_replace_window_hours?, supported_material_ids?}.
+            fabrication_replace_window_hours?, supported_material_ids?,
+            max_print_size_x_mm? / _y_mm? / _z_mm? (blank = no limit), allow_print_rotation_to_fit?}.
     """
     qs = fabrication_manageable_equipment_qs(request.user).select_related("internal_department")
     if request.method == "GET":
@@ -229,6 +256,22 @@ def fabrication_material_equipment(request):
             return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
         eq.fabrication_replace_window_hours = hours
         update_fields.append("fabrication_replace_window_hours")
+    size_keys = [f for f in PRINT_SIZE_FIELDS if f in data]
+    if (size_keys or "allow_print_rotation_to_fit" in data) and eq.profile_type != EquipmentProfileType.PRINT_3D:
+        return Response(
+            {"error": "The maximum print size applies to 3D printing equipment only."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    for field in size_keys:
+        value, err = clean_max_print_size(data.get(field), field[len("max_print_size_")].upper())
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        setattr(eq, field, value)
+        update_fields.append(field)
+    if "allow_print_rotation_to_fit" in data:
+        raw = data.get("allow_print_rotation_to_fit")
+        eq.allow_print_rotation_to_fit = str(raw).strip().lower() not in ("false", "0", "no", "off", "none", "")
+        update_fields.append("allow_print_rotation_to_fit")
     # A rejected material list rolls back the other settings sent in the same request.
     with transaction.atomic():
         if update_fields:
