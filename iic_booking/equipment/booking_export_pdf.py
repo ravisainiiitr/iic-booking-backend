@@ -57,6 +57,9 @@ _ASCII_FALLBACK = {"₹": "Rs.", "–": "-", "—": "-", "·": "-", "×": "x", "
 
 # Card fields that are already in the header band.
 _BAND_KEYS = {"sno", "booking_id", "equipment", "status"}
+# A table row cannot split across pages: longer values go in a paragraph, table cells are capped.
+_LONG_TEXT = 500
+_CELL_MAX_LINES = 50
 
 
 @dataclass(frozen=True)
@@ -150,7 +153,7 @@ def _styles(fonts: Fonts):
         table_head=style("exp_table_head", bold=True, size=7.2, leading=9, color=BRAND),
         table_head_small=style("exp_table_head_small", bold=True, size=6.5, leading=8.2, color=BRAND),
         table_label=style("exp_table_label", bold=True, size=7.6, leading=9.6, color="#334155", spaceBefore=3,
-                          spaceAfter=2),
+                          spaceAfter=2, keepWithNext=1),
         band_id=style("exp_band_id", bold=True, size=11.5, leading=14, color="#ffffff"),
         band_sub=style("exp_band_sub", size=8.5, leading=11, color="#dbe7f7"),
         badge=style("exp_badge", bold=True, size=7.4, leading=9, alignment=TA_CENTER),
@@ -208,6 +211,8 @@ class _Builder:
             ("TOPPADDING", (0, 0), (-1, -1), 7),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
         ]))
+        heading.keepWithNext = True
+        heading.spaceAfter = 3
         return heading
 
     def kv_table(self, pairs, *, columns: int = 1):
@@ -269,15 +274,19 @@ class _Builder:
         shares = [max(min(length, 40), 4) for length in lengths]
         total = sum(shares)
         widths = [width * s / total for s in shares]
+        caps = [max(80, int(w / (cell_style.fontSize * 0.5) * _CELL_MAX_LINES)) for w in widths]
+
+        def cell(r, i):
+            text = str(r[i]) if i < len(r) and r[i] is not None and str(r[i]).strip() else "—"
+            if len(text) > caps[i]:
+                text = text[:caps[i]] + "… (shortened; full text in the Excel export)"
+            return self.p(text, self.S.cell_right if i in right_align else cell_style)
+
         data = []
         if columns:
             data.append([self.p(columns[i] if i < len(columns) else "", head_style) for i in range(n)])
         for r in rows:
-            data.append([
-                self.p(r[i] if i < len(r) and str(r[i]).strip() else "—",
-                       self.S.cell_right if i in right_align else cell_style)
-                for i in range(n)
-            ])
+            data.append([cell(r, i) for i in range(n)])
         table = Table(data, colWidths=widths, repeatRows=1 if columns else 0)
         style = [
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -334,11 +343,12 @@ class _Builder:
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
             ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ]))
+        strip.keepWithNext = True
+        strip.spaceAfter = 3
         return strip
 
     def input_block(self, fields, set_index: int, extra_pairs=()) -> list:
         """One sample set's inputs: label / value rows, with table inputs as their own bordered tables."""
-        from reportlab.platypus import KeepTogether
         from reportlab.platypus import Spacer
 
         flow: list = []
@@ -353,13 +363,23 @@ class _Builder:
         for item in fields:
             value = item.values[set_index] if set_index < len(item.values) else {"kind": "empty"}
             kind = value.get("kind")
-            if kind == "text":
+            if kind == "text" and len(value.get("text") or "") > _LONG_TEXT:
+                flush()
+                flow.extend([self.p(item.label, self.S.table_label), self.p(value["text"], self.S.value),
+                             Spacer(1, 4)])
+            elif kind == "text":
                 pairs.append((item.label, value.get("text") or ""))
             elif kind == "table":
                 flush()
                 table = self.data_table(list(value.get("columns") or []), [list(r) for r in value.get("rows") or []])
-                flow.append(KeepTogether([self.p(item.label, self.S.table_label), table, Spacer(1, 4)]))
-        pairs.extend(extra_pairs)
+                # No nested KeepTogether: inside the card's KeepTogether it would measure as endlessly tall.
+                flow.extend([self.p(item.label, self.S.table_label), table, Spacer(1, 4)])
+        for label, text in extra_pairs:
+            if len(text) > _LONG_TEXT:
+                flush()
+                flow.extend([self.p(label, self.S.table_label), self.p(text, self.S.value), Spacer(1, 4)])
+            else:
+                pairs.append((label, text))
         flush()
         return flow
 
@@ -394,7 +414,6 @@ class _Builder:
         if detail.sets > 1:
             title += f" · {detail.sets} sample sets"
         flow.append(self.section(title))
-        flow.append(Spacer(1, 3))
         if not detail.fields and not detail.comments:
             flow.append(self.p("No user inputs were recorded for this booking.", self.S.note))
             flow.append(Spacer(1, 3))
@@ -402,7 +421,6 @@ class _Builder:
         elif detail.sets > 1:
             for index in range(detail.sets):
                 flow.append(self.set_title(f"Sample set {index + 1}"))
-                flow.append(Spacer(1, 3))
                 flow.extend(self.input_block(detail.fields, index))
             flow.append(self.kv_table(extras))
         else:
@@ -410,7 +428,6 @@ class _Builder:
 
         if detail.files:
             flow.append(self.section("Uploaded files"))
-            flow.append(Spacer(1, 3))
             flow.append(self.data_table(
                 ["#", "File name", "Part", "Material", "Quantity"],
                 [[str(i), f.name, f.part, f.material, str(f.quantity)] for i, f in enumerate(detail.files, start=1)],
@@ -418,7 +435,6 @@ class _Builder:
             ))
         if self.charges and detail.charges:
             flow.append(self.section("Charges"))
-            flow.append(Spacer(1, 3))
             flow.append(self.charges_table(detail.charges, row.get("amount")))
         return flow
 

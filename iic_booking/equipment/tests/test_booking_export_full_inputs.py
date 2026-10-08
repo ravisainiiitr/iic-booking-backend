@@ -213,6 +213,18 @@ def test_pdf_has_cover_summary_and_cards_with_embedded_unicode_font(world):
 
 
 @pytest.mark.django_db
+def test_pdf_handles_values_longer_than_a_page(world):
+    b1 = add_rich_inputs(world)
+    long_text = "Very long note. " * 600
+    b1.input_values = {**b1.input_values, "G": long_text, "comments": long_text,
+                       "E": [["x" * 9000, "y"]], "_sample_sets": []}
+    b1.save(update_fields=["input_values"])
+    res = _export(world.f.client_for(world.admin), "pdf", view="staff")
+    assert res.status_code == 200
+    assert len(re.findall(rb"/Type /Page\b", res.content)) >= 4
+
+
+@pytest.mark.django_db
 def test_pdf_falls_back_to_helvetica_without_font_files(world, settings, tmp_path, monkeypatch):
     from reportlab.pdfbase import pdfmetrics
 

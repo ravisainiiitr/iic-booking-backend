@@ -34,7 +34,7 @@ from .models import WaitlistEntry
 
 EXPORT_ROW_LIMIT = 10_000
 # The pdf has a details card (often a page) per booking; larger lists are for Excel.
-PDF_ROW_LIMIT = 1_000
+PDF_ROW_LIMIT = 500
 IST = ZoneInfo("Asia/Kolkata")
 PORTAL_HEADER = "Institute Instrumentation Centre (IIC), IIT Roorkee"
 
