@@ -212,6 +212,38 @@ class _ResultsDeadlineFieldMixin:
             logger.exception("results deadline payload failed for booking %s", getattr(obj, "booking_id", None))
             return None
 
+    def _list_status(self, obj) -> str:
+        """Stored status, or the derived Pending / Result Overdue (``booking_list_status``); cached on the row."""
+        from .booking_list_status import booking_list_status
+
+        cached = getattr(obj, "_list_status", None)
+        if cached:
+            return cached
+        ctx = self._results_context()
+        try:
+            value = booking_list_status(obj, staff_view=ctx["_results_deadline_staff"])
+        except Exception:
+            logger.exception("list status failed for booking %s", getattr(obj, "booking_id", None))
+            return obj.status
+        obj._list_status = value
+        return value
+
+    def get_list_status(self, obj):
+        return self._list_status(obj)
+
+    def get_list_status_group(self, obj):
+        from .booking_list_status import status_group
+
+        return status_group(self._list_status(obj))
+
+    def get_status_display(self, obj):
+        from .booking_list_status import DERIVED_LABELS
+
+        list_status = self._list_status(obj)
+        if list_status in DERIVED_LABELS:
+            return DERIVED_LABELS[list_status]
+        return _booking_status_display(obj)
+
 
 class _RescheduleBlockFieldsMixin:
     """can_reschedule / can_cancel are null when the viewer is unknown (no request in context); the endpoints still enforce."""
@@ -1542,8 +1574,43 @@ class DailySlotSerializer(serializers.ModelSerializer):
     
     def get_booking_status_display(self, obj):
         if obj.booking_id and obj.booking:
+            derived = self._slot_list_statuses().get(obj.booking_id)
+            if derived:
+                from .booking_list_status import DERIVED_LABELS
+
+                return DERIVED_LABELS[derived]
             return obj.booking.get_status_display()
         return None
+
+    def _slot_list_statuses(self) -> dict:
+        """Staff slot calendars: {booking_id: RESULTS_PENDING / RESULT_OVERDUE} for the open bookings listed."""
+        ctx = self.context
+        if "_slot_list_statuses" in ctx:
+            return ctx["_slot_list_statuses"]
+        result: dict = {}
+        root = getattr(self, "root", None)
+        if root is not None and getattr(root, "child", None) is self:
+            from .booking_list_status import DERIVED_LABELS, list_status_map
+            from .results_deadline import _open_statuses, viewer_is_staff
+
+            if viewer_is_staff(getattr(ctx.get("request"), "user", None)):
+                open_statuses = _open_statuses()
+                ids = {
+                    s.booking_id
+                    for s in (root.instance or [])
+                    if getattr(s, "booking_id", None) and getattr(s.booking, "status", None) in open_statuses
+                }
+                if ids:
+                    try:
+                        result = {
+                            pk: value
+                            for pk, value in list_status_map(ids, staff_view=True).items()
+                            if value in DERIVED_LABELS
+                        }
+                    except Exception:
+                        logger.exception("slot calendar list status failed")
+        ctx["_slot_list_statuses"] = result
+        return result
 
     def _booking_user(self, obj):
         booking = getattr(obj, "booking", None)
@@ -3550,6 +3617,8 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     user_department = serializers.SerializerMethodField()
     user_profile_picture = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
+    list_status = serializers.SerializerMethodField()
+    list_status_group = serializers.SerializerMethodField()
     total_hours = serializers.SerializerMethodField()
     start_time = serializers.SerializerMethodField()
     end_time = serializers.SerializerMethodField()
@@ -3787,6 +3856,8 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'charge_breakdown',
             'status',
             'status_display',
+            'list_status',
+            'list_status_group',
             'notes',
             'operator_absent_hold_until',
             'results_deadline',
@@ -4165,10 +4236,6 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             return get_user_display_name(obj.created_by)
         return self.get_user_name(obj)
     
-    def get_status_display(self, obj):
-        """Return model's status display."""
-        return _booking_status_display(obj)
-    
     def get_total_hours(self, obj):
         """Convert total_time_minutes to hours."""
         if obj.total_time_minutes:
@@ -4321,6 +4388,8 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     user_phone = serializers.SerializerMethodField()
     user_department = serializers.SerializerMethodField()
     status_display = serializers.SerializerMethodField()
+    list_status = serializers.SerializerMethodField()
+    list_status_group = serializers.SerializerMethodField()
     total_hours = serializers.SerializerMethodField()
     start_time = serializers.SerializerMethodField()
     end_time = serializers.SerializerMethodField()
@@ -4406,7 +4475,8 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'maintenance_disruption_flag', 'maintenance_decision_deadline_at', 'maintenance_reschedule_extra_week',
             'maintenance_operational_marked_at', 'disruption_kind', 'disruption_release_slot_status',
             'charge_profile', 'user_type_snapshot', 'total_time_minutes', 'total_hours',
-            'total_charge', 'status', 'status_display', 'start_time', 'end_time', 'equipment_weekly_view_display',
+            'total_charge', 'status', 'status_display', 'list_status', 'list_status_group', 'start_time', 'end_time',
+            'equipment_weekly_view_display',
             'user_type_snapshot_display', 'wallet_owner_name', 'created_by_name', 'repeat_sample_request_status',
             'has_results',
             'charge_recalculation_pending_amount', 'charge_recalculation_pay_deadline',
@@ -4499,7 +4569,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
         return None
 
     def get_status_display(self, obj):
-        return _booking_status_display(obj) if hasattr(obj, 'get_status_display') else obj.status
+        return super().get_status_display(obj) if hasattr(obj, 'get_status_display') else obj.status
 
     def get_total_hours(self, obj):
         if obj.total_time_minutes is not None:

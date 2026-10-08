@@ -214,11 +214,15 @@ def _load_bookings(queryset) -> list:
     )
 
 
-def build_booking_rows(bookings) -> list[dict]:
+def build_booking_rows(bookings, *, staff_view: bool = True) -> list[dict]:
+    from .booking_list_status import booking_list_status
+    from .booking_list_status import label_for
+    from .booking_list_status import status_group
     from .booking_sample_summary import SampleCountFieldIndex
     from .booking_sample_summary import booking_sample_summary
-    from .serializers import _booking_status_display
     from .serializers import wallet_owner_display_names
+
+    now = timezone.now()
 
     user_type_labels = dict(UserType.get_choices())
     users = {b.user.pk: b.user for b in bookings if b.user_id and b.user}
@@ -251,10 +255,13 @@ def build_booking_rows(bookings) -> list[dict]:
         events = list(b.sample_trace_events.all())
         user = b.user if b.user_id else None
         code = (b.user_type_snapshot or "").strip()
+        list_status = booking_list_status(b, staff_view=staff_view, now=now)
         rows.append(
             {
                 "pk": b.pk,
                 "status_code": b.status,
+                "list_status": list_status,
+                "group": status_group(list_status),
                 "booking_id": booking_display_id_for_email(b),
                 "equipment": getattr(b.equipment, "name", "") or "",
                 "user": get_user_display_name(user) if user else "",
@@ -266,7 +273,7 @@ def build_booking_rows(bookings) -> list[dict]:
                 "slot_dates": dates,
                 "slot_times": times,
                 "duration": format_duration(b.total_time_minutes),
-                "status": _booking_status_display(b),
+                "status": label_for(list_status, b),
                 "samples": " · ".join(sample_parts),
                 "sample_status": events[-1].get_status_display() if events else "",
                 "amount": _money(b.total_charge),
@@ -321,6 +328,8 @@ def build_waitlist_rows(entries, search: str) -> list[dict]:
             {
                 "pk": None,
                 "status_code": BookingStatus.WAITLISTED,
+                "list_status": BookingStatus.WAITLISTED,
+                "group": None,
                 "booking_id": display_id,
                 "equipment": name,
                 "user": get_user_display_name(entry.user),
@@ -356,10 +365,15 @@ def filters_summary(request, *, view: str) -> list[tuple[str, str]]:
         value = (params.get(name) or "").strip()
         return value if len(value) >= 2 else ""
 
+    from .booking_list_status import DEFAULT_ORDERING, label_for, parse_list_status
+
     out: list[tuple[str, str]] = []
     status_value = (params.get("status") or "").strip().upper()
+    list_status = parse_list_status(params.get("list_status"))
     if str(params.get("results_overdue") or "").strip().lower() in ("1", "true", "yes"):
-        out.append(("Status", "Results overdue"))
+        out.append(("Status", "Result Overdue"))
+    elif list_status:
+        out.append(("Status", label_for(list_status)))
     elif status_value:
         out.append(("Status", dict(BookingStatus.choices).get(status_value, status_value)))
     else:
@@ -386,18 +400,21 @@ def filters_summary(request, *, view: str) -> list[tuple[str, str]]:
         out.append(("I-STEM FBR", istem.capitalize()))
     ordering = (params.get("ordering") or "").strip()
     key = ordering.lstrip("-")
-    if key in _SORT_LABELS:
+    if ordering == DEFAULT_ORDERING:
+        out.append(("Sorted by", "Default order (Result Overdue, Pending, Booked, ... Completed)"))
+    elif key in _SORT_LABELS:
         out.append(("Sorted by", f"{_SORT_LABELS[key]} ({'descending' if ordering.startswith('-') else 'ascending'})"))
     return out
 
 
 def status_counts(rows) -> list[tuple[str, int]]:
-    """[(status label, bookings)] most common first."""
-    labels = dict(BookingStatus.choices)
+    """[(status label, bookings)] most common first; Pending / Result Overdue counted on their own."""
+    from .booking_list_status import label_for
+
     counts: dict[str, int] = {}
     for row in rows:
-        code = row.get("status_code") or ""
-        label = str(labels.get(code, code or "Unknown"))
+        code = row.get("list_status") or row.get("status_code") or ""
+        label = label_for(code) if code else "Unknown"
         counts[label] = counts.get(label, 0) + 1
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
 
@@ -655,12 +672,16 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
 def export_booking_list(request, queryset, *, view: str, export_format: str) -> HttpResponse:
     from .api_views import _user_is_accounts_finance_user
 
+    from .booking_list_status import DEFAULT_ORDERING, GROUP_BOOKED, parse_list_status
+
     params = request.query_params
     status_value = (params.get("status") or "").strip().upper()
+    list_status = parse_list_status(params.get("list_status")) or ""
     include_waitlist = (
         view == "my"
         and not _user_is_accounts_finance_user(request.user)
         and status_value in ("", BookingStatus.WAITLISTED)
+        and list_status in ("", BookingStatus.WAITLISTED)
     )
     entries = _waitlist_entries(request, include=include_waitlist)
 
@@ -680,15 +701,22 @@ def export_booking_list(request, queryset, *, view: str, export_format: str) -> 
     from .booking_export_details import build_booking_details
 
     show_charges = charges_visible(view, request.user)
+    from .booking_list_status import staff_view_for
+
     bookings = _load_bookings(queryset)
-    rows = build_booking_rows(bookings)
+    rows = build_booking_rows(bookings, staff_view=staff_view_for(request.user))
     attach_details(rows, build_booking_details(bookings, include_charges=show_charges))
     if entries:
         search = (params.get("search") or "").strip()
         waitlist_rows = build_waitlist_rows(entries, search if len(search) >= 2 else "")
         ordering = (params.get("ordering") or "-created_at").strip()
-        rows = rows + waitlist_rows
-        # My Bookings interleaves waitlist entries by date only for the default created-at sorts.
+        if ordering == DEFAULT_ORDERING:
+            # Default order: waitlist entries right after the Booked group (before Awaiting your choice).
+            split = next((i for i, r in enumerate(rows) if (r.get("group") or 0) > GROUP_BOOKED), len(rows))
+            rows = rows[:split] + waitlist_rows + rows[split:]
+        else:
+            rows = rows + waitlist_rows
+        # My Bookings interleaves waitlist entries by date only for the created-at sorts.
         if ordering in ("created_at", "-created_at"):
             rows.sort(key=lambda r: r["booked_on"] or timezone.now(), reverse=ordering.startswith("-"))
     for index, row in enumerate(rows, start=1):

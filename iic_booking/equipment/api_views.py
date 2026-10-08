@@ -6521,10 +6521,28 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
                 status=status.HTTP_400_BAD_REQUEST,
             )
     
+    # View Booking / My Bookings status (incl. derived Pending / Result Overdue) and default group order.
+    from . import booking_list_status as bls
+
+    list_status = bls.parse_list_status(request.query_params.get('list_status'))
+    if list_status and list_status not in bls.LIST_STATUS_VALUES:
+        return None, Response(
+            {"error": f"Invalid list_status. Must be one of: {', '.join(sorted(bls.LIST_STATUS_VALUES))}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    ordering = (request.query_params.get('ordering') or '-created_at').strip()
+    default_order = ordering == bls.DEFAULT_ORDERING
+    if list_status or default_order:
+        queryset = bls.annotate_list_status(queryset, staff_view=bls.staff_view_for(request.user))
+        if list_status:
+            queryset = bls.filter_list_status(queryset, list_status)
+    if default_order:
+        return bls.apply_default_order(queryset), None
+
     # Ordering (whitelisted keys, incl. View Booking column sorts such as start_time / user_name)
     from .booking_list_ordering import apply_booking_list_ordering
 
-    queryset = apply_booking_list_ordering(queryset, request.query_params.get('ordering', '-created_at'))
+    queryset = apply_booking_list_ordering(queryset, ordering)
     return queryset, None
 
 @api_view(["GET"])
@@ -6544,16 +6562,18 @@ def booking_stats(request):
         summarize_report_bookings,
     )
 
-    queryset, scope = report_bookings_scope(request.user)
+    from . import booking_list_status as bls
 
-    status_filter = (request.query_params.get("status") or "").strip().upper()
-    if status_filter:
-        if status_filter not in BookingStatus.values:
-            return Response(
-                {"error": f"Invalid status. Must be one of: {', '.join(BookingStatus.values)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        queryset = queryset.filter(status=status_filter)
+    queryset, scope = report_bookings_scope(request.user)
+    staff_view = bls.staff_view_for(request.user)
+
+    # Status = the booking list status (Booked no longer includes the derived Pending / Result Overdue).
+    status_filter = bls.parse_list_status(request.query_params.get("status")) or ""
+    if status_filter and status_filter not in bls.LIST_STATUS_VALUES:
+        return Response(
+            {"error": f"Invalid status. Must be one of: {', '.join(sorted(bls.LIST_STATUS_VALUES))}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     dates = {}
     for key in ("date_from", "date_to"):
@@ -6570,10 +6590,16 @@ def booking_stats(request):
                 )
             dates[key] = parsed
     queryset = filter_report_period(queryset, dates.get("date_from"), dates.get("date_to"))
+    if status_filter:
+        matching = bls.annotate_list_status(queryset, staff_view=staff_view).filter(_list_status=status_filter)
+        queryset = queryset.filter(pk__in=matching.values("pk"))
 
     from .charge_visibility import strip_booking_stats_money, viewer_may_see_report_revenue
 
     data = summarize_report_bookings(queryset)
+    list_counts = bls.list_status_counts(queryset, staff_view=staff_view)
+    if sum(list_counts.values()) == data["total_bookings"]:
+        data["status_counts"] = dict(sorted(list_counts.items(), key=lambda kv: (-kv[1], kv[0])))
     revenue_visible = viewer_may_see_report_revenue(request.user)
     if not revenue_visible:
         strip_booking_stats_money(data)
