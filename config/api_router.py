@@ -278,6 +278,11 @@ from iic_booking.equipment.fabrication_materials_views import (
     laser_sheet_materials_manage,
 )
 from iic_booking.equipment.fabrication_reupload_views import booking_fabrication_files, booking_fabrication_reject
+from iic_booking.equipment.urgent_allocation_views import (
+    urgent_allocate,
+    urgent_allocation_quote,
+    urgent_allocation_slots,
+)
 from iic_booking.equipment.oic_substitution_views import (
     oic_substitute_candidates,
     oic_substitute_end,
@@ -1657,6 +1662,9 @@ urlpatterns = router.urls + [
     path("urgent-booking-requests/hold-expiry-config/", urgent_hold_expiry_config, name="urgent-hold-expiry-config"),
     path("urgent-booking-requests/<int:request_id>/", update_urgent_booking_request, name="update-urgent-booking-request"),
     path("urgent-booking-requests/<int:request_id>/wallet-approve/", wallet_approve_urgent_booking_request, name="wallet-approve-urgent-booking-request"),
+    path("urgent-booking-requests/<int:request_id>/allocation-slots/", urgent_allocation_slots, name="urgent-allocation-slots"),
+    path("urgent-booking-requests/<int:request_id>/allocation-quote/", urgent_allocation_quote, name="urgent-allocation-quote"),
+    path("urgent-booking-requests/<int:request_id>/allocate/", urgent_allocate, name="urgent-allocate"),
     path(
         "urgent-booking-requests/<int:request_id>/supervisor-email-action/<str:action>/",
         urgent_supervisor_email_action,

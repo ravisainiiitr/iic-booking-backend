@@ -9236,6 +9236,38 @@ def create_urgent_booking_request(request):
             req.evidence_file = evidence
             req.evidence_original_name = (request.data.get("evidence_original_name") or evidence.name or "")[:255]
         req.reviewer_comment = (request.data.get("reviewer_comment") or "").strip()[:8000]
+        if not req.hold_booking_id:
+            from .urgent_allocation import (
+                MAX_PREFERRED_SCHEDULE_LENGTH,
+                UrgentAllocationError,
+                clean_request_input_values,
+                quote_urgent_charge,
+            )
+
+            import json as _json
+
+            selected_parameters = request.data.get("selected_parameters")
+            if isinstance(selected_parameters, str) and selected_parameters.strip().startswith("["):
+                try:
+                    selected_parameters = _json.loads(selected_parameters)
+                except ValueError:
+                    selected_parameters = None
+            try:
+                cleaned_inputs = clean_request_input_values(
+                    equip, request.user, request.data.get("input_values"), selected_parameters=selected_parameters
+                )
+                quote = quote_urgent_charge(equip, request.user, cleaned_inputs)
+            except UrgentAllocationError as exc:
+                return Response(exc.payload(), status=exc.http_status)
+            req.requires_slot_allocation = True
+            req.input_values = cleaned_inputs
+            req.duration_minutes = quote["required_minutes"]
+            req.slots_requested = max(1, int(quote["required_slots"] or 1))
+            req.estimated_charge = quote["total_charge"]
+            req.estimated_charge_breakdown = quote["charge_breakdown"]
+            req.preferred_schedule = (request.data.get("preferred_schedule") or "").strip()[
+                :MAX_PREFERRED_SCHEDULE_LENGTH
+            ]
         # Wallet owners (faculty) have no supervisor, so their requests go straight to the OIC.
         supervisor = _get_wallet_supervisor_user(request.user)
         if supervisor is not None and supervisor.id != request.user.id:
@@ -9279,6 +9311,12 @@ def create_urgent_booking_request(request):
                 "for approval. After the supervisor approves, the Officer in charge will review and allocate slots. "
                 "Your wallet is charged only after the Officer in charge gives final approval."
             )
+        elif req.requires_slot_allocation:
+            next_steps = (
+                "Your Type B request is pending OIC/Admin review. The Officer in charge will choose the date and "
+                "slots (weekends included) and confirm the booking; you will get the booking confirmation by email. "
+                "Your wallet is charged only then. Once booked, please submit your sample at the earliest."
+            )
         elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
             next_steps = (
                 "Your Type B request is pending OIC/Admin review. They may accept, reject, or reschedule "
@@ -9289,6 +9327,11 @@ def create_urgent_booking_request(request):
                 "Your request is recorded. Admin/Officer in charge will confirm it"
                 + (f" ({auto_approve_error})" if auto_approve_error else "")
                 + ". You can track its status using the link below."
+            )
+        if req.requires_slot_allocation and req.estimated_charge is not None:
+            next_steps += (
+                f" Required time: {req.duration_minutes} minutes. Estimated amount: ₹{req.estimated_charge:.2f} "
+                "(includes the 50% urgent surcharge)."
             )
         CommunicationService.send_email(
             recipient=request.user,
@@ -9333,6 +9376,11 @@ def create_urgent_booking_request(request):
             "Type B urgent request submitted (50% surcharge). It has been sent to your supervisor for approval; "
             "after that the Officer in charge gives final approval. Your wallet is charged only after final approval."
         )
+    elif req.requires_slot_allocation:
+        message = (
+            "Type B urgent request submitted for OIC/Admin review (50% surcharge). The Officer in charge will "
+            "choose the date and slots; your wallet is charged only when the booking is allocated."
+        )
     elif request_type_val == UrgentBookingRequestType.REVIEWER_URGENT:
         message = (
             "Type B urgent request submitted for OIC/Admin review (50% surcharge). "
@@ -9350,6 +9398,10 @@ def create_urgent_booking_request(request):
             "auto_approved": auto_approved,
             "waive_urgent_surcharge": req.waive_urgent_surcharge,
             "pending_wallet_approval": req.pending_supervisor_approval,
+            "requires_slot_allocation": req.requires_slot_allocation,
+            "required_minutes": req.duration_minutes if req.requires_slot_allocation else None,
+            "estimated_charge": str(req.estimated_charge) if req.estimated_charge is not None else None,
+            "estimated_charge_breakdown": req.estimated_charge_breakdown if req.requires_slot_allocation else [],
         },
         status=status.HTTP_201_CREATED,
     )
@@ -9404,7 +9456,7 @@ def list_my_urgent_booking_requests(request):
     requests_qs = (
         UrgentBookingRequest.objects
         .filter(user=request.user)
-        .select_related("equipment")
+        .select_related("equipment", "hold_booking")
         .order_by("-requested_at")
     )
     status_filter = request.query_params.get("status", "").strip().upper()
@@ -9434,6 +9486,15 @@ def list_my_urgent_booking_requests(request):
             "expiry_at": expiry_at.isoformat() if expiry_at else None,
             "pending_wallet_approval": req.pending_supervisor_approval,
             "supervisor_decision": req.supervisor_decision or "",
+            "requires_slot_allocation": req.requires_slot_allocation,
+            "required_minutes": req.duration_minutes if req.requires_slot_allocation else None,
+            "estimated_charge": str(req.estimated_charge) if req.estimated_charge is not None else None,
+            "preferred_schedule": req.preferred_schedule or "",
+            "booking_display_id": (
+                booking_display_id_for_email(req.hold_booking)
+                if req.status == UrgentBookingRequestStatus.APPROVED and req.hold_booking_id and req.hold_booking
+                else None
+            ),
         })
     return Response(
         {"urgent_requests": results, "total_count": total_count, "limit": limit, "offset": offset},
@@ -9485,6 +9546,7 @@ def list_urgent_booking_requests(request):
     if config_for_expiry and getattr(config_for_expiry, "urgent_booking_validity_days", None) is not None:
         validity_days_list = config_for_expiry.urgent_booking_validity_days or 1
     from .input_display import booking_input_fields
+    from .urgent_allocation import requirement_payload
 
     key_to_label_cache = {}
     input_fields_cache = {}
@@ -9583,6 +9645,8 @@ def list_urgent_booking_requests(request):
             "no_slot_log_entries": log_recent,
             "hold_booking_id": req.hold_booking_id,
             "hold_booking_summary": hold_booking_summary,
+            "requires_slot_allocation": req.requires_slot_allocation,
+            "requirement": requirement_payload(req, field_cache=input_fields_cache),
         })
     return Response(
         {
@@ -9623,6 +9687,7 @@ def get_urgent_request_detail(request, request_id):
                 status=status.HTTP_403_FORBIDDEN,
             )
     from .input_display import booking_input_fields as _booking_input_fields
+    from .urgent_allocation import requirement_payload
 
     log_count, log_recent = _get_no_slot_log_for_urgent_display(urg.user, urg.equipment)
     evidence_url = None
@@ -9707,6 +9772,8 @@ def get_urgent_request_detail(request, request_id):
         "no_slot_log_entries": log_recent,
         "hold_booking_id": urg.hold_booking_id,
         "hold_booking_summary": hold_booking_summary,
+        "requires_slot_allocation": urg.requires_slot_allocation,
+        "requirement": requirement_payload(urg),
     }
     return Response(result, status=status.HTTP_200_OK)
 
@@ -10256,6 +10323,14 @@ def update_urgent_booking_request(request, request_id):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if urg.requires_slot_allocation and not urg.hold_booking_id:
+            return Response(
+                {
+                    "error": "This request has no slots yet. Use Approve & allocate to choose the slots.",
+                    "code": "SLOT_ALLOCATION_REQUIRED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if urg.status != UrgentBookingRequestStatus.APPROVED:
             cap_error = _urgent_weekly_cap_error(urg.equipment, urg.request_type, include_pending=False)
             if cap_error:
@@ -10543,6 +10618,8 @@ def _notify_urgent_supervisor_decision(urg, actor) -> None:
 
 
 def _urgent_supervisor_row(req) -> dict:
+    from .urgent_allocation import requirement_payload
+
     evidence_url = None
     if req.evidence_file:
         try:
@@ -10578,6 +10655,8 @@ def _urgent_supervisor_row(req) -> dict:
         "hold_booking_total_charge": str(hb.total_charge) if hb is not None and hb.total_charge is not None else None,
         "evidence_file_url": evidence_url,
         "evidence_original_name": req.evidence_original_name or "",
+        "requires_slot_allocation": req.requires_slot_allocation,
+        "requirement": requirement_payload(req),
     }
 
 

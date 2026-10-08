@@ -77,7 +77,10 @@ def _equipment(**kwargs):
     }
     defaults.update(kwargs)
     eq = Equipment.objects.create(**defaults)
-    ChargeProfile.objects.create(equipment=eq, user_type=UserType.STUDENT, primary_unit_charge=Decimal("100.00"))
+    for user_type in (UserType.STUDENT, UserType.FACULTY):
+        ChargeProfile.objects.create(
+            equipment=eq, user_type=user_type, profile_type="SAMPLE", primary_unit_charge=Decimal("100.00")
+        )
     return eq
 
 
@@ -360,6 +363,7 @@ def test_create_type_b_routes_student_to_supervisor(create_unlocked, _quiet):
             "request_type": "REVIEWER_URGENT",
             "disclaimer_accepted": True,
             "reviewer_comment": "Reviewer asked for revised spectra within a week.",
+            "input_values": {"A": 1},
         },
         format="json",
     )
@@ -384,6 +388,7 @@ def test_create_type_b_by_faculty_skips_supervisor(create_unlocked):
             "request_type": "REVIEWER_URGENT",
             "disclaimer_accepted": True,
             "reviewer_comment": "Reviewer asked for revised spectra within a week.",
+            "input_values": {"A": 1},
         },
         format="json",
     )
@@ -406,6 +411,7 @@ def test_create_blocked_by_weekly_cap(create_unlocked):
             "request_type": "REVIEWER_URGENT",
             "disclaimer_accepted": True,
             "reviewer_comment": "Reviewer asked for revised spectra within a week.",
+            "input_values": {"A": 1},
         },
         format="json",
     )

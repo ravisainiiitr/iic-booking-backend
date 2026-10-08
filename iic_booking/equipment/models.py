@@ -4695,6 +4695,31 @@ class UrgentBookingRequest(models.Model):
         choices=[('', _('Awaiting supervisor')), ('APPROVED', _('Approved')), ('REJECTED', _('Rejected'))],
     )
     supervisor_decided_at = models.DateTimeField(null=True, blank=True)
+    requires_slot_allocation = models.BooleanField(
+        default=False,
+        help_text=_(
+            'Type B request submitted with the booking inputs only (no slots); the OIC chooses the slots '
+            'on approval. duration_minutes holds the required time.'
+        ),
+    )
+    input_values = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=_('Booking inputs (Step 1) given by the user for a request without slots'),
+    )
+    estimated_charge = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_('Amount shown to the user on submission (category rate + 50% urgent surcharge, GST if any)'),
+    )
+    estimated_charge_breakdown = models.JSONField(default=list, blank=True)
+    preferred_schedule = models.TextField(
+        blank=True,
+        default='',
+        help_text=_('Preferred dates / time given by the user (free text, optional)'),
+    )
 
     @property
     def pending_supervisor_approval(self) -> bool:

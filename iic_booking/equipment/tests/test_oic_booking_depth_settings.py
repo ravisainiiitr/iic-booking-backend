@@ -83,8 +83,10 @@ def _equipment(**kwargs):
     }
     defaults.update(kwargs)
     eq = Equipment.objects.create(**defaults)
-    ChargeProfile.objects.create(equipment=eq, user_type=UserType.STUDENT, primary_unit_charge=Decimal("100.00"))
-    ChargeProfile.objects.create(equipment=eq, user_type=UserType.FACULTY, primary_unit_charge=Decimal("100.00"))
+    for user_type in (UserType.STUDENT, UserType.FACULTY):
+        ChargeProfile.objects.create(
+            equipment=eq, user_type=user_type, profile_type="SAMPLE", primary_unit_charge=Decimal("100.00")
+        )
     return eq
 
 
@@ -310,6 +312,7 @@ def _submit(user, eq, request_type):
     body = {"equipment_id": eq.pk, "request_type": request_type, "disclaimer_accepted": True}
     if request_type == "REVIEWER_URGENT":
         body["reviewer_comment"] = "Reviewer asked for revised spectra within a week."
+        body["input_values"] = {"A": 1}
     return _client(user).post(CREATE_URGENT_URL, body, format="json")
 
 
