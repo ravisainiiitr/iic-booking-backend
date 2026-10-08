@@ -8929,6 +8929,15 @@ def _notify_urgent_request_submitted(req, actor, *, auto_approved: bool) -> None
         _notify_oics_urgent_request_pending(req, actor, requester=actor)
 
 
+def _email_urgent_oics(req, stage: str) -> None:
+    from .urgent_oic_alerts import send_urgent_oic_alert_emails
+
+    try:
+        send_urgent_oic_alert_emails(req, stage=stage)
+    except Exception:
+        logger.exception("Failed urgent OIC alert emails request_id=%s stage=%s", req.id, stage)
+
+
 def _notify_oics_urgent_request_pending(req, actor, *, requester) -> None:
     from iic_booking.communication.in_app import equipment_oic_users, notify_in_app, person_label
 
@@ -9372,6 +9381,8 @@ def create_urgent_booking_request(request):
                 exc_info=True,
             )
     _notify_urgent_request_submitted(req, request.user, auto_approved=auto_approved)
+    if not auto_approved:
+        _email_urgent_oics(req, "submitted")
     if auto_approved:
         message = "Type A rush relief approved — held slots booked at normal rates. The 14-day rush-relief attempt window now resets."
     elif req.pending_supervisor_approval:
@@ -10618,6 +10629,8 @@ def _notify_urgent_supervisor_decision(urg, actor) -> None:
         logger.warning(
             "Failed to send urgent supervisor decision notifications for request id=%s: %s", urg.id, e, exc_info=True
         )
+    if approved:
+        _email_urgent_oics(urg, "supervisor_approved")
 
 
 def _urgent_supervisor_row(req) -> dict:

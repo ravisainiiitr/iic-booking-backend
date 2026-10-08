@@ -60,6 +60,7 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "urgent_booking_hold_confirmed_email",
     "urgent_booking_hold_released_email",
     "urgent_booking_admin_decision_user_email",
+    "urgent_booking_request_oic_alert_email",
     "wallet_credit_email",
     "wallet_debit_email",
     "wallet_recharge_approved_email",
@@ -1048,6 +1049,37 @@ def _urgent_templates() -> list[dict[str, Any]]:
             variable_help=(
                 "{{ user_name }}, {{ decision_headline }}, {{ decision_body }}, {{ request_id }}, "
                 "{{ equipment_name }}, {{ equipment_code }}, {{ admin_notes }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="urgent_booking_request_oic_alert_email",
+            title="{{ headline }}",
+            subject="{{ headline }} #{{ request_id }} – {{ equipment_name }}",
+            intro="{{ intro }}",
+            description=(
+                "Sent to the equipment's Officer(s) in charge, including active temporary OICs, when a Type B "
+                "urgent request is raised and again when the supervisor approves it."
+            ),
+            detail_rows=[
+                optional_detail_row("Request ID", "request_id"),
+                optional_detail_row("Status", "status_label"),
+                optional_detail_row("Equipment", "equipment_name"),
+                optional_detail_row("Equipment code", "equipment_code"),
+                optional_detail_row("Requested by", "requester_name"),
+                optional_detail_row("Requester category", "requester_category"),
+                optional_detail_row("Required time", "required_time"),
+                optional_detail_row("Amount at submission", "amount"),
+            ],
+            note_vars=(
+                ("preferred_schedule", "Preferred dates / notes"),
+                ("reason", "Reason for urgency"),
+            ),
+            cta_label="Open urgent request",
+            variable_help=(
+                "{{ user_name }}, {{ headline }}, {{ intro }}, {{ request_id }}, {{ status_label }}, "
+                "{{ status_detail }}, {{ equipment_name }}, {{ equipment_code }}, {{ requester_name }}, "
+                "{{ requester_category }}, {{ required_time }}, {{ amount }}, {{ preferred_schedule }}, "
+                "{{ reason }}, {{ link }}"
             ),
         ),
     ]

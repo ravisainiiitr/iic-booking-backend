@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 MAX_DETAILS = 3
 MAX_COMPLETION_DETAILS = 50
+MAX_STAFF_ENTRIES = 5
+LAB_MESSAGE_SCAN_LIMIT = 200
 RECENT_RESULTS_DAYS = 30
 
 
@@ -45,6 +47,90 @@ def _person(user) -> str:
     return person_label(user)
 
 
+def _age(ts) -> str:
+    if not ts:
+        return ""
+    secs = max(0, int((timezone.now() - ts).total_seconds()))
+    if secs < 3600:
+        return f"{max(1, secs // 60)} min ago"
+    if secs < 86400:
+        return f"{secs // 3600} h ago"
+    days = secs // 86400
+    return "1 day ago" if days == 1 else f"{days} days ago"
+
+
+def _lab_message_items(c: _Collector) -> None:
+    """Bookings with unread 'Message the lab' notifications from the booking user that no staff member has answered since."""
+    from django.db.models import Max
+
+    from iic_booking.communication.models import CommunicationLog
+
+    from .booking_lab_messages import KIND_STAFF_QUESTION, KIND_STAFF_REMINDER, KIND_STAFF_REPLY, KIND_USER, LAB_MESSAGE_KEY
+    from .models import BookingEvent
+
+    rows = (
+        CommunicationLog.objects.filter(
+            recipient=c.user,
+            communication_type=CommunicationLog.CommunicationType.PUSH_NOTIFICATION,
+            metadata__event="booking.lab_message",
+            **{f"metadata__{LAB_MESSAGE_KEY}": KIND_USER},
+        )
+        .exclude(status=CommunicationLog.CommunicationStatus.READ)
+        .order_by("-created_at")
+        .values("id", "created_at", "message", "metadata")[:LAB_MESSAGE_SCAN_LIMIT]
+    )
+    latest: dict[int, dict[str, Any]] = {}
+    notification_ids: dict[int, list[int]] = {}
+    for row in rows:
+        md = row["metadata"] or {}
+        try:
+            booking_id = int(md.get("real_booking_id"))
+        except (TypeError, ValueError):
+            continue
+        notification_ids.setdefault(booking_id, []).append(row["id"])
+        latest.setdefault(booking_id, row)
+    if not latest:
+        return
+    answered = dict(
+        BookingEvent.objects.filter(
+            booking_id__in=list(latest),
+            **{f"metadata__{LAB_MESSAGE_KEY}__in": [KIND_STAFF_REPLY, KIND_STAFF_REMINDER, KIND_STAFF_QUESTION]},
+        )
+        .order_by()
+        .values("booking_id")
+        .annotate(last=Max("created_at"))
+        .values_list("booking_id", "last")
+    )
+    open_ids = [bid for bid, row in latest.items() if not (answered.get(bid) and answered[bid] >= row["created_at"])]
+    if not open_ids:
+        return
+
+    def entry(booking_id: int) -> dict[str, Any]:
+        row = latest[booking_id]
+        ref = (row["metadata"] or {}).get("booking_id") or str(booking_id)
+        snippet = (row["message"] or "").strip()
+        snippet = snippet if len(snippet) <= 120 else snippet[:117] + "..."
+        return {
+            "label": f"{ref} — {snippet} — {_age(row['created_at'])}",
+            "link": f"/booking-management?expand={booking_id}&section=messages",
+            "notification_ids": notification_ids[booking_id],
+        }
+
+    entries = [entry(bid) for bid in open_ids[:MAX_STAFF_ENTRIES]]
+    c.items.append(
+        {
+            "key": "lab_messages_from_users",
+            "label": "Unread messages from users",
+            "count": len(open_ids),
+            "link": "/booking-management",
+            "description": "Booking users sent messages to the lab that no one has answered yet. Open a booking to "
+            "read and reply.",
+            "details": [e["label"] for e in entries],
+            "entries": entries,
+        }
+    )
+
+
 class _Collector:
     def __init__(self, user):
         self.user = user
@@ -59,13 +145,20 @@ class _Collector:
         description: str,
         detail: Callable | None = None,
         max_details: int = MAX_DETAILS,
+        entry: Callable | None = None,
     ):
+        """``entry(obj)`` returns ``{"label", "link"}`` so each listed row opens its own page."""
         count = qs_or_count if isinstance(qs_or_count, int) else qs_or_count.count()
         if not count:
             return
         item: dict[str, Any] = {"key": key, "label": label, "count": count, "link": link, "description": description}
-        if detail is not None and not isinstance(qs_or_count, int):
-            item["details"] = [detail(obj) for obj in qs_or_count[:max_details]]
+        if not isinstance(qs_or_count, int) and (detail is not None or entry is not None):
+            objs = list(qs_or_count[:max_details])
+            if entry is not None:
+                item["entries"] = [entry(obj) for obj in objs]
+                item["details"] = [e["label"] for e in item["entries"]]
+            else:
+                item["details"] = [detail(obj) for obj in objs]
         self.items.append(item)
 
     def safely(self, name: str, fn: Callable[[], None]) -> None:
@@ -379,19 +472,29 @@ def _staff_items(c: _Collector) -> None:
         )
     if user_type == UserType.OPERATOR:
         return
+    from .urgent_oic_alerts import urgent_request_path
+
     c.add(
         "urgent_requests",
         "Urgent booking requests",
         _scoped(
-            UrgentBookingRequest.objects.filter(status=UrgentBookingRequestStatus.PENDING).exclude(
-                supervisor_approval_required=True, supervisor_decision=""
-            ),
+            UrgentBookingRequest.objects.filter(status=UrgentBookingRequestStatus.PENDING)
+            .exclude(supervisor_approval_required=True, supervisor_decision="")
+            .select_related("user", "equipment")
+            .order_by("requested_at"),
             "equipment_id",
             equipment_ids,
         ),
         "/urgent-requests",
-        "Urgent (Type B) booking requests are waiting for your decision.",
+        "Urgent (Type B) booking requests are waiting for your decision. Open one to review or allocate it.",
+        max_details=MAX_STAFF_ENTRIES,
+        entry=lambda r: {
+            "label": f"#{r.id} — {r.equipment.name} — {str(r.user.get_user_type_display_label() or 'User')} — "
+            f"{_age(r.requested_at)}",
+            "link": urgent_request_path(r.id),
+        },
     )
+    c.safely("lab_messages", lambda: _lab_message_items(c))
 
     def fbr():
         c.add(
