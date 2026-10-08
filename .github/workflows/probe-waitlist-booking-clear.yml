@@ -1,0 +1,145 @@
+# Read-only: one booking's origin (waitlist auto / manual / normal), its slots' status history, wallet
+# debits / refunds, the holder's waitlist entry and whether the booking exceeds the holder's quota.
+# Prints IDs, codes, amounts and statuses only. Nothing is written.
+name: Probe Waitlist Booking Clear
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_code:
+        description: "Booking code (virtual booking id)"
+        required: true
+        default: "IICXPS202600053"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          BOOKING_CODE: ${{ inputs.booking_code }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e BOOKING_CODE="$BOOKING_CODE" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import timedelta
+          from django.utils import timezone
+          from iic_booking.equipment import quota_utils
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, DailySlot, WaitlistEntry, BookingAttemptLog, EquipmentGroupQuota,
+          )
+          from iic_booking.equipment.disruption_models import SlotStatusChangeLog, DisruptionEvent
+          from iic_booking.equipment.slot_block_rule_models import RecurringSlotBlockRuleSlot
+          from iic_booking.equipment.booking_paid_amount import booking_paid_charge
+          from iic_booking.users.models.wallet import SubWalletTransaction
+
+          def lt(dt):
+              return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
+          code = os.environ["BOOKING_CODE"].strip()
+          b = Booking.objects.select_related("equipment", "user").get(virtual_booking_id=code)
+          eq = b.equipment
+          print(f"== booking pk={b.pk} code={b.virtual_booking_id} status={b.status} user={b.user_id} "
+                f"user_type={b.user.user_type} created_by={b.created_by_id} created_at={lt(b.created_at)}")
+          print(f"   eq={eq.pk} {eq.code} group={eq.equipment_group_id} skip_quota={getattr(eq,'skip_quota_check',None)} "
+                f"minutes={b.total_time_minutes} total_charge={b.total_charge} paid={booking_paid_charge(b)} "
+                f"pending_diff={b.charge_recalculation_pending_amount} reward_points_used={b.reward_points_used} "
+                f"anchor={lt(b.quota_period_anchor_at)} source_booking={b.source_booking_id}")
+          notes = b.notes or ""
+          print(f"   origin_flags manual_waitlist={'Confirmed manually from waitlist' in notes} "
+                f"auto_waitlist={'Auto-booked from waitlist' in notes} notes_len={len(notes)}")
+          print("== events")
+          for e in BookingEvent.objects.filter(booking=b).order_by("created_at", "pk"):
+              md = e.metadata if isinstance(e.metadata, dict) else {}
+              keep = {k: md.get(k) for k in ("from_waitlist", "manual_waitlist_confirmation", "waitlist_position",
+                                             "refund_amount") if k in md}
+              print(f"   ev={e.pk} {e.event_type} {e.previous_status}->{e.new_status} by={e.created_by_id} at={lt(e.created_at)} md={keep}")
+
+          slots = list(DailySlot.objects.filter(booking=b).select_related("slot_master").order_by("start_datetime"))
+          print(f"== slots ({len(slots)})")
+          for s in slots:
+              print(f"   slot={s.pk} date={s.date} weekday={s.date.strftime('%A')} sm={s.slot_master.slot_number} "
+                    f"start={lt(s.start_datetime)} status={s.status} blocked_label={s.blocked_label!r} "
+                    f"released_by_booking_at={lt(s.released_by_booking_at)} ext_ref={s.external_reference!r} "
+                    f"home_only={s.home_department_only} updated_at={lt(s.updated_at)}")
+              for r in RecurringSlotBlockRuleSlot.objects.filter(daily_slot=s).select_related("rule"):
+                  ru = r.rule
+                  print(f"     repeat_rule={ru.pk} link_source={r.source} active={ru.is_active} label={ru.label!r} "
+                        f"removed_at={lt(ru.removed_at)} created_at={lt(ru.created_at)}")
+              for lg in SlotStatusChangeLog.objects.filter(equipment=eq).order_by("changed_at"):
+                  if s.pk in (lg.slot_ids or []):
+                      print(f"     status_log={lg.pk} at={lt(lg.changed_at)} new={lg.new_status} prev={lg.previous_statuses} "
+                            f"label={lg.label!r} source={lg.source} by={lg.changed_by_id} n={lg.slot_count}")
+              for de in DisruptionEvent.objects.filter(equipment=eq, start_at__lte=s.end_datetime).order_by("start_at"):
+                  if de.end_at is None or de.end_at >= s.start_datetime:
+                      print(f"     disruption={de.pk} type={de.disruption_type} scope={de.scope} source={de.source} "
+                            f"start={lt(de.start_at)} end={lt(de.end_at)} ended={lt(de.ended_at)}")
+              same_day = DailySlot.objects.filter(slot_master__equipment=eq, date=s.date).exclude(pk=s.pk)
+              print("     same_day_others=" + ", ".join(f"{o.pk}:{o.status}:{o.blocked_label!r}" for o in same_day.order_by("start_datetime")))
+
+          print("== wallet transactions near creation / mentioning the code")
+          win = (b.created_at - timedelta(minutes=10), b.created_at + timedelta(minutes=10))
+          txns = SubWalletTransaction.objects.filter(related_user=b.user).filter(
+              created_at__range=win
+          ) | SubWalletTransaction.objects.filter(description__contains=code)
+          for t in txns.select_related("sub_wallet", "sub_wallet__wallet").order_by("created_at"):
+              print(f"   txn={t.pk} {t.transaction_type} amount={t.amount} sub_wallet={t.sub_wallet_id} "
+                    f"wallet={t.sub_wallet.wallet_id} owner={t.sub_wallet.wallet.user_id} dept={t.sub_wallet.department_id} "
+                    f"at={lt(t.created_at)} mentions_code={code in (t.description or '')} "
+                    f"is_booking_debit={(t.description or '').startswith('Booking #')}")
+          try:
+              from iic_booking.payments.models import Payment
+              for p in Payment.objects.filter(booking=b):
+                  print(f"   payment={p.pk} status={getattr(p,'status',None)} amount={getattr(p,'amount',None)}")
+          except Exception as ex:
+              print("   payment lookup:", type(ex).__name__)
+
+          print("== waitlist entries of this user on this equipment")
+          for w in WaitlistEntry.objects.filter(user=b.user, equipment=eq):
+              print(f"   entry={w.pk} status={w.status} created={lt(w.created_at)} remark_len={len(w.cannot_fulfill_remark or '')}")
+          print("   active_queue=" + ", ".join(f"{w.pk}:u{w.user_id}" for w in WaitlistEntry.objects.filter(equipment=eq, status='ACTIVE').order_by('created_at')))
+          for a in BookingAttemptLog.objects.filter(user=b.user, equipment=eq).order_by("-requested_at")[:6]:
+              print(f"   attempt={a.pk} {a.outcome} at={lt(a.requested_at)} reason={(a.failure_reason or '')[:160]!r}")
+
+          print("== quota with this booking (slot week)")
+          ref = quota_utils.booking_quota_reference_datetime(b)
+          print("   reference=", lt(ref))
+          if eq.equipment_group_id:
+              for q in EquipmentGroupQuota.objects.filter(equipment_group_id=eq.equipment_group_id):
+                  print(f"   group_quota={q.pk} type={q.quota_type} enforced={q.is_enforced} "
+                        f"individual={q.internal_individual_quota_minutes} "
+                        f"faculty={getattr(q,'internal_faculty_quota_minutes',None)}")
+          without = quota_utils.QuotaService.evaluate_booking_quota(
+              b.user, eq, additional_time_minutes=int(b.total_time_minutes or 0), additional_bookings=1,
+              additional_charge=b.total_charge, booking_date=ref, exclude_booking_id=b.pk)
+          print(f"   adding_this_booking_to_others: allowed={without.allowed} error={without.error!r}")
+          f = getattr(without, "failure", None)
+          if f is not None:
+              print("   failure=", {k: getattr(f, k) for k in dir(f) if not k.startswith('_') and not callable(getattr(f, k))})
+          for qt in ("WEEKLY",):
+              start, end = quota_utils.QuotaService._get_quota_period(qt, ref)
+              others = quota_utils.QuotaService._in_quota_period(
+                  quota_utils.QuotaService._base_quota_bookings_qs().filter(
+                      user=b.user, equipment__equipment_group_id=eq.equipment_group_id) if eq.equipment_group_id
+                  else quota_utils.QuotaService._base_quota_bookings_qs().filter(user=b.user, equipment=eq),
+                  start, end)
+              print(f"   {qt} {start:%Y-%m-%d}..{end:%Y-%m-%d}: " + ", ".join(
+                  f"{o.virtual_booking_id}:{o.status}:{o.total_time_minutes}m" for o in others.distinct()))
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
