@@ -1,6 +1,5 @@
-# Read-only (IDs and amounts only; no names or emails): for students on the MALDI Equipment PI's wallet,
-# the live Calculate Charges estimate for their own category versus the booking-flow estimate
-# (GET /calculate/, no writes), plus the same for the PI and for a student not on a PI wallet.
+# Read-only (IDs, codes and amounts only; no names or emails): how each MALDI booking was priced
+# (charge profile, inputs, minutes, path markers) and what the PI / standard profiles give for it.
 name: Probe PI Student Charges
 
 on:
@@ -27,42 +26,36 @@ jobs:
           import os, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
-          from rest_framework.test import APIRequestFactory, force_authenticate
-          from iic_booking.equipment.models import Booking, Equipment, EquipmentPI
+          from iic_booking.equipment.models import Booking, ChargeProfile, Equipment, EquipmentPI
+          from iic_booking.equipment.calculators import ChargeCalculationEngine
           from iic_booking.equipment import pi_pricing as pp
-          from iic_booking.equipment.api_views import equipment_calculate
-          from iic_booking.users.models import User
-          from iic_booking.users.models.wallet import WalletJoinRequest
 
-          print("fix_deployed=", hasattr(pp, "category_estimate_pricing_profile"))
           eq = Equipment.objects.get(code="MALDI")
-          rf = APIRequestFactory()
-
-          def calc(user, extra):
-              req = rf.get(f"/api/equipments/{eq.pk}/calculate/", {"A": "1", **extra}, HTTP_HOST="equip.iitr.ac.in")
-              force_authenticate(req, user=user)
-              r = equipment_calculate(req, pk=eq.pk)
-              d = getattr(r, "data", {}) or {}
-              return r.status_code, d.get("applied_profile"), d.get("total_charge")
-
-          pis = list(EquipmentPI.objects.filter(equipment=eq, is_active=True).values_list("faculty_id", flat=True))
-          ok = total = 0
-          for jr in WalletJoinRequest.objects.filter(faculty_id__in=pis, status="APPROVED").select_related("student"):
-              s = jr.student
-              booking_flow = calc(s, {})
-              estimate = calc(s, {"user_type": s.user_type})
-              total += 1
-              ok += int(booking_flow == estimate and booking_flow[1] == "PI")
-              print(f"  student uid={s.pk} booking_flow={booking_flow} estimate_own_category={estimate}")
-          print(f"  linked_students_matching_pi={ok}/{total}")
-          for fid in pis:
-              f = User.objects.get(pk=fid)
-              print(f"  PI uid={fid} booking_flow={calc(f, {})} estimate_own_category={calc(f, {'user_type': f.user_type})}")
-          b = Booking.objects.filter(equipment=eq).select_related("user").first()
-          if b is not None:
+          pis = set(EquipmentPI.objects.filter(equipment=eq, is_active=True).values_list("faculty_id", flat=True))
+          markers = [f.name for f in Booking._meta.get_fields() if any(k in f.name for k in ("urgent", "waitlist", "repeat", "rush"))
+                     and getattr(f, "concrete", False) and not f.is_relation]
+          for b in Booking.objects.filter(equipment=eq).select_related("charge_profile", "user", "created_by").order_by("booking_id"):
               u = b.user
-              print(f"  unlinked booker uid={u.pk} booking_flow={calc(u, {})} estimate_own_category={calc(u, {'user_type': u.user_type})} "
-                    f"booking={b.virtual_booking_id} charged={b.total_charge} status={b.status}")
+              o = pp.wallet_owner_user(u)
+              cp = b.charge_profile
+              iv = {k: v for k, v in (b.input_values or {}).items() if k in ("A",)}
+              mins = int(b.total_time_minutes or 0)
+              def calc(p):
+                  try:
+                      return ChargeCalculationEngine.calculate_charge(p, dict(b.input_values or {}), mins, b.selected_parameters or None)[0]
+                  except Exception as ex:
+                      return f"err:{type(ex).__name__}"
+              pi_cp = ChargeProfile.objects.filter(equipment=eq, pricing_profile="pi", is_active=True).first()
+              mk = {m: getattr(b, m) for m in markers if getattr(b, m) not in (None, False, "", 0)}
+              print(f"{b.virtual_booking_id} st={b.status} created={b.created_at.isoformat(timespec='minutes')} "
+                    f"uid={u.pk} ut={b.user_type_snapshot} owner_is_pi={bool(o and o.pk in pis)} "
+                    f"on_behalf={bool(b.created_by_id and b.created_by_id != u.pk)} creator_ut={getattr(b.created_by, 'user_type', None)} "
+                    f"cp={cp.pk}/{cp.user_type}/{cp.pricing_profile} A={iv.get('A')} mins={mins} charged={b.total_charge} "
+                    f"wallet_applied={b.wallet_amount_applied} recalc_booked_cp={calc(cp)} pi_calc={calc(pi_cp) if pi_cp else None} "
+                    f"breakdown_lines={len(b.charge_breakdown or [])} markers={mk}")
+              for line in (b.charge_breakdown or [])[:4]:
+                  if isinstance(line, dict):
+                      print(f"    line amount={line.get('amount')} desc_has_pi={'pi' in str(line.get('description','')).lower()}")
           PY
               exit 0
             fi
