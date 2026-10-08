@@ -26,6 +26,7 @@ def build_report_pdf(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     equipment_ids: Optional[list[int]] = None,
+    include_revenue: bool = True,
 ) -> bytes:
     """Build equipment report as PDF bytes."""
     from reportlab.lib import colors
@@ -46,6 +47,7 @@ def build_report_pdf(
         date_from=date_from,
         date_to=date_to,
         equipment_ids=equipment_ids,
+        include_revenue=include_revenue,
     )
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -100,13 +102,16 @@ def build_report_pdf(
     story.append(Spacer(1, 0.4 * cm))
 
     # Financial + KPI summary
-    story.append(Paragraph("Financial & KPI summary", heading_style))
+    story.append(Paragraph("Financial & KPI summary" if include_revenue else "KPI summary", heading_style))
     summary = data.get("summary", {}) or {}
-    fin_rows = [
-        ["Metric", "Value"],
-        ["Revenue (total)", f"₹{float(summary.get('revenue_total', 0) or 0):.2f}"],
-        ["Revenue (internal)", f"₹{float(summary.get('revenue_internal', 0) or 0):.2f}"],
-        ["Revenue (external)", f"₹{float(summary.get('revenue_external', 0) or 0):.2f}"],
+    fin_rows = [["Metric", "Value"]]
+    if include_revenue:
+        fin_rows += [
+            ["Revenue (total)", f"₹{float(summary.get('revenue_total', 0) or 0):.2f}"],
+            ["Revenue (internal)", f"₹{float(summary.get('revenue_internal', 0) or 0):.2f}"],
+            ["Revenue (external)", f"₹{float(summary.get('revenue_external', 0) or 0):.2f}"],
+        ]
+    fin_rows += [
         ["Slot hours (all status)", f"{float(summary.get('total_hours', 0) or 0):.2f}"],
         ["Utilized hours (BOOKED slots)", f"{float(summary.get('utilized_hours', 0) or 0):.2f}"],
         ["Downtime hours (maint. + op. absent)", f"{float(summary.get('downtime_hours', 0) or 0):.2f}"],
@@ -387,6 +392,7 @@ def build_report_excel(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     equipment_ids: Optional[list[int]] = None,
+    include_revenue: bool = True,
 ) -> bytes:
     """Build equipment report as Excel (xlsx) bytes."""
     from openpyxl import Workbook
@@ -396,6 +402,7 @@ def build_report_excel(
         date_from=date_from,
         date_to=date_to,
         equipment_ids=equipment_ids,
+        include_revenue=include_revenue,
     )
     wb = Workbook()
     ws = wb.active
@@ -418,17 +425,20 @@ def build_report_excel(
 
     # Financial summary
     summary = data.get("summary", {}) or {}
-    ws.cell(row=row, column=1, value="Financial & KPI summary").font = Font(bold=True)
+    ws.cell(row=row, column=1, value="Financial & KPI summary" if include_revenue else "KPI summary").font = Font(
+        bold=True
+    )
     row += 1
-    ws.cell(row=row, column=1, value="Revenue (total)")
-    ws.cell(row=row, column=2, value=float(summary.get("revenue_total", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Revenue (internal)")
-    ws.cell(row=row, column=2, value=float(summary.get("revenue_internal", 0) or 0))
-    row += 1
-    ws.cell(row=row, column=1, value="Revenue (external)")
-    ws.cell(row=row, column=2, value=float(summary.get("revenue_external", 0) or 0))
-    row += 1
+    if include_revenue:
+        ws.cell(row=row, column=1, value="Revenue (total)")
+        ws.cell(row=row, column=2, value=float(summary.get("revenue_total", 0) or 0))
+        row += 1
+        ws.cell(row=row, column=1, value="Revenue (internal)")
+        ws.cell(row=row, column=2, value=float(summary.get("revenue_internal", 0) or 0))
+        row += 1
+        ws.cell(row=row, column=1, value="Revenue (external)")
+        ws.cell(row=row, column=2, value=float(summary.get("revenue_external", 0) or 0))
+        row += 1
     ws.cell(row=row, column=1, value="Total hours")
     ws.cell(row=row, column=2, value=float(summary.get("total_hours", 0) or 0))
     row += 1

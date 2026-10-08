@@ -6503,6 +6503,7 @@ def _booking_list_queryset(request, *, min_search_chars: int = 0):
 def booking_stats(request):
     """Reports & Statistics cards and status breakdown, all from one scoped queryset.
 
+    Money keys (spent, average cost, refunded) are omitted for Lab Operators.
     Optional query params: ``status`` (one booking status), ``date_from`` / ``date_to``
     (YYYY-MM-DD, booking created date in IST). See ``booking_report_metrics`` for definitions.
     """
@@ -6541,9 +6542,15 @@ def booking_stats(request):
             dates[key] = parsed
     queryset = filter_report_period(queryset, dates.get("date_from"), dates.get("date_to"))
 
+    from .charge_visibility import strip_booking_stats_money, viewer_may_see_report_revenue
+
     data = summarize_report_bookings(queryset)
+    revenue_visible = viewer_may_see_report_revenue(request.user)
+    if not revenue_visible:
+        strip_booking_stats_money(data)
     data.update(
         {
+            "revenue_visible": revenue_visible,
             "scope": scope,
             "status_filter": status_filter or None,
             "date_from": dates["date_from"].isoformat() if "date_from" in dates else None,

@@ -317,10 +317,30 @@ def get_equipment_report_data(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     equipment_ids: Optional[list[int]] = None,
+    include_revenue: bool = True,
 ) -> dict[str, Any]:
     """
     Compute per-equipment performance stats and overall utilization for the given date range.
+
+    With ``include_revenue=False`` (Lab Operators) the revenue summary keys and ``financial`` are omitted.
     """
+    payload = _equipment_report_payload(date_from, date_to, equipment_ids, include_revenue)
+    payload["revenue_visible"] = include_revenue
+    if not include_revenue:
+        from .charge_visibility import EQUIPMENT_REPORT_SUMMARY_MONEY_KEYS
+
+        for key in EQUIPMENT_REPORT_SUMMARY_MONEY_KEYS:
+            payload.get("summary", {}).pop(key, None)
+        payload.pop("financial", None)
+    return payload
+
+
+def _equipment_report_payload(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    equipment_ids: Optional[list[int]],
+    include_revenue: bool,
+) -> dict[str, Any]:
     today = timezone.localdate()
     if date_from:
         try:
@@ -620,6 +640,8 @@ def get_equipment_report_data(
             booking_minutes_ext[eid] += tm
 
     completed_revenue_qs = completed_in_range.select_related("user", "user__department", "equipment")
+    if not include_revenue:
+        completed_revenue_qs = completed_revenue_qs.none()
     total_revenue = completed_revenue_qs.aggregate(total=Sum("total_charge"))["total"] or 0
     revenue_internal = 0.0
     revenue_external = 0.0

@@ -39,20 +39,27 @@ def _status_labels() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _money_visible(data: dict) -> bool:
+    """The source endpoints omit money for viewers who may not see it (Lab Operators)."""
+    return data.get("revenue_visible") is not False
+
+
 def _booking_stats_parts(request, *, params=None):
     data = call_view(request, "booking-stats", params if params is not None else {
         k: request.query_params.get(k) for k in ("status", "date_from", "date_to") if request.query_params.get(k)
     }) or {}
     labels = _status_labels()
     staff_scope = data.get("scope") in ("equipment", "department", "institute")
-    kpis = [
-        spec.Kpi("Total bookings", data.get("total_bookings", 0), spec.INTEGER, _SCOPES.get(data.get("scope"), "")),
-        spec.Kpi("Total charged" if staff_scope else "Total spent", data.get("total_spent", 0), spec.CURRENCY,
-                 f"{int(data.get('charged_bookings') or 0):,} charged bookings"),
-        spec.Kpi("Total hours booked", data.get("total_hours", 0), spec.NUMBER),
-        spec.Kpi("Average cost per booking", data.get("average_cost", 0), spec.CURRENCY),
-        spec.Kpi("Refunded amount", data.get("refunded_amount", 0), spec.CURRENCY),
-    ]
+    kpis = [spec.Kpi("Total bookings", data.get("total_bookings", 0), spec.INTEGER, _SCOPES.get(data.get("scope"), ""))]
+    if _money_visible(data):
+        kpis.append(spec.Kpi("Total charged" if staff_scope else "Total spent", data.get("total_spent", 0),
+                             spec.CURRENCY, f"{int(data.get('charged_bookings') or 0):,} charged bookings"))
+    kpis.append(spec.Kpi("Total hours booked", data.get("total_hours", 0), spec.NUMBER))
+    if _money_visible(data):
+        kpis += [
+            spec.Kpi("Average cost per booking", data.get("average_cost", 0), spec.CURRENCY),
+            spec.Kpi("Refunded amount", data.get("refunded_amount", 0), spec.CURRENCY),
+        ]
     counts = data.get("status_counts") or {}
     total = sum(int(v or 0) for v in counts.values()) or 0
     rows = [
@@ -84,11 +91,12 @@ def booking_statistics(request):
 
 @register("report-bookings")
 def report_bookings(request):
-    """Reports › Booking details: every booking in the report scope with hours and amount."""
+    """Reports › Booking details: every booking in the report scope with hours and amount (hours only for operators)."""
     from ..bridge import collect_rows
 
     status = (request.query_params.get("status") or "").strip()
     stats, kpis, _ = _booking_stats_parts(request, params={"status": status} if status else {})
+    money = _money_visible(stats)
     params = {"list_view": "true", "ordering": "-created_at"}
     if status:
         params["status"] = status
@@ -101,7 +109,7 @@ def report_bookings(request):
         C("start_time", "Start (IST)", spec.DATETIME, 1.15),
         C("end_time", "End (IST)", spec.DATETIME, 1.15),
         C("total_hours", "Hours", spec.NUMBER, 0.6, total=True),
-        C("total_charge", "Amount (₹)", spec.CURRENCY, 0.9, total=True),
+        *([C("total_charge", "Amount (₹)", spec.CURRENCY, 0.9, total=True)] if money else []),
         C("status", "Status", width=0.9,
           value=lambda r: r.get("status_display") or labels.get(r.get("status"), humanize(r.get("status")))),
         C("rating", "Rating", spec.NUMBER, 0.5),
@@ -110,8 +118,10 @@ def report_bookings(request):
     filters = [("Scope", _SCOPES.get(stats.get("scope"), humanize(stats.get("scope"))))]
     filters += filter_pairs(request, [("status", "Status", labels)])
     table = spec.Table("bookings", "Booking details", columns, rows, empty_message="No bookings in your scope.")
-    return make_document(request, title="Booking Details — Amount and Hours", slug="booking-details",
-                         tables=[table], filters=filters, kpis=kpis[:4], subtitle=_SCOPES.get(stats.get("scope"), ""))
+    kpis = [k for k in kpis if k.label != "Refunded amount"]
+    title = "Booking Details — Amount and Hours" if money else "Booking Details — Hours"
+    return make_document(request, title=title, slug="booking-details", tables=[table], filters=filters, kpis=kpis,
+                         subtitle=_SCOPES.get(stats.get("scope"), ""))
 
 
 # ---------------------------------------------------------------------------
@@ -148,11 +158,15 @@ def _equipment_parts(request):
     financial = data.get("financial") or {}
     equipment = data.get("equipment") or []
 
-    kpis = [
-        spec.Kpi("Equipment", summary.get("total_equipment", len(equipment)), spec.INTEGER),
-        spec.Kpi("Revenue (total)", summary.get("revenue_total", 0), spec.CURRENCY, "Completed bookings in period"),
-        spec.Kpi("Revenue (internal)", summary.get("revenue_internal", 0), spec.CURRENCY),
-        spec.Kpi("Revenue (external)", summary.get("revenue_external", 0), spec.CURRENCY),
+    money = _money_visible(data)
+    kpis = [spec.Kpi("Equipment", summary.get("total_equipment", len(equipment)), spec.INTEGER)]
+    if money:
+        kpis += [
+            spec.Kpi("Revenue (total)", summary.get("revenue_total", 0), spec.CURRENCY, "Completed bookings in period"),
+            spec.Kpi("Revenue (internal)", summary.get("revenue_internal", 0), spec.CURRENCY),
+            spec.Kpi("Revenue (external)", summary.get("revenue_external", 0), spec.CURRENCY),
+        ]
+    kpis += [
         spec.Kpi("Utilization factor", summary.get("utilization_factor", 0), spec.PERCENT,
                  "Booked hours ÷ all slot hours"),
         spec.Kpi("Utilized hours", summary.get("utilized_hours", 0), spec.NUMBER),
@@ -163,7 +177,7 @@ def _equipment_parts(request):
                  spec.PERCENT),
     ]
 
-    tables = [
+    tables = [] if not money else [
         _revenue_table("revenue_user_type", "Revenue by user type", "User type",
                        lambda r: humanize(r.get("user_type_snapshot")) or "—",
                        financial.get("revenue_by_user_type"), "Revenue by user type"),

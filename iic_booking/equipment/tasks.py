@@ -236,6 +236,7 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
     Returns:
         Number of individual emails successfully sent.
     """
+    from iic_booking.equipment.charge_visibility import viewer_may_see_report_revenue
     from iic_booking.equipment.report_exports import build_report_pdf
     from iic_booking.equipment.models import Equipment, EquipmentManager, EquipmentOperator
     from iic_booking.communication.service import CommunicationService
@@ -307,20 +308,28 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
         if not recipient_users:
             continue
 
-        pdf_bytes = build_report_pdf(
-            date_from=date_from,
-            date_to=date_to,
-            equipment_ids=[eid],
-        )
         eq = Equipment.objects.filter(equipment_id=eid).only("code", "name").first()
         eq_code = (eq.code if eq else str(eid)) or str(eid)
         eq_name = (eq.name if eq else "") or ""
 
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-            f.write(pdf_bytes)
-            path = f.name
+        pdf_paths: dict[bool, str] = {}
+
+        def _pdf_path(include_revenue: bool) -> str:
+            if include_revenue not in pdf_paths:
+                pdf_bytes = build_report_pdf(
+                    date_from=date_from,
+                    date_to=date_to,
+                    equipment_ids=[eid],
+                    include_revenue=include_revenue,
+                )
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                    f.write(pdf_bytes)
+                    pdf_paths[include_revenue] = f.name
+            return pdf_paths[include_revenue]
+
         try:
             for user in recipient_users:
+                path = _pdf_path(viewer_may_see_report_revenue(user))
                 attach_name = f"performance-report-{eq_code}-{date_from}-to-{date_to}.pdf"
                 try:
                     if template:
@@ -362,10 +371,11 @@ def send_oic_monthly_reports(target_month: Optional[str] = None) -> int:
                         e,
                     )
         finally:
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+            for path in pdf_paths.values():
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
     logger.info("send_oic_monthly_reports: period=%s to %s, emails_sent=%d", date_from, date_to, sent)
     return sent

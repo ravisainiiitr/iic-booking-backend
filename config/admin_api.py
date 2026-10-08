@@ -4800,6 +4800,11 @@ def admin_api_router():
                     equipment_ids = [x for x in equipment_ids if x in allowed]
             return equipment_ids
 
+        def _include_revenue(self, request):
+            from iic_booking.equipment.charge_visibility import viewer_may_see_report_revenue
+
+            return viewer_may_see_report_revenue(request.user)
+
         def list(self, request):
             """GET ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&equipment_id=1&equipment_id=2 - report data."""
             date_from = request.query_params.get("date_from") or None
@@ -4809,6 +4814,7 @@ def admin_api_router():
                 date_from=date_from,
                 date_to=date_to,
                 equipment_ids=equipment_ids,
+                include_revenue=self._include_revenue(request),
             )
             return Response(data)
 
@@ -4822,6 +4828,7 @@ def admin_api_router():
                 date_from=date_from,
                 date_to=date_to,
                 equipment_ids=equipment_ids,
+                include_revenue=self._include_revenue(request),
             )
             filename = f"equipment-report-{timezone.localdate().isoformat()}.pdf"
             resp = HttpResponse(pdf_bytes, content_type="application/pdf")
@@ -4838,6 +4845,7 @@ def admin_api_router():
                 date_from=date_from,
                 date_to=date_to,
                 equipment_ids=equipment_ids,
+                include_revenue=self._include_revenue(request),
             )
             filename = f"equipment-report-{timezone.localdate().isoformat()}.xlsx"
             resp = HttpResponse(xlsx_bytes, content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

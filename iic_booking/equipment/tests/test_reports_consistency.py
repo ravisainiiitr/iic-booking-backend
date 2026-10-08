@@ -215,7 +215,7 @@ def test_oic_operator_dept_admin_and_admin_scopes(egs_factory, faculty_group, st
     data = _stats(f, operator)
     assert data["total_bookings"] == 3
     assert data["status_counts"] == {"BOOKED": 1, "ABSENT": 1, "WAITLISTED": 1}
-    assert Decimal(str(data["total_spent"])) == Decimal("330.00")
+    assert "total_spent" not in data and data["revenue_visible"] is False
 
     dept_admin = UserFactory(user_type=UserType.DEPT_ADMIN, department=f.department)
     data = _stats(f, dept_admin)
