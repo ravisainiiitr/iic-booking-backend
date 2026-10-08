@@ -1,0 +1,186 @@
+# Read-only: why bookings were marked Booking Not Utilized versus the equipment's
+# "Booking Not Utilize Window (hours)". Prints ids, booking codes, statuses, timestamps, settings,
+# actor kind (system / user id + role flags), template codes and amounts only. No names, emails or text.
+name: Probe Not Utilized Window
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_codes:
+        description: "Comma-separated booking codes (virtual booking ids)"
+        required: true
+        default: "IICXPS202600006,IICXPS202600018"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          BOOKING_CODES: ${{ inputs.booking_codes }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e BOOKING_CODES="$BOOKING_CODES" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import timedelta
+          from collections import Counter
+          from django.db.models import Max, Q
+          from django.utils import timezone
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, BookingSampleTrace, BookingStatus, SlotStatus,
+          )
+          from iic_booking.equipment import results_deadline as rd
+          from iic_booking.communication.models import CommunicationLog
+
+          now = timezone.now()
+          print(f"now={timezone.localtime(now).isoformat()} tz={timezone.get_current_timezone_name()}")
+
+          def lt(dt):
+              if dt is None:
+                  return None
+              if timezone.is_naive(dt):
+                  dt = timezone.make_aware(dt)
+              return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M:%S%z")
+
+          def actor(u):
+              if u is None:
+                  return "system"
+              groups = sorted(u.groups.values_list("name", flat=True))
+              return f"user_id={u.pk} staff={u.is_staff} superuser={u.is_superuser} groups={groups}"
+
+          def comment_kind(c):
+              c = c or ""
+              if "Automatically marked as Booking Not Utilized" in c:
+                  return "auto_scheduled_not_utilized"
+              if c.startswith("Booking marked as Not Utilized"):
+                  return "manual_staff_not_utilized"
+              return f"other(len={len(c)})"
+
+          EQ_FIELDS = (
+              "booking_not_utilize_window_hours", "sample_submission_lead_hours", "sample_collect_deadline_hours",
+              "operator_unavailable_after_booking_end_hours", "operator_absent_disruption_after_booking_end_hours",
+              "results_deadline_value", "results_deadline_unit", "profile_type",
+          )
+
+          codes = [c.strip() for c in os.environ.get("BOOKING_CODES", "").split(",") if c.strip()]
+          for code in codes:
+              print(f"\n===== {code} =====")
+              b = Booking.objects.select_related("equipment", "user").filter(virtual_booking_id=code).first()
+              if not b:
+                  print("not found")
+                  continue
+              eq = b.equipment
+              print(f"booking_id={b.booking_id} status={b.status} equipment_id={eq.pk} equipment_code={eq.code}")
+              print(f"created_at={lt(getattr(b, 'created_at', None))} atmosphere_sensitive={getattr(b, 'atmosphere_sensitive_sample', None)}")
+              print("equipment settings: " + ", ".join(f"{f}={getattr(eq, f, 'n/a')}" for f in EQ_FIELDS))
+              slots = list(b.daily_slots.order_by("start_datetime"))
+              for s in slots:
+                  print(f"  slot id={s.pk} date={s.date} start={lt(s.start_datetime)} end={lt(s.end_datetime)} status={s.status}")
+              ends = [s.end_datetime for s in slots if s.end_datetime]
+              last_end = max(ends) if ends else None
+              if last_end is not None:
+                  if timezone.is_naive(last_end):
+                      last_end = timezone.make_aware(last_end)
+                  w = int(getattr(eq, "booking_not_utilize_window_hours", 0) or 0)
+                  print(f"last_slot_end={lt(last_end)} +24h={lt(last_end + timedelta(hours=24))} +window({w}h)={lt(last_end + timedelta(hours=w))}")
+                  cfg = rd.equipment_deadline_config(eq)
+                  if cfg:
+                      print(f"results_deadline={lt(rd.compute_results_deadline(last_end, cfg[0], cfg[1]))} cfg={cfg}")
+              print("events:")
+              for e in BookingEvent.objects.filter(booking=b).select_related("created_by").order_by("created_at", "event_id"):
+                  print(
+                      f"  {lt(e.created_at)} type={e.event_type} {e.previous_status}->{e.new_status} "
+                      f"actor={actor(e.created_by)} comment={comment_kind(e.comment)} meta_keys={sorted((e.metadata or {}).keys())}"
+                  )
+              print("sample trace:")
+              for t in BookingSampleTrace.objects.filter(booking=b).select_related("created_by").order_by("created_at", "id"):
+                  print(f"  {lt(t.created_at)} status={t.status} actor={actor(t.created_by)} reason_kind={'auto' if (t.reason or '').startswith('Automatically') else ('staff' if 'by staff' in (t.reason or '') else 'other')}")
+              print("emails (template code / status / recipient role):")
+              wallet = None
+              try:
+                  wallet = b.user.get_accessible_wallet()
+              except Exception:
+                  pass
+              owner_id = getattr(wallet, "user_id", None)
+              logs = CommunicationLog.objects.filter(
+                  Q(message__contains=code) | Q(subject__contains=code)
+              ).select_related("template").order_by("created_at")
+              for lg in logs:
+                  role = "booking_user" if lg.recipient_id == b.user_id else ("wallet_owner" if lg.recipient_id == owner_id else "other")
+                  print(f"  {lt(lg.created_at)} type={lg.communication_type} template={getattr(lg.template, 'code', None)} status={lg.status} to={role}")
+              try:
+                  from iic_booking.users.models.wallet import SubWalletTransaction
+                  tx = SubWalletTransaction.objects.filter(
+                      Q(description__contains=code) | Q(description__contains=f"#{b.booking_id}")
+                  ).order_by("created_at")
+                  print(f"wallet transactions mentioning booking: {tx.count()}")
+                  for x in tx:
+                      print(f"  {lt(x.created_at)} id={x.pk} type={x.transaction_type} amount={x.amount}")
+              except Exception as ex:
+                  print(f"wallet tx lookup failed: {type(ex).__name__}")
+              try:
+                  from iic_booking.equipment.disruption_models import SlotStatusChangeLog
+                  for s in slots:
+                      for lg in SlotStatusChangeLog.objects.filter(slot_ids__contains=[s.pk]).order_by("changed_at"):
+                          print(f"  slot_change slot={s.pk} {lt(lg.changed_at)} new={lg.new_status} prev={lg.previous_statuses} by={actor(lg.changed_by)}")
+              except Exception as ex:
+                  print(f"slot change lookup failed: {type(ex).__name__}")
+
+          print("\n===== Global: automatic Not Utilized before the equipment window =====")
+          auto = (
+              BookingEvent.objects.filter(
+                  new_status=BookingStatus.BOOKING_NOT_UTILIZED,
+                  created_by__isnull=True,
+                  comment__startswith="Automatically marked as Booking Not Utilized",
+              )
+              .select_related("booking__equipment")
+          )
+          c = Counter()
+          early_still_nu = []
+          for e in auto.iterator():
+              b = e.booking
+              w = int(getattr(b.equipment, "booking_not_utilize_window_hours", 0) or 0)
+              last_end = b.daily_slots.aggregate(m=Max("end_datetime"))["m"]
+              if last_end is None:
+                  c["no_slots"] += 1
+                  continue
+              if timezone.is_naive(last_end):
+                  last_end = timezone.make_aware(last_end)
+              c["auto_total"] += 1
+              if w <= 24:
+                  c["window_le_24"] += 1
+                  continue
+              if e.created_at < last_end + timedelta(hours=w):
+                  c["marked_before_window"] += 1
+                  if b.status == BookingStatus.BOOKING_NOT_UTILIZED:
+                      c["before_window_still_not_utilized"] += 1
+                      if now < last_end + timedelta(hours=w):
+                          c["window_not_yet_over_now"] += 1
+                      early_still_nu.append((b.virtual_booking_id, b.booking_id, b.equipment.code, w, lt(last_end), lt(e.created_at)))
+              else:
+                  c["marked_after_window"] += 1
+          print(dict(c))
+          for row in early_still_nu:
+              print("  code=%s id=%s eq=%s window_h=%s last_end=%s marked_at=%s" % row)
+          eqc = Counter(
+              int(x or 0) for x in __import__("iic_booking.equipment.models", fromlist=["Equipment"]).Equipment.objects.values_list("booking_not_utilize_window_hours", flat=True)
+          )
+          print(f"equipment window distribution (hours: count): {dict(sorted(eqc.items()))}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
