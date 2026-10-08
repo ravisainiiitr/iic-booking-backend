@@ -1,0 +1,147 @@
+# Clear one booking as if it was never given: full refund (no fee) to the sub-wallet it was debited from,
+# booking marked Refunded with an audit event (standard refund email), and its slots put back to their
+# previous status / label. released_by_booking_at stays NULL and no waitlist auto-booking runs.
+# Dry run by default; apply only with confirm=CLEAR. Prints IDs, codes, amounts and statuses only.
+name: Clear Booking Restore Slot
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_code:
+        description: "Booking code (virtual booking id)"
+        required: true
+      expected_slot_ids:
+        description: "Comma-separated slot IDs the booking must hold"
+        required: true
+      restore_status:
+        description: "Slot status to restore (e.g. NOT_AVAILABLE, BLOCKED)"
+        required: true
+        default: "NOT_AVAILABLE"
+      restore_label:
+        description: "blocked_label to restore (empty = none)"
+        required: false
+        default: ""
+      confirm:
+        description: "Type CLEAR to apply (anything else = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  clear:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Clear
+        env:
+          BOOKING_CODE: ${{ inputs.booking_code }}
+          EXPECTED_SLOT_IDS: ${{ inputs.expected_slot_ids }}
+          RESTORE_STATUS: ${{ inputs.restore_status }}
+          RESTORE_LABEL: ${{ inputs.restore_label }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e BOOKING_CODE="$BOOKING_CODE" -e EXPECTED_SLOT_IDS="$EXPECTED_SLOT_IDS" \
+                -e RESTORE_STATUS="$RESTORE_STATUS" -e RESTORE_LABEL="$RESTORE_LABEL" -e CONFIRM="$CONFIRM" \
+                -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db import transaction
+          from iic_booking.communication.utils import booking_display_id_for_email
+          from iic_booking.equipment.api_views import _student_booking_description_suffix
+          from iic_booking.equipment.booking_events import create_booking_event
+          from iic_booking.equipment.booking_paid_amount import booking_paid_charge, clear_pending_charge_difference
+          from iic_booking.equipment.models import (
+              Booking, BookingEventType, BookingStatus, DailySlot, SlotStatus, WaitlistEntry,
+          )
+          from iic_booking.users.models import User
+          from iic_booking.users.models.user_type import UserType
+          from iic_booking.users.models.wallet import SubWallet, SubWalletTransaction
+
+          code = os.environ["BOOKING_CODE"].strip()
+          expected = sorted(int(x) for x in os.environ["EXPECTED_SLOT_IDS"].split(",") if x.strip())
+          restore_status = os.environ["RESTORE_STATUS"].strip()
+          restore_label = os.environ.get("RESTORE_LABEL", "").strip() or None
+          apply = os.environ.get("CONFIRM", "").strip() == "CLEAR"
+          assert restore_status in SlotStatus.values and restore_status not in (
+              SlotStatus.AVAILABLE, SlotStatus.BOOKED), f"refusing restore_status={restore_status}"
+
+          actor = User.objects.filter(user_type=UserType.ADMIN, is_active=True).order_by("id").first()
+          waitlist_before = list(WaitlistEntry.objects.order_by("id").values_list("id", "status"))
+
+          with transaction.atomic():
+              b = Booking.objects.select_for_update().select_related("equipment", "user").get(virtual_booking_id=code)
+              eq = b.equipment
+              slots = list(DailySlot.objects.select_for_update().filter(booking=b).order_by("id"))
+              slot_ids = [s.pk for s in slots]
+              debits = list(SubWalletTransaction.objects.filter(
+                  description__contains=code, transaction_type=SubWalletTransaction.TransactionType.DEBIT))
+              credits = list(SubWalletTransaction.objects.filter(
+                  description__contains=code, transaction_type=SubWalletTransaction.TransactionType.CREDIT))
+              refund = booking_paid_charge(b)
+              print(f"booking={b.pk} {b.virtual_booking_id} status={b.status} user={b.user_id} eq={eq.code} "
+                    f"paid={refund} slots={slot_ids} actor={getattr(actor, 'id', None)}")
+              print("debits=", [(t.pk, str(t.amount), t.sub_wallet_id) for t in debits],
+                    "credits=", [(t.pk, str(t.amount), t.sub_wallet_id) for t in credits])
+              for s in slots:
+                  print(f"  slot={s.pk} {s.date} status={s.status} label={s.blocked_label!r} "
+                        f"released_by_booking_at={s.released_by_booking_at} -> {restore_status} label={restore_label!r}")
+              assert b.status == BookingStatus.BOOKED, "booking is not Booked"
+              assert slot_ids == expected, f"slots {slot_ids} != expected {expected}"
+              assert len(debits) == 1 and not credits, "expected exactly one debit and no refund yet"
+              assert debits[0].amount == refund, "debit amount differs from paid amount"
+              assert actor is not None
+              if not apply:
+                  print("DRY RUN: nothing written. Re-run with confirm=CLEAR to apply.")
+                  transaction.set_rollback(True)
+              else:
+                  sub = SubWallet.objects.get(pk=debits[0].sub_wallet_id)
+                  desc = (f"Refund for cancelled Booking {booking_display_id_for_email(b)}- {eq.name}"
+                          f" - booking cleared by Main Administrator"
+                          + _student_booking_description_suffix(sub, b.user))
+                  txn = sub.credit(amount=refund, description=desc, related_user=b.user)
+                  DailySlot.objects.filter(pk__in=slot_ids, booking=b).update(
+                      booking=None, status=restore_status, blocked_label=restore_label,
+                      released_by_booking_at=None,
+                  )
+                  previous = b.status
+                  clear_pending_charge_difference(b)
+                  b.status = BookingStatus.REFUNDED
+                  b.notes = (f"{b.notes or ''}\n[Cancellation Notes]: Booking cleared by Main Administrator; "
+                             f"full refund, slot restored to its previous status.").strip()
+                  b.save()
+                  create_booking_event(
+                      booking=b,
+                      event_type=BookingEventType.REFUNDED,
+                      previous_status=previous,
+                      new_status=BookingStatus.REFUNDED,
+                      comment="Booking cancelled and refunded by admin. Booking cleared; slot restored to its previous status.",
+                      created_by=actor,
+                      send_notification=True,
+                      metadata={"refund_amount": str(refund), "cleared_by_admin": True,
+                                "restored_slot_status": restore_status},
+                  )
+                  print(f"APPLIED refund_txn={txn.pk} amount={refund} sub_wallet={sub.pk}")
+
+          b.refresh_from_db()
+          print(f"after: booking status={b.status}")
+          for s in DailySlot.objects.filter(pk__in=expected).order_by("id"):
+              print(f"  slot={s.pk} status={s.status} label={s.blocked_label!r} booking={s.booking_id} "
+                    f"released_by_booking_at={s.released_by_booking_at}")
+          waitlist_after = list(WaitlistEntry.objects.order_by("id").values_list("id", "status"))
+          print("waitlist_unchanged=", waitlist_before == waitlist_after, "entries=", len(waitlist_after))
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
