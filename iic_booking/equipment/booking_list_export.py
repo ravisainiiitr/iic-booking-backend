@@ -2,7 +2,9 @@
 
 Rows are every booking the page would list for the same filters, search, sort and role scope
 (the caller passes the ``_booking_list_queryset`` result). Columns follow what each page shows:
-``staff`` is View Booking (/booking-management), ``my`` is My Bookings.
+``staff`` is View Booking (/booking-management), ``my`` is My Bookings. Each booking also carries every
+user input shown in its booking details (``booking_export_details``): one column per input field in csv /
+xlsx (plus Sample sets, Input tables and Charges sheets in xlsx) and a card per booking in the pdf.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ from .models import DailySlot
 from .models import WaitlistEntry
 
 EXPORT_ROW_LIMIT = 10_000
+# The pdf has a details card (often a page) per booking; larger lists are for Excel.
+PDF_ROW_LIMIT = 1_000
 IST = ZoneInfo("Asia/Kolkata")
 PORTAL_HEADER = "Institute Instrumentation Centre (IIC), IIT Roorkee"
 
@@ -77,6 +81,11 @@ class Column:
     kind: str = "text"  # text | int | money | datetime
 
 
+def charges_visible(view: str, user) -> bool:
+    """My Bookings shows the user's own charges; on View Booking Lab Operators see no charges."""
+    return view == "my" or getattr(user, "user_type", None) in STAFF_AMOUNT_USER_TYPES
+
+
 def export_columns(view: str, user) -> list[Column]:
     if view == "staff":
         cols = [
@@ -96,7 +105,7 @@ def export_columns(view: str, user) -> list[Column]:
             Column("samples", "Samples", 0.9),
             Column("sample_status", "Sample status", 1.1),
         ]
-        if getattr(user, "user_type", None) in STAFF_AMOUNT_USER_TYPES:
+        if charges_visible(view, user):
             cols.append(Column("amount", "Amount (₹)", 1.0, "money"))
         cols.append(Column("booked_on", "Booked on (IST)", 1.3, "datetime"))
         return cols
@@ -183,29 +192,6 @@ def _money(value):
         return None
 
 
-def _wallet_owner_names(users) -> dict:
-    """Supervisor (wallet owner) label per user id, same rule as the list's Supervisor Name column."""
-    from iic_booking.users.models.wallet import WalletJoinRequest
-    from iic_booking.users.models.wallet import WalletJoinRequestStatus
-
-    names = {u.pk: None for u in users}
-    student_ids = [u.pk for u in users if u.user_type in {UserType.STUDENT, UserType.OTHER}]
-    if not student_ids:
-        return names
-    seen = set()
-    qs = WalletJoinRequest.objects.filter(student_id__in=student_ids, status=WalletJoinRequestStatus.APPROVED)
-    if not qs.ordered:
-        qs = qs.order_by("pk")
-    for req in qs.select_related("wallet__user"):
-        if req.student_id in seen:
-            continue
-        seen.add(req.student_id)
-        owner = getattr(getattr(req, "wallet", None), "user", None) if req.wallet_id else None
-        if owner is not None and owner.pk != req.student_id:
-            names[req.student_id] = get_user_display_name(owner)
-    return names
-
-
 def _load_bookings(queryset) -> list:
     return list(
         queryset.select_related("user", "user__department", "equipment", "charge_profile").prefetch_related(
@@ -229,10 +215,11 @@ def build_booking_rows(bookings) -> list[dict]:
     from .booking_sample_summary import SampleCountFieldIndex
     from .booking_sample_summary import booking_sample_summary
     from .serializers import _booking_status_display
+    from .serializers import wallet_owner_display_names
 
     user_type_labels = dict(UserType.get_choices())
     users = {b.user.pk: b.user for b in bookings if b.user_id and b.user}
-    supervisors = _wallet_owner_names(list(users.values()))
+    supervisors = wallet_owner_display_names(list(users.values()))
     no_slot_ids = [b.pk for b in bookings if not b.daily_slots.all()]
     released = {}
     for start_idx in range(0, len(no_slot_ids), 500):
@@ -263,6 +250,8 @@ def build_booking_rows(bookings) -> list[dict]:
         code = (b.user_type_snapshot or "").strip()
         rows.append(
             {
+                "pk": b.pk,
+                "status_code": b.status,
                 "booking_id": booking_display_id_for_email(b),
                 "equipment": getattr(b.equipment, "name", "") or "",
                 "user": get_user_display_name(user) if user else "",
@@ -327,6 +316,8 @@ def build_waitlist_rows(entries, search: str) -> list[dict]:
         queue = f"WL{position}" if position else "queue"
         rows.append(
             {
+                "pk": None,
+                "status_code": BookingStatus.WAITLISTED,
                 "booking_id": display_id,
                 "equipment": name,
                 "user": get_user_display_name(entry.user),
@@ -397,6 +388,17 @@ def filters_summary(request, *, view: str) -> list[tuple[str, str]]:
     return out
 
 
+def status_counts(rows) -> list[tuple[str, int]]:
+    """[(status label, bookings)] most common first."""
+    labels = dict(BookingStatus.choices)
+    counts: dict[str, int] = {}
+    for row in rows:
+        code = row.get("status_code") or ""
+        label = str(labels.get(code, code or "Unknown"))
+        counts[label] = counts.get(label, 0) + 1
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def _iso_to_dmy(value) -> str:
     try:
         return datetime.strptime(str(value).strip(), "%Y-%m-%d").strftime("%d-%m-%Y")
@@ -431,6 +433,62 @@ def _cell_text(col: Column, value) -> str:
     return str(value)
 
 
+INPUT_KEY_PREFIX = "input:"
+
+
+def attach_details(rows, details_by_pk) -> None:
+    """Put each booking's BookingDetail on its row, plus one-line texts for the input columns."""
+    from .booking_export_details import field_text
+    from .booking_export_details import files_text
+
+    for row in rows:
+        detail = details_by_pk.get(row.get("pk"))
+        row["detail"] = detail
+        if detail is None:
+            continue
+        for item in detail.fields:
+            row[INPUT_KEY_PREFIX + item.label] = field_text(item, detail.sets)
+        row["atmosphere"] = "Yes (submit at slot start)" if detail.atmosphere_sensitive else "No"
+        row["comments"] = detail.comments
+        row["files"] = files_text(detail.files)
+        row["charge_lines"] = "; ".join(
+            f"{desc or 'Charge'}: {'' if amount is None else f'{amount:.2f}'}".rstrip(": ")
+            for desc, amount in detail.charges
+        )
+
+
+def input_field_labels(rows) -> list[str]:
+    """Distinct input field labels of the exported bookings, grouped by equipment (A-Z) in field order."""
+    by_equipment: dict[str, list[str]] = {}
+    for row in rows:
+        detail = row.get("detail")
+        if detail is None:
+            continue
+        labels = by_equipment.setdefault(row.get("equipment") or "", [])
+        for item in detail.fields:
+            if item.label not in labels:
+                labels.append(item.label)
+    out: list[str] = []
+    for equipment in sorted(by_equipment, key=str.lower):
+        out.extend(label for label in by_equipment[equipment] if label not in out)
+    return out
+
+
+def detail_columns(rows, *, charges: bool, include_charge_lines: bool) -> list[Column]:
+    """Columns after the list columns: one per input field, then the booking-level extras that have values."""
+    cols = [Column(INPUT_KEY_PREFIX + label, label, 1.0) for label in input_field_labels(rows)]
+    details = [r["detail"] for r in rows if r.get("detail") is not None]
+    if any(d.atmosphere_sensitive for d in details):
+        cols.append(Column("atmosphere", "Atmosphere-sensitive sample", 1.0))
+    if any(d.comments for d in details):
+        cols.append(Column("comments", "Any other requirements", 1.0))
+    if any(d.files for d in details):
+        cols.append(Column("files", "Uploaded files", 1.0))
+    if charges and include_charge_lines and any(d.charges for d in details):
+        cols.append(Column("charge_lines", "Charge breakdown (₹)", 1.0))
+    return cols
+
+
 def render_csv(columns, rows) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\r\n")
@@ -443,209 +501,265 @@ def render_csv(columns, rows) -> bytes:
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
-def render_xlsx(columns, rows, *, summary, generated_at) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.cell import WriteOnlyCell
+_XLSX_BRAND = "153F79"
+_XLSX_TEXT_MAX = 32_000  # Excel holds at most 32,767 characters in a cell
+
+
+def _xlsx_text(value):
+    text = guard_formula(value)
+    if isinstance(text, str) and len(text) > _XLSX_TEXT_MAX:
+        text = text[:_XLSX_TEXT_MAX] + "…"
+    return None if text == "" else text
+
+
+def _register_xlsx_styles(wb) -> None:
     from openpyxl.styles import Alignment
+    from openpyxl.styles import Border
     from openpyxl.styles import Font
+    from openpyxl.styles import NamedStyle
     from openpyxl.styles import PatternFill
-    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Side
+
+    def fill(color):
+        return PatternFill("solid", start_color=color, end_color=color)
+
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    body = Font(name="Calibri", size=10, color="1E293B")
+    top_left = Alignment(vertical="top", wrap_text=True)
+    kinds = {
+        "text": {"alignment": top_left},
+        "int": {"alignment": Alignment(vertical="top", horizontal="center")},
+        "money": {"alignment": Alignment(vertical="top", horizontal="right"), "number_format": '"₹"#,##0.00'},
+        "datetime": {"alignment": Alignment(vertical="top", horizontal="left"), "number_format": "DD-MM-YYYY HH:MM"},
+    }
+    for kind, extra in kinds.items():
+        wb.add_named_style(NamedStyle(name=f"exp_{kind}", font=body, border=border, **extra))
+        wb.add_named_style(NamedStyle(name=f"exp_{kind}_alt", font=body, border=border, fill=fill("F4F7FB"), **extra))
+    wb.add_named_style(NamedStyle(
+        name="exp_header", font=Font(name="Calibri", size=10, bold=True, color="FFFFFF"), fill=fill(_XLSX_BRAND),
+        border=border, alignment=Alignment(vertical="center", wrap_text=True),
+    ))
+    wb.add_named_style(NamedStyle(
+        name="exp_band", font=Font(name="Calibri", size=11, bold=True, color=_XLSX_BRAND), fill=fill("DBE7F7"),
+    ))
+    wb.add_named_style(NamedStyle(name="exp_title", font=Font(name="Calibri", size=14, bold=True, color=_XLSX_BRAND)))
+    wb.add_named_style(NamedStyle(
+        name="exp_label", font=Font(name="Calibri", size=10, bold=True, color="334155"), fill=fill("EEF2F7"),
+        border=border, alignment=top_left,
+    ))
+    wb.add_named_style(NamedStyle(name="exp_note", font=Font(name="Calibri", size=10, italic=True, color="64748B")))
+
+
+class _SheetWriter:
+    """Buffers a write-only sheet so column widths (written before the rows) fit the content."""
+
+    def __init__(self, wb, title: str, *, max_width: int = 50):
+        self.ws = wb.create_sheet(title)
+        self.max_width = max_width
+        self.rows: list[list[tuple]] = []
+        self.widths: dict[int, int] = {}
+        self.data_rows = 0
+
+    def _track(self, index: int, value, kind: str, *, header: bool = False) -> None:
+        if value is None:
+            return
+        if kind == "datetime":
+            length = 16
+        elif kind == "money":
+            length = len(f"₹{value:,.2f}")
+        elif header:
+            words = str(value).split()
+            length = max([min(len(str(value)), 22), *(len(w) for w in words)])
+        else:
+            length = max((len(line) for line in str(value).split("\n")), default=0)
+        self.widths[index] = max(self.widths.get(index, 0), length)
+
+    def header(self, labels) -> None:
+        for i, label in enumerate(labels):
+            self._track(i, label, "text", header=True)
+        self.rows.append([(label, "exp_header") for label in labels])
+
+    def row(self, values, kinds, *, striped: bool = False) -> None:
+        out = []
+        for i, (value, kind) in enumerate(zip(values, kinds)):
+            self._track(i, value, kind)
+            out.append((value, f"exp_{kind}_alt" if striped else f"exp_{kind}"))
+        self.rows.append(out)
+        self.data_rows += 1
+
+    def line(self, value, style: str) -> None:
+        self.rows.append([(value, style)])
+
+    def blank(self) -> None:
+        self.rows.append([])
+
+    def flush(self, *, autofilter_columns: int = 0, min_width: int = 8) -> None:
+        from openpyxl.cell import WriteOnlyCell
+        from openpyxl.utils import get_column_letter
+
+        for index, width in self.widths.items():
+            letter = get_column_letter(index + 1)
+            self.ws.column_dimensions[letter].width = min(max(width + 2, min_width), self.max_width)
+        if autofilter_columns and self.data_rows:
+            last = get_column_letter(autofilter_columns)
+            self.ws.auto_filter.ref = f"A1:{last}{self.data_rows + 1}"
+        for row in self.rows:
+            cells = []
+            for value, style in row:
+                cell = WriteOnlyCell(self.ws, value=value)
+                cell.style = style
+                cells.append(cell)
+            self.ws.append(cells)
+
+
+def _xlsx_value(col: Column, value):
+    if col.kind == "datetime":
+        return _ist(value).replace(tzinfo=None) if value is not None else None
+    if col.kind == "money":
+        return float(value) if value is not None else None
+    if col.kind == "int":
+        return value
+    return _xlsx_text(_cell_text(col, value))
+
+
+def _sample_set_rows(rows, labels):
+    from .input_display import formatted_as_text
+
+    for row in rows:
+        detail = row.get("detail")
+        if detail is None or not detail.fields:
+            continue
+        by_label = {item.label: item for item in detail.fields}
+        for index in range(detail.sets):
+            values = []
+            for label in labels:
+                item = by_label.get(label)
+                value = item.values[index] if item is not None and index < len(item.values) else None
+                values.append(_xlsx_text(formatted_as_text(value)) if value else None)
+            yield row, index + 1, values
+
+
+def _input_table_groups(rows) -> list[tuple[str, list[str], list[list]]]:
+    """[(title, columns, rows)] per equipment / table field / column layout; rows are [booking, set, row #, cells…]."""
+    groups: dict[tuple, list[list]] = {}
+    for row in rows:
+        detail = row.get("detail")
+        if detail is None:
+            continue
+        for item in detail.fields:
+            for set_index, value in enumerate(item.values, start=1):
+                if value.get("kind") != "table":
+                    continue
+                columns = list(value.get("columns") or [])
+                data = [list(r) for r in value.get("rows") or []]
+                if columns and columns[0] == "S.No.":
+                    columns = columns[1:]
+                    data = [r[1:] for r in data]
+                width = max([len(columns), *(len(r) for r in data)])
+                columns += [f"Column {i + 1}" for i in range(len(columns), width)]
+                key = (row.get("equipment") or "", item.label, tuple(columns))
+                bucket = groups.setdefault(key, [])
+                for number, cells in enumerate(data, start=1):
+                    bucket.append([row["booking_id"], set_index, number, *cells, *[""] * (width - len(cells))])
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))
+    return [(f"{equipment} — {label}" if equipment else label, list(cols), data)
+            for (equipment, label, cols), data in ordered]
+
+
+def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_label="", charges=False) -> bytes:
+    from openpyxl import Workbook
 
     wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Bookings")
-    ws.freeze_panes = "A2"
+    _register_xlsx_styles(wb)
 
-    widths = [len(c.label) for c in columns]
-    for row in rows:
-        for i, c in enumerate(columns):
-            text = _cell_text(c, row.get(c.key))
-            widths[i] = max(widths[i], len(text))
-    for i, width in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = min(max(width + 2, 8), 60)
+    bookings = _SheetWriter(wb, "Bookings")
+    bookings.header([c.label for c in columns])
+    kinds = [c.kind if c.kind in ("int", "money", "datetime") else "text" for c in columns]
+    for i, row in enumerate(rows):
+        bookings.row([_xlsx_value(c, row.get(c.key)) for c in columns], kinds, striped=i % 2 == 1)
+    bookings.ws.freeze_panes = "C2"
+    bookings.flush(autofilter_columns=len(columns))
 
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="153F79", end_color="153F79", fill_type="solid")
-    header = []
-    for c in columns:
-        cell = WriteOnlyCell(ws, value=c.label)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(vertical="center")
-        header.append(cell)
-    ws.append(header)
+    labels = input_field_labels(rows)
+    sets = _SheetWriter(wb, "Sample sets")
+    sets.header(["Booking ID", "Equipment", "Sample set", *labels])
+    for i, (row, number, values) in enumerate(_sample_set_rows(rows, labels)):
+        sets.row([row["booking_id"], _xlsx_text(row.get("equipment") or ""), number, *values],
+                 ["text", "text", "int", *["text"] * len(labels)], striped=i % 2 == 1)
+    if not sets.data_rows:
+        sets.blank()
+        sets.line("None of the exported bookings has user inputs.", "exp_note")
+    sets.ws.freeze_panes = "D2"
+    sets.flush(autofilter_columns=3 + len(labels))
 
-    for row in rows:
-        out = []
-        for c in columns:
-            value = row.get(c.key)
-            if c.kind == "datetime" and value is not None:
-                cell = WriteOnlyCell(ws, value=_ist(value).replace(tzinfo=None))
-                cell.number_format = "DD-MM-YYYY HH:MM"
-            elif c.kind == "money" and value is not None:
-                cell = WriteOnlyCell(ws, value=float(value))
-                cell.number_format = "#,##0.00"
-            elif c.kind == "int":
-                cell = WriteOnlyCell(ws, value=value)
-            else:
-                cell = WriteOnlyCell(ws, value=guard_formula(_cell_text(c, value)) or None)
-            out.append(cell)
-        ws.append(out)
+    tables = _SheetWriter(wb, "Input tables", max_width=40)
+    groups = _input_table_groups(rows)
+    for title, cols, data in groups:
+        tables.line(_xlsx_text(title), "exp_band")
+        tables.header(["Booking ID", "Sample set", "Row #", *cols])
+        for i, cells in enumerate(data):
+            tables.row([cells[0], cells[1], cells[2], *(_xlsx_text(c) for c in cells[3:])],
+                       ["text", "int", "int", *["text"] * len(cols)], striped=i % 2 == 1)
+        tables.blank()
+    if not groups:
+        tables.line("None of the exported bookings has a table input.", "exp_note")
+    tables.flush()
 
-    info = wb.create_sheet("Filters")
-    info.column_dimensions["A"].width = 18
-    info.column_dimensions["B"].width = 60
-    bold = Font(bold=True)
-    title = WriteOnlyCell(info, value=f"Bookings — {PORTAL_HEADER}")
-    title.font = Font(bold=True, size=12)
-    info.append([title])
-    for label, value in [("Generated at", generated_at), ("Rows", str(len(rows))), *summary]:
-        key_cell = WriteOnlyCell(info, value=label)
-        key_cell.font = bold
-        info.append([key_cell, guard_formula(value)])
+    if charges:
+        sheet = _SheetWriter(wb, "Charges", max_width=70)
+        sheet.header(["Booking ID", "Equipment", "Line", "Description", "Amount (₹)"])
+        stripe = False
+        for row in rows:
+            detail = row.get("detail")
+            if detail is None or not detail.charges:
+                continue
+            for number, (description, amount) in enumerate(detail.charges, start=1):
+                sheet.row(
+                    [row["booking_id"], _xlsx_text(row.get("equipment") or ""), number, _xlsx_text(description),
+                     float(amount) if amount is not None else None],
+                    ["text", "text", "int", "text", "money"], striped=stripe,
+                )
+            stripe = not stripe
+        if not sheet.data_rows:
+            sheet.blank()
+            sheet.line("None of the exported bookings has a charge breakdown.", "exp_note")
+        sheet.ws.freeze_panes = "A2"
+        sheet.flush(autofilter_columns=5)
+
+    info = _SheetWriter(wb, "Filters", max_width=90)
+    info.line(f"Bookings — {PORTAL_HEADER}", "exp_title")
+    info.blank()
+    details = [("Generated at (IST)", generated_at)]
+    if view_label:
+        details.append(("Exported from", view_label))
+    details.append(("Rows", str(len(rows))))
+    for label, value in [*details, *summary]:
+        info.row([label, _xlsx_text(value)], ["text", "text"])
+        info.rows[-1][0] = (label, "exp_label")
+    if status_counts:
+        info.blank()
+        info.line("Bookings by status", "exp_band")
+        for label, count in status_counts:
+            info.row([label, count], ["text", "int"])
+            info.rows[-1][0] = (label, "exp_label")
+    info.blank()
+    info.line("Sheets in this file", "exp_band")
+    sheet_notes = [
+        ("Bookings", "One row per booking: list columns, then one column per user input field (by equipment)."),
+        ("Sample sets", "One row per sample set with that set's parameters."),
+        ("Input tables", "Table inputs, one row per table row, grouped by equipment and field."),
+    ]
+    if charges:
+        sheet_notes.append(("Charges", "Charge breakdown lines of each booking (₹)."))
+    for label, text in sheet_notes:
+        info.row([label, text], ["text", "text"])
+        info.rows[-1][0] = (label, "exp_label")
+    info.widths[0] = max(info.widths.get(0, 0), 22)
+    info.flush()
 
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
-
-
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _fit_lines(text: str, font: str, size: float, width: float) -> str:
-    """Word-wrap ``text`` to ``width`` points, breaking single words (e.g. emails) that are still too wide."""
-    from reportlab.lib.utils import simpleSplit
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-
-    lines = []
-    for line in simpleSplit(text, font, size, width):
-        while len(line) > 1 and stringWidth(line, font, size) > width:
-            cut = len(line) - 1
-            while cut > 1 and stringWidth(line[:cut], font, size) > width:
-                cut -= 1
-            lines.append(line[:cut])
-            line = line[cut:]
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def render_pdf(columns, rows, *, summary, generated_at) -> bytes:
-    from django.conf import settings
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.pagesizes import landscape
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import cm
-    from reportlab.pdfgen import canvas as rl_canvas
-    from reportlab.platypus import Paragraph
-    from reportlab.platypus import SimpleDocTemplate
-    from reportlab.platypus import Spacer
-    from reportlab.platypus import Table
-    from reportlab.platypus import TableStyle
-
-    from .document_exports import _pdf_letterhead_story_lines
-    from .document_exports import _register_pdf_rupee_font
-
-    unicode_font = _register_pdf_rupee_font()
-    body_font = unicode_font or "Helvetica"
-    header_font = unicode_font or "Helvetica-Bold"
-    font_size = 6.5
-
-    class _NumberedCanvas(rl_canvas.Canvas):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._saved_pages = []
-
-        def showPage(self):
-            self._saved_pages.append(dict(self.__dict__))
-            self._startPage()
-
-        def save(self):
-            total = len(self._saved_pages)
-            for state in self._saved_pages:
-                self.__dict__.update(state)
-                self.setFont("Helvetica", 7)
-                self.setFillColor(colors.HexColor("#64748b"))
-                width, _ = self._pagesize
-                self.drawString(1 * cm, 0.6 * cm, f"Bookings — generated {generated_at}")
-                self.drawRightString(width - 1 * cm, 0.6 * cm, f"Page {self._pageNumber} of {total}")
-                super().showPage()
-            super().save()
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf,
-        pagesize=landscape(A4),
-        leftMargin=1 * cm,
-        rightMargin=1 * cm,
-        topMargin=1 * cm,
-        bottomMargin=1.2 * cm,
-        title="Bookings",
-        author=PORTAL_HEADER,
-    )
-    styles = getSampleStyleSheet()
-    meta_style = ParagraphStyle(
-        "export_meta", parent=styles["Normal"], fontName=body_font, fontSize=8, leading=10, alignment=TA_CENTER,
-    )
-    dept = getattr(settings, "ORG_DEPARTMENT_NAME", "") or "Institute Instrumentation Centre (IIC)"
-    story = list(_pdf_letterhead_story_lines(department_name=dept, document_title="Bookings"))
-    applied = "; ".join(f"{label}: {value}" for label, value in summary) or "None"
-    story.append(Paragraph(_escape(f"Filters — {applied}"), meta_style))
-    story.append(
-        Paragraph(_escape(f"Generated at {generated_at} IST · {len(rows)} booking{'s' if len(rows) != 1 else ''}"),
-                  meta_style),
-    )
-    story.append(Spacer(1, 0.3 * cm))
-
-    total_share = sum(c.pdf_width for c in columns)
-    col_widths = [doc.width * c.pdf_width / total_share for c in columns]
-    rupee = "₹" if unicode_font else "Rs."
-
-    def header_text(c: Column, width: float) -> str:
-        return _fit_lines(c.label.replace("₹", rupee), header_font, font_size, width - 4)
-
-    def wrap(text: str, width: float) -> str:
-        if not text:
-            return ""
-        if not unicode_font:
-            text = text.replace("₹", "Rs.").replace("–", "-").replace("·", "-")
-        return _fit_lines(text, body_font, font_size, width - 4)
-
-    header_row = [header_text(c, w) for c, w in zip(columns, col_widths)]
-    money_cols = [i for i, c in enumerate(columns) if c.kind == "money"]
-    style = [
-        ("FONTNAME", (0, 0), (-1, -1), body_font),
-        ("FONTSIZE", (0, 0), (-1, -1), font_size),
-        ("LEADING", (0, 0), (-1, -1), font_size + 1.5),
-        ("FONTNAME", (0, 0), (-1, 0), header_font),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#153f79")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#94a3b8")),
-        ("LEFTPADDING", (0, 0), (-1, -1), 2),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-        ("TOPPADDING", (0, 0), (-1, -1), 1.5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
-    ]
-    for i in money_cols:
-        style.append(("ALIGN", (i, 1), (i, -1), "RIGHT"))
-
-    if not rows:
-        story.append(Paragraph("No bookings match these filters.", meta_style))
-    # Large tables split slowly in reportlab; chunks keep rendering linear and still repeat the header.
-    chunk = 250
-    for start in range(0, len(rows), chunk):
-        data = [header_row]
-        for row in rows[start:start + chunk]:
-            data.append([wrap(_cell_text(c, row.get(c.key)), w) for c, w in zip(columns, col_widths)])
-        table = Table(data, colWidths=col_widths, repeatRows=1)
-        table.setStyle(TableStyle(style))
-        story.append(table)
-
-    doc.build(story, canvasmaker=_NumberedCanvas)
     return buf.getvalue()
 
 
@@ -666,14 +780,25 @@ def export_booking_list(request, queryset, *, view: str, export_format: str) -> 
     )
     entries = _waitlist_entries(request, include=include_waitlist)
 
-    total = queryset.count()
-    if total + len(entries) > EXPORT_ROW_LIMIT:
+    total = queryset.count() + len(entries)
+    if total > EXPORT_ROW_LIMIT:
         raise ExportTooLarge(
-            f"{total + len(entries):,} bookings match these filters; exports are limited to "
+            f"{total:,} bookings match these filters; exports are limited to "
             f"{EXPORT_ROW_LIMIT:,}. Narrow the filters (for example a date range) and try again.",
         )
+    if export_format == "pdf" and total > PDF_ROW_LIMIT:
+        raise ExportTooLarge(
+            f"{total:,} bookings match these filters; the PDF has a details page for each booking and is "
+            f"limited to {PDF_ROW_LIMIT:,}. Download Excel instead (up to {EXPORT_ROW_LIMIT:,} bookings) "
+            "or narrow the filters (for example a date range).",
+        )
 
-    rows = build_booking_rows(_load_bookings(queryset))
+    from .booking_export_details import build_booking_details
+
+    show_charges = charges_visible(view, request.user)
+    bookings = _load_bookings(queryset)
+    rows = build_booking_rows(bookings)
+    attach_details(rows, build_booking_details(bookings, include_charges=show_charges))
     if entries:
         search = (params.get("search") or "").strip()
         waitlist_rows = build_waitlist_rows(entries, search if len(search) >= 2 else "")
@@ -689,12 +814,24 @@ def export_booking_list(request, queryset, *, view: str, export_format: str) -> 
     now = timezone.now()
     generated_at = format_ist_datetime(now)
     summary = filters_summary(request, view=view)
+    counts = status_counts(rows)
+    view_label = "View Booking" if view == "staff" else "My Bookings"
     if export_format == "csv":
-        content = render_csv(columns, rows)
+        extra = detail_columns(rows, charges=show_charges, include_charge_lines=True)
+        content = render_csv(columns + extra, rows)
     elif export_format == "xlsx":
-        content = render_xlsx(columns, rows, summary=summary, generated_at=generated_at)
+        extra = detail_columns(rows, charges=show_charges, include_charge_lines=False)
+        content = render_xlsx(
+            columns + extra, rows, summary=summary, generated_at=generated_at, status_counts=counts,
+            view_label=view_label, charges=show_charges,
+        )
     else:
-        content = render_pdf(columns, rows, summary=summary, generated_at=generated_at)
+        from .booking_export_pdf import render_pdf
+
+        content = render_pdf(
+            columns, rows, summary=summary, generated_at=generated_at, status_counts=counts,
+            view_label=view_label, charges=show_charges,
+        )
 
     response = HttpResponse(content, content_type=_CONTENT_TYPES[export_format])
     response["Content-Disposition"] = f'attachment; filename="{export_filename(export_format, now)}"'

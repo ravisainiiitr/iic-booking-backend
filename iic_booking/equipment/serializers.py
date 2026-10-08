@@ -508,6 +508,30 @@ def _get_wallet_owner_display_name(user, cache: dict):
     return result
 
 
+def wallet_owner_display_names(users) -> dict:
+    """``{user id: Supervisor label or None}`` for many users in one query, by the same rule as
+    ``_get_wallet_owner_display_name`` (a list's cache can be pre-filled with it)."""
+    from iic_booking.users.models.wallet import WalletJoinRequest, WalletJoinRequestStatus
+
+    users = [u for u in users if u is not None and getattr(u, "pk", None)]
+    names = {u.pk: None for u in users}
+    student_ids = [u.pk for u in users if u.user_type in {UserType.STUDENT, UserType.OTHER}]
+    if not student_ids:
+        return names
+    seen = set()
+    qs = WalletJoinRequest.objects.filter(student_id__in=student_ids, status=WalletJoinRequestStatus.APPROVED)
+    if not qs.ordered:
+        qs = qs.order_by("pk")
+    for req in qs.select_related("wallet__user"):
+        if req.student_id in seen:
+            continue
+        seen.add(req.student_id)
+        owner = getattr(getattr(req, "wallet", None), "user", None) if req.wallet_id else None
+        if owner is not None and owner.pk != req.student_id:
+            names[req.student_id] = get_user_display_name(owner)
+    return names
+
+
 def _equipment_image_url(obj, request=None, *, verify_storage=False):
     """
     Return the stable API proxy URL for the equipment image (streams from storage; does not expire).

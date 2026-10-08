@@ -6096,7 +6096,7 @@ def list_bookings(request):
         start_date: Optional. Filter bookings from this date (YYYY-MM-DD)
         end_date: Optional. Filter bookings until this date (YYYY-MM-DD)
         ordering: Optional. Order by field (default: -created_at). Use '-' prefix for descending.
-        limit: Optional. Max number of results per page (default: 50).
+        limit: Optional. Max number of results per page (default: 50; at most 500 with list_view, else 100).
         offset: Optional. Number of results to skip (default: 0).
         search: Optional. Search in booking ID, equipment name, user name, user email, user mobile.
         user_name: Optional. Filter by booking user's name (partial match).
@@ -6150,10 +6150,12 @@ def list_bookings(request):
             'equipment__equipment_managers__manager',
         )
 
-    # Pagination: limit (default 50) and offset (default 0)
+    # Pagination: limit (default 50) and offset (default 0). The lightweight list view (View Booking /
+    # My Bookings "Rows per page") allows up to 500 rows; full booking payloads stay at 100.
+    max_limit = 500 if list_view else 100
     try:
         limit = int(request.query_params.get('limit', 50))
-        limit = max(1, min(limit, 100))
+        limit = max(1, min(limit, max_limit))
     except (ValueError, TypeError):
         limit = 50
     try:
@@ -6163,16 +6165,22 @@ def list_bookings(request):
         offset = 0
 
     total_count = queryset.count()
-    queryset = queryset[offset:offset + limit]
+    page = list(queryset[offset:offset + limit])
 
     if not list_view:
-        for booking in queryset:
+        for booking in page:
             _ensure_istem_fbr_initialized(booking)
 
+    from .serializers import wallet_owner_display_names
+
+    context = {
+        "request": request,
+        "_wallet_owner_display_cache": wallet_owner_display_names({b.user_id: b.user for b in page}.values()),
+    }
     if list_view:
-        serializer = BookingListSerializer(queryset, many=True, context={"request": request})
+        serializer = BookingListSerializer(page, many=True, context=context)
     else:
-        serializer = BookingSerializer(queryset, many=True, context={"request": request})
+        serializer = BookingSerializer(page, many=True, context=context)
 
     return Response(
         {

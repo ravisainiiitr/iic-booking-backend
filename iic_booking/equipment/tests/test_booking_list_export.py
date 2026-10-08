@@ -128,7 +128,7 @@ def test_xlsx_bold_frozen_header_and_typed_cells(world):
     assert re.fullmatch(r'attachment; filename="bookings_\d{4}-\d{2}-\d{2}_\d{4}\.xlsx"', res["Content-Disposition"])
     wb = load_workbook(io.BytesIO(res.content))
     ws = wb["Bookings"]
-    assert ws.freeze_panes == "A2"
+    assert ws.freeze_panes == "C2"
     header = [c.value for c in ws[1]]
     assert all(c.font.bold for c in ws[1])
     assert ws.max_row == 2
@@ -144,7 +144,7 @@ def test_xlsx_bold_frozen_header_and_typed_cells(world):
 
 
 @pytest.mark.django_db
-def test_pdf_is_landscape_with_page_numbers_for_long_lists(world, monkeypatch):
+def test_pdf_is_a4_portrait_with_a_card_per_booking_for_long_lists(world, monkeypatch):
     f = world.f
     for i in range(70):
         f.booking(world.alice, world.eq_b, world.base + timedelta(days=5, hours=i % 8))
@@ -153,9 +153,9 @@ def test_pdf_is_landscape_with_page_numbers_for_long_lists(world, monkeypatch):
     assert res["Content-Type"] == "application/pdf"
     assert res.content.startswith(b"%PDF")
     pages = re.findall(rb"/Type /Page\b", res.content)
-    assert len(pages) >= 2
+    assert len(pages) >= 10
     media_box = re.search(rb"/MediaBox \[ 0 0 ([\d.]+) ([\d.]+) \]", res.content)
-    assert media_box and float(media_box.group(1)) > float(media_box.group(2))
+    assert media_box and float(media_box.group(1)) < float(media_box.group(2))
     assert res["X-Export-Row-Count"] == "73"
 
 
@@ -277,18 +277,6 @@ def test_export_query_count_does_not_grow_per_booking(world, django_assert_max_n
     with django_assert_max_num_queries(30):
         res = _export(f.client_for(world.admin), view="staff")
     assert res.status_code == 200
-
-
-def test_pdf_cell_wrapping_breaks_words_wider_than_the_column():
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-
-    from iic_booking.equipment.booking_list_export import _fit_lines
-
-    text = "someone.with.a.very.long.address@department.iitr.ac.in and more"
-    lines = _fit_lines(text, "Helvetica", 6.5, 60).split("\n")
-    assert len(lines) > 2
-    assert all(stringWidth(line, "Helvetica", 6.5) <= 60 for line in lines)
-    assert "".join(lines).replace(" ", "") == text.replace(" ", "")
 
 
 def test_slot_summary_merges_adjacent_slots_and_compresses_long_ranges():
