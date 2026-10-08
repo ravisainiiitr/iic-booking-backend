@@ -1,0 +1,161 @@
+# Full 24-hour slots (Close = Open on a Slot Master). Lists every Slot Master that is one minute short of
+# 24 h (e.g. 00:00-23:59) and, for NMR TXI only, sets its Slot Master to 00:00-00:00 and extends its future,
+# unbooked Daily Slots to start + 24 h. Booked, started and past slots are left alone and counted; booking
+# charges are not touched. Other equipment is reported only. Dry run by default; apply only with
+# confirm=APPLY-NMR-TXI-24H. Idempotent. Prints equipment codes, ids and counts only.
+name: Full Day Slots NMR TXI
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY-NMR-TXI-24H to apply (empty = dry run)"
+        required: false
+        default: ""
+      equipment_code:
+        description: "NMR TXI equipment code (empty = find the single equipment whose name/code has NMR and TXI)"
+        required: false
+        default: ""
+
+jobs:
+  full-day-slots:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Full day slots
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          EQUIPMENT_CODE: ${{ inputs.equipment_code }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e CONFIRM="$CONFIRM" -e EQUIPMENT_CODE="$EQUIPMENT_CODE" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter
+          from datetime import timedelta
+          from django.db import transaction
+          from django.db.models import F
+          from django.utils import timezone
+          from iic_booking.equipment.models import DailySlot, Equipment, SlotMaster, SlotStatus
+
+          apply = os.environ.get("CONFIRM", "") == "APPLY-NMR-TXI-24H"
+          code_in = (os.environ.get("EQUIPMENT_CODE") or "").strip()
+          now = timezone.now()
+          DAY = timedelta(hours=24)
+          SHORT = DAY - timedelta(minutes=1)
+
+          def minutes(o, c):
+              s, e = o.hour * 60 + o.minute, c.hour * 60 + c.minute
+              return e - s + (1440 if e <= s else 0)
+
+          def hm(t):
+              return t.strftime("%H:%M") if t else None
+
+          print(f"mode={'APPLY' if apply else 'DRY RUN'} now={timezone.localtime(now).strftime('%Y-%m-%d %H:%M%z')}")
+
+          short = [
+              sm for sm in SlotMaster.objects.select_related("equipment").order_by("equipment_id", "slot_number")
+              if sm.open_time and sm.close_time and minutes(sm.open_time, sm.close_time) == 1439
+          ]
+          print(f"short_slot_masters={len(short)}")
+          for sm in short:
+              eq = sm.equipment
+              future = DailySlot.objects.filter(slot_master=sm, start_datetime__gt=now)
+              active_masters = SlotMaster.objects.filter(equipment=eq, is_active=True).count() if eq else 0
+              print(
+                  f"  eq_code={eq.code if eq else None} eq_id={eq.pk if eq else None} slot_master_id={sm.pk} "
+                  f"slot_number={sm.slot_number} {hm(sm.open_time)}-{hm(sm.close_time)} active={sm.is_active} "
+                  f"active_masters={active_masters} slot_duration_minutes={getattr(eq, 'slot_duration_minutes', None)} "
+                  f"future_slots={future.count()} future_booked={future.filter(booking__isnull=False).count()}"
+              )
+
+          if code_in:
+              matches = list(Equipment.objects.filter(code__iexact=code_in))
+          else:
+              matches = [
+                  e for e in Equipment.objects.all()
+                  if "TXI" in f"{e.name} {e.code}".upper() and "NMR" in f"{e.name} {e.code}".upper()
+              ]
+          print(f"nmr_txi_matches={len(matches)} codes={[e.code for e in matches]} ids={[e.pk for e in matches]}")
+          if len(matches) != 1:
+              print("STOP: need exactly one NMR TXI equipment (pass equipment_code)")
+              raise SystemExit(0 if not apply else 1)
+          eq = matches[0]
+          masters = list(SlotMaster.objects.filter(equipment=eq).order_by("slot_number"))
+          active = [m for m in masters if m.is_active]
+          print(
+              f"nmr_txi code={eq.code} id={eq.pk} slot_duration_minutes={eq.slot_duration_minutes} "
+              f"masters={[(m.pk, m.slot_number, hm(m.open_time), hm(m.close_time), m.is_active) for m in masters]}"
+          )
+          if len(active) != 1:
+              print(f"STOP: NMR TXI has {len(active)} active slot masters; a full-day slot must be the only one")
+              raise SystemExit(0 if not apply else 1)
+          sm = active[0]
+          mins = minutes(sm.open_time, sm.close_time)
+          if mins not in (1439, 1440):
+              print(f"STOP: NMR TXI slot master is {mins} min, not 1 minute short of 24 h")
+              raise SystemExit(0 if not apply else 1)
+
+          slots = DailySlot.objects.filter(slot_master=sm)
+          past = slots.filter(end_datetime__lte=now).count()
+          started = slots.filter(start_datetime__lte=now, end_datetime__gt=now).count()
+          future = slots.filter(start_datetime__gt=now)
+          booked_future = future.filter(booking__isnull=False) | future.filter(status=SlotStatus.BOOKED)
+          free_future = future.filter(booking__isnull=True).exclude(status=SlotStatus.BOOKED)
+          to_extend_ids, already_full, other_len, overlapping = [], 0, 0, 0
+          for s in free_future.only("pk", "start_datetime", "end_datetime"):
+              length = s.end_datetime - s.start_datetime
+              if length == DAY:
+                  already_full += 1
+              elif length != SHORT:
+                  other_len += 1
+              elif DailySlot.objects.filter(
+                  slot_master__equipment=eq, start_datetime__lt=s.start_datetime + DAY, end_datetime__gt=s.end_datetime
+              ).exclude(pk=s.pk).exists():
+                  overlapping += 1
+              else:
+                  to_extend_ids.append(s.pk)
+          booked_rows = list(booked_future.distinct().values_list("pk", "date", "booking_id"))
+          print(
+              f"nmr_txi_daily_slots total={slots.count()} past={past} in_progress={started} future={future.count()} "
+              f"future_free_to_extend={len(to_extend_ids)} future_free_already_24h={already_full} "
+              f"future_free_other_length={other_len} future_free_overlap_skipped={overlapping} "
+              f"future_booked_left_unchanged={len(booked_rows)}"
+          )
+          print(f"  future_free_status_counts={dict(Counter(free_future.values_list('status', flat=True)))}")
+          for pk, d, bid in booked_rows:
+              print(f"  booked_future_left slot_id={pk} date={d} booking_id={bid}")
+
+          if apply:
+              with transaction.atomic():
+                  changed_master = sm.close_time != sm.open_time
+                  if changed_master:
+                      SlotMaster.objects.filter(pk=sm.pk).update(close_time=sm.open_time)
+                  n = DailySlot.objects.filter(
+                      pk__in=to_extend_ids, booking__isnull=True, start_datetime__gt=now
+                  ).exclude(status=SlotStatus.BOOKED).update(end_datetime=F("start_datetime") + DAY)
+              sm.refresh_from_db()
+              print(
+                  f"applied slot_master_id={sm.pk} now={hm(sm.open_time)}-{hm(sm.close_time)} "
+                  f"master_changed={changed_master} daily_slots_extended={n}"
+              )
+              left_short = DailySlot.objects.filter(slot_master=sm, start_datetime__gt=now).filter(
+                  end_datetime=F("start_datetime") + SHORT
+              ).count()
+              print(f"after future_slots_still_short={left_short}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
