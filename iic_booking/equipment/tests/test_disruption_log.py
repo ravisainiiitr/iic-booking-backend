@@ -415,6 +415,13 @@ def test_history_filters_and_summary():
     assert data["summary"]["reason_missing"] == 2
     row = next(r for r in data["results"] if r["id"] == closed.pk)
     assert row["status"] == "CLOSED" and row["reason_missing"] is False
+    assert "equipment_options" not in data
+
+    opts = _client(admin).get(LIST_URL, {"with_options": 1}).data
+    assert eq.pk in {o["id"] for o in opts["equipment_options"]}
+    assert eq.internal_department_id in {d["id"] for d in opts["department_options"]}
+    oic_opts = _client(_oic_for(eq)).get(LIST_URL, {"with_options": 1}).data
+    assert [o["id"] for o in oic_opts["equipment_options"]] == [eq.pk] and "department_options" not in oic_opts
 
     att = _client(admin).get(f"{LIST_URL}attention/").data
     assert att == {"enabled": True, "open_now": 2, "reason_missing": 2}

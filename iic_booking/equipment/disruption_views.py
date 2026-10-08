@@ -343,7 +343,34 @@ def disruption_list(request):
     }
     if not _truthy(params.get("no_summary")):
         payload["summary"] = _summary(apply_filters(_scoped_events(request.user), params, now), now)
+    if _truthy(params.get("with_options")):
+        payload.update(_filter_options(request.user))
     return Response(payload)
+
+
+def _filter_options(user) -> dict:
+    """Equipment (and, for the Main Administrator, departments) the user may filter by."""
+    from .models import Equipment
+
+    ids = disruption_equipment_ids(user)
+    eq_qs = Equipment.objects.all() if ids is None else Equipment.objects.filter(equipment_id__in=ids)
+    rows = list(
+        eq_qs.order_by("name").values(
+            "equipment_id", "name", "code", "internal_department_id", "internal_department__name"
+        )
+    )
+    out = {
+        "equipment_options": [
+            {"id": r["equipment_id"], "name": r["name"] or "", "code": r["code"] or "", "department_id": r["internal_department_id"]}
+            for r in rows
+        ]
+    }
+    if getattr(user, "user_type", None) == UserType.ADMIN:
+        depts = {r["internal_department_id"]: r["internal_department__name"] for r in rows if r["internal_department_id"]}
+        out["department_options"] = [
+            {"id": k, "name": v or ""} for k, v in sorted(depts.items(), key=lambda kv: (kv[1] or "").lower())
+        ]
+    return out
 
 
 @api_view(["GET"])
