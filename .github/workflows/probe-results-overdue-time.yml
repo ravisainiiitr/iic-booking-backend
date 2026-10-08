@@ -1,0 +1,89 @@
+# Read-only, counts only (no booking ids, no names): bookings counted as overdue under the old rules
+# (awaiting-completion counter from max(slot end, receipt); Results overdue from the results deadline)
+# and under the results overdue time (default 24 h after max(slot end, receipt + booked time)).
+name: Probe Results Overdue Time
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db.models import Max
+          from django.utils import timezone
+          from iic_booking.equipment.models import Booking, Equipment
+          from iic_booking.equipment import completion_reminders as cr
+          from iic_booking.equipment import results_deadline as rd
+          from iic_booking.equipment import results_overdue as ro
+
+          now = timezone.now()
+          print(f"now={now.isoformat()}")
+          print(f"equipment_total={Equipment.objects.count()}")
+          print(f"equipment_hours_not_24={Equipment.objects.exclude(results_overdue_after_hours=24).count()}")
+          print(f"equipment_countdown_shown_to_users={Equipment.objects.filter(show_results_countdown_to_users=True).count()}")
+
+          awaiting = list(cr.bookings_awaiting_completion(now=now))
+          pairs = cr.with_results_due(awaiting)
+          new_overdue = [(b, d) for b, d in pairs if ro.is_results_overdue(b, d, now)]
+          waiting_user = sum(1 for b, d in pairs if d and d.due_at <= now and ro.waiting_for_user(b))
+          print(f"awaiting_completion_total={len(awaiting)}")
+          print(f"awaiting_old_overdue_counter_shown={len(awaiting)}")
+          print(f"awaiting_new_overdue={len(new_overdue)}")
+          print(f"awaiting_new_due_later={len(awaiting) - len(new_overdue) - waiting_user}")
+          print(f"awaiting_new_past_due_waiting_for_user={waiting_user}")
+
+          def recipients(bookings):
+              eq_ids = sorted({b.equipment_id for b in bookings})
+              if not eq_ids:
+                  return 0
+              n = 0
+              for user in cr._candidate_recipients(eq_ids):
+                  if not (user.email or "").strip():
+                      continue
+                  scope = set(cr.awaiting_completion_equipment_ids(user))
+                  if any(b.equipment_id in scope for b in bookings):
+                      n += 1
+              return n
+
+          print(f"digest_recipients_old={recipients(awaiting)}")
+          print(f"digest_recipients_new={recipients([b for b, _d in new_overdue])}")
+          print(f"digest_bookings_old={len(awaiting)} digest_bookings_new={len(new_overdue)}")
+
+          cands = list(
+              rd.annotate_sample_receipt(Booking.objects.filter(status__in=rd._open_statuses()))
+              .annotate(last_slot_end=Max("daily_slots__end_datetime"))
+              .filter(last_slot_end__isnull=False, last_slot_end__lt=now, equipment__results_deadline_value__gt=0)
+              .filter(rd.sample_received_q())
+              .select_related("equipment")
+              .order_by()
+          )
+          ro.preload(cands)
+          cal = rd.WorkingCalendar()
+          old_list = sum(1 for b in cands if rd.is_results_overdue(b, rd.booking_results_deadline(b, cal), now))
+          new_list = len(rd.overdue_bookings(Booking.objects.all(), now))
+          print(f"results_overdue_list_old_deadline_rule={old_list}")
+          print(f"results_overdue_list_new_rule={new_list}")
+          PY
+              exit 0
+            fi
+          done
+          echo "backend checkout not found"
+          exit 1
