@@ -130,3 +130,133 @@ def wallet_withdrawal_requests(request):
                        empty_message="No withdrawal requests match these filters.")
     return make_document(request, title="Wallet Withdrawal Requests", slug="wallet-withdrawal-requests",
                          tables=[table], filters=filters, kpis=kpis, landscape=True)
+
+
+_BALANCE_STATES = {"positive": "Positive", "zero": "Zero", "negative": "Negative", "zero_or_negative": "Zero or negative"}
+_OWNER_STATUS = {"active": "Active", "inactive": "Inactive"}
+_TXN_TYPES = {"credit": "Credit", "debit": "Debit"}
+
+
+def _owner_type_label(raw: str) -> str:
+    from iic_booking.users.models import UserType
+
+    labels = dict(UserType.get_choices())
+    return ", ".join(str(labels.get(v.strip(), v.strip())) for v in raw.split(","))
+
+
+def _sub_wallets_text(row) -> str:
+    return "; ".join(f"{s['department_name']}: ₹{Decimal(s['balance']):,.2f}" for s in row.get("sub_wallets") or [])
+
+
+def _ledger_choice(key: str):
+    def resolve(raw: str) -> str:
+        from iic_booking.users import admin_wallet_ledger as ledger
+
+        options = {"category": ledger.category_options(), "performer": ledger.PERFORMER_OPTIONS}[key]
+        labels = {o["value"]: o["label"] for o in options}
+        return ", ".join(labels.get(v.strip(), v.strip()) for v in raw.split(","))
+
+    return resolve
+
+
+@register("admin-wallet-owners")
+def admin_wallet_owners(request):
+    rows, first = collect_rows(request, "admin-wallet-ledger-owners", page_size=500, page_param="page",
+                               limit_param="page_size")
+    summary = (first or {}).get("summary") or {}
+    columns = [
+        SNO,
+        C("name", "Wallet owner", width=1.5),
+        C("employee_id", "Employee / enrolment no.", width=1.0),
+        C("user_type_label", "Category", width=1.1),
+        C("department_name", "Department", width=1.4),
+        C("sub_wallets", "Sub-wallets and balances", width=2.4, value=_sub_wallets_text),
+        C("total_balance", "Total balance (₹)", spec.CURRENCY, 1.0, total=True),
+        C("linked_students", "Linked students", spec.INTEGER, 0.7),
+        C("status", "Status", width=0.7, value=lambda r: _OWNER_STATUS.get(r.get("status"), r.get("status"))),
+        C("last_transaction_at", "Last transaction (IST)", spec.DATETIME, 1.15),
+    ]
+    kpis = [
+        spec.Kpi("Wallet owners", summary.get("owners", len(rows)), spec.INTEGER),
+        spec.Kpi("Total balance", to_number(summary.get("total_balance")) or 0, spec.CURRENCY),
+        spec.Kpi("Negative balance", summary.get("negative_owners", 0), spec.INTEGER),
+        spec.Kpi("Zero balance", summary.get("zero_owners", 0), spec.INTEGER),
+    ]
+    filters = filter_pairs(request, [
+        ("search", "Search", "text"),
+        ("department", "Department", "department"),
+        ("owner_type", "Category", _owner_type_label),
+        ("sub_wallet_department", "Sub-wallet", "department"),
+        ("balance_state", "Balance", _BALANCE_STATES),
+        ("balance_min", "Balance from (₹)", "text"),
+        ("balance_max", "Balance up to (₹)", "text"),
+        ("status", "Status", _OWNER_STATUS),
+        ("activity_from", "Activity from", "date"),
+        ("activity_to", "Activity to", "date"),
+    ])
+    table = spec.Table("owners", "Wallet owners", columns, numbered(rows),
+                       note="Email addresses and phone numbers are left out of exports.",
+                       empty_message="No wallet owners match these filters.")
+    return make_document(request, title="Wallet Owners", slug="wallet-owners", tables=[table], filters=filters,
+                         kpis=kpis, landscape=True)
+
+
+@register("admin-wallet-transactions")
+def admin_wallet_transactions(request):
+    rows, first = collect_rows(request, "admin-wallet-ledger-transactions", page_size=500, page_param="page",
+                               limit_param="page_size")
+    summary = (first or {}).get("summary") or {}
+    single_owner = bool((request.query_params.get("owner") or "").strip())
+    columns = [
+        SNO,
+        C("created_at", "Date & time (IST)", spec.DATETIME, 1.15),
+        C("id", "Transaction ID", spec.INTEGER, 0.8),
+    ]
+    if not single_owner:
+        columns += [
+            C("owner_name", "Wallet owner", width=1.4),
+            C("owner_department", "Owner department", width=1.2),
+        ]
+    columns += [
+        C("transaction_type", "Type", width=0.6, value=lambda r: _TXN_TYPES.get(r.get("transaction_type"), "")),
+        C("category_label", "Source", width=1.1),
+        C("booking_code", "Booking", width=1.1),
+        C("department_name", "Sub-wallet", width=1.2),
+        C("credit", "Credit (₹)", spec.CURRENCY, 0.9, total=True,
+          value=lambda r: r.get("amount") if r.get("transaction_type") == "credit" else None),
+        C("debit", "Debit (₹)", spec.CURRENCY, 0.9, total=True,
+          value=lambda r: r.get("amount") if r.get("transaction_type") == "debit" else None),
+        C("balance_after", "Balance after (₹)", spec.CURRENCY, 1.0),
+        C("performed_by", "Performed by", width=1.2),
+        C("description", "Description", width=2.4),
+        C("remarks", "Remarks", width=1.6),
+    ]
+    kpis = [
+        spec.Kpi("Transactions", summary.get("transactions", len(rows)), spec.INTEGER),
+        spec.Kpi("Total credits", to_number(summary.get("total_credits")) or 0, spec.CURRENCY),
+        spec.Kpi("Total debits", to_number(summary.get("total_debits")) or 0, spec.CURRENCY),
+        spec.Kpi("Net", to_number(summary.get("net")) or 0, spec.CURRENCY),
+    ]
+    filters = filter_pairs(request, [
+        ("owner", "Wallet owner", "user"),
+        ("owner_department", "Owner department", "department"),
+        ("owner_type", "Owner category", _owner_type_label),
+        ("sub_wallet_department", "Sub-wallet", "department"),
+        ("type", "Type", _TXN_TYPES),
+        ("category", "Source", _ledger_choice("category")),
+        ("performer", "Performed by", _ledger_choice("performer")),
+        ("date_from", "From", "date"),
+        ("date_to", "To", "date"),
+        ("amount_min", "Amount from (₹)", "text"),
+        ("amount_max", "Amount up to (₹)", "text"),
+        ("booking", "Booking", "text"),
+        ("search", "Search", "text"),
+    ])
+    title = "Wallet Transactions"
+    subtitle = ""
+    if single_owner and rows:
+        subtitle = f"{rows[0].get('owner_name') or ''} — {rows[0].get('owner_department') or ''}".strip(" —")
+    table = spec.Table("transactions", "Wallet transactions", columns, numbered(rows),
+                       empty_message="No wallet transactions match these filters.")
+    return make_document(request, title=title, slug="wallet-transactions", subtitle=subtitle, tables=[table],
+                         filters=filters, kpis=kpis, landscape=True)

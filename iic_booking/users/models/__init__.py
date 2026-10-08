@@ -89,6 +89,11 @@ from .wallet_payment_modes import (
     WalletPaymentModeAuditEvent,
     WalletPaymentModeConfig,
 )
+from .wallet_admin_adjustment import (
+    WalletAdminAdjustment,
+    WalletAdminAdjustmentDirection,
+    WalletAdminAdjustmentReason,
+)
 from .test_account_email_settings import TestAccountEmailSettings
 from .user_type_inactivity import UserTypeInactivityTimeout
 from .billing import ExternalBillingProfile
@@ -157,6 +162,9 @@ __all__ = [
     "SubWallet",
     "SubWalletTransaction",
     "WalletRazorpayOrder",
+    "WalletAdminAdjustment",
+    "WalletAdminAdjustmentDirection",
+    "WalletAdminAdjustmentReason",
     "WalletJoinRequest",
     "WalletJoinRequestStatus",
     "WalletRechargeRequest",
