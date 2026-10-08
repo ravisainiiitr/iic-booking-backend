@@ -116,9 +116,13 @@ def backfill_disruption_events(*, apply: bool, equipment_ids=None) -> dict:
             .values("id", "start_datetime", "end_datetime", "status", "blocked_label", "date", "booking_id")
         )
         under_maintenance_now = is_equipment_under_maintenance_status(equipment.status)
-        has_equipment_event = DisruptionEvent.objects.filter(
-            equipment=equipment, scope=DisruptionScope.EQUIPMENT, ended_at__isnull=True
-        ).exists()
+        open_equipment_event_start = (
+            DisruptionEvent.objects.filter(equipment=equipment, scope=DisruptionScope.EQUIPMENT, ended_at__isnull=True)
+            .order_by("start_at")
+            .values_list("start_at", flat=True)
+            .first()
+        )
+        has_equipment_event = open_equipment_event_start is not None
 
         equipment_run_start = None
         if under_maintenance_now and not has_equipment_event:
@@ -159,6 +163,7 @@ def backfill_disruption_events(*, apply: bool, equipment_ids=None) -> dict:
             dates = [r["date"] for r in rows if r["status"] == SlotStatus.BLOCKED]
             holidays = set(Holiday.get_holidays_in_range(min(dates), max(dates)).keys())
 
+        covered_from = equipment_run_start if equipment_run_start is not None else open_equipment_event_start
         by_type = defaultdict(list)
         for r in rows:
             if r["id"] in linked:
@@ -170,8 +175,8 @@ def backfill_disruption_events(*, apply: bool, equipment_ids=None) -> dict:
                     continue
             if (
                 r["status"] == SlotStatus.UNDER_MAINTENANCE
-                and equipment_run_start is not None
-                and r["start_datetime"] >= equipment_run_start
+                and covered_from is not None
+                and r["start_datetime"] >= covered_from
             ):
                 continue  # covered by the whole-equipment event
             dtype = disruption_type_for_slot_status(r["status"])

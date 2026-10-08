@@ -492,6 +492,8 @@ def test_backfill_dry_run_then_apply_is_idempotent():
 
     whole = _equipment()
     Equipment.objects.filter(pk=whole.pk).update(status=EquipmentStatus.REPAIR)
+    whole_slots = _slots(whole, day)
+    DailySlot.objects.filter(pk__in=[s.pk for s in whole_slots]).update(status=SlotStatus.UNDER_MAINTENANCE)
 
     out = StringIO()
     call_command("backfill_disruption_events", stdout=out)
@@ -505,10 +507,13 @@ def test_backfill_dry_run_then_apply_is_idempotent():
     other = events.get(disruption_type="OTHER")
     assert other.reason == "Power cut" and other.backfilled and other.source == "BACKFILL"
     assert DisruptionEvent.objects.filter(equipment=whole, scope="EQUIPMENT").count() == 1
+    assert not DisruptionEvent.objects.filter(equipment=whole, scope="SLOTS").exists()
     total = DisruptionEvent.objects.count()
 
-    call_command("backfill_disruption_events", "--apply", stdout=StringIO())
+    rerun = StringIO()
+    call_command("backfill_disruption_events", "--apply", stdout=rerun)
     assert DisruptionEvent.objects.count() == total
+    assert "slot_events=0" in rerun.getvalue()
 
 
 # --- Reports ----------------------------------------------------------------------------------------------
