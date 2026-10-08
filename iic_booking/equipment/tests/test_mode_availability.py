@@ -105,6 +105,7 @@ def test_day_statuses_inside_the_window(family):
     _slot(base, wed, 11)
     _slot(depth, thu, 10, status="BOOKED")
     _slot(base, TUESDAY_10AM.date(), 9)
+    _slot(base, TUESDAY_10AM.date(), 8, status="BOOKED")
     s = _summary(base)
     assert _cell(s, base, MONDAY)["status"] == ma.PAST
     wed_cell = _cell(s, base, wed)

@@ -350,10 +350,10 @@ def _day_status(mode, schedules, viewer, window, rule, rows, on_date, holiday, n
         return {**out, "status": MAINTENANCE, "label": "Maintenance"}
     if open_rows:
         return {**out, "status": NOT_AVAILABLE, "label": "Reserved for another department"}
-    if booked:
-        return {**out, "status": FULL, "label": "Fully booked", "total_slots": len(rows)}
     if on_date == timezone.localtime(now).date() and any(r[0] == SlotStatus.AVAILABLE for r in rows):
         return {**out, "status": NOT_AVAILABLE, "label": "No more slots today"}
+    if booked:
+        return {**out, "status": FULL, "label": "Fully booked", "total_slots": len(rows)}
     return {**out, "status": NOT_AVAILABLE, "label": "Not available"}
 
 
