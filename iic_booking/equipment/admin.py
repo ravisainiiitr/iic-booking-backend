@@ -1687,16 +1687,10 @@ class EquipmentAdmin(admin.ModelAdmin):
             # Allow intentional admin “clear” of the image field.
             obj._allow_clear_equipment_image = True
 
-        old_time_from = None
-        old_time_to = None
         old_parent_id = None
         if change and obj.pk:
             try:
-                prev = Equipment.objects.only(
-                    "weekly_view_time_from", "weekly_view_time_to", "parent_equipment_id"
-                ).get(pk=obj.pk)
-                old_time_from = prev.weekly_view_time_from
-                old_time_to = prev.weekly_view_time_to
+                prev = Equipment.objects.only("parent_equipment_id").get(pk=obj.pk)
                 old_parent_id = prev.parent_equipment_id
             except Exception:
                 pass
@@ -1760,20 +1754,6 @@ class EquipmentAdmin(admin.ModelAdmin):
                     % {"path": obj.image.name},
                 )
 
-        if change and (old_time_from != obj.weekly_view_time_from or old_time_to != obj.weekly_view_time_to):
-            try:
-                from iic_booking.equipment.waitlist import notify_waitlist_slots_available
-                notified = notify_waitlist_slots_available(obj)
-                if notified:
-                    self.message_user(
-                        request,
-                        _('Slot window updated. Waitlist processed: %(count)d booking(s) created and queue cleared.') % {'count': notified},
-                        messages.SUCCESS,
-                    )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning('Failed to process waitlist after slot window change for equipment %s: %s', getattr(obj, 'code', obj.pk), e)
-        
         # Note: Slot masters are now generated on-demand via API when frontend requests slots.
         # This prevents data loss from automatic deletion of slots and bookings.
         # If slot configuration changed, slot masters will be updated intelligently
@@ -2533,7 +2513,6 @@ class DailySlotAdmin(admin.ModelAdmin):
                 
                 count = 0
                 errors = []
-                available_slot_ids_by_equipment = {}
                 changed_by_equipment = {}
                 
                 # Process each slot
@@ -2565,8 +2544,6 @@ class DailySlotAdmin(admin.ModelAdmin):
                             changed_by_equipment.setdefault(slot.slot_master.equipment_id, (slot.slot_master.equipment, []))[
                                 1
                             ].append(slot)
-                        if old_status != SlotStatus.AVAILABLE and new_status == SlotStatus.AVAILABLE and slot.slot_master_id and slot.slot_master.equipment_id:
-                            available_slot_ids_by_equipment.setdefault(slot.slot_master.equipment_id, []).append(slot.id)
                         
                         count += 1
                     except Exception as e:
@@ -2600,24 +2577,6 @@ class DailySlotAdmin(admin.ModelAdmin):
                         _("Errors: {errors}").format(errors='; '.join(errors[:10])),  # Limit to first 10 errors
                         level="error",
                     )
-                if available_slot_ids_by_equipment:
-                    try:
-                        from iic_booking.equipment.waitlist import notify_waitlist_slots_available
-                        equipment_map = {
-                            e.equipment_id: e
-                            for e in Equipment.objects.filter(equipment_id__in=list(available_slot_ids_by_equipment.keys()))
-                        }
-                        for equipment_id, slot_ids in available_slot_ids_by_equipment.items():
-                            equipment = equipment_map.get(equipment_id)
-                            if not equipment:
-                                continue
-                            notify_waitlist_slots_available(
-                                equipment,
-                                preferred_slot_ids=slot_ids,
-                                respect_reschedule_threshold=True,
-                            )
-                    except Exception as e:
-                        logger.warning("Failed to notify waitlist after DailySlot bulk AVAILABLE update: %s", e)
                 # Clear session
                 if 'dailyslot_selected_ids' in request.session:
                     del request.session['dailyslot_selected_ids']
@@ -2642,27 +2601,6 @@ class DailySlotAdmin(admin.ModelAdmin):
                 return render(request, "admin/equipment/dailyslot/bulk_status_change.html", context)
     
     change_status_bulk.allowed_permissions = ("change",)
-
-    def save_model(self, request, obj, form, change):
-        """When a DailySlot is made AVAILABLE from admin UI, trigger waitlist confirmation."""
-        old_status = None
-        if change and obj.pk:
-            try:
-                old_status = DailySlot.objects.only("status").get(pk=obj.pk).status
-            except DailySlot.DoesNotExist:
-                old_status = None
-        super().save_model(request, obj, form, change)
-        if obj.status == SlotStatus.AVAILABLE and old_status != SlotStatus.AVAILABLE:
-            equipment = getattr(getattr(obj, "slot_master", None), "equipment", None)
-            if equipment:
-                try:
-                    from iic_booking.equipment.waitlist import notify_waitlist_slots_available
-                    notify_waitlist_slots_available(
-                        equipment,
-                        preferred_slot_ids=[obj.id],
-                    )
-                except Exception as e:
-                    logger.warning("Failed to notify waitlist for DailySlot %s after AVAILABLE update: %s", obj.id, e)
 
 # ============================================================================
 # Booking Admin

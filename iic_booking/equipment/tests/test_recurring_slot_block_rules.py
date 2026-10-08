@@ -446,7 +446,8 @@ def test_remove_unblocks_only_own_future_unbooked_slots(admin, eq):
         res = _client(admin).post(_url(eq, f"{rule_id}/remove/"), {}, format="json")
     assert res.status_code == 200, res.data
     assert res.data["result"]["unblocked_count"] == 5
-    notify.assert_called_once()
+    # Slots a staff rule removal reopens never auto-confirm the waitlist.
+    notify.assert_not_called()
     assert res.data["rule"]["is_active"] is False
 
     rule = RecurringSlotBlockRule.objects.get(pk=rule_id)

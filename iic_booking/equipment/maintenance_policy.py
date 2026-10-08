@@ -638,16 +638,15 @@ def apply_when_equipment_becomes_operational(equipment) -> int:
 
     # Restore previously under-maintenance slots to AVAILABLE for booking.
     # Keep booked/held slots untouched (they should already be BOOKED/HOLD/etc).
+    # Restored slots do not auto-confirm the waitlist (only booking cancellations / reschedules do).
     now = timezone.now()
     today = timezone.localtime(now).date()
-    freed_qs = DailySlot.objects.filter(
+    DailySlot.objects.filter(
         slot_master__equipment=equipment,
         date__gte=today,
         status=SlotStatus.UNDER_MAINTENANCE,
         booking_id__isnull=True,
-    )
-    freed_slot_ids = list(freed_qs.values_list("id", flat=True))
-    freed_qs.update(status=SlotStatus.AVAILABLE)
+    ).update(status=SlotStatus.AVAILABLE)
 
     qs = (
         Booking.objects.filter(
@@ -671,21 +670,6 @@ def apply_when_equipment_becomes_operational(equipment) -> int:
         )
         _send_equipment_operational_email(booking)
         n += 1
-
-    if freed_slot_ids:
-        try:
-            from .waitlist import notify_waitlist_slots_available
-
-            notify_waitlist_slots_available(
-                equipment,
-                preferred_slot_ids=freed_slot_ids,
-                respect_reschedule_threshold=False,
-            )
-        except Exception:
-            logger.exception(
-                "Failed to run waitlist auto-book after equipment %s became operational",
-                getattr(equipment, "code", equipment.pk),
-            )
     return n
 
 

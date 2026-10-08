@@ -426,18 +426,6 @@ def remove_rule(rule: RecurringSlotBlockRule, actor) -> dict:
         rule.removal_summary = result
         rule.save(update_fields=["is_active", "removed_by", "removed_at", "removal_summary"])
 
-    if unblocked and restore_status == SlotStatus.AVAILABLE:
-        try:
-            from iic_booking.equipment.waitlist import notify_waitlist_slots_available
-
-            notify_waitlist_slots_available(
-                equipment,
-                preferred_slot_ids=[s.pk for s in plan.unblock],
-                respect_reschedule_threshold=True,
-            )
-        except Exception as exc:
-            logger.warning("Waitlist notify after removing repeat block %s failed: %s", rule.pk, exc)
-
     record_staff_action(
         actor,
         "recurring_slot_block_rule_removed",

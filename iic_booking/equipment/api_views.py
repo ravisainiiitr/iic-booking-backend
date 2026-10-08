@@ -216,6 +216,7 @@ from .maintenance_policy import (
 from .waitlist import (
     add_user_to_waitlist,
     notify_waitlist_slots_available,
+    schedule_waitlist_slots_available_after_commit,
     waitlist_virtual_booking_id,
 )
 from .reports import get_equipment_ids_managed_by_oic
@@ -12517,15 +12518,12 @@ def refund_booking_internal(booking, refund_notes, performed_by):
             except Exception as e:
                 logger.error(f"Failed to send wallet transaction notification: {str(e)}", exc_info=True)
 
-    # After slots are freed: notify waitlist so users can book (first come first serve)
-    try:
-        notify_waitlist_slots_available(
-            booking.equipment,
-            preferred_slot_ids=released_slot_ids,
-            respect_reschedule_threshold=True,
-        )
-    except Exception as e:
-        logger.warning("Failed to notify waitlist after refund for equipment %s: %s", booking.equipment.code, e)
+    # After commit, so slots staff block / mark in the same request are already set and not handed to the waitlist.
+    schedule_waitlist_slots_available_after_commit(
+        booking.equipment,
+        preferred_slot_ids=released_slot_ids,
+        respect_reschedule_threshold=True,
+    )
     return Decimal(str(booking.total_charge or 0)) if razorpay_payment else wallet_credit
 
 def _reverse_reward_points_for_booking(booking, actor, note_prefix):

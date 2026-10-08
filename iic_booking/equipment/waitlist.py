@@ -3,9 +3,11 @@ Waitlist queue service for equipment.
 
 - Add user to waitlist on failed booking (respects equipment.waitlist_queue_depth).
 - Send "unsuccessful booking + your position in queue" email.
-- When slots become available (cancellation, refund, operator unavailable, admin/OIC marking slots AVAILABLE):
+- When a booking gives slots back (cancellation, refund, operator unavailable, reschedule, hold release):
   automatically create bookings for waitlisted users one by one (FCFS): wallet debit, BOOKED row,
   slots assigned, and email to the booker and wallet owner (template booking_waitlist_confirmed_email).
+  Only slots with DailySlot.released_by_booking_at count; slots made Available by OIC / admin status
+  changes, maintenance ending, rule removal or slot generation never auto-confirm the waitlist.
 - Before the pre-reference cutoff window, FCFS is attempted once so users with available slots are
   confirmed before remaining waitlist rows are cleared.
 """
@@ -478,11 +480,11 @@ def notify_waitlist_slots_available(
     respect_reschedule_threshold: bool = False,
 ) -> int:
     """
-    When slots become available, automatically create bookings for waitlisted users
-    one by one (first-come-first-serve). Booking confirmation is sent to each user
-    and to the faculty wallet owner (via create_booking_event). Then clear the waitlist.
-    Called when slots become available due to cancellation, rescheduling, or admin/OIC
-    marking slots AVAILABLE. Returns the number of bookings created.
+    When a booking cancellation or reschedule gives slots back, automatically create bookings
+    for waitlisted users one by one (first-come-first-serve). Booking confirmation is sent to
+    each user and to the faculty wallet owner (via create_booking_event). Then clear the waitlist.
+    Only AVAILABLE slots with released_by_booking_at are used, with or without preferred_slot_ids.
+    Returns the number of bookings created.
 
     Note: only waitlist entries we attempted to auto-book are removed. Entries that
     couldn't be booked because no slots were available for their user type remain.
@@ -498,6 +500,14 @@ def notify_waitlist_slots_available(
             preferred_slot_ids = [sid for sid in preferred_slot_ids if sid not in reserved_ids]
             if not preferred_slot_ids:
                 return 0
+        released_ids = set(
+            DailySlot.objects.filter(
+                id__in=preferred_slot_ids, released_by_booking_at__isnull=False
+            ).values_list("id", flat=True)
+        )
+        preferred_slot_ids = [sid for sid in preferred_slot_ids if sid in released_ids]
+        if not preferred_slot_ids:
+            return 0
     entries = list(
         WaitlistEntry.objects.filter(equipment=equipment, status="ACTIVE")
         .select_related("user", "equipment")
@@ -596,6 +606,8 @@ def notify_waitlist_slots_available(
     available_qs = DailySlot.objects.filter(
         slot_master__equipment=equipment,
         status=SlotStatus.AVAILABLE,
+        booking__isnull=True,
+        released_by_booking_at__isnull=False,
     )
     available_slots = prioritize_slots(slot_ids_within_window(available_qs))
     if not available_slots and available_qs.exists():
@@ -818,7 +830,8 @@ def clear_waitlist_due_before_reference(now_dt=None) -> int:
             ref_datetime = timezone.make_aware(ref_naive, timezone.get_current_timezone())
             cutoff = ref_datetime - timedelta(minutes=60)
             if cutoff <= now < ref_datetime:
-                # Attempt FCFS confirmations while slots exist before clearing remaining entries.
+                # Attempt FCFS confirmations into slots freed by cancellations / reschedules before
+                # clearing remaining entries (staff-opened slots are never used).
                 try:
                     notify_waitlist_slots_available(equipment)
                 except Exception:

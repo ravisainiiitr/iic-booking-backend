@@ -3265,20 +3265,8 @@ def admin_api_router():
                     except Exception as e:
                         logger.warning("Failed to update booking %s status to BOOKING_NOT_UTILIZED: %s", s.booking_id, e)
 
-            # When slots are marked AVAILABLE, notify waitlist so users can book (first come first serve)
-            if new_status == SlotStatus.AVAILABLE:
-                try:
-                    from iic_booking.equipment.waitlist import notify_waitlist_slots_available
-                    preferred_slot_ids = [s.id for s in slots]
-                    notified = notify_waitlist_slots_available(
-                        equipment,
-                        preferred_slot_ids=preferred_slot_ids,
-                        respect_reschedule_threshold=True,
-                    )
-                    if notified:
-                        logger.info("Notified %d waitlist user(s) for equipment %s (slots available).", notified, equipment.code)
-                except Exception as e:
-                    logger.warning("Failed to notify waitlist for equipment %s: %s", equipment.code, e)
+            # Slots staff mark AVAILABLE never auto-confirm the waitlist; bookings refunded above already
+            # queued it for the slots they gave back.
 
             # For Booking Not Utilized: send email to each booking user and to Supervisor (no refund)
             if new_status == SlotStatus.BOOKING_NOT_UTILIZED:

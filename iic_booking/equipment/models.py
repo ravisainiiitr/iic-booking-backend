@@ -3173,6 +3173,15 @@ def _released_status_expression():
     )
 
 
+def _released_by_booking_at_expression():
+    """Stamp only slots that a booking actually gave back; anything else in the same update is cleared."""
+    return models.Case(
+        models.When(booking_id__isnull=False, then=models.Value(timezone.now())),
+        default=models.Value(None),
+        output_field=models.DateTimeField(),
+    )
+
+
 class DailySlotQuerySet(models.QuerySet):
     def update(self, **kwargs):
         booking_given = "booking" in kwargs or "booking_id" in kwargs
@@ -3183,8 +3192,11 @@ class DailySlotQuerySet(models.QuerySet):
             remember_booking_slot_ranges(self)
             if kwargs.get("status") == SlotStatus.AVAILABLE and not staff_sets_reference:
                 kwargs["status"] = _released_status_expression()
+            kwargs.setdefault("released_by_booking_at", _released_by_booking_at_expression())
         elif booking_given and kwargs.get("status") == SlotStatus.BOOKED and not staff_sets_reference:
             kwargs["external_reference"] = _booked_external_reference_expression()
+        if "status" in kwargs:
+            kwargs.setdefault("released_by_booking_at", None)
         return super().update(**kwargs)
 
 
@@ -3256,6 +3268,14 @@ class DailySlot(models.Model):
         null=True,
         help_text=_('Booking associated with this slot')
     )
+    released_by_booking_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_(
+            'When a booking cancellation or reschedule last gave this slot back. Any other status change '
+            '(OIC / admin, maintenance, rules) clears it. Only such slots auto-confirm waitlisted users.'
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -3274,7 +3294,34 @@ class DailySlot(models.Model):
                 condition=models.Q(booking__isnull=False),
             ),
         ]
-    
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._loaded_status = instance.__dict__.get("status")
+        instance._loaded_released_by_booking_at = instance.__dict__.get("released_by_booking_at")
+        return instance
+
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get("update_fields")
+        writes_status = "status" in self.__dict__ and (update_fields is None or "status" in update_fields)
+        if not hasattr(self, "_loaded_status") or not writes_status:
+            status_changed = False
+        elif self._loaded_status is None:
+            status_changed = True
+        else:
+            status_changed = self.__dict__["status"] != self._loaded_status
+        marker_untouched = self.__dict__.get("released_by_booking_at") == getattr(
+            self, "_loaded_released_by_booking_at", None
+        )
+        if status_changed and marker_untouched:
+            self.released_by_booking_at = None
+            if update_fields is not None and "released_by_booking_at" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "released_by_booking_at"]
+        super().save(*args, **kwargs)
+        self._loaded_status = self.__dict__.get("status")
+        self._loaded_released_by_booking_at = self.__dict__.get("released_by_booking_at")
+
     def __str__(self):
         if self.slot_master and self.slot_master.equipment:
             equipment_code = self.slot_master.equipment.code
