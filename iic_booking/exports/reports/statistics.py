@@ -82,6 +82,38 @@ def booking_statistics(request):
                          filters=filters, kpis=kpis, subtitle=_SCOPES.get(data.get("scope"), ""))
 
 
+@register("report-bookings")
+def report_bookings(request):
+    """Reports › Booking details: every booking in the report scope with hours and amount."""
+    from ..bridge import collect_rows
+
+    status = (request.query_params.get("status") or "").strip()
+    stats, kpis, _ = _booking_stats_parts(request, params={"status": status} if status else {})
+    params = {"list_view": "true", "ordering": "-created_at"}
+    if status:
+        params["status"] = status
+    rows, _ = collect_rows(request, "list-bookings", results_key="bookings", page_size=100, params=params)
+    labels = _status_labels()
+    columns = [
+        C("booking_id", "Booking ID", width=1.1),
+        C("equipment", "Equipment", width=1.9, value=lambda r: _eq_label(
+            {"code": r.get("equipment_code"), "name": r.get("equipment_name")})),
+        C("start_time", "Start (IST)", spec.DATETIME, 1.15),
+        C("end_time", "End (IST)", spec.DATETIME, 1.15),
+        C("total_hours", "Hours", spec.NUMBER, 0.6, total=True),
+        C("total_charge", "Amount (₹)", spec.CURRENCY, 0.9, total=True),
+        C("status", "Status", width=0.9,
+          value=lambda r: r.get("status_display") or labels.get(r.get("status"), humanize(r.get("status")))),
+        C("rating", "Rating", spec.NUMBER, 0.5),
+        C("created_at", "Booked on (IST)", spec.DATETIME, 1.15),
+    ]
+    filters = [("Scope", _SCOPES.get(stats.get("scope"), humanize(stats.get("scope"))))]
+    filters += filter_pairs(request, [("status", "Status", labels)])
+    table = spec.Table("bookings", "Booking details", columns, rows, empty_message="No bookings in your scope.")
+    return make_document(request, title="Booking Details — Amount and Hours", slug="booking-details",
+                         tables=[table], filters=filters, kpis=kpis[:4], subtitle=_SCOPES.get(stats.get("scope"), ""))
+
+
 # ---------------------------------------------------------------------------
 # Equipment performance report (admin panel / reports staff)
 # ---------------------------------------------------------------------------

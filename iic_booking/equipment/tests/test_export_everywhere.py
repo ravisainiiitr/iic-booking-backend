@@ -150,8 +150,7 @@ def test_oic_substitutes_scope(world):
     res = _export(world.f.client_for(world.oic_a), "oic-substitutes", export_format="xlsx")
     assert res.status_code == 200
     wb = load_workbook(io.BytesIO(res.content))
-    assert wb.sheetnames == ["Substitutes I appointed", "Equipment I substitute for", "Substitution history",
-                             "Filters"]
+    assert wb.sheetnames == ["Substitutes you assigned", "Assigned to you", "Substitution history", "Filters"]
     assert _export(world.f.client_for(world.alice), "oic-substitutes").status_code == 403
 
 
@@ -181,3 +180,14 @@ def test_single_table_of_a_report(world):
     assert rows[0] == ["Department", "Bookings", "Revenue (₹)"]
     bad = _export(world.f.client_for(world.admin), "equipment-performance", table="nope")
     assert bad.status_code == 400
+
+
+@pytest.mark.django_db
+def test_report_bookings_lists_only_own_bookings(world):
+    f = world.f
+    f.booking(world.alice, world.eq_a, f.future(days=3), total_charge="120.00")
+    f.booking(world.bob, world.eq_b, f.future(days=4), total_charge="80.00")
+    rows = _csv(_export(f.client_for(world.alice), "report-bookings"))
+    assert len(rows) - 1 == 1
+    assert "Alpha XRD" in _column(rows, "Equipment")[0]
+    assert _column(rows, "Amount (₹)") == ["120.00"]

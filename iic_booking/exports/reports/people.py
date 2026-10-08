@@ -194,10 +194,11 @@ def oic_substitutes(request):
         assigned = data.get("assigned_to_me") or []
         items = granted + assigned
         tables = [
-            spec.Table("granted", "Substitutes I appointed", list(_SUBSTITUTION_COLUMNS), numbered(list(granted)),
-                       empty_message="You have not appointed any OIC substitutes."),
-            spec.Table("assigned", "Equipment I substitute for", list(_SUBSTITUTION_COLUMNS),
-                       numbered(list(assigned)), empty_message="You are not an OIC substitute for any equipment."),
+            spec.Table("granted", "Substitutes you assigned", list(_SUBSTITUTION_COLUMNS), numbered(list(granted)),
+                       empty_message="You have not assigned any OIC substitutes."),
+            spec.Table("assigned", "Equipment assigned to you as substitute", list(_SUBSTITUTION_COLUMNS),
+                       numbered(list(assigned)), sheet_name="Assigned to you",
+                       empty_message="You are not an OIC substitute for any equipment."),
         ]
         filters = []
     tables.append(spec.Table("history", "Substitution history", list(_HISTORY_COLUMNS), _history(items),
