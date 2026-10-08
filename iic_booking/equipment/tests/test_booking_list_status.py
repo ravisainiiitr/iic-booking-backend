@@ -259,6 +259,19 @@ def test_report_breakdown_counts_new_statuses(lab):
 
 
 @pytest.mark.django_db
+def test_awaiting_completion_rows_carry_list_status(lab):
+    from iic_booking.equipment.completion_reminders import bookings_awaiting_completion, serialize_awaiting_booking
+
+    rows = _groups_fixture(lab)
+    awaiting = {
+        b.booking_id: serialize_awaiting_booking(b, now=lab.now)["list_status"]
+        for b in bookings_awaiting_completion(now=lab.now)
+    }
+    assert awaiting[rows[0].pk] == awaiting[rows[1].pk] == bls.RESULT_OVERDUE
+    assert awaiting[rows[2].pk] == awaiting[rows[3].pk] == bls.RESULTS_PENDING
+
+
+@pytest.mark.django_db
 def test_slot_calendar_hover_status_for_staff(lab, rf):
     from iic_booking.equipment.models import DailySlot
     from iic_booking.equipment.serializers import DailySlotSerializer

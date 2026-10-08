@@ -180,6 +180,7 @@ def results_due(booking, now=None, calendar=None) -> tuple[str, bool]:
 
 def serialize_awaiting_booking(booking, now=None, calendar=None, results=None) -> dict[str, Any]:
     """``results`` is the booking's ``results_overdue.ResultsDue`` (computed when not given)."""
+    from .booking_list_status import compute_list_status
     from .results_overdue import booking_results_due, due_display, is_results_overdue, waiting_for_user
 
     now = now or timezone.now()
@@ -207,6 +208,7 @@ def serialize_awaiting_booking(booking, now=None, calendar=None, results=None) -
         "equipment_code": equipment.code,
         "user_name": _person(booking.user),
         "status": booking.status,
+        "list_status": compute_list_status(booking, staff_view=True, now=now),
         "ended_at": booking.last_slot_end.isoformat(),
         "ended_display": _ended_display(booking.last_slot_end),
         "overdue": overdue_label(results.due_at, now) if overdue else "",
