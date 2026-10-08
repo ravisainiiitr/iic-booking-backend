@@ -1,0 +1,97 @@
+# Restore bookings that the scheduled check marked Booking Not Utilized before the equipment's
+# Booking Not Utilize Window (bug fixed in the same release). Dry run by default; apply only with
+# confirm=RESTORE. Idempotent: restored bookings are skipped, each email is sent at most once.
+# Prints counts, booking ids/codes, statuses, timestamps, transaction types and amounts only.
+name: Restore Not Utilized Window
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RESTORE to apply (empty = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  restore:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Restore
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e CONFIRM="$CONFIRM" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db.models import Q
+          from django.utils import timezone
+          from iic_booking.equipment import booking_not_utilized_restore as r
+          from iic_booking.equipment.models import BookingEvent
+          from iic_booking.users.models.wallet import SubWalletTransaction
+
+          apply = os.environ.get("CONFIRM", "") == "RESTORE"
+          now = timezone.now()
+
+          def lt(dt):
+              return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M%z") if dt else None
+
+          print(f"mode={'APPLY' if apply else 'DRY RUN'} now={lt(now)}")
+          candidates = r.find_candidates(now)
+          print(f"candidates={len(candidates)}")
+          for c in candidates:
+              b = c.booking
+              print(
+                  f"  code={b.virtual_booking_id} id={b.booking_id} eq={b.equipment.code} window_h={c.window_hours} "
+                  f"last_slot_end={lt(c.last_slot_end)} marked_at={lt(c.auto_event.created_at)} "
+                  f"corrected_allowed_from={lt(c.allowed_from)}"
+              )
+              for x in SubWalletTransaction.objects.filter(
+                  Q(description__contains=b.virtual_booking_id) | Q(description__contains=f"#{b.booking_id}")
+              ).order_by("created_at"):
+                  when = "after_marking" if x.created_at >= c.auto_event.created_at else "before_marking"
+                  print(f"    wallet_tx id={x.pk} type={x.transaction_type} amount={x.amount} at={lt(x.created_at)} {when}")
+
+          restored = emails = 0
+          if apply:
+              for c in candidates:
+                  ev = r.restore_booking(c)
+                  if ev is None:
+                      print(f"  skip id={c.booking.booking_id} (state changed)")
+                      continue
+                  restored += 1
+                  print(f"  restored id={c.booking.booking_id} event_id={ev.event_id}")
+
+          pending = []
+          for ev in (
+              BookingEvent.objects.filter(metadata__has_key=r.RESTORE_MARKER).select_related("booking__user", "booking__equipment")
+              .order_by("event_id")
+          ):
+              done = (ev.metadata or {}).get(r.EMAILS_SENT_KEY) or {}
+              pending.append((ev, sorted(done)))
+          print(f"restore_events_total={len(pending)}")
+          for ev, done in pending:
+              print(f"  event_id={ev.event_id} booking_id={ev.booking_id} emails_done={done}")
+              if apply:
+                  n = r.send_restore_emails(ev.booking, ev)
+                  emails += n
+                  ev.refresh_from_db()
+                  print(f"    sent_now={n} emails_done={sorted(((ev.metadata or {}).get(r.EMAILS_SENT_KEY) or {}))}")
+          print(f"summary restored={restored} emails_sent_now={emails}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

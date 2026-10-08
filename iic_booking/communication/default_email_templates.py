@@ -43,6 +43,8 @@ DEFAULT_EMAIL_TEMPLATE_CODES: list[str] = [
     "booking_charge_recalculated_email",
     "booking_not_utilized_email",
     "booking_not_utilized_wallet_owner_email",
+    "booking_not_utilized_restored_email",
+    "booking_not_utilized_restored_wallet_owner_email",
     "booking_unsuccessful_waitlist_email",
     "booking_waitlist_confirmed_email",
     "waitlist_opt_out_email",
@@ -688,6 +690,60 @@ def _booking_templates() -> list[dict[str, Any]]:
             variable_help=(
                 "{{ wallet_owner_name }}, {{ student_name }}, {{ student_email }}, " + _BOOKING_PARTY_HELP + ", "
                 "{{ equipment_name }}, {{ slot_details }}, {{ booking_id }}, {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="booking_not_utilized_restored_email",
+            title="Booking Restored",
+            subject="Booking Restored – {{ equipment_name }} ({{ booking_id }})",
+            intro=(
+                "We are sorry: your booking was marked as <strong>Booking Not Utilized</strong> by mistake. "
+                "Due to a system error the automatic check ran before the time allowed for this equipment. "
+                "The booking has been restored to <strong>Booked</strong>. No action is needed from you. "
+                "If you have any questions, please contact the lab. We apologise for the inconvenience."
+            ),
+            description=(
+                "Sent to the user when an automatic Booking Not Utilized applied before the equipment's window "
+                "is corrected and the booking is restored to Booked."
+            ),
+            detail_rows=[
+                optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
+                optional_detail_row("Equipment", "equipment_name"),
+                optional_detail_row("Slot", "slot_details"),
+                optional_detail_row("Status", "new_status"),
+            ],
+            variable_help=(
+                "{{ user_name }}, {{ equipment_name }}, {{ slot_details }}, {{ booking_id }}, {{ new_status }}, "
+                + _BOOKING_PARTY_HELP
+                + ", {{ link }}"
+            ),
+        ),
+        _simple_email(
+            code="booking_not_utilized_restored_wallet_owner_email",
+            title="Booking Restored – Notice",
+            subject="Booking Restored – Wallet User Notice ({{ booking_id }})",
+            intro=(
+                "We are sorry: a booking made using your wallet was marked as <strong>Booking Not Utilized</strong> "
+                "by mistake. Due to a system error the automatic check ran before the time allowed for this "
+                "equipment. The booking has been restored to <strong>Booked</strong>. No action is needed. "
+                "If you have any questions, please contact the lab. We apologise for the inconvenience."
+            ),
+            description=(
+                "Sent to the wallet owner/supervisor when a student's booking wrongly marked Booking Not Utilized "
+                "is restored to Booked."
+            ),
+            name_var="wallet_owner_name",
+            detail_rows=[
+                optional_detail_row("Booking ID", "booking_id"),
+                *booking_party_rows(),
+                optional_detail_row("Equipment", "equipment_name"),
+                optional_detail_row("Slot", "slot_details"),
+                optional_detail_row("Status", "new_status"),
+            ],
+            variable_help=(
+                "{{ wallet_owner_name }}, {{ student_name }}, " + _BOOKING_PARTY_HELP + ", "
+                "{{ equipment_name }}, {{ slot_details }}, {{ booking_id }}, {{ new_status }}, {{ link }}"
             ),
         ),
         _simple_email(
