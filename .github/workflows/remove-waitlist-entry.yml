@@ -1,0 +1,117 @@
+# Take one waitlist entry out of the ACTIVE queue the way the portal does (row kept for audit):
+# status CANNOT_FULFILL, cannot_fulfill_remark and marked_cannot_fulfill_at, staff audit log line.
+# No email (marking an entry Cannot Fulfill never sends one). Only the given entry is touched.
+# Dry run by default; apply only with confirm=REMOVE. Prints IDs and statuses only.
+name: Remove Waitlist Entry
+
+on:
+  workflow_dispatch:
+    inputs:
+      entry_id:
+        description: "Waitlist entry ID"
+        required: true
+      expected_user_id:
+        description: "User ID the entry must belong to"
+        required: true
+      expected_equipment_code:
+        description: "Equipment code the entry must be on"
+        required: true
+      remark:
+        description: "Reason shown to the user"
+        required: true
+        default: "Removed from the waitlist by the Main Administrator: your weekly booking limit for this equipment is used up, so a waitlisted booking cannot be given."
+      confirm:
+        description: "Type REMOVE to apply (anything else = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  remove:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Remove
+        env:
+          ENTRY_ID: ${{ inputs.entry_id }}
+          EXPECTED_USER_ID: ${{ inputs.expected_user_id }}
+          EXPECTED_EQUIPMENT_CODE: ${{ inputs.expected_equipment_code }}
+          REMARK: ${{ inputs.remark }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e ENTRY_ID="$ENTRY_ID" -e EXPECTED_USER_ID="$EXPECTED_USER_ID" \
+                -e EXPECTED_EQUIPMENT_CODE="$EXPECTED_EQUIPMENT_CODE" -e REMARK="$REMARK" -e CONFIRM="$CONFIRM" \
+                -w /app "$CID" python - 2>&1 <<'PY' | grep -v -i "warn"
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db import transaction
+          from django.utils import timezone
+          from iic_booking.communication.models import CommunicationLog
+          from iic_booking.equipment.dept_admin_actions import record_staff_action
+          from iic_booking.equipment.models import Booking, WaitlistEntry
+          from iic_booking.users.models import User
+          from iic_booking.users.models.user_type import UserType
+
+          entry_id = int(os.environ["ENTRY_ID"])
+          user_id = int(os.environ["EXPECTED_USER_ID"])
+          eq_code = os.environ["EXPECTED_EQUIPMENT_CODE"].strip()
+          remark = os.environ["REMARK"].strip()
+          apply = os.environ.get("CONFIRM", "").strip() == "REMOVE"
+          started = timezone.now()
+
+          def queue(eq_id):
+              rows = WaitlistEntry.objects.filter(equipment_id=eq_id, status="ACTIVE").order_by("created_at")
+              return " ".join(f"WL{i}:{w.pk}:u{w.user_id}" for i, w in enumerate(rows, start=1))
+
+          entry = WaitlistEntry.objects.select_related("equipment").get(pk=entry_id)
+          eq = entry.equipment
+          others_before = list(WaitlistEntry.objects.exclude(pk=entry_id).order_by("pk")
+                               .values_list("pk", "status", "cannot_fulfill_remark", "created_at"))
+          bookings_before = Booking.objects.filter(equipment=eq).count()
+          print(f"entry={entry.pk} user={entry.user_id} eq={eq.code} status={entry.status} "
+                f"created={timezone.localtime(entry.created_at):%Y-%m-%d %H:%M}")
+          print("queue_before:", queue(eq.pk))
+          print("queue_after: ", " ".join(f"WL{i}:{w.pk}:u{w.user_id}" for i, w in enumerate(
+              WaitlistEntry.objects.filter(equipment=eq, status="ACTIVE").exclude(pk=entry_id).order_by("created_at"), start=1)))
+          assert entry.user_id == user_id and eq.code == eq_code, "entry does not match expected user / equipment"
+          assert entry.status == "ACTIVE", "entry is not ACTIVE"
+
+          if not apply:
+              print("DRY RUN: nothing written. Re-run with confirm=REMOVE to apply.")
+          else:
+              actor = User.objects.filter(user_type=UserType.ADMIN, is_active=True).order_by("id").first()
+              with transaction.atomic():
+                  n = WaitlistEntry.objects.filter(pk=entry_id, status="ACTIVE").update(
+                      status="CANNOT_FULFILL", cannot_fulfill_remark=remark[:2000],
+                      marked_cannot_fulfill_at=timezone.now(),
+                  )
+                  assert n == 1, f"updated {n} rows"
+              record_staff_action(actor, "waitlist.remove_entry", equipment_id=eq.pk,
+                                  waitlist_entry_id=entry_id, user_id=user_id, reason="quota")
+              print(f"APPLIED updated_rows={n} actor={actor.pk}")
+              entry.refresh_from_db()
+              print(f"after: entry={entry.pk} status={entry.status} marked_at={entry.marked_cannot_fulfill_at is not None} "
+                    f"remark_len={len(entry.cannot_fulfill_remark or '')}")
+              print("queue_now:   ", queue(eq.pk))
+              others_after = list(WaitlistEntry.objects.exclude(pk=entry_id).order_by("pk")
+                                  .values_list("pk", "status", "cannot_fulfill_remark", "created_at"))
+              print("other_entries_unchanged=", others_before == others_after,
+                    "bookings_unchanged=", bookings_before == Booking.objects.filter(equipment=eq).count())
+              comms = list(CommunicationLog.objects.filter(created_at__gte=started, recipient_id=user_id).values_list("pk", flat=True))
+              print("notifications_to_user_since_start=", comms)
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
