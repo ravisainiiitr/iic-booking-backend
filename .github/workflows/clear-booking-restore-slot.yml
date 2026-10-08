@@ -22,7 +22,11 @@ on:
         required: false
         default: ""
       confirm:
-        description: "Type CLEAR to apply (anything else = dry run)"
+        description: "Type CLEAR to apply (anything else = dry run); SEND with notify_event_id"
+        required: false
+        default: ""
+      notify_event_id:
+        description: "Only send this booking's unsent refund event notification (no clear)"
         required: false
         default: ""
 
@@ -37,6 +41,7 @@ jobs:
           RESTORE_STATUS: ${{ inputs.restore_status }}
           RESTORE_LABEL: ${{ inputs.restore_label }}
           CONFIRM: ${{ inputs.confirm }}
+          NOTIFY_EVENT_ID: ${{ inputs.notify_event_id }}
         run: |
           set -euo pipefail
           for d in \
@@ -51,6 +56,7 @@ jobs:
               test -n "$CID"
               docker exec -i -e BOOKING_CODE="$BOOKING_CODE" -e EXPECTED_SLOT_IDS="$EXPECTED_SLOT_IDS" \
                 -e RESTORE_STATUS="$RESTORE_STATUS" -e RESTORE_LABEL="$RESTORE_LABEL" -e CONFIRM="$CONFIRM" \
+                -e NOTIFY_EVENT_ID="$NOTIFY_EVENT_ID" \
                 -w /app "$CID" python - <<'PY'
           import os, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
@@ -74,6 +80,36 @@ jobs:
           apply = os.environ.get("CONFIRM", "").strip() == "CLEAR"
           assert restore_status in SlotStatus.values and restore_status not in (
               SlotStatus.AVAILABLE, SlotStatus.BOOKED), f"refusing restore_status={restore_status}"
+
+          from django.utils import timezone
+          from iic_booking.communication.models import CommunicationLog
+          from iic_booking.equipment.booking_events import send_booking_event_notification
+          from iic_booking.equipment.models import BookingEvent
+
+          def send_inline(event_id):
+              # The usual on-commit sender runs in a daemon thread that this one-shot process would kill.
+              started = timezone.now()
+              ev = BookingEvent.objects.select_related(
+                  "booking", "booking__user", "booking__equipment", "created_by").get(event_id=event_id)
+              send_booking_event_notification(ev)
+              BookingEvent.objects.filter(event_id=event_id).update(notification_sent=True)
+              for c in CommunicationLog.objects.filter(created_at__gte=started).select_related("template"):
+                  print(f"  comm={c.pk} {c.communication_type} template={getattr(c.template, 'code', None)} "
+                        f"recipient={c.recipient_id} status={c.status}")
+
+          notify_id = os.environ.get("NOTIFY_EVENT_ID", "").strip()
+          if notify_id:
+              ev = BookingEvent.objects.select_related("booking").get(event_id=int(notify_id))
+              print(f"event={ev.event_id} booking={ev.booking.virtual_booking_id} type={ev.event_type} "
+                    f"notification_sent={ev.notification_sent}")
+              assert ev.booking.virtual_booking_id == code and ev.event_type == BookingEventType.REFUNDED
+              assert not ev.notification_sent, "notification already sent"
+              if os.environ.get("CONFIRM", "").strip() == "SEND":
+                  send_inline(ev.event_id)
+                  print("SENT")
+              else:
+                  print("DRY RUN: re-run with confirm=SEND to send it.")
+              raise SystemExit(0)
 
           actor = User.objects.filter(user_type=UserType.ADMIN, is_active=True).order_by("id").first()
           waitlist_before = list(WaitlistEntry.objects.order_by("id").values_list("id", "status"))
@@ -119,18 +155,20 @@ jobs:
                   b.notes = (f"{b.notes or ''}\n[Cancellation Notes]: Booking cleared by Main Administrator; "
                              f"full refund, slot restored to its previous status.").strip()
                   b.save()
-                  create_booking_event(
+                  refund_event = create_booking_event(
                       booking=b,
                       event_type=BookingEventType.REFUNDED,
                       previous_status=previous,
                       new_status=BookingStatus.REFUNDED,
                       comment="Booking cancelled and refunded by admin. Booking cleared; slot restored to its previous status.",
                       created_by=actor,
-                      send_notification=True,
+                      send_notification=False,
                       metadata={"refund_amount": str(refund), "cleared_by_admin": True,
                                 "restored_slot_status": restore_status},
                   )
-                  print(f"APPLIED refund_txn={txn.pk} amount={refund} sub_wallet={sub.pk}")
+                  print(f"APPLIED refund_txn={txn.pk} amount={refund} sub_wallet={sub.pk} event={refund_event.event_id}")
+          if apply:
+              send_inline(refund_event.event_id)
 
           b.refresh_from_db()
           print(f"after: booking status={b.status}")
