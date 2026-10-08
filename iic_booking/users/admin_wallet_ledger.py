@@ -710,7 +710,6 @@ def _check_debit(balance: Decimal, amount: Decimal) -> None:
         raise LedgerError(
             "INSUFFICIENT_BALANCE",
             f"A debit cannot take the balance below ₹0.00. Available: ₹{max(balance, ZERO):,.2f}.",
-            extra={"balance": _money(balance)},
         )
 
 
