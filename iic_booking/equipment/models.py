@@ -3084,11 +3084,59 @@ class SlotMaster(models.Model):
         equipment_code = self.equipment.code if self.equipment else "N/A"
         return f"{equipment_code} - Slot {self.slot_number}{name}: {self.open_time} - {self.close_time}"
     
+    @property
+    def is_full_day(self) -> bool:
+        return is_full_day_slot(self.open_time, self.close_time)
+
     def clean(self):
-        """Reject zero-length slots. close_time before open_time is allowed (crosses midnight, e.g. 18:00–00:00)."""
-        if self.open_time is not None and self.close_time is not None:
-            if self.close_time == self.open_time:
-                raise ValidationError(_('Close time must be after open time.'))
+        """Close = Open is a full 24-hour slot, allowed only as the equipment's only active slot.
+
+        close_time before open_time is allowed (crosses midnight, e.g. 18:00–00:00). The sibling check
+        reads the database; the admin inline formset validates all rows together instead.
+        """
+        if self.open_time is None or self.close_time is None:
+            return
+        if not self.is_active or self.equipment_id is None or getattr(self, "_skip_full_day_sibling_check", False):
+            return
+        others = list(
+            SlotMaster.objects.filter(equipment_id=self.equipment_id, is_active=True)
+            .exclude(pk=self.pk)
+            .values_list("open_time", "close_time")
+        )
+        error = full_day_slot_conflict([(self.open_time, self.close_time)] + others)
+        if error:
+            raise ValidationError({"close_time": error})
+
+
+SLOT_MASTER_CLOSE_TIME_HELP = _(
+    'Set Close = Open for a full 24-hour slot (e.g. 00:00–00:00); if Close is earlier than Open the slot ends next day.'
+)
+FULL_DAY_SLOT_NOT_ALONE_MESSAGE = _(
+    'A full 24-hour slot (Close = Open) must be the only active slot of this equipment. '
+    'Deactivate or remove the other slots, or set a Close time different from the Open time.'
+)
+
+
+def is_full_day_slot(open_time, close_time) -> bool:
+    """Close = Open on a Slot Master means a full 24-hour slot (end = start + 24 h)."""
+    return open_time is not None and close_time is not None and open_time == close_time
+
+
+def slot_master_duration_minutes(open_time, close_time) -> int:
+    """Length of a Slot Master's slot: 1440 for Close = Open, next-day end when Close is earlier."""
+    start = open_time.hour * 60 + open_time.minute
+    end = close_time.hour * 60 + close_time.minute
+    if end <= start:
+        end += 1440
+    return end - start
+
+
+def full_day_slot_conflict(active_times) -> str | None:
+    """Error when a full 24-hour slot is not the only one among an equipment's active (open, close) times."""
+    times = [(o, c) for o, c in active_times if o is not None and c is not None]
+    if len(times) > 1 and any(is_full_day_slot(o, c) for o, c in times):
+        return str(FULL_DAY_SLOT_NOT_ALONE_MESSAGE)
+    return None
 
 
 def remember_booking_slot_ranges(slot_qs) -> None:

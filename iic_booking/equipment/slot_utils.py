@@ -19,12 +19,15 @@ class SlotGenerator:
         open_time: time,
         close_time: time,
     ) -> Tuple[datetime, datetime]:
-        """Build timezone-aware start/end datetimes for a slot on target_date."""
+        """Build timezone-aware start/end datetimes for a slot on target_date.
+
+        The slot belongs to target_date (its start). Close earlier than Open ends the next day;
+        Close = Open is a full 24-hour slot ending at the same time the next day.
+        """
         tz = timezone.get_current_timezone()
         start_datetime = timezone.make_aware(datetime.combine(target_date, open_time), tz)
-        end_datetime = timezone.make_aware(datetime.combine(target_date, close_time), tz)
-        if close_time < open_time:
-            end_datetime += timedelta(days=1)
+        end_date = target_date + timedelta(days=1) if close_time <= open_time else target_date
+        end_datetime = timezone.make_aware(datetime.combine(end_date, close_time), tz)
         return start_datetime, end_datetime
 
     @staticmethod
@@ -63,7 +66,7 @@ class SlotGenerator:
         Return existing active SlotMasters for the equipment. Daily slots are generated from
         these using the same open_time/close_time for each date.
 
-        If the equipment has no active slot masters, one default (9:00–18:00) is created
+        If the equipment has no active slot masters, one default full-day slot (00:00–00:00) is created
         so that the slots API returns data; admins can then edit or add slot masters in
         the Equipment change page (Slot Masters inline).
 
@@ -89,7 +92,7 @@ class SlotGenerator:
                 SlotMaster.objects.filter(equipment=equipment, is_active=True).order_by("slot_number")
             )
         default_open = time(0, 0)
-        default_close = time(23, 59)
+        default_close = time(0, 0)
         default_master = SlotMaster.objects.create(
             equipment=equipment,
             slot_number=1,

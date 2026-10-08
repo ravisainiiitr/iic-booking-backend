@@ -16,6 +16,8 @@ from iic_booking.users.models.user_type import UserType
 logger = logging.getLogger(__name__)
 from .image_utils import persist_equipment_image_upload
 from .models import (
+    SLOT_MASTER_CLOSE_TIME_HELP,
+    full_day_slot_conflict,
     BookingDataShare,
     BookingInputTemplate,
     CalendarFeedToken,
@@ -785,9 +787,37 @@ class MultiParamDefinitionInline(admin.TabularInline):
         qs = super().get_queryset(request)
         return qs.order_by('user_type', 'param_name')
 
+class SlotMasterInlineForm(forms.ModelForm):
+    class Meta:
+        model = SlotMaster
+        fields = ['slot_number', 'slot_name', 'open_time', 'close_time', 'is_active']
+        help_texts = {'close_time': SLOT_MASTER_CLOSE_TIME_HELP}
+
+    def _post_clean(self):
+        # Other rows may change in the same submit; SlotMasterInlineFormSet.clean checks them together.
+        self.instance._skip_full_day_sibling_check = True
+        super()._post_clean()
+
+
+class SlotMasterInlineFormSet(forms.BaseInlineFormSet):
+    def clean(self):
+        super().clean()
+        active = []
+        for form in self.forms:
+            data = getattr(form, "cleaned_data", None) or {}
+            if not data or data.get("DELETE") or not data.get("is_active"):
+                continue
+            active.append((data.get("open_time"), data.get("close_time")))
+        error = full_day_slot_conflict(active)
+        if error:
+            raise forms.ValidationError(error)
+
+
 class SlotMasterInline(admin.TabularInline):
     """Inline admin for Slot Masters."""
     model = SlotMaster
+    form = SlotMasterInlineForm
+    formset = SlotMasterInlineFormSet
     extra = 0
     fk_name = 'equipment'
     fields = ['slot_number', 'slot_name', 'open_time', 'close_time', 'is_active']

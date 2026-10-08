@@ -28,6 +28,7 @@ from iic_booking.equipment.models import (
     RecurringSlotBlockRuleSlot,
     SlotMaster,
     SlotStatus,
+    slot_master_duration_minutes,
 )
 from iic_booking.equipment.slot_utils import SlotGenerator
 
@@ -82,6 +83,7 @@ def equipment_slot_times(equipment: Equipment) -> list[dict]:
             {
                 "time": key,
                 "end_time": _hhmm(master.close_time),
+                "duration_minutes": slot_master_duration_minutes(master.open_time, master.close_time),
                 "name": master.slot_name or f"Slot {master.slot_number}",
             },
         )

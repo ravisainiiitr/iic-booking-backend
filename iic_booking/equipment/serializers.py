@@ -25,6 +25,8 @@ from .models import (
     ChargeProfilePricingProfile,
     MultiParamDefinition,
     SlotMaster,
+    SLOT_MASTER_CLOSE_TIME_HELP,
+    full_day_slot_conflict,
     DailySlot,
     SlotStatus,
     EquipmentOperator,
@@ -1367,6 +1369,7 @@ class SlotMasterSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
+        extra_kwargs = {'close_time': {'help_text': SLOT_MASTER_CLOSE_TIME_HELP}}
 
 
 _SLOT_STATUS_LABELS = dict(SlotStatus.choices)
@@ -2499,7 +2502,7 @@ class SlotMasterWriteSerializer(serializers.Serializer):
     slot_number = serializers.IntegerField()
     slot_name = serializers.CharField(max_length=100, allow_blank=True, required=False, default='')
     open_time = serializers.TimeField()
-    close_time = serializers.TimeField()
+    close_time = serializers.TimeField(help_text=SLOT_MASTER_CLOSE_TIME_HELP)
     is_active = serializers.BooleanField(default=True)
 
 
@@ -2663,6 +2666,14 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         dupes = sorted({c for c in codes if c and codes.count(c) > 1})
         if dupes:
             raise serializers.ValidationError(f"Material codes must be unique: {', '.join(dupes)}.")
+        return value
+
+    def validate_slot_masters(self, value):
+        error = full_day_slot_conflict(
+            [(item.get("open_time"), item.get("close_time")) for item in value or [] if item.get("is_active", True)]
+        )
+        if error:
+            raise serializers.ValidationError(error)
         return value
 
     def validate_internal_department(self, value):
