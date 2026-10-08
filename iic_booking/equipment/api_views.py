@@ -1587,7 +1587,7 @@ def user_can_see_equipment_image(user, equipment):
     """
     return True
 
-def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
+def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None, mode_catalog_filter: bool = True):
     """
     Return Equipment queryset filtered by visibility for the given user.
     - Anonymous: only equipment with visibility_group=None (public).
@@ -1595,6 +1595,7 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
     - Operator/Admin: all equipment.
     - Manager (OIC): only equipment for which they are OIC (primary or temporary until resume_at).
     - Department Administrator: only equipment in their assigned internal department.
+    ``mode_catalog_filter=False`` keeps multi-mode bases that the catalog hides for today's exclusive mode.
     """
     queryset = Equipment.objects.all()
     if not user or not user.is_authenticated:
@@ -1637,6 +1638,8 @@ def get_visible_equipment_queryset(user, *, catalog_scope: str | None = None):
 
     queryset = exclude_test_only_equipment(queryset, user)
     queryset = apply_department_catalog_visibility(queryset, user)
+    if not mode_catalog_filter:
+        return queryset
 
     from .mode_utils import filter_queryset_for_mode_catalog
     return filter_queryset_for_mode_catalog(queryset, user)
@@ -2424,13 +2427,14 @@ def equipment_list(request):
 
     # Parents whose child modes are listed for this user, ignoring the search, so the catalog
     # opens a family view only when there is a child mode to show.
-    parents_with_child_modes = set(
+    visible_child_modes = list(
         apply_catalog_filters(get_visible_equipment_queryset(request.user, catalog_scope=catalog_scope))
         .filter(parent_equipment__isnull=False)
         .order_by()
-        .values_list("parent_equipment_id", flat=True)
+        .values_list("equipment_id", "parent_equipment_id")
         .distinct()
     )
+    parents_with_child_modes = {parent_id for _, parent_id in visible_child_modes}
 
     # scope=booking_attempt_log is deprecated: OIC visibility is now enforced in get_visible_equipment_queryset
     serializer_class = EquipmentListSerializer if include_ratings else EquipmentListLiteSerializer
@@ -2444,6 +2448,9 @@ def equipment_list(request):
         price = from_prices.get(row.get("equipment_id"))
         row["from_price"] = price["from_price"] if price else None
         row["from_price_unit"] = price["from_price_unit"] if price else None
+    from .mode_availability import attach_card_availability
+
+    attach_card_availability(rows, request.user, {child_id for child_id, _ in visible_child_modes})
     return Response(
         {
             "equipments": rows,

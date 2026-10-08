@@ -510,6 +510,7 @@ from iic_booking.equipment.publication_claim_views import (
     publication_claims_review_queue,
     publication_doi_lookup,
 )
+from iic_booking.equipment.mode_availability import equipment_mode_availability
 from iic_booking.equipment.results_sharing_views import (
     booking_data_share_revoke,
     booking_data_shares,
@@ -1462,6 +1463,11 @@ urlpatterns = router.urls + [
     path("calendar/feed/<str:token>.ics", calendar_feed, name="calendar-feed"),
     path("equipments/<int:equipment_id>/proforma-invoice.pdf", equipment_proforma_invoice_pdf, name="equipment-proforma-invoice-pdf"),
     path("equipments/<int:pk>/slots/", equipment_daily_slots, name="equipment-daily-slots"),
+    path(
+        "equipments/<int:pk>/mode-availability/",
+        equipment_mode_availability,
+        name="equipment-mode-availability",
+    ),
     path("equipments/<int:pk>/book/", book_equipment, name="book-equipment"),
     path("equipments/<int:pk>/book-for-user-info/", equipment_book_for_user_info, name="equipment-book-for-user-info"),
     path("equipments/<int:pk>/", equipment_detail, name="equipment-detail"),
