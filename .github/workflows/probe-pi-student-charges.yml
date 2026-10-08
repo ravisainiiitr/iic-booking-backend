@@ -1,6 +1,6 @@
-# Read-only (IDs, booleans and counts only; no names or emails): is the faculty whose wallet paid for the
-# MALDI student booking the same person as the MALDI Equipment PI (duplicate account), and how the PI
-# account and its linked students compare.
+# Read-only (IDs and amounts only; no names or emails): for students on the MALDI Equipment PI's wallet,
+# the live Calculate Charges estimate for their own category versus the booking-flow estimate
+# (GET /calculate/, no writes), plus the same for the PI and for a student not on a PI wallet.
 name: Probe PI Student Charges
 
 on:
@@ -24,46 +24,45 @@ jobs:
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
               docker exec -i -w /app "$CID" python - <<'PY'
-          import os, re, django
+          import os, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
+          from rest_framework.test import APIRequestFactory, force_authenticate
           from iic_booking.equipment.models import Booking, Equipment, EquipmentPI
           from iic_booking.equipment import pi_pricing as pp
+          from iic_booking.equipment.api_views import equipment_calculate
           from iic_booking.users.models import User
           from iic_booking.users.models.wallet import WalletJoinRequest
 
-          def norm(s):
-              s = (s or "").lower()
-              s = re.sub(r"\b(prof|dr|mr|ms|mrs)\b\.?", " ", s)
-              return " ".join(re.sub(r"[^a-z ]", " ", s).split())
-
-          def local(e):
-              return (e or "").split("@")[0].lower()
-
-          def flags(u):
-              return (f"id={u.pk} ut={u.user_type} approved={u.admin_approved} force_inactive={u.force_inactive} "
-                      f"is_active={u.is_active} logged_in={u.last_login is not None} dept={u.department_id} "
-                      f"linked_students={WalletJoinRequest.objects.filter(faculty=u, status='APPROVED').count()} "
-                      f"pi_rows={EquipmentPI.objects.filter(faculty=u).count()}")
-
+          print("fix_deployed=", hasattr(pp, "category_estimate_pricing_profile"))
           eq = Equipment.objects.get(code="MALDI")
-          pis = [ep.faculty for ep in EquipmentPI.objects.filter(equipment=eq).select_related("faculty")]
-          for pi in pis:
-              print("PI", flags(pi))
-              same = User.objects.filter(user_type="faculty").exclude(pk=pi.pk)
-              dups = [u for u in same if norm(u.name) and norm(u.name) == norm(pi.name)]
-              print(f"  other_faculty_accounts_with_same_name={len(dups)}")
-              for u in dups:
-                  print("   DUP", flags(u), f"same_email_local={local(u.email) == local(pi.email)} same_emp_id={bool(u.emp_id) and u.emp_id == pi.emp_id}")
-          for b in Booking.objects.filter(equipment=eq).select_related("user"):
-              s = b.user
-              o = pp.wallet_owner_user(s)
-              print(f"BOOKING {b.virtual_booking_id} student_dept={s.department_id}")
-              if o is not None:
-                  print("  WALLET_OWNER", flags(o))
-                  for pi in pis:
-                      print(f"  vs PI {pi.pk}: same_name={norm(o.name) == norm(pi.name)} same_email_local={local(o.email) == local(pi.email)} "
-                            f"same_emp_id={bool(o.emp_id) and o.emp_id == pi.emp_id} same_dept={o.department_id == pi.department_id}")
+          rf = APIRequestFactory()
+
+          def calc(user, extra):
+              req = rf.get(f"/api/equipments/{eq.pk}/calculate/", {"A": "1", **extra}, HTTP_HOST="equip.iitr.ac.in")
+              force_authenticate(req, user=user)
+              r = equipment_calculate(req, pk=eq.pk)
+              d = getattr(r, "data", {}) or {}
+              return r.status_code, d.get("applied_profile"), d.get("total_charge")
+
+          pis = list(EquipmentPI.objects.filter(equipment=eq, is_active=True).values_list("faculty_id", flat=True))
+          ok = total = 0
+          for jr in WalletJoinRequest.objects.filter(faculty_id__in=pis, status="APPROVED").select_related("student"):
+              s = jr.student
+              booking_flow = calc(s, {})
+              estimate = calc(s, {"user_type": s.user_type})
+              total += 1
+              ok += int(booking_flow == estimate and booking_flow[1] == "PI")
+              print(f"  student uid={s.pk} booking_flow={booking_flow} estimate_own_category={estimate}")
+          print(f"  linked_students_matching_pi={ok}/{total}")
+          for fid in pis:
+              f = User.objects.get(pk=fid)
+              print(f"  PI uid={fid} booking_flow={calc(f, {})} estimate_own_category={calc(f, {'user_type': f.user_type})}")
+          b = Booking.objects.filter(equipment=eq).select_related("user").first()
+          if b is not None:
+              u = b.user
+              print(f"  unlinked booker uid={u.pk} booking_flow={calc(u, {})} estimate_own_category={calc(u, {'user_type': u.user_type})} "
+                    f"booking={b.virtual_booking_id} charged={b.total_charge} status={b.status}")
           PY
               exit 0
             fi
