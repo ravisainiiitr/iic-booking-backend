@@ -4,6 +4,7 @@ from django.urls.resolvers import URLPattern
 from django.urls.resolvers import URLResolver
 
 from config.admin_api import admin_api_router
+from iic_booking.exports.views import export_report
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
@@ -1074,6 +1075,7 @@ urlpatterns = router.urls + [
         name="finance-payment-receipt-process",
     ),
     path("finance/reports/dashboard/", finance_report_dashboard, name="finance-report-dashboard"),
+    path("exports/<slug:report_key>/", export_report, name="export-report"),
 
     # SRIC office integration API
     path("integrations/sric/transfer-requests/", sric_transfer_requests_list, name="sric-transfer-requests"),
