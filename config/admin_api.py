@@ -177,6 +177,19 @@ def _require_wallet_manage(request):
     raise PermissionDenied("Wallet management permission is required.")
 
 
+LEGACY_WALLET_ADJUSTMENT_MESSAGE = (
+    "Manual wallet credit, debit and transaction deletion have moved to the Wallet ledger "
+    "(Main Administrator → Finance → Wallet ledger)."
+)
+
+
+def _legacy_wallet_adjustment_gone():
+    return Response(
+        {"error": LEGACY_WALLET_ADJUSTMENT_MESSAGE, "code": "USE_WALLET_LEDGER"},
+        status=status.HTTP_410_GONE,
+    )
+
+
 def _require_bookings_manage(request):
     user = getattr(request, "user", None)
     if getattr(user, "user_type", None) == UserType.ADMIN:
@@ -233,8 +246,6 @@ def admin_api_router():
         AdminSubWalletListSerializer,
         AdminSubWalletCreateSerializer,
         SubWalletTransactionSerializer,
-        WalletCreditSerializer,
-        WalletDebitSerializer,
         WalletRechargeRequestSerializer,
     )
     from iic_booking.equipment.models import (
@@ -1799,39 +1810,24 @@ def admin_api_router():
 
         @action(detail=True, methods=["post"], url_path="credit")
         def credit(self, request, pk=None):
-            """Credit the sub-wallet (mirrors Django admin /admin/users/subwallet/<id>/credit/)."""
-            sub_wallet = self.get_object()
-            serializer = WalletCreditSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            amount = serializer.validated_data["amount"]
-            description = (serializer.validated_data.get("description") or "").strip() or f"Admin credit"
-            try:
-                transaction = sub_wallet.credit(amount, description)
-            except ValueError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-            return Response({
-                "detail": f"Successfully credited ₹{amount} to {sub_wallet.department.name} sub-wallet.",
-                "transaction": SubWalletTransactionSerializer(transaction).data,
-                "sub_wallet": AdminSubWalletListSerializer(sub_wallet).data,
-            })
+            return _legacy_wallet_adjustment_gone()
 
         @action(detail=True, methods=["post"], url_path="debit")
         def debit(self, request, pk=None):
-            """Debit the sub-wallet (mirrors Django admin /admin/users/subwallet/<id>/debit/)."""
+            return _legacy_wallet_adjustment_gone()
+
+        def destroy(self, request, *args, **kwargs):
             sub_wallet = self.get_object()
-            serializer = WalletDebitSerializer(data=request.data)
-            serializer.is_valid(raise_exception=True)
-            amount = serializer.validated_data["amount"]
-            description = (serializer.validated_data.get("description") or "").strip() or f"Admin debit"
-            try:
-                transaction = sub_wallet.debit(amount, description)
-            except ValueError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-            return Response({
-                "detail": f"Successfully debited ₹{amount} from {sub_wallet.department.name} sub-wallet.",
-                "transaction": SubWalletTransactionSerializer(transaction).data,
-                "sub_wallet": AdminSubWalletListSerializer(sub_wallet).data,
-            })
+            if sub_wallet.balance != 0:
+                return Response(
+                    {
+                        "error": "A sub-wallet with a non-zero balance cannot be deleted. "
+                        "Adjust the balance in the Wallet ledger first.",
+                        "code": "SUB_WALLET_HAS_BALANCE",
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            return super().destroy(request, *args, **kwargs)
 
     class SubWalletTransactionViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]
@@ -1850,36 +1846,7 @@ def admin_api_router():
             return qs
 
         def destroy(self, request, *args, **kwargs):
-            """Delete transaction and reverse its effect on sub-wallet balance (mirrors Django admin)."""
-            from django.db import transaction as db_transaction
-            from django.db.models import F
-
-            txn = self.get_object()
-            sub_wallet = txn.sub_wallet
-            amount = txn.amount
-            txn_id = txn.id
-            txn_type = txn.transaction_type
-            with db_transaction.atomic():
-                if txn_type == SubWalletTransaction.TransactionType.CREDIT:
-                    sub_wallet.__class__.objects.filter(pk=sub_wallet.pk).update(balance=F("balance") - amount)
-                else:
-                    sub_wallet.__class__.objects.filter(pk=sub_wallet.pk).update(balance=F("balance") + amount)
-                txn.delete()
-            logger.info(
-                "SubWalletTransaction %s deleted by user %s (type=%s amount=%s sub_wallet=%s); balance reversed.",
-                txn_id,
-                getattr(request.user, "id", None),
-                txn_type,
-                amount,
-                getattr(sub_wallet, "id", None),
-            )
-            return Response(
-                {
-                    "detail": "Transaction deleted and sub-wallet balance reversed.",
-                    "deleted_id": txn_id,
-                },
-                status=status.HTTP_200_OK,
-            )
+            return _legacy_wallet_adjustment_gone()
 
     class WalletRazorpayOrderViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUser]

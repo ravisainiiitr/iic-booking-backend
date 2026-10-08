@@ -4,10 +4,6 @@ from django.contrib.auth import forms as admin_forms
 from django.forms import BooleanField
 from django.forms import EmailField
 from django.forms import ModelForm
-from django.forms import Form
-from django.forms import DecimalField
-from django.forms import CharField
-from django.forms import Textarea
 from django.utils.translation import gettext_lazy as _
 
 from .models import User
@@ -77,38 +73,5 @@ class UserSocialSignupForm(SocialSignupForm):
     See UserSignupForm otherwise.
     """
 
-
-class WalletCreditForm(Form):
-    """Form for crediting a wallet."""
-    amount = DecimalField(
-        label=_("Amount"),
-        max_digits=10,
-        decimal_places=2,
-        min_value=0.01,
-        help_text=_("Enter the amount to credit (must be positive)"),
-    )
-    description = CharField(
-        label=_("Description"),
-        required=False,
-        widget=Textarea(attrs={"rows": 3}),
-        help_text=_("Optional description for this transaction"),
-    )
-
-
-class WalletDebitForm(Form):
-    """Form for debiting a wallet."""
-    amount = DecimalField(
-        label=_("Amount"),
-        max_digits=10,
-        decimal_places=2,
-        min_value=0.01,
-        help_text=_("Enter the amount to debit (must be positive and not exceed balance)"),
-    )
-    description = CharField(
-        label=_("Description"),
-        required=False,
-        widget=Textarea(attrs={"rows": 3}),
-        help_text=_("Optional description for this transaction"),
-    )
 
 

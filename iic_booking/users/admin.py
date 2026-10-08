@@ -1290,6 +1290,12 @@ class WalletAdmin(admin.ModelAdmin):
     readonly_fields = ["total_balance_display"]
     fieldsets = ((None, {"fields": ("user", "total_balance_display")}),)
 
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj is not None:
+            fields.append("user")
+        return fields
+
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("user")
 
@@ -1323,19 +1329,41 @@ class WalletAdmin(admin.ModelAdmin):
 
 @admin.register(SubWallet)
 class SubWalletAdmin(admin.ModelAdmin):
-    """Admin interface for SubWallet (department-wise) model."""
+    """Sub-wallets (department-wise). Balances change only through the Wallet ledger and portal flows."""
 
-    list_display = ["id", "wallet_user", "department", "balance", "created_at", "credit_debit_actions"]
+    list_display = ["id", "wallet_user", "department", "balance", "created_at", "ledger_link"]
     list_filter = ["department", "created_at"]
     search_fields = ["wallet__user__email", "wallet__user__name", "department__name"]
     readonly_fields = ["created_at", "updated_at", "balance_display"]
     list_select_related = ["wallet", "wallet__user", "department"]
-    actions = ["credit_selected", "debit_selected"]
 
     fieldsets = (
         (None, {"fields": ("wallet", "department", "balance_display")}),
         (_("Timestamps"), {"fields": ("created_at", "updated_at")}),
     )
+
+    def get_readonly_fields(self, request, obj=None):
+        fields = list(super().get_readonly_fields(request, obj))
+        if obj is not None:
+            fields += ["wallet", "department"]
+        return fields
+
+    def has_delete_permission(self, request, obj=None):
+        if obj is not None and obj.balance != 0:
+            return False
+        return super().has_delete_permission(request, obj)
+
+    def delete_queryset(self, request, queryset):
+        from django.contrib import messages
+
+        kept = queryset.exclude(balance=0).count()
+        super().delete_queryset(request, queryset.filter(balance=0))
+        if kept:
+            self.message_user(
+                request,
+                f"{kept} sub-wallet(s) with a non-zero balance were not deleted. Adjust balances in the Wallet ledger.",
+                level=messages.WARNING,
+            )
 
     def wallet_user(self, obj):
         return obj.wallet.user.email if obj.wallet and obj.wallet.user else "-"
@@ -1349,245 +1377,21 @@ class SubWalletAdmin(admin.ModelAdmin):
         return "₹0.00"
     balance_display.short_description = _("Balance")
 
-    def credit_debit_actions(self, obj):
-        """Display credit/debit action buttons."""
-        if not obj:
+    def ledger_link(self, obj):
+        if not obj or not obj.wallet_id:
             return "-"
-        
-        credit_url = reverse("admin:users_subwallet_credit", args=[obj.pk])
-        debit_url = reverse("admin:users_subwallet_debit", args=[obj.pk])
-        
-        return _admin_action_buttons(
-            format_html(
-                '<a class="button" href="{}" style="{}background-color:#28a745;color:#fff;">Credit</a>',
-                credit_url,
-                _ADMIN_ACTION_BTN,
-            ),
-            format_html(
-                '<a class="button" href="{}" style="{}background-color:#dc3545;color:#fff;">Debit</a>',
-                debit_url,
-                _ADMIN_ACTION_BTN,
-            ),
+        from iic_booking.communication.utils import get_frontend_absolute_url
+
+        return format_html(
+            '<a href="{}" target="_blank" rel="noopener">Wallet ledger</a>',
+            get_frontend_absolute_url(f"/admin/wallet-ledger/{obj.wallet.user_id}"),
         )
-
-    credit_debit_actions.short_description = _("Actions")
-
-    def get_urls(self):
-        """Add custom URLs for credit/debit actions."""
-        from django.urls import path
-        urls = super().get_urls()
-        custom_urls = [
-            path(
-                "<int:subwallet_id>/credit/",
-                self.admin_site.admin_view(self.credit_subwallet_view),
-                name="users_subwallet_credit",
-            ),
-            path(
-                "<int:subwallet_id>/debit/",
-                self.admin_site.admin_view(self.debit_subwallet_view),
-                name="users_subwallet_debit",
-            ),
-        ]
-        return custom_urls + urls
-
-    def credit_subwallet_view(self, request, subwallet_id):
-        """Handle credit action for a sub-wallet."""
-        from django.shortcuts import redirect, get_object_or_404, render
-        from django.contrib import messages
-        from .forms import WalletCreditForm
-        
-        sub_wallet = get_object_or_404(SubWallet, pk=subwallet_id)
-        
-        if request.method == "POST":
-            form = WalletCreditForm(request.POST)
-            if form.is_valid():
-                try:
-                    amount = form.cleaned_data["amount"]
-                    description = form.cleaned_data.get("description", "") or f"Admin credit - {request.user.email}"
-                    transaction = sub_wallet.credit(amount, description)
-                    messages.success(
-                        request,
-                        f"Successfully credited ₹{amount} to {sub_wallet.department.name} sub-wallet for {sub_wallet.wallet.user.email}. Transaction ID: {transaction.id}"
-                    )
-                    return redirect("admin:users_subwallet_changelist")
-                except ValueError as e:
-                    messages.error(request, f"Error: {str(e)}")
-                except Exception as e:
-                    messages.error(request, f"Unexpected error: {str(e)}")
-        else:
-            form = WalletCreditForm()
-        
-        context = {
-            "title": f"Credit Sub-Wallet: {sub_wallet.department.name}",
-            "sub_wallet": sub_wallet,
-            "form": form,
-            "opts": self.model._meta,
-            "has_view_permission": self.has_view_permission(request, sub_wallet),
-            "has_change_permission": self.has_change_permission(request, sub_wallet),
-        }
-        return render(request, "admin/users/subwallet/credit_form.html", context)
-
-    def debit_subwallet_view(self, request, subwallet_id):
-        """Handle debit action for a sub-wallet."""
-        from django.shortcuts import redirect, get_object_or_404, render
-        from django.contrib import messages
-        from .forms import WalletDebitForm
-        
-        sub_wallet = get_object_or_404(SubWallet, pk=subwallet_id)
-        
-        if request.method == "POST":
-            form = WalletDebitForm(request.POST)
-            if form.is_valid():
-                try:
-                    amount = form.cleaned_data["amount"]
-                    description = form.cleaned_data.get("description", "") or f"Admin debit - {request.user.email}"
-                    transaction = sub_wallet.debit(amount, description)
-                    messages.success(
-                        request,
-                        f"Successfully debited ₹{amount} from {sub_wallet.department.name} sub-wallet for {sub_wallet.wallet.user.email}. Transaction ID: {transaction.id}"
-                    )
-                    return redirect("admin:users_subwallet_changelist")
-                except ValueError as e:
-                    messages.error(request, f"Error: {str(e)}")
-                except Exception as e:
-                    messages.error(request, f"Unexpected error: {str(e)}")
-        else:
-            form = WalletDebitForm()
-        
-        context = {
-            "title": f"Debit Sub-Wallet: {sub_wallet.department.name}",
-            "sub_wallet": sub_wallet,
-            "form": form,
-            "opts": self.model._meta,
-            "has_view_permission": self.has_view_permission(request, sub_wallet),
-            "has_change_permission": self.has_change_permission(request, sub_wallet),
-        }
-        return render(request, "admin/users/subwallet/debit_form.html", context)
-
-    @admin.action(description="Credit selected sub-wallets")
-    def credit_selected(self, request, queryset):
-        """Credit selected sub-wallets (bulk action)."""
-        from django.shortcuts import redirect, render
-        from .forms import WalletCreditForm
-        
-        # Store selected IDs in session for POST request
-        if request.method == "GET":
-            selected_ids = request.GET.getlist(admin.ACTION_CHECKBOX_NAME)
-            request.session['subwallet_selected_ids'] = selected_ids
-        
-        if request.method == "POST":
-            form = WalletCreditForm(request.POST)
-            if form.is_valid():
-                # Get selected IDs from session or POST
-                selected_ids = request.POST.getlist('selected_ids') or request.session.get('subwallet_selected_ids', [])
-                if not selected_ids:
-                    self.message_user(request, "No sub-wallets selected.", level="error")
-                    return redirect("admin:users_subwallet_changelist")
-                
-                queryset = self.model.objects.filter(id__in=selected_ids)
-                amount = form.cleaned_data["amount"]
-                description = form.cleaned_data.get("description", "") or f"Bulk admin credit - {request.user.email}"
-                count = 0
-                errors = []
-                
-                for sub_wallet in queryset:
-                    try:
-                        sub_wallet.credit(amount, description)
-                        count += 1
-                    except Exception as e:
-                        errors.append(f"{sub_wallet.department.name}: {str(e)}")
-                
-                if count > 0:
-                    self.message_user(
-                        request,
-                        f"Successfully credited ₹{amount} to {count} sub-wallet(s).",
-                    )
-                if errors:
-                    self.message_user(
-                        request,
-                        f"Errors: {'; '.join(errors)}",
-                        level="error",
-                    )
-                # Clear session
-                if 'subwallet_selected_ids' in request.session:
-                    del request.session['subwallet_selected_ids']
-                return redirect("admin:users_subwallet_changelist")
-        else:
-            form = WalletCreditForm()
-        
-        context = {
-            "title": f"Credit {queryset.count()} Selected Sub-Wallet(s)",
-            "sub_wallets": queryset,
-            "form": form,
-            "opts": self.model._meta,
-            "selected_ids": [str(sw.id) for sw in queryset],
-        }
-        return render(request, "admin/users/subwallet/bulk_credit_form.html", context)
-
-    @admin.action(description="Debit selected sub-wallets")
-    def debit_selected(self, request, queryset):
-        """Debit selected sub-wallets (bulk action)."""
-        from django.shortcuts import redirect, render
-        from .forms import WalletDebitForm
-        
-        # Store selected IDs in session for POST request
-        if request.method == "GET":
-            selected_ids = request.GET.getlist(admin.ACTION_CHECKBOX_NAME)
-            request.session['subwallet_selected_ids'] = selected_ids
-        
-        if request.method == "POST":
-            form = WalletDebitForm(request.POST)
-            if form.is_valid():
-                # Get selected IDs from session or POST
-                selected_ids = request.POST.getlist('selected_ids') or request.session.get('subwallet_selected_ids', [])
-                if not selected_ids:
-                    self.message_user(request, "No sub-wallets selected.", level="error")
-                    return redirect("admin:users_subwallet_changelist")
-                
-                queryset = self.model.objects.filter(id__in=selected_ids)
-                amount = form.cleaned_data["amount"]
-                description = form.cleaned_data.get("description", "") or f"Bulk admin debit - {request.user.email}"
-                count = 0
-                errors = []
-                
-                for sub_wallet in queryset:
-                    try:
-                        sub_wallet.debit(amount, description)
-                        count += 1
-                    except Exception as e:
-                        errors.append(f"{sub_wallet.department.name}: {str(e)}")
-                
-                if count > 0:
-                    self.message_user(
-                        request,
-                        f"Successfully debited ₹{amount} from {count} sub-wallet(s).",
-                    )
-                if errors:
-                    self.message_user(
-                        request,
-                        f"Errors: {'; '.join(errors)}",
-                        level="error",
-                    )
-                # Clear session
-                if 'subwallet_selected_ids' in request.session:
-                    del request.session['subwallet_selected_ids']
-                return redirect("admin:users_subwallet_changelist")
-        else:
-            form = WalletDebitForm()
-        
-        context = {
-            "title": f"Debit {queryset.count()} Selected Sub-Wallet(s)",
-            "sub_wallets": queryset,
-            "form": form,
-            "opts": self.model._meta,
-            "selected_ids": [str(sw.id) for sw in queryset],
-        }
-        return render(request, "admin/users/subwallet/bulk_debit_form.html", context)
+    ledger_link.short_description = _("Credit / debit")
 
 
 @admin.register(SubWalletTransaction)
 class SubWalletTransactionAdmin(admin.ModelAdmin):
-    """Admin interface for SubWalletTransaction model. Supports deletion with balance reversal."""
+    """Sub-wallet transactions, read only. Corrections are posted as new entries in the Wallet ledger."""
 
     list_display = ["id", "sub_wallet_display", "transaction_type", "amount", "description_short", "created_at"]
     list_filter = ["transaction_type", "created_at"]
@@ -1614,27 +1418,7 @@ class SubWalletTransactionAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
-        return request.user.has_perm("users.delete_subwallettransaction")
-
-    def _reverse_balance_for_transaction(self, txn):
-        """Reverse the sub_wallet balance for this transaction, then delete it."""
-        from django.db.models import F
-        sub_wallet = txn.sub_wallet
-        amount = txn.amount
-        if txn.transaction_type == SubWalletTransaction.TransactionType.CREDIT:
-            sub_wallet.__class__.objects.filter(pk=sub_wallet.pk).update(balance=F("balance") - amount)
-        else:
-            sub_wallet.__class__.objects.filter(pk=sub_wallet.pk).update(balance=F("balance") + amount)
-        txn.delete()
-
-    def delete_model(self, request, obj):
-        """Delete a single transaction and reverse its effect on sub_wallet balance."""
-        self._reverse_balance_for_transaction(obj)
-
-    def delete_queryset(self, request, queryset):
-        """Delete selected transactions and reverse each one's effect on sub_wallet balance."""
-        for txn in queryset:
-            self._reverse_balance_for_transaction(txn)
+        return False
 
 
 @admin.register(WalletRazorpayOrder)
