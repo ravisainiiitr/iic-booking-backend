@@ -3910,6 +3910,23 @@ def admin_api_router():
                     )
                     input_values = reduced_inputs
 
+            from iic_booking.equipment.waitlist_quota import manual_confirm_quota_warning
+
+            quota_info = manual_confirm_quota_warning(
+                equipment,
+                user,
+                minutes=int(time_override) if time_override else slot_minutes,
+                booking_date=slots[0].start_datetime,
+            )
+            if str(request.data.get("preview") or "").strip().lower() in ("1", "true", "yes"):
+                return Response(
+                    {
+                        "preview": True,
+                        "total_time_minutes": int(time_override) if time_override else slot_minutes,
+                        **quota_info,
+                    }
+                )
+
             booking, err = create_booking_for_waitlist_user(
                 equipment,
                 user,
@@ -3947,6 +3964,7 @@ def admin_api_router():
                 equipment_id=equipment.equipment_id,
                 waitlist_entry_id=entry.id,
                 booking_id=booking.booking_id,
+                over_quota=bool(quota_info["quota_warning"]),
             )
             entry.delete()
             return Response(
@@ -3955,6 +3973,7 @@ def admin_api_router():
                     "booking_id": booking.booking_id,
                     "total_charge": str(booking.total_charge),
                     "total_time_minutes": booking.total_time_minutes,
+                    **quota_info,
                 },
                 status=status.HTTP_201_CREATED,
             )

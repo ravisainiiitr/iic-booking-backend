@@ -3946,8 +3946,10 @@ def book_equipment(request, pk):
     try:
         from .equipment_group_service import run_booking_with_group_alternatives
         from .template_slot_preference import attach_slot_taken_alternatives
+        from .waitlist_quota import waitlist_join_request_scope
 
-        response = run_booking_with_group_alternatives(request, pk, _book_equipment_impl)
+        with waitlist_join_request_scope():
+            response = run_booking_with_group_alternatives(request, pk, _book_equipment_impl)
         attach_slot_taken_alternatives(request, pk, response)
         return response
     except Exception as exc:
@@ -4283,6 +4285,16 @@ def _book_equipment_impl(request, pk):
             additional_info=_get_additional_info_from_request(request, equipment),
         )
         return Response({"error": numeric_limit_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    from .waitlist_quota import note_waitlist_join_request
+
+    raw_slot_ids = request.data.get("slot_ids")
+    note_waitlist_join_request(
+        input_values=input_values,
+        slot_ids=[x for x in raw_slot_ids if str(x).strip().isdigit()] if isinstance(raw_slot_ids, list) else [],
+        week_start=request.data.get("visible_week_start"),
+        skip_limits=bool(skip_period_limits or create_as_hold),
+    )
 
     # Whether to push failed booking attempts into waitlist queue.
     # Default: True (backwards compatible; existing frontend flows push to waitlist).
@@ -8737,6 +8749,7 @@ def _serialize_waitlist_entry_for_history(entry: WaitlistEntry, position: int) -
         ),
         "notes": (
             f"Current position in queue: WL{int(position)}"
+            + (f". {entry.cannot_fulfill_remark}" if getattr(entry, "cannot_fulfill_remark", None) else "")
             if position and (getattr(entry, "status", "ACTIVE") or "ACTIVE").upper() == "ACTIVE"
             else (
                 "Opted out of waitlist — will not receive automatic confirmation."
@@ -11491,6 +11504,13 @@ def _enrich_failed_booking_response(
         return {"error": error_message}
 
     payload = {"error": error_message}
+    from .waitlist_quota import waitlist_join_quota_error
+
+    quota_error = waitlist_join_quota_error(equipment, booking_user)
+    if quota_error:
+        payload["error"] = f"{error_message} Not added to the waitlist: {quota_error}"
+        payload["waitlist_quota_exceeded"] = True
+        return payload
     try:
         added, position = add_user_to_waitlist(equipment, booking_user)
         if position is not None:

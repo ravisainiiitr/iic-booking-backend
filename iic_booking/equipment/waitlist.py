@@ -8,6 +8,8 @@ Waitlist queue service for equipment.
   slots assigned, and email to the booker and wallet owner (template booking_waitlist_confirmed_email).
   Only slots with DailySlot.released_by_booking_at count; slots made Available by OIC / admin status
   changes, maintenance ending, rule removal or slot generation never auto-confirm the waitlist.
+- Normal-booking weekly / monthly quota applies in the freed slot's period: an over-quota entry is
+  skipped (stays ACTIVE, reason in cannot_fulfill_remark) and the slot goes to the next entry.
 - Before the pre-reference cutoff window, FCFS is attempted once so users with available slots are
   confirmed before remaining waitlist rows are cleared.
 """
@@ -32,6 +34,7 @@ from iic_booking.equipment.waitlist_booking import (
     create_booking_for_waitlist_user,
     reduce_waitlist_inputs_to_fit_available_slots,
 )
+from iic_booking.equipment.waitlist_quota import WaitlistQuotaExceeded
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url
 from iic_booking.users.models.user_type import UserType
@@ -622,6 +625,7 @@ def notify_waitlist_slots_available(
     # keep the entry so they can be retried in a future auto-booking run.
     processed_entry_ids: list[int] = []
     cannot_fulfill_remark_by_id: dict[int, str] = {}
+    quota_skip_remark_by_id: dict[int, str] = {}
 
     for idx, entry in enumerate(entries, start=1):
         user = entry.user
@@ -758,6 +762,17 @@ def notify_waitlist_slots_available(
                 user.email,
                 equipment_code,
             )
+        elif isinstance(err, WaitlistQuotaExceeded):
+            # Over the weekly / monthly limit for the slot's period: stay waitlisted, slot goes to the next entry.
+            logger.info(
+                "Waitlist auto-booking skipped entry %s (user %s, equipment %s): quota would be exceeded.",
+                entry.id,
+                user.pk,
+                equipment_code,
+            )
+            quota_skip_remark_by_id[int(entry.id)] = (
+                f"Skipped by automatic confirmation on {timezone.localtime(now):%Y-%m-%d %H:%M}: {err}"
+            )
         else:
             logger.warning(
                 "Waitlist auto-booking skipped for user %s (equipment %s): %s",
@@ -791,6 +806,11 @@ def notify_waitlist_slots_available(
                 )
         except Exception:
             logger.exception("Failed to mark cannot-fulfill waitlist entries for equipment %s", equipment_code)
+
+    for entry_id, remark in quota_skip_remark_by_id.items():
+        WaitlistEntry.objects.filter(equipment=equipment, id=entry_id, status="ACTIVE").update(
+            cannot_fulfill_remark=remark[:2000]
+        )
 
     if processed_entry_ids:
         with transaction.atomic():

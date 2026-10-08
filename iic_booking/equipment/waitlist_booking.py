@@ -387,7 +387,9 @@ def create_booking_for_waitlist_user(
             booking_date=booking_date,
         )
         if not quota_allowed:
-            return None, quota_error
+            from .waitlist_quota import WaitlistQuotaExceeded
+
+            return None, WaitlistQuotaExceeded(quota_error or "Booking limit for this equipment is used up.")
 
     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
