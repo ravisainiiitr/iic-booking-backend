@@ -1,0 +1,145 @@
+# Read-only: (1) verify a cleared booking (status, refund, slots, emails, waitlist), (2) the user whose
+# normalised name hashes to name_sha256 (sha256 of lower-case words joined by one space): waitlist entries
+# and weekly / monthly quota, (3) active bookings created from the waitlist that are over quota.
+# Prints IDs, codes, amounts and statuses only. Nothing is written.
+name: Probe Waitlist Quota Violations
+
+on:
+  workflow_dispatch:
+    inputs:
+      booking_code:
+        description: "Cleared booking code to verify"
+        required: false
+        default: "IICXPS202600053"
+      name_sha256:
+        description: "sha256 of the user's normalised name (optional)"
+        required: false
+        default: ""
+      equipment_code:
+        description: "Equipment code for the named user's quota"
+        required: false
+        default: "XPS"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        env:
+          BOOKING_CODE: ${{ inputs.booking_code }}
+          NAME_SHA256: ${{ inputs.name_sha256 }}
+          EQUIPMENT_CODE: ${{ inputs.equipment_code }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e BOOKING_CODE="$BOOKING_CODE" -e NAME_SHA256="$NAME_SHA256" \
+                -e EQUIPMENT_CODE="$EQUIPMENT_CODE" -w /app "$CID" python - 2>&1 <<'PY' | grep -v -i "warn"
+          import os, re, hashlib, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import timedelta
+          from django.db.models import Min
+          from django.utils import timezone
+          from iic_booking.communication.models import CommunicationLog
+          from iic_booking.equipment import quota_utils
+          from iic_booking.equipment.models import (
+              Booking, BookingEvent, BookingEventType, DailySlot, Equipment, WaitlistEntry, BookingAttemptLog, QuotaType,
+          )
+          from iic_booking.users.models import User
+          from iic_booking.users.models.wallet import SubWalletTransaction
+
+          def lt(dt):
+              return timezone.localtime(dt).strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
+          now = timezone.now()
+          QS = quota_utils.QuotaService
+
+          code = os.environ.get("BOOKING_CODE", "").strip()
+          if code:
+              b = Booking.objects.get(virtual_booking_id=code)
+              print(f"== 1. cleared booking {code}: pk={b.pk} status={b.status} user={b.user_id}")
+              for e in BookingEvent.objects.filter(booking=b).order_by("-created_at")[:3]:
+                  md = e.metadata if isinstance(e.metadata, dict) else {}
+                  print(f"   ev={e.pk} {e.event_type} {e.previous_status}->{e.new_status} by={e.created_by_id} at={lt(e.created_at)} "
+                        f"refund={md.get('refund_amount')} cleared={md.get('cleared_by_admin')}")
+              for t in SubWalletTransaction.objects.filter(description__contains=code).order_by("created_at"):
+                  print(f"   txn={t.pk} {t.transaction_type} amount={t.amount} sub_wallet={t.sub_wallet_id} at={lt(t.created_at)}")
+              for s in DailySlot.objects.filter(pk__in=[42661, 42662]).order_by("pk"):
+                  print(f"   slot={s.pk} {s.date} status={s.status} label={s.blocked_label!r} booking={s.booking_id} "
+                        f"released_by_booking_at={s.released_by_booking_at}")
+              since = b.updated_at - timedelta(minutes=5)
+              for c in CommunicationLog.objects.filter(created_at__gte=since, created_at__lte=b.updated_at + timedelta(minutes=10)).select_related("template"):
+                  tcode = getattr(c.template, "code", None) or getattr(c.template, "template_code", None)
+                  if c.recipient_id in (b.user_id,) or (tcode and ("refund" in tcode or "waitlist" in tcode)):
+                      print(f"   comm={c.pk} {c.communication_type} template={tcode} recipient={c.recipient_id} status={c.status} at={lt(c.created_at)}")
+              xps = b.equipment
+              print(f"   waitlist entries on {xps.code}: " + ", ".join(
+                  f"{w.pk}:u{w.user_id}:{w.status}" for w in WaitlistEntry.objects.filter(equipment=xps).order_by("created_at")))
+              print(f"   bookings on {xps.code} created since clear: " + ", ".join(
+                  f"{o.virtual_booking_id}:u{o.user_id}" for o in Booking.objects.filter(equipment=xps, created_at__gte=since)))
+
+          target = os.environ.get("NAME_SHA256", "").strip().lower()
+          if target:
+              print("== 2. named user")
+              eq = Equipment.objects.get(code=os.environ.get("EQUIPMENT_CODE", "XPS").strip())
+              def norm(n):
+                  words = (n or "").lower().split()
+                  return [" ".join(words), " ".join(w for w in (re.sub(r"[^a-z]", "", x) for x in words) if w not in ("", "dr", "mr", "ms", "mrs", "prof"))]
+              hits = [u for u in User.objects.only("id", "name", "user_type") if any(
+                  hashlib.sha256(v.encode()).hexdigest() == target for v in norm(u.name))]
+              for u in hits:
+                  print(f"   user={u.pk} user_type={u.user_type}")
+                  for w in WaitlistEntry.objects.filter(user=u):
+                      print(f"     waitlist entry={w.pk} eq={w.equipment.code} status={w.status} created={lt(w.created_at)} remark_len={len(w.cannot_fulfill_remark or '')}")
+                  for a in BookingAttemptLog.objects.filter(user=u, equipment=eq).order_by("-requested_at")[:5]:
+                      print(f"     attempt={a.pk} {a.outcome} at={lt(a.requested_at)} minutes={a.duration_minutes} slots={a.slots_requested} "
+                            f"reason={(a.failure_reason or '')[:120]!r}")
+                  for weeks in (0, 1):
+                      ref = now + timedelta(days=7 * weeks)
+                      start, end = QS._get_quota_period(QuotaType.WEEKLY, ref)
+                      used = QS._in_quota_period(QS._base_quota_bookings_qs().filter(
+                          user=u, equipment__equipment_group_id=eq.equipment_group_id), start, end).distinct()
+                      print(f"     week {start:%Y-%m-%d}: " + ", ".join(f"{o.virtual_booking_id}:{o.status}:{o.total_time_minutes}m" for o in used))
+                      d = QS.evaluate_booking_quota(u, eq, additional_time_minutes=60, additional_bookings=1, booking_date=ref)
+                      f = d.failure
+                      print(f"     +60 min that week: allowed={d.allowed}" + (f" {f.scope} used={f.used_minutes} limit={f.limit_minutes}" if f else ""))
+              print(f"   matches={len(hits)}")
+
+          print("== 3. active bookings created from the waitlist that are over quota")
+          ids = set(BookingEvent.objects.filter(event_type=BookingEventType.CREATED, metadata__from_waitlist=True)
+                    .values_list("booking_id", flat=True))
+          rows = (Booking.objects.filter(pk__in=ids, status__in=quota_utils.QUOTA_COUNTING_STATUSES, source_booking__isnull=True)
+                  .annotate(first_start=Min("daily_slots__start_datetime")).filter(first_start__gte=now - timedelta(days=31))
+                  .select_related("equipment").order_by("first_start"))
+          checked = over = 0
+          for o in rows:
+              if quota_utils.booking_quota_should_skip(o.equipment):
+                  continue
+              checked += 1
+              ref = quota_utils.booking_quota_reference_datetime(o)
+              d = QS.evaluate_booking_quota(o.user, o.equipment, additional_time_minutes=int(quota_utils.booking_effective_quota_minutes(o)),
+                                            additional_bookings=1, additional_charge=o.total_charge, booking_date=ref,
+                                            exclude_booking_id=o.pk)
+              if not d.allowed:
+                  over += 1
+                  manual = BookingEvent.objects.filter(booking=o, event_type=BookingEventType.CREATED,
+                                                       metadata__manual_waitlist_confirmation=True).exists()
+                  f = d.failure
+                  print(f"   {o.virtual_booking_id} user={o.user_id} eq={o.equipment.code} status={o.status} slot={lt(o.first_start)} "
+                        f"manual={manual}" + (f" {f.scope} used_without={f.used_minutes} this={f.requested_minutes} limit={f.limit_minutes}" if f else f" {d.error!r}"))
+          print(f"   checked={checked} over_quota={over} (bookings with a slot in the last 31 days or later)")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
