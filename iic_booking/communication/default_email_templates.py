@@ -1944,8 +1944,10 @@ def _registration_and_support_templates() -> list[dict[str, Any]]:
             description=(
                 "Daily 09:00 digest to each Officer in charge / Lab in-charge listing their bookings whose "
                 "slot time is over and whose sample has been received (Sample Accepted, or walk-in equipment), "
-                "but which are not marked Completed. Overdue by and Results due count from the slot end or "
-                "the sample receipt, whichever is later. Schedule: equipment.send_booking_completion_reminders."
+                "but which are not marked Completed, once their results are overdue: the equipment's Results "
+                "overdue after (hours) (24 by default) after the slot end, or after the sample receipt plus the "
+                "booked time if that is later. Overdue by counts from that time. "
+                "Schedule: equipment.send_booking_completion_reminders."
             ),
             post_details_html="{{ bookings_html }}",
             post_details_text="{{ bookings_text }}",

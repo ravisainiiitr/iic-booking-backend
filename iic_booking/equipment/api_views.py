@@ -18144,6 +18144,7 @@ OIC_EQUIPMENT_SETTINGS_INT_FIELDS = {
     "operator_absent_disruption_after_booking_end_hours": (0, 8760),
     "sample_submission_lead_hours": (0, 8760),
     "sample_collect_deadline_hours": (0, 8760),
+    "results_overdue_after_hours": (1, 720),
 }
 OIC_EQUIPMENT_SETTINGS_TIME_FIELDS = (
     "slot_window_reference_time",
@@ -18169,6 +18170,7 @@ OIC_EQUIPMENT_SETTINGS_AUDITED_FIELDS = (
     "results_deadline_value",
     "results_deadline_unit",
     "show_results_deadline_to_users",
+    "show_results_countdown_to_users",
 )
 
 
@@ -18262,6 +18264,7 @@ def _oic_equipment_settings_row(eq, usage: dict | None = None) -> dict:
             "results_deadline_value": eq.results_deadline_value,
             "results_deadline_unit": eq.results_deadline_unit,
             "show_results_deadline_to_users": bool(eq.show_results_deadline_to_users),
+            "show_results_countdown_to_users": bool(eq.show_results_countdown_to_users),
             "important_instruction": eq.important_instruction or "",
             "important_instruction_by_user_type": {
                 k: v
@@ -18408,12 +18411,11 @@ def oic_equipment_settings_update(request, equipment_id):
             eq.results_deadline_unit = unit
             changed.extend(["results_deadline_value", "results_deadline_unit"])
 
-    if "show_results_deadline_to_users" in data:
-        raw = data.get("show_results_deadline_to_users")
-        eq.show_results_deadline_to_users = (
-            raw if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "yes", "y", "on")
-        )
-        changed.append("show_results_deadline_to_users")
+    for name in ("show_results_deadline_to_users", "show_results_countdown_to_users"):
+        if name in data:
+            raw = data.get(name)
+            setattr(eq, name, raw if isinstance(raw, bool) else str(raw).strip().lower() in ("1", "true", "yes", "y", "on"))
+            changed.append(name)
 
     from .rich_text import clean_important_instruction as _clean_instruction
     from .rich_text import instruction_user_type_aliases, instruction_user_type_choices

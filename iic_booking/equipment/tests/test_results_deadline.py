@@ -172,9 +172,9 @@ def test_overdue_detection(world):
     _trace(forwarded_only, SampleTraceStatus.FORWARDED_TO_LAB, now - timedelta(days=20))
 
     ids = set(overdue_booking_ids(Booking.objects.all(), now))
-    assert ids == {overdue.pk, processing.pk}
+    # The list follows the results overdue time (24 h by default on every equipment), not the results deadline.
+    assert ids == {overdue.pk, processing.pk, no_deadline.pk}
     assert recent.pk not in ids and waiting_user.pk not in ids and extended.pk not in ids
-    assert no_deadline.pk not in ids
     assert never_received.pk not in ids and forwarded_only.pk not in ids
 
     b = _reload(extended)
@@ -597,7 +597,12 @@ def test_completion_digest_and_card_show_results_due(world):
     assert card["results_overdue"] is True and card["results_due_display"]
     late_card = serialize_awaiting_booking(rows[1], world.now)
     assert late_card["booking_id"] == late.pk
-    assert late_card["results_overdue"] is False and late_card["overdue"] == "2 h"
-    ctx = _digest_context(world.oic_a, rows, world.now)
-    assert "Results due" in ctx["bookings_html"] and "results overdue" in ctx["bookings_text"]
-    assert "Sample received" in ctx["bookings_html"] and "overdue by 2 h" in ctx["bookings_text"]
+    # Received 2 h ago, 1 h booked: results overdue 24 h after receipt + 1 h, so no counter yet.
+    assert late_card["results_overdue"] is False and late_card["overdue"] == "" and late_card["is_overdue"] is False
+    assert late_card["results_due_at_display"]
+    from iic_booking.equipment.results_overdue import booking_results_due
+
+    overdue_rows = [(rows[0], booking_results_due(rows[0]))]
+    ctx = _digest_context(world.oic_a, overdue_rows, world.now)
+    assert "Results deadline" in ctx["bookings_html"] and "(passed)" in ctx["bookings_text"]
+    assert "Sample received" in ctx["bookings_html"] and "overdue by 18 days" in ctx["bookings_text"]

@@ -118,16 +118,18 @@ def test_walk_in_equipment_counts_as_received_at_the_slot(setup, egs_factory):
 
 
 @pytest.mark.django_db
-def test_overdue_by_counts_from_sample_receipt_when_later(setup, egs_factory):
+def test_overdue_by_counts_from_the_results_overdue_time(setup, egs_factory):
     from iic_booking.equipment.completion_reminders import serialize_awaiting_booking
 
     now = timezone.now()
-    late = _received(egs_factory.booking(setup["student"], setup["eq_a"], now - timedelta(days=2)), now - timedelta(hours=3))
+    late = _received(egs_factory.booking(setup["student"], setup["eq_a"], now - timedelta(days=2)), now - timedelta(hours=30))
     rows = {b.pk: b for b in bookings_awaiting_completion_for_user(setup["oic_a"], now)}
     early_row = serialize_awaiting_booking(rows[setup["ended_a"].pk], now)
     late_row = serialize_awaiting_booking(rows[late.pk], now)
-    assert early_row["overdue"].startswith("1 day")  # slot ended ~47 h ago; received before the slot
-    assert late_row["overdue"] == "3 h"
+    # Slot ended 47 h ago, received before the slot: due 24 h after the slot end.
+    assert early_row["overdue"] == "23 h" and early_row["is_overdue"] is True
+    # Received 30 h ago + 1 h booked: due 24 h after that, so overdue by 5 h.
+    assert late_row["overdue"] == "5 h"
     assert late_row["receipt_source"] == "sample_accepted" and late_row["sample_received_display"]
     assert list(rows)[-1] == late.pk  # ordered by the later of slot end and receipt
 
@@ -159,9 +161,10 @@ def test_daily_digest_sends_one_email_per_responsible_person(setup):
     with patch.object(CommunicationService, "send_email") as send_email:
         sent = send_booking_completion_reminders()
 
-    assert sent == 3
+    # ended_b ended 4 h ago, so its results are not overdue yet and oic_b gets nothing.
+    assert sent == 2
     by_user = {call.kwargs["recipient"].pk: call.kwargs for call in send_email.call_args_list}
-    assert set(by_user) == {setup["oic_a"].pk, setup["operator_a"].pk, setup["oic_b"].pk}
+    assert set(by_user) == {setup["oic_a"].pk, setup["operator_a"].pk}
     ctx = by_user[setup["oic_a"].pk]["template_context"]
     assert by_user[setup["oic_a"].pk]["template"] == EMAIL_TEMPLATE_CODE
     assert ctx["booking_count"] == "1"
@@ -203,8 +206,11 @@ def test_no_email_when_nothing_is_overdue(egs_factory):
 
 @pytest.mark.django_db
 def test_login_popup_item_lists_all_overdue_bookings(setup, egs_factory):
+    now = timezone.now()
     for days in (3, 4, 5, 6):
-        _received(egs_factory.booking(setup["student"], setup["eq_a"], timezone.now() - timedelta(days=days)))
+        start = now - timedelta(days=days)
+        _received(egs_factory.booking(setup["student"], setup["eq_a"], start), start)
+    _received(egs_factory.booking(setup["student"], setup["eq_a"], now - timedelta(hours=6)))  # not overdue yet
 
     items = {i["key"]: i for i in collect_pending_actions(setup["oic_a"])}
     item = items["bookings_awaiting_completion"]

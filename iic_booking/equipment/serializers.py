@@ -166,15 +166,14 @@ def _viewer_sample_locked(serializer, booking) -> bool:
 
 
 class _ResultsDeadlineFieldMixin:
-    """``results_deadline``: always for staff; for users only when the equipment shows it to users."""
+    """
+    ``results_deadline``: always for staff; for users only when the equipment shows it to users.
+    ``results_overdue``: always for staff; for users only when the equipment shows the results countdown.
+    """
 
-    def get_results_deadline(self, obj):
-        from .results_deadline import (
-            WorkingCalendar,
-            booking_results_deadline_payload,
-            preload_page,
-            viewer_is_staff,
-        )
+    def _results_context(self):
+        from .results_deadline import WorkingCalendar, viewer_is_staff
+        from .results_overdue import preload
 
         ctx = self.context
         if "_results_deadline_calendar" not in ctx:
@@ -184,9 +183,25 @@ class _ResultsDeadlineFieldMixin:
             rows = getattr(getattr(self, "parent", None), "instance", None)
             if rows is not None and not isinstance(rows, Booking):
                 try:
-                    preload_page(list(rows))
+                    preload(list(rows))
                 except Exception:
                     logger.exception("results deadline preload failed")
+        return ctx
+
+    def get_results_overdue(self, obj):
+        from .results_overdue import booking_results_overdue_payload
+
+        ctx = self._results_context()
+        try:
+            return booking_results_overdue_payload(obj, staff_view=ctx["_results_deadline_staff"])
+        except Exception:
+            logger.exception("results overdue payload failed for booking %s", getattr(obj, "booking_id", None))
+            return None
+
+    def get_results_deadline(self, obj):
+        from .results_deadline import booking_results_deadline_payload
+
+        ctx = self._results_context()
         try:
             return booking_results_deadline_payload(
                 obj,
@@ -387,8 +402,11 @@ def build_booking_lifecycle_countdown(booking):
     if start_dt is None or end_dt is None:
         return None
 
-    # Phase 2: after Sample Accepted — booking countdown to slot end
+    # Phase 2: after Sample Accepted — booking countdown to slot end. After the slot the results time
+    # (``results_overdue``) takes over, so this never counts "overdue" from the slot end.
     if accepted is not None:
+        if now >= end_dt:
+            return None
         return _payload(
             phase="booking",
             title="Time remaining to complete booking",
@@ -1949,6 +1967,8 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
             'results_deadline_value',
             'results_deadline_unit',
             'show_results_deadline_to_users',
+            'results_overdue_after_hours',
+            'show_results_countdown_to_users',
             'show_lifecycle_countdowns',
             'sample_submission_lead_hours',
             'atmosphere_sensitive_sample_enabled',
@@ -2453,6 +2473,8 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             'results_deadline_value',
             'results_deadline_unit',
             'show_results_deadline_to_users',
+            'results_overdue_after_hours',
+            'show_results_countdown_to_users',
             'skip_quota_check',
             'enable_charge_recalculation',
             'allow_multiple_sample_sets',
@@ -2553,11 +2575,18 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
             )
         return value
 
-    RESULTS_DEADLINE_FIELDS = ("results_deadline_value", "results_deadline_unit", "show_results_deadline_to_users")
+    RESULTS_DEADLINE_FIELDS = (
+        "results_deadline_value",
+        "results_deadline_unit",
+        "show_results_deadline_to_users",
+        "results_overdue_after_hours",
+        "show_results_countdown_to_users",
+    )
 
     def _validate_results_deadline(self, attrs, instance):
         """Main Admin and the equipment's OIC (incl. temporary OIC) only; values checked against the unit."""
         from .results_deadline import validate_deadline
+        from .results_overdue import validate_overdue_hours
 
         changed = [
             name
@@ -2573,8 +2602,12 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
 
             if not _user_can_act_as_oic_for_equipment(user, instance) and not getattr(user, "is_superuser", False):
                 raise serializers.ValidationError(
-                    {changed[0]: "Only the Main Admin or the equipment's Officer In-Charge can change the results deadline."}
+                    {changed[0]: "Only the Main Admin or the equipment's Officer In-Charge can change the results settings."}
                 )
+        if "results_overdue_after_hours" in changed:
+            _hours, error = validate_overdue_hours(attrs["results_overdue_after_hours"])
+            if error:
+                raise serializers.ValidationError({"results_overdue_after_hours": error})
         value = attrs.get("results_deadline_value", getattr(instance, "results_deadline_value", 2) if instance else 2)
         unit = attrs.get("results_deadline_unit", getattr(instance, "results_deadline_unit", "WORKING_DAYS") if instance else "WORKING_DAYS")
         _value, _unit, errors = validate_deadline(value, unit)
@@ -3441,6 +3474,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     
     booking_id = serializers.SerializerMethodField()
     results_deadline = serializers.SerializerMethodField()
+    results_overdue = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
@@ -3712,6 +3746,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'notes',
             'operator_absent_hold_until',
             'results_deadline',
+            'results_overdue',
             'atmosphere_sensitive_sample',
             'equipment_atmosphere_sensitive_sample_enabled',
             'equipment_allow_multiple_sample_sets',
@@ -4228,6 +4263,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     """Lightweight serializer for list/table view. Excludes heavy fields (daily_slots, charge_breakdown, input_fields, sample_trace)."""
     booking_id = serializers.SerializerMethodField()
     results_deadline = serializers.SerializerMethodField()
+    results_overdue = serializers.SerializerMethodField()
     real_booking_id = serializers.IntegerField(source='booking_id', read_only=True)
     equipment_code = serializers.CharField(source='equipment.code', read_only=True)
     equipment_name = serializers.CharField(source='equipment.name', read_only=True)
@@ -4339,7 +4375,7 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
             'rated_at', 'repeat_sample_enabled', 'source_booking_id',
             'istem_fbr_number', 'istem_fbr_status', 'istem_fbr_status_display', 'istem_fbr_invalid_reason', 'istem_fbr_executed_at',
             'istem_portal_url', 'istem_fbr_status_url', 'require_istem_fbr',
-            'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline',
+            'oic_contacts', 'sample_summary', 'lab_questions_open', 'results_deadline', 'results_overdue',
             'fabrication_rejected_at', 'fabrication_replace_deadline',
         ]
         read_only_fields = [

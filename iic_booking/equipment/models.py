@@ -707,6 +707,24 @@ class Equipment(models.Model):
             '("Results expected by <date>"). Off by default: users see the generic wording only.'
         ),
     )
+    results_overdue_after_hours = models.PositiveSmallIntegerField(
+        default=24,
+        validators=[MinValueValidator(1), MaxValueValidator(720)],
+        verbose_name=_('Results overdue after (hours)'),
+        help_text=_(
+            'Hours after the later of the booking end and (sample received + booked time) before an open '
+            'booking counts as Results overdue: the overdue counter, the Results overdue list and the daily '
+            '9:00 AM reminder start only then.'
+        ),
+    )
+    show_results_countdown_to_users = models.BooleanField(
+        default=False,
+        verbose_name=_('Show results countdown to users'),
+        help_text=_(
+            'When on, the booking details tell the user "Results expected by <date time>" and, once that time '
+            'has passed, "Results overdue by <hours>".'
+        ),
+    )
     show_lifecycle_countdowns = models.BooleanField(
         default=True,
         verbose_name=_('Show sample lifecycle countdowns'),

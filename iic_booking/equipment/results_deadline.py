@@ -12,9 +12,10 @@ receipt, whichever is later".
   the anchor day. Hours are clock hours after the anchor.
 * An Admin / Officer In-Charge "Extend results deadline" on a booking (``operator_absent_hold_until``)
   moves that booking's deadline to the chosen time when it is later.
-* Results overdue = still Pending / Booked / Processing after the deadline, the lab has the sample
-  (see above), and the sample is not waiting for the user (held at office or rejected). Lab Operators
-  and the OIC see these bookings.
+* Deadline passed (``is_results_overdue``) = still Pending / Booked / Processing after the deadline, the lab
+  has the sample (see above), and the sample is not waiting for the user (held at office or rejected).
+  The Results overdue list, filter, counters and reminders follow the separate per-equipment
+  "Results overdue after (hours)" rule in ``results_overdue`` (``overdue_bookings`` delegates to it).
 * Safeguard (replaces the fixed-hour Auto Operator Unavailable / Auto Operator Absent Disruption timers):
   when ``ResultsDeadlinePolicy.automation_enabled`` is on, bookings whose last slot ends at or after
   ``automation_since`` are acted on at their results deadline; earlier bookings keep the old timers.
@@ -385,37 +386,10 @@ def due_display(deadline: BookingDeadline) -> str:
 
 
 def overdue_bookings(queryset, now=None) -> list[tuple]:
-    """[(booking, BookingDeadline)] for bookings in ``queryset`` whose results are overdue, oldest deadline first."""
-    from django.db.models import Max, OuterRef, Subquery
+    """[(booking, ResultsDue)] whose results are overdue under the "Results overdue after (hours)" rule."""
+    from .results_overdue import overdue_bookings as _overdue_bookings
 
-    from .models import BookingSampleTrace
-
-    now = now or timezone.now()
-    candidates = (
-        annotate_sample_receipt(queryset.filter(status__in=_open_statuses()))
-        .annotate(
-            last_slot_end=Max("daily_slots__end_datetime"),
-            _latest_stage=Subquery(
-                BookingSampleTrace.objects.filter(booking_id=OuterRef("pk"))
-                .order_by("-created_at", "-id")
-                .values("status")[:1]
-            ),
-        )
-        .filter(last_slot_end__isnull=False, last_slot_end__lt=now, equipment__results_deadline_value__gt=0)
-        .filter(sample_received_q())
-        .select_related("equipment", "user")
-        .order_by()
-    )
-    calendar = WorkingCalendar()
-    rows = []
-    for booking in candidates:
-        if booking._latest_stage is None:
-            booking._latest_stage = ""
-        deadline = booking_results_deadline(booking, calendar)
-        if is_results_overdue(booking, deadline, now):
-            rows.append((booking, deadline))
-    rows.sort(key=lambda r: (r[1].due_at, r[0].booking_id))
-    return rows
+    return _overdue_bookings(queryset, now)
 
 
 def overdue_booking_ids(queryset, now=None) -> list[int]:
@@ -519,11 +493,15 @@ def public_equipment_deadline(equipment) -> Optional[dict]:
     return {"value": value, "unit": unit, "label": deadline_label(value, unit)}
 
 
-def serialize_overdue_booking(booking, deadline: BookingDeadline, now=None) -> dict:
+def serialize_overdue_booking(booking, due, now=None, calendar=None) -> dict:
+    """``due`` is a ``results_overdue.ResultsDue``; the equipment's results deadline (if any) is added for reference."""
     from iic_booking.communication.in_app import person_label
     from iic_booking.communication.utils import booking_display_id_for_email
 
+    from .results_overdue import due_display as overdue_due_display
+
     equipment = booking.equipment
+    deadline = booking_results_deadline(booking, calendar)
     return {
         "booking_id": booking.booking_id,
         "booking_ref": booking_display_id_for_email(booking) or str(booking.booking_id),
@@ -532,15 +510,17 @@ def serialize_overdue_booking(booking, deadline: BookingDeadline, now=None) -> d
         "equipment_code": equipment.code,
         "user_name": person_label(booking.user),
         "status": booking.status,
-        "slot_ended_at": deadline.slot_end.isoformat(),
-        "anchor_at": deadline.anchor.isoformat(),
-        "sample_received_at": deadline.received_at.isoformat() if deadline.received_at else None,
-        "receipt_source": deadline.receipt_source,
-        "due_at": deadline.due_at.isoformat(),
-        "due_display": due_display(deadline),
-        "deadline_label": deadline.label,
-        "extended": deadline.extended,
-        "overdue_by": overdue_label(deadline.due_at, now),
+        "slot_ended_at": due.slot_end.isoformat(),
+        "anchor_at": due.anchor.isoformat(),
+        "sample_received_at": due.received_at.isoformat() if due.received_at else None,
+        "receipt_source": due.receipt_source,
+        "due_at": due.due_at.isoformat(),
+        "due_display": overdue_due_display(due.due_at),
+        "overdue_after_hours": due.hours,
+        "deadline_label": due.label,
+        "extended": due.extended,
+        "overdue_by": overdue_label(due.due_at, now),
+        "results_deadline_display": due_display(deadline) if deadline else "",
         "link": f"/booking-management?expand={booking.booking_id}",
     }
 
@@ -574,7 +554,8 @@ def results_overdue_for_user(user, now=None) -> list[tuple]:
 @permission_classes([IsAuthenticated])
 def results_overdue_view(request):
     now = timezone.now()
-    rows = [serialize_overdue_booking(b, d, now) for b, d in results_overdue_for_user(request.user, now)]
+    calendar = WorkingCalendar()
+    rows = [serialize_overdue_booking(b, d, now, calendar) for b, d in results_overdue_for_user(request.user, now)]
     return Response({"count": len(rows), "bookings": rows}, status=status.HTTP_200_OK)
 
 

@@ -573,15 +573,24 @@ def _admin_items(c: _Collector) -> None:
 
 
 def _completion_items(c: _Collector) -> None:
-    from .completion_reminders import DASHBOARD_PATH, bookings_awaiting_completion_for_user, pending_action_detail
+    from .completion_reminders import (
+        DASHBOARD_PATH,
+        bookings_awaiting_completion_for_user,
+        overdue_awaiting_completion_for_user,
+        pending_action_detail,
+    )
 
+    overdue_ids = [b.booking_id for b, _due in overdue_awaiting_completion_for_user(c.user)]
+    if not overdue_ids:
+        return
     c.add(
         "bookings_awaiting_completion",
         "Bookings awaiting completion",
-        bookings_awaiting_completion_for_user(c.user),
+        bookings_awaiting_completion_for_user(c.user).filter(booking_id__in=overdue_ids),
         DASHBOARD_PATH,
-        "The booking time of these bookings is over and the lab has received the sample, but they are not "
-        "marked as completed yet. Complete each booking (or take the appropriate action).",
+        "The results of these bookings are overdue (the lab has the sample and the results time set for the "
+        "equipment has passed), but they are not marked as completed yet. Complete each booking (or take the "
+        "appropriate action).",
         pending_action_detail,
         max_details=MAX_COMPLETION_DETAILS,
     )
