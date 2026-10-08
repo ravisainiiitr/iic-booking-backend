@@ -145,6 +145,16 @@ def test_pdf_many_rows_repeat_pages_and_landscape():
     assert b"/MediaBox [ 0 0 841.8898 595.2756 ]" in raw
 
 
+def test_pdf_long_titled_table_starts_on_first_page():
+    from pypdf import PdfReader
+
+    columns = [spec.Column("name", "Name"), spec.Column("count", "Count", spec.INTEGER)]
+    rows = [{"name": f"Row {i}", "count": i} for i in range(80)]
+    document = spec.Document(title="Log", slug="log", tables=[spec.Table("log", "All entries", columns, rows)])
+    first_page = PdfReader(io.BytesIO(render_pdf(document, generated_at="x"))).pages[0].extract_text()
+    assert "Row 0" in first_page
+
+
 def test_export_response_caps_and_headers():
     response = export_response(_doc(), "csv")
     assert response["X-Export-Row-Count"] == "3"

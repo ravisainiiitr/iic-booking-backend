@@ -259,7 +259,7 @@ def waitlist(request):
     columns = [
         SNO,
         C("equipment", "Equipment", width=1.6, value=_equipment),
-        C("position", "Position", spec.INTEGER, 0.6),
+        C("position", "Position", spec.INTEGER, 0.75),
         C("waitlist_code", "Waitlist ID", width=1.0),
         C("user_name", "User", width=1.3),
         C("user_email", "Email", width=1.6),

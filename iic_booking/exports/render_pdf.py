@@ -79,7 +79,7 @@ class _Styles:
         self.filter = ParagraphStyle("x_filter", fontName=fonts.regular, fontSize=8, leading=10, textColor=ink,
                                      alignment=TA_LEFT)
         self.section = ParagraphStyle("x_section", fontName=fonts.bold, fontSize=11.5, leading=14, textColor=brand,
-                                      spaceBefore=10, spaceAfter=4, keepWithNext=1)
+                                      spaceBefore=10, spaceAfter=4)
         self.note = ParagraphStyle("x_note", fontName=fonts.regular, fontSize=7.5, leading=9.5, textColor=muted,
                                    spaceBefore=3)
         self.empty = ParagraphStyle("x_empty", fontName=fonts.regular, fontSize=8.5, leading=11, textColor=muted,
@@ -207,13 +207,17 @@ def _kpi_cards(document: spec.Document, styles: _Styles, fonts: Fonts, width: fl
 
 def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, width: float, body_size: float) -> list:
     from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import CondPageBreak
     from reportlab.platypus import Paragraph
     from reportlab.platypus import Table
     from reportlab.platypus import TableStyle
 
     story = []
-    if len(document.tables) > 1 or table.title != document.title:
+    if len(document.tables) > 1 or table.title.casefold() != document.title.casefold():
         count = len(table.rows)
+        # keepWithNext would hold the heading to the whole table and push a long table to the next page
+        story.append(CondPageBreak(3 * cm))
         story.append(Paragraph(
             f'{markup(table.title, fonts)} <font size="8" color="#{MUTED_HEX}">'
             f'· {count:,} row{"s" if count != 1 else ""}</font>',
