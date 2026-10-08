@@ -2,9 +2,19 @@
 
 Frontend must not submit is_pi / spoofed amounts; booking and estimate always
 resolve the ChargeProfile pricing_profile via resolve_pricing_profile_for_user.
+
+Precedence for a booking user on an equipment:
+1. PI rates, when the user or the owner of the wallet they book against (an approved
+   wallet join for students) is an active Equipment PI of that equipment and the
+   equipment has an active PI ChargeProfile. The PI row for the user's own type wins,
+   else the PI's type ("PI IIT Faculty"), else faculty.
+2. Discounted (waiver) for users flagged use_discounted_charge_profile.
+3. Standard rates for the user's own type.
 """
 
 from __future__ import annotations
+
+from django.core.cache import cache
 
 from .models import ChargeProfile, ChargeProfilePricingProfile, EquipmentPI, UserDiscountedChargeEquipment
 from .request_memo import memo_get_or_compute
@@ -127,6 +137,67 @@ def resolve_pricing_profile_for_user(user, equipment) -> str:
     ):
         return ChargeProfilePricingProfile.PI
     return standard_or_discounted_pricing_profile(user, equipment)
+
+
+def category_estimate_pricing_profile(viewer, equipment, user_type) -> str:
+    """
+    Pricing profile for a "Calculate charges" estimate of the category ``user_type``.
+
+    A signed-in user estimating their own category gets the profile their booking will use (PI rates
+    for students on an Equipment PI's wallet, waiver), so the estimate matches the charge. Any other
+    category is estimated at the standard rate.
+    """
+    if viewer is None or not getattr(viewer, "is_authenticated", False):
+        return ChargeProfilePricingProfile.STANDARD
+    own = str(getattr(viewer, "user_type", "") or "").strip().casefold()
+    if own and own == str(user_type or "").strip().casefold():
+        return resolve_pricing_profile_for_user(viewer, equipment)
+    return ChargeProfilePricingProfile.STANDARD
+
+
+PI_FACULTY_CACHE_KEY = "pi_pricing:pi_faculty_by_equipment:v1"
+# Display-only readers (catalog prices) use this map; charges always read the database.
+PI_FACULTY_CACHE_SECONDS = 60
+
+
+def invalidate_pi_faculty_cache() -> None:
+    cache.delete(PI_FACULTY_CACHE_KEY)
+
+
+def pi_faculty_by_equipment() -> dict:
+    """{equipment_id: {faculty_id, ...}} of active Equipment PIs on equipment with active PI rates."""
+    cached = cache.get(PI_FACULTY_CACHE_KEY)
+    if cached is None:
+        with_rates = ChargeProfile.objects.filter(
+            pricing_profile=ChargeProfilePricingProfile.PI, is_active=True
+        ).values("equipment_id")
+        cached = {}
+        for equipment_id, faculty_id in EquipmentPI.objects.filter(
+            is_active=True, equipment_id__in=with_rates
+        ).values_list("equipment_id", "faculty_id"):
+            cached.setdefault(equipment_id, set()).add(faculty_id)
+        cache.set(PI_FACULTY_CACHE_KEY, cached, PI_FACULTY_CACHE_SECONDS)
+    return cached
+
+
+def pi_rate_user_types_by_equipment(user, equipment_ids) -> dict:
+    """
+    {equipment_id: user type of the Equipment PI whose PI rates apply} for the equipment in
+    ``equipment_ids`` where ``resolve_pricing_profile_for_user`` gives PI for this user.
+    """
+    if not user or getattr(user, "pk", None) is None or not equipment_ids:
+        return {}
+    pi_map = pi_faculty_by_equipment()
+    relevant = {eq_id: pi_map[eq_id] for eq_id in equipment_ids if eq_id in pi_map}
+    out = {eq_id: user.user_type for eq_id, faculty_ids in relevant.items() if user.pk in faculty_ids}
+    remaining = [eq_id for eq_id in relevant if eq_id not in out]
+    if remaining:
+        owner = wallet_owner_user(user)
+        if owner is not None and owner.pk != user.pk:
+            for eq_id in remaining:
+                if owner.pk in relevant[eq_id]:
+                    out[eq_id] = owner.user_type
+    return out
 
 
 def pi_rate_user_type(user, equipment):

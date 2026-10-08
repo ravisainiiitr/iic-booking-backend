@@ -11,3 +11,4 @@ class EquipmentConfig(AppConfig):
         import iic_booking.equipment.fabrication_material_support  # noqa: F401
         import iic_booking.equipment.remote_analysis_integration.signals  # noqa: F401
         import iic_booking.equipment.peak_window_signals  # noqa: F401
+        import iic_booking.equipment.pi_pricing_signals  # noqa: F401

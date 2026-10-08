@@ -3055,8 +3055,10 @@ def equipment_calculate(request, pk):
                 {"error": f"No active charge profile found for equipment {pk} and user type {user_type_param}."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        from .pi_pricing import category_estimate_pricing_profile
+
         user_type = user_type_param
-        pricing_profile = ChargeProfilePricingProfile.STANDARD
+        pricing_profile = category_estimate_pricing_profile(booking_user, equipment, user_type_param)
 
     actor_type = str(request.user.user_type or "").lower() if user_is_authenticated else ""
     if user_id_param and user_is_authenticated and actor_type in (
