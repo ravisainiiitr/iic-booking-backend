@@ -1,6 +1,6 @@
-# Read-only (IDs, codes, counts and amounts only; no names or emails): PI charge profiles on MALDI
-# equipment, the Equipment PIs assigned to it, the students linked to those PIs (approved wallet join,
-# supervisor link, registration approval) and how recent MALDI bookings were charged versus the PI rate.
+# Read-only (IDs, codes, counts and amounts only; no names or emails): PI charge profiles on MALDI,
+# live charge estimates (GET /calculate/, no writes) for students on an Equipment PI's wallet, and,
+# across all equipment with PI rates, bookings by such students that were not charged at the PI rate.
 name: Probe PI Student Charges
 
 on:
@@ -29,122 +29,74 @@ jobs:
           django.setup()
           from collections import Counter
           from decimal import Decimal
-          from django.db.models import Q
-          from iic_booking.equipment.models import Booking, ChargeProfile, Equipment, EquipmentPI
+          from rest_framework.test import APIRequestFactory, force_authenticate
+          from iic_booking.equipment.models import Booking, ChargeProfile, DynamicInputField, Equipment, EquipmentPI
           from iic_booking.equipment.calculators import ChargeCalculationEngine
           from iic_booking.equipment import pi_pricing as pp
-          from iic_booking.users.models import User
-          from iic_booking.users.models.wallet import Wallet, WalletJoinRequest
+          from iic_booking.equipment.api_views import equipment_calculate
+          from iic_booking.users.models.wallet import WalletJoinRequest
 
-          try:
-              from iic_booking.users.models.registration_approval import RegistrationApproval
-          except Exception:
-              RegistrationApproval = None
+          eq = Equipment.objects.get(code="MALDI")
+          print("== MALDI formulas ==")
+          for cp in ChargeProfile.objects.filter(equipment=eq, is_active=True, user_type__in=["student", "faculty"]):
+              print(f"  CP {cp.pk} {cp.user_type}/{cp.pricing_profile} formula={(cp.charge_formula or '')[:300]!r} "
+                    f"time_formula={(cp.time_formula or '')[:120]!r}")
+          print("== MALDI input fields ==")
+          fields = list(DynamicInputField.objects.filter(equipment=eq).values_list("field_key", "user_type", "field_type"))
+          for f in fields:
+              print(f"  {f}")
+          keys = sorted({k for k, ut, _t in fields if (ut or "") in ("", "student")}) or sorted({k for k, _u, _t in fields})
 
-          print("has_get_active_charge_profile_pi_fallback=", "pi_rate_user_type" in dir(pp))
-          base = list(Equipment.objects.filter(name__icontains="MALDI").order_by("pk"))
-          ids = {e.pk for e in base}
-          for e in base:
-              if e.parent_equipment_id:
-                  ids.add(e.parent_equipment_id)
-          ids |= set(Equipment.objects.filter(parent_equipment_id__in=ids).values_list("pk", flat=True))
-          eqs = list(Equipment.objects.filter(pk__in=ids).order_by("pk"))
-          pi_ids = set()
-          for e in eqs:
-              print(f"== EQ id={e.pk} code={e.code} status={e.status} parent={e.parent_equipment_id} "
-                    f"multi_mode={e.enable_multi_mode} group={e.equipment_group_id} profile_type={e.profile_type} "
-                    f"name_has_maldi={'maldi' in (e.name or '').lower()}")
-              for cp in ChargeProfile.objects.filter(equipment=e).order_by("pricing_profile", "user_type", "pk"):
-                  print(f"   CP id={cp.pk} ut={cp.user_type} pp={cp.pricing_profile} active={cp.is_active} "
-                        f"ptype={cp.profile_type} p1={cp.primary_unit_charge} p2={cp.secondary_unit_charge} "
-                        f"formula={'y' if (cp.charge_formula or '').strip() else 'n'}")
-              for ep in EquipmentPI.objects.filter(equipment=e).select_related("faculty").order_by("pk"):
-                  pi_ids.add(ep.faculty_id)
-                  print(f"   PI row={ep.pk} faculty_id={ep.faculty_id} active={ep.is_active} "
-                        f"ut={ep.faculty.user_type} has_wallet={Wallet.objects.filter(user_id=ep.faculty_id).exists()} "
-                        f"created={ep.created_at.date()}")
+          rf = APIRequestFactory()
+          def calc(user, extra):
+              params = {k: "1" for k in keys}
+              params.update(extra)
+              req = rf.get(f"/api/equipments/{eq.pk}/calculate/", params, HTTP_HOST="equip.iitr.ac.in")
+              force_authenticate(req, user=user)
+              r = equipment_calculate(req, pk=eq.pk)
+              d = getattr(r, "data", {}) or {}
+              return r.status_code, d.get("applied_profile"), d.get("applied_charge"), d.get("normal_charge"), (d.get("error") or "")[:80]
 
-          print("== Students linked to MALDI PIs ==")
-          linked = {}
-          for fid in sorted(pi_ids):
-              jr = WalletJoinRequest.objects.filter(faculty_id=fid)
-              st = Counter(jr.values_list("status", flat=True))
-              appr = list(jr.filter(status="APPROVED").select_related("student", "wallet"))
-              wrong_wallet = sum(1 for r in appr if r.wallet_id and r.wallet.user_id != fid)
-              no_wallet = sum(1 for r in appr if not r.wallet_id)
-              uts = Counter(r.student.user_type for r in appr)
-              owner_ok = 0
-              multi = 0
-              for r in appr:
-                  s = r.student
-                  linked.setdefault(s.pk, set()).add(("wallet", fid))
-                  if WalletJoinRequest.objects.filter(student=s, status="APPROVED").count() > 1:
-                      multi += 1
-                  o = pp.wallet_owner_user(s)
-                  if o is not None and o.pk == fid:
-                      owner_ok += 1
-              sup = list(User.objects.filter(supervisor_id=fid).values_list("pk", "user_type"))
-              for uid, _ut in sup:
-                  linked.setdefault(uid, set()).add(("supervisor", fid))
-              reg = []
-              if RegistrationApproval is not None:
-                  reg = list(RegistrationApproval.objects.filter(faculty_id=fid).values_list("user_id", "status"))
-                  for uid, _s in reg:
-                      linked.setdefault(uid, set()).add(("registration", fid))
-              print(f"  PI faculty_id={fid} join_requests={dict(st)} approved_student_types={dict(uts)} "
-                    f"approved_wallet_owner_resolves_to_pi={owner_ok}/{len(appr)} multi_approved={multi} "
-                    f"wallet_not_pi={wrong_wallet} no_wallet={no_wallet} supervised={dict(Counter(u for _, u in sup))} "
-                    f"registration_approvals={dict(Counter(s for _, s in reg))}")
-          print(f"  distinct_linked_users={len(linked)}")
+          print("== Live estimates for students on MALDI PI wallets (inputs=1) ==")
+          pis = list(EquipmentPI.objects.filter(equipment=eq, is_active=True).values_list("faculty_id", flat=True))
+          for jr in WalletJoinRequest.objects.filter(faculty_id__in=pis, status="APPROVED").select_related("student"):
+              s = jr.student
+              print(f"  student uid={s.pk} ut={s.user_type} booking_flow={calc(s, {})} "
+                    f"estimate_own_category={calc(s, {'user_type': s.user_type})}")
 
-          print("== MALDI bookings by linked users / students ==")
-          qs = (Booking.objects.filter(equipment_id__in=ids)
-                .select_related("charge_profile", "user").order_by("booking_id"))
-          print(f"  total_bookings_on_maldi={qs.count()} by_status={dict(Counter(qs.values_list('status', flat=True)))}")
-          print(f"  by_user_type_snapshot={dict(Counter(qs.values_list('user_type_snapshot', flat=True)))}")
-          print(f"  by_applied_pricing={dict(Counter(qs.values_list('charge_profile__pricing_profile', flat=True)))}")
-          tot_diff = Decimal("0")
-          n_diff = 0
-          unlinked = Counter()
-          for b in qs:
+          print("== MALDI bookings ==")
+          for b in Booking.objects.filter(equipment=eq).select_related("user", "created_by", "charge_profile"):
               u = b.user
-              links = linked.get(u.pk, set())
-              is_student_like = (b.user_type_snapshot or u.user_type) in ("student", "other", "individual_student")
-              if not links:
-                  if is_student_like:
-                      unlinked[(b.user_type_snapshot, b.charge_profile.pricing_profile)] += 1
-                  continue
-              owner = pp.wallet_owner_user(u)
-              owner_pi = bool(owner and owner.pk in pi_ids)
-              resolved_now = pp.resolve_pricing_profile_for_user(u, b.equipment)
-              try:
-                  pi_cp = pp.get_active_charge_profile(b.equipment, b.user_type_snapshot or u.user_type, "pi", u)
-              except ChargeProfile.DoesNotExist:
-                  pi_cp = None
-              cp = b.charge_profile
-              iv = dict(b.input_values or {})
-              mins = int(b.total_time_minutes or 0)
-              try:
-                  booked_calc, _ = ChargeCalculationEngine.calculate_charge(cp, iv, mins, b.selected_parameters or None)
-              except Exception as ex:
-                  booked_calc = f"err:{type(ex).__name__}"
-              pi_calc = None
-              if pi_cp is not None:
+              o = pp.wallet_owner_user(u)
+              any_jr = Counter(WalletJoinRequest.objects.filter(student=u, faculty_id__in=pis).values_list("status", flat=True))
+              print(f"  {b.virtual_booking_id} st={b.status} created={b.created_at.date()} ut={b.user_type_snapshot} "
+                    f"cp={b.charge_profile_id}/{b.charge_profile.pricing_profile} charged={b.total_charge} "
+                    f"on_behalf={bool(b.created_by_id and b.created_by_id != u.pk)} creator_ut={getattr(b.created_by, 'user_type', None)} "
+                    f"wallet_owner_ut={getattr(o, 'user_type', None)} owner_is_maldi_pi={bool(o and o.pk in pis)} "
+                    f"join_requests_with_maldi_pi={dict(any_jr)} supervisor_is_pi={u.supervisor_id in pis}")
+
+          print("== All equipment with PI rates: student bookings on a PI wallet not charged at PI rate ==")
+          pi_eq = set(ChargeProfile.objects.filter(pricing_profile="pi", is_active=True).values_list("equipment_id", flat=True))
+          rows = EquipmentPI.objects.filter(equipment_id__in=pi_eq, is_active=True)
+          print(f"  equipment_with_pi_rates={len(pi_eq)} with_active_pi={rows.values('equipment_id').distinct().count()} active_pi_rows={rows.count()}")
+          n = 0
+          tot = Decimal("0")
+          for ep in rows.select_related("equipment"):
+              students = list(WalletJoinRequest.objects.filter(faculty_id=ep.faculty_id, status="APPROVED").values_list("student_id", flat=True))
+              qs = (Booking.objects.filter(equipment_id=ep.equipment_id, user_id__in=students)
+                    .exclude(charge_profile__pricing_profile="pi").select_related("charge_profile", "user"))
+              for b in qs:
                   try:
-                      pi_calc, _ = ChargeCalculationEngine.calculate_charge(pi_cp, iv, mins, b.selected_parameters or None)
+                      pcp = pp.get_active_charge_profile(ep.equipment, b.user_type_snapshot or b.user.user_type, "pi", b.user)
+                      pc, _ = ChargeCalculationEngine.calculate_charge(pcp, dict(b.input_values or {}), int(b.total_time_minutes or 0), b.selected_parameters or None)
                   except Exception as ex:
-                      pi_calc = f"err:{type(ex).__name__}"
-              link_s = ",".join(sorted(f"{k}:{f}" for k, f in links)) or "-"
-              print(f"  {b.virtual_booking_id or b.booking_id} eq={b.equipment_id} st={b.status} "
-                    f"created={b.created_at.date() if getattr(b, 'created_at', None) else '?'} ut={b.user_type_snapshot} "
-                    f"uid={u.pk} links={link_s} wallet_owner={getattr(owner, 'pk', None)} owner_is_pi={owner_pi} "
-                    f"applied_cp={cp.pk}/{cp.user_type}/{cp.pricing_profile} charged={b.total_charge} "
-                    f"recalc_booked={booked_calc} pi_cp={getattr(pi_cp, 'pk', None)} pi_calc={pi_calc} resolved_now={resolved_now}")
-              if links and cp.pricing_profile != "pi" and isinstance(pi_calc, Decimal):
-                  n_diff += 1
-                  tot_diff += Decimal(b.total_charge) - pi_calc
-          print(f"  linked_bookings_not_on_pi={n_diff} total_charged_minus_pi_calc={tot_diff}")
-          print(f"  unlinked_student_like_bookings={dict(unlinked)}")
+                      pcp, pc = None, f"err:{type(ex).__name__}"
+                  n += 1
+                  if isinstance(pc, Decimal):
+                      tot += Decimal(b.total_charge) - pc
+                  print(f"  {b.virtual_booking_id} eq={ep.equipment.code} st={b.status} created={b.created_at.date()} "
+                        f"pi_assigned={ep.created_at.date()} cp={b.charge_profile.pricing_profile} charged={b.total_charge} pi_calc={pc}")
+          print(f"  affected={n} total_charged_minus_pi={tot}")
           PY
               exit 0
             fi
