@@ -3140,13 +3140,51 @@ def remember_booking_slot_ranges(slot_qs) -> None:
         logger.exception("Could not remember booking slot ranges before releasing slots")
 
 
+def _booked_external_reference_expression():
+    """``external_reference`` to store when slots are taken by a booking.
+
+    A slot booked out of Reserved (External) keeps its I-STEM FBR reference, or '' when it had none,
+    so a non-NULL reference on a booked slot means "Reserved (External) before this booking".
+    Slots handed from one booking to another keep the value; any other slot is cleared.
+    """
+    from django.db.models.functions import Coalesce
+
+    return models.Case(
+        models.When(
+            status=SlotStatus.RESERVED_EXTERNAL,
+            then=Coalesce(models.F("external_reference"), models.Value("")),
+        ),
+        models.When(status=SlotStatus.BOOKED, then=models.F("external_reference")),
+        default=models.Value(None),
+        output_field=models.CharField(),
+    )
+
+
+def _released_status_expression():
+    """Status for slots released back to Available: booked Reserved (External) slots go back to Reserved."""
+    return models.Case(
+        models.When(
+            booking_id__isnull=False,
+            external_reference__isnull=False,
+            then=models.Value(SlotStatus.RESERVED_EXTERNAL),
+        ),
+        default=models.Value(SlotStatus.AVAILABLE),
+        output_field=models.CharField(),
+    )
+
+
 class DailySlotQuerySet(models.QuerySet):
     def update(self, **kwargs):
-        releases = ("booking" in kwargs and kwargs["booking"] is None) or (
-            "booking_id" in kwargs and kwargs["booking_id"] is None
-        )
+        booking_given = "booking" in kwargs or "booking_id" in kwargs
+        booking_value = kwargs["booking"] if "booking" in kwargs else kwargs.get("booking_id")
+        releases = booking_given and booking_value is None
+        staff_sets_reference = "external_reference" in kwargs
         if releases:
             remember_booking_slot_ranges(self)
+            if kwargs.get("status") == SlotStatus.AVAILABLE and not staff_sets_reference:
+                kwargs["status"] = _released_status_expression()
+        elif booking_given and kwargs.get("status") == SlotStatus.BOOKED and not staff_sets_reference:
+            kwargs["external_reference"] = _booked_external_reference_expression()
         return super().update(**kwargs)
 
 

@@ -488,6 +488,16 @@ def notify_waitlist_slots_available(
     couldn't be booked because no slots were available for their user type remain.
     """
     preferred_slot_ids = [int(x) for x in (preferred_slot_ids or []) if x is not None]
+    if preferred_slot_ids:
+        reserved_ids = set(
+            DailySlot.objects.filter(
+                id__in=preferred_slot_ids, status=SlotStatus.RESERVED_EXTERNAL
+            ).values_list("id", flat=True)
+        )
+        if reserved_ids:
+            preferred_slot_ids = [sid for sid in preferred_slot_ids if sid not in reserved_ids]
+            if not preferred_slot_ids:
+                return 0
     entries = list(
         WaitlistEntry.objects.filter(equipment=equipment, status="ACTIVE")
         .select_related("user", "equipment")
