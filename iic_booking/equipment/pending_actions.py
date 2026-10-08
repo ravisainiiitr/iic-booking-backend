@@ -471,6 +471,7 @@ def _staff_items(c: _Collector) -> None:
             "Users have asked for a complimentary repeat sample. Approve or reject each request.",
         )
     if user_type == UserType.OPERATOR:
+        c.safely("lab_messages", lambda: _lab_message_items(c))
         return
     from .urgent_oic_alerts import urgent_request_path
 

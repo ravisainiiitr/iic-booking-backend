@@ -315,6 +315,16 @@ def test_lab_message_item_groups_unread_messages_per_booking_with_message_links(
     assert "lab_messages_from_users" not in _items(s["temp_oic"])
 
 
+def test_lab_operator_sees_user_messages_but_not_urgent_requests():
+    s = _setup()
+    operator = UserFactory(user_type=UserType.OPERATOR, admin_approved=True)
+    _ready_request(s)
+    _lab_message_notice(operator, _booking(s), "Please call me")
+    items = _items(operator)
+    assert items["lab_messages_from_users"]["count"] == 1
+    assert "urgent_requests" not in items
+
+
 def test_staff_items_use_a_fixed_number_of_queries():
     s = _setup()
 
