@@ -41,7 +41,9 @@ SKIP_REASONS = {
     SlotStatus.BLOCKED: "Already blocked (Other Reasons)",
     SlotStatus.UNDER_MAINTENANCE: "Under maintenance",
     SlotStatus.OPERATOR_ABSENT: "Operator absent",
-    SlotStatus.NOT_AVAILABLE: "Not available (closed day)",
+    SlotStatus.NOT_AVAILABLE: "Not available",
+    SlotStatus.SCHEDULED_MAINTENANCE: "Scheduled maintenance",
+    SlotStatus.RESERVED_EXTERNAL: "Reserved (External)",
     SlotStatus.BOOKING_NOT_UTILIZED: "Booking not utilized",
     SlotStatus.BOOKED: "Booked",
 }

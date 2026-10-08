@@ -3035,6 +3035,9 @@ class SlotStatus(models.TextChoices):
     UNDER_MAINTENANCE = 'UNDER_MAINTENANCE', _('Under Maintenance')
     OPERATOR_ABSENT = 'OPERATOR_ABSENT', _('Operator Absent')
     BOOKING_NOT_UTILIZED = 'BOOKING_NOT_UTILIZED', _('Booking Not Utilized')
+    # Stored values are limited to 20 characters (DailySlot.status max_length).
+    SCHEDULED_MAINTENANCE = 'SCHEDULED_MAINT', _('Scheduled Maintenance')
+    RESERVED_EXTERNAL = 'RESERVED_EXTERNAL', _('Reserved (External)')
 
 
 class SlotMaster(models.Model):
@@ -3186,6 +3189,13 @@ class DailySlot(models.Model):
             'Deprecated. External booking is limited by Equipment.external_slot_quota_percent '
             'and weekly snapshots; this flag is no longer enforced and should remain False.'
         ),
+    )
+    external_reference = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        verbose_name=_('I-STEM FBR reference'),
+        help_text=_('Optional I-STEM FBR reference for slots in Reserved (External) status. Staff only.'),
     )
     home_department_only = models.BooleanField(
         default=False,
@@ -7551,4 +7561,14 @@ class ChargeCopyBatch(models.Model):
 from iic_booking.equipment.slot_block_rule_models import (  # noqa: E402
     RecurringSlotBlockRule,
     RecurringSlotBlockRuleSlot,
+)
+from iic_booking.equipment.disruption_models import (  # noqa: E402
+    DisruptionEvent,
+    DisruptionEventEdit,
+    DisruptionEventSlot,
+    DisruptionScope,
+    DisruptionServiceReport,
+    DisruptionSource,
+    DisruptionType,
+    SlotStatusChangeLog,
 )

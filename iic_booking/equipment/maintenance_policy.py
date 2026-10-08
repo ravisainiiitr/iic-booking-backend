@@ -689,10 +689,19 @@ def apply_when_equipment_becomes_operational(equipment) -> int:
     return n
 
 
+def _equipment_disruption_input(equipment):
+    """Who / why for the disruption log: API paths set ``equipment._disruption_input`` before saving."""
+    from .disruption_service import DisruptionInput
+
+    data = getattr(equipment, "_disruption_input", None)
+    return data if isinstance(data, DisruptionInput) else DisruptionInput(source="OTHER")
+
+
 def on_equipment_status_changed(equipment, old_status: str | None, new_status: str | None) -> None:
     if old_status == new_status:
         return
     if is_equipment_under_maintenance_status(new_status) and not is_equipment_under_maintenance_status(old_status):
+        n = 0
         try:
             n = apply_when_equipment_marked_under_maintenance(equipment)
             logger.info(
@@ -702,6 +711,11 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
             )
         except Exception:
             logger.exception("apply_when_equipment_marked_under_maintenance failed for equipment %s", equipment.pk)
+        from .disruption_service import record_equipment_under_maintenance
+
+        equipment._disruption_result = record_equipment_under_maintenance(
+            equipment, _equipment_disruption_input(equipment), bookings_affected=n
+        )
     elif is_equipment_operational_status(new_status) and is_equipment_under_maintenance_status(old_status):
         try:
             n = apply_when_equipment_becomes_operational(equipment)
@@ -712,6 +726,9 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
             )
         except Exception:
             logger.exception("apply_when_equipment_becomes_operational failed for equipment %s", equipment.pk)
+        from .disruption_service import record_equipment_operational
+
+        equipment._disruption_result = record_equipment_operational(equipment, _equipment_disruption_input(equipment))
 
 
 def auto_cancel_expired_maintenance_bookings() -> int:

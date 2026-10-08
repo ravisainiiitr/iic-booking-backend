@@ -259,6 +259,15 @@ def _is_admin_panel_user(user) -> bool:
     u_norm = str(ut).strip().lower()
     return any(str(c).strip().lower() == u_norm for c in codes)
 
+def _record_booking_details_disruption(request, booking, disruption_type: str, fallback_reason="") -> dict:
+    from .disruption_service import DisruptionInput, clean_text, record_booking_disruption
+
+    data = DisruptionInput.from_request_data(request.data, user=request.user, source="BOOKING_DETAILS")
+    if not data.reason:
+        data.reason = clean_text(fallback_reason)
+    return record_booking_disruption(booking, disruption_type, data).as_dict()
+
+
 def _actor_may_book_on_behalf(actor, equipment) -> str | None:
     """
     Allow booking/calculating for another user.
@@ -807,6 +816,8 @@ DEFAULT_CALENDAR_COLORS = {
         "OPERATOR_ABSENT": "#9ca3af",     # Default grey
         "BOOKING_NOT_UTILIZED": "#c4b5fd",  # Soft violet
         "RESERVED_FOR_EXTERNAL": "#94a3b8",
+        "RESERVED_EXTERNAL": "#f0abfc",   # Soft fuchsia (reserved for an I-STEM / external user)
+        "SCHEDULED_MAINT": "#fcd34d",     # Soft amber (planned maintenance)
         "HOME_DEPARTMENT_ONLY": "#c4b5fd",
         "NON_HOME_RESERVED": "#67e8f9",
         "NOT_AVAILABLE": "#e5e7eb",       # Light grey
@@ -837,6 +848,8 @@ def get_calendar_colors():
                 "OPERATOR_ABSENT",
                 "BOOKING_NOT_UTILIZED",
                 "RESERVED_FOR_EXTERNAL",
+                "RESERVED_EXTERNAL",
+                "SCHEDULED_MAINT",
                 "HOME_DEPARTMENT_ONLY",
                 "NON_HOME_RESERVED",
                 "NOT_AVAILABLE",
@@ -2794,6 +2807,12 @@ def equipment_detail(request, pk):
         for key in allowed:
             if key in request.data:
                 setattr(equipment, key, request.data[key])
+        if "status" in request.data:
+            from .disruption_service import DisruptionInput
+
+            equipment._disruption_input = DisruptionInput.from_request_data(
+                request.data, user=request.user, source="EQUIPMENT_STATUS"
+            )
         equipment.save()
 
         notice_side_effect = {}
@@ -2839,6 +2858,9 @@ def equipment_detail(request, pk):
         payload = dict(serializer.data)
         if notice_side_effect:
             payload["notice_board"] = notice_side_effect
+        disruption_result = getattr(equipment, "_disruption_result", None)
+        if disruption_result is not None:
+            payload["disruption_events"] = disruption_result.as_dict()
         return Response(payload, status=status.HTTP_200_OK)
 
     serializer = EquipmentDetailSerializer(equipment, context={'request': request})
@@ -3806,6 +3828,10 @@ def equipment_daily_slots(request, pk):
     if outside_window_slot_ids:
         for row in slots_payload:
             row["outside_visibility_window"] = row.get("id") in outside_window_slot_ids
+    if is_admin:
+        from .disruption_service import annotate_slot_payloads_for_staff
+
+        annotate_slot_payloads_for_staff(equipment, filtered_slots, slots_payload)
 
     # Min/max times for backward compatibility (from the slot_masters we already have)
     agg = (
@@ -12437,6 +12463,7 @@ def absent_booking(request, booking_id):
         apply_operator_disruption_pending_from_staff(booking, notes=absent_notes)
     except ValueError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    _record_booking_details_disruption(request, booking, "OPERATOR_ABSENT", absent_notes)
 
     booking.refresh_from_db()
     serializer = BookingSerializer(booking)
@@ -12643,6 +12670,7 @@ def booking_maintenance_disruption(request, booking_id):
         apply_maintenance_disruption_for_booking_manually(booking, notes=str(notes).strip())
     except ValueError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    _record_booking_details_disruption(request, booking, "UNDER_MAINTENANCE", notes)
 
     booking.refresh_from_db()
     ev_comment = "Booking flagged for under-maintenance disruption (Admin/OIC). User notified by email."
@@ -12717,6 +12745,7 @@ def booking_other_disruption(request, booking_id):
         apply_other_disruption_for_booking_manually(booking, reason=str(reason).strip())
     except ValueError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    _record_booking_details_disruption(request, booking, "OTHER", reason)
 
     booking.refresh_from_db()
     ev_comment = "Booking flagged as Analysis Not Possible. User notified by email."

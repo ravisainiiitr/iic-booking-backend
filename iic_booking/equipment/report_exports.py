@@ -115,6 +115,7 @@ def build_report_pdf(
         ["Slot hours (all status)", f"{float(summary.get('total_hours', 0) or 0):.2f}"],
         ["Utilized hours (BOOKED slots)", f"{float(summary.get('utilized_hours', 0) or 0):.2f}"],
         ["Downtime hours (maint. + op. absent)", f"{float(summary.get('downtime_hours', 0) or 0):.2f}"],
+        ["Disruption hours (downtime + other reasons)", f"{float(summary.get('disruption_hours', 0) or 0):.2f}"],
         ["Utilization factor (booked / all slot hours)", f"{float(summary.get('utilization_factor', 0) or 0) * 100:.2f}%"],
         [
             "Available hours (Mon–Fri, excl. holidays; slot time window)",
@@ -447,6 +448,9 @@ def build_report_excel(
     row += 1
     ws.cell(row=row, column=1, value="Downtime hours")
     ws.cell(row=row, column=2, value=float(summary.get("downtime_hours", 0) or 0))
+    row += 1
+    ws.cell(row=row, column=1, value="Disruption hours")
+    ws.cell(row=row, column=2, value=float(summary.get("disruption_hours", 0) or 0))
     row += 1
     ws.cell(row=row, column=1, value="Utilization factor (booked / all slot hours)")
     ws.cell(row=row, column=2, value=float(summary.get("utilization_factor", 0) or 0))

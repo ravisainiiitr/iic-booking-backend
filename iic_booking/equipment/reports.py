@@ -434,6 +434,7 @@ def _equipment_report_payload(
                 "total_hours": 0.0,
                 "utilized_hours": 0.0,
                 "downtime_hours": 0.0,
+                "disruption_hours": 0.0,
                 "utilization_factor": 0.0,
                 "revenue_total": 0.0,
                 "revenue_internal": 0.0,
@@ -477,6 +478,10 @@ def _equipment_report_payload(
             eq_slot_stats[rollup_eid] = {
                 "under_maintenance_slots": 0,
                 "under_maintenance_hours": 0.0,
+                "scheduled_maintenance_slots": 0,
+                "scheduled_maintenance_hours": 0.0,
+                "other_reasons_slots": 0,
+                "other_reasons_hours": 0.0,
                 "operator_absent_slots": 0,
                 "operator_absent_hours": 0.0,
                 "booking_not_utilized_slots": 0,
@@ -486,6 +491,20 @@ def _equipment_report_payload(
                 "booked_slots": 0,
                 "booked_hours": 0.0,
             }
+
+    # Other Reasons blocks count as a disruption only when staff recorded them as one (holiday, training,
+    # repeat-rule and legacy blocks share the BLOCKED status).
+    from .models import DisruptionEventSlot, DisruptionType
+
+    other_reason_slot_ids = set(
+        DisruptionEventSlot.objects.filter(
+            event__disruption_type=DisruptionType.OTHER,
+            released_at__isnull=True,
+            daily_slot__date__gte=start,
+            daily_slot__date__lte=end,
+            daily_slot__slot_master__equipment_id__in=eq_ids,
+        ).values_list("daily_slot_id", flat=True)
+    )
 
     for ds in slots_in_range.iterator(chunk_size=500):
         eid = mode_rollup.get(ds.slot_master.equipment_id, ds.slot_master.equipment_id)
@@ -503,6 +522,9 @@ def _equipment_report_payload(
         if st == SlotStatus.UNDER_MAINTENANCE:
             eq_slot_stats[eid]["under_maintenance_slots"] += 1
             eq_slot_stats[eid]["under_maintenance_hours"] += hrs
+        elif st == SlotStatus.SCHEDULED_MAINTENANCE:
+            eq_slot_stats[eid]["scheduled_maintenance_slots"] += 1
+            eq_slot_stats[eid]["scheduled_maintenance_hours"] += hrs
         elif st == SlotStatus.OPERATOR_ABSENT:
             eq_slot_stats[eid]["operator_absent_slots"] += 1
             eq_slot_stats[eid]["operator_absent_hours"] += hrs
@@ -517,6 +539,9 @@ def _equipment_report_payload(
             eq_slot_stats[eid]["booked_hours"] += hrs
         elif st == SlotStatus.BLOCKED:
             eq_perf_slots[eid]["blocked_hours"] += hrs
+            if ds.pk in other_reason_slot_ids:
+                eq_slot_stats[eid]["other_reasons_slots"] += 1
+                eq_slot_stats[eid]["other_reasons_hours"] += hrs
         elif st == SlotStatus.NOT_AVAILABLE:
             eq_perf_slots[eid]["blocked_hours"] += hrs
 
@@ -789,6 +814,17 @@ def _equipment_report_payload(
                 "under_maintenance_hours": round(float(slot_s.get("under_maintenance_hours", 0)), 2),
                 "operator_absent_slots": int(slot_s.get("operator_absent_slots", 0)),
                 "operator_absent_hours": round(float(slot_s.get("operator_absent_hours", 0)), 2),
+                "scheduled_maintenance_slots": int(slot_s.get("scheduled_maintenance_slots", 0)),
+                "scheduled_maintenance_hours": round(float(slot_s.get("scheduled_maintenance_hours", 0)), 2),
+                "other_reasons_slots": int(slot_s.get("other_reasons_slots", 0)),
+                "other_reasons_hours": round(float(slot_s.get("other_reasons_hours", 0)), 2),
+                "disruption_hours": round(
+                    float(slot_s.get("under_maintenance_hours", 0))
+                    + float(slot_s.get("scheduled_maintenance_hours", 0))
+                    + float(slot_s.get("operator_absent_hours", 0))
+                    + float(slot_s.get("other_reasons_hours", 0)),
+                    2,
+                ),
                 "booking_not_utilized_slots": int(slot_s.get("booking_not_utilized_slots", 0)),
                 "booking_not_utilized_hours": round(float(slot_s.get("booking_not_utilized_hours", 0)), 2),
                 "no_booking_slots": int(slot_s.get("no_booking_slots", 0)),
@@ -800,12 +836,16 @@ def _equipment_report_payload(
         )
 
     total_um = sum(float(s.get("under_maintenance_hours", 0)) for s in eq_slot_stats.values())
+    total_sm = sum(float(s.get("scheduled_maintenance_hours", 0)) for s in eq_slot_stats.values())
     total_oa = sum(float(s.get("operator_absent_hours", 0)) for s in eq_slot_stats.values())
+    total_or = sum(float(s.get("other_reasons_hours", 0)) for s in eq_slot_stats.values())
     total_nu = sum(float(s.get("booking_not_utilized_hours", 0)) for s in eq_slot_stats.values())
     total_nob = sum(float(s.get("no_booking_hours", 0)) for s in eq_slot_stats.values())
     total_booked = sum(float(s.get("booked_hours", 0)) for s in eq_slot_stats.values())
-    total_hours = float(total_um + total_oa + total_nu + total_nob + total_booked)
-    downtime_hours = float(total_um + total_oa)
+    total_hours = float(total_um + total_sm + total_oa + total_nu + total_nob + total_booked)
+    # Downtime: maintenance (unplanned + scheduled) and operator absent. Disruption adds Other Reasons.
+    downtime_hours = float(total_um + total_sm + total_oa)
+    disruption_hours = float(downtime_hours + total_or)
     utilized_hours = float(total_booked)
     utilization_factor = round((utilized_hours / total_hours) if total_hours > 0 else 0.0, 4)
 
@@ -813,6 +853,7 @@ def _equipment_report_payload(
         {"name": "Utilized (Booked)", "value": round(total_booked, 2), "hours": round(total_booked, 2)},
         {"name": "Booking not utilized", "value": round(total_nu, 2), "hours": round(total_nu, 2)},
         {"name": "Under maintenance", "value": round(total_um, 2), "hours": round(total_um, 2)},
+        {"name": "Scheduled maintenance", "value": round(total_sm, 2), "hours": round(total_sm, 2)},
         {"name": "Operator absent", "value": round(total_oa, 2), "hours": round(total_oa, 2)},
         {"name": "No booking", "value": round(total_nob, 2), "hours": round(total_nob, 2)},
     ]
@@ -863,6 +904,7 @@ def _equipment_report_payload(
             "total_hours": round(total_hours, 2),
             "utilized_hours": round(utilized_hours, 2),
             "downtime_hours": round(downtime_hours, 2),
+            "disruption_hours": round(disruption_hours, 2),
             "utilization_factor": utilization_factor,
             "revenue_total": float(total_revenue or 0),
             "revenue_internal": float(revenue_internal or 0),

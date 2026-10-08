@@ -1,0 +1,31 @@
+name: Backfill Disruption Events
+
+# Creates disruption history records from slots / equipment that are already disrupted.
+# Records only: slot statuses and bookings are never changed. Dry run unless confirm is BACKFILL DISRUPTIONS.
+# Prints counts and ids only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Leave empty for a dry run; type BACKFILL DISRUPTIONS to write the records"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Backfill
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          if [ "${CONFIRM}" = "BACKFILL DISRUPTIONS" ]; then
+            echo "Mode: APPLY"
+            docker exec -i -w /app "$CID" python manage.py backfill_disruption_events --apply
+          else
+            echo "Mode: DRY RUN (type BACKFILL DISRUPTIONS to apply)"
+            docker exec -i -w /app "$CID" python manage.py backfill_disruption_events
+          fi

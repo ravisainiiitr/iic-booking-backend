@@ -11,6 +11,7 @@ from rest_framework.routers import DefaultRouter
 from rest_framework.routers import SimpleRouter
 
 from iic_booking.department_modules import urls as department_modules_urls
+from iic_booking.equipment import disruption_views
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -1291,6 +1292,28 @@ urlpatterns = router.urls + [
         "equipments/slot-status-picker/",
         __import__("iic_booking.equipment.slot_status_picker_views", fromlist=["slot_status_picker"]).slot_status_picker,
         name="equipment-slot-status-picker",
+    ),
+    path("equipments/disruptions/", disruption_views.disruption_list, name="equipment-disruptions-list"),
+    path(
+        "equipments/disruptions/attention/",
+        disruption_views.disruption_attention,
+        name="equipment-disruptions-attention",
+    ),
+    path("equipments/disruptions/<int:pk>/", disruption_views.disruption_detail, name="equipment-disruption-detail"),
+    path(
+        "equipments/disruptions/<int:pk>/service-report/",
+        disruption_views.disruption_service_report_upload,
+        name="equipment-disruption-service-report-upload",
+    ),
+    path(
+        "equipments/disruptions/<int:pk>/service-report/<int:report_id>/",
+        disruption_views.disruption_service_report_download,
+        name="equipment-disruption-service-report-download",
+    ),
+    path(
+        "equipments/slot-status-changes/",
+        disruption_views.slot_status_change_log,
+        name="equipment-slot-status-changes",
     ),
     path("equipments/analysis-charges/", equipment_analysis_charges, name="equipment-analysis-charges"),
 

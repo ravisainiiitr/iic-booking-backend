@@ -322,7 +322,7 @@ def test_other_statuses_are_left_unchanged_and_reported(admin, eq):
     assert reasons[(day.isoformat(), "14:00")]["reason"] == "Already blocked (Other Reasons)"
     assert reasons[(day.isoformat(), "14:00")]["blocked_label"] == "Service visit"
     assert reasons[((MON + timedelta(days=10)).isoformat(), "10:00")]["reason"] == "Operator absent"
-    assert reasons[((MON + timedelta(days=5)).isoformat(), "10:00")]["reason"] == "Not available (closed day)"
+    assert reasons[((MON + timedelta(days=5)).isoformat(), "10:00")]["reason"] == "Not available"
     assert data["result"]["skipped_other_count"] == 3 + 4
 
     for slot, status, label in (

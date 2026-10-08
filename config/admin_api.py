@@ -2676,9 +2676,18 @@ def admin_api_router():
         def update(self, request, *args, **kwargs):
             instance = self.get_object()
             new_status = (request.data.get("status") or "").strip().upper()
-            slot_status_block = (SlotStatus.BLOCKED, SlotStatus.UNDER_MAINTENANCE, SlotStatus.OPERATOR_ABSENT)
+            slot_status_block = (
+                SlotStatus.BLOCKED,
+                SlotStatus.UNDER_MAINTENANCE,
+                SlotStatus.OPERATOR_ABSENT,
+                SlotStatus.SCHEDULED_MAINTENANCE,
+            )
+            old_status = instance.status
+            affected_booking_ids = set()
             if new_status in slot_status_block and getattr(instance, "booking_id", None):
                 booking = instance.booking
+                if booking and str(booking.status) != "REFUNDED":
+                    affected_booking_ids.add(booking.booking_id)
                 if booking and str(booking.status) != "REFUNDED":
                     # Operator absent: do NOT auto-refund; apply disruption policy so user can cancel anytime or reschedule.
                     if new_status == SlotStatus.OPERATOR_ABSENT:
@@ -2711,7 +2720,18 @@ def admin_api_router():
                                 {"error": f"Cannot update slot: refund failed. {str(e)}"},
                                 status=status.HTTP_400_BAD_REQUEST,
                             )
-            return super().update(request, *args, **kwargs)
+            response = super().update(request, *args, **kwargs)
+            if new_status and new_status != old_status and response.status_code < 400:
+                from iic_booking.equipment.disruption_service import DisruptionInput, record_slot_status_change
+
+                slot = DailySlot.objects.select_related("slot_master__equipment").get(pk=instance.pk)
+                slot._disruption_old_status = old_status
+                data = DisruptionInput.from_request_data(request.data, user=request.user, source="ADMIN_SLOT_API")
+                data.label = slot.blocked_label or ""
+                record_slot_status_change(
+                    slot.slot_master.equipment, [slot], slot.status, data, affected_booking_ids=affected_booking_ids
+                )
+            return response
 
     class EquipmentViewSet(ModelViewSet):
         permission_classes = [IsAdminPanelUserOrReportsStaff]
@@ -2902,6 +2922,11 @@ def admin_api_router():
             self._assert_dept_admin_equipment_access(request.data, instance=instance)
             serializer = self.get_serializer(instance, data=request.data, partial=partial)
             serializer.is_valid(raise_exception=True)
+            from iic_booking.equipment.disruption_service import DisruptionInput
+
+            instance._disruption_input = DisruptionInput.from_request_data(
+                request.data, user=request.user, source="EQUIPMENT_STATUS"
+            )
             self.perform_update(serializer)
             request._force_all_input_fields = True
             detail_serializer = EquipmentDetailSerializer(instance, context={"request": request})
@@ -3006,6 +3031,10 @@ def admin_api_router():
             blocked_label = (data.get("blocked_label") or "").strip() or None
             if new_status != SlotStatus.BLOCKED:
                 blocked_label = None
+            preview = str(data.get("preview", "")).strip().lower() in ("1", "true", "yes")
+            source = str(data.get("source") or "").strip().upper()
+            if source not in ("CHANGE_SLOT_STATUS", "DASHBOARD_CALENDAR"):
+                source = "CHANGE_SLOT_STATUS"
 
             slot_ids = []
             slot_ids_raw = data.get("slot_ids")
@@ -3090,7 +3119,25 @@ def admin_api_router():
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            slot_status_block = (SlotStatus.BLOCKED, SlotStatus.UNDER_MAINTENANCE, SlotStatus.OPERATOR_ABSENT)
+            # Not Available / Reserved (External) never take a slot away from a booking: booked slots are skipped.
+            skipped_booked = 0
+            if new_status in (SlotStatus.NOT_AVAILABLE, SlotStatus.RESERVED_EXTERNAL):
+                kept = [s for s in slots if not s.booking_id]
+                skipped_booked = len(slots) - len(kept)
+                slots = kept
+                slot_ids = [s.id for s in slots]
+                if not slot_ids:
+                    return Response(
+                        {"error": "All selected slots are booked. Cancel or reschedule those bookings first."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            slot_status_block = (
+                SlotStatus.BLOCKED,
+                SlotStatus.UNDER_MAINTENANCE,
+                SlotStatus.OPERATOR_ABSENT,
+                SlotStatus.SCHEDULED_MAINTENANCE,
+            )
             bookings_to_refund = set()
             bookings_for_disruption = set()
             for s in slots:
@@ -3101,10 +3148,45 @@ def admin_api_router():
                         else:
                             bookings_to_refund.add(s.booking_id)
 
+            from iic_booking.equipment.disruption_service import (
+                DisruptionInput,
+                preview_slot_status_change,
+                record_slot_status_change,
+            )
+
+            if str(data.get("preview", "")).lower() in ("1", "true", "yes"):
+                return Response(
+                    {
+                        **preview_slot_status_change(
+                            equipment,
+                            slots,
+                            new_status,
+                            affected_booking_ids=bookings_to_refund | bookings_for_disruption,
+                            skipped=skipped_booked,
+                        ),
+                        "equipment_id": equipment.equipment_id,
+                        "equipment_name": equipment.name or equipment.code or "",
+                        "new_status": new_status,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            source = str(data.get("source") or "").strip().upper()
+            if source not in ("CHANGE_SLOT_STATUS", "DASHBOARD_CALENDAR"):
+                source = "CHANGE_SLOT_STATUS"
+            disruption_input = DisruptionInput.from_request_data(data, user=request.user, source=source)
+            disruption_input.label = blocked_label or ""
+            external_reference = (
+                disruption_input.external_reference or None if new_status == SlotStatus.RESERVED_EXTERNAL else None
+            )
+            for s in slots:
+                s._disruption_old_status = s.status
+
             reason_map = {
                 SlotStatus.BLOCKED: "The slot was marked as Blocked.",
                 SlotStatus.UNDER_MAINTENANCE: "The slot was marked as Under Maintenance.",
                 SlotStatus.OPERATOR_ABSENT: "The slot was marked as Operator Absent.",
+                SlotStatus.SCHEDULED_MAINTENANCE: "The slot was marked for Scheduled Maintenance.",
             }
             reason_message = (
                 f"{reason_map.get(new_status, 'The slot is no longer available.')} "
@@ -3136,8 +3218,19 @@ def admin_api_router():
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
-            update_fields = {"status": new_status, "blocked_label": blocked_label}
+            update_fields = {
+                "status": new_status,
+                "blocked_label": blocked_label,
+                "external_reference": external_reference,
+            }
             DailySlot.objects.filter(id__in=slot_ids).update(**update_fields)
+            disruption_result = record_slot_status_change(
+                equipment,
+                slots,
+                new_status,
+                disruption_input,
+                affected_booking_ids=bookings_to_refund | bookings_for_disruption,
+            )
 
             # For Booking Not Utilized: update each affected booking's status so no further changes are allowed
             if new_status == SlotStatus.BOOKING_NOT_UTILIZED:
@@ -3237,8 +3330,16 @@ def admin_api_router():
                         except Exception as e:
                             logger.warning("Failed to send booking not utilized email to Supervisor: %s", e)
 
+            message = f"Updated {len(slot_ids)} slot(s) to {dict(SlotStatus.choices).get(new_status, new_status)}."
+            if skipped_booked:
+                message += f" {skipped_booked} booked slot(s) were left unchanged."
             return Response(
-                {"updated": len(slot_ids), "message": f"Updated {len(slot_ids)} slot(s) to {new_status}."},
+                {
+                    "updated": len(slot_ids),
+                    "skipped_booked": skipped_booked,
+                    "message": message,
+                    "disruption_events": disruption_result.as_dict(),
+                },
                 status=status.HTTP_200_OK,
             )
 
@@ -4662,6 +4763,8 @@ def admin_api_router():
                 "OPERATOR_ABSENT",
                 "BOOKING_NOT_UTILIZED",
                 "RESERVED_FOR_EXTERNAL",
+                "RESERVED_EXTERNAL",
+                "SCHEDULED_MAINT",
                 "HOME_DEPARTMENT_ONLY",
                 "NON_HOME_RESERVED",
                 "NOT_AVAILABLE",

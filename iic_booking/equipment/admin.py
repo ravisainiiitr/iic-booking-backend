@@ -1671,6 +1671,9 @@ class EquipmentAdmin(admin.ModelAdmin):
     
     def save_model(self, request, obj, form, change):
         """Persist equipment. When slot window changes, run waitlist."""
+        from .disruption_service import DisruptionInput
+
+        obj._disruption_input = DisruptionInput(user=request.user, source="DJANGO_ADMIN")
         existing_image_name = None
         if change and obj.pk:
             try:
@@ -2531,9 +2534,10 @@ class DailySlotAdmin(admin.ModelAdmin):
                 count = 0
                 errors = []
                 available_slot_ids_by_equipment = {}
+                changed_by_equipment = {}
                 
                 # Process each slot
-                for slot in slots_queryset:
+                for slot in slots_queryset.select_related("slot_master__equipment"):
                     try:
                         old_status = slot.status
                         # Don't change status if slot is booked (has a booking)
@@ -2556,6 +2560,11 @@ class DailySlotAdmin(admin.ModelAdmin):
                         
                         # Save the slot - use save() without update_fields to ensure all fields are saved
                         slot.save()
+                        if old_status != new_status and slot.slot_master_id and slot.slot_master.equipment_id:
+                            slot._disruption_old_status = old_status
+                            changed_by_equipment.setdefault(slot.slot_master.equipment_id, (slot.slot_master.equipment, []))[
+                                1
+                            ].append(slot)
                         if old_status != SlotStatus.AVAILABLE and new_status == SlotStatus.AVAILABLE and slot.slot_master_id and slot.slot_master.equipment_id:
                             available_slot_ids_by_equipment.setdefault(slot.slot_master.equipment_id, []).append(slot.id)
                         
@@ -2567,6 +2576,16 @@ class DailySlotAdmin(admin.ModelAdmin):
                             error=str(e)
                         ))
                 
+                if changed_by_equipment:
+                    from .disruption_service import DisruptionInput, record_slot_status_change
+
+                    for equipment, changed_slots in changed_by_equipment.values():
+                        record_slot_status_change(
+                            equipment,
+                            changed_slots,
+                            new_status,
+                            DisruptionInput(user=request.user, source="DJANGO_ADMIN", label=blocked_label or ""),
+                        )
                 if count > 0:
                     self.message_user(
                         request,
