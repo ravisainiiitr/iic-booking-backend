@@ -240,6 +240,8 @@ def tickets(request):
     ]
     filters = filter_pairs(request, [("status", "Status", _TICKET_STATUSES),
                                      ("ticket_type", "Type", "text"),
+                                     ("priority", "Priority", {"LOW": "Low", "MEDIUM": "Medium", "HIGH": "High",
+                                                               "URGENT": "Urgent"}),
                                      ("scope", "Showing", _TICKET_SCOPES),
                                      ("search", "Search", "text")])
     table = spec.Table("tickets", "Support tickets", columns, numbered(rows),
