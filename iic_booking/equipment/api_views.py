@@ -296,6 +296,17 @@ def _actor_may_book_on_behalf(actor, equipment) -> str | None:
         return None
     return "You don't have permission to book on behalf of another user."
 
+
+def staff_booking_skips_period_limits(actor, equipment, booking_user) -> bool:
+    """
+    Weekly / monthly booking limits don't apply when a Main Administrator, the equipment's Department
+    Administrator or its (temporary) OIC books or moves a booking for another user. The booking still
+    counts toward that user's usage for their own later bookings.
+    """
+    if booking_user is None or getattr(actor, "pk", None) == getattr(booking_user, "pk", None):
+        return False
+    return _actor_may_book_on_behalf(actor, equipment) is None
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def equipment_book_for_user_info(request, pk: int):
@@ -4086,6 +4097,7 @@ def _book_equipment_impl(request, pk):
         pass  # External users confirm I-STEM after payment on the next-steps page (no pre-book gate).
     # Admin and OIC (and other admin-panel users) see all slots and are not restricted by slot window; only regular users are.
     is_admin = getattr(request.user, "user_type", None) in UserType.get_admin_panel_codes()
+    skip_period_limits = is_admin or staff_booking_skips_period_limits(request.user, equipment, booking_user)
 
     # Get request data
     start_time_str = request.data.get('start_time')
@@ -4828,7 +4840,7 @@ def _book_equipment_impl(request, pk):
                 charge_breakdown = list(charge_breakdown) + [
                     {"description": "TA Reward Points", "amount": -float(reward_discount_amount)},
                 ]
-        if not is_admin and not booking_quota_should_skip(equipment):
+        if not skip_period_limits and not booking_quota_should_skip(equipment):
             # Urgent / HOLD bookings bypass quota restrictions.
             quota_decision = QuotaService.evaluate_booking_quota(
                 booking_user,
@@ -4897,7 +4909,7 @@ def _book_equipment_impl(request, pk):
                 {"error": bal_err or "Insufficient wallet balance"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if not is_admin:
+        if not skip_period_limits:
             limit_resp = _student_spending_limit_response(
                 request, equipment, booking_user, booking_target, total_charge,
                 slots_requested=len(slot_ids), duration_minutes=total_time_minutes,
@@ -5106,7 +5118,7 @@ def _book_equipment_impl(request, pk):
                     else:
                         raise ValueError(SLOTS_ALREADY_OCCUPIED_MESSAGE)
                 perf.mark("slot_lock_path_resolved")
-                if not is_admin:
+                if not skip_period_limits:
                     from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
                     ext_quota = ExternalSlotQuotaService.validate_external_booking(
@@ -5141,7 +5153,7 @@ def _book_equipment_impl(request, pk):
                                     booking_date=locked_booking_date,
                                 ),
                             )
-                if not is_admin:
+                if not skip_period_limits:
                     from iic_booking.users.student_spending_limits import spending_limit_error
 
                     limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
@@ -5784,7 +5796,7 @@ def _book_equipment_impl(request, pk):
     
     # Check quota limits before creating booking (skip for admin; urgent HOLD bypasses)
     booking_date = start_time
-    if not is_admin and not booking_quota_should_skip(equipment):
+    if not skip_period_limits and not booking_quota_should_skip(equipment):
         quota_decision = QuotaService.evaluate_booking_quota(
             booking_user,
             equipment,
@@ -5861,7 +5873,7 @@ def _book_equipment_impl(request, pk):
             {"error": bal_err2 or "Insufficient wallet balance"},
             status=status.HTTP_400_BAD_REQUEST,
         )
-    if not is_admin:
+    if not skip_period_limits:
         limit_resp = _student_spending_limit_response(
             request, equipment, booking_user, booking_target, total_charge,
             slots_requested=daily_slots.count(), duration_minutes=total_time_minutes,
@@ -5890,7 +5902,7 @@ def _book_equipment_impl(request, pk):
             if unavailable_locked:
                 raise ValueError(SLOTS_ALREADY_OCCUPIED_MESSAGE)
             slot_ids = [s.id for s in locked_slots_list]
-            if not is_admin:
+            if not skip_period_limits:
                 from iic_booking.equipment.external_slot_quota import ExternalSlotQuotaService
 
                 ext_quota = ExternalSlotQuotaService.validate_external_booking(
@@ -5902,7 +5914,7 @@ def _book_equipment_impl(request, pk):
                 )
                 if not ext_quota.allowed:
                     raise ValueError(ext_quota.message or "External weekly slot quota exceeded.")
-            if not is_admin:
+            if not skip_period_limits:
                 from iic_booking.users.student_spending_limits import spending_limit_error
 
                 limit_err = spending_limit_error(booking_user, booking_target, total_charge, lock=True)
@@ -13037,7 +13049,7 @@ def reschedule_booking(request, booking_id):
         slot_dates=list(available_slots.values_list("date", flat=True)),
         slots_requested=available_slots.count(),
         exclude_booking_id=booking.booking_id,
-        bypass=False,
+        bypass=staff_booking_skips_period_limits(request.user, equipment, booking.user),
     )
     if not ext_quota.allowed:
         return Response(
@@ -13843,7 +13855,7 @@ def user_reschedule_booking(request, booking_id):
         slot_dates=list(available_slots.values_list("date", flat=True)),
         slots_requested=available_slots.count(),
         exclude_booking_id=booking.booking_id,
-        bypass=False,
+        bypass=staff_booking_skips_period_limits(request.user, equipment, booking.user),
     )
     if not ext_quota.allowed:
         return Response(

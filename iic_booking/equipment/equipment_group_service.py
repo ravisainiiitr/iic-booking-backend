@@ -1263,7 +1263,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
         slot_dates=[s.date for s in candidates],
         slots_requested=len(candidates),
         exclude_booking_id=booking.booking_id,
-        bypass=False,
+        bypass=av.staff_booking_skips_period_limits(request.user, target, owner),
     )
     if not ext_quota.allowed:
         return Response(ext_quota.as_error_payload(), status=status.HTTP_400_BAD_REQUEST)
