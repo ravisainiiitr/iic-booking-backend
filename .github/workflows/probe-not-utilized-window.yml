@@ -85,10 +85,10 @@ jobs:
               print(f"booking_id={b.booking_id} status={b.status} equipment_id={eq.pk} equipment_code={eq.code}")
               print(f"created_at={lt(getattr(b, 'created_at', None))} atmosphere_sensitive={getattr(b, 'atmosphere_sensitive_sample', None)}")
               print("equipment settings: " + ", ".join(f"{f}={getattr(eq, f, 'n/a')}" for f in EQ_FIELDS))
-              slots = list(b.daily_slots.order_by("start_datetime"))
+              slots = list(b.daily_slots.order_by("start_datetime").values("pk", "date", "start_datetime", "end_datetime", "status"))
               for s in slots:
-                  print(f"  slot id={s.pk} date={s.date} start={lt(s.start_datetime)} end={lt(s.end_datetime)} status={s.status}")
-              ends = [s.end_datetime for s in slots if s.end_datetime]
+                  print(f"  slot id={s['pk']} date={s['date']} start={lt(s['start_datetime'])} end={lt(s['end_datetime'])} status={s['status']}")
+              ends = [s["end_datetime"] for s in slots if s["end_datetime"]]
               last_end = max(ends) if ends else None
               if last_end is not None:
                   if timezone.is_naive(last_end):
@@ -133,8 +133,8 @@ jobs:
               try:
                   from iic_booking.equipment.disruption_models import SlotStatusChangeLog
                   for s in slots:
-                      for lg in SlotStatusChangeLog.objects.filter(slot_ids__contains=[s.pk]).order_by("changed_at"):
-                          print(f"  slot_change slot={s.pk} {lt(lg.changed_at)} new={lg.new_status} prev={lg.previous_statuses} by={actor(lg.changed_by)}")
+                      for lg in SlotStatusChangeLog.objects.filter(slot_ids__contains=[s["pk"]]).order_by("changed_at"):
+                          print(f"  slot_change slot={s['pk']} {lt(lg.changed_at)} new={lg.new_status} prev={lg.previous_statuses} by={actor(lg.changed_by)}")
               except Exception as ex:
                   print(f"slot change lookup failed: {type(ex).__name__}")
 
