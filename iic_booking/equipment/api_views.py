@@ -17062,7 +17062,7 @@ def create_repeat_booking(request, booking_id):
 
     return Response({
         "message": "Repeat booking created successfully.",
-        "booking": BookingSerializer(new_booking).data,
+        "booking": BookingSerializer(new_booking, context={"viewer": request.user}).data,
         "virtual_booking_id": new_booking.virtual_booking_id,
     }, status=status.HTTP_201_CREATED)
 
