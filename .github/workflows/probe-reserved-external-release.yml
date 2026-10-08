@@ -1,0 +1,108 @@
+# Read-only: Reserved (External) slots that were booked and then released. Lists slots that went back to
+# Available (or another status) instead of Reserved (External), and booked slots whose reservation would be
+# lost on release. Prints counts, slot ids, booking ids and equipment codes only (no names, emails or FBR
+# references). Never writes.
+name: Probe Reserved External Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from django.utils import timezone
+          from iic_booking.equipment.models import BookingSlotRange, DailySlot, SlotStatus, SlotStatusChangeLog
+
+          now = timezone.now()
+          print(f"now={now.isoformat()}")
+          when = lambda s: "future" if s.start_datetime and s.start_datetime > now else "past"
+
+          print("== A. Slots carrying an FBR reference, by status ==")
+          ref_qs = DailySlot.objects.exclude(external_reference__isnull=True)
+          by_status = Counter()
+          for st, has_ref, booked in ref_qs.values_list("status", "external_reference", "booking_id"):
+              by_status[(st, "ref" if (has_ref or "").strip() else "empty", "booked" if booked else "unbooked")] += 1
+          for k, v in sorted(by_status.items()):
+              print(f"  {k} -> {v}")
+
+          print("== B. Reserved (External) staff marks: where are those slots now? ==")
+          last_log = {}
+          for log in SlotStatusChangeLog.objects.order_by("changed_at", "id").only("id", "new_status", "slot_ids", "changed_at"):
+              for sid in log.slot_ids or []:
+                  try:
+                      last_log[int(sid)] = (log.new_status, log.id)
+                  except (TypeError, ValueError):
+                      pass
+          marked = {sid for sid, (st, _lid) in last_log.items() if st == SlotStatus.RESERVED_EXTERNAL}
+          print(f"  slots_whose_latest_staff_change_is_reserved_external={len(marked)}")
+          slots = list(
+              DailySlot.objects.filter(pk__in=marked)
+              .select_related("slot_master__equipment")
+              .only("id", "status", "booking_id", "external_reference", "start_datetime", "slot_master__equipment__code")
+          )
+          now_state = Counter((s.status, "booked" if s.booking_id else "unbooked", when(s)) for s in slots)
+          for k, v in sorted(now_state.items()):
+              print(f"  now {k} -> {v}")
+
+          wrongly_freed = [s for s in slots if s.status != SlotStatus.RESERVED_EXTERNAL and not s.booking_id]
+          booked_no_memory = [
+              s for s in slots if s.booking_id and s.external_reference is None
+          ]
+          print(f"== C. Reserved slots released to another status (not Reserved) = {len(wrongly_freed)} ==")
+          print(f"  by (status, future/past, has_ref): {dict(Counter((s.status, when(s), bool((s.external_reference or '').strip())) for s in wrongly_freed))}")
+          by_eq = defaultdict(list)
+          for s in sorted(wrongly_freed, key=lambda s: s.start_datetime or now):
+              by_eq[s.slot_master.equipment.code if s.slot_master and s.slot_master.equipment else "?"].append(s)
+          for code, rows in sorted(by_eq.items()):
+              print(f"  eq={code} count={len(rows)}")
+              for s in rows[:60]:
+                  bids = list(
+                      BookingSlotRange.objects.filter(
+                          booking__equipment_id=s.slot_master.equipment_id,
+                          start_datetime__lte=s.start_datetime,
+                          end_datetime__gt=s.start_datetime,
+                      ).values_list("booking_id", "booking__status")[:5]
+                  )
+                  print(
+                      f"    slot={s.pk} start={timezone.localtime(s.start_datetime).isoformat() if s.start_datetime else None}"
+                      f" status={s.status} {when(s)} released_bookings={bids}"
+                  )
+
+          print(f"== D. Reserved slots booked now WITHOUT reference memory (would free to Available) = {len(booked_no_memory)} ==")
+          print(f"  by future/past: {dict(Counter(when(s) for s in booked_no_memory))}")
+          for s in booked_no_memory[:60]:
+              print(f"    slot={s.pk} booking={s.booking_id} {when(s)}")
+
+          print("== E. Unbooked Available slots still carrying a reference (released after booking) ==")
+          stale = list(
+              DailySlot.objects.filter(status=SlotStatus.AVAILABLE, booking__isnull=True)
+              .exclude(external_reference__isnull=True)
+              .values_list("id", "start_datetime")
+          )
+          print(f"  count={len(stale)} future={sum(1 for _i, st in stale if st and st > now)}")
+          print(f"  ids={[i for i, _st in stale][:100]}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
