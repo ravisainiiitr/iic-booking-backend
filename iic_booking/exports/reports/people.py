@@ -205,3 +205,44 @@ def oic_substitutes(request):
                              empty_message="No substitution activity yet."))
     return make_document(request, title="OIC Substitute — Assignments and History", slug="oic-substitutes",
                          tables=tables, filters=filters, landscape=True)
+
+
+_TICKET_STATUSES = {"OPEN": "Open", "IN_PROGRESS": "In progress", "RESOLVED": "Resolved", "CLOSED": "Closed",
+                    "CANCELLED": "Cancelled"}
+_TICKET_SCOPES = {"MINE": "Raised by me", "ASSIGNED": "Marked to me"}
+
+
+def _ticket_equipment(row) -> str:
+    code, name = row.get("related_equipment_code") or "", row.get("related_equipment_name") or ""
+    return f"{name} ({code})" if code and name else (name or code)
+
+
+@register("tickets")
+def tickets(request):
+    rows, _ = collect_rows(request, "ticket-list", results_key="tickets", page_size=200)
+    columns = [
+        SNO,
+        C("ticket_id", "Ticket", spec.INTEGER, 0.6),
+        C("created_at", "Raised (IST)", spec.DATETIME, 1.15),
+        C("subject", "Subject", width=2.2),
+        C("ticket_type", "Type", width=1.0,
+          value=lambda r: r.get("ticket_type_name") or r.get("ticket_type_display") or humanize(r.get("ticket_type"))),
+        C("priority", "Priority", width=0.7, value=lambda r: r.get("priority_display") or humanize(r.get("priority"))),
+        C("status", "Status", width=0.8, value=lambda r: r.get("status_display") or humanize(r.get("status"))),
+        C("requester_name", "Raised by", width=1.3,
+          value=lambda r: r.get("requester_name") or r.get("user_name") or ""),
+        C("requester_email", "Email", width=1.6,
+          value=lambda r: r.get("requester_email") or r.get("user_email") or ""),
+        C("equipment", "Equipment", width=1.5, value=_ticket_equipment),
+        C("assigned_to_name", "Assigned to", width=1.2),
+        C("comments_count", "Replies", spec.INTEGER, 0.6),
+        C("updated_at", "Last update (IST)", spec.DATETIME, 1.15),
+    ]
+    filters = filter_pairs(request, [("status", "Status", _TICKET_STATUSES),
+                                     ("ticket_type", "Type", "text"),
+                                     ("scope", "Showing", _TICKET_SCOPES),
+                                     ("search", "Search", "text")])
+    table = spec.Table("tickets", "Support tickets", columns, numbered(rows),
+                       empty_message="No tickets match these filters.")
+    return make_document(request, title="Support Tickets", slug="support-tickets", tables=[table],
+                         filters=filters, landscape=True)

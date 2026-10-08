@@ -191,3 +191,71 @@ def test_report_bookings_lists_only_own_bookings(world):
     assert len(rows) - 1 == 1
     assert "Alpha XRD" in _column(rows, "Equipment")[0]
     assert _column(rows, "Amount (₹)") == ["120.00"]
+
+
+@pytest.mark.django_db
+def test_wallet_recharge_requests_follow_list_filters(world):
+    from decimal import Decimal
+
+    from iic_booking.users.models.wallet import Wallet
+    from iic_booking.users.models.wallet import WalletRechargeRequest
+
+    faculty = _staff(UserType.FACULTY, department=world.f.department)
+    wallet, _ = Wallet.objects.get_or_create(user=faculty)
+    for amount, state in (("500.00", "PENDING"), ("1250.50", "APPROVED")):
+        WalletRechargeRequest.objects.create(user=faculty, wallet=wallet, department=world.f.department,
+                                             amount=Decimal(amount), user_otp_verified=True, status=state)
+    client = world.f.client_for(world.admin)
+    rows = _csv(_export(client, "wallet-recharge-requests"))
+    assert len(rows) - 1 == 2
+    approved = _csv(_export(client, "wallet-recharge-requests", status="APPROVED"))
+    assert _column(approved, "Amount (₹)") == ["1250.50"]
+    assert _export(world.f.client_for(world.alice), "wallet-recharge-requests").status_code == 403
+
+
+@pytest.mark.django_db
+def test_wallet_withdrawal_requests_status_filter_and_no_bank_details(world):
+    from decimal import Decimal
+
+    from iic_booking.users.models.wallet import Wallet
+    from iic_booking.users.models.wallet import WalletWithdrawalRequest
+
+    owner = _staff(UserType.FACULTY, department=world.f.department)
+    wallet, _ = Wallet.objects.get_or_create(user=owner)
+    for state in ("PENDING", "COMPLETED"):
+        WalletWithdrawalRequest.objects.create(user=owner, wallet=wallet, amount=Decimal("100.00"),
+                                               status=state, bank_snapshot={"account_number": "123456789012"})
+    client = world.f.client_for(world.admin)
+    listed = client.get("/api/admin/wallet-withdrawal-requests/", {"status": "COMPLETED"}).data
+    assert [r["status"] for r in listed] == ["COMPLETED"]
+    rows = _csv(_export(client, "wallet-withdrawal-requests", status="COMPLETED"))
+    assert _column(rows, "Status") == ["Completed"]
+    assert "123456789012" not in _export(client, "wallet-withdrawal-requests").content.decode("utf-8-sig")
+    assert _export(world.f.client_for(world.oic_a), "wallet-withdrawal-requests").status_code == 403
+
+
+@pytest.mark.django_db
+def test_repeat_samples_scoped_like_list(world):
+    from iic_booking.equipment.models import RepeatSampleRequest
+
+    f = world.f
+    RepeatSampleRequest.objects.create(booking=f.booking(world.alice, world.eq_a, f.future(days=3)))
+    RepeatSampleRequest.objects.create(booking=f.booking(world.bob, world.eq_b, f.future(days=4)))
+    assert len(_csv(_export(f.client_for(world.admin), "repeat-sample-requests"))) - 1 == 2
+    oic_rows = _csv(_export(f.client_for(world.oic_a), "repeat-sample-requests"))
+    assert _column(oic_rows, "User") == ["Alice Rao"]
+    assert _export(f.client_for(world.alice), "repeat-sample-requests").status_code == 403
+
+
+@pytest.mark.django_db
+def test_tickets_only_visible_ones(world):
+    from iic_booking.support.models import Ticket
+
+    Ticket.objects.create(user=world.alice, subject="Detector noise", description="d")
+    Ticket.objects.create(user=world.bob, subject="Refund query", description="d",
+                          status=Ticket.TicketStatus.RESOLVED)
+    mine = _csv(_export(world.f.client_for(world.alice), "tickets"))
+    assert _column(mine, "Subject") == ["Detector noise"]
+    admin = world.f.client_for(world.admin)
+    assert len(_csv(_export(admin, "tickets"))) - 1 == 2
+    assert _column(_csv(_export(admin, "tickets", status="resolved")), "Subject") == ["Refund query"]

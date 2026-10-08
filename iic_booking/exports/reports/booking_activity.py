@@ -283,3 +283,37 @@ def waitlist(request):
                        empty_message="No one is on the waitlist for these filters.")
     return make_document(request, title="Equipment Waitlist", slug="equipment-waitlist", tables=[table],
                          filters=filters, kpis=kpis, landscape=True)
+
+
+_REPEAT_STATUSES = {"PENDING": "Pending", "APPROVED": "Approved", "REJECTED": "Rejected"}
+
+
+def _repeat_status(row) -> str:
+    return row.get("status_display") or _REPEAT_STATUSES.get(row.get("status"), humanize(row.get("status")))
+
+
+@register("repeat-sample-requests")
+def repeat_sample_requests(request):
+    rows, _ = collect_rows(request, "list-repeat-sample-requests", results_key="repeat_sample_requests",
+                           page_size=None)
+    columns = [
+        SNO,
+        C("booking_id", "Original booking", width=1.1),
+        C("equipment", "Equipment", width=1.6, value=_equipment),
+        C("user_name", "User", width=1.3),
+        C("user_email", "Email", width=1.6),
+        C("completed_at", "Original completed (IST)", spec.DATETIME, 1.15),
+        C("requested_at", "Marked (IST)", spec.DATETIME, 1.15),
+        C("status", "Status", width=0.8, value=_repeat_status),
+        C("responded_by_name", "Arranged by", width=1.2),
+        C("new_booking_id", "Repeat booking", width=1.1),
+        C("booked_at", "Repeat booked (IST)", spec.DATETIME, 1.15),
+        C("notes", "Notes", width=1.8, value=lambda r: r.get("admin_notes") or r.get("user_notes") or ""),
+    ]
+    filters = filter_pairs(request, [("status", "Status", _REPEAT_STATUSES),
+                                     ("department_id", "Department", "department"),
+                                     ("equipment_id", "Equipment", "equipment")])
+    table = spec.Table("repeats", "Repeat samples", columns, numbered(rows),
+                       empty_message="No repeat samples match these filters.")
+    return make_document(request, title="Repeat Samples", slug="repeat-samples", tables=[table],
+                         filters=filters, landscape=True)

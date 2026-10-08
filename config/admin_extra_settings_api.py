@@ -426,6 +426,13 @@ def register_extra_admin_routes(router):
         serializer_class = WalletWithdrawalRequestSerializer
         http_method_names = ["get", "head", "options"]
 
+        def get_queryset(self):
+            qs = super().get_queryset()
+            status_filter = (self.request.query_params.get("status") or "").strip().upper()
+            if self.action == "list" and status_filter:
+                qs = qs.filter(status=status_filter)
+            return qs
+
     class WalletCreditFacilitySettingsSerializer(serializers.ModelSerializer):
         class Meta:
             model = WalletCreditFacilitySettings
