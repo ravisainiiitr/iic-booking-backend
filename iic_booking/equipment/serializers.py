@@ -1444,6 +1444,16 @@ class DailySlotSerializer(serializers.ModelSerializer):
         return None
 
     def to_representation(self, instance):
+        data = self._status_representation(instance)
+        # Slot calendars pass a SlotBookingIdentityPolicy; booking payloads nest their own slots without one.
+        policy = self.context.get("booking_identity_policy")
+        if policy is not None and not policy.allows(instance):
+            from .slot_booking_identity import mask_slot_booking_identity
+
+            mask_slot_booking_identity(data)
+        return data
+
+    def _status_representation(self, instance):
         """External users: grey out slots outside external_bookable_min/max_date as NOT_AVAILABLE.
         Inside the window, any AVAILABLE slot is bookable (available_for_external=True).
         Internal users: home_department overlays apply to all AVAILABLE slots (no reserved_for_external gate)."""
@@ -3493,6 +3503,16 @@ def _booking_breakdown_suffix_start_index(stored: list) -> int:
     return len(stored)
 
 
+def _strip_booking_money_for_viewer(context, booking, data: dict) -> dict:
+    """Drop charges for Lab Operators; ``viewer`` is for responses serialized without a request."""
+    from .charge_visibility import strip_booking_money, viewer_may_see_booking_money
+
+    viewer = context.get("viewer") or getattr(context.get("request"), "user", None)
+    if viewer_may_see_booking_money(viewer, booking):
+        return data
+    return strip_booking_money(data)
+
+
 class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin, serializers.ModelSerializer):
     """Serializer for Booking model. Shows 'Booked' for PENDING (user-facing)."""
     
@@ -3588,7 +3608,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             from .fabrication import display_input_values
 
             data["input_values"] = display_input_values(instance.equipment, data["input_values"])
-        return data
+        return _strip_booking_money_for_viewer(self.context, instance, data)
 
     def get_fabrication_quantity(self, obj):
         """Quantity Required (input A) of a 3D print / laser booking; 1 for bookings made before it."""
@@ -4334,6 +4354,9 @@ class BookingListSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMi
     cancel_block_message = serializers.SerializerMethodField()
     sample_summary = serializers.SerializerMethodField()
     lab_questions_open = serializers.SerializerMethodField()
+
+    def to_representation(self, instance):
+        return _strip_booking_money_for_viewer(self.context, instance, super().to_representation(instance))
 
     def get_charge_recalculation_pay_seconds_remaining(self, obj):
         from .input_edit_payment_window import payment_seconds_remaining

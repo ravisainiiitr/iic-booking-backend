@@ -2631,6 +2631,13 @@ def admin_api_router():
 
         pagination_class = DailySlotPagination
 
+        def get_serializer_context(self):
+            from iic_booking.equipment.slot_booking_identity import SlotBookingIdentityPolicy
+
+            context = super().get_serializer_context()
+            context["booking_identity_policy"] = SlotBookingIdentityPolicy(self.request.user)
+            return context
+
         def get_queryset(self):
             qs = super().get_queryset()
             qs = scope_queryset_to_department(

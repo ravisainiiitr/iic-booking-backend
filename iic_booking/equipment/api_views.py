@@ -3807,6 +3807,8 @@ def equipment_daily_slots(request, pk):
     slot_masters = list(slot_masters_qs)
     slot_master_times = [sm.open_time.strftime("%H:%M:%S") for sm in slot_masters]
 
+    from .slot_booking_identity import SlotBookingIdentityPolicy
+
     for_external_user_ctx = bool(for_external_user)
     serializer = DailySlotSerializer(
         filtered_slots,
@@ -3818,6 +3820,7 @@ def equipment_daily_slots(request, pk):
             'external_bookable_max_date': slot_window_max_date if for_external_user_ctx else None,
             # Email/phone only for admin-panel staff (Admin / OIC / Operator / Finance).
             'include_booking_user_contact': bool(is_admin),
+            'booking_identity_policy': SlotBookingIdentityPolicy(user),
         },
     )
     slots_payload = list(serializer.data)
@@ -12062,7 +12065,7 @@ def complete_booking(request, booking_id):
             return Response(
                 {
                     "message": "Booking marked as completed. Result files saved, but sending email failed: " + str(e),
-                    "booking": BookingSerializer(booking).data,
+                    "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
                     "uploaded_files": uploaded_names,
                 },
                 status=status.HTTP_200_OK,
@@ -12076,7 +12079,7 @@ def complete_booking(request, booking_id):
                     if uploaded_names
                     else ""
                 ),
-                "booking": BookingSerializer(booking).data,
+                "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
                 "uploaded_files": uploaded_names,
             },
             status=status.HTTP_200_OK,
@@ -12150,7 +12153,7 @@ def refund_booking(request, booking_id):
     refund_target, _ = WalletRepository.get_booking_wallet_target(
         booking.user, getattr(booking.equipment, "internal_department", None)
     )
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": f"Booking refunded successfully. ₹{refunded} credited / refunded.",
@@ -12293,7 +12296,7 @@ def mark_booking_not_utilized(request, booking_id):
         )
 
     booking.refresh_from_db()
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": "Booking marked as Not Utilized. No refund issued. User has been notified by email.",
@@ -12487,7 +12490,7 @@ def absent_booking(request, booking_id):
     _record_booking_details_disruption(request, booking, "OPERATOR_ABSENT", absent_notes)
 
     booking.refresh_from_db()
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": (
@@ -12705,7 +12708,7 @@ def booking_maintenance_disruption(request, booking_id):
         send_notification=False,
     )
 
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": "Booking flagged for under-maintenance disruption. The user has been emailed with options and the decision deadline.",
@@ -12780,7 +12783,7 @@ def booking_other_disruption(request, booking_id):
         send_notification=False,
     )
 
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": "Booking flagged as Analysis Not Possible. The user has been emailed with options and the decision deadline.",
@@ -12993,7 +12996,7 @@ def reschedule_booking(request, booking_id):
                 exc_info=True,
             )
 
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": "Booking rescheduled successfully.",
@@ -13084,7 +13087,7 @@ def cancel_booking(request, booking_id):
     refund_amount = cancel_result["refund_amount"]
 
     booking.refresh_from_db()
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     if cancel_result["is_full_cancel"]:
         message = "Booking cancelled successfully."
         if should_refund and refund_transaction:
@@ -13327,7 +13330,7 @@ def user_cancel_booking(request, booking_id):
     refund_amount = cancel_result["refund_amount"]
 
     booking.refresh_from_db()
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     if cancel_result["is_full_cancel"]:
         message = "Booking cancelled successfully."
         if should_refund and refund_transaction:
@@ -13801,7 +13804,7 @@ def user_reschedule_booking(request, booking_id):
                 exc_info=True,
             )
 
-    serializer = BookingSerializer(booking)
+    serializer = BookingSerializer(booking, context={"viewer": request.user})
     return Response(
         {
             "message": "Booking rescheduled successfully.",
@@ -14183,7 +14186,7 @@ def update_booking_istem_fbr(request, booking_id):
         send_notification=True,
     )
     _notify_oic_istem_fbr_submitted(booking)
-    return Response({"message": "FBR submitted. An Officer in Charge will verify it on I-STEM.", "booking": BookingSerializer(booking).data})
+    return Response({"message": "FBR submitted. An Officer in Charge will verify it on I-STEM.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
@@ -14232,7 +14235,7 @@ def review_booking_istem_fbr(request, booking_id):
             comment="I-STEM FBR marked as verified. User may download results after completing other requirements (e.g. rating).",
             send_notification=True,
         )
-        return Response({"message": "FBR marked as verified.", "booking": BookingSerializer(booking).data})
+        return Response({"message": "FBR marked as verified.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
     if action == "invalidate":
         reason = (request.data.get("reason") if isinstance(request.data, dict) else None) or ""
         reason = str(reason).strip()
@@ -14261,7 +14264,7 @@ def review_booking_istem_fbr(request, booking_id):
             comment=f"I-STEM FBR marked invalid. Reason: {reason}",
             send_notification=True,
         )
-        return Response({"message": "User has been notified to correct the FBR.", "booking": BookingSerializer(booking).data})
+        return Response({"message": "User has been notified to correct the FBR.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data})
     return Response(
         {"error": 'Invalid action. Use "execute" or "invalidate".'},
         status=status.HTTP_400_BAD_REQUEST,
@@ -15929,7 +15932,7 @@ def update_booking_input_values(request, booking_id):
         except Exception as e:
             logger.exception("Charge recalculation failed")
             return Response(
-                {"error": "Charge recalculation failed: " + str(e), "booking": BookingSerializer(booking).data},
+                {"error": "Charge recalculation failed: " + str(e), "booking": BookingSerializer(booking, context={"viewer": request.user}).data},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
@@ -16001,7 +16004,7 @@ def update_booking_atmosphere_sensitive_sample(request, booking_id):
         return Response(
             {
                 "message": "Atmosphere-sensitive sample unchanged.",
-                "booking": BookingSerializer(booking).data,
+                "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
             },
             status=status.HTTP_200_OK,
         )
@@ -16064,7 +16067,7 @@ def update_booking_atmosphere_sensitive_sample(request, booking_id):
                 if new_value
                 else "Atmosphere-sensitive sample disabled."
             ),
-            "booking": BookingSerializer(booking).data,
+            "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
         },
         status=status.HTTP_200_OK,
     )
@@ -16216,7 +16219,7 @@ def rate_booking(request, booking_id):
     return Response(
         {
             "message": "Rating submitted.",
-            "booking": BookingSerializer(booking).data,
+            "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
         },
         status=status.HTTP_200_OK,
     )
@@ -16301,7 +16304,7 @@ def process_charge_recalculation_refund(request, booking_id):
     except ValueError as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(
-        {"message": "Refund processed. Amount credited to wallet.", "booking": BookingSerializer(booking).data},
+        {"message": "Refund processed. Amount credited to wallet.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data},
         status=status.HTTP_200_OK,
     )
 
@@ -16427,7 +16430,7 @@ def process_charge_recalculation_pay_now(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
     return Response(
-        {"message": "Payment processed. Amount debited from wallet.", "booking": BookingSerializer(booking).data},
+        {"message": "Payment processed. Amount debited from wallet.", "booking": BookingSerializer(booking, context={"viewer": request.user}).data},
         status=status.HTTP_200_OK,
     )
 
@@ -16462,7 +16465,7 @@ def cancel_unpaid_input_edit(request, booking_id):
     return Response(
         {
             "message": "Edit cancelled. The previous values and charge have been restored.",
-            "booking": BookingSerializer(booking).data,
+            "booking": BookingSerializer(booking, context={"viewer": request.user}).data,
         },
         status=status.HTTP_200_OK,
     )

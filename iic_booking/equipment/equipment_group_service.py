@@ -1389,7 +1389,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
     return Response(
         {
             "message": f"Booking moved to {target.name} and rescheduled successfully.",
-            "booking": av.BookingSerializer(booking).data,
+            "booking": av.BookingSerializer(booking, context={"viewer": request.user}).data,
             "cross_equipment": True,
             "previous_equipment": _equipment_summary(source),
             "new_equipment": _equipment_summary(target),
