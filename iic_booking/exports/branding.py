@@ -1,11 +1,15 @@
-"""Shared look of exported reports: IIT Roorkee crest masthead, brand colour and portal line."""
+"""Shared look of exported reports: IIT Roorkee crest masthead, brand colours and portal line."""
 
 from __future__ import annotations
 
-BRAND_HEX = "153F79"
+from iic_booking.equipment.export_styles import INK
+from iic_booking.equipment.export_styles import MUTED
+from iic_booking.equipment.export_styles import XLSX_BRAND
+
+BRAND_HEX = XLSX_BRAND
 ACCENT_HEX = "E8EEF7"
-INK_HEX = "1E293B"
-MUTED_HEX = "64748B"
+INK_HEX = INK.lstrip("#").upper()
+MUTED_HEX = MUTED.lstrip("#").upper()
 PORTAL_LINE = "Institute Instrumentation Centre (IIC), IIT Roorkee"
 PORTAL_HOST = "equip.iitr.ac.in"
 

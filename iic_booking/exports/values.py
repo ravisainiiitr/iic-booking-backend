@@ -12,10 +12,11 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.dateparse import parse_datetime
 
+from iic_booking.equipment.export_styles import guard_formula  # noqa: F401
+
 from . import spec
 
 IST = ZoneInfo("Asia/Kolkata")
-FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
 def lookup(row, key: str):
@@ -37,13 +38,6 @@ def raw_value(row, column: spec.Column):
     if column.value is not None:
         return column.value(row)
     return lookup(row, column.key)
-
-
-def guard_formula(value):
-    """Spreadsheet formula-injection guard: text starting with = + - @ (or tab / CR) gets a leading apostrophe."""
-    if isinstance(value, str) and value.startswith(FORMULA_PREFIXES):
-        return "'" + value
-    return value
 
 
 def to_ist_datetime(value) -> datetime | None:

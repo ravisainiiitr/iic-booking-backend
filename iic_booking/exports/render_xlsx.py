@@ -40,7 +40,11 @@ def _sheet_title(name: str, used: set[str]) -> str:
 
 
 def _styles():
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.styles import Alignment
+    from openpyxl.styles import Border
+    from openpyxl.styles import Font
+    from openpyxl.styles import PatternFill
+    from openpyxl.styles import Side
 
     thin = Side(style="thin", color="D0D7E2")
     return {

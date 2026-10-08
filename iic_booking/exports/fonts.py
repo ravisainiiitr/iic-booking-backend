@@ -1,72 +1,29 @@
-"""PDF fonts: Noto Sans (Latin and ₹) and Noto Sans Devanagari, vendored under ``BASE_DIR/fonts`` (SIL OFL 1.1).
+"""PDF fonts of report exports: the shared registration of :mod:`iic_booking.equipment.export_styles`.
 
-Registered under the same reportlab names as the View Booking PDF export (``IICNotoSans``, ``IICNotoDeva``) so
-both modules share one registration. Falls back to DejaVu / Segoe UI, then Helvetica with "Rs.".
+Noto Sans (Latin and ₹) and Noto Sans Devanagari vendored under ``BASE_DIR/fonts`` (SIL OFL 1.1), registered
+once for both the View Booking export and these reports; DejaVu, then Helvetica with "Rs." otherwise.
 """
 
 from __future__ import annotations
 
-import logging
-import os
-import re
-from dataclasses import dataclass
+from iic_booking.equipment.export_styles import _ASCII_FALLBACK
+from iic_booking.equipment.export_styles import _DEVANAGARI_RUN as DEVANAGARI_RUN
+from iic_booking.equipment.export_styles import Fonts
+from iic_booking.equipment.export_styles import register_fonts
 
-logger = logging.getLogger(__name__)
+__all__ = ["DEVANAGARI_RUN", "Fonts", "markup", "needs_markup", "plain", "register_fonts", "rupee"]
 
-_DEVANAGARI_CHARS = "\u0900-\u097F\uA8E0-\uA8FF\u1CD0-\u1CFF"
-DEVANAGARI_RUN = re.compile(f"[{_DEVANAGARI_CHARS}]+(?:[\\s\u200c\u200d]+[{_DEVANAGARI_CHARS}]+)*")
-_ASCII_FALLBACK = {"₹": "Rs.", "–": "-", "—": "-", "·": "-", "×": "x", "…": "...", "’": "'", "“": '"', "”": '"'}
+_EXTRA_FALLBACK = {"’": "'", "“": '"', "”": '"'}
 
 
-@dataclass(frozen=True)
-class Fonts:
-    regular: str
-    bold: str
-    devanagari: str | None
-    unicode: bool
-
-    @property
-    def rupee(self) -> str:
-        return "₹" if self.unicode else "Rs."
-
-
-def register_fonts() -> Fonts:
-    from django.conf import settings
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-
-    font_dir = os.path.join(str(getattr(settings, "BASE_DIR", "")), "fonts")
-
-    def family(name: str, regular_file: str, bold_file: str) -> bool:
-        registered = set(pdfmetrics.getRegisteredFontNames())
-        try:
-            for font_name, filename in ((name, regular_file), (f"{name}-Bold", bold_file)):
-                if font_name not in registered:
-                    pdfmetrics.registerFont(TTFont(font_name, os.path.join(font_dir, filename)))
-        except Exception:  # noqa: BLE001 - missing or unreadable font file
-            logger.warning("Report export: font %s not available in %s", regular_file, font_dir)
-            return False
-        pdfmetrics.registerFontFamily(name, normal=name, bold=f"{name}-Bold", italic=name, boldItalic=f"{name}-Bold")
-        return True
-
-    if family("IICNotoSans", "NotoSans-Regular.ttf", "NotoSans-Bold.ttf"):
-        deva = "IICNotoDeva" if family(
-            "IICNotoDeva", "NotoSansDevanagari-Regular.ttf", "NotoSansDevanagari-Bold.ttf",
-        ) else None
-        return Fonts("IICNotoSans", "IICNotoSans-Bold", deva, True)
-
-    from iic_booking.equipment.document_exports import _register_pdf_rupee_font
-
-    fallback = _register_pdf_rupee_font()
-    if fallback:
-        return Fonts(fallback, fallback, None, True)
-    return Fonts("Helvetica", "Helvetica-Bold", None, False)
+def rupee(fonts: Fonts) -> str:
+    return "₹" if fonts.unicode else "Rs."
 
 
 def plain(text, fonts: Fonts) -> str:
     text = "" if text is None else str(text)
     if not fonts.unicode:
-        for char, replacement in _ASCII_FALLBACK.items():
+        for char, replacement in {**_ASCII_FALLBACK, **_EXTRA_FALLBACK}.items():
             text = text.replace(char, replacement)
         text = text.encode("latin-1", "replace").decode("latin-1")
     return text

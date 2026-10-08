@@ -23,6 +23,7 @@ from .fonts import markup
 from .fonts import needs_markup
 from .fonts import plain
 from .fonts import register_fonts
+from .fonts import rupee
 from .values import display_text
 from .values import raw_value
 from .values import to_number
@@ -60,7 +61,8 @@ def _wants_landscape(document: spec.Document) -> bool:
 class _Styles:
     def __init__(self, fonts: Fonts, body_size: float):
         from reportlab.lib import colors
-        from reportlab.lib.enums import TA_CENTER, TA_LEFT
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.enums import TA_LEFT
         from reportlab.lib.styles import ParagraphStyle
 
         brand = colors.HexColor(f"#{BRAND_HEX}")
@@ -93,7 +95,10 @@ def _letterhead(document: spec.Document, styles: _Styles, fonts: Fonts, width: f
     from reportlab.lib import colors
     from reportlab.lib.units import cm
     from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import HRFlowable, Image, Paragraph, Spacer
+    from reportlab.platypus import HRFlowable
+    from reportlab.platypus import Image
+    from reportlab.platypus import Paragraph
+    from reportlab.platypus import Spacer
 
     story = []
     path = masthead_path()
@@ -123,7 +128,10 @@ def _letterhead(document: spec.Document, styles: _Styles, fonts: Fonts, width: f
 def _filters_block(document: spec.Document, styles: _Styles, fonts: Fonts, width: float) -> list:
     from reportlab.lib import colors
     from reportlab.lib.units import cm
-    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph
+    from reportlab.platypus import Spacer
+    from reportlab.platypus import Table
+    from reportlab.platypus import TableStyle
 
     pairs = document.filters or [("Filters", "None (all records you can see)")]
     per_row = 3 if width > 20 * cm else 2
@@ -151,7 +159,10 @@ def _filters_block(document: spec.Document, styles: _Styles, fonts: Fonts, width
 def _kpi_cards(document: spec.Document, styles: _Styles, fonts: Fonts, width: float) -> list:
     from reportlab.lib import colors
     from reportlab.lib.units import cm
-    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph
+    from reportlab.platypus import Spacer
+    from reportlab.platypus import Table
+    from reportlab.platypus import TableStyle
 
     per_row = 5 if width > 20 * cm else 4
     gap = 0.25 * cm
@@ -165,7 +176,7 @@ def _kpi_cards(document: spec.Document, styles: _Styles, fonts: Fonts, width: fl
             if i:
                 row.append("")
                 widths.append(gap)
-            value = display_text(kpi.value, kpi.type, rupee=fonts.rupee) or "—"
+            value = display_text(kpi.value, kpi.type, rupee=rupee(fonts)) or "—"
             content = [
                 Paragraph(markup(kpi.label.upper(), fonts), styles.kpi_label),
                 Paragraph(markup(value, fonts), styles.kpi_value),
@@ -196,7 +207,9 @@ def _kpi_cards(document: spec.Document, styles: _Styles, fonts: Fonts, width: fl
 
 def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, width: float, body_size: float) -> list:
     from reportlab.lib import colors
-    from reportlab.platypus import Paragraph, Table, TableStyle
+    from reportlab.platypus import Paragraph
+    from reportlab.platypus import Table
+    from reportlab.platypus import TableStyle
 
     story = []
     if len(document.tables) > 1 or table.title != document.title:
@@ -256,7 +269,7 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
                     number = to_number(raw)
                     if number is not None:
                         totals[index] += number
-                out.append(cell(display_text(raw, column.type, rupee=fonts.rupee), col_width, fonts.regular))
+                out.append(cell(display_text(raw, column.type, rupee=rupee(fonts)), col_width, fonts.regular))
             data.append(out)
         style = list(base_style)
         if totals and start + _CHUNK >= len(rows):
@@ -265,7 +278,7 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
                 if index == 0:
                     total_row.append("Total")
                 elif index in totals:
-                    total_row.append(display_text(totals[index], column.type, rupee=fonts.rupee))
+                    total_row.append(display_text(totals[index], column.type, rupee=rupee(fonts)))
                 else:
                     total_row.append("")
             data.append(total_row)
@@ -284,7 +297,8 @@ def _data_table(document, table: spec.Table, styles: _Styles, fonts: Fonts, widt
 
 def render_pdf(document: spec.Document, *, generated_at: str) -> bytes:
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import landscape
     from reportlab.lib.units import cm
     from reportlab.pdfgen import canvas as rl_canvas
     from reportlab.platypus import SimpleDocTemplate
