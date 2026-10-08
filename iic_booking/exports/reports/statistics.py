@@ -29,9 +29,10 @@ _RATING_LABELS = {
 
 
 def _status_labels() -> dict:
+    from iic_booking.equipment.booking_list_status import DERIVED_LABELS
     from iic_booking.equipment.models import BookingStatus
 
-    return {str(k): str(v) for k, v in BookingStatus.choices}
+    return {**{str(k): str(v) for k, v in BookingStatus.choices}, **DERIVED_LABELS}
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +100,7 @@ def report_bookings(request):
     money = _money_visible(stats)
     params = {"list_view": "true", "ordering": "-created_at"}
     if status:
-        params["status"] = status
+        params["list_status"] = status
     rows, _ = collect_rows(request, "list-bookings", results_key="bookings", page_size=100, params=params)
     labels = _status_labels()
     columns = [
