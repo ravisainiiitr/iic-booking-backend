@@ -2,10 +2,13 @@
 One-off / periodic backfill: BOOKED bookings whose latest BOOKED slot end_datetime is over 24 hours ago,
 with all slots still BOOKED.
 
-Applies the same routing as scheduled tasks:
-  1) Booking Not Utilized (no refund) — empty or only Sample Sent lifecycle
-  2) Operator Absent disruption — latest trace Forwarded / Sample Accepted / Processing
-  3) Operator Unavailable (full refund) — other non-terminal lifecycle beyond Sample Sent
+Applies the same routing and timing as scheduled tasks:
+  1) Booking Not Utilized (no refund) — empty or only Sample Sent lifecycle, after the equipment's
+     Booking Not Utilize Window
+  2) Operator Absent disruption — latest trace Forwarded / Sample Accepted / Processing, after the
+     equipment's absent-disruption hours / results deadline
+  3) Operator Unavailable (full refund) — other non-terminal lifecycle beyond Sample Sent, after the
+     equipment's operator-unavailable hours / results deadline
 
 Skipped (logged): latest Held / Sample Rejected, or terminal traces, or apply_* failures.
 
@@ -22,11 +25,13 @@ from django.utils import timezone
 
 from iic_booking.equipment.booking_not_utilized_service import (
     apply_booking_not_utilized,
+    auto_not_utilized_hours,
     latest_booked_slot_end_datetime,
 )
 from iic_booking.equipment.maintenance_policy import apply_operator_absent_disruption_for_booking
 from iic_booking.equipment.models import Booking, BookingSampleTrace, BookingStatus, SampleTraceStatus, SlotStatus
 from iic_booking.equipment.operator_unavailable import apply_operator_unavailable_booking
+from iic_booking.equipment.results_deadline import WorkingCalendar, automation_state, safeguard_due_at
 from iic_booking.equipment.sample_trace_policy import (
     OPERATOR_UNAVAILABLE_AUTO_REFUND_EXCLUDED_LATEST_STATUSES,
     SAMPLE_TRACE_IN_LAB_OR_ANALYSIS_STATUSES,
@@ -72,6 +77,14 @@ class Command(BaseCommand):
         now = timezone.now()
         hours = 24
         deadline_delta = timedelta(hours=hours)
+        state = automation_state()
+        calendar = WorkingCalendar()
+
+        def safeguard_not_due(booking, latest_end, legacy_hours):
+            due_at, _mode = safeguard_due_at(
+                booking, latest_end, legacy_hours=legacy_hours, state=state, calendar=calendar
+            )
+            return due_at is None or now < due_at
 
         qs = Booking.objects.filter(status=BookingStatus.BOOKED).select_related("user", "equipment")
         if only_id is not None:
@@ -107,7 +120,14 @@ class Command(BaseCommand):
                 continue
 
             bid = booking.booking_id
+            equipment = booking.equipment
             if trace_allows_booking_not_utilized(bid):
+                nu_hours = auto_not_utilized_hours(equipment)
+                if nu_hours is None or now < latest_end + timedelta(hours=nu_hours):
+                    counts["skipped"] += 1
+                    if only_id is not None:
+                        self.stdout.write(f"booking_id={bid}: skip (equipment Booking Not Utilize Window not over)")
+                    continue
                 if dry_run:
                     self.stdout.write(f"DRY booking_id={bid} -> Booking Not Utilized")
                     counts["dry_seen"] += 1
@@ -116,7 +136,7 @@ class Command(BaseCommand):
                     booking,
                     actor=None,
                     automated=True,
-                    hours_after_last_slot_end=hours,
+                    hours_after_last_slot_end=nu_hours,
                 ):
                     counts["not_util"] += 1
                     self.stdout.write(self.style.SUCCESS(f"booking_id={bid} -> Booking Not Utilized"))
@@ -138,6 +158,11 @@ class Command(BaseCommand):
             latest_st = getattr(latest_ev, "status", None)
 
             if latest_st in SAMPLE_TRACE_IN_LAB_OR_ANALYSIS_STATUSES:
+                if safeguard_not_due(
+                    booking, latest_end, getattr(equipment, "operator_absent_disruption_after_booking_end_hours", 48)
+                ):
+                    counts["skipped"] += 1
+                    continue
                 if dry_run:
                     self.stdout.write(
                         f"DRY booking_id={bid} -> Operator Absent disruption (latest={latest_st})"
@@ -170,6 +195,11 @@ class Command(BaseCommand):
                 status=SampleTraceStatus.SAMPLE_SENT
             ).exists()
             if not non_sample_sent:
+                counts["skipped"] += 1
+                continue
+            if safeguard_not_due(
+                booking, latest_end, getattr(equipment, "operator_unavailable_after_booking_end_hours", 24)
+            ):
                 counts["skipped"] += 1
                 continue
 

@@ -10,7 +10,7 @@ accepted, in analysis/processing), use disruption policy — not Booking Not Uti
 ``auto_mark_operator_unavailable_after_booking_end`` (~20:30),
 ``auto_mark_operator_absent_disruption_after_booking_end`` (~20:35).
 
-**Equipment admin** (Slot Configuration): ``booking_not_utilize_window_hours`` (manual UI gate),
+**Equipment admin** (Slot Configuration): ``booking_not_utilize_window_hours`` (staff action and the scheduled check; 0 = off),
 ``operator_unavailable_after_booking_end_hours``, ``operator_absent_disruption_after_booking_end_hours``.
 """
 

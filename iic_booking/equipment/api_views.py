@@ -12166,8 +12166,8 @@ def refund_booking(request, booking_id):
 def mark_booking_not_utilized(request, booking_id):
     """Mark a booking as Not Utilized (no refund).
 
-    Allowed only when: booking is BOOKED; current time is after the latest **BOOKED** slot's
-    **end_datetime**; sample lifecycle has no events or only SAMPLE_SENT. User did not attend or samples were not
+    Allowed only when: booking is BOOKED; current time is at least the equipment's Booking Not Utilize
+    Window (hours) after the latest **BOOKED** slot's **end_datetime**; sample lifecycle has no events or only SAMPLE_SENT. User did not attend or samples were not
     submitted in time.
 
     All booked slots are set to BOOKING_NOT_UTILIZED. Email is sent to the user and the
@@ -12204,7 +12204,11 @@ def mark_booking_not_utilized(request, booking_id):
 
     equipment = booking.equipment
 
-    from .booking_not_utilized_service import apply_booking_not_utilized, latest_booked_slot_end_datetime
+    from .booking_not_utilized_service import (
+        apply_booking_not_utilized,
+        latest_booked_slot_end_datetime,
+        not_utilized_window_hours,
+    )
 
     booked_slots = list(
         booking.daily_slots.filter(status=SlotStatus.BOOKED).select_related("booking", "booking__user", "booking__equipment")
@@ -12252,6 +12256,23 @@ def mark_booking_not_utilized(request, booking_id):
             {
                 "error": (
                     "Booking Not Utilized can only be recorded after the last booked slot end time."
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    window_hours = not_utilized_window_hours(equipment)
+    if window_hours <= 0:
+        return Response(
+            {"error": "Booking Not Utilized is switched off for this equipment (Booking Not Utilize Window is 0)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    allowed_from = booking_end + timedelta(hours=window_hours)
+    if timezone.now() < allowed_from:
+        return Response(
+            {
+                "error": (
+                    f"Booking Not Utilized can be recorded only {window_hours} hours after the last booked slot "
+                    f"ends for this equipment, i.e. from {timezone.localtime(allowed_from):%d %b %Y %H:%M}."
                 ),
             },
             status=status.HTTP_400_BAD_REQUEST,

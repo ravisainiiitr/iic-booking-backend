@@ -27,6 +27,31 @@ from .sample_trace_policy import trace_allows_booking_not_utilized
 User = get_user_model()
 logger = logging.getLogger(__name__)
 
+# The scheduled job never acts sooner than this after the last booked slot, even for shorter windows.
+AUTO_NOT_UTILIZED_MIN_HOURS = 24
+
+
+def not_utilized_window_hours(equipment) -> int:
+    """Equipment's "Booking Not Utilize Window (hours)"; 0 means Booking Not Utilized is off for it."""
+    return int(getattr(equipment, "booking_not_utilize_window_hours", 0) or 0)
+
+
+def auto_not_utilized_hours(equipment) -> Optional[int]:
+    """Hours after the last booked slot end before the scheduled job may act; None when switched off."""
+    window = not_utilized_window_hours(equipment)
+    if window <= 0:
+        return None
+    return max(window, AUTO_NOT_UTILIZED_MIN_HOURS)
+
+
+def not_utilized_allowed_from(booking: Booking):
+    """Earliest time Booking Not Utilized may be recorded (last booked slot end + equipment window), or None."""
+    window = not_utilized_window_hours(getattr(booking, "equipment", None))
+    latest_end = latest_booked_slot_end_datetime(booking)
+    if window <= 0 or latest_end is None:
+        return None
+    return latest_end + timedelta(hours=window)
+
 
 def _normalize_daily_slot_end_datetime(end_dt):
     """
@@ -138,23 +163,13 @@ def apply_booking_not_utilized(
 
     When ``automated`` is True and ``actor`` is None, the booking event is stored with null created_by.
 
-    The time gate uses only **end_datetime** on **BOOKED** slots: for ``hours_after_last_slot_end=N``,
-    requires ``now >= max(end_datetime) + N hours`` (see ``latest_booked_slot_end_datetime``).
+    The time gate uses only **end_datetime** on **BOOKED** slots: requires
+    ``now >= max(end_datetime) + max(N, equipment window) hours`` for ``hours_after_last_slot_end=N``
+    (see ``latest_booked_slot_end_datetime``). The equipment's ``booking_not_utilize_window_hours`` is always
+    honoured; a window of 0 switches Booking Not Utilized off for that equipment.
 
     Returns True if the booking was updated, False if current state does not allow it (idempotent/race).
     """
-    trace_reason = (
-        "Automatically marked as Booking Not Utilized: latest booked slot end_datetime was over 24 hours ago and sample "
-        "lifecycle had no update or only Sample Sent. No refund issued."
-        if automated
-        else "Booking marked as Not Utilized by staff. No refund issued."
-    )
-    event_comment = (
-        "Automatically marked as Booking Not Utilized (scheduled check). No refund issued."
-        if automated
-        else "Booking marked as Not Utilized. No refund issued."
-    )
-
     with transaction.atomic():
         locked = (
             Booking.objects.select_for_update()
@@ -178,12 +193,28 @@ def apply_booking_not_utilized(
         if locked.daily_slots.exclude(status=SlotStatus.BOOKED).exists():
             return False
 
+        window = not_utilized_window_hours(locked.equipment)
+        if window <= 0:
+            return False
         latest_end = latest_booked_slot_end_datetime(locked)
         if latest_end is None:
             return False
-        deadline = latest_end + timedelta(hours=hours_after_last_slot_end)
-        if timezone.now() < deadline:
+        required_hours = max(int(hours_after_last_slot_end or 0), window)
+        if timezone.now() < latest_end + timedelta(hours=required_hours):
             return False
+
+        trace_reason = (
+            f"Automatically marked as Booking Not Utilized: latest booked slot ended over {required_hours} hours ago "
+            f"(equipment Booking Not Utilize Window: {window} hours) and sample lifecycle had no update or only "
+            "Sample Sent. No refund issued."
+            if automated
+            else "Booking marked as Not Utilized by staff. No refund issued."
+        )
+        event_comment = (
+            "Automatically marked as Booking Not Utilized (scheduled check). No refund issued."
+            if automated
+            else "Booking marked as Not Utilized. No refund issued."
+        )
 
         locked.daily_slots.filter(status=SlotStatus.BOOKED).update(status=SlotStatus.BOOKING_NOT_UTILIZED)
         BookingSampleTrace.objects.create(

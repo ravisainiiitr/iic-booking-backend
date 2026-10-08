@@ -593,14 +593,18 @@ def check_booking_not_utilized() -> int:
     """
     Daily at 20:00 (Asia/Kolkata): on **working days only** (excludes Saturday, Sunday, and institute
     holidays per ``Holiday.is_holiday``), find BOOKED bookings where **the latest ``DailySlot.end_datetime``
-    among BOOKED slots** is at least **24 hours** before *now* (i.e. ``now >= that_end + 24h``), sample
-    lifecycle is **empty or only SAMPLE_SENT** (excludes forwarded/accepted/processing — those follow
-    operator disruption / unavailable rules), and all slots are still BOOKED; mark Booking Not Utilized
-    (no refund) and email user + faculty wallet owner.
+    among BOOKED slots** is at least the equipment's **Booking Not Utilize Window** (never less than 24 hours)
+    before *now*, sample lifecycle is **empty or only SAMPLE_SENT** (excludes forwarded/accepted/processing —
+    those follow operator disruption / unavailable rules), and all slots are still BOOKED; mark Booking Not
+    Utilized (no refund) and email user + faculty wallet owner. Equipment with a window of 0 is skipped.
     """
     from django.db.models import Count, Exists, F, Max, OuterRef, Q
 
-    from .booking_not_utilized_service import apply_booking_not_utilized
+    from .booking_not_utilized_service import (
+        AUTO_NOT_UTILIZED_MIN_HOURS,
+        apply_booking_not_utilized,
+        auto_not_utilized_hours,
+    )
     from .models import (
         FABRICATION_PROFILE_TYPES,
         Booking,
@@ -618,9 +622,10 @@ def check_booking_not_utilized() -> int:
         logger.info("check_booking_not_utilized: skip (not a working day: %s)", reason)
         return 0
 
-    # 24h is measured from max(end_datetime) of BOOKED slots only — not booking created_at or slot.date.
+    # Measured from max(end_datetime) of BOOKED slots only — not booking created_at or slot.date. The query
+    # uses the 24h minimum; each booking's equipment window is applied per booking below.
     now = timezone.now()
-    cutoff = now - timedelta(hours=24)
+    cutoff = now - timedelta(hours=AUTO_NOT_UTILIZED_MIN_HOURS)
 
     # Not utilized only when no lifecycle progress past "sample sent" (see sample_trace_policy).
     bad_trace = BookingSampleTrace.objects.filter(booking_id=OuterRef("pk")).exclude(
@@ -654,17 +659,21 @@ def check_booking_not_utilized() -> int:
         .exclude(walk_in_sample_equipment_q("equipment__"))
         # 3D printing / laser cutting have no sample lifecycle; the lab marks them complete or rejects them.
         .exclude(equipment__profile_type__in=FABRICATION_PROFILE_TYPES)
+        .exclude(equipment__booking_not_utilize_window_hours=0)
         .select_related("user", "equipment")
     )
 
     marked = 0
     for booking in qs.iterator(chunk_size=50):
+        hours = auto_not_utilized_hours(booking.equipment)
+        if hours is None or now < booking.latest_booked_slot_end + timedelta(hours=hours):
+            continue
         try:
             if apply_booking_not_utilized(
                 booking,
                 actor=None,
                 automated=True,
-                hours_after_last_slot_end=24,
+                hours_after_last_slot_end=hours,
             ):
                 marked += 1
         except Exception:
