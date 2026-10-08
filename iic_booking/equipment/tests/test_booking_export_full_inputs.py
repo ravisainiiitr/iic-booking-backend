@@ -228,20 +228,20 @@ def test_pdf_handles_values_longer_than_a_page(world):
 def test_pdf_falls_back_to_helvetica_without_font_files(world, settings, tmp_path, monkeypatch):
     from reportlab.pdfbase import pdfmetrics
 
-    from iic_booking.equipment import booking_export_pdf
+    from iic_booking.equipment import export_styles
 
     add_rich_inputs(world)
     settings.BASE_DIR = tmp_path
     monkeypatch.setattr(pdfmetrics, "getRegisteredFontNames", lambda: [])
     monkeypatch.setattr("iic_booking.equipment.document_exports._register_pdf_rupee_font", lambda: None)
-    fonts = booking_export_pdf.register_fonts()
-    assert fonts == booking_export_pdf.Fonts("Helvetica", "Helvetica-Bold", None, False)
-    assert booking_export_pdf.markup("₹5 – <b>", fonts) == "Rs.5 - &lt;b&gt;"
+    fonts = export_styles.register_fonts()
+    assert fonts == export_styles.Fonts("Helvetica", "Helvetica-Bold", None, False)
+    assert export_styles.markup("₹5 – <b>", fonts) == "Rs.5 - &lt;b&gt;"
 
 
 def test_markup_puts_devanagari_runs_in_the_devanagari_font():
-    from iic_booking.equipment.booking_export_pdf import Fonts
-    from iic_booking.equipment.booking_export_pdf import markup
+    from iic_booking.equipment.export_styles import Fonts
+    from iic_booking.equipment.export_styles import markup
 
     fonts = Fonts("IICNotoSans", "IICNotoSans-Bold", "IICNotoDeva", True)
     assert markup("Sample नमूना विवरण & ₹10", fonts) == (
@@ -317,3 +317,28 @@ def test_field_label_with_key():
     assert field_label_with_key("A", "No. of Samples:") == "No. of Samples (A)"
     assert field_label_with_key("B", "Mode (B)") == "Mode (B)"
     assert field_label_with_key("sample_type", "") == "Sample type"
+
+
+def test_shared_export_styles_build_a_styled_workbook():
+    import io
+
+    from openpyxl import Workbook
+    from openpyxl import load_workbook
+
+    from iic_booking.equipment.export_styles import SheetWriter
+    from iic_booking.equipment.export_styles import register_xlsx_styles
+    from iic_booking.equipment.export_styles import xlsx_text
+
+    wb = Workbook(write_only=True)
+    register_xlsx_styles(wb)
+    sheet = SheetWriter(wb, "Items")
+    sheet.header(["Name", "Amount"])
+    sheet.row([xlsx_text("=cmd"), 12.5], ["text", "money"])
+    sheet.row([xlsx_text(""), None], ["text", "money"], striped=True)
+    sheet.flush(autofilter_columns=2)
+    buf = io.BytesIO()
+    wb.save(buf)
+    ws = load_workbook(io.BytesIO(buf.getvalue()))["Items"]
+    assert ws["A2"].value == "'=cmd" and ws["A3"].value is None
+    assert ws["A1"].style == "exp_header" and ws["B2"].style == "exp_money" and ws["A3"].style == "exp_text_alt"
+    assert ws.auto_filter.ref == "A1:B3"

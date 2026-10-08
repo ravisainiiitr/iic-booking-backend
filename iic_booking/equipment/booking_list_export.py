@@ -25,6 +25,10 @@ from iic_booking.communication.utils import booking_display_id_for_email
 from iic_booking.users.display import get_user_display_name
 from iic_booking.users.models.user_type import UserType
 
+from .export_styles import SheetWriter
+from .export_styles import guard_formula
+from .export_styles import register_xlsx_styles
+from .export_styles import xlsx_text
 from .models import Booking
 from .models import BookingSampleTrace
 from .models import BookingSlotRange
@@ -41,7 +45,6 @@ PORTAL_HEADER = "Institute Instrumentation Centre (IIC), IIT Roorkee"
 # Lab Operators see the job sheet (no charges) on View Booking; OIC / Department Admin / Admin see Total Cost.
 STAFF_AMOUNT_USER_TYPES = frozenset({UserType.MANAGER, UserType.DEPT_ADMIN, UserType.ADMIN})
 
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 _CONTENT_TYPES = {
     "csv": "text/csv; charset=utf-8",
@@ -416,13 +419,6 @@ def export_filename(ext: str, now=None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def guard_formula(value):
-    """Spreadsheet formula-injection guard: text starting with = + - @ (or tab / CR) gets a leading apostrophe."""
-    if isinstance(value, str) and value.startswith(_FORMULA_PREFIXES):
-        return "'" + value
-    return value
-
-
 def _cell_text(col: Column, value) -> str:
     if value is None or value == "":
         return ""
@@ -501,118 +497,6 @@ def render_csv(columns, rows) -> bytes:
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
-_XLSX_BRAND = "153F79"
-_XLSX_TEXT_MAX = 32_000  # Excel holds at most 32,767 characters in a cell
-
-
-def _xlsx_text(value):
-    text = guard_formula(value)
-    if isinstance(text, str) and len(text) > _XLSX_TEXT_MAX:
-        text = text[:_XLSX_TEXT_MAX] + "…"
-    return None if text == "" else text
-
-
-def _register_xlsx_styles(wb) -> None:
-    from openpyxl.styles import Alignment
-    from openpyxl.styles import Border
-    from openpyxl.styles import Font
-    from openpyxl.styles import NamedStyle
-    from openpyxl.styles import PatternFill
-    from openpyxl.styles import Side
-
-    def fill(color):
-        return PatternFill("solid", start_color=color, end_color=color)
-
-    thin = Side(style="thin", color="CBD5E1")
-    border = Border(left=thin, right=thin, top=thin, bottom=thin)
-    body = Font(name="Calibri", size=10, color="1E293B")
-    top_left = Alignment(vertical="top", wrap_text=True)
-    kinds = {
-        "text": {"alignment": top_left},
-        "int": {"alignment": Alignment(vertical="top", horizontal="center")},
-        "money": {"alignment": Alignment(vertical="top", horizontal="right"), "number_format": '"₹"#,##0.00'},
-        "datetime": {"alignment": Alignment(vertical="top", horizontal="left"), "number_format": "DD-MM-YYYY HH:MM"},
-    }
-    for kind, extra in kinds.items():
-        wb.add_named_style(NamedStyle(name=f"exp_{kind}", font=body, border=border, **extra))
-        wb.add_named_style(NamedStyle(name=f"exp_{kind}_alt", font=body, border=border, fill=fill("F4F7FB"), **extra))
-    wb.add_named_style(NamedStyle(
-        name="exp_header", font=Font(name="Calibri", size=10, bold=True, color="FFFFFF"), fill=fill(_XLSX_BRAND),
-        border=border, alignment=Alignment(vertical="center", wrap_text=True),
-    ))
-    wb.add_named_style(NamedStyle(
-        name="exp_band", font=Font(name="Calibri", size=11, bold=True, color=_XLSX_BRAND), fill=fill("DBE7F7"),
-    ))
-    wb.add_named_style(NamedStyle(name="exp_title", font=Font(name="Calibri", size=14, bold=True, color=_XLSX_BRAND)))
-    wb.add_named_style(NamedStyle(
-        name="exp_label", font=Font(name="Calibri", size=10, bold=True, color="334155"), fill=fill("EEF2F7"),
-        border=border, alignment=top_left,
-    ))
-    wb.add_named_style(NamedStyle(name="exp_note", font=Font(name="Calibri", size=10, italic=True, color="64748B")))
-
-
-class _SheetWriter:
-    """Buffers a write-only sheet so column widths (written before the rows) fit the content."""
-
-    def __init__(self, wb, title: str, *, max_width: int = 50):
-        self.ws = wb.create_sheet(title)
-        self.max_width = max_width
-        self.rows: list[list[tuple]] = []
-        self.widths: dict[int, int] = {}
-        self.data_rows = 0
-
-    def _track(self, index: int, value, kind: str, *, header: bool = False) -> None:
-        if value is None:
-            return
-        if kind == "datetime":
-            length = 16
-        elif kind == "money":
-            length = len(f"₹{value:,.2f}")
-        elif header:
-            words = str(value).split()
-            length = max([min(len(str(value)), 22), *(len(w) for w in words)])
-        else:
-            length = max((len(line) for line in str(value).split("\n")), default=0)
-        self.widths[index] = max(self.widths.get(index, 0), length)
-
-    def header(self, labels) -> None:
-        for i, label in enumerate(labels):
-            self._track(i, label, "text", header=True)
-        self.rows.append([(label, "exp_header") for label in labels])
-
-    def row(self, values, kinds, *, striped: bool = False) -> None:
-        out = []
-        for i, (value, kind) in enumerate(zip(values, kinds)):
-            self._track(i, value, kind)
-            out.append((value, f"exp_{kind}_alt" if striped else f"exp_{kind}"))
-        self.rows.append(out)
-        self.data_rows += 1
-
-    def line(self, value, style: str) -> None:
-        self.rows.append([(value, style)])
-
-    def blank(self) -> None:
-        self.rows.append([])
-
-    def flush(self, *, autofilter_columns: int = 0, min_width: int = 8) -> None:
-        from openpyxl.cell import WriteOnlyCell
-        from openpyxl.utils import get_column_letter
-
-        for index, width in self.widths.items():
-            letter = get_column_letter(index + 1)
-            self.ws.column_dimensions[letter].width = min(max(width + 2, min_width), self.max_width)
-        if autofilter_columns and self.data_rows:
-            last = get_column_letter(autofilter_columns)
-            self.ws.auto_filter.ref = f"A1:{last}{self.data_rows + 1}"
-        for row in self.rows:
-            cells = []
-            for value, style in row:
-                cell = WriteOnlyCell(self.ws, value=value)
-                cell.style = style
-                cells.append(cell)
-            self.ws.append(cells)
-
-
 def _xlsx_value(col: Column, value):
     if col.kind == "datetime":
         return _ist(value).replace(tzinfo=None) if value is not None else None
@@ -620,7 +504,7 @@ def _xlsx_value(col: Column, value):
         return float(value) if value is not None else None
     if col.kind == "int":
         return value
-    return _xlsx_text(_cell_text(col, value))
+    return xlsx_text(_cell_text(col, value))
 
 
 def _sample_set_rows(rows, labels):
@@ -636,7 +520,7 @@ def _sample_set_rows(rows, labels):
             for label in labels:
                 item = by_label.get(label)
                 value = item.values[index] if item is not None and index < len(item.values) else None
-                values.append(_xlsx_text(formatted_as_text(value)) if value else None)
+                values.append(xlsx_text(formatted_as_text(value)) if value else None)
             yield row, index + 1, values
 
 
@@ -671,9 +555,9 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     from openpyxl import Workbook
 
     wb = Workbook(write_only=True)
-    _register_xlsx_styles(wb)
+    register_xlsx_styles(wb)
 
-    bookings = _SheetWriter(wb, "Bookings")
+    bookings = SheetWriter(wb, "Bookings")
     bookings.header([c.label for c in columns])
     kinds = [c.kind if c.kind in ("int", "money", "datetime") else "text" for c in columns]
     for i, row in enumerate(rows):
@@ -682,10 +566,10 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     bookings.flush(autofilter_columns=len(columns))
 
     labels = input_field_labels(rows)
-    sets = _SheetWriter(wb, "Sample sets")
+    sets = SheetWriter(wb, "Sample sets")
     sets.header(["Booking ID", "Equipment", "Sample set", *labels])
     for i, (row, number, values) in enumerate(_sample_set_rows(rows, labels)):
-        sets.row([row["booking_id"], _xlsx_text(row.get("equipment") or ""), number, *values],
+        sets.row([row["booking_id"], xlsx_text(row.get("equipment") or ""), number, *values],
                  ["text", "text", "int", *["text"] * len(labels)], striped=i % 2 == 1)
     if not sets.data_rows:
         sets.blank()
@@ -693,13 +577,13 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     sets.ws.freeze_panes = "D2"
     sets.flush(autofilter_columns=3 + len(labels))
 
-    tables = _SheetWriter(wb, "Input tables", max_width=40)
+    tables = SheetWriter(wb, "Input tables", max_width=40)
     groups = _input_table_groups(rows)
     for title, cols, data in groups:
-        tables.line(_xlsx_text(title), "exp_band")
+        tables.line(xlsx_text(title), "exp_band")
         tables.header(["Booking ID", "Sample set", "Row #", *cols])
         for i, cells in enumerate(data):
-            tables.row([cells[0], cells[1], cells[2], *(_xlsx_text(c) for c in cells[3:])],
+            tables.row([cells[0], cells[1], cells[2], *(xlsx_text(c) for c in cells[3:])],
                        ["text", "int", "int", *["text"] * len(cols)], striped=i % 2 == 1)
         tables.blank()
     if not groups:
@@ -707,7 +591,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
     tables.flush()
 
     if charges:
-        sheet = _SheetWriter(wb, "Charges", max_width=70)
+        sheet = SheetWriter(wb, "Charges", max_width=70)
         sheet.header(["Booking ID", "Equipment", "Line", "Description", "Amount (₹)"])
         stripe = False
         for row in rows:
@@ -716,7 +600,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
                 continue
             for number, (description, amount) in enumerate(detail.charges, start=1):
                 sheet.row(
-                    [row["booking_id"], _xlsx_text(row.get("equipment") or ""), number, _xlsx_text(description),
+                    [row["booking_id"], xlsx_text(row.get("equipment") or ""), number, xlsx_text(description),
                      float(amount) if amount is not None else None],
                     ["text", "text", "int", "text", "money"], striped=stripe,
                 )
@@ -727,7 +611,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
         sheet.ws.freeze_panes = "A2"
         sheet.flush(autofilter_columns=5)
 
-    info = _SheetWriter(wb, "Filters", max_width=90)
+    info = SheetWriter(wb, "Filters", max_width=90)
     info.line(f"Bookings — {PORTAL_HEADER}", "exp_title")
     info.blank()
     details = [("Generated at (IST)", generated_at)]
@@ -735,7 +619,7 @@ def render_xlsx(columns, rows, *, summary, generated_at, status_counts=(), view_
         details.append(("Exported from", view_label))
     details.append(("Rows", str(len(rows))))
     for label, value in [*details, *summary]:
-        info.row([label, _xlsx_text(value)], ["text", "text"])
+        info.row([label, xlsx_text(value)], ["text", "text"])
         info.rows[-1][0] = (label, "exp_label")
     if status_counts:
         info.blank()

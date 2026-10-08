@@ -10,50 +10,23 @@ repository's ``fonts`` folder (₹ and Devanagari), falling back to Helvetica wi
 from __future__ import annotations
 
 import io
-import logging
-import os
-import re
-from dataclasses import dataclass
-from types import SimpleNamespace
 
 from .booking_list_export import PORTAL_HEADER
 from .booking_list_export import _cell_text
-
-logger = logging.getLogger(__name__)
-
-BRAND = "#153f79"
-INK = "#1e293b"
-MUTED = "#64748b"
-RULE = "#cbd5e1"
-LABEL_BG = "#f1f5f9"
-STRIPE_BG = "#f8fafc"
-TABLE_HEAD_BG = "#e3ebf6"
-SET_BG = "#eef3fa"
-
-# (text, background) of the status badge
-_STATUS_COLOURS = {
-    "BOOKED": ("#1d4ed8", "#dbeafe"),
-    "COMPLETED": ("#15803d", "#dcfce7"),
-    "PROCESSING": ("#0f766e", "#ccfbf1"),
-    "PENDING": ("#b45309", "#fef3c7"),
-    "PENDING_PAYMENT": ("#b45309", "#fef3c7"),
-    "HOLD": ("#b45309", "#fef3c7"),
-    "DISRUPTION_PENDING": ("#c2410c", "#ffedd5"),
-    "UNDER_MAINTENANCE": ("#c2410c", "#ffedd5"),
-    "OTHER_DISRUPTION": ("#c2410c", "#ffedd5"),
-    "ABSENT": ("#c2410c", "#ffedd5"),
-    "BOOKING_NOT_UTILIZED": ("#c2410c", "#ffedd5"),
-    "CANCELLED": ("#b91c1c", "#fee2e2"),
-    "REFUNDED": ("#475569", "#e2e8f0"),
-    "WAITLISTED": ("#7e22ce", "#f3e8ff"),
-}
-_DEFAULT_STATUS_COLOURS = ("#475569", "#e2e8f0")
-
-_DEVANAGARI_CHARS = "\u0900-\u097F\uA8E0-\uA8FF\u1CD0-\u1CFF"
-_DEVANAGARI_RUN = re.compile(
-    f"[{_DEVANAGARI_CHARS}]+(?:[\\s\u200c\u200d]+[{_DEVANAGARI_CHARS}]+)*",
-)
-_ASCII_FALLBACK = {"₹": "Rs.", "–": "-", "—": "-", "·": "-", "×": "x", "…": "..."}
+from .export_styles import BRAND
+from .export_styles import DEFAULT_STATUS_COLOURS
+from .export_styles import LABEL_BG
+from .export_styles import MUTED
+from .export_styles import RULE
+from .export_styles import SET_BG
+from .export_styles import STATUS_COLOURS
+from .export_styles import STRIPE_BG
+from .export_styles import TABLE_HEAD_BG
+from .export_styles import Fonts
+from .export_styles import markup
+from .export_styles import money_text
+from .export_styles import pdf_styles
+from .export_styles import register_fonts
 
 # Card fields that are already in the header band.
 _BAND_KEYS = {"sno", "booking_id", "equipment", "status"}
@@ -62,111 +35,10 @@ _LONG_TEXT = 500
 _CELL_MAX_LINES = 50
 
 
-@dataclass(frozen=True)
-class Fonts:
-    regular: str
-    bold: str
-    devanagari: str | None
-    unicode: bool
-
-
-def register_fonts() -> Fonts:
-    """Noto Sans (Latin, ₹) and Noto Sans Devanagari from ``BASE_DIR/fonts``; DejaVu or Helvetica otherwise."""
-    from django.conf import settings
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
-
-    font_dir = os.path.join(str(getattr(settings, "BASE_DIR", "")), "fonts")
-
-    def family(name: str, regular_file: str, bold_file: str) -> bool:
-        registered = set(pdfmetrics.getRegisteredFontNames())
-        try:
-            for font_name, filename in ((name, regular_file), (f"{name}-Bold", bold_file)):
-                if font_name not in registered:
-                    pdfmetrics.registerFont(TTFont(font_name, os.path.join(font_dir, filename)))
-        except Exception:  # noqa: BLE001 - missing or unreadable font file
-            logger.warning("Bookings PDF export: font %s not available in %s", regular_file, font_dir)
-            return False
-        pdfmetrics.registerFontFamily(
-            name, normal=name, bold=f"{name}-Bold", italic=name, boldItalic=f"{name}-Bold",
-        )
-        return True
-
-    if family("IICNotoSans", "NotoSans-Regular.ttf", "NotoSans-Bold.ttf"):
-        deva = "IICNotoDeva" if family(
-            "IICNotoDeva", "NotoSansDevanagari-Regular.ttf", "NotoSansDevanagari-Bold.ttf",
-        ) else None
-        return Fonts("IICNotoSans", "IICNotoSans-Bold", deva, True)
-
-    from .document_exports import _register_pdf_rupee_font
-
-    dejavu = _register_pdf_rupee_font()
-    if dejavu:
-        return Fonts(dejavu, dejavu, None, True)
-    return Fonts("Helvetica", "Helvetica-Bold", None, False)
-
-
-def markup(text, fonts: Fonts) -> str:
-    """Paragraph markup for plain text: escaped, Devanagari runs in the Devanagari font, newlines as breaks."""
-    text = "" if text is None else str(text)
-    if not fonts.unicode:
-        for char, replacement in _ASCII_FALLBACK.items():
-            text = text.replace(char, replacement)
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    if fonts.devanagari:
-        text = _DEVANAGARI_RUN.sub(lambda m: f'<font name="{fonts.devanagari}">{m.group(0)}</font>', text)
-    return text.replace("\n", "<br/>")
-
-
-def _money_text(amount, fonts: Fonts) -> str:
-    if amount is None:
-        return ""
-    return f"{'₹' if fonts.unicode else 'Rs. '}{amount:,.2f}"
-
-
-def _styles(fonts: Fonts):
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.enums import TA_RIGHT
-    from reportlab.lib.styles import ParagraphStyle
-
-    def style(name, *, bold=False, size=8.0, leading=None, color=INK, **kw):
-        return ParagraphStyle(
-            name, fontName=fonts.bold if bold else fonts.regular, fontSize=size,
-            leading=leading or round(size * 1.3, 1), textColor=colors.HexColor(color), **kw,
-        )
-
-    return SimpleNamespace(
-        title=style("exp_title", bold=True, size=22, leading=27, color=BRAND, alignment=TA_CENTER),
-        subtitle=style("exp_subtitle", size=10, color=MUTED, alignment=TA_CENTER),
-        h2=style("exp_h2", bold=True, size=12.5, leading=16, color=BRAND, spaceBefore=4, spaceAfter=5),
-        panel_title=style("exp_panel_title", bold=True, size=9, color=BRAND),
-        section=style("exp_section", bold=True, size=9.2, leading=12, color=BRAND),
-        label=style("exp_label", size=7.3, leading=9.2, color=MUTED),
-        value=style("exp_value", size=8, leading=10.2),
-        cell=style("exp_cell", size=7.4, leading=9.3),
-        cell_small=style("exp_cell_small", size=6.6, leading=8.3),
-        cell_right=style("exp_cell_right", size=7.4, leading=9.3, alignment=TA_RIGHT),
-        cell_bold_right=style("exp_cell_bold_right", bold=True, size=7.6, leading=9.5, alignment=TA_RIGHT),
-        cell_bold=style("exp_cell_bold", bold=True, size=7.6, leading=9.5),
-        head=style("exp_head", bold=True, size=7.4, leading=9.3, color="#ffffff"),
-        table_head=style("exp_table_head", bold=True, size=7.2, leading=9, color=BRAND),
-        table_head_small=style("exp_table_head_small", bold=True, size=6.5, leading=8.2, color=BRAND),
-        table_label=style("exp_table_label", bold=True, size=7.6, leading=9.6, color="#334155", spaceBefore=3,
-                          spaceAfter=2, keepWithNext=1),
-        band_id=style("exp_band_id", bold=True, size=11.5, leading=14, color="#ffffff"),
-        band_sub=style("exp_band_sub", size=8.5, leading=11, color="#dbe7f7"),
-        badge=style("exp_badge", bold=True, size=7.4, leading=9, alignment=TA_CENTER),
-        set_title=style("exp_set_title", bold=True, size=8.4, leading=10.5, color=BRAND),
-        note=style("exp_note", size=7.6, leading=9.8, color=MUTED),
-        count=style("exp_count", bold=True, size=8, leading=10, alignment=TA_RIGHT),
-    )
-
-
 class _Builder:
     def __init__(self, fonts: Fonts, width: float, charges: bool):
         self.fonts = fonts
-        self.S = _styles(fonts)
+        self.S = pdf_styles(fonts)
         self.width = width
         self.charges = charges
 
@@ -184,7 +56,7 @@ class _Builder:
         from reportlab.platypus import Table
         from reportlab.platypus import TableStyle
 
-        fg, bg = _STATUS_COLOURS.get(status_code or "", _DEFAULT_STATUS_COLOURS)
+        fg, bg = STATUS_COLOURS.get(status_code or "", DEFAULT_STATUS_COLOURS)
         label = text or status_code or ""
         style = self.S.badge.clone("exp_badge_c", textColor=colors.HexColor(fg))
         width = min(stringWidth(label, self.fonts.bold, style.fontSize) + 16, 150)
@@ -395,7 +267,7 @@ class _Builder:
             if col.key in _BAND_KEYS:
                 continue
             value = row.get(col.key)
-            text = _money_text(value, self.fonts) if col.kind == "money" else _cell_text(col, value)
+            text = money_text(value, self.fonts) if col.kind == "money" else _cell_text(col, value)
             if text:
                 label = col.label.replace(" (₹)", "")
                 pairs.append((label, text))
@@ -516,7 +388,7 @@ class _Builder:
                     if key == "amount":
                         cells.append(self.p("" if value is None else f"{value:,.2f}", self.S.cell_right))
                     elif key == "status":
-                        fg, _bg = _STATUS_COLOURS.get(row.get("status_code") or "", _DEFAULT_STATUS_COLOURS)
+                        fg, _bg = STATUS_COLOURS.get(row.get("status_code") or "", DEFAULT_STATUS_COLOURS)
                         cells.append(self.p(value or "", self.S.cell_bold.clone("exp_status_c",
                                                                                 textColor=colors.HexColor(fg))))
                     else:
@@ -540,7 +412,7 @@ class _Builder:
         if self.charges:
             amounts = [r.get("amount") for r in rows if r.get("amount") is not None]
             if amounts:
-                details.append(("Total amount", _money_text(sum(amounts), self.fonts)))
+                details.append(("Total amount", money_text(sum(amounts), self.fonts)))
         details += list(summary)
 
         def panel(title, data_rows, widths, label_style, value_style, value_align="LEFT"):
