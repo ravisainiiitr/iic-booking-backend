@@ -304,9 +304,11 @@ def _release_links(slot_ids, *, keep_type: str | None, data: DisruptionInput, no
     for event in DisruptionEvent.objects.filter(pk__in=event_ids).select_for_update():
         if event.scope == DisruptionScope.EQUIPMENT:
             continue
+        # Deleted events are still kept consistent (in case they are restored) but never reported back.
+        visible = not event.is_deleted
         was_open = event_is_open(event, now)
         _refresh_event_span(event)
-        if resume:
+        if resume and visible:
             result.resumed.append(event.pk)
             if data.action_taken and data.action_taken != event.action_taken:
                 _log_edit(event, "action", data.user, field_name="action_taken", old=event.action_taken,
@@ -321,7 +323,7 @@ def _release_links(slot_ids, *, keep_type: str | None, data: DisruptionInput, no
             event.ended_at = now
             event.ended_by = _user_or_none(data.user)
             event.end_source = data.source
-            if was_open:
+            if was_open and visible:
                 result.closed.append(event.pk)
             _log_edit(event, "resumed" if resume else "released", data.user,
                       note="Slots made available" if resume else "Slots changed to another status")
@@ -336,6 +338,7 @@ def _find_extendable(equipment, disruption_type: str, run: list[dict], reason: s
             equipment=equipment,
             disruption_type=disruption_type,
             scope=DisruptionScope.SLOTS,
+            is_deleted=False,
         )
         .filter(active_events_q(now))
         .order_by("-start_at")[:5]
@@ -366,7 +369,7 @@ def _open_equipment_event(equipment, disruption_type: str, now):
 
     return (
         DisruptionEvent.objects.filter(
-            equipment=equipment, disruption_type=disruption_type, scope=DisruptionScope.EQUIPMENT
+            equipment=equipment, disruption_type=disruption_type, scope=DisruptionScope.EQUIPMENT, is_deleted=False
         )
         .filter(active_events_q(now))
         .order_by("-start_at")
@@ -536,7 +539,9 @@ def preview_slot_status_change(equipment, slots, new_status: str, *, affected_bo
     )
     open_events = [
         serialize_event_brief(e)
-        for e in DisruptionEvent.objects.filter(pk__in=open_event_ids).filter(active_events_q(now)).select_related(
+        for e in DisruptionEvent.objects.filter(pk__in=open_event_ids, is_deleted=False)
+        .filter(active_events_q(now))
+        .select_related(
             "equipment"
         )
     ]
@@ -632,8 +637,9 @@ def record_equipment_operational(equipment, data: DisruptionInput):
                     event.action_updated_by = _user_or_none(data.user)
                 event.save()
                 _log_edit(event, "resumed", data.user, note="Equipment marked Operational")
-                result.closed.append(event.pk)
-                result.resumed.append(event.pk)
+                if not event.is_deleted:
+                    result.closed.append(event.pk)
+                    result.resumed.append(event.pk)
     except Exception:
         logger.exception("Could not record equipment operational for %s", getattr(equipment, "pk", None))
     return result
@@ -643,7 +649,9 @@ def open_equipment_events_for(equipment) -> list:
     from .models import DisruptionEvent, DisruptionScope
 
     return list(
-        DisruptionEvent.objects.filter(equipment=equipment, scope=DisruptionScope.EQUIPMENT, ended_at__isnull=True)
+        DisruptionEvent.objects.filter(
+            equipment=equipment, scope=DisruptionScope.EQUIPMENT, ended_at__isnull=True, is_deleted=False
+        )
     )
 
 
@@ -660,7 +668,9 @@ def disruption_info_by_slot(equipment, slot_ids) -> dict[int, dict]:
     if not slot_ids:
         return out
     rows = (
-        DisruptionEventSlot.objects.filter(daily_slot_id__in=list(slot_ids), released_at__isnull=True)
+        DisruptionEventSlot.objects.filter(
+            daily_slot_id__in=list(slot_ids), released_at__isnull=True, event__is_deleted=False
+        )
         .order_by("daily_slot_id", "-event__start_at")
         .values(
             "daily_slot_id",

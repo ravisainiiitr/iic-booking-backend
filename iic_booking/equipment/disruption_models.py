@@ -103,6 +103,18 @@ class DisruptionEvent(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Soft delete: hidden from history, reports and slot annotations; slots and bookings are not touched.
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    delete_reason = models.TextField(blank=True, default="")
+
     class Meta:
         ordering = ["-start_at", "-id"]
         verbose_name = _("Disruption event")

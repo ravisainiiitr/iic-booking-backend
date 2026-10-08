@@ -499,6 +499,7 @@ def _equipment_report_payload(
     other_reason_slot_ids = set(
         DisruptionEventSlot.objects.filter(
             event__disruption_type=DisruptionType.OTHER,
+            event__is_deleted=False,
             released_at__isnull=True,
             daily_slot__date__gte=start,
             daily_slot__date__lte=end,

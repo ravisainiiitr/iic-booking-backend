@@ -41,9 +41,11 @@ def _reports(row) -> str:
 @register("disruption-history")
 def disruption_history(request):
     params = request.query_params.copy()
+    params.pop("show_deleted", None)
     params["no_summary"] = "1"
     rows, _ = collect_rows(request, "equipment-disruptions-list", params=params)
     summary_params = request.query_params.copy()
+    summary_params.pop("show_deleted", None)
     summary_params["limit"] = "1"
     summary = (call_view(request, "equipment-disruptions-list", summary_params) or {}).get("summary") or {}
 

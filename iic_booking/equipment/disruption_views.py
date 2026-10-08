@@ -5,6 +5,8 @@ GET    /api/equipments/disruptions/                      list + summary cards (f
 GET    /api/equipments/disruptions/attention/            open count / reason-missing count for the dashboard
 GET    /api/equipments/disruptions/<id>/                 detail with slots, timeline and service reports
 PATCH  /api/equipments/disruptions/<id>/                 reason, reason_category, action_taken
+POST   /api/equipments/disruptions/<id>/delete/          soft delete with optional ``reason`` (same scope as view)
+POST   /api/equipments/disruptions/<id>/restore/         Main Administrator; list deleted with ``show_deleted=1``
 POST   /api/equipments/disruptions/<id>/service-report/  multipart ``file`` (PDF, image, Word; 20 MB)
 GET    /api/equipments/disruptions/<id>/service-report/<report_id>/   authenticated download
 GET    /api/equipments/slot-status-changes/              general slot status change log
@@ -102,13 +104,15 @@ def _forbidden():
     )
 
 
-def _scoped_events(user):
+def _scoped_events(user, *, deleted: bool = False):
     from .models import DisruptionEvent
 
     ids = disruption_equipment_ids(user)
     qs = DisruptionEvent.objects.select_related(
         "equipment", "equipment__internal_department", "started_by", "ended_by"
-    )
+    ).filter(is_deleted=deleted)
+    if deleted:
+        qs = qs.select_related("deleted_by")
     if ids is not None:
         qs = qs.filter(equipment_id__in=ids)
     return qs
@@ -199,7 +203,7 @@ def serialize_event(event, *, now=None, links=None, reports=None) -> dict:
     dept = getattr(eq, "internal_department", None)
     hours = event_duration_hours(event, links=links, now=now)
     report_rows = reports if reports is not None else []
-    return {
+    row = {
         "id": event.pk,
         "equipment_id": event.equipment_id,
         "equipment_name": getattr(eq, "name", "") or "",
@@ -240,6 +244,16 @@ def serialize_event(event, *, now=None, links=None, reports=None) -> dict:
             for r in report_rows
         ],
     }
+    if event.is_deleted:
+        row.update(
+            {
+                "is_deleted": True,
+                "deleted_at": event.deleted_at,
+                "deleted_by_name": _user_name(event.deleted_by),
+                "delete_reason": event.delete_reason,
+            }
+        )
+    return row
 
 
 def _links_and_reports(events):
@@ -295,12 +309,14 @@ def _summary(qs, now) -> dict:
 def disruption_list(request):
     from .models import DisruptionSource, DisruptionType
 
+    params = request.query_params
+    is_admin = getattr(request.user, "user_type", None) == UserType.ADMIN
+    deleted = is_admin and _truthy(params.get("show_deleted"))
     try:
-        qs = _scoped_events(request.user)
+        qs = _scoped_events(request.user, deleted=deleted)
     except PermissionError:
         return _forbidden()
     now = timezone.now()
-    params = request.query_params
     qs = apply_filters(qs, params, now)
 
     ordering = str(params.get("ordering") or "-start_at").strip()
@@ -339,10 +355,13 @@ def disruption_list(request):
         "reason_categories": {
             t: [{"value": k, "label": v} for k, v in cats] for t, cats in REASON_CATEGORIES.items()
         },
-        "can_filter_department": getattr(request.user, "user_type", None) == UserType.ADMIN,
+        "can_filter_department": is_admin,
+        "can_delete": True,
+        "can_view_deleted": is_admin,
+        "show_deleted": deleted,
     }
     if not _truthy(params.get("no_summary")):
-        payload["summary"] = _summary(apply_filters(_scoped_events(request.user), params, now), now)
+        payload["summary"] = _summary(apply_filters(_scoped_events(request.user, deleted=deleted), params, now), now)
     if _truthy(params.get("with_options")):
         payload.update(_filter_options(request.user))
     return Response(payload)
@@ -470,6 +489,84 @@ def disruption_detail(request, pk: int):
                 event.action_updated_at, event.action_updated_by = now, user
         event.save()
     return Response(_detail_payload(event))
+
+
+DELETE_REASON_MAX_LENGTH = 500
+
+
+def _event_for_change(request, pk, *, deleted: bool):
+    """Event in the user's scope for delete / restore; 403 when it exists outside the scope."""
+    from .models import DisruptionEvent
+
+    try:
+        event = _scoped_events(request.user, deleted=deleted).filter(pk=pk).first()
+    except PermissionError:
+        return None, _forbidden()
+    if event is not None:
+        return event, None
+    if DisruptionEvent.objects.filter(pk=pk, is_deleted=deleted).exists():
+        return None, Response(
+            {"error": "You can only delete disruptions of equipment you manage."}, status=status.HTTP_403_FORBIDDEN
+        )
+    return None, Response({"error": "Disruption not found."}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+def disruption_delete(request, pk: int):
+    """Soft delete: hidden from history, exports, reports and slot annotations. Slots, bookings and the slot
+    status change log are not changed."""
+    from .dept_admin_actions import record_staff_action
+
+    event, error = _event_for_change(request, pk, deleted=False)
+    if error:
+        return error
+    reason = clean_text((request.data or {}).get("reason"), DELETE_REASON_MAX_LENGTH)
+    now = timezone.now()
+    was_open = event_is_open(event, now)
+    with transaction.atomic():
+        event.is_deleted = True
+        event.deleted_at = now
+        event.deleted_by = request.user
+        event.delete_reason = reason
+        event.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason", "updated_at"])
+        _log_edit(event, "deleted", request.user, note=reason[:255])
+    record_staff_action(
+        request.user,
+        "disruption_deleted",
+        equipment_id=event.equipment_id,
+        disruption_id=event.pk,
+        disruption_type=event.disruption_type,
+        was_open=was_open,
+        with_reason=bool(reason),
+    )
+    return Response({"id": event.pk, "deleted": True, "was_open": was_open})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+def disruption_restore(request, pk: int):
+    """Main Administrator only: bring a deleted disruption back into history and reports."""
+    from .dept_admin_actions import record_staff_action
+
+    if getattr(request.user, "user_type", None) != UserType.ADMIN:
+        return Response(
+            {"error": "Only the Main Administrator can restore deleted disruptions."}, status=status.HTTP_403_FORBIDDEN
+        )
+    event, error = _event_for_change(request, pk, deleted=True)
+    if error:
+        return error
+    with transaction.atomic():
+        event.is_deleted = False
+        event.deleted_at = None
+        event.deleted_by = None
+        event.delete_reason = ""
+        event.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "delete_reason", "updated_at"])
+        _log_edit(event, "restored", request.user)
+    record_staff_action(request.user, "disruption_restored", equipment_id=event.equipment_id, disruption_id=event.pk)
+    return Response({"id": event.pk, "deleted": False})
 
 
 def _validate_report(upload):

@@ -1306,6 +1306,16 @@ urlpatterns = router.urls + [
     ),
     path("equipments/disruptions/<int:pk>/", disruption_views.disruption_detail, name="equipment-disruption-detail"),
     path(
+        "equipments/disruptions/<int:pk>/delete/",
+        disruption_views.disruption_delete,
+        name="equipment-disruption-delete",
+    ),
+    path(
+        "equipments/disruptions/<int:pk>/restore/",
+        disruption_views.disruption_restore,
+        name="equipment-disruption-restore",
+    ),
+    path(
         "equipments/disruptions/<int:pk>/service-report/",
         disruption_views.disruption_service_report_upload,
         name="equipment-disruption-service-report-upload",
