@@ -1,6 +1,6 @@
-# Read-only (IDs, codes, counts and amounts only; no names or emails): PI charge profiles on MALDI,
-# live charge estimates (GET /calculate/, no writes) for students on an Equipment PI's wallet, and,
-# across all equipment with PI rates, bookings by such students that were not charged at the PI rate.
+# Read-only (IDs, booleans and counts only; no names or emails): is the faculty whose wallet paid for the
+# MALDI student booking the same person as the MALDI Equipment PI (duplicate account), and how the PI
+# account and its linked students compare.
 name: Probe PI Student Charges
 
 on:
@@ -24,79 +24,46 @@ jobs:
               CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
               test -n "$CID"
               docker exec -i -w /app "$CID" python - <<'PY'
-          import os, django
+          import os, re, django
           os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
           django.setup()
-          from collections import Counter
-          from decimal import Decimal
-          from rest_framework.test import APIRequestFactory, force_authenticate
-          from iic_booking.equipment.models import Booking, ChargeProfile, DynamicInputField, Equipment, EquipmentPI
-          from iic_booking.equipment.calculators import ChargeCalculationEngine
+          from iic_booking.equipment.models import Booking, Equipment, EquipmentPI
           from iic_booking.equipment import pi_pricing as pp
-          from iic_booking.equipment.api_views import equipment_calculate
+          from iic_booking.users.models import User
           from iic_booking.users.models.wallet import WalletJoinRequest
 
+          def norm(s):
+              s = (s or "").lower()
+              s = re.sub(r"\b(prof|dr|mr|ms|mrs)\b\.?", " ", s)
+              return " ".join(re.sub(r"[^a-z ]", " ", s).split())
+
+          def local(e):
+              return (e or "").split("@")[0].lower()
+
+          def flags(u):
+              return (f"id={u.pk} ut={u.user_type} approved={u.admin_approved} force_inactive={u.force_inactive} "
+                      f"is_active={u.is_active} logged_in={u.last_login is not None} dept={u.department_id} "
+                      f"linked_students={WalletJoinRequest.objects.filter(faculty=u, status='APPROVED').count()} "
+                      f"pi_rows={EquipmentPI.objects.filter(faculty=u).count()}")
+
           eq = Equipment.objects.get(code="MALDI")
-          print("== MALDI formulas ==")
-          for cp in ChargeProfile.objects.filter(equipment=eq, is_active=True, user_type__in=["student", "faculty"]):
-              print(f"  CP {cp.pk} {cp.user_type}/{cp.pricing_profile} formula={(cp.charge_formula or '')[:300]!r} "
-                    f"time_formula={(cp.time_formula or '')[:120]!r}")
-          print("== MALDI input fields ==")
-          fields = list(DynamicInputField.objects.filter(equipment=eq).values_list("field_key", "user_type", "field_type"))
-          for f in fields:
-              print(f"  {f}")
-          keys = sorted({k for k, ut, _t in fields if (ut or "") in ("", "student")}) or sorted({k for k, _u, _t in fields})
-
-          rf = APIRequestFactory()
-          def calc(user, extra):
-              params = {k: "1" for k in keys}
-              params.update(extra)
-              req = rf.get(f"/api/equipments/{eq.pk}/calculate/", params, HTTP_HOST="equip.iitr.ac.in")
-              force_authenticate(req, user=user)
-              r = equipment_calculate(req, pk=eq.pk)
-              d = getattr(r, "data", {}) or {}
-              return r.status_code, d.get("applied_profile"), d.get("applied_charge"), d.get("normal_charge"), (d.get("error") or "")[:80]
-
-          print("== Live estimates for students on MALDI PI wallets (inputs=1) ==")
-          pis = list(EquipmentPI.objects.filter(equipment=eq, is_active=True).values_list("faculty_id", flat=True))
-          for jr in WalletJoinRequest.objects.filter(faculty_id__in=pis, status="APPROVED").select_related("student"):
-              s = jr.student
-              print(f"  student uid={s.pk} ut={s.user_type} booking_flow={calc(s, {})} "
-                    f"estimate_own_category={calc(s, {'user_type': s.user_type})}")
-
-          print("== MALDI bookings ==")
-          for b in Booking.objects.filter(equipment=eq).select_related("user", "created_by", "charge_profile"):
-              u = b.user
-              o = pp.wallet_owner_user(u)
-              any_jr = Counter(WalletJoinRequest.objects.filter(student=u, faculty_id__in=pis).values_list("status", flat=True))
-              print(f"  {b.virtual_booking_id} st={b.status} created={b.created_at.date()} ut={b.user_type_snapshot} "
-                    f"cp={b.charge_profile_id}/{b.charge_profile.pricing_profile} charged={b.total_charge} "
-                    f"on_behalf={bool(b.created_by_id and b.created_by_id != u.pk)} creator_ut={getattr(b.created_by, 'user_type', None)} "
-                    f"wallet_owner_ut={getattr(o, 'user_type', None)} owner_is_maldi_pi={bool(o and o.pk in pis)} "
-                    f"join_requests_with_maldi_pi={dict(any_jr)} supervisor_is_pi={u.supervisor_id in pis}")
-
-          print("== All equipment with PI rates: student bookings on a PI wallet not charged at PI rate ==")
-          pi_eq = set(ChargeProfile.objects.filter(pricing_profile="pi", is_active=True).values_list("equipment_id", flat=True))
-          rows = EquipmentPI.objects.filter(equipment_id__in=pi_eq, is_active=True)
-          print(f"  equipment_with_pi_rates={len(pi_eq)} with_active_pi={rows.values('equipment_id').distinct().count()} active_pi_rows={rows.count()}")
-          n = 0
-          tot = Decimal("0")
-          for ep in rows.select_related("equipment"):
-              students = list(WalletJoinRequest.objects.filter(faculty_id=ep.faculty_id, status="APPROVED").values_list("student_id", flat=True))
-              qs = (Booking.objects.filter(equipment_id=ep.equipment_id, user_id__in=students)
-                    .exclude(charge_profile__pricing_profile="pi").select_related("charge_profile", "user"))
-              for b in qs:
-                  try:
-                      pcp = pp.get_active_charge_profile(ep.equipment, b.user_type_snapshot or b.user.user_type, "pi", b.user)
-                      pc, _ = ChargeCalculationEngine.calculate_charge(pcp, dict(b.input_values or {}), int(b.total_time_minutes or 0), b.selected_parameters or None)
-                  except Exception as ex:
-                      pcp, pc = None, f"err:{type(ex).__name__}"
-                  n += 1
-                  if isinstance(pc, Decimal):
-                      tot += Decimal(b.total_charge) - pc
-                  print(f"  {b.virtual_booking_id} eq={ep.equipment.code} st={b.status} created={b.created_at.date()} "
-                        f"pi_assigned={ep.created_at.date()} cp={b.charge_profile.pricing_profile} charged={b.total_charge} pi_calc={pc}")
-          print(f"  affected={n} total_charged_minus_pi={tot}")
+          pis = [ep.faculty for ep in EquipmentPI.objects.filter(equipment=eq).select_related("faculty")]
+          for pi in pis:
+              print("PI", flags(pi))
+              same = User.objects.filter(user_type="faculty").exclude(pk=pi.pk)
+              dups = [u for u in same if norm(u.name) and norm(u.name) == norm(pi.name)]
+              print(f"  other_faculty_accounts_with_same_name={len(dups)}")
+              for u in dups:
+                  print("   DUP", flags(u), f"same_email_local={local(u.email) == local(pi.email)} same_emp_id={bool(u.emp_id) and u.emp_id == pi.emp_id}")
+          for b in Booking.objects.filter(equipment=eq).select_related("user"):
+              s = b.user
+              o = pp.wallet_owner_user(s)
+              print(f"BOOKING {b.virtual_booking_id} student_dept={s.department_id}")
+              if o is not None:
+                  print("  WALLET_OWNER", flags(o))
+                  for pi in pis:
+                      print(f"  vs PI {pi.pk}: same_name={norm(o.name) == norm(pi.name)} same_email_local={local(o.email) == local(pi.email)} "
+                            f"same_emp_id={bool(o.emp_id) and o.emp_id == pi.emp_id} same_dept={o.department_id == pi.department_id}")
           PY
               exit 0
             fi
