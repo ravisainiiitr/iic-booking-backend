@@ -74,6 +74,7 @@ def nearest_angle_index(angle_deg) -> int:
 PROFILE_BINS = 48
 SLOPE_EDGES = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)  # tan(slope from horizontal) bucket edges; last bucket open
 SUPPORT_SAMPLE_BUDGET = 300_000
+UP_SAMPLES_PER_CELL = 5.0
 ON_BED_MM = 0.2
 
 # --------------------------------------------------------------------------------------------- presets
@@ -433,10 +434,10 @@ def _support_table(tris, nz, proj, zmin, bed_mask, up_mask) -> Dict[str, List[fl
         res = max(res, math.sqrt((xmax - xmin + 1) * (ymax - ymin + 1) / 20000.0))
     rng = np.random.default_rng(20261009)
 
-    def sample(mask):
+    def sample(mask, per_cell=1.0):
         t = tris[mask]
         p = proj[mask]
-        k = np.clip(np.ceil(p / (res * res)).astype(np.int64), 1, 4096)
+        k = np.clip(np.ceil(per_cell * p / (res * res)).astype(np.int64), 1, int(4096 * per_cell))
         idx = np.repeat(np.arange(len(t)), k)
         u = rng.random(len(idx))
         v = rng.random(len(idx))
@@ -450,7 +451,8 @@ def _support_table(tris, nz, proj, zmin, bed_mask, up_mask) -> Dict[str, List[fl
 
     over_pts, over_w, over_idx = sample(over)
     lean = -nz[over][over_idx]
-    up_pts, _w, _i = sample(up)
+    # Floors are sampled densely: a height-map cell without a floor sample would look clear to the bed.
+    up_pts, _w, _i = sample(up, UP_SAMPLES_PER_CELL)
     ny = int(math.floor((ymax - ymin) / res)) + 1
 
     def cell(pts):
