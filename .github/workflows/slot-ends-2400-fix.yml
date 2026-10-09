@@ -1,0 +1,155 @@
+# Slot Masters ending one minute (or second) before midnight -> end at midnight (00:00, shown as 24:00).
+# For each listed equipment, the last active Slot Master closing at 23:59 or 23:59:59 gets close_time 00:00
+# (a 00:00-23:59 slot becomes 00:00-00:00, a full 24-hour slot), and its future Daily Slots (start >= now) that
+# end 1 minute / 1 second before local midnight are extended to midnight, booked ones included (end time only;
+# bookings, charges, statuses and emails are not touched). Past and in-progress slots are left alone.
+# Also sets slot_duration_minutes 1439 -> 1440 for NMR TXI and L1. Dry run by default; apply only with
+# confirm=APPLY-SLOT-2400-ENDS. Idempotent. Prints equipment codes, ids and counts only.
+name: Slot Ends 24:00 Fix
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type APPLY-SLOT-2400-ENDS to apply (empty = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  slot-ends:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Slot ends 24:00
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e CONFIRM="$CONFIRM" -w /app "$CID" python - <<'PY'
+          import os, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from datetime import datetime, time, timedelta
+          from django.db import transaction
+          from django.utils import timezone
+          from iic_booking.equipment.models import DailySlot, Equipment, SlotMaster, SlotStatus
+
+          apply = os.environ.get("CONFIRM", "") == "APPLY-SLOT-2400-ENDS"
+          now = timezone.now()
+          tz = timezone.get_current_timezone()
+          EQUIPMENT_IDS = [46, 8, 51, 7, 4, 82, 94]
+          DURATION_FIX = {338: (1439, 1440), 94: (1439, 1440)}
+          SHORT_CLOSES = (time(23, 59), time(23, 59, 59))
+          SHORTFALLS = (timedelta(minutes=1), timedelta(seconds=1))
+
+          def hm(t):
+              return t.strftime("%H:%M:%S" if t.second else "%H:%M") if t else None
+
+          def local_midnight_after(start):
+              day = timezone.localtime(start).date() + timedelta(days=1)
+              return timezone.make_aware(datetime.combine(day, time(0)), tz)
+
+          print(f"mode={'APPLY' if apply else 'DRY RUN'} now={timezone.localtime(now).strftime('%Y-%m-%d %H:%M%z')}")
+          total_remaining = 0
+          for eq_id in EQUIPMENT_IDS:
+              eq = Equipment.objects.filter(pk=eq_id).first()
+              if eq is None:
+                  print(f"eq_id={eq_id} MISSING")
+                  continue
+              masters = list(SlotMaster.objects.filter(equipment=eq).order_by("slot_number"))
+              summary = [(m.pk, m.slot_number, hm(m.open_time), hm(m.close_time), m.is_active) for m in masters]
+              candidates = [m for m in masters if m.is_active and m.close_time in SHORT_CLOSES]
+              sm = max(candidates, key=lambda m: (m.open_time, m.slot_number)) if candidates else None
+              done_sm = None
+              if sm is None:
+                  ends_midnight = [m for m in masters if m.is_active and m.close_time == time(0)]
+                  done_sm = max(ends_midnight, key=lambda m: (m.open_time, m.slot_number)) if ends_midnight else None
+              target_sm = sm or done_sm
+              print(
+                  f"eq_code={eq.code} eq_id={eq.pk} slot_duration_minutes={eq.slot_duration_minutes} masters={summary} "
+                  f"target_master={target_sm.pk if target_sm else None} master_needs_change={sm is not None}"
+              )
+              if target_sm is None:
+                  print("  STOP for this equipment: no active Slot Master ending at 23:59/23:59:59 or 00:00")
+                  continue
+
+              to_extend, booked, free, overlap_skipped, other = [], 0, 0, 0, 0
+              for s in DailySlot.objects.filter(slot_master=target_sm, start_datetime__gte=now).only(
+                  "pk", "start_datetime", "end_datetime", "status", "booking_id"
+              ):
+                  midnight = local_midnight_after(s.start_datetime)
+                  if s.end_datetime == midnight:
+                      continue
+                  if midnight - s.end_datetime not in SHORTFALLS:
+                      other += 1
+                      continue
+                  clash = DailySlot.objects.filter(
+                      slot_master__equipment=eq, start_datetime__lt=midnight, end_datetime__gt=s.end_datetime
+                  ).exclude(pk=s.pk).exists()
+                  if clash:
+                      overlap_skipped += 1
+                      continue
+                  is_booked = s.booking_id is not None or s.status == SlotStatus.BOOKED
+                  booked += int(is_booked)
+                  free += int(not is_booked)
+                  to_extend.append((s.pk, midnight))
+              print(
+                  f"  future_short_slots={len(to_extend)} booked={booked} unbooked={free} "
+                  f"overlap_skipped={overlap_skipped} other_length_left={other}"
+              )
+
+              if apply:
+                  with transaction.atomic():
+                      master_changed = SlotMaster.objects.filter(pk=target_sm.pk, close_time__in=SHORT_CLOSES).update(
+                          close_time=time(0)
+                      )
+                      extended = 0
+                      for pk, midnight in to_extend:
+                          extended += DailySlot.objects.filter(pk=pk, start_datetime__gte=now).update(end_datetime=midnight)
+                  target_sm.refresh_from_db()
+                  print(
+                      f"  applied master_id={target_sm.pk} now={hm(target_sm.open_time)}-{hm(target_sm.close_time)} "
+                      f"master_changed={master_changed} slots_extended={extended}"
+                  )
+                  to_extend = [
+                      1 for s in DailySlot.objects.filter(slot_master=target_sm, start_datetime__gte=now).only(
+                          "start_datetime", "end_datetime"
+                      )
+                      if local_midnight_after(s.start_datetime) - s.end_datetime in SHORTFALLS
+                  ]
+              remaining = len(to_extend) + (1 if sm is not None and not apply else 0)
+              total_remaining += remaining
+              print(f"  remaining_to_fix={remaining}")
+
+          for eq_id, (old, new) in DURATION_FIX.items():
+              eq = Equipment.objects.filter(pk=eq_id).first()
+              if eq is None:
+                  print(f"duration eq_id={eq_id} MISSING")
+                  continue
+              before = eq.slot_duration_minutes
+              changed = 0
+              if apply and before == old:
+                  changed = Equipment.objects.filter(pk=eq_id, slot_duration_minutes=old).update(slot_duration_minutes=new)
+                  eq.refresh_from_db()
+              pending = int(eq.slot_duration_minutes == old)
+              total_remaining += pending
+              print(
+                  f"duration eq_code={eq.code} eq_id={eq_id} before={before} now={eq.slot_duration_minutes} "
+                  f"changed={changed} remaining_to_fix={pending}"
+              )
+          print(f"total_remaining_to_fix={total_remaining}")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
