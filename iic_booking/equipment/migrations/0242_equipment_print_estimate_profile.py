@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('equipment', '0240_disruptionevent_soft_delete'),
+        ('equipment', '0241_disruptionevent_transparency'),
     ]
 
     operations = [
