@@ -7,7 +7,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from iic_booking.users.models import Department, DepartmentType, UserType, Wallet
@@ -128,6 +128,7 @@ class StudentRechargeVisibilityTests(TestCase):
         self.assertIsNotNone(assert_iitr_student_may_recharge(self.student, department=other))
         self.assertEqual(self._send_otp(self.student, other).status_code, 403)
 
+    @override_settings(WALLET_PROJECT_GRANT_RETIRED=False)
     def test_tinkering_style_disabled_methods_apply_to_students(self):
         flags = self._client(self.student).get(SETTINGS_URL).data
         self.assertEqual(
@@ -143,6 +144,7 @@ class StudentRechargeVisibilityTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.data.get("code"), "direct_cash_recharge_disabled")
 
+    @override_settings(WALLET_PROJECT_GRANT_RETIRED=False)
     def test_project_grant_stays_faculty_only(self):
         res = self._send_otp(self.student, self.dept_a, mode="project_grant")
         self.assertEqual(res.status_code, 403)

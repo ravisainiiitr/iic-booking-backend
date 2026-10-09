@@ -236,6 +236,16 @@ def read_sric_cashbook_mailbox() -> dict:
     return result
 
 
+@shared_task(name="users.scan_sric_wallet_recharge_mailbox")
+@defer_during_peak("users.scan_sric_wallet_recharge_mailbox")
+def scan_sric_wallet_recharge_mailbox() -> dict:
+    """Read new Wallet_Recharge.csv emails from the SRIC portal and credit / queue their rows."""
+    from iic_booking.users.sric_wallet_recharge import scan_mailbox
+
+    result = scan_mailbox(trigger="schedule")
+    return {k: v for k, v in result.items() if k != "messages"}
+
+
 @shared_task(name="users.expire_channel_i_students")
 @defer_during_peak("users.expire_channel_i_students")
 def expire_channel_i_students() -> int:

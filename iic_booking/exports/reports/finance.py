@@ -100,6 +100,60 @@ def wallet_recharge_requests(request):
                          tables=[table], filters=filters, kpis=kpis, landscape=True)
 
 
+_SRIC_STATUSES = {
+    "credited": "Credited",
+    "awaiting_credit": "Ready to credit",
+    "needs_review": "Needs review",
+    "duplicate": "Duplicate",
+    "failed": "Failed",
+    "rejected": "Rejected",
+}
+
+
+@register("sric-wallet-recharges")
+def sric_wallet_recharges(request):
+    rows, _ = collect_rows(request, "admin-sric-wallet-recharges", page_size=200, page_param="page",
+                           limit_param="page_size")
+    columns = [
+        SNO,
+        C("reference", "Reference", width=0.9),
+        C("email_date", "Email date (IST)", spec.DATETIME, 1.15),
+        C("financial_year", "FY", width=0.7),
+        C("ledger_id", "Ledger ID", width=1.3),
+        C("project_number", "Project number", width=1.3),
+        C("pi_name", "PI name", width=1.3),
+        C("employee_id", "Employee ID", width=0.9),
+        C("receiver_label", "Receiver", width=0.8),
+        C("amount", "Amount (₹)", spec.CURRENCY, 1.0, total=True),
+        C("status_display", "Status", width=1.0),
+        C("review_message", "Review reason", width=1.6),
+        C("matched_user", "Credited to", width=1.4, value=lambda r: (r.get("matched_user") or {}).get("name", "")),
+        C("credited_at", "Credited (IST)", spec.DATETIME, 1.15),
+        C("fund_receipt", "Fund receipt", width=1.1,
+          value=lambda r: ("Verified" if r.get("fund_receipt_verified") else "Not verified") if r.get("status") == "credited" else ""),
+        C("fund_receipt_verification_remarks", "Verification remarks", width=1.4),
+    ]
+    kpis = [
+        spec.Kpi("Rows", len(rows), spec.INTEGER),
+        spec.Kpi("Credited amount", _amount_sum(rows, status="credited"), spec.CURRENCY),
+        spec.Kpi("Need action", sum(1 for r in rows if r.get("status") in ("needs_review", "awaiting_credit", "failed")),
+                 spec.INTEGER),
+    ]
+    filters = filter_pairs(request, [
+        ("status", "Status", _SRIC_STATUSES),
+        ("financial_year", "Financial year", "text"),
+        ("receiver", "Receiver", "text"),
+        ("verified", "Fund receipt", {"true": "Verified", "false": "Not verified"}),
+        ("date_from", "From", "date"),
+        ("date_to", "To", "date"),
+        ("search", "Search", "text"),
+    ])
+    table = spec.Table("rows", "SRIC wallet recharges", columns, numbered(rows),
+                       empty_message="No SRIC wallet recharges match these filters.")
+    return make_document(request, title="SRIC Wallet Recharges", slug="sric-wallet-recharges",
+                         tables=[table], filters=filters, kpis=kpis, landscape=True)
+
+
 @register("wallet-withdrawal-requests")
 def wallet_withdrawal_requests(request):
     rows, _ = collect_rows(request, "admin-wallet-withdrawal-requests-list", page_size=None)

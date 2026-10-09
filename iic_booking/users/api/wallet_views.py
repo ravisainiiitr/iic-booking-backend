@@ -85,6 +85,19 @@ PROJECT_GRANT_RECHARGE_DISABLED_CODE = "project_grant_recharge_disabled"
 
 
 def _project_grant_recharge_disabled_response() -> Response:
+    from iic_booking.users.models.wallet_sric_settings import PROJECT_GRANT_RETIRED_MESSAGE, project_grant_retired
+
+    if project_grant_retired():
+        return Response(
+            {
+                "error": PROJECT_GRANT_RETIRED_MESSAGE,
+                "code": PROJECT_GRANT_RECHARGE_DISABLED_CODE,
+                "retired": True,
+                "procedure_url": "/wallet/recharge-from-project",
+                "sric_portal_url": "https://rnd.iitr.ac.in",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
     return Response(
         {
             "error": (

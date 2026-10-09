@@ -185,7 +185,24 @@ def _department_allows(option: str, department) -> bool:
     return department_allows(option, department)
 
 
+def project_grant_retired() -> bool:
+    """Project Grant requests were replaced by SRIC wallet recharge (rnd.iitr.ac.in emails Wallet_Recharge.csv)."""
+    from django.conf import settings
+
+    return bool(getattr(settings, "WALLET_PROJECT_GRANT_RETIRED", True))
+
+
+PROJECT_GRANT_RETIRED_MESSAGE = (
+    "Wallet recharge requests via Project Grant are no longer accepted. To recharge from a project, open "
+    "rnd.iitr.ac.in, go to Ledger > New Wallet Recharge, select the project, choose Receiver Type (IIC for IIC "
+    "facilities, Tinkering for Tinkering Lab), enter the amount and click Submit Recharge. The amount is credited "
+    "to your wallet automatically after SRIC emails the portal."
+)
+
+
 def project_grant_recharge_enabled(user=None, department=None) -> bool:
+    if project_grant_retired():
+        return False
     if project_grant_switch_exempt(user):
         return True
     if not WalletSricSettings.get_singleton().project_grant_recharge_enabled:
@@ -224,9 +241,10 @@ def wallet_mode_flags(user=None) -> dict:
     from iic_booking.users.wallet_payment_modes import user_department_modes
 
     s = WalletSricSettings.get_singleton()
-    exempt = project_grant_switch_exempt(user)
+    retired = project_grant_retired()
+    exempt = project_grant_switch_exempt(user) and not retired
     masters = {
-        "project_grant": bool(s.project_grant_recharge_enabled),
+        "project_grant": bool(s.project_grant_recharge_enabled) and not retired,
         "direct_cash": bool(s.direct_cash_recharge_enabled),
         "online_gateway": bool(s.online_gateway_recharge_enabled),
         "peer_transfer": bool(s.peer_transfer_enabled),
@@ -236,6 +254,8 @@ def wallet_mode_flags(user=None) -> dict:
         "direct_cash_recharge_enabled": masters["direct_cash"],
         "online_gateway_recharge_enabled": masters["online_gateway"],
         "peer_transfer_enabled": masters["peer_transfer"],
+        "project_grant_retired": retired,
+        "sric_wallet_recharge_enabled": retired,
         "credit_facility_enabled": bool(credit_feature_enabled()),
         "department_modes": user_department_modes(masters, project_grant_exempt=exempt),
         "disabled_message": AWAITING_APPROVAL_MESSAGE,

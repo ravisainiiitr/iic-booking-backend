@@ -85,6 +85,7 @@ def category_rules() -> list[tuple[str, str, Q | None]]:
             Q(admin_adjustment__isnull=False) | _starts("Admin credit", "Admin debit", "Bulk admin"),
         ),
         ("direct_recharge", "Direct wallet recharge", Q(direct_recharge__isnull=False) | _starts("Direct wallet recharge")),
+        ("sric_recharge", "SRIC wallet recharge", Q(sric_wallet_recharge__isnull=False) | _starts("SRIC wallet recharge")),
         ("legacy_sync", "Old portal sync", _starts(*LEGACY_CREDIT_PREFIXES)),
         (
             "credit_facility",

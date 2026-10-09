@@ -25,7 +25,7 @@ DEAN_SRIC = "dean.sric@test.iitr.ac.in"
 QA_INBOX = "qa.inbox@example.com"
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", WALLET_PROJECT_GRANT_RETIRED=False)
 class ProjectGrantTestFacultyExemptionTests(TestCase):
     def setUp(self):
         self.dept = Department.objects.create(name="Exempt Dept", code="EXD", department_type=DepartmentType.INTERNAL)

@@ -31,7 +31,7 @@ VERIFY = "/api/wallet/recharge-request/"
 PROJECTS = "/api/projects/"
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", WALLET_PROJECT_GRANT_RETIRED=False)
 class ProjectGrantRechargeTests(TestCase):
     def setUp(self):
         self.dept = Department.objects.create(

@@ -78,6 +78,12 @@ from .auth_lock import UserLoginLock
 from .mobile_device_session import MobileDeviceSession
 from .auth_settings import AuthSettings
 from .wallet_sric_settings import WalletCashbookMailboxMessage, WalletSricSettings
+from .sric_wallet_recharge import (
+    SricReceiverMapping,
+    SricWalletMailMessage,
+    SricWalletRecharge,
+    SricWalletRechargeSettings,
+)
 from .wallet_payment_modes import (
     DepartmentModeState,
     WalletDirectRecharge,
@@ -206,6 +212,10 @@ __all__ = [
     "AuthSettings",
     "WalletSricSettings",
     "WalletCashbookMailboxMessage",
+    "SricReceiverMapping",
+    "SricWalletMailMessage",
+    "SricWalletRecharge",
+    "SricWalletRechargeSettings",
     "TestAccountEmailSettings",
     "UserTypeInactivityTimeout",
     "ExternalBillingProfile",

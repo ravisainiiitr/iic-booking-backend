@@ -19,7 +19,7 @@ VERIFY = "/api/wallet/recharge-request/"
 SETTINGS = "/api/wallet/student-recharge/settings/"
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend", WALLET_PROJECT_GRANT_RETIRED=False)
 class ProjectGrantRechargeSwitchTests(TestCase):
     def setUp(self):
         self.dept = Department.objects.create(name="Switch Dept", code="SWD", department_type=DepartmentType.INTERNAL)

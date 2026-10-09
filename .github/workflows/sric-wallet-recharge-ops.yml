@@ -1,0 +1,51 @@
+# SRIC wallet recharge (Wallet_Recharge.csv emails): status, read-only dry-run scan of the real mailbox (parse +
+# match only, nothing stored or credited), or switch the 5-minute mailbox reading on / off. Auto-credit is a
+# separate Main Administrator setting and is never changed here. Prints counts, flags and record ids only.
+name: SRIC Wallet Recharge Ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "status | dry-run-scan | enable-scan | disable-scan"
+        required: true
+        default: "status"
+        type: choice
+        options: [status, dry-run-scan, enable-scan, disable-scan]
+
+jobs:
+  ops:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                python manage.py sric_wallet_recharge "$ACTION"
+              echo "== celery beat / worker =="
+              docker ps --format '{{.Names}} {{.Status}}' | grep -Ei 'celery|beat' || true
+              BEAT="$(docker ps --format '{{.Names}}' | grep -Ei 'beat' | head -n 1 || true)"
+              if [[ -n "$BEAT" ]]; then
+                docker logs --since 30m "$BEAT" 2>&1 | grep -c "scan_sric_wallet_recharge_mailbox" | sed 's/^/beat_sends_last_30m=/' || true
+              fi
+              WORKER="$(docker ps --format '{{.Names}}' | grep -Ei 'celeryworker|worker' | head -n 1 || true)"
+              if [[ -n "$WORKER" ]]; then
+                docker logs --since 30m "$WORKER" 2>&1 | grep "scan_sric_wallet_recharge_mailbox" | grep -Eo "succeeded in [0-9.]+s: \{'status': '[a-z_]+'" | tail -n 5 || true
+              fi
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1

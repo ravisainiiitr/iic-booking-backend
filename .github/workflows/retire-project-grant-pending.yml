@@ -1,0 +1,41 @@
+# Project Grant recharge mode retired: soft-delete every PENDING Project Grant wallet recharge request (reason
+# 'Project grant mode retired — use SRIC wallet recharge'), releasing matched cash-book entries. Other statuses
+# and modes are untouched; no emails. Dry run by default; type RETIRE to apply. Prints counts and request ids only.
+name: Retire Pending Project Grant Requests
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type RETIRE to apply (empty = dry run)"
+        required: false
+        default: ""
+
+jobs:
+  retire:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Retire
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              ARGS=""
+              if [[ "$CONFIRM" == "RETIRE" ]]; then ARGS="--apply --confirm RETIRE"; fi
+              docker exec -i -e DJANGO_SETTINGS_MODULE=config.settings.production -w /app "$CID" \
+                python manage.py retire_project_grant_pending $ARGS
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
