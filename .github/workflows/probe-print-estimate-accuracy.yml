@@ -1,0 +1,111 @@
+# Read-only, ids and numbers only (no names, emails or file names): per 3D printer, its make / model text and
+# materials (code, density), how many STL analyses exist / are booked / have staff-entered actual weight or time,
+# and for every part with actuals the estimate vs the actual plus the mesh features used to calibrate the
+# estimator (volume, surface area, bounding box, top / bottom / overhang areas). STLs are only read.
+name: Probe Print Estimate Accuracy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          cd /home/ubuntu/iic-booking-backend
+          echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+          test -n "$CID"
+          docker exec -i -w /app "$CID" python - <<'PY'
+          import math, os, statistics, struct, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from django.db import connection, transaction
+          from iic_booking.equipment.models import Booking, Equipment, EquipmentProfileType, PrintAnalysis, PrintMaterial
+          from iic_booking.equipment.fabrication import booking_job_quantity
+          from iic_booking.equipment.print_3d_service import parse_stl_bytes
+
+          def features(tris):
+              top = bottom = over = sup = 0.0
+              zmin = min(min(v[2] for v in t) for t in tris)
+              for a, b, c in tris:
+                  ux, uy, uz = b[0]-a[0], b[1]-a[1], b[2]-a[2]
+                  vx, vy, vz = c[0]-a[0], c[1]-a[1], c[2]-a[2]
+                  nx, ny, nz = uy*vz-uz*vy, uz*vx-ux*vz, ux*vy-uy*vx
+                  n = math.sqrt(nx*nx+ny*ny+nz*nz)
+                  if n <= 0:
+                      continue
+                  proj = abs(nz) / 2.0
+                  cosz = nz / n
+                  zc = (a[2]+b[2]+c[2]) / 3.0
+                  if cosz > 0.05:
+                      top += proj
+                  elif cosz < -0.05:
+                      bottom += proj
+                      h = zc - zmin
+                      if cosz < -0.7071 and h > 0.3:
+                          over += proj
+                          sup += proj * h
+              return top, bottom, over, sup
+
+          with transaction.atomic():
+              if connection.vendor == "postgresql":
+                  with connection.cursor() as cur:
+                      cur.execute("SET TRANSACTION READ ONLY")
+              printers = Equipment.objects.filter(profile_type=EquipmentProfileType.PRINT_3D).order_by("pk")
+              print(f"printers={printers.count()}")
+              for eq in printers:
+                  qs = PrintAnalysis.objects.filter(equipment=eq)
+                  booked = qs.filter(booking__isnull=False)
+                  with_act = booked.exclude(actual_weight_grams__isnull=True, actual_time_minutes__isnull=True)
+                  mats = sorted({(m.code, str(m.density_g_per_cm3)) for m in PrintMaterial.objects.filter(supported_equipment=eq)} |
+                                {(m.code, str(m.density_g_per_cm3)) for m in PrintMaterial.objects.filter(equipment=eq)})
+                  print(f"eq={eq.pk} status={eq.status} make={eq.make!r} model={eq.model_information!r} "
+                        f"size=({eq.max_print_size_x_mm},{eq.max_print_size_y_mm},{eq.max_print_size_z_mm}) "
+                        f"analyses={qs.count()} completed={qs.filter(status='COMPLETED').count()} booked={booked.count()} "
+                        f"with_actuals={with_act.count()} methods={sorted(set(qs.values_list('analysis_method', flat=True)))}")
+                  print(f"   materials={mats}")
+              print("\nROWS eq|booking|bstatus|aid|mat|dens|infill|layer|qty|jobq|vol_cm3|area_mm2|x|y|z|tris|top|bottom|over|sup_mm3|est_g|est_min|act_g|act_min")
+              rows = (PrintAnalysis.objects.filter(booking__isnull=False)
+                      .exclude(actual_weight_grams__isnull=True, actual_time_minutes__isnull=True)
+                      .select_related("booking", "material").order_by("equipment_id", "booking_id"))
+              n = 0
+              for a in rows[:400]:
+                  bb = a.bounding_box or {}
+                  sz = bb.get("size") or {}
+                  ss = a.slicer_settings or {}
+                  try:
+                      with a.stl_file.open("rb") as fh:
+                          tris = parse_stl_bytes(fh.read())
+                      top, bottom, over, sup = features(tris)
+                      ntri = len(tris)
+                  except Exception as exc:  # noqa: BLE001
+                      top = bottom = over = sup = -1.0
+                      ntri = -1
+                  dens = a.material.density_g_per_cm3 if a.material else None
+                  print("|".join(str(v) for v in [
+                      a.equipment_id, a.booking_id, a.booking.status if a.booking else "", str(a.pk)[:8],
+                      a.material_code_snapshot, dens, ss.get("infill_percent"), ss.get("layer_height_mm"),
+                      a.quantity, booking_job_quantity(a.booking) if a.booking else 1,
+                      a.volume_cm3, round(float(bb.get("_surface_area_mm2") or 0), 1),
+                      round(float(sz.get("x") or 0), 1), round(float(sz.get("y") or 0), 1), round(float(sz.get("z") or 0), 1),
+                      ntri, round(top, 1), round(bottom, 1), round(over, 1), round(sup, 1),
+                      a.weight_grams, a.estimated_time_minutes, a.actual_weight_grams, a.actual_time_minutes,
+                  ]))
+                  n += 1
+              print(f"rows_printed={n}")
+              print("\nBOOKED (no actuals) eq|booking|bstatus|aid|infill|qty|vol_cm3|z|est_g|est_min")
+              for a in (PrintAnalysis.objects.filter(booking__isnull=False, actual_weight_grams__isnull=True,
+                                                     actual_time_minutes__isnull=True)
+                        .select_related("booking").order_by("equipment_id", "booking_id")[:150]):
+                  bb = a.bounding_box or {}
+                  sz = bb.get("size") or {}
+                  print("|".join(str(v) for v in [
+                      a.equipment_id, a.booking_id, a.booking.status if a.booking else "", str(a.pk)[:8],
+                      (a.slicer_settings or {}).get("infill_percent"), a.quantity, a.volume_cm3,
+                      round(float(sz.get("z") or 0), 1), a.weight_grams, a.estimated_time_minutes]))
+              transaction.set_rollback(True)
+          print("DONE (read-only, rolled back)")
+          PY
