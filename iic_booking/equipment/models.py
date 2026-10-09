@@ -7813,3 +7813,9 @@ from iic_booking.equipment.disruption_models import (  # noqa: E402
     DisruptionType,
     SlotStatusChangeLog,
 )
+from iic_booking.equipment.flash_message_models import (  # noqa: E402
+    EquipmentFlashMessage,
+    EquipmentFlashMessageAudit,
+    FlashAudience,
+    FlashTone,
+)

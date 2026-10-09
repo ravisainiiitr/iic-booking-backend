@@ -12,6 +12,7 @@ from rest_framework.routers import SimpleRouter
 
 from iic_booking.department_modules import urls as department_modules_urls
 from iic_booking.equipment import disruption_views
+from iic_booking.equipment import flash_message_views
 from iic_booking.equipment.peak_window_views import PeakWindowSettingView, peak_window_status
 from iic_booking.users.api.auth_views import (
     omniport_auth_url,
@@ -1301,6 +1302,22 @@ urlpatterns = router.urls + [
         "equipments/slot-status-picker/",
         __import__("iic_booking.equipment.slot_status_picker_views", fromlist=["slot_status_picker"]).slot_status_picker,
         name="equipment-slot-status-picker",
+    ),
+    path("equipments/flash-messages/", flash_message_views.flash_message_list, name="equipment-flash-messages"),
+    path(
+        "equipments/flash-messages/<int:pk>/",
+        flash_message_views.flash_message_detail,
+        name="equipment-flash-message-detail",
+    ),
+    path(
+        "equipments/flash-messages/<int:pk>/end/",
+        flash_message_views.flash_message_end,
+        name="equipment-flash-message-end",
+    ),
+    path(
+        "equipments/flash-messages/<int:pk>/extend/",
+        flash_message_views.flash_message_extend,
+        name="equipment-flash-message-extend",
     ),
     path("equipments/disruptions/", disruption_views.disruption_list, name="equipment-disruptions-list"),
     path(

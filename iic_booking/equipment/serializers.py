@@ -2003,15 +2003,33 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     group_cross_reschedule_enabled = serializers.SerializerMethodField()
     max_print_size = serializers.SerializerMethodField()
     disruption_notice = serializers.SerializerMethodField()
+    flash_messages = serializers.SerializerMethodField()
+    flash_messages_can_manage = serializers.SerializerMethodField()
 
     def get_disruption_notice(self, obj):
         return _disruption_notice(obj)
+
+    def _viewer(self):
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        return getattr(request, 'user', None)
+
+    def get_flash_messages(self, obj):
+        from .flash_message_service import public_flash_messages
+
+        return public_flash_messages(obj, self._viewer())
+
+    def get_flash_messages_can_manage(self, obj):
+        from .flash_message_service import can_manage_equipment_flash
+
+        return can_manage_equipment_flash(self._viewer(), obj)
 
     class Meta:
         model = Equipment
         fields = [
             'equipment_id',
             'disruption_notice',
+            'flash_messages',
+            'flash_messages_can_manage',
             'code',
             'name',
             'description',
