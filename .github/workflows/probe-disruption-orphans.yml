@@ -138,6 +138,38 @@ jobs:
                       f" admin_edits={[(f'{a['action_time']:%Y-%m-%d %H:%M}', a['action_flag'], a['user__user_type']) for a in ad][-3:]}"
                       f" created={r['created_at']:%Y-%m-%d} updated={r['updated_at']:%Y-%m-%d %H:%M}"
                   )
+              # What the history API returns for the people who can see this equipment (ids only).
+              from rest_framework.test import APIRequestFactory, force_authenticate
+              from iic_booking.equipment.disruption_views import disruption_list, disruption_equipment_ids
+              from iic_booking.equipment.models import EquipmentManager, EquipmentTemporaryOIC
+              from django.contrib.auth import get_user_model
+              U = get_user_model()
+              viewers = set(EquipmentManager.objects.filter(equipment=e).values_list("user_id", flat=True))
+              viewers |= set(EquipmentTemporaryOIC.objects.filter(equipment=e).values_list("user_id", flat=True)) if hasattr(EquipmentTemporaryOIC, "equipment") else set()
+              viewers |= set(U.objects.filter(user_type="admin", is_active=True).values_list("id", flat=True)[:2])
+              viewers |= set(U.objects.filter(user_type="dept_admin", is_active=True, department_id=getattr(e, "internal_department_id", None)).values_list("id", flat=True)[:3]) if hasattr(U, "department_id") else set()
+              ev_ids = set(DisruptionEvent.objects.filter(equipment=e, is_deleted=False).values_list("id", flat=True))
+              rf = APIRequestFactory()
+              for uid in sorted(viewers):
+                  u = U.objects.get(pk=uid)
+                  try:
+                      scope = disruption_equipment_ids(u)
+                  except PermissionError:
+                      print(f"    viewer id={uid} type={u.user_type} -> forbidden")
+                      continue
+                  in_scope = scope is None or e.equipment_id in scope
+                  found = {}
+                  for page in range(1, 8):
+                      req = rf.get("/api/equipments/disruptions/", {"page": page, "page_size": 25, "ordering": "-start_at"})
+                      force_authenticate(req, user=u)
+                      resp = disruption_list(req)
+                      res = (resp.data or {}).get("results", []) if resp.status_code == 200 else []
+                      for r in res:
+                          if r["id"] in ev_ids:
+                              found[r["id"]] = page
+                      if len(res) < 25:
+                          break
+                  print(f"    viewer id={uid} type={u.user_type} status={resp.status_code} in_scope={in_scope} total={(resp.data or {}).get('count')} found={found}")
               recent = SlotStatusChangeLog.objects.filter(equipment=e).order_by("-changed_at")[:15]
               for lg in recent:
                   print(
