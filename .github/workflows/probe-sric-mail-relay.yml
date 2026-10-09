@@ -1,0 +1,103 @@
+# Read-only: how the IITR mail gateway marks internal vs external mail in the portal mailbox. Prints only
+# gateway header verdict values, sender DOMAIN class, and for each Received hop the domain suffix of the
+# host names and whether the relay IP is private/public. No addresses, subjects or bodies.
+name: Probe SRIC Mail Relay
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Probe
+        run: |
+          set -euo pipefail
+          for d in \
+            /home/ubuntu/iic-booking-backend \
+            /home/ubuntu/iic_booking_backend \
+            /home/ubuntu/iic-booking-backend-rt-port
+          do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              test -n "$CID"
+              docker exec -i -w /app "$CID" python - <<'PY'
+          import os, re, email, imaplib, socket, ipaddress
+          from collections import Counter
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          import django
+          django.setup()
+          from django.conf import settings
+          socket.setdefaulttimeout(45)
+          conn = imaplib.IMAP4_SSL(settings.IMAP_HOST, int(getattr(settings, "IMAP_PORT", 993) or 993))
+          conn.login(settings.IMAP_USER, settings.IMAP_PASSWORD)
+          conn.select("INBOX", readonly=True)
+          def suffix(h):
+              h = (h or "").strip("[]().").lower()
+              if not h:
+                  return "-"
+              try:
+                  ipaddress.ip_address(h)
+                  return "ip-literal"
+              except ValueError:
+                  pass
+              parts = h.split(".")
+              return ".".join(parts[-3:]) if len(parts) >= 3 else ("single-label" if len(parts) == 1 else h)
+          def ipclass(s):
+              for m in re.findall(r"\[?(\d{1,3}(?:\.\d{1,3}){3})\]?", s or ""):
+                  try:
+                      ip = ipaddress.ip_address(m)
+                  except ValueError:
+                      continue
+                  return "private" if ip.is_private else "public:" + ".".join(m.split(".")[:2]) + ".x.x"
+              return "-"
+          def hops(m):
+              out = []
+              for r in m.get_all("Received") or []:
+                  flat = " ".join(str(r).split())
+                  fm = re.search(r"\bfrom\s+(\S+)(\s+\([^)]*\))?", flat, re.I)
+                  by = re.search(r"\bby\s+(\S+)", flat, re.I)
+                  out.append(f"from={suffix(fm.group(1)) if fm else '-'}({ipclass(fm.group(2) if fm and fm.group(2) else '')}) by={suffix(by.group(1)) if by else '-'} with={(re.search(r'with\s+(\S+)', flat, re.I).group(1) if re.search(r'with\s+(\S+)', flat, re.I) else '-')[:16]}")
+              return out
+          def val(m, name):
+              v = m.get(name)
+              return " ".join(str(v).split())[:40] if v is not None else "(absent)"
+          typ, data = conn.uid("search", None, 'FROM "bills@sric.iitr.ac.in"')
+          ids = data[0].split() if data and data[0] else []
+          for uid in ids[-3:]:
+              t, md = conn.uid("fetch", uid, "(BODY.PEEK[HEADER])")
+              raw = next((p[1] for p in md if isinstance(p, tuple) and len(p) >= 2), b"")
+              m = email.message_from_bytes(raw)
+              print("--- bills uid", uid.decode())
+              for h in hops(m):
+                  print("   hop", h)
+              for name in ("mail_from_trusted_domains", "X-IronPort-Anti-Spam-Filtered", "X-ThreatScanner-Verdict", "X-IPAS-Result", "X-Originating-IP"):
+                  v = val(m, name)
+                  if name == "X-Originating-IP":
+                      v = ipclass(v)
+                  elif name == "X-IPAS-Result":
+                      v = v[:12]
+                  print(f"   {name}={v}")
+          typ, data = conn.uid("search", None, "ALL")
+          ids = data[0].split() if data and data[0] else []
+          stats = Counter()
+          for uid in ids[-400:]:
+              t, md = conn.uid("fetch", uid, "(BODY.PEEK[HEADER])")
+              raw = next((p[1] for p in md if isinstance(p, tuple) and len(p) >= 2), b"")
+              m = email.message_from_bytes(raw)
+              addr = email.utils.parseaddr(m.get("From") or "")[1].lower()
+              dom = addr.split("@")[-1]
+              cls = "iitr" if dom == "iitr.ac.in" or dom.endswith(".iitr.ac.in") else "external"
+              h = hops(m)
+              stats[(cls, "trusted=" + val(m, "mail_from_trusted_domains")[:20], "ironport=" + val(m, "X-IronPort-Anti-Spam-Filtered")[:8], "hops=" + str(len(h)), "first_external_hop=" + next((x.split(" by=")[0] for x in reversed(h) if "public" in x), "none"))] += 1
+          for k, v in sorted(stats.items(), key=lambda kv: -kv[1])[:30]:
+              print("stat", v, k)
+          conn.logout()
+          print("DONE_OK")
+          PY
+              exit 0
+            fi
+          done
+          echo "No production compose path found"
+          exit 1
