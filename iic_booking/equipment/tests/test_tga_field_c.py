@@ -76,7 +76,7 @@ def test_values_get_a_blank_sample_name_and_plain_tables_are_held_back_unless_ma
 def test_run_changes_every_profile_converts_values_and_restores(egs_factory):
     eq = _tga(egs_factory)
     owner = egs_factory.student()
-    advanced = egs_factory.booking(owner, eq, egs_factory.future(), total_charge="200.00", input_values={
+    advanced = egs_factory.booking(owner, eq, egs_factory.future(), total_charge="300.00", input_values={
         "A": 2, "C": [ROW, ROW], SAMPLE_SETS_KEY: [{"A": 1, "C": [ROW]}]})
     blank = egs_factory.booking(owner, eq, egs_factory.future(days=4), input_values={"A": 1, "C": LEGACY_BLANK})
     held = egs_factory.booking(owner, eq, egs_factory.future(days=5), input_values={"A": 1, "C": LEGACY_DATA})
@@ -102,14 +102,15 @@ def test_run_changes_every_profile_converts_values_and_restores(egs_factory):
     advanced.refresh_from_db()
     assert advanced.input_values["C"] == [{NEW_KEY: "", **ROW}, {NEW_KEY: "", **ROW}]
     assert advanced.input_values[SAMPLE_SETS_KEY][0]["C"] == [{NEW_KEY: "", **ROW}]
-    assert advanced.total_charge == Decimal("200.00") and advanced.status == "BOOKED"
+    assert advanced.total_charge == Decimal("300.00") and advanced.status == "BOOKED"
     assert Booking.objects.get(pk=blank.pk).input_values["C"] == [{NEW_KEY: ""}, {NEW_KEY: ""}]
     assert Booking.objects.get(pk=held.pk).input_values == before[held.pk]
     template.refresh_from_db()
     assert template.input_values["C"] == [{NEW_KEY: ""}, {NEW_KEY: ""}]
     assert any("held back (plain table with data) ids: [%d]" % held.pk in line for line in lines)
-    assert any("recomputed same as before conversion" in line and "DIFFERENT" not in line for line in lines
-               if line.startswith("  charge sanity"))
+    sanity = next(line for line in lines if line.startswith("  charge sanity"))
+    assert "'recomputed same as before conversion': 2" in sanity and "DIFFERENT" not in sanity
+    assert "'recomputed equals stored amount': 1" in sanity
     assert not [line for line in lines if "sample charge" in line and "DIFFERENT" in line]
 
     again = run(apply=True, codes=[eq.code], write=lambda *_: None)

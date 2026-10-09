@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import json
 from collections import Counter, defaultdict
+from decimal import Decimal
 from typing import Any
 
 from django.db import transaction
@@ -308,8 +309,8 @@ def run(*, apply: bool, simple_mapping: bool = False, codes=TARGET_CODES, write=
                         sanity[f"error {type(exc).__name__}"] += 1
                         continue
                     sanity["recomputed same as before conversion" if old == new else "recomputed DIFFERENT"] += 1
-                    stored_amount = str(booking.total_charge)
-                    sanity["recomputed equals stored amount" if new[1] == stored_amount else "recomputed differs from stored amount"] += 1
+                    equal = Decimal(new[1]) == booking.total_charge
+                    sanity["recomputed equals stored amount" if equal else "recomputed differs from stored amount"] += 1
             for label in ("bookings", "booking revert snapshots", "urgent requests", "booking templates"):
                 c = counts.get(label) or Counter()
                 write(f"  {label}: {dict(sorted(c.items())) or 'none'}")
