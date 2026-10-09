@@ -46,10 +46,29 @@ jobs:
           conn = imaplib.IMAP4_SSL(host, int(getattr(settings, "IMAP_PORT", 993) or 993)) if getattr(settings, "IMAP_USE_SSL", True) else imaplib.IMAP4(host, int(getattr(settings, "IMAP_PORT", 143) or 143))
           conn.login(user, pw)
           print("folders_with_sric_hint=", [f.decode(errors="replace").split(' "/" ')[-1] for f in (conn.list()[1] or []) if f and (b"sric" in f.lower() or b"spam" in f.lower() or b"junk" in f.lower())])
+          print("mailbox_is_iicbooking=", user.lower().startswith("iicbooking"))
+          from collections import Counter
+          ids = []
+          for f in [folder, "Junk"]:
+              typ, _ = conn.select(f'"{f}"', readonly=True)
+              if typ != "OK":
+                  print("folder", f, "not selectable")
+                  continue
+              typ, data = conn.uid("search", None, 'FROM "sric.iitr.ac.in"')
+              uids = data[0].split() if data and data[0] else []
+              senders = Counter()
+              for u in uids[-200:]:
+                  t, hd = conn.uid("fetch", u, "(BODY.PEEK[HEADER.FIELDS (FROM)])")
+                  rawh = next((p[1] for p in hd if isinstance(p, tuple) and len(p) >= 2), b"")
+                  addr = email.utils.parseaddr(email.message_from_bytes(rawh).get("From") or "")[1].lower()
+                  local, _, domain = addr.partition("@")
+                  senders[(local if local in ("no-reply", "noreply", "bills", "sric", "do-not-reply") else "other") + "@" + domain] += 1
+              print("folder=", f, "from_sric_domain=", len(uids), "by_sender=", dict(senders))
+              if f == folder:
+                  typ, data = conn.uid("search", None, f'FROM "{sender}"')
+                  ids = data[0].split() if data and data[0] else []
+                  print("messages_from_sender_in_inbox=", len(ids))
           typ, _ = conn.select(folder, readonly=True)
-          typ, data = conn.uid("search", None, f'FROM "{sender}"')
-          ids = data[0].split() if data and data[0] else []
-          print("messages_from_sender=", len(ids))
           VERDICT = re.compile(r"\b(spf|dkim|dmarc|arc)\s*=\s*([a-z]+)", re.I)
           DOMAINS = re.compile(r"\b(header\.d|header\.i|header\.from|smtp\.mailfrom|smtp\.helo)\s*=\s*([^\s;]+)", re.I)
           def dom(v):
