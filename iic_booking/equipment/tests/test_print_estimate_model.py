@@ -466,6 +466,22 @@ def test_support_material_offered_by_oic_and_preview_endpoint(egs_factory, media
 
 
 @pytest.mark.django_db
+def test_booking_payload_carries_the_printer_plate_size(egs_factory):
+    from types import SimpleNamespace
+
+    from iic_booking.equipment.serializers import BookingSerializer
+
+    eq = print_equipment(egs_factory)
+    get = BookingSerializer().get_equipment_max_print_size
+    assert get(SimpleNamespace(equipment=eq)) is None  # not configured: the preview keeps its 220 x 220 plate
+    eq.max_print_size_x_mm, eq.max_print_size_y_mm, eq.max_print_size_z_mm = Decimal(256), Decimal(256), Decimal(256)
+    eq.save()
+    assert get(SimpleNamespace(equipment=eq))["x"] == 256.0
+    laser = egs_factory.equipment(with_profile=False, profile_type="LASER_CUT_2D")
+    assert get(SimpleNamespace(equipment=laser)) is None
+
+
+@pytest.mark.django_db
 def test_oic_edits_the_estimate_profile(egs_factory):
     eq = print_equipment(egs_factory)
     eq.make, eq.model_information = "Bambu Lab", "P1S"

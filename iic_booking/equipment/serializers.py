@@ -3719,6 +3719,16 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
     fabrication_files_replaceable = serializers.SerializerMethodField()
     fabrication_workflow = serializers.SerializerMethodField()
     own_material_fixed_charge = serializers.SerializerMethodField()
+    equipment_max_print_size = serializers.SerializerMethodField()
+
+    def get_equipment_max_print_size(self, obj):
+        """The 3D printer's maximum print size set by the OIC (also the preview's build plate); None otherwise."""
+        equipment = getattr(obj, "equipment", None)
+        if getattr(equipment, "profile_type", None) != EquipmentProfileType.PRINT_3D:
+            return None
+        from .print_size_limit import print_size_limit_payload
+
+        return print_size_limit_payload(equipment)
 
     def _is_fabrication(self, obj) -> bool:
         return getattr(getattr(obj, "equipment", None), "profile_type", None) in FABRICATION_PROFILE_TYPES
@@ -3989,6 +3999,7 @@ class BookingSerializer(_ResultsDeadlineFieldMixin, _RescheduleBlockFieldsMixin,
             'fabrication_file_changes',
             'fabrication_files_replaceable',
             'fabrication_workflow',
+            'equipment_max_print_size',
         ]
         read_only_fields = [
             'booking_id',
