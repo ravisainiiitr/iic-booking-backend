@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from unittest import mock
 
 import pytest
 from django.core.cache import cache
@@ -31,11 +32,26 @@ INTERNAL = ma.Viewer(ma.VIEWER_INTERNAL)
 EXTERNAL = ma.Viewer(ma.VIEWER_EXTERNAL, signed_in=True)
 
 
+def _at(y, m, d, hh=10, mm=0):
+    return timezone.make_aware(datetime(y, m, d, hh, mm), timezone.get_current_timezone())
+
+
 @pytest.fixture(autouse=True)
 def _clear_cache():
     cache.clear()
     yield
     cache.clear()
+
+
+@pytest.fixture(autouse=True)
+def frozen_now():
+    """API calls read the clock; pin it so results do not depend on the weekday the suite runs on.
+
+    The catalog hides a base on days an exclusive mode runs (UPS on Fridays in ``family``).
+    """
+    clock = {"now": TUESDAY_10AM}
+    with mock.patch("django.utils.timezone.now", side_effect=lambda: clock["now"]):
+        yield clock
 
 
 def _slot(eq, day: date, hour: int, status="AVAILABLE", **kw):
@@ -254,6 +270,62 @@ def test_catalog_cards_get_compact_availability(family, egs_factory):
     assert child["parent_equipment_id"] == base.pk
     assert [m["equipment_id"] for m in child["modes"]] == [depth.pk]
     assert child["modes"][0]["weekdays"] == [1, 3]
+
+
+def test_catalog_on_an_exclusive_mode_day_keeps_the_mode_card(family, egs_factory, frozen_now):
+    base, depth, ups = family
+    frozen_now["now"] = _at(2030, 1, 11, 19, 30)
+    res = egs_factory.client_for(egs_factory.student()).get("/api/equipments/")
+    rows = {r["equipment_id"]: r for r in res.data["equipments"]}
+    assert base.pk not in rows
+    assert [m["equipment_id"] for m in rows[ups.pk]["mode_availability"]["modes"]] == [ups.pk]
+    assert rows[ups.pk]["mode_availability"]["modes"][0]["weekdays"] == [0, 1, 2, 3, 4]
+    summary = egs_factory.client_for(egs_factory.student()).get(f"/api/equipments/{ups.pk}/mode-availability/").data
+    assert [m["equipment_id"] for m in summary["modes"]] == [base.pk, depth.pk, ups.pk]
+
+
+@pytest.mark.parametrize(
+    "when",
+    [
+        _at(2030, 1, 8, 10, 0),
+        _at(2030, 1, 9, 20, 59),
+        _at(2030, 1, 9, 21, 0),
+        _at(2030, 1, 11, 19, 30),
+        _at(2030, 1, 12, 11, 0),
+        _at(2030, 1, 13, 23, 30),
+    ],
+    ids=["tue-morning", "wed-before-opening", "wed-opening", "fri-evening", "sat", "sun-late"],
+)
+@pytest.mark.parametrize("viewer", [INTERNAL, EXTERNAL], ids=["internal", "external"])
+def test_summary_is_consistent_at_any_time(family, frozen_now, when, viewer):
+    base, depth, ups = family
+    for offset in range(21):
+        day = MONDAY + timedelta(days=offset)
+        if day.weekday() < 5:
+            for eq in (base, depth, ups):
+                _slot(eq, day, 9)
+                _slot(eq, day, 20)
+    frozen_now["now"] = when
+    s = ma.family_summaries([base.pk], viewer, now=when)[base.pk]
+    today = timezone.localtime(when).date()
+    assert s["today"] == today.isoformat()
+    assert s["start_date"] == (today - timedelta(days=today.weekday())).isoformat() and len(s["days"]) == 28
+    windows = {m["equipment_id"]: m["window"] for m in s["modes"]}
+    first_free: dict[int, str] = {}
+    for d in s["days"]:
+        assert d["is_past"] == (d["date"] < today.isoformat()) and d["is_today"] == (d["date"] == today.isoformat())
+        for cell in d["modes"]:
+            if d["is_past"]:
+                assert cell["status"] == ma.PAST
+            if cell["status"] == ma.AVAILABLE:
+                assert d["date"] <= windows[cell["equipment_id"]]["max_date"]
+                assert datetime.fromisoformat(cell["first_slot_at"]) > when and cell["free_slots"] > 0
+                first_free.setdefault(cell["equipment_id"], d["date"])
+            if cell["status"] == ma.NOT_OPEN:
+                assert d["date"] > windows[cell["equipment_id"]]["max_date"]
+                assert datetime.fromisoformat(cell["opens_at"]) > when
+    for m in s["modes"]:
+        assert (m["next_available"] or {}).get("date") == first_free.get(m["equipment_id"])
 
 
 def test_summary_query_count_does_not_grow_with_families(egs_factory):
