@@ -104,6 +104,8 @@ jobs:
                       f" ended={bool(ev.ended_at)} deleted={ev.is_deleted} backfilled={ev.backfilled}"
                       f" slots={ev.slot_links.count()} started_by_set={bool(ev.started_by_id)}"
                   )
+                  for ed in ev.edits.order_by("edited_at"):
+                      print(f"      edit {ed.edited_at:%Y-%m-%d %H:%M} kind={ed.kind} field={ed.field} by={ed.edited_by_id}")
               rows = list(
                   DailySlot.objects.filter(slot_master__equipment=e, status__in=STATUSES)
                   .order_by("start_datetime")
