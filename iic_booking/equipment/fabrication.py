@@ -272,6 +272,9 @@ def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
                     "support_weight_g_total": support_each * copies,
                 }
             )
+        orientation = (getattr(a, "slicer_settings", None) or {}).get("orientation")
+        if orientation:
+            part["orientation"] = list(orientation)
         parts.append(part)
     return parts
 
@@ -536,4 +539,5 @@ def format_part_line(part: dict) -> str:
         supports = f", supports: {part.get('support_mode_label') or part.get('support_mode')}"
         if part.get("support_weight_g_each"):
             supports += f" (+{part['support_weight_g_each']} g {part.get('support_material_code')} each)"
-    return f"{part.get('name')} × {qty}{est}{supports} [{part.get('filename')}]"
+    oriented = ", user-selected orientation" if part.get("orientation") else ""
+    return f"{part.get('name')} × {qty}{est}{supports}{oriented} [{part.get('filename')}]"

@@ -58,6 +58,7 @@ from .print_estimate_model import (
     TECHNOLOGY_LABELS,
     resolve_profile,
 )
+from .print_orientation import ORIENTATION_KEY, evaluate_orientations, parse_orientation
 from .print_size_limit import analyses_size_error, check_stl_files, print_size_limit_payload
 from .serializers import (
     PrintAnalysisBatchSerializer,
@@ -193,7 +194,21 @@ def _slicer_settings_from_request(data, equipment, previous=None):
     supports, err = _support_settings_from_request(data, equipment, previous)
     if err:
         return None, err
-    return {**default_slicer_settings(layer_height, density), **supports}, None
+    out = {**default_slicer_settings(layer_height, density), **supports}
+    if (previous or {}).get(ORIENTATION_KEY):
+        out[ORIENTATION_KEY] = previous[ORIENTATION_KEY]
+    return out, None
+
+
+def _orientation_from_request(data):
+    """(present, matrix or None, error) for an optional ``orientation`` (9 numbers; empty / null = as uploaded)."""
+    if ORIENTATION_KEY not in data:
+        return False, None, None
+    raw = data.get(ORIENTATION_KEY)
+    if hasattr(data, "getlist") and isinstance(raw, str) and len(data.getlist(ORIENTATION_KEY)) > 1:
+        raw = data.getlist(ORIENTATION_KEY)
+    m, err = parse_orientation(raw)
+    return True, m, err
 
 
 def _refresh_batch_status(batch: PrintAnalysisBatch) -> None:
@@ -547,6 +562,14 @@ def recalculate_print_analysis(request, analysis_id):
     slicer_settings, err = _slicer_settings_from_request(request.data, equipment, analysis.slicer_settings)
     if err:
         return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    orientation_given, orientation, err = _orientation_from_request(request.data)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    if orientation_given:
+        if orientation:
+            slicer_settings[ORIENTATION_KEY] = list(orientation)
+        else:
+            slicer_settings.pop(ORIENTATION_KEY, None)
 
     try:
         estimate = recalculate_print_estimate(
@@ -555,7 +578,10 @@ def recalculate_print_analysis(request, analysis_id):
             layer_height_mm=slicer_settings["layer_height_mm"],
             infill_percent=slicer_settings["infill_percent"],
             support_settings={k: v for k, v in slicer_settings.items() if k in SUPPORT_SETTING_KEYS},
+            **({"orientation": orientation} if orientation_given else {}),
         )
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     except Exception as exc:
         logger.exception("Print settings recalculation failed for %s", analysis_id)
         return Response(
@@ -644,8 +670,21 @@ def print_analysis_estimate(request, analysis_id):
     supports, err = _support_settings_from_request(params, equipment, analysis.slicer_settings)
     if err:
         return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
-    estimate = preview_print_estimate(analysis, material=material, infill_percent=infill, support_settings=supports)
-    breakdown = (estimate.bounding_box or {}).get("_estimate") or {}
+    orientation_given, orientation, err = _orientation_from_request(params)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        estimate = preview_print_estimate(
+            analysis,
+            material=material,
+            infill_percent=infill,
+            support_settings=supports,
+            **({"orientation": orientation} if orientation_given else {}),
+        )
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    bbox = estimate.bounding_box or {}
+    breakdown = bbox.get("_estimate") or {}
     support_g = breakdown.get("support_material_g") or 0
     return Response(
         {
@@ -657,8 +696,51 @@ def print_analysis_estimate(request, analysis_id):
             "estimated_time_minutes": estimate.estimated_time_minutes,
             "quantity": max(1, int(analysis.quantity or 1)),
             "estimate_breakdown": breakdown,
+            "orientation": list(orientation) if orientation_given and orientation else (
+                None if orientation_given else (analysis.slicer_settings or {}).get(ORIENTATION_KEY)
+            ),
+            "size_mm": bbox.get("size"),
         }
     )
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def print_analysis_orientations(request, analysis_id):
+    """
+    Compare ways of placing one analysed STL on the plate (each side down, and its largest flat faces down) and
+    suggest the one needing the least support material, then the shortest print, among those that fit the
+    printer. Read-only. Query: material_id, density_percent and support_* as for the estimate.
+    """
+    try:
+        analysis = PrintAnalysis.objects.select_related("equipment", "material").get(pk=analysis_id)
+    except PrintAnalysis.DoesNotExist:
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not user_can_access_print_resource(request, analysis.user_id):
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+    if analysis.status != PrintAnalysisStatus.COMPLETED or analysis.volume_cm3 is None:
+        return Response({"error": "The STL analysis has not completed."}, status=status.HTTP_400_BAD_REQUEST)
+    equipment = analysis.equipment
+    params = request.query_params
+    material = analysis.material
+    if params.get("material_id"):
+        material = bookable_material_or_none(equipment, params.get("material_id"))
+        if not material:
+            return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
+    infill = None
+    if params.get("density_percent") not in (None, "") or params.get("infill_percent") not in (None, ""):
+        infill = _parse_density_percent(params.get("density_percent", params.get("infill_percent")))
+    supports, err = _support_settings_from_request(params, equipment, analysis.slicer_settings)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        result = evaluate_orientations(analysis, material=material, infill_percent=infill, support_settings=supports)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:  # noqa: BLE001
+        logger.exception("Orientation search failed for %s", analysis_id)
+        return Response({"error": "Could not compare orientations for this file."}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"analysis_id": str(analysis.id), **result})
 
 
 @api_view(["PATCH"])
@@ -778,7 +860,10 @@ def recalculate_print_analysis_batch(request, batch_id):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         analysis.material = material
-        analysis.slicer_settings = slicer_settings
+        item_settings = {k: v for k, v in slicer_settings.items() if k != ORIENTATION_KEY}
+        if (analysis.slicer_settings or {}).get(ORIENTATION_KEY):
+            item_settings[ORIENTATION_KEY] = analysis.slicer_settings[ORIENTATION_KEY]
+        analysis.slicer_settings = item_settings
         analysis.material_code_snapshot = material.code if material else ""
         analysis.price_per_gram_snapshot = material.price_per_gram if material else None
         analysis.weight_grams = estimate.weight_grams

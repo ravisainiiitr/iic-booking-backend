@@ -722,6 +722,8 @@ class EstimateBreakdown:
     support_min: float = 0.0
     overhang_area_mm2: float = 0.0
     overhang_plate_mm2: float = 0.0
+    # Share of the print time (without warm-up) done when the print reaches each of PROFILE_BINS equal heights.
+    progress: List[float] = field(default_factory=list)
 
     @property
     def support_separate(self) -> bool:
@@ -765,7 +767,16 @@ class EstimateBreakdown:
             "overhang_plate_mm2": round(self.overhang_plate_mm2, 1),
             "notes": list(self.notes),
             "detail": {k: round(float(v), 3) for k, v in self.detail.items()},
+            "progress": [round(float(v), 4) for v in self.progress],
         }
+
+
+def _cumulative_share(seconds) -> List[float]:
+    s = np.clip(np.asarray(seconds, dtype=np.float64), 0.0, None)
+    total = float(s.sum())
+    if total <= 0 or not len(s):
+        return [(i + 1) / max(len(s), 1) for i in range(len(s))]
+    return (np.cumsum(s) / total).tolist()
 
 
 def _segment_time(length: float, v: float, accel: float, v_corner: float) -> float:
@@ -923,12 +934,18 @@ def estimate_fdm(
         support_overhead_s += support_layers * _num(profile, "toolchange_s", 0.0)
     support_s = float(support_bins_s.sum()) + support_overhead_s
     print_s = extrude_s + overhead_s + support_overhead_s
+    bin_s = (
+        slowed * layers_per_bin
+        + layers_per_bin * _num(profile, "layer_overhead_s", 2.0)
+        + support_overhead_s * support_w
+    )
 
     b = _finish(
         TECH_FDM, profile, model_g, support_g, waste_g, print_s, layers, lh, infill_percent, [],
         {"shell_mm3": shell, "skin_mm3": skin, "infill_mm3": sparse, "support_mm3": support,
          "support_layers": support_layers, "extrude_min": extrude_s / 60.0, "layer_overhead_min": overhead_s / 60.0},
     )
+    b.progress = _cumulative_share(bin_s)
     return _with_support(b, profile, opts, mode, s_density, separate, support_s, area_all, area_plate)
 
 
@@ -973,6 +990,15 @@ def estimate_layered(
         print_s += model_layers * avg_section_cm2 * area_rate
     notes = ["Printed solid; the density setting does not apply to this printer type."]
     b = _finish(tech, profile, model_g, support_g, waste_g, print_s, layers, lh, None, notes, {"support_mm3": support})
+    # Layer by layer at a fixed time each (the first, slower layers at the bottom); the area term follows the section.
+    nb = len(f.cross_section_mm2 or []) or PROFILE_BINS
+    bins = np.full(nb, (layers - bottom) * per_layer / nb)
+    if bottom:
+        bins[0] += bottom * _num(profile, "bottom_layer_s", per_layer)
+    if area_rate > 0 and f.cross_section_mm2:
+        sec = np.asarray(f.cross_section_mm2, dtype=np.float64)
+        bins = bins + sec / 100.0 * area_rate * (max(1, int(math.ceil(f.height / lh))) / nb)
+    b.progress = _cumulative_share(bins)
     return _with_support(b, profile, opts, mode, s_density, separate, support_s, area_all, area_plate)
 
 

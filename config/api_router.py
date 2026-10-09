@@ -252,6 +252,7 @@ from iic_booking.equipment.print_3d_views import (
     equipment_print_materials,
     print_analysis_detail,
     print_analysis_estimate,
+    print_analysis_orientations,
     print_analysis_batch_detail,
     recalculate_print_analysis,
     recalculate_print_analysis_batch,
@@ -1425,6 +1426,11 @@ urlpatterns = router.urls + [
         name="print-analysis-recalculate",
     ),
     path("print-analyses/<uuid:analysis_id>/estimate/", print_analysis_estimate, name="print-analysis-estimate"),
+    path(
+        "print-analyses/<uuid:analysis_id>/orientations/",
+        print_analysis_orientations,
+        name="print-analysis-orientations",
+    ),
     path(
         "print-analysis-batches/<uuid:batch_id>/",
         print_analysis_batch_detail,

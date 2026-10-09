@@ -408,6 +408,9 @@ def analysis_features(analysis):
     return approximate_features(volume_mm3, surface_area_mm2, (size.get("x"), size.get("y"), size.get("z")))
 
 
+KEEP_ORIENTATION = object()
+
+
 def recalculate_print_estimate(
     analysis,
     *,
@@ -415,19 +418,35 @@ def recalculate_print_estimate(
     layer_height_mm: float,
     infill_percent: float,
     support_settings: Optional[Dict[str, Any]] = None,
+    orientation=KEEP_ORIENTATION,
 ) -> PrintEstimate:
     """
     Fast re-quote from the stored mesh features with the printer's current estimate profile (which sets the
     layer height). Used when material, density or supports change after the initial analysis; analyses stored
     before features were kept re-read their STL once. ``support_settings`` (``SUPPORT_SETTING_KEYS``) default
-    to the analysis's stored choice. Does not save the analysis.
+    to the analysis's stored choice. ``orientation`` (a rotation matrix, None = as uploaded) re-reads the STL
+    turned that way unless it is the stored one; the bounding box then follows it. Does not save the analysis.
     """
     from .print_estimate_model import ESTIMATE_KEY, FEATURES_KEY, resolve_profile
+    from .print_orientation import (
+        ORIENTATION_STORED_KEY,
+        features_for,
+        orientation_key,
+        oriented_bounding_box,
+    )
 
     volume_mm3, surface_area_mm2, _height = mesh_metrics_from_analysis(analysis)
     volume_cm3 = volume_mm3 / 1000.0
     density = float(material.density_g_per_cm3) if material else 1.24
-    features = analysis_features(analysis)
+    oriented_box = None
+    stored_key = str((analysis.bounding_box or {}).get(ORIENTATION_STORED_KEY) or "")
+    if orientation is KEEP_ORIENTATION or orientation_key(orientation) == stored_key:
+        features = analysis_features(analysis)
+        new_key = stored_key
+    else:
+        features, mins = features_for(analysis, orientation)
+        oriented_box = oriented_bounding_box(features, mins)
+        new_key = orientation_key(orientation)
     profile = resolve_profile(getattr(analysis, "equipment", None))
     if support_settings is None:
         support_settings = {k: v for k, v in (analysis.slicer_settings or {}).items() if k in SUPPORT_SETTING_KEYS}
@@ -440,10 +459,16 @@ def recalculate_print_estimate(
     )
 
     bbox = dict(analysis.bounding_box or {})
+    if oriented_box is not None:
+        bbox.update(oriented_box)
     bbox["_volume_mm3"] = volume_mm3
     bbox["_surface_area_mm2"] = surface_area_mm2
     bbox[FEATURES_KEY] = features.to_dict()
     bbox[ESTIMATE_KEY] = breakdown
+    if new_key:
+        bbox[ORIENTATION_STORED_KEY] = new_key
+    else:
+        bbox.pop(ORIENTATION_STORED_KEY, None)
 
     return PrintEstimate(
         weight_grams=weight_g,
@@ -463,9 +488,11 @@ def preview_print_estimate(
     material=None,
     infill_percent: Optional[float] = None,
     support_settings: Optional[Dict[str, Any]] = None,
+    orientation=KEEP_ORIENTATION,
 ) -> PrintEstimate:
     """Stable, read-only estimate for one analysed STL (one copy). Anything not given keeps the analysis's
-    stored choice (material, density, supports). Never saves; safe for live previews and booked analyses.
+    stored choice (material, density, supports, orientation). Never saves; safe for live previews and booked
+    analyses.
 
     Returned ``bounding_box["_estimate"]`` holds the breakdown (model / support / waste grams, separate
     support-material grams, print / support / warm-up minutes)."""
@@ -481,6 +508,7 @@ def preview_print_estimate(
         layer_height_mm=float(stored.get("layer_height_mm") or 0.1),
         infill_percent=float(infill_percent),
         support_settings=merged_support,
+        orientation=orientation,
     )
 
 
