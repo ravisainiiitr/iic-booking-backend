@@ -53,6 +53,15 @@ def test_typed_table_rows_use_column_labels_and_yes_no():
     assert value == {"kind": "table", "columns": ["S.No.", "Code", "Toxic"], "rows": [["1", "S1", "Yes"]]}
 
 
+def test_typed_table_shows_rows_saved_while_it_was_a_plain_table():
+    field = {"field_key": "C", "field_type": "TYPED_TABLE",
+             "table_config": {"columns": [{"key": "code", "label": "Code", "type": "TEXT"}]}}
+    legacy = [["1", "S1", "600", "Nitrogen"], ["2", "", "", ""]]
+    assert format_input_value(field, {"C": legacy}) == {"kind": "table", "columns": [], "rows": [["1", "S1", "600", "Nitrogen"]]}
+    assert format_input_value(field, {"C": json.dumps(legacy)})["rows"] == [["1", "S1", "600", "Nitrogen"]]
+    assert format_input_value(field, {"C": [["1", ""], ["2", ""]]}) == {"kind": "empty"}
+
+
 def test_periodic_table_shows_elements_and_toggle_yes_no():
     assert format_input_value({"field_key": "B", "field_type": "PERIODIC_TABLE"}, {"B": 5, "B_elements": "C,Lu,W"}) == {
         "kind": "text", "text": "C, Lu, W"}

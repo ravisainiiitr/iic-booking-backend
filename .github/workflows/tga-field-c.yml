@@ -1,0 +1,103 @@
+# TGA/DTA [A] / [B] field C (python manage.py tga_field_c): required "Sample Name/Code" first column, the same
+# advanced table for every user type, stored booking / template values converted (blank Sample Name/Code).
+# Dry run by default (it is also the read-only verification). apply needs confirm=TGA-FIELD-C; plain-table
+# values that hold data are converted only with simple_mapping=true. The backup (old and new values) goes to
+# /home/ubuntu/backups/tga-field-c/<run id>/ on the server and is never printed. restore needs
+# confirm=TGA-FIELD-C-RESTORE. Output: ids, codes, user types, kinds and counts only.
+name: TGA Field C
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "dry-run | apply | restore-dry-run | restore"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: [dry-run, apply, restore-dry-run, restore]
+      simple_mapping:
+        description: "Also convert plain-table values with data (proposed mapping)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      confirm:
+        description: "TGA-FIELD-C for apply, TGA-FIELD-C-RESTORE for restore"
+        required: false
+        default: ""
+      backup_run_id:
+        description: "Run id of the backup to restore (restore only)"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux]
+    steps:
+      - name: Run
+        env:
+          TC_ACTION: ${{ inputs.action }}
+          TC_MAPPING: ${{ inputs.simple_mapping }}
+          TC_CONFIRM: ${{ inputs.confirm }}
+          TC_RESTORE_ID: ${{ inputs.backup_run_id }}
+          TC_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          HOST_ROOT=/home/ubuntu/backups/tga-field-c
+          ARGS=()
+          [[ "$TC_MAPPING" == "true" ]] && ARGS+=(--simple-mapping)
+          case "$TC_ACTION" in
+            dry-run) ;;
+            apply) [[ "$TC_CONFIRM" == "TGA-FIELD-C" ]] || { echo "confirm=TGA-FIELD-C is required"; exit 1; } ;;
+            restore-dry-run|restore)
+              [[ "$TC_RESTORE_ID" =~ ^[0-9]+$ ]] || { echo "backup_run_id is required"; exit 1; }
+              if [[ "$TC_ACTION" == "restore" ]]; then
+                [[ "$TC_CONFIRM" == "TGA-FIELD-C-RESTORE" ]] || { echo "confirm=TGA-FIELD-C-RESTORE is required"; exit 1; }
+              fi ;;
+            *) echo "unknown action"; exit 1 ;;
+          esac
+
+          CID=""
+          for d in /home/ubuntu/iic-booking-backend /home/ubuntu/iic_booking_backend /home/ubuntu/iic-booking-backend-rt-port; do
+            if [[ -f "$d/docker-compose.production.yml" ]]; then
+              cd "$d"
+              echo "DESCRIBE=$(git describe --tags --always 2>/dev/null || true)"
+              CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1 || true)"
+              break
+            fi
+          done
+          test -n "$CID" || { echo "No production django container found"; exit 1; }
+          dexec() { docker exec -i -w /app -e DJANGO_SETTINGS_MODULE=config.settings.production "$CID" "$@"; }
+          CMD=(python manage.py tga_field_c)
+
+          case "$TC_ACTION" in
+            dry-run)
+              dexec "${CMD[@]}" "${ARGS[@]}"
+              ;;
+            apply)
+              CDIR="/tmp/tga-field-c/$TC_RUN_ID"
+              HDIR="$HOST_ROOT/$TC_RUN_ID"
+              dexec "${CMD[@]}" "${ARGS[@]}" --apply --backup-dir "$CDIR"
+              mkdir -p "$HDIR"
+              docker cp "$CID:$CDIR/." "$HDIR/"
+              chmod -R go-rwx "$HOST_ROOT"
+              (cd "$HDIR" && sha256sum --quiet -c SHA256SUMS)
+              dexec rm -rf "$CDIR"
+              echo "BACKUP_DIR=$HDIR ($(du -sh "$HDIR" | cut -f1))"
+              ;;
+            restore-dry-run|restore)
+              HDIR="$HOST_ROOT/$TC_RESTORE_ID"
+              test -f "$HDIR/backup.json" || { echo "No backup at $HDIR"; exit 1; }
+              (cd "$HDIR" && sha256sum --quiet -c SHA256SUMS)
+              CDIR="/tmp/tga-field-c/restore-$TC_RESTORE_ID"
+              dexec mkdir -p "$CDIR"
+              docker cp "$HDIR/backup.json" "$CID:$CDIR/backup.json"
+              APP_UID="$(docker exec "$CID" id -u)"; APP_GID="$(docker exec "$CID" id -g)"
+              docker exec -u 0 "$CID" chown -R "$APP_UID:$APP_GID" "$CDIR"
+              RARGS=(--restore "$CDIR/backup.json")
+              [[ "$TC_ACTION" == "restore" ]] && RARGS+=(--apply)
+              dexec "${CMD[@]}" "${RARGS[@]}"
+              dexec rm -rf "$CDIR"
+              ;;
+          esac

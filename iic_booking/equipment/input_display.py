@@ -172,6 +172,12 @@ def format_input_value(field: dict, values: dict) -> dict:
         options = field.get("options")
         columns = [normalize_choice_option(o, i)[1] for i, o in enumerate(options)] if isinstance(options, list) else []
         return {"kind": "table", "columns": [c for c in columns if c], "rows": rows}
+    if ftype == "TYPED_TABLE" and isinstance(_parse_json(raw), list) and _parse_json(raw) and all(
+        isinstance(r, (list, tuple)) for r in _parse_json(raw)
+    ):
+        # Saved while the field was a plain table: its rows, without the old (unknown) headers.
+        rows = [r for r in read_table_rows(raw) if any(c.strip() for c in r[1:]) or (r and not r[0].strip().isdigit())]
+        return {"kind": "table", "columns": [], "rows": rows} if rows else {"kind": "empty"}
     if ftype == "TYPED_TABLE" or (ftype not in _TABLE_TYPES and isinstance(_parse_json(raw), list)
                                    and _parse_json(raw) and all(isinstance(r, dict) for r in _parse_json(raw))):
         display = _typed_table_display(field.get("table_config"), raw)
