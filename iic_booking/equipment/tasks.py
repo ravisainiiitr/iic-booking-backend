@@ -1166,7 +1166,8 @@ def run_print_analysis_impl(analysis_id: str) -> None:
     from django.db import close_old_connections
 
     from .models import PrintAnalysis, PrintAnalysisMethod, PrintAnalysisStatus
-    from .print_3d_service import analyze_stl_file
+    from .print_3d_service import analyze_stl_file, support_options
+    from .print_estimate_model import resolve_profile
     from .print_size_limit import equipment_print_size_limit
 
     close_old_connections()
@@ -1190,6 +1191,8 @@ def run_print_analysis_impl(analysis_id: str) -> None:
         bed_size_mm = None
         if equipment_print_size_limit(equipment) is None:
             bed_size_mm = {"x": 220.0, "y": 220.0, "z": 250.0}
+        profile = resolve_profile(equipment)
+        supports = support_options(slicer_settings)
     except Exception as exc:
         logger.exception("Failed to load STL for print analysis %s", analysis_id)
         close_old_connections()
@@ -1208,6 +1211,8 @@ def run_print_analysis_impl(analysis_id: str) -> None:
             density_g_per_cm3=density,
             slicer_settings=slicer_settings,
             bed_size_mm=bed_size_mm,
+            profile=profile,
+            supports=supports,
         )
         result_status = PrintAnalysisStatus.COMPLETED
         result_error = ""

@@ -1,4 +1,4 @@
-"""STL parsing, heuristic estimation, and optional CuraEngine slicing for 3D print quotes."""
+"""STL parsing, model-based estimates (``print_estimate_model``) and optional CuraEngine slicing for 3D print quotes."""
 
 from __future__ import annotations
 
@@ -44,29 +44,6 @@ class PrintEstimate:
     analysis_method: str
     volume_mm3: float = 0.0
     surface_area_mm2: float = 0.0
-
-
-def _cross(a: Vec3, b: Vec3) -> Vec3:
-    return (
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    )
-
-
-def _dot(a: Vec3, b: Vec3) -> float:
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def _triangle_area(v1: Vec3, v2: Vec3, v3: Vec3) -> float:
-    ab = (v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2])
-    ac = (v3[0] - v1[0], v3[1] - v1[1], v3[2] - v1[2])
-    c = _cross(ab, ac)
-    return 0.5 * math.sqrt(_dot(c, c))
-
-
-def _signed_tetra_volume(v1: Vec3, v2: Vec3, v3: Vec3) -> float:
-    return _dot(v1, _cross(v2, v3)) / 6.0
 
 
 def _is_ascii_stl(data: bytes) -> bool:
@@ -118,90 +95,6 @@ def _parse_ascii_stl(text: str) -> List[Triangle]:
     if not triangles:
         raise ValueError("No triangles found in ASCII STL.")
     return triangles
-
-
-def compute_mesh_metrics(triangles: List[Triangle], bed_size_mm: Optional[Dict[str, float]] = None) -> StlMeshMetrics:
-    if not triangles:
-        raise ValueError("STL contains no triangles.")
-
-    warnings: List[str] = []
-    signed_volume = 0.0
-    surface_area = 0.0
-    min_x = min_y = min_z = float("inf")
-    max_x = max_y = max_z = float("-inf")
-
-    for v1, v2, v3 in triangles:
-        signed_volume += _signed_tetra_volume(v1, v2, v3)
-        surface_area += _triangle_area(v1, v2, v3)
-        for x, y, z in (v1, v2, v3):
-            min_x, max_x = min(min_x, x), max(max_x, x)
-            min_y, max_y = min(min_y, y), max(max_y, y)
-            min_z, max_z = min(min_z, z), max(max_z, z)
-
-    volume_mm3 = abs(signed_volume)
-    volume_cm3 = volume_mm3 / 1000.0
-    size = {"x": max_x - min_x, "y": max_y - min_y, "z": max_z - min_z}
-    bbox = {
-        "min": {"x": min_x, "y": min_y, "z": min_z},
-        "max": {"x": max_x, "y": max_y, "z": max_z},
-        "size": size,
-    }
-
-    if volume_mm3 < 1e-6:
-        warnings.append("Computed volume is near zero — mesh may be open or invalid.")
-    if len(triangles) < 12:
-        warnings.append("Very low triangle count — model may be overly simplified.")
-    tiny = tiny_model_warning((size["x"], size["y"], size["z"]))
-    if tiny:
-        warnings.append(tiny)
-    if bed_size_mm:
-        if size["x"] > bed_size_mm.get("x", 0) or size["y"] > bed_size_mm.get("y", 0) or size["z"] > bed_size_mm.get("z", 0):
-            warnings.append(
-                f"Model ({size['x']:.1f}×{size['y']:.1f}×{size['z']:.1f} mm) exceeds bed "
-                f"({bed_size_mm.get('x')}×{bed_size_mm.get('y')}×{bed_size_mm.get('z')} mm)."
-            )
-
-    return StlMeshMetrics(
-        triangle_count=len(triangles),
-        volume_mm3=volume_mm3,
-        volume_cm3=volume_cm3,
-        surface_area_mm2=surface_area,
-        bounding_box=bbox,
-        warnings=warnings,
-    )
-
-
-def material_usage_factor(infill_percent: float) -> float:
-    infill = max(0.0, min(100.0, infill_percent)) / 100.0
-    shell_share = 0.28
-    return shell_share + (1.0 - shell_share) * infill
-
-
-def estimate_print_time_minutes(
-    volume_mm3: float,
-    surface_area_mm2: float,
-    bbox_height_mm: float,
-    *,
-    layer_height_mm: float = 0.2,
-    infill_percent: float = 20.0,
-    perimeter_speed_mm_per_sec: float = 45.0,
-    flow_rate_mm3_per_sec: float = 8.0,
-    startup_minutes: float = 2.0,
-) -> int:
-    usage = material_usage_factor(infill_percent)
-    material_volume_mm3 = volume_mm3 * usage
-    extrude_sec = material_volume_mm3 / max(flow_rate_mm3_per_sec, 0.1)
-    layers = max(1.0, bbox_height_mm / max(layer_height_mm, 0.05))
-    perimeter_sec = surface_area_mm2 / max(perimeter_speed_mm_per_sec, 1.0)
-    layer_overhead_sec = layers * 1.5
-    total_sec = extrude_sec + perimeter_sec + layer_overhead_sec + startup_minutes * 60.0
-    return max(1, int(round(total_sec / 60.0)))
-
-
-def estimate_weight_grams(volume_cm3: float, density_g_per_cm3: float, infill_percent: float) -> Decimal:
-    usage = material_usage_factor(infill_percent)
-    weight = volume_cm3 * density_g_per_cm3 * usage
-    return ceil_weight_grams(weight)
 
 
 def ceil_weight_grams(weight) -> Decimal:
@@ -304,19 +197,115 @@ def run_curaengine_slice(stl_path: Path, gcode_path: Path, slicer_settings: Dict
     return gcode_path.read_text(encoding="utf-8", errors="ignore")
 
 
+def _metrics_from_features(features, bed_size_mm: Optional[Dict[str, float]], mins) -> StlMeshMetrics:
+    warnings: List[str] = []
+    sx, sy, sz = features.size
+    size = {"x": sx, "y": sy, "z": sz}
+    bbox = {
+        "min": {"x": mins[0], "y": mins[1], "z": mins[2]},
+        "max": {"x": mins[0] + sx, "y": mins[1] + sy, "z": mins[2] + sz},
+        "size": size,
+    }
+    if features.volume_mm3 < 1e-6:
+        warnings.append("Computed volume is near zero — mesh may be open or invalid.")
+    if features.triangle_count < 12:
+        warnings.append("Very low triangle count — model may be overly simplified.")
+    tiny = tiny_model_warning((sx, sy, sz))
+    if tiny:
+        warnings.append(tiny)
+    if bed_size_mm:
+        if sx > bed_size_mm.get("x", 0) or sy > bed_size_mm.get("y", 0) or sz > bed_size_mm.get("z", 0):
+            warnings.append(
+                f"Model ({sx:.1f}×{sy:.1f}×{sz:.1f} mm) exceeds bed "
+                f"({bed_size_mm.get('x')}×{bed_size_mm.get('y')}×{bed_size_mm.get('z')} mm)."
+            )
+    return StlMeshMetrics(
+        triangle_count=features.triangle_count,
+        volume_mm3=features.volume_mm3,
+        volume_cm3=features.volume_mm3 / 1000.0,
+        surface_area_mm2=features.area_mm2,
+        bounding_box=bbox,
+        warnings=warnings,
+    )
+
+
+SUPPORT_SETTING_KEYS = (
+    "support_mode",
+    "support_density_pct",
+    "support_angle_deg",
+    "support_material_id",
+    "support_material_code",
+)
+
+
+def allowed_support_materials(equipment):
+    """Separate support materials the OIC offers on this printer (active master-list materials only)."""
+    from .models import PrintMaterial
+    from .print_estimate_model import stored_profile
+
+    ids = [i for i in (stored_profile(equipment).get("support_material_ids") or []) if isinstance(i, int)]
+    if not ids:
+        return PrintMaterial.objects.none()
+    return PrintMaterial.objects.filter(pk__in=ids, is_active=True).order_by("display_order", "name")
+
+
+def support_options(settings: Optional[Dict[str, Any]]):
+    """SupportOptions from stored / requested settings; the support material's density is looked up by id."""
+    from .models import PrintMaterial
+    from .print_estimate_model import SupportOptions
+
+    settings = settings or {}
+    density = None
+    material_id = settings.get("support_material_id")
+    if material_id:
+        material = PrintMaterial.objects.filter(pk=material_id).only("density_g_per_cm3").first()
+        if material is not None:
+            density = float(material.density_g_per_cm3)
+    return SupportOptions.from_settings(settings, density)
+
+
+def model_estimate(
+    features,
+    profile: Dict[str, Any],
+    *,
+    infill_percent: float,
+    density_g_per_cm3: float,
+    supports=None,
+):
+    """(model-material weight Decimal, minutes int, breakdown dict) from mesh features and a resolved profile.
+
+    The weight is what is charged at the model material's rate: supports are included unless they are printed
+    in a separate support material (then they are ``breakdown["support_material_g"]``)."""
+    from .print_estimate_model import estimate
+
+    breakdown = estimate(
+        features, profile, infill_percent=infill_percent, density_g_cm3=density_g_per_cm3, supports=supports
+    )
+    return (
+        ceil_weight_grams(breakdown.model_material_g),
+        max(1, int(round(breakdown.total_min))),
+        breakdown.to_dict(),
+    )
+
+
 def analyze_stl_file(
     stl_bytes: bytes,
     *,
     density_g_per_cm3: float,
     slicer_settings: Optional[Dict[str, Any]] = None,
     bed_size_mm: Optional[Dict[str, float]] = None,
+    profile: Optional[Dict[str, Any]] = None,
+    supports=None,
 ) -> PrintEstimate:
+    from .print_estimate_model import ESTIMATE_KEY, FEATURES_KEY, compute_features, resolve_profile, stl_triangles
+
     slicer_settings = slicer_settings or {}
-    layer_height = float(slicer_settings.get("layer_height_mm", 0.2))
+    profile = profile if profile is not None else resolve_profile(None)
     infill = float(slicer_settings.get("infill_percent", 20))
 
-    triangles = parse_stl_bytes(stl_bytes)
-    metrics = compute_mesh_metrics(triangles, bed_size_mm=bed_size_mm)
+    tris = stl_triangles(stl_bytes)
+    features = compute_features(tris)
+    metrics = _metrics_from_features(features, bed_size_mm, tris.reshape(-1, 3).min(axis=0).tolist())
     warnings = list(metrics.warnings)
     method = "HEURISTIC"
 
@@ -344,20 +333,24 @@ def analyze_stl_file(
             logger.warning("CuraEngine slice failed, falling back to heuristic: %s", exc)
             warnings.append("Slicer unavailable or failed; using heuristic estimate.")
 
+    model_weight, model_time, breakdown = model_estimate(
+        features,
+        profile,
+        infill_percent=infill,
+        density_g_per_cm3=density_g_per_cm3,
+        supports=supports if supports is not None else support_options(slicer_settings),
+    )
     if weight_g is None:
-        weight_g = estimate_weight_grams(metrics.volume_cm3, density_g_per_cm3, infill)
+        weight_g = model_weight
     if time_min is None:
-        time_min = estimate_print_time_minutes(
-            metrics.volume_mm3,
-            metrics.surface_area_mm2,
-            metrics.bounding_box["size"]["z"],
-            layer_height_mm=layer_height,
-            infill_percent=infill,
-        )
+        time_min = model_time
 
     bbox = dict(metrics.bounding_box)
     bbox["_volume_mm3"] = metrics.volume_mm3
     bbox["_surface_area_mm2"] = metrics.surface_area_mm2
+    bbox[FEATURES_KEY] = features.to_dict()
+    if method == "HEURISTIC":
+        bbox[ESTIMATE_KEY] = breakdown
 
     return PrintEstimate(
         weight_grams=weight_g,
@@ -392,39 +385,65 @@ def mesh_metrics_from_analysis(analysis) -> Tuple[float, float, float]:
     return volume_mm3, surface_area_mm2, height
 
 
+def analysis_features(analysis):
+    """Mesh features of a stored analysis: saved ones, else re-read from its STL, else a box-like stand-in."""
+    from .print_estimate_model import FEATURES_KEY, MODEL_VERSION, MeshFeatures, approximate_features, compute_features, stl_triangles
+
+    bbox = analysis.bounding_box or {}
+    saved = bbox.get(FEATURES_KEY)
+    if isinstance(saved, dict) and saved.get("v") == MODEL_VERSION:
+        try:
+            return MeshFeatures.from_dict(saved)
+        except (KeyError, TypeError, ValueError):
+            pass
+    stl = getattr(analysis, "stl_file", None)
+    if stl:
+        try:
+            with stl.open("rb") as fh:
+                return compute_features(stl_triangles(fh.read()))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not re-read STL for analysis %s: %s", getattr(analysis, "pk", None), exc)
+    volume_mm3, surface_area_mm2, _height = mesh_metrics_from_analysis(analysis)
+    size = bbox.get("size") or {}
+    return approximate_features(volume_mm3, surface_area_mm2, (size.get("x"), size.get("y"), size.get("z")))
+
+
 def recalculate_print_estimate(
     analysis,
     *,
     material,
     layer_height_mm: float,
     infill_percent: float,
+    support_settings: Optional[Dict[str, Any]] = None,
 ) -> PrintEstimate:
     """
-    Fast re-quote from stored mesh metrics — no STL re-parse or re-slice.
-    Used when only material, layer height, or infill changes after initial analysis.
+    Fast re-quote from the stored mesh features with the printer's current estimate profile (which sets the
+    layer height). Used when material, density or supports change after the initial analysis; analyses stored
+    before features were kept re-read their STL once. ``support_settings`` (``SUPPORT_SETTING_KEYS``) default
+    to the analysis's stored choice. Does not save the analysis.
     """
-    volume_mm3, surface_area_mm2, bbox_height = mesh_metrics_from_analysis(analysis)
+    from .print_estimate_model import ESTIMATE_KEY, FEATURES_KEY, resolve_profile
+
+    volume_mm3, surface_area_mm2, _height = mesh_metrics_from_analysis(analysis)
     volume_cm3 = volume_mm3 / 1000.0
     density = float(material.density_g_per_cm3) if material else 1.24
-    slicer_settings = default_slicer_settings(layer_height_mm, infill_percent)
-    infill = float(slicer_settings.get("infill_percent", infill_percent))
-    layer_height = float(slicer_settings.get("layer_height_mm", layer_height_mm))
-
-    weight_g = estimate_weight_grams(volume_cm3, density, infill)
-    time_min = estimate_print_time_minutes(
-        volume_mm3,
-        surface_area_mm2,
-        bbox_height,
-        layer_height_mm=layer_height,
-        infill_percent=infill,
-        perimeter_speed_mm_per_sec=float(slicer_settings.get("perimeter_speed_mm_per_sec", 45.0)),
-        flow_rate_mm3_per_sec=float(slicer_settings.get("flow_rate_mm3_per_sec", 8.0)),
-        startup_minutes=float(slicer_settings.get("startup_minutes", 2.0)),
+    features = analysis_features(analysis)
+    profile = resolve_profile(getattr(analysis, "equipment", None))
+    if support_settings is None:
+        support_settings = {k: v for k, v in (analysis.slicer_settings or {}).items() if k in SUPPORT_SETTING_KEYS}
+    weight_g, time_min, breakdown = model_estimate(
+        features,
+        profile,
+        infill_percent=float(infill_percent),
+        density_g_per_cm3=density,
+        supports=support_options(support_settings),
     )
 
     bbox = dict(analysis.bounding_box or {})
     bbox["_volume_mm3"] = volume_mm3
     bbox["_surface_area_mm2"] = surface_area_mm2
+    bbox[FEATURES_KEY] = features.to_dict()
+    bbox[ESTIMATE_KEY] = breakdown
 
     return PrintEstimate(
         weight_grams=weight_g,
@@ -435,6 +454,33 @@ def recalculate_print_estimate(
         analysis_method="HEURISTIC",
         volume_mm3=volume_mm3,
         surface_area_mm2=surface_area_mm2,
+    )
+
+
+def preview_print_estimate(
+    analysis,
+    *,
+    material=None,
+    infill_percent: Optional[float] = None,
+    support_settings: Optional[Dict[str, Any]] = None,
+) -> PrintEstimate:
+    """Stable, read-only estimate for one analysed STL (one copy). Anything not given keeps the analysis's
+    stored choice (material, density, supports). Never saves; safe for live previews and booked analyses.
+
+    Returned ``bounding_box["_estimate"]`` holds the breakdown (model / support / waste grams, separate
+    support-material grams, print / support / warm-up minutes)."""
+    stored = analysis.slicer_settings or {}
+    if infill_percent is None:
+        infill_percent = float(stored.get("infill_percent") or 100.0)
+    merged_support = {k: v for k, v in stored.items() if k in SUPPORT_SETTING_KEYS}
+    if support_settings is not None:
+        merged_support = dict(support_settings)
+    return recalculate_print_estimate(
+        analysis,
+        material=material if material is not None else analysis.material,
+        layer_height_mm=float(stored.get("layer_height_mm") or 0.1),
+        infill_percent=float(infill_percent),
+        support_settings=merged_support,
     )
 
 

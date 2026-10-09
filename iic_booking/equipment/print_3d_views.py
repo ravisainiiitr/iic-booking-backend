@@ -2,6 +2,7 @@
 
 import io
 import logging
+import math
 import mimetypes
 import threading
 import zipfile
@@ -38,9 +39,24 @@ from .fabrication import (
 )
 from .fabrication_material_support import NO_MATERIALS_MESSAGE, bookable_material_or_none, bookable_materials
 from .print_3d_service import (
+    SUPPORT_SETTING_KEYS,
+    allowed_support_materials,
     analyze_stl_file,
     default_slicer_settings,
+    preview_print_estimate,
     recalculate_print_estimate,
+)
+from .print_estimate_model import (
+    AUTO_SUPPORT_MIN_OVERHANG_MM2,
+    DEFAULT_SUPPORT_ANGLE,
+    SUPPORT_ANGLES,
+    SUPPORT_AUTO,
+    SUPPORT_MODES,
+    TECH_FDM,
+    TECH_RESIN,
+    TECH_SLS,
+    TECHNOLOGY_LABELS,
+    resolve_profile,
 )
 from .print_size_limit import analyses_size_error, check_stl_files, print_size_limit_payload
 from .serializers import (
@@ -98,7 +114,6 @@ def print_analysis_actor_owns(actor, owner_user_id: int) -> bool:
 
 MAX_STL_BYTES = getattr(settings, "PRINT_3D_MAX_STL_BYTES", 100 * 1024 * 1024)
 MAX_ZIP_STL_FILES = getattr(settings, "PRINT_3D_MAX_ZIP_STL_FILES", 50)
-FIXED_LAYER_HEIGHT_MM = 0.1
 DEFAULT_DENSITY_PERCENT = 100.0
 MIN_DENSITY_PERCENT = 20.0
 
@@ -116,13 +131,69 @@ def _parse_density_percent(value, default: float = DEFAULT_DENSITY_PERCENT) -> f
     return max(MIN_DENSITY_PERCENT, min(100.0, density))
 
 
-def _slicer_settings_from_request(data) -> dict:
-    layer_height = FIXED_LAYER_HEIGHT_MM
+def _layer_height_for(equipment) -> float:
+    """Layer height the estimate uses: the printer's estimate profile (0.1 mm for FDM by default)."""
+    return float(resolve_profile(equipment).get("layer_height_mm") or 0.1)
+
+
+def _support_settings_from_request(data, equipment, previous=None):
+    """Support choice from a request, starting from ``previous`` (stored) settings. Returns (settings, error).
+
+    support_mode: auto | none | buildplate | everywhere; support_density_pct 0-100 and support_angle_deg 30-70
+    (blank = printer default); support_material_id: one of the printer's support materials (blank / "same" =
+    the model material)."""
+    out = {k: v for k, v in (previous or {}).items() if k in SUPPORT_SETTING_KEYS}
+    if "support_mode" in data:
+        mode = str(data.get("support_mode") or SUPPORT_AUTO).strip().lower()
+        if mode not in SUPPORT_MODES:
+            return None, "Supports must be auto, none, buildplate or everywhere."
+        out["support_mode"] = mode
+    for key, lo, hi, label in (
+        ("support_density_pct", 0.0, 100.0, "Support density must be between 0 and 100%."),
+        ("support_angle_deg", float(SUPPORT_ANGLES[0]), float(SUPPORT_ANGLES[-1]),
+         f"Overhang angle must be between {SUPPORT_ANGLES[0]} and {SUPPORT_ANGLES[-1]} degrees."),
+    ):
+        if key not in data:
+            continue
+        raw = data.get(key)
+        if raw in (None, ""):
+            out.pop(key, None)
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None, label
+        if value < lo or value > hi:
+            return None, label
+        out[key] = value
+    if "support_material_id" in data:
+        raw = data.get("support_material_id")
+        if raw in (None, "", "same", 0, "0"):
+            out.pop("support_material_id", None)
+            out.pop("support_material_code", None)
+        else:
+            try:
+                material = allowed_support_materials(equipment).filter(pk=int(raw)).first()
+            except (TypeError, ValueError):
+                material = None
+            if material is None:
+                return None, "This support material is not offered on this printer."
+            out["support_material_id"] = material.pk
+            out["support_material_code"] = material.code
+    return out, None
+
+
+def _slicer_settings_from_request(data, equipment, previous=None):
+    """(settings, error): fixed layer height from the printer profile, density and the support choice."""
+    layer_height = _layer_height_for(equipment)
     density = _parse_density_percent(
         data.get("density_percent", data.get("infill_percent")),
         DEFAULT_DENSITY_PERCENT,
     )
-    return default_slicer_settings(layer_height, density)
+    supports, err = _support_settings_from_request(data, equipment, previous)
+    if err:
+        return None, err
+    return {**default_slicer_settings(layer_height, density), **supports}, None
 
 
 def _refresh_batch_status(batch: PrintAnalysisBatch) -> None:
@@ -276,8 +347,26 @@ def equipment_print_materials(request, pk):
             "materials": serializer.data,
             "no_materials_message": NO_MATERIALS_MESSAGE,
             "max_print_size": print_size_limit_payload(equipment),
+            "support_materials": PrintMaterialSerializer(allowed_support_materials(equipment), many=True).data,
+            "support_defaults": _support_defaults(equipment),
         }
     )
+
+
+def _support_defaults(equipment) -> dict:
+    profile = resolve_profile(equipment)
+    tech = profile.get("technology")
+    return {
+        "technology": tech,
+        "technology_label": TECHNOLOGY_LABELS.get(tech, ""),
+        "supports_available": bool(profile.get("supports", True)) and tech != TECH_SLS,
+        "modes_selectable": tech in (TECH_FDM, TECH_RESIN),
+        "density_pct": float(profile.get("support_density_pct") or 0),
+        "angle_deg": DEFAULT_SUPPORT_ANGLE,
+        "angle_range": [SUPPORT_ANGLES[0], SUPPORT_ANGLES[-1]],
+        "auto_min_overhang_mm2": AUTO_SUPPORT_MIN_OVERHANG_MM2,
+        "layer_height_mm": float(profile.get("layer_height_mm") or 0.1),
+    }
 
 
 @transaction.non_atomic_requests
@@ -287,7 +376,7 @@ def equipment_analyze_stl(request, pk):
     """
     Upload STL or ZIP (multiple STLs) for analysis.
     Form fields: file (required), material_id, density_percent (20–100, default 100).
-    Layer height is fixed at 0.1 mm.
+    Layer height comes from the printer's estimate profile (0.1 mm for FDM by default).
     """
     from .api_views import user_can_see_equipment
     try:
@@ -329,7 +418,9 @@ def equipment_analyze_stl(request, pk):
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
-    slicer_settings = _slicer_settings_from_request(request.data)
+    slicer_settings, err = _slicer_settings_from_request(request.data, equipment)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
     print_user = resolve_print_3d_user(request)
 
     if is_stl:
@@ -453,19 +544,17 @@ def recalculate_print_analysis(request, analysis_id):
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
-    layer_height = FIXED_LAYER_HEIGHT_MM
-    infill = _parse_density_percent(
-        request.data.get("density_percent", request.data.get("infill_percent")),
-        DEFAULT_DENSITY_PERCENT,
-    )
-    slicer_settings = default_slicer_settings(layer_height, infill)
+    slicer_settings, err = _slicer_settings_from_request(request.data, equipment, analysis.slicer_settings)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
         estimate = recalculate_print_estimate(
             analysis,
             material=material,
-            layer_height_mm=layer_height,
-            infill_percent=infill,
+            layer_height_mm=slicer_settings["layer_height_mm"],
+            infill_percent=slicer_settings["infill_percent"],
+            support_settings={k: v for k, v in slicer_settings.items() if k in SUPPORT_SETTING_KEYS},
         )
     except Exception as exc:
         logger.exception("Print settings recalculation failed for %s", analysis_id)
@@ -514,6 +603,62 @@ def print_analysis_detail(request, analysis_id):
         return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
 
     return Response(PrintAnalysisSerializer(analysis, context={"request": request}).data)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def print_analysis_estimate(request, analysis_id):
+    """
+    Read-only estimate for one analysed STL with optional what-if settings (nothing is saved; works for booked
+    files too). Query: material_id, density_percent, support_mode, support_density_pct, support_angle_deg,
+    support_material_id — anything omitted keeps the file's stored choice.
+
+    Response (per copy): weight_grams (model material, including supports printed in it), support_weight_grams
+    (separate support material, 0 when the same), estimated_time_minutes, quantity, estimate_breakdown.
+    """
+    from .api_views import check_operator_permission
+
+    try:
+        analysis = PrintAnalysis.objects.select_related("equipment", "material", "booking").get(pk=analysis_id)
+    except PrintAnalysis.DoesNotExist:
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+    allowed = user_can_access_print_resource(request, analysis.user_id) or (
+        request.user
+        and request.user.is_authenticated
+        and user_may_download_design_file(request.user, analysis, check_operator_permission)
+    )
+    if not allowed:
+        return Response({"error": "Analysis not found."}, status=status.HTTP_404_NOT_FOUND)
+    if analysis.status != PrintAnalysisStatus.COMPLETED or analysis.volume_cm3 is None:
+        return Response({"error": "The STL analysis has not completed."}, status=status.HTTP_400_BAD_REQUEST)
+    equipment = analysis.equipment
+    params = request.query_params
+    material = analysis.material
+    if params.get("material_id"):
+        material = bookable_material_or_none(equipment, params.get("material_id"))
+        if not material:
+            return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
+    infill = None
+    if params.get("density_percent") not in (None, "") or params.get("infill_percent") not in (None, ""):
+        infill = _parse_density_percent(params.get("density_percent", params.get("infill_percent")))
+    supports, err = _support_settings_from_request(params, equipment, analysis.slicer_settings)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    estimate = preview_print_estimate(analysis, material=material, infill_percent=infill, support_settings=supports)
+    breakdown = (estimate.bounding_box or {}).get("_estimate") or {}
+    support_g = breakdown.get("support_material_g") or 0
+    return Response(
+        {
+            "analysis_id": str(analysis.id),
+            "material_id": material.pk if material else None,
+            "weight_grams": int(estimate.weight_grams),
+            "support_weight_grams": int(math.ceil(float(support_g))) if support_g else 0,
+            "support_material_id": supports.get("support_material_id"),
+            "estimated_time_minutes": estimate.estimated_time_minutes,
+            "quantity": max(1, int(analysis.quantity or 1)),
+            "estimate_breakdown": breakdown,
+        }
+    )
 
 
 @api_view(["PATCH"])
@@ -596,12 +741,12 @@ def recalculate_print_analysis_batch(request, batch_id):
         if not material:
             return Response({"error": "Invalid material_id."}, status=status.HTTP_400_BAD_REQUEST)
 
-    layer_height = FIXED_LAYER_HEIGHT_MM
-    infill = _parse_density_percent(
-        request.data.get("density_percent", request.data.get("infill_percent")),
-        DEFAULT_DENSITY_PERCENT,
-    )
-    slicer_settings = default_slicer_settings(layer_height, infill)
+    slicer_settings, err = _slicer_settings_from_request(request.data, equipment, batch.slicer_settings)
+    if err:
+        return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+    layer_height = slicer_settings["layer_height_mm"]
+    infill = slicer_settings["infill_percent"]
+    support_settings = {k: v for k, v in slicer_settings.items() if k in SUPPORT_SETTING_KEYS}
 
     items = list(batch.items.filter(cancelled_at__isnull=True).order_by("sequence", "created_at"))
     if not items:
@@ -624,6 +769,7 @@ def recalculate_print_analysis_batch(request, batch_id):
                 material=material,
                 layer_height_mm=layer_height,
                 infill_percent=infill,
+                support_settings=support_settings,
             )
         except Exception as exc:
             logger.exception("Batch recalculation failed for %s", analysis.id)

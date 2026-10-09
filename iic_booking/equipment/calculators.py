@@ -1308,23 +1308,30 @@ class ChargeCalculationEngine:
             return Decimal("0.00"), breakdown
 
         equipment = charge_profile.equipment
-        active = PrintMaterial.objects.filter(code=material_code, is_active=True)
         user_type = getattr(charge_profile, "user_type", None)
-        material = None
-        # Supported materials first. New bookings are limited to those before pricing; the fallbacks keep
-        # existing bookings re-priceable after their material is no longer supported by the equipment.
-        for material_qs in (
-            active.filter(supported_equipment=equipment),
-            active.filter(equipment=equipment),
-            active.filter(analyses__equipment=equipment).distinct(),
-        ):
-            material = (
-                material_qs.filter(user_type=user_type).first()
-                or material_qs.filter(user_type__isnull=True).first()
-                or material_qs.first()
-            )
-            if material:
-                break
+
+        def find_material(code, *, any_active=False):
+            active = PrintMaterial.objects.filter(code=code, is_active=True)
+            # Supported materials first. New bookings are limited to those before pricing; the fallbacks keep
+            # existing bookings re-priceable after their material is no longer supported by the equipment.
+            choices = [
+                active.filter(supported_equipment=equipment),
+                active.filter(equipment=equipment),
+                active.filter(analyses__equipment=equipment).distinct(),
+            ]
+            if any_active:
+                choices.append(active)
+            for material_qs in choices:
+                found = (
+                    material_qs.filter(user_type=user_type).first()
+                    or material_qs.filter(user_type__isnull=True).first()
+                    or material_qs.first()
+                )
+                if found:
+                    return found
+            return None
+
+        material = find_material(material_code)
         if not material:
             raise ValidationError(f"Unknown or inactive print material: {material_code}")
 
@@ -1357,6 +1364,26 @@ class ChargeCalculationEngine:
                     "amount": float(cost),
                 })
                 total_charge += cost
+                support_weight = Decimal(int(part.get("support_weight_g_total") or 0))
+                support_code = str(part.get("support_material_code") or "").strip()
+                if support_weight > 0 and support_code:
+                    # Supports offered in a material the printer no longer lists are charged at the model rate.
+                    support_material = find_material(support_code, any_active=True) or material
+                    if qty > 1 or job_quantity > 1:
+                        support_text = f"{part.get('support_weight_g_each')} g × {qty}"
+                    else:
+                        support_text = f"{support_weight} g"
+                    if job_quantity > 1:
+                        support_text += f" × {job_quantity} sets"
+                    support_cost = support_weight * support_material.price_per_gram
+                    breakdown.append({
+                        "description": (
+                            f"{part.get('name') or 'Part'} supports: {support_text} {support_material.name} "
+                            f"@ {_format_rate(support_material.price_per_gram)}/g"
+                        ),
+                        "amount": float(support_cost),
+                    })
+                    total_charge += support_cost
         else:
             material_cost = weight_g * material.price_per_gram
             breakdown.append({

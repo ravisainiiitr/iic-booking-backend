@@ -1194,6 +1194,22 @@ class PrintAnalysisSerializer(serializers.ModelSerializer):
     stl_filename = serializers.CharField(source="original_filename", read_only=True)
     stl_download_url = serializers.SerializerMethodField()
     display_part_name = serializers.CharField(read_only=True)
+    bounding_box = serializers.SerializerMethodField()
+    estimate_breakdown = serializers.SerializerMethodField()
+
+    def get_bounding_box(self, obj):
+        from .print_estimate_model import ESTIMATE_KEY, FEATURES_KEY
+
+        bbox = obj.bounding_box if isinstance(obj.bounding_box, dict) else {}
+        return {k: v for k, v in bbox.items() if k not in (FEATURES_KEY, ESTIMATE_KEY)}
+
+    def get_estimate_breakdown(self, obj):
+        """Model / supports / waste grams and print / warm-up minutes per copy, when estimated by the model."""
+        from .print_estimate_model import ESTIMATE_KEY
+
+        bbox = obj.bounding_box if isinstance(obj.bounding_box, dict) else {}
+        data = bbox.get(ESTIMATE_KEY)
+        return data if isinstance(data, dict) else None
 
     def get_stl_download_url(self, obj):
         """Return API download URL for the STL (served via Django)."""
@@ -1220,6 +1236,7 @@ class PrintAnalysisSerializer(serializers.ModelSerializer):
             "estimated_time_minutes",
             "actual_time_minutes",
             "bounding_box",
+            "estimate_breakdown",
             "warnings",
             "error_message",
             "slicer_settings",

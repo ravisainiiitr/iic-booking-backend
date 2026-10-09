@@ -490,6 +490,16 @@ class Equipment(models.Model):
         ),
         verbose_name=_("Allow rotation to fit"),
     )
+    print_estimate_profile = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text=_(
+            "For 3D printing equipment: printer type preset, parameter overrides and calibration used for the "
+            "weight / time estimate of uploaded STL files. Blank uses the preset detected from Make / Model."
+        ),
+        verbose_name=_("3D print estimate profile"),
+    )
 
     make = models.CharField(
         max_length=255,

@@ -32,6 +32,8 @@ RESERVED_KEYS = (PARTS_KEY, OWN_MATERIAL_KEY, BOOKED_MINUTES_KEY, PRINT_WEIGHT_K
 
 # Stored with the booking's inputs (not reserved): A holds Quantity Required.
 QUANTITY_MARKER_KEY = "_quantity_in_a"
+# Stored with 3D print inputs (not reserved): the support choice and estimated support grams, for staff.
+PRINT_SUPPORTS_KEY = "_print_supports"
 QUANTITY_KEY = "A"
 QUANTITY_LABEL = "Quantity Required"
 
@@ -217,9 +219,20 @@ def _ceil_grams(value) -> int:
     return int(math.ceil(float(value)))
 
 
+def print_estimate_breakdown(analysis) -> dict:
+    """The model's breakdown saved with the analysis ({} for analyses estimated before supports existed)."""
+    bbox = getattr(analysis, "bounding_box", None)
+    value = bbox.get("_estimate") if isinstance(bbox, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
 def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
     """Per-file totals. Estimates are multiplied by the file's copies and the job quantity; staff-entered
-    actuals are the totals of all those copies already."""
+    actuals are the totals of all those copies already.
+
+    ``weight_g_*`` is charged at the model material's rate (it includes supports printed in that material).
+    Supports in a separate material are ``support_weight_g_*`` at ``support_material_code``'s rate; they stay
+    at the estimate when staff enter the actual weight (which is the model material)."""
     job_quantity = max(1, int(job_quantity or 1))
     parts = []
     for a in analyses:
@@ -231,23 +244,52 @@ def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
         copies = qty * job_quantity
         weight_total = _ceil_grams(a.actual_weight_grams) if has_actual_weight else weight_each * copies
         time_total = int(a.actual_time_minutes) if has_actual_time else time_each * copies
-        parts.append(
-            {
-                "kind": "print",
-                "analysis_id": str(a.id),
-                "name": a.display_part_name,
-                "filename": a.original_filename,
-                "quantity": qty,
-                "job_quantity": job_quantity,
-                "weight_g_each": weight_each,
-                "time_min_each": time_each,
-                "weight_g_total": weight_total,
-                "time_min_total": time_total,
-                "actual_weight": has_actual_weight,
-                "actual_time": has_actual_time,
-            }
-        )
+        part = {
+            "kind": "print",
+            "analysis_id": str(a.id),
+            "name": a.display_part_name,
+            "filename": a.original_filename,
+            "quantity": qty,
+            "job_quantity": job_quantity,
+            "weight_g_each": weight_each,
+            "time_min_each": time_each,
+            "weight_g_total": weight_total,
+            "time_min_total": time_total,
+            "actual_weight": has_actual_weight,
+            "actual_time": has_actual_time,
+        }
+        est = print_estimate_breakdown(a)
+        if est.get("support_mode"):
+            support_code = str(est.get("support_material_code") or "")
+            support_each = _ceil_grams(est.get("support_material_g")) if support_code else 0
+            part.update(
+                {
+                    "support_mode": est.get("support_mode"),
+                    "support_mode_label": est.get("support_mode_label") or est.get("support_mode"),
+                    "support_g_each": round(float(est.get("support_g") or 0), 1),
+                    "support_material_code": support_code if support_each else "",
+                    "support_weight_g_each": support_each,
+                    "support_weight_g_total": support_each * copies,
+                }
+            )
+        parts.append(part)
     return parts
+
+
+def print_supports_summary(parts) -> str:
+    """One line per booking for staff, e.g. 'Touching build plate only (12 g); Part 2: none'."""
+    rows = []
+    for p in parts:
+        mode = p.get("support_mode")
+        if not mode:
+            continue
+        text = p.get("support_mode_label") or mode
+        if p.get("support_weight_g_each"):
+            text += f", {p['support_weight_g_each']} g {p.get('support_material_code')} each"
+        elif float(p.get("support_g_each") or 0) > 0:
+            text += f", ~{p['support_g_each']} g each"
+        rows.append(f"{p.get('name')}: {text}" if len(parts) > 1 else text)
+    return "; ".join(rows)
 
 
 def print_material_code(analyses) -> str:
@@ -270,6 +312,11 @@ def inject_print_parts(input_values, analyses, job_quantity: int = 1) -> dict:
         merged["B"] = code
     merged[JOB_QUANTITY_KEY] = max(1, int(job_quantity or 1))
     merged[PARTS_KEY] = parts
+    supports = print_supports_summary(parts)
+    if supports:
+        merged[PRINT_SUPPORTS_KEY] = supports
+    else:
+        merged.pop(PRINT_SUPPORTS_KEY, None)
     return merged
 
 
@@ -478,4 +525,9 @@ def format_part_line(part: dict) -> str:
     weight = part.get("weight_g_each")
     time_min = part.get("time_min_each")
     est = f", est. {weight} g / {time_min} min each" if weight or time_min else ""
-    return f"{part.get('name')} × {qty}{est} [{part.get('filename')}]"
+    supports = ""
+    if part.get("support_mode"):
+        supports = f", supports: {part.get('support_mode_label') or part.get('support_mode')}"
+        if part.get("support_weight_g_each"):
+            supports += f" (+{part['support_weight_g_each']} g {part.get('support_material_code')} each)"
+    return f"{part.get('name')} × {qty}{est}{supports} [{part.get('filename')}]"

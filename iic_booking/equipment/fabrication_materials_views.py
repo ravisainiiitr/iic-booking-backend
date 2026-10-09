@@ -30,6 +30,7 @@ from .models import (
     LaserSheetMaterial,
     PrintMaterial,
 )
+from .print_estimate_calibration import apply_profile_update, profile_payload
 from .serializers import LaserSheetMaterialSerializer, LaserSheetMaterialWriteSerializer, PrintMaterialSerializer
 
 MAX_NOTIFICATION_EMAILS = 10
@@ -119,6 +120,12 @@ def clean_own_material_fixed_charge(raw):
     return value, None
 
 
+ESTIMATE_PROFILE_KEYS = (
+    "print_estimate_preset",
+    "print_estimate_overrides",
+    "print_estimate_calibration",
+    "print_estimate_support_material_ids",
+)
 MAX_PRINT_SIZE_LIMIT_MM = Decimal("10000")
 PRINT_SIZE_FIELDS = ("max_print_size_x_mm", "max_print_size_y_mm", "max_print_size_z_mm")
 
@@ -159,6 +166,7 @@ def _equipment_row(eq):
         for field in PRINT_SIZE_FIELDS:
             row[field] = _decimal_or_none(getattr(eq, field))
         row["allow_print_rotation_to_fit"] = eq.allow_print_rotation_to_fit is not False
+        row["print_estimate"] = profile_payload(eq)
         row["print_materials"] = PrintMaterialSerializer(
             eq.print_materials.all().order_by("display_order", "name"), many=True
         ).data
@@ -201,7 +209,9 @@ def fabrication_material_equipment(request):
          equipment's supported_material_ids, and the master list of every category they manage.
     PATCH: {equipment_id, fabrication_notification_emails?, own_material_fixed_charge?,
             fabrication_replace_window_hours?, supported_material_ids?,
-            max_print_size_x_mm? / _y_mm? / _z_mm? (blank = no limit), allow_print_rotation_to_fit?}.
+            max_print_size_x_mm? / _y_mm? / _z_mm? (blank = no limit), allow_print_rotation_to_fit?,
+            print_estimate_preset? ("" = detect from Make / Model), print_estimate_overrides? {param: value},
+            print_estimate_calibration? ("fit" | "apply" | "off")}.
     """
     qs = fabrication_manageable_equipment_qs(request.user).select_related("internal_department")
     if request.method == "GET":
@@ -272,6 +282,17 @@ def fabrication_material_equipment(request):
         raw = data.get("allow_print_rotation_to_fit")
         eq.allow_print_rotation_to_fit = str(raw).strip().lower() not in ("false", "0", "no", "off", "none", "")
         update_fields.append("allow_print_rotation_to_fit")
+    estimate_keys = [k for k in ESTIMATE_PROFILE_KEYS if k in data]
+    if estimate_keys:
+        if eq.profile_type != EquipmentProfileType.PRINT_3D:
+            return Response(
+                {"error": "The estimate profile applies to 3D printing equipment only."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        err = apply_profile_update(eq, data)
+        if err:
+            return Response({"error": err}, status=status.HTTP_400_BAD_REQUEST)
+        update_fields.append("print_estimate_profile")
     # A rejected material list rolls back the other settings sent in the same request.
     with transaction.atomic():
         if update_fields:
