@@ -3852,6 +3852,9 @@ def equipment_daily_slots(request, pk):
     if outside_window_slot_ids:
         for row in slots_payload:
             row["outside_visibility_window"] = row.get("id") in outside_window_slot_ids
+    from .disruption_service import annotate_slot_payloads_public
+
+    annotate_slot_payloads_public(equipment, filtered_slots, slots_payload)
     if is_admin:
         from .disruption_service import annotate_slot_payloads_for_staff
 

@@ -107,6 +107,21 @@ def clean_text(raw, limit: int = REASON_MAX_LENGTH) -> str:
     return str(raw or "").replace("\x00", "").strip()[:limit]
 
 
+def parse_expected_recovery(raw):
+    """``(ok, value)``: empty / "unknown" -> (True, None); an ISO date-time -> (True, aware datetime)."""
+    from django.utils.dateparse import parse_datetime
+
+    text = str(raw or "").strip()
+    if not text or text.lower() == "unknown":
+        return True, None
+    value = parse_datetime(text)
+    if value is None:
+        return False, None
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value)
+    return True, value
+
+
 @dataclass
 class DisruptionInput:
     user: object | None = None
@@ -116,10 +131,14 @@ class DisruptionInput:
     action_taken: str = ""
     label: str = ""
     external_reference: str = ""
+    expected_recovery_at: object | None = None
+    expected_recovery_given: bool = False
 
     @classmethod
     def from_request_data(cls, data, *, user, source: str) -> "DisruptionInput":
         data = data or {}
+        given = "expected_recovery_at" in data
+        ok, recovery = parse_expected_recovery(data.get("expected_recovery_at")) if given else (True, None)
         return cls(
             user=user,
             source=source,
@@ -127,7 +146,171 @@ class DisruptionInput:
             reason_category=str(data.get("disruption_reason_category") or "").strip().upper(),
             action_taken=clean_text(data.get("resolution_action")),
             external_reference=clean_text(data.get("external_reference"), EXTERNAL_REFERENCE_MAX_LENGTH),
+            expected_recovery_at=recovery,
+            expected_recovery_given=given and ok,
         )
+
+
+# ---------------------------------------------------------------------------
+# Who started / resumed it (role at the time)
+# ---------------------------------------------------------------------------
+
+STAFF_ROLE_LABELS = {
+    "MAIN_ADMIN": "Main Admin",
+    "OIC": "OIC",
+    "TEMP_OIC": "Temp OIC",
+    "DEPT_ADMIN": "Dept Admin",
+    "OPERATOR": "Operator",
+    "STAFF": "Staff",
+}
+
+
+def staff_role_label(code: str | None) -> str:
+    return STAFF_ROLE_LABELS.get(code or "", "")
+
+
+def staff_role_for(user, equipment) -> str:
+    """Role ``user`` acts in on ``equipment`` right now (stored on the event so later role changes don't alter it)."""
+    from iic_booking.users.models.user_type import UserType
+
+    from .models import EquipmentManager, EquipmentOperator, EquipmentTemporaryOIC
+
+    if user is None or not getattr(user, "pk", None):
+        return ""
+    ut = getattr(user, "user_type", None)
+    if ut == UserType.ADMIN:
+        return "MAIN_ADMIN"
+    eid = getattr(equipment, "pk", equipment)
+    if eid and EquipmentManager.objects.filter(equipment_id=eid, manager_id=user.pk).exists():
+        return "OIC"
+    if eid and EquipmentTemporaryOIC.objects.active().filter(equipment_id=eid, temporary_oic_id=user.pk).exists():
+        return "TEMP_OIC"
+    if ut == UserType.DEPT_ADMIN:
+        return "DEPT_ADMIN"
+    if ut == UserType.OPERATOR or (
+        eid and EquipmentOperator.objects.filter(equipment_id=eid, operator_id=user.pk).exists()
+    ):
+        return "OPERATOR"
+    if ut == UserType.MANAGER:
+        return "OIC"
+    return "STAFF"
+
+
+# ---------------------------------------------------------------------------
+# Public wording (all users): type, reason, expected recovery. No staff names, actions or reports.
+# ---------------------------------------------------------------------------
+
+DISRUPTION_TYPE_LABELS = {
+    "UNDER_MAINTENANCE": "Under maintenance",
+    "OPERATOR_ABSENT": "Operator absent",
+    "SCHEDULED_MAINTENANCE": "Scheduled maintenance",
+    "OTHER": "Not available (other reasons)",
+}
+DEFAULT_PUBLIC_REASONS = {
+    "UNDER_MAINTENANCE": "The equipment is under maintenance.",
+    "OPERATOR_ABSENT": "The operator is not available at this time.",
+    "SCHEDULED_MAINTENANCE": "Planned maintenance of the equipment.",
+    "OTHER": "The equipment is not available at this time.",
+}
+RECOVERY_UNKNOWN_TEXT = "Recovery date not yet announced"
+RECOVERY_DELAYED_TEXT = "Recovery delayed — update awaited"
+
+
+def format_recovery_time(value) -> str:
+    local = timezone.localtime(value)
+    return f"{local:%a} {local.day} {local:%b}, {local:%H:%M}"
+
+
+def recovery_status(expected_at, now=None) -> str:
+    now = now or timezone.now()
+    if expected_at is None:
+        return "UNKNOWN"
+    return "DELAYED" if expected_at <= now else "EXPECTED"
+
+
+def recovery_text(expected_at, now=None) -> str:
+    state = recovery_status(expected_at, now)
+    if state == "UNKNOWN":
+        return RECOVERY_UNKNOWN_TEXT
+    if state == "DELAYED":
+        return RECOVERY_DELAYED_TEXT
+    return f"Expected back: {format_recovery_time(expected_at)}"
+
+
+def public_reason_text(disruption_type: str | None, reason: str = "", category: str = "") -> str:
+    text = (reason or "").strip()
+    if text:
+        return text
+    label = reason_category_label(disruption_type, category)
+    if label and category != "OTHER":
+        return label
+    return DEFAULT_PUBLIC_REASONS.get(disruption_type or "", DEFAULT_PUBLIC_REASONS["OTHER"])
+
+
+def public_disruption_info(disruption_type: str, *, reason: str = "", category: str = "", expected_at=None,
+                           ongoing: bool = True, now=None) -> dict:
+    out = {
+        "type": disruption_type,
+        "label": DISRUPTION_TYPE_LABELS.get(disruption_type, "Not available"),
+        "reason": public_reason_text(disruption_type, reason, category),
+        "expected_recovery_at": expected_at,
+        "recovery_status": "",
+        "recovery_text": "",
+    }
+    if ongoing:
+        out["recovery_status"] = recovery_status(expected_at, now)
+        out["recovery_text"] = recovery_text(expected_at, now)
+    return out
+
+
+def _non_operational_statuses() -> set[str]:
+    from .models import EquipmentStatus
+
+    return {EquipmentStatus.REPAIR, EquipmentStatus.MAINTENANCE, EquipmentStatus.INACTIVE}
+
+
+def public_equipment_notice(equipment, now=None) -> dict | None:
+    """Status notice for the equipment page and card while the equipment is not operational; None otherwise."""
+    from .models import DisruptionEvent, DisruptionScope
+
+    if getattr(equipment, "status", None) not in _non_operational_statuses():
+        return None
+    now = now or timezone.now()
+    event = (
+        DisruptionEvent.objects.filter(
+            equipment_id=equipment.pk, scope=DisruptionScope.EQUIPMENT, ended_at__isnull=True, is_deleted=False
+        )
+        .order_by("-start_at")
+        .only("disruption_type", "reason", "reason_category", "expected_recovery_at", "start_at")
+        .first()
+    )
+    info = public_disruption_info(
+        "UNDER_MAINTENANCE",
+        reason=event.reason if event else "",
+        category=event.reason_category if event else "",
+        expected_at=event.expected_recovery_at if event else None,
+        now=now,
+    )
+    info["since"] = event.start_at if event else None
+    info["message"] = f"Under maintenance · {info['recovery_text']}"
+    return info
+
+
+def set_expected_recovery(event, value, user, now=None) -> bool:
+    """Change the expected recovery (logged). Returns True when it changed."""
+    if event.expected_recovery_at == value:
+        return False
+    _log_edit(
+        event,
+        "recovery",
+        user,
+        field_name="expected_recovery_at",
+        old=event.expected_recovery_at.isoformat() if event.expected_recovery_at else "",
+        new=value.isoformat() if value else "",
+        note=f"Expected back: {format_recovery_time(value)}" if value else RECOVERY_UNKNOWN_TEXT,
+    )
+    event.expected_recovery_at = value
+    return True
 
 
 @dataclass
@@ -322,6 +505,7 @@ def _release_links(slot_ids, *, keep_type: str | None, data: DisruptionInput, no
         ).exists()):
             event.ended_at = now
             event.ended_by = _user_or_none(data.user)
+            event.ended_by_role = staff_role_for(event.ended_by, event.equipment_id)
             event.end_source = data.source
             if was_open and visible:
                 result.closed.append(event.pk)
@@ -397,10 +581,12 @@ def _attach_run(equipment, disruption_type: str, run: list[dict], data: Disrupti
             end_at=max(r["end"] for r in run),
             started_at=now,
             started_by=_user_or_none(data.user),
+            started_by_role=staff_role_for(_user_or_none(data.user), equipment),
             reason=reason,
             reason_category=category,
             reason_updated_at=now if (reason or category) else None,
             reason_updated_by=_user_or_none(data.user) if (reason or category) else None,
+            expected_recovery_at=data.expected_recovery_at if data.expected_recovery_given else None,
         )
         created = True
     existing = set(
@@ -425,6 +611,8 @@ def _attach_run(equipment, disruption_type: str, run: list[dict], data: Disrupti
         event.reason_category = category
         event.reason_updated_at = now
         event.reason_updated_by = _user_or_none(data.user)
+    if not created and data.expected_recovery_given:
+        set_expected_recovery(event, data.expected_recovery_at, data.user, now)
     event.save()
     if created:
         _log_edit(event, "created", data.user, note=f"{len(run)} slot(s) marked")
@@ -590,7 +778,12 @@ def record_equipment_under_maintenance(equipment, data: DisruptionInput, *, book
     try:
         with transaction.atomic():
             now = timezone.now()
-            if _open_equipment_event(equipment, DisruptionType.UNDER_MAINTENANCE, now) is not None:
+            existing = _open_equipment_event(equipment, DisruptionType.UNDER_MAINTENANCE, now)
+            if existing is not None:
+                if data.expected_recovery_given and set_expected_recovery(
+                    existing, data.expected_recovery_at, data.user, now
+                ):
+                    existing.save(update_fields=["expected_recovery_at", "updated_at"])
                 return result
             category = clean_reason_category(DisruptionType.UNDER_MAINTENANCE, data.reason_category)
             event = DisruptionEvent.objects.create(
@@ -601,6 +794,8 @@ def record_equipment_under_maintenance(equipment, data: DisruptionInput, *, book
                 start_at=now,
                 started_at=now,
                 started_by=_user_or_none(data.user),
+                started_by_role=staff_role_for(_user_or_none(data.user), equipment),
+                expected_recovery_at=data.expected_recovery_at if data.expected_recovery_given else None,
                 reason=data.reason,
                 reason_category=category,
                 reason_updated_at=now if (data.reason or category) else None,
@@ -628,6 +823,7 @@ def record_equipment_operational(equipment, data: DisruptionInput):
                 event.ended_at = now
                 event.end_at = now
                 event.ended_by = _user_or_none(data.user)
+                event.ended_by_role = staff_role_for(event.ended_by, equipment)
                 event.end_source = data.source
                 if data.action_taken and data.action_taken != event.action_taken:
                     _log_edit(event, "action", data.user, field_name="action_taken", old=event.action_taken,
@@ -678,6 +874,8 @@ def disruption_info_by_slot(equipment, slot_ids) -> dict[int, dict]:
             "event__disruption_type",
             "event__reason",
             "event__reason_category",
+            "event__expected_recovery_at",
+            "event__ended_at",
         )
     )
     for row in rows:
@@ -690,9 +888,66 @@ def disruption_info_by_slot(equipment, slot_ids) -> dict[int, dict]:
                 "disruption_reason_category": reason_category_label(
                     row["event__disruption_type"], row["event__reason_category"]
                 ),
+                "_category_key": row["event__reason_category"] or "",
+                "_expected_recovery_at": row["event__expected_recovery_at"],
+                "_ended": row["event__ended_at"] is not None,
             },
         )
     return out
+
+
+def _public_info_for_row(dtype, ev, slot_end, now) -> dict:
+    ongoing = slot_end is None or slot_end > now
+    if ev is None:
+        return public_disruption_info(dtype, ongoing=ongoing, now=now)
+    return public_disruption_info(
+        ev["disruption_type"],
+        reason=ev["disruption_reason"],
+        category=ev["_category_key"],
+        expected_at=ev["_expected_recovery_at"],
+        ongoing=ongoing and not ev["_ended"],
+        now=now,
+    )
+
+
+def _equipment_event_info(ev) -> dict:
+    return {
+        "disruption_event_id": ev.pk,
+        "disruption_type": ev.disruption_type,
+        "disruption_reason": ev.reason or "",
+        "disruption_reason_category": reason_category_label(ev.disruption_type, ev.reason_category),
+        "_category_key": ev.reason_category or "",
+        "_expected_recovery_at": ev.expected_recovery_at,
+        "_ended": ev.ended_at is not None,
+    }
+
+
+def annotate_slot_payloads_public(equipment, slots, payloads) -> None:
+    """Every user: ``disruption_public`` (type, reason or default wording, expected recovery) on disrupted slots.
+
+    Blocks without a recorded disruption (holidays, repeat rules) and Not Available are left alone; deleted
+    disruptions are ignored. Never includes staff names, actions taken or service reports."""
+    try:
+        now = timezone.now()
+        candidates = [row for row in payloads if disruption_type_for_slot_status(row.get("status"))]
+        if not candidates:
+            return
+        ends = {s.pk: getattr(s, "end_datetime", None) for s in slots if getattr(s, "pk", None)}
+        info = disruption_info_by_slot(equipment, [row.get("id") for row in candidates if row.get("id")])
+        equipment_events = None
+        for row in candidates:
+            dtype = disruption_type_for_slot_status(row.get("status"))
+            ev = info.get(row.get("id"))
+            if ev is None and dtype == "UNDER_MAINTENANCE":
+                if equipment_events is None:
+                    equipment_events = open_equipment_events_for(equipment)
+                if equipment_events:
+                    ev = _equipment_event_info(equipment_events[0])
+            if ev is None and dtype == "OTHER":
+                continue
+            row["disruption_public"] = _public_info_for_row(dtype, ev, ends.get(row.get("id")), now)
+    except Exception:
+        logger.exception("Could not annotate public slot disruption info")
 
 
 def annotate_slot_payloads_for_staff(equipment, slots, payloads) -> None:
@@ -709,15 +964,9 @@ def annotate_slot_payloads_for_staff(equipment, slots, payloads) -> None:
                 if equipment_events is None:
                     equipment_events = open_equipment_events_for(equipment)
                 if equipment_events:
-                    ev = equipment_events[0]
-                    extra = {
-                        "disruption_event_id": ev.pk,
-                        "disruption_type": ev.disruption_type,
-                        "disruption_reason": ev.reason or "",
-                        "disruption_reason_category": reason_category_label(ev.disruption_type, ev.reason_category),
-                    }
+                    extra = _equipment_event_info(equipment_events[0])
             if extra:
-                row.update(extra)
+                row.update({k: v for k, v in extra.items() if not k.startswith("_")})
             if refs.get(sid):
                 row["external_reference"] = refs[sid]
     except Exception:

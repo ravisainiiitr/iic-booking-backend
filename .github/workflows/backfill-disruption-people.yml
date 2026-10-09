@@ -1,0 +1,31 @@
+name: Backfill Disruption People
+
+# Fills in Started by (from the slot status change log) and the Started by / Ended by roles on disruption records.
+# Records only: slots and bookings are never changed. Dry run unless confirm is BACKFILL PEOPLE.
+# Prints counts and ids only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Leave empty for a dry run; type BACKFILL PEOPLE to write the changes"
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Backfill
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          if [ "${CONFIRM}" = "BACKFILL PEOPLE" ]; then
+            echo "Mode: APPLY"
+            docker exec -i -w /app "$CID" python manage.py backfill_disruption_people --apply
+          else
+            echo "Mode: DRY RUN (type BACKFILL PEOPLE to apply)"
+            docker exec -i -w /app "$CID" python manage.py backfill_disruption_people
+          fi

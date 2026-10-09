@@ -99,6 +99,19 @@ class DisruptionEvent(models.Model):
         related_name="+",
     )
 
+    started_by_role = models.CharField(
+        max_length=16, blank=True, default="", help_text=_("Role of the person who started it, at that time.")
+    )
+    ended_by_role = models.CharField(
+        max_length=16, blank=True, default="", help_text=_("Role of the person who resumed it, at that time.")
+    )
+    expected_recovery_at = models.DateTimeField(
+        null=True, blank=True, help_text=_("When the equipment or slots are expected back; empty = not announced.")
+    )
+    procurement_request_ids = models.JSONField(
+        default=list, blank=True, help_text=_("Procurement & Assets requests raised from this disruption.")
+    )
+
     backfilled = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

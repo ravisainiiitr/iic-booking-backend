@@ -7,6 +7,8 @@ GET    /api/equipments/disruptions/<id>/                 detail with slots, time
 PATCH  /api/equipments/disruptions/<id>/                 reason, reason_category, action_taken
 POST   /api/equipments/disruptions/<id>/delete/          soft delete with optional ``reason`` (same scope as view)
 POST   /api/equipments/disruptions/<id>/restore/         Main Administrator; list deleted with ``show_deleted=1``
+GET    /api/equipments/disruptions/procurement-options/?equipment=<id>   Procurement & Assets request available?
+POST   /api/equipments/disruptions/<id>/procurement-request/   raise a request for recommended items (linked back)
 POST   /api/equipments/disruptions/<id>/service-report/  multipart ``file`` (PDF, image, Word; 20 MB)
 GET    /api/equipments/disruptions/<id>/service-report/<report_id>/   authenticated download
 GET    /api/equipments/slot-status-changes/              general slot status change log
@@ -36,6 +38,9 @@ from rest_framework.response import Response
 
 from iic_booking.users.models.user_type import UserType
 
+from .disruption_procurement import DisruptionProcurementError
+from .disruption_procurement import procurement_options
+from .disruption_procurement import raise_procurement_request
 from .disruption_service import REASON_CATEGORIES
 from .disruption_service import _log_edit
 from .disruption_service import active_events_q
@@ -43,7 +48,12 @@ from .disruption_service import clean_reason_category
 from .disruption_service import clean_text
 from .disruption_service import event_duration_hours
 from .disruption_service import event_is_open
+from .disruption_service import parse_expected_recovery
 from .disruption_service import reason_category_label
+from .disruption_service import recovery_status
+from .disruption_service import recovery_text
+from .disruption_service import set_expected_recovery
+from .disruption_service import staff_role_label
 
 SERVICE_REPORT_TYPES = {
     ".pdf": "application/pdf",
@@ -195,7 +205,7 @@ def _user_name(user) -> str:
     return get_user_display_name(user, fallback_to_email=False) or "Staff"
 
 
-def serialize_event(event, *, now=None, links=None, reports=None) -> dict:
+def serialize_event(event, *, now=None, links=None, reports=None, procurement=None) -> dict:
     from .models import DisruptionScope, DisruptionSource, DisruptionType
 
     now = now or timezone.now()
@@ -203,6 +213,7 @@ def serialize_event(event, *, now=None, links=None, reports=None) -> dict:
     dept = getattr(eq, "internal_department", None)
     hours = event_duration_hours(event, links=links, now=now)
     report_rows = reports if reports is not None else []
+    is_open = event_is_open(event, now)
     row = {
         "id": event.pk,
         "equipment_id": event.equipment_id,
@@ -229,9 +240,17 @@ def serialize_event(event, *, now=None, links=None, reports=None) -> dict:
         "action_missing": not event.action_taken,
         "started_at": event.started_at,
         "started_by_name": _user_name(event.started_by),
+        "started_by_role": event.started_by_role,
+        "started_by_role_display": staff_role_label(event.started_by_role),
         "ended_at": event.ended_at,
         "ended_by_name": _user_name(event.ended_by),
-        "status": "OPEN" if event_is_open(event, now) else "CLOSED",
+        "ended_by_role": event.ended_by_role,
+        "ended_by_role_display": staff_role_label(event.ended_by_role),
+        "status": "OPEN" if is_open else "CLOSED",
+        "expected_recovery_at": event.expected_recovery_at,
+        "recovery_status": recovery_status(event.expected_recovery_at, now) if is_open else "",
+        "recovery_text": recovery_text(event.expected_recovery_at, now) if is_open else "",
+        "procurement_requests": procurement if procurement is not None else [],
         "backfilled": event.backfilled,
         "service_reports": [
             {
@@ -269,6 +288,25 @@ def _links_and_reports(events):
     for r in DisruptionServiceReport.objects.filter(event_id__in=ids):
         reports[r.event_id].append(r)
     return links, reports
+
+
+def _procurement_rows(events) -> dict[int, list]:
+    """event id -> [{id, number, status, status_display}] of linked Procurement & Assets requests."""
+    wanted = {int(i) for e in events for i in (e.procurement_request_ids or []) if str(i).isdigit()}
+    out: dict[int, list] = {e.pk: [] for e in events}
+    if not wanted:
+        return out
+    try:
+        from iic_booking.procurement_management.models import PurchaseRequest
+    except Exception:
+        return out
+    rows = {
+        r.pk: {"id": r.pk, "number": r.number, "status": r.status, "status_display": r.get_status_display()}
+        for r in PurchaseRequest.objects.filter(pk__in=wanted).only("id", "number", "status")
+    }
+    for e in events:
+        out[e.pk] = [rows[int(i)] for i in (e.procurement_request_ids or []) if str(i).isdigit() and int(i) in rows]
+    return out
 
 
 def _summary(qs, now) -> dict:
@@ -342,7 +380,11 @@ def disruption_list(request):
         limit = page_size
     events = list(qs[offset : offset + limit])
     links, reports = _links_and_reports(events)
-    results = [serialize_event(e, now=now, links=links[e.pk], reports=reports[e.pk]) for e in events]
+    procurement = _procurement_rows(events)
+    results = [
+        serialize_event(e, now=now, links=links[e.pk], reports=reports[e.pk], procurement=procurement[e.pk])
+        for e in events
+    ]
     for index, row in enumerate(results, start=offset + 1):
         row["s_no"] = index
     payload = {
@@ -421,12 +463,15 @@ def _get_event(request, pk):
     return event, None
 
 
-def _detail_payload(event) -> dict:
+def _detail_payload(event, user=None) -> dict:
     from .models import DisruptionEventEdit
 
     now = timezone.now()
     links, reports = _links_and_reports([event])
-    data = serialize_event(event, now=now, links=links[event.pk], reports=reports[event.pk])
+    data = serialize_event(
+        event, now=now, links=links[event.pk], reports=reports[event.pk], procurement=_procurement_rows([event])[event.pk]
+    )
+    data["procurement"] = procurement_options(user, event.equipment)
     data["slots"] = [
         {
             "start_datetime": link.start_datetime,
@@ -461,12 +506,22 @@ def disruption_detail(request, pk: int):
     if error:
         return error
     if request.method == "GET":
-        return Response(_detail_payload(event))
+        return Response(_detail_payload(event, request.user))
 
     data = request.data or {}
     now = timezone.now()
     user = request.user
+    recovery = None
+    if "expected_recovery_at" in data:
+        ok, recovery = parse_expected_recovery(data.get("expected_recovery_at"))
+        if not ok:
+            return Response(
+                {"error": "Enter the expected recovery as a date and time, or leave it empty if not known."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
     with transaction.atomic():
+        if "expected_recovery_at" in data:
+            set_expected_recovery(event, recovery, user, now)
         if "reason" in data or "reason_category" in data:
             reason = clean_text(data.get("reason")) if "reason" in data else event.reason
             category = (
@@ -488,7 +543,39 @@ def disruption_detail(request, pk: int):
                 event.action_taken = action
                 event.action_updated_at, event.action_updated_by = now, user
         event.save()
-    return Response(_detail_payload(event))
+    return Response(_detail_payload(event, request.user))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def disruption_procurement_options(request):
+    """Whether the resume dialog may offer a Procurement & Assets request for ``equipment``."""
+    from .models import Equipment
+
+    try:
+        ids = disruption_equipment_ids(request.user)
+    except PermissionError:
+        return Response({"available": False, "categories": []})
+    raw = str(request.query_params.get("equipment") or "").strip()
+    equipment = Equipment.objects.filter(pk=int(raw)).first() if raw.isdigit() else None
+    if equipment is None or (ids is not None and equipment.pk not in ids):
+        return Response({"available": False, "categories": []})
+    return Response(procurement_options(request.user, equipment))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser])
+def disruption_procurement_request(request, pk: int):
+    event, error = _get_event(request, pk)
+    if error:
+        return error
+    try:
+        result = raise_procurement_request(event, request.user, request.data, request=request)
+    except DisruptionProcurementError as exc:
+        return Response({"error": exc.message}, status=exc.status)
+    event.refresh_from_db()
+    return Response({"request": result, "disruption": _detail_payload(event, request.user)}, status=201)
 
 
 DELETE_REASON_MAX_LENGTH = 500
@@ -615,7 +702,7 @@ def disruption_service_report_upload(request, pk: int):
         report.file.save(name, upload, save=False)
         report.save()
         _log_edit(event, "report", request.user, note=f"Service report uploaded: {name}"[:255])
-    return Response(_detail_payload(event), status=status.HTTP_201_CREATED)
+    return Response(_detail_payload(event, request.user), status=status.HTTP_201_CREATED)
 
 
 @api_view(["GET"])

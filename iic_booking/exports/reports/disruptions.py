@@ -38,6 +38,16 @@ def _reports(row) -> str:
     return ", ".join(r.get("name") or "" for r in row.get("service_reports") or [])
 
 
+def _person(row, prefix: str) -> str:
+    name = row.get(f"{prefix}_name") or ""
+    role = row.get(f"{prefix}_role_display") or ""
+    return f"{name} ({role})" if name and role else (name or role)
+
+
+def _procurement(row) -> str:
+    return ", ".join(r.get("number") or "" for r in row.get("procurement_requests") or [])
+
+
 @register("disruption-history")
 def disruption_history(request):
     params = request.query_params.copy()
@@ -63,8 +73,12 @@ def disruption_history(request):
         C("reason", "Reason", width=2.0, value=_reason),
         C("action_taken", "Action taken", width=2.0),
         C("service_reports", "Service report", width=1.0, value=_reports),
-        C("started_by_name", "Started by", width=1.0),
-        C("ended_by_name", "Ended by", width=1.0),
+        C("started_by_name", "Started by", width=1.1, value=lambda r: _person(r, "started_by")),
+        C("started_at", "Started at (IST)", spec.DATETIME, 1.1),
+        C("ended_by_name", "Ended by", width=1.1, value=lambda r: _person(r, "ended_by")),
+        C("ended_at", "Ended at (IST)", spec.DATETIME, 1.1),
+        C("recovery_text", "Expected recovery", width=1.2),
+        C("procurement_requests", "Procurement request", width=1.0, value=_procurement),
         C("status", "Status", width=0.6, value=lambda r: "Open" if r.get("status") == "OPEN" else "Closed"),
     ]
     table = spec.Table("disruptions", "Disruption history", columns, numbered(rows), sheet_name="Disruptions")

@@ -1306,7 +1306,17 @@ urlpatterns = router.urls + [
         disruption_views.disruption_attention,
         name="equipment-disruptions-attention",
     ),
+    path(
+        "equipments/disruptions/procurement-options/",
+        disruption_views.disruption_procurement_options,
+        name="equipment-disruptions-procurement-options",
+    ),
     path("equipments/disruptions/<int:pk>/", disruption_views.disruption_detail, name="equipment-disruption-detail"),
+    path(
+        "equipments/disruptions/<int:pk>/procurement-request/",
+        disruption_views.disruption_procurement_request,
+        name="equipment-disruption-procurement-request",
+    ),
     path(
         "equipments/disruptions/<int:pk>/delete/",
         disruption_views.disruption_delete,

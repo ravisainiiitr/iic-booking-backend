@@ -1722,6 +1722,15 @@ class DailySlotSerializer(serializers.ModelSerializer):
         return str(status).replace("_", " ").title() if status else None
 
 
+def _disruption_notice(obj):
+    from .disruption_service import public_equipment_notice
+
+    try:
+        return public_equipment_notice(obj)
+    except Exception:
+        return None
+
+
 class EquipmentListSerializer(serializers.ModelSerializer):
     """Simplified serializer for listing equipment."""
 
@@ -1743,6 +1752,10 @@ class EquipmentListSerializer(serializers.ModelSerializer):
     featured_publication_title = serializers.CharField(read_only=True, allow_null=True)
     featured_citation = serializers.CharField(read_only=True, allow_null=True)
     results_deadline_public = serializers.SerializerMethodField()
+    disruption_notice = serializers.SerializerMethodField()
+
+    def get_disruption_notice(self, obj):
+        return _disruption_notice(obj)
 
     def get_results_deadline_public(self, obj):
         from .results_deadline import public_equipment_deadline
@@ -1753,6 +1766,7 @@ class EquipmentListSerializer(serializers.ModelSerializer):
         model = Equipment
         fields = [
             'equipment_id',
+            'disruption_notice',
             'code',
             'name',
             'description',
@@ -1865,11 +1879,16 @@ class EquipmentListLiteSerializer(serializers.ModelSerializer):
     publication_count = serializers.IntegerField(read_only=True, allow_null=True)
     featured_publication_title = serializers.CharField(read_only=True, allow_null=True)
     featured_citation = serializers.CharField(read_only=True, allow_null=True)
+    disruption_notice = serializers.SerializerMethodField()
+
+    def get_disruption_notice(self, obj):
+        return _disruption_notice(obj)
 
     class Meta:
         model = Equipment
         fields = [
             'equipment_id',
+            'disruption_notice',
             'code',
             'name',
             'profile_type',
@@ -1954,11 +1973,16 @@ class EquipmentDetailSerializer(serializers.ModelSerializer):
     group_alternatives_enabled = serializers.SerializerMethodField()
     group_cross_reschedule_enabled = serializers.SerializerMethodField()
     max_print_size = serializers.SerializerMethodField()
+    disruption_notice = serializers.SerializerMethodField()
+
+    def get_disruption_notice(self, obj):
+        return _disruption_notice(obj)
 
     class Meta:
         model = Equipment
         fields = [
             'equipment_id',
+            'disruption_notice',
             'code',
             'name',
             'description',
