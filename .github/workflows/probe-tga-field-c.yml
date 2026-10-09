@@ -195,6 +195,32 @@ jobs:
                                              .values_list("pk", "user__user_type", "input_values")])
                   print(f"  repeat bookings (source in this equipment): "
                         f"{Booking.objects.filter(source_booking__equipment=eq).count()}")
+
+                  from decimal import Decimal
+                  from iic_booking.equipment.calculators import (
+                      ChargeCalculationEngine, TimeCalculationEngine, build_safe_input_values_for_charge_calculation,
+                  )
+                  sanity = Counter()
+                  for b in Booking.objects.filter(equipment=eq).select_related("charge_profile").order_by("pk"):
+                      if not isinstance(b.input_values, dict) or "C" not in b.input_values:
+                          continue
+                      try:
+                          safe = build_safe_input_values_for_charge_calculation(b.input_values, equipment=eq)
+                          minutes = TimeCalculationEngine.calculate_time(b.charge_profile, safe, eq.slot_duration_minutes)
+                          total, _bd = ChargeCalculationEngine.calculate_charge(b.charge_profile, safe, minutes)
+                      except Exception as exc:  # noqa: BLE001
+                          sanity[f"error {type(exc).__name__}"] += 1
+                          continue
+                      same = Decimal(str(total)) == b.total_charge
+                      sanity["equal" if same else "differs"] += 1
+                      if not same or sanity["shown"] < 3:
+                          sanity["shown"] += 1
+                          print(f"     charge check booking={b.pk} status={b.status} profile={b.charge_profile_id} "
+                                f"A={b.input_values.get('A')} sets={len(b.input_values.get('_sample_sets') or [])} "
+                                f"stored={b.total_charge} recomputed={total} time={minutes}/{b.total_time_minutes} "
+                                f"{'OK' if same else 'DIFF'}")
+                  sanity.pop("shown", None)
+                  print(f"  charge recompute vs stored (bookings with C): {dict(sanity)}")
               transaction.set_rollback(True)
           print("\nDONE (read-only, rolled back)")
           PY
