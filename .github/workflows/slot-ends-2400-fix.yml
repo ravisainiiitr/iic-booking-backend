@@ -3,7 +3,8 @@
 # (a 00:00-23:59 slot becomes 00:00-00:00, a full 24-hour slot), and its future Daily Slots (start >= now) that
 # end 1 minute / 1 second before local midnight are extended to midnight, booked ones included (end time only;
 # bookings, charges, statuses and emails are not touched). Past and in-progress slots are left alone.
-# Also sets slot_duration_minutes 1439 -> 1440 for NMR TXI and L1. Dry run by default; apply only with
+# NMR TXI (already 00:00-00:00) is included for its future slots still ending at 23:59. Also lists future slots
+# of any equipment ending just before midnight. Sets slot_duration_minutes 1439 -> 1440 for NMR TXI and L1. Dry run by default; apply only with
 # confirm=APPLY-SLOT-2400-ENDS. Idempotent. Prints equipment codes, ids and counts only.
 name: Slot Ends 24:00 Fix
 
@@ -46,7 +47,7 @@ jobs:
           apply = os.environ.get("CONFIRM", "") == "APPLY-SLOT-2400-ENDS"
           now = timezone.now()
           tz = timezone.get_current_timezone()
-          EQUIPMENT_IDS = [46, 8, 51, 7, 4, 82, 94]
+          EQUIPMENT_IDS = [46, 8, 51, 7, 4, 82, 94, 338]
           DURATION_FIX = {338: (1439, 1440), 94: (1439, 1440)}
           SHORT_CLOSES = (time(23, 59), time(23, 59, 59))
           SHORTFALLS = (timedelta(minutes=1), timedelta(seconds=1))
@@ -147,6 +148,15 @@ jobs:
                   f"changed={changed} remaining_to_fix={pending}"
               )
           print(f"total_remaining_to_fix={total_remaining}")
+
+          from collections import Counter
+          short_any = Counter()
+          for s in DailySlot.objects.filter(start_datetime__gte=now).select_related("slot_master__equipment").only(
+              "start_datetime", "end_datetime", "slot_master__equipment__code"
+          ):
+              if local_midnight_after(s.start_datetime) - s.end_datetime in SHORTFALLS:
+                  short_any[(s.slot_master.equipment.code, s.slot_master.equipment_id)] += 1
+          print(f"all_equipment_future_slots_ending_before_midnight={sum(short_any.values())} by_equipment={sorted(short_any.items())}")
           PY
               exit 0
             fi
