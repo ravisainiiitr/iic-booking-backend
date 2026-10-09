@@ -1,0 +1,40 @@
+name: Repair Disruption Orphans
+
+# Links slots that are in a disruption status but have no disruption event (records only: slot statuses and
+# bookings are never changed). Dry run unless confirm is LINK ORPHANS; an apply is followed by a dry run that
+# must report orphan_slots=0. Prints equipment codes, counts and ids only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Leave empty for a dry run; type LINK ORPHANS to write the links"
+        required: false
+        default: ""
+      focus_code:
+        description: "Equipment code to always report"
+        required: false
+        default: "TGA/DTA [A]"
+
+jobs:
+  run:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Repair
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+          FOCUS: ${{ github.event.inputs.focus_code }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          if [ "${CONFIRM}" = "LINK ORPHANS" ]; then
+            echo "Mode: APPLY"
+            docker exec -i -w /app "$CID" python manage.py repair_disruption_orphans --apply --focus-code "$FOCUS"
+            echo "Verify (dry run after apply):"
+            OUT="$(docker exec -i -w /app "$CID" python manage.py repair_disruption_orphans --focus-code "$FOCUS")"
+            echo "$OUT"
+            echo "$OUT" | grep -qx 'orphan_slots=0' || { echo "Orphans remain after apply"; exit 1; }
+          else
+            echo "Mode: DRY RUN (type LINK ORPHANS to apply)"
+            docker exec -i -w /app "$CID" python manage.py repair_disruption_orphans --focus-code "$FOCUS"
+          fi

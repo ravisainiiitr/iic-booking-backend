@@ -409,6 +409,8 @@ def remove_rule(rule: RecurringSlotBlockRule, actor) -> dict:
             unblocked = DailySlot.objects.filter(
                 pk__in=[s.pk for s in plan.unblock], status=SlotStatus.BLOCKED, booking__isnull=True
             ).update(status=restore_status, blocked_label=None)
+            if unblocked:
+                _record_restored_disruptions(equipment, [s.pk for s in plan.unblock], restore_status, actor)
         own_label = rule.label or ""
         handover: dict[int, tuple[RecurringSlotBlockRule, list[int]]] = {}
         for slot, other in plan.kept:
@@ -529,9 +531,41 @@ def bulk_create_daily_slots(equipment: Equipment, rows: list[DailySlot]) -> list
         return []
     matches = _apply_rules_to_new_rows(equipment, rows)
     if not matches:
-        return list(DailySlot.objects.bulk_create(rows, ignore_conflicts=True))
-    labels = {(r.slot_master_id, r.date): r.blocked_label for r in rows if (r.slot_master_id, r.date) in matches}
-    with transaction.atomic():
         created = list(DailySlot.objects.bulk_create(rows, ignore_conflicts=True))
-        _link_generated_rows(matches, labels)
+    else:
+        labels = {(r.slot_master_id, r.date): r.blocked_label for r in rows if (r.slot_master_id, r.date) in matches}
+        with transaction.atomic():
+            created = list(DailySlot.objects.bulk_create(rows, ignore_conflicts=True))
+            _link_generated_rows(matches, labels)
+    _record_generated_disruptions(equipment, rows)
     return created
+
+
+def _record_restored_disruptions(equipment: Equipment, slot_ids: list[int], status: str, actor) -> None:
+    from .disruption_service import DisruptionInput, auto_recorded_slot_statuses, record_unrecorded_slots
+
+    if status not in auto_recorded_slot_statuses():
+        return
+    record_unrecorded_slots(
+        equipment,
+        DailySlot.objects.filter(pk__in=slot_ids),
+        DisruptionInput(user=actor, source="CHANGE_SLOT_STATUS"),
+        old_status=SlotStatus.BLOCKED,
+    )
+
+
+def _record_generated_disruptions(equipment: Equipment, rows: list[DailySlot]) -> None:
+    """Slots generated Under Maintenance (equipment in repair) join its open disruption event."""
+    from .disruption_service import DisruptionInput, auto_recorded_slot_statuses, record_unrecorded_slots
+
+    statuses = set(auto_recorded_slot_statuses())
+    keys = [(r.slot_master_id, r.date) for r in rows if r.status in statuses]
+    if not keys:
+        return
+    try:
+        qs = DailySlot.objects.filter(
+            slot_master_id__in={k[0] for k in keys}, date__in={k[1] for k in keys}, booking__isnull=True
+        )
+        record_unrecorded_slots(equipment, qs, DisruptionInput(source="EQUIPMENT_STATUS"))
+    except Exception:
+        logger.exception("Could not record generated disruption slots for equipment %s", equipment.pk)

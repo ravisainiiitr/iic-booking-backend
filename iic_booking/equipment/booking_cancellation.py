@@ -33,6 +33,7 @@ from .slot_allocation import (
 from .maintenance_policy import (
     clear_disruption_policy_fields,
     effective_slot_status_when_freeing_disruption_booking,
+    record_freed_booking_slots,
     released_slot_status_after_booking_freed,
 )
 from .models import (
@@ -838,6 +839,7 @@ def perform_booking_cancellation(
             booking=None,
             status=free_status,
         )
+        record_freed_booking_slots(booking.equipment, slot_ids)
         schedule_waitlist_slots_available_after_commit(
             booking.equipment,
             preferred_slot_ids=slot_ids,

@@ -682,6 +682,8 @@ def _equipment_disruption_input(equipment):
 
 
 def on_equipment_status_changed(equipment, old_status: str | None, new_status: str | None) -> None:
+    from .models import SlotStatus
+
     if old_status == new_status:
         return
     if is_equipment_under_maintenance_status(new_status) and not is_equipment_under_maintenance_status(old_status):
@@ -695,12 +697,19 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
             )
         except Exception:
             logger.exception("apply_when_equipment_marked_under_maintenance failed for equipment %s", equipment.pk)
-        from .disruption_service import record_equipment_under_maintenance
+        from .disruption_service import record_equipment_under_maintenance, record_unrecorded_slots
 
-        equipment._disruption_result = record_equipment_under_maintenance(
-            equipment, _equipment_disruption_input(equipment), bookings_affected=n
-        )
+        data = _equipment_disruption_input(equipment)
+        equipment._disruption_result = record_equipment_under_maintenance(equipment, data, bookings_affected=n)
+        record_unrecorded_slots(equipment, _upcoming_slots(equipment), data, old_status=SlotStatus.AVAILABLE)
     elif is_equipment_operational_status(new_status) and is_equipment_under_maintenance_status(old_status):
+        from .disruption_service import release_slots_made_available
+
+        restored_ids = list(
+            _upcoming_slots(equipment)
+            .filter(status=SlotStatus.UNDER_MAINTENANCE, booking_id__isnull=True)
+            .values_list("id", flat=True)
+        )
         try:
             n = apply_when_equipment_becomes_operational(equipment)
             logger.info(
@@ -712,7 +721,30 @@ def on_equipment_status_changed(equipment, old_status: str | None, new_status: s
             logger.exception("apply_when_equipment_becomes_operational failed for equipment %s", equipment.pk)
         from .disruption_service import record_equipment_operational
 
-        equipment._disruption_result = record_equipment_operational(equipment, _equipment_disruption_input(equipment))
+        data = _equipment_disruption_input(equipment)
+        release_slots_made_available(equipment, restored_ids, data)
+        equipment._disruption_result = record_equipment_operational(equipment, data)
+
+
+def record_freed_booking_slots(equipment, slot_ids, *, user=None, source: str = "OTHER") -> None:
+    """Freed slots that went back to Under Maintenance / Operator Absent join (or open) a disruption event."""
+    from .disruption_service import DisruptionInput, record_unrecorded_slots
+    from .models import DailySlot, SlotStatus
+
+    if not slot_ids or equipment is None:
+        return
+    record_unrecorded_slots(
+        equipment,
+        DailySlot.objects.filter(pk__in=list(slot_ids), booking__isnull=True),
+        DisruptionInput(user=user, source=source),
+        old_status=SlotStatus.BOOKED,
+    )
+
+
+def _upcoming_slots(equipment):
+    from .models import DailySlot
+
+    return DailySlot.objects.filter(slot_master__equipment=equipment, date__gte=timezone.localdate())
 
 
 def auto_cancel_expired_maintenance_bookings() -> int:
@@ -745,6 +777,7 @@ def auto_cancel_expired_maintenance_bookings() -> int:
                     booking=None,
                     status=slot_status,
                 )
+                record_freed_booking_slots(booking.equipment, released_slot_ids, source="EQUIPMENT_STATUS")
                 refund_target, _ = WalletRepository.get_booking_wallet_target(
                     booking.user, getattr(booking.equipment, "internal_department", None)
                 )
@@ -851,8 +884,13 @@ def daily_under_maintenance_sweep_for_today() -> dict[str, int]:
         # Notify today's affected bookings (in-progress/future) and ensure maintenance flags/deadlines are set.
         bookings_notified += apply_when_equipment_marked_under_maintenance(eq)
 
+    from .disruption_service import record_unrecorded_upcoming_slots
+
+    recorded = record_unrecorded_upcoming_slots(today)
     return {
         "equipments_checked": equipments.count(),
         "slots_marked_under_maintenance": slots_marked,
         "bookings_notified": bookings_notified,
+        "disruption_events_opened": recorded["opened"],
+        "disruption_events_extended": recorded["extended"],
     }

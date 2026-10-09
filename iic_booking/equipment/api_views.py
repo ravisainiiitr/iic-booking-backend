@@ -211,6 +211,7 @@ from .booking_cancellation import (
 from .maintenance_policy import (
     clear_disruption_policy_fields,
     effective_slot_status_when_freeing_disruption_booking,
+    record_freed_booking_slots,
     released_slot_status_after_booking_freed,
 )
 from .waitlist import (
@@ -13131,6 +13132,7 @@ def reschedule_booking(request, booking_id):
                 booking=None,
                 status=free_status,
             )
+            record_freed_booking_slots(equipment, released_slot_ids, user=request.user)
 
             # Book new slots
             slot_ids = [slot.id for slot in available_slots]
@@ -13939,6 +13941,7 @@ def user_reschedule_booking(request, booking_id):
                 booking=None,
                 status=free_status,
             )
+            record_freed_booking_slots(equipment, released_slot_ids, user=request.user)
 
             # Book new slots
             slot_ids = list(available_slots.values_list("id", flat=True))

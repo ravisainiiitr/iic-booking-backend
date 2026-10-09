@@ -852,6 +852,94 @@ def open_equipment_events_for(equipment) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Automatic paths (slot generation, equipment maintenance, freed bookings)
+# ---------------------------------------------------------------------------
+
+
+def auto_recorded_slot_statuses() -> list[str]:
+    """Statuses that are always a disruption. BLOCKED is left out: repeat rules, holidays and training block too."""
+    SlotStatus = _slot_status()
+    return [SlotStatus.UNDER_MAINTENANCE, SlotStatus.OPERATOR_ABSENT, SlotStatus.SCHEDULED_MAINTENANCE]
+
+
+def unrecorded_disruption_slots(slots_qs):
+    """Slots of ``slots_qs`` in an auto-recorded status with no unreleased event link.
+
+    A link to a deleted event still counts as recorded: staff removed that entry on purpose."""
+    from .models import DisruptionEventSlot
+
+    return slots_qs.filter(status__in=auto_recorded_slot_statuses()).exclude(
+        pk__in=DisruptionEventSlot.objects.filter(released_at__isnull=True, daily_slot__isnull=False).values(
+            "daily_slot_id"
+        )
+    )
+
+
+def record_unrecorded_slots(equipment, slots_qs, data: DisruptionInput, *, old_status: str | None = None) -> RecordResult:
+    """Record slots that a path other than a staff status change put into a disruption status.
+
+    Under Maintenance slots join the open whole-equipment event when there is one; other runs open or extend slot
+    events exactly like a staff change. Already recorded slots are left alone, so calling this twice is harmless."""
+    result = RecordResult()
+    try:
+        slots = list(
+            unrecorded_disruption_slots(slots_qs)
+            .only("id", "start_datetime", "end_datetime", "status", "booking_id")
+            .order_by("start_datetime", "id")
+        )
+    except Exception:
+        logger.exception("Could not find unrecorded disruption slots for equipment %s", getattr(equipment, "pk", None))
+        return result
+    by_status: dict[str, list] = {}
+    for slot in slots:
+        if old_status:
+            slot._disruption_old_status = old_status
+        by_status.setdefault(slot.status, []).append(slot)
+    for status, group in by_status.items():
+        part = record_slot_status_change(equipment, group, status, data)
+        result.opened += part.opened
+        result.extended += part.extended
+    return result
+
+
+def release_slots_made_available(equipment, slot_ids, data: DisruptionInput) -> RecordResult:
+    """Release the event links of slots an automatic path put back to Available (e.g. equipment Operational)."""
+    from .models import DailySlot
+
+    SlotStatus = _slot_status()
+    if not slot_ids:
+        return RecordResult()
+    slots = list(
+        DailySlot.objects.filter(pk__in=list(slot_ids), status=SlotStatus.AVAILABLE).only(
+            "id", "start_datetime", "end_datetime", "status", "booking_id"
+        )
+    )
+    for slot in slots:
+        slot._disruption_old_status = SlotStatus.UNDER_MAINTENANCE
+    return record_slot_status_change(equipment, slots, SlotStatus.AVAILABLE, data)
+
+
+def record_unrecorded_upcoming_slots(today=None) -> dict[str, int]:
+    """Safety net for the daily sweep: record today's and future disruption slots that no path recorded."""
+    from .models import DailySlot, Equipment
+
+    today = today or timezone.localdate()
+    base = DailySlot.objects.filter(date__gte=today, slot_master__equipment__isnull=False)
+    equipment_ids = sorted(
+        set(unrecorded_disruption_slots(base).values_list("slot_master__equipment_id", flat=True))
+    )
+    stats = {"equipment": 0, "opened": 0, "extended": 0}
+    for equipment in Equipment.objects.filter(pk__in=equipment_ids):
+        result = record_unrecorded_slots(
+            equipment, base.filter(slot_master__equipment=equipment), DisruptionInput(source="OTHER")
+        )
+        stats["equipment"] += 1
+        stats["opened"] += len(result.opened)
+        stats["extended"] += len(result.extended)
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Calendar annotations (staff only)
 # ---------------------------------------------------------------------------
 
