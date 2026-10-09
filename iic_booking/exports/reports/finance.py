@@ -191,6 +191,7 @@ def admin_wallet_owners(request):
         ("balance_min", "Balance from (₹)", "text"),
         ("balance_max", "Balance up to (₹)", "text"),
         ("status", "Status", _OWNER_STATUS),
+        ("has_students", "Linked students", {"yes": "Has linked students", "no": "No linked students"}),
         ("activity_from", "Activity from", "date"),
         ("activity_to", "Activity to", "date"),
     ])
@@ -250,6 +251,7 @@ def admin_wallet_transactions(request):
         ("amount_min", "Amount from (₹)", "text"),
         ("amount_max", "Amount up to (₹)", "text"),
         ("booking", "Booking", "text"),
+        ("related_user", "Booking user", "user"),
         ("search", "Search", "text"),
     ])
     title = "Wallet Transactions"
@@ -260,3 +262,66 @@ def admin_wallet_transactions(request):
                        empty_message="No wallet transactions match these filters.")
     return make_document(request, title=title, slug="wallet-transactions", subtitle=subtitle, tables=[table],
                          filters=filters, kpis=kpis, landscape=True)
+
+
+_LINK_STATUS = {
+    "linked": "Linked",
+    "pending": "Pending approval",
+    "declined": "Declined",
+    "removed": "Removed by owner",
+    "cancelled": "Withdrawn by student",
+}
+
+
+def _limit_text(row: dict) -> str:
+    if not row.get("spending_limit_enabled"):
+        return ""
+    parts = []
+    if row.get("weekly_limit") is not None:
+        parts.append(f"Week ₹{row.get('week_spent') or '0.00'} of ₹{row['weekly_limit']}")
+    if row.get("monthly_limit") is not None:
+        parts.append(f"Month ₹{row.get('month_spent') or '0.00'} of ₹{row['monthly_limit']}")
+    return "; ".join(parts)
+
+
+@register("admin-wallet-linked-students")
+def admin_wallet_linked_students(request):
+    rows, first = collect_rows(request, "admin-wallet-ledger-linked-students", page_size=None)
+    data = first or {}
+    summary = data.get("summary") or {}
+    has_range = bool(request.query_params.get("date_from") or request.query_params.get("date_to"))
+    columns = [
+        SNO,
+        C("name", "Student", width=1.5),
+        C("enrollment", "Enrolment / employee no.", width=1.0),
+        C("department_name", "Department", width=1.3),
+        C("user_type_label", "Category", width=1.0),
+        C("status", "Link status", width=0.9, value=lambda r: _LINK_STATUS.get(r.get("status"), r.get("status"))),
+        C("requested_at", "Requested (IST)", spec.DATETIME, 1.1),
+        C("responded_at", "Linked / changed (IST)", spec.DATETIME, 1.1),
+        C("sub_wallets", "Books against", width=1.4,
+          value=lambda r: ", ".join(s.get("department_name", "") for s in r.get("sub_wallets") or [])),
+        C("limits", "Spending limits (used of limit)", width=1.8, value=_limit_text),
+        C("total_spent", "Spent from wallet (₹)", spec.CURRENCY, 1.0, total=True),
+    ]
+    if has_range:
+        columns.append(C("range_spent", "Spent in period (₹)", spec.CURRENCY, 1.0, total=True))
+    columns.append(C("last_booking_at", "Last booking (IST)", spec.DATETIME, 1.1))
+    kpis = [
+        spec.Kpi("Linked", summary.get("linked", 0), spec.INTEGER),
+        spec.Kpi("Pending", summary.get("pending", 0), spec.INTEGER),
+        spec.Kpi("Spent from wallet", to_number(summary.get("total_spent")) or 0, spec.CURRENCY),
+    ]
+    filters = filter_pairs(request, [
+        ("owner", "Wallet owner", "user"),
+        ("status", "Link status", _LINK_STATUS),
+        ("date_from", "Spent from", "date"),
+        ("date_to", "Spent to", "date"),
+        ("search", "Search", "text"),
+    ])
+    table = spec.Table("students", "Linked students", columns, numbered(rows),
+                       note="Email addresses are left out of exports. Spend is booking charges on this wallet minus refunds.",
+                       empty_message="No linked students match these filters.")
+    return make_document(request, title="Linked Students", slug="wallet-linked-students",
+                         subtitle=data.get("owner_name") or "", tables=[table], filters=filters, kpis=kpis,
+                         landscape=True)

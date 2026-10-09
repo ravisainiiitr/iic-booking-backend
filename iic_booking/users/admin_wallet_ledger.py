@@ -274,6 +274,11 @@ def filter_owners(qs, params):
         qs = qs.filter(total_balance_value__gte=lo)
     if hi is not None:
         qs = qs.filter(total_balance_value__lte=hi)
+    has_students = (params.get("has_students") or "").strip().lower()
+    if has_students == "yes":
+        qs = qs.filter(linked_students__gt=0)
+    elif has_students == "no":
+        qs = qs.filter(linked_students=0)
     status = (params.get("status") or "").strip()
     if status == "active":
         qs = qs.filter(user__is_active=True)
@@ -464,6 +469,9 @@ def filter_transactions(qs, params):
     sw_dept = _int(params.get("sub_wallet_department"))
     if sw_dept:
         qs = qs.filter(sub_wallet__department_id=sw_dept)
+    related = _int(params.get("related_user"))
+    if related:
+        qs = qs.filter(related_user_id=related)
     ttype = (params.get("type") or "").strip().lower()
     if ttype in ("credit", "debit"):
         qs = qs.filter(transaction_type=ttype)

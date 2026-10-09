@@ -51,6 +51,17 @@ def wallet_ledger_transactions(request):
     return Response(svc.list_transactions(request.query_params))
 
 
+@api_view(["GET"])
+@permission_classes([IsMainAdmin])
+def wallet_ledger_linked_students(request):
+    from iic_booking.users.admin_wallet_students import linked_students
+
+    try:
+        return Response(linked_students(request.query_params))
+    except svc.LedgerError as exc:
+        return _error(exc)
+
+
 @api_view(["POST"])
 @permission_classes([IsMainAdmin])
 def wallet_ledger_adjustment_preview(request):

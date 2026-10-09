@@ -12,6 +12,11 @@ urlpatterns = [
     ),
     path("admin/wallet-ledger/transactions/", views.wallet_ledger_transactions, name="admin-wallet-ledger-transactions"),
     path(
+        "admin/wallet-ledger/linked-students/",
+        views.wallet_ledger_linked_students,
+        name="admin-wallet-ledger-linked-students",
+    ),
+    path(
         "admin/wallet-ledger/adjustments/preview/",
         views.wallet_ledger_adjustment_preview,
         name="admin-wallet-ledger-adjustment-preview",

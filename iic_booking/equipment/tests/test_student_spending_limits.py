@@ -437,3 +437,21 @@ def test_book_endpoint_rejects_over_limit_and_admin_on_behalf_bypasses(egs_facto
     )
     assert resp.status_code in (200, 201), resp.data
     assert Booking.objects.filter(user=student).count() == 2
+
+
+@pytest.mark.django_db
+def test_limit_usage_matches_booking_time_rule(egs_factory):
+    from iic_booking.users.admin_wallet_students import _limit_usage
+
+    student, _faculty, link, _sub = _supervised(egs_factory, spending_limit_enabled=True, weekly_limit_inr=100)
+    eq = egs_factory.equipment()
+    _booking_at(egs_factory, student, eq, NOW - timedelta(hours=1), "30.00")
+    _booking_at(egs_factory, student, eq, NOW - timedelta(days=4), "40.00")
+    _booking_at(egs_factory, student, eq, NOW - timedelta(days=60), "50.00")
+    _booking_at(egs_factory, student, eq, NOW - timedelta(hours=2), "500.00", status=BookingStatus.CANCELLED)
+    _booking_at(
+        egs_factory, student, eq, NOW - timedelta(hours=3), "25.00", charge_recalculation_pending_amount=Decimal("15.00")
+    )
+    week, month = _limit_usage([link], NOW)[link.pk]
+    assert week == student_spend(link, *week_bounds(NOW)) == Decimal("40.00")
+    assert month == student_spend(link, *month_bounds(NOW))
