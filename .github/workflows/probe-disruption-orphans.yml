@@ -1,0 +1,134 @@
+# Read-only: slots in a disruption status (Under Maintenance, Operator Absent, Scheduled Maintenance, Blocked)
+# that no non-deleted DisruptionEvent links, and how they got there. Prints equipment codes, ids, dates,
+# statuses and counts only (no names, no emails, no free-text labels).
+name: Probe Disruption Orphans
+
+on:
+  workflow_dispatch:
+    inputs:
+      code_like:
+        description: "Equipment code fragment to detail (case-insensitive)"
+        required: false
+        default: "TGA"
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Probe
+        env:
+          CODE_LIKE: ${{ github.event.inputs.code_like }}
+        run: |
+          set -euo pipefail
+          CID="$(docker ps --format '{{.Names}}' | grep -E 'django' | head -n 1)"
+          test -n "$CID"
+          docker exec -i -e CODE_LIKE="${CODE_LIKE}" -w /app "$CID" python - <<'PY'
+          import os, re, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.production")
+          django.setup()
+          from collections import Counter, defaultdict
+          from django.contrib.admin.models import LogEntry
+          from django.contrib.contenttypes.models import ContentType
+          from django.utils import timezone
+          from iic_booking.equipment.models import (
+              DailySlot, DisruptionEvent, DisruptionEventSlot, Equipment, RecurringSlotBlockRuleSlot,
+              SlotStatusChangeLog,
+          )
+
+          now = timezone.now()
+          STATUSES = ["UNDER_MAINTENANCE", "OPERATOR_ABSENT", "SCHEDULED_MAINT", "BLOCKED"]
+
+          def label_kind(lbl):
+              lbl = (lbl or "").strip()
+              if not lbl:
+                  return "-"
+              m = re.match(r"^[A-Z][A-Z0-9_:]{2,40}", lbl)
+              return m.group(0) if m else f"text(len={len(lbl)})"
+
+          links = defaultdict(list)
+          for sid, eid, deleted, ended in DisruptionEventSlot.objects.values_list(
+              "daily_slot_id", "event_id", "event__is_deleted", "event__ended_at"
+          ):
+              if sid:
+                  links[sid].append((eid, deleted, ended is None))
+          open_eq_events = {
+              e: d for e, d in DisruptionEvent.objects.filter(scope="EQUIPMENT", ended_at__isnull=True)
+              .values_list("equipment_id", "is_deleted")
+          }
+          rule_slots = set(RecurringSlotBlockRuleSlot.objects.values_list("daily_slot_id", flat=True))
+
+          print(f"now={now.isoformat()}")
+          print("== A. Global: disruption-status slots without a non-deleted event link ==")
+          agg = Counter()
+          for sid, eq_id, code, eq_status, st, start in DailySlot.objects.filter(status__in=STATUSES).values_list(
+              "id", "slot_master__equipment_id", "slot_master__equipment__code", "slot_master__equipment__status",
+              "status", "start_datetime",
+          ):
+              ls = links.get(sid, [])
+              if any(not d for _e, d, _o in ls):
+                  continue
+              if st == "BLOCKED" and sid in rule_slots:
+                  continue
+              why = "deleted_event_only" if ls else "no_link"
+              when = "past" if start <= now else "future"
+              cov = "eq_event_open" if (eq_id in open_eq_events and not open_eq_events[eq_id]) else "-"
+              agg[(code, eq_status, st, when, why, cov)] += 1
+          print(f"  total={sum(agg.values())}")
+          for k, v in sorted(agg.items(), key=lambda x: (x[0][0] or "", x[0][2], x[0][3])):
+              print(f"    eq={k[0]} eq_status={k[1]} slot={k[2]} {k[3]} {k[4]} {k[5]} -> {v}")
+
+          frag = (os.environ.get("CODE_LIKE") or "TGA").strip()
+          eqs = list(Equipment.objects.filter(code__icontains=frag).only("equipment_id", "code", "status"))
+          print(f"== B. Equipment with code containing {frag!r}: {len(eqs)} ==")
+          slot_ct = ContentType.objects.get_for_model(DailySlot)
+          for e in eqs:
+              print(f"  eq_id={e.equipment_id} code={e.code} status={e.status}")
+              for ev in DisruptionEvent.objects.filter(equipment=e).order_by("start_at"):
+                  print(
+                      f"    event id={ev.pk} type={ev.disruption_type} scope={ev.scope} src={ev.source}"
+                      f" start={ev.start_at:%Y-%m-%d %H:%M} end={ev.end_at and f'{ev.end_at:%Y-%m-%d %H:%M}'}"
+                      f" ended={bool(ev.ended_at)} deleted={ev.is_deleted} backfilled={ev.backfilled}"
+                      f" slots={ev.slot_links.count()} started_by_set={bool(ev.started_by_id)}"
+                  )
+              rows = list(
+                  DailySlot.objects.filter(slot_master__equipment=e, status__in=STATUSES)
+                  .order_by("start_datetime")
+                  .values("id", "date", "start_datetime", "status", "blocked_label", "booking_id",
+                          "booking__status", "created_at", "updated_at")
+              )
+              print(f"    disruption_status_slots={len(rows)}")
+              ids = [r["id"] for r in rows]
+              logs_by_slot = defaultdict(list)
+              for lg in SlotStatusChangeLog.objects.filter(equipment=e).order_by("changed_at").values(
+                  "id", "new_status", "source", "changed_at", "changed_by_id", "changed_by__user_type", "slot_ids"
+              ):
+                  for s in lg["slot_ids"] or []:
+                      if str(s).isdigit() and int(s) in ids:
+                          logs_by_slot[int(s)].append(lg)
+              admin_edits = defaultdict(list)
+              for le in LogEntry.objects.filter(content_type=slot_ct, object_id__in=[str(i) for i in ids]).values(
+                  "object_id", "action_time", "action_flag", "user__user_type"
+              ):
+                  admin_edits[int(le["object_id"])].append(le)
+              for r in rows:
+                  ls = links.get(r["id"], [])
+                  lg = logs_by_slot.get(r["id"], [])
+                  last = lg[-1] if lg else None
+                  ad = admin_edits.get(r["id"], [])
+                  print(
+                      f"    slot id={r['id']} {r['start_datetime']:%Y-%m-%d %H:%M} {r['status']}"
+                      f" label={label_kind(r['blocked_label'])} booking={r['booking_id']}/{r['booking__status']}"
+                      f" links={[(x[0], 'del' if x[1] else 'ok', 'open' if x[2] else 'closed') for x in ls]}"
+                      f" rule={r['id'] in rule_slots}"
+                      f" logs={len(lg)} last_log={last and (last['id'], last['new_status'], last['source'], f'{last['changed_at']:%Y-%m-%d %H:%M}', last['changed_by_id'], last['changed_by__user_type'])}"
+                      f" admin_edits={[(f'{a['action_time']:%Y-%m-%d %H:%M}', a['action_flag'], a['user__user_type']) for a in ad][-3:]}"
+                      f" created={r['created_at']:%Y-%m-%d} updated={r['updated_at']:%Y-%m-%d %H:%M}"
+                  )
+              recent = SlotStatusChangeLog.objects.filter(equipment=e).order_by("-changed_at")[:15]
+              for lg in recent:
+                  print(
+                      f"    log id={lg.pk} {lg.changed_at:%Y-%m-%d %H:%M} new={lg.new_status} src={lg.source}"
+                      f" n={lg.slot_count} by={lg.changed_by_id}"
+                      f" first={lg.first_start and f'{lg.first_start:%Y-%m-%d %H:%M}'}"
+                  )
+          PY
