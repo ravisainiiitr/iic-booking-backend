@@ -6,7 +6,7 @@ import logging
 
 from django.utils import timezone
 
-from iic_booking.communication.email_branding import absolute_http_url
+from iic_booking.communication.email_branding import absolute_http_url, slot_end_on_start_day, strftime_slot_end
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import booking_display_id_for_email
 from iic_booking.communication.utils import get_frontend_absolute_url
@@ -33,7 +33,7 @@ def _slot_lines(booking) -> str:
             continue
         start = timezone.localtime(s.start_datetime)
         end = timezone.localtime(s.end_datetime)
-        end_text = f"{end:%H:%M}" if end.date() == start.date() else f"{end:%a %d %b %Y, %H:%M}"
+        end_text = strftime_slot_end(end, "%H:%M") if slot_end_on_start_day(start, end) else f"{end:%a %d %b %Y, %H:%M}"
         lines.append(f"{start:%a %d %b %Y, %H:%M} – {end_text}")
     return "\n".join(lines)
 

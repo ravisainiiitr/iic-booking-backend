@@ -23,6 +23,8 @@ from typing import Any, Callable, Optional
 from django.conf import settings
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import format_local_end_dt
+
 logger = logging.getLogger("iic_booking.equipment_group")
 
 MAX_ALTERNATIVES = 5
@@ -1336,7 +1338,7 @@ def perform_cross_equipment_reschedule(request, booking, start_time, end_time, *
                 comment=(
                     f"Booking moved from {source.name} to {target.name} and rescheduled to "
                     f"{timezone.localtime(start_time).strftime('%Y-%m-%d %H:%M')} - "
-                    f"{timezone.localtime(end_time).strftime('%Y-%m-%d %H:%M')}"
+                    f"{format_local_end_dt(end_time)}"
                 ),
                 created_by=request.user,
                 metadata={

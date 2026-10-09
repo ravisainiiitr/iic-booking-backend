@@ -32,6 +32,7 @@ from rest_framework.response import Response
 from iic_booking.communication.email_branding import (
     absolute_http_url,
     format_email_datetime,
+    format_email_end_datetime,
     user_display_name,
 )
 from iic_booking.communication.service import CommunicationService
@@ -307,7 +308,7 @@ def _user_slot_context(booking) -> dict[str, str]:
         return {
             **empty,
             "start_time": format_email_datetime(released.start_datetime),
-            "end_time": format_email_datetime(released.end_datetime),
+            "end_time": format_email_end_datetime(released.end_datetime),
         }
     if _uses_slot_ids(booking):
         names = [
@@ -322,7 +323,7 @@ def _user_slot_context(booking) -> dict[str, str]:
     return {
         **empty,
         "start_time": format_email_datetime(slots[0].start_datetime),
-        "end_time": format_email_datetime(slots[-1].end_datetime),
+        "end_time": format_email_end_datetime(slots[-1].end_datetime),
     }
 
 

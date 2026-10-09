@@ -10,7 +10,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
-from iic_booking.communication.email_branding import format_local_dt
+from iic_booking.communication.email_branding import format_local_dt, format_local_end_dt
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import booking_display_id_for_email
 
@@ -102,7 +102,7 @@ def send_booking_not_utilized_emails(
     for s in booked_slots:
         part = str(s.date)
         if getattr(s, "start_datetime", None) and getattr(s, "end_datetime", None):
-            part += f" {format_local_dt(s.start_datetime, '%H:%M')}-{format_local_dt(s.end_datetime, '%H:%M')}"
+            part += f" {format_local_dt(s.start_datetime, '%H:%M')}-{format_local_end_dt(s.end_datetime, '%H:%M')}"
         slot_parts.append(part)
     slot_details = "; ".join(slot_parts)
     from iic_booking.communication.email_branding import user_display_name

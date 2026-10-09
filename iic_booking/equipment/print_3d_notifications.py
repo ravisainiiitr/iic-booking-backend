@@ -14,6 +14,7 @@ from django.core.mail import EmailMessage
 from django.db import transaction
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import strftime_slot_end
 from iic_booking.communication.utils import booking_display_id_for_email
 
 logger = logging.getLogger(__name__)
@@ -495,7 +496,7 @@ def _build_email_body(booking, files, attachments, links, *, reason: str, is_las
                 slot_label = slot.slot_master.slot_name or f"Slot {slot.slot_master.slot_number}"
             if start and end:
                 lines.append(
-                    f"  {start.strftime('%Y-%m-%d %H:%M')} – {end.strftime('%H:%M')}"
+                    f"  {start.strftime('%Y-%m-%d %H:%M')} – {strftime_slot_end(end, '%H:%M')}"
                     + (f" ({slot_label})" if slot_label else "")
                 )
             elif slot_label:

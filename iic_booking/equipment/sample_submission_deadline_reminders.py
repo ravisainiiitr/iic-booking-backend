@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 from django.db.models import Exists, OuterRef, Prefetch
 from django.utils import timezone
 
-from iic_booking.communication.email_branding import format_local_dt
+from iic_booking.communication.email_branding import format_local_dt, format_local_end_dt
 from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import booking_display_id_for_email, get_frontend_absolute_url
 from iic_booking.equipment.booking_events import (
@@ -174,7 +174,7 @@ def send_sample_submission_deadline_reminder(booking: "Booking") -> bool:
             format_local_dt(daily_slots[0].start_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
         )
         end_time = (
-            format_local_dt(daily_slots[-1].end_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
+            format_local_end_dt(daily_slots[-1].end_datetime, "%Y-%m-%d %H:%M:%S") if daily_slots else ""
         )
 
     lead_hours = effective_sample_submission_lead_hours(booking)

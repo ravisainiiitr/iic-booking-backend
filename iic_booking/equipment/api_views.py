@@ -231,7 +231,7 @@ from iic_booking.communication.service import CommunicationService
 from iic_booking.communication.utils import get_frontend_absolute_url, booking_display_id_for_email
 from iic_booking.equipment.results_sharing_service import is_active_share_recipient, mark_results_viewed
 from iic_booking.communication.styled_transactional_emails import send_return_shipping_tracking_email
-from iic_booking.communication.email_branding import build_booking_created_event_comment, format_local_dt
+from iic_booking.communication.email_branding import build_booking_created_event_comment, format_local_dt, format_local_end_dt
 from iic_booking.users.display import apply_faculty_name_prefix, get_user_display_name
 
 logger = logging.getLogger(__name__)
@@ -13152,7 +13152,7 @@ def reschedule_booking(request, booking_id):
                 event_type=BookingEventType.RESCHEDULED,
                 previous_status=previous_status,
                 new_status=booking.status,
-                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_dt(end_time)}",
+                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_end_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
             )
@@ -13960,7 +13960,7 @@ def user_reschedule_booking(request, booking_id):
                 event_type=BookingEventType.RESCHEDULED,
                 previous_status=previous_status,
                 new_status=booking.status,
-                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_dt(end_time)}",
+                comment=f"Booking rescheduled to {format_local_dt(start_time)} - {format_local_end_dt(end_time)}",
                 created_by=request.user,
                 send_notification=True,
             )
@@ -14157,6 +14157,7 @@ def _send_results_available_push_and_email(booking):
     from iic_booking.communication.email_branding import (
         format_duration_minutes,
         format_email_datetime,
+        format_email_end_datetime,
         format_inr,
         user_display_name,
     )
@@ -14191,7 +14192,7 @@ def _send_results_available_push_and_email(booking):
         daily_slots = list(booking.daily_slots.all().order_by("start_datetime"))
         if daily_slots:
             start_time = format_email_datetime(daily_slots[0].start_datetime)
-            end_time = format_email_datetime(daily_slots[-1].end_datetime)
+            end_time = format_email_end_datetime(daily_slots[-1].end_datetime)
     except Exception:
         logger.exception("Failed to resolve slot times for results email booking %s", booking.booking_id)
 

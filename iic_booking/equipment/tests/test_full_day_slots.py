@@ -14,7 +14,7 @@ from iic_booking.equipment.models import (
     DailySlot,
     Holiday,
     SlotMaster,
-    full_day_slot_conflict,
+    slot_masters_conflict,
     slot_master_duration_minutes,
 )
 from iic_booking.equipment.serializers import EquipmentAdminWriteSerializer
@@ -138,11 +138,11 @@ def test_clean_rejects_full_day_when_other_slots_are_active(egs_factory):
     assert "close_time" in exc.value.message_dict
 
 
-def test_full_day_slot_conflict_rules():
-    assert full_day_slot_conflict([(time(0), time(0))]) is None
-    assert full_day_slot_conflict([(time(9), time(10)), (time(10), time(11))]) is None
-    assert full_day_slot_conflict([(time(0), time(0)), (time(9), time(10))])
-    assert full_day_slot_conflict([(time(0), time(0)), (None, None)]) is None
+def test_slot_masters_conflict_rules():
+    assert slot_masters_conflict([(time(0), time(0))]) is None
+    assert slot_masters_conflict([(time(9), time(10)), (time(10), time(11))]) is None
+    assert slot_masters_conflict([(time(0), time(0)), (time(9), time(10))])
+    assert slot_masters_conflict([(time(0), time(0)), (None, None)]) is None
 
 
 def _serializer_slots(*rows):
@@ -223,6 +223,6 @@ def test_slot_time_listings_report_24_hours(egs_factory):
     eq = egs_factory.equipment(with_profile=False)
     _master(eq)
     assert equipment_slot_times(eq) == [
-        {"time": "00:00", "end_time": "00:00", "duration_minutes": 1440, "name": "Slot 1"}
+        {"time": "00:00", "end_time": "24:00", "duration_minutes": 1440, "name": "Slot 1"}
     ]
     assert weekly_slot_rows(eq, None) == [(0, 1440)]

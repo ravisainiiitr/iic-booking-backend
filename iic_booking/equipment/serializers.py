@@ -26,7 +26,8 @@ from .models import (
     MultiParamDefinition,
     SlotMaster,
     SLOT_MASTER_CLOSE_TIME_HELP,
-    full_day_slot_conflict,
+    slot_masters_conflict,
+    normalize_slot_close_input,
     DailySlot,
     SlotStatus,
     EquipmentOperator,
@@ -2549,12 +2550,19 @@ class ChargeProfileWriteSerializer(serializers.Serializer):
     display_text = serializers.CharField(allow_blank=True, required=False, default='')
 
 
+class SlotCloseTimeField(serializers.TimeField):
+    """TimeField that also accepts '24:00' / '24:00:00' (midnight at the end of the day, stored as 00:00)."""
+
+    def to_internal_value(self, value):
+        return super().to_internal_value(normalize_slot_close_input(value))
+
+
 class SlotMasterWriteSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False, allow_null=True)
     slot_number = serializers.IntegerField()
     slot_name = serializers.CharField(max_length=100, allow_blank=True, required=False, default='')
     open_time = serializers.TimeField()
-    close_time = serializers.TimeField(help_text=SLOT_MASTER_CLOSE_TIME_HELP)
+    close_time = SlotCloseTimeField(help_text=SLOT_MASTER_CLOSE_TIME_HELP)
     is_active = serializers.BooleanField(default=True)
 
 
@@ -2721,7 +2729,7 @@ class EquipmentAdminWriteSerializer(serializers.ModelSerializer):
         return value
 
     def validate_slot_masters(self, value):
-        error = full_day_slot_conflict(
+        error = slot_masters_conflict(
             [(item.get("open_time"), item.get("close_time")) for item in value or [] if item.get("is_active", True)]
         )
         if error:

@@ -21,6 +21,7 @@ from django.db.models import Prefetch
 from django.http import HttpResponse
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import strftime_slot_end
 from iic_booking.communication.utils import booking_display_id_for_email
 from iic_booking.users.display import get_user_display_name
 from iic_booking.users.models.user_type import UserType
@@ -180,7 +181,7 @@ def slot_summary(ranges) -> tuple[str, str]:
         d = start.strftime("%d-%m-%Y")
         if d not in dates:
             dates.append(d)
-        t = f"{start:%H:%M}–{end:%H:%M}"
+        t = f"{start:%H:%M}–{strftime_slot_end(end, '%H:%M')}"
         if t not in times:
             times.append(t)
     date_text = ", ".join(dates) if len(dates) <= 3 else f"{dates[0]} to {dates[-1]} ({len(dates)} days)"

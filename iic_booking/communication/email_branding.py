@@ -8,7 +8,7 @@ Used by CommunicationTemplate defaults and styled transactional emails.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
@@ -328,6 +328,30 @@ def format_local_dt(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
     return dt.strftime(fmt)
 
 
+def strftime_slot_end(dt: datetime, fmt: str) -> str:
+    """strftime for a slot or booking end: local midnight reads as 24:00 of the day before (12:00–24:00)."""
+    if (dt.hour, dt.minute, dt.second, dt.microsecond) != (0, 0, 0, 0):
+        return dt.strftime(fmt)
+    for pattern, text in (("%I:%M:%S %p", "24:00:00"), ("%I:%M %p", "24:00"), ("%H", "24")):
+        fmt = fmt.replace(pattern, text)
+    return (dt - timedelta(days=1)).strftime(fmt)
+
+
+def slot_end_on_start_day(start: datetime, end: datetime) -> bool:
+    """True when ``end`` is on ``start``'s calendar day, counting an end at the following midnight (24:00)."""
+    at_midnight = (end.hour, end.minute, end.second, end.microsecond) == (0, 0, 0, 0)
+    end_day = (end - timedelta(days=1)).date() if at_midnight and end > start else end.date()
+    return end_day == start.date()
+
+
+def format_local_end_dt(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """format_local_dt for a slot or booking end; an end at midnight reads as 24:00 of the day before."""
+    dt = _to_local_dt(value)
+    if not dt:
+        return ""
+    return strftime_slot_end(dt, fmt)
+
+
 def local_date(value: Any) -> Optional[date]:
     """Calendar date of ``value`` in the portal time zone (a UTC date can be a day behind before 05:30 IST)."""
     dt = _to_local_dt(value)
@@ -361,6 +385,14 @@ def format_email_datetime(value: Any) -> str:
             return value.strip()
         return ""
     return f"{dt.strftime('%d %b %Y')}, {dt.strftime('%I:%M %p')}"
+
+
+def format_email_end_datetime(value: Any) -> str:
+    """format_email_datetime for a slot or booking end: 24 Jul 2026, 24:00 for an end at midnight."""
+    dt = _to_local_dt(value)
+    if not dt:
+        return format_email_datetime(value)
+    return strftime_slot_end(dt, "%d %b %Y, %I:%M %p")
 
 
 def absolute_http_url(url: Any) -> str:

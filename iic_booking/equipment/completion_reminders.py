@@ -138,7 +138,9 @@ def overdue_label(last_slot_end, now=None) -> str:
 
 
 def _ended_display(last_slot_end) -> str:
-    return timezone.localtime(last_slot_end).strftime("%d %b %Y, %I:%M %p")
+    from iic_booking.communication.email_branding import strftime_slot_end
+
+    return strftime_slot_end(timezone.localtime(last_slot_end), "%d %b %Y, %I:%M %p")
 
 
 def completion_anchor(booking):

@@ -15,7 +15,9 @@ from iic_booking.communication.email_branding import (
     absolute_http_url,
     format_duration_minutes,
     format_email_datetime,
+    format_email_end_datetime,
     format_inr,
+    strftime_slot_end,
     strip_booking_summary_from_note,
     trims_booking_note,
     user_display_name,
@@ -749,7 +751,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
         released_range = list(BookingSlotRange.objects.filter(booking_id=booking.pk)[:1])
     from iic_booking.users.models.user_type import UserType
 
-    def _format_local(dt, fmt=None):
+    def _format_local(dt, fmt=None, end=False):
         if not dt:
             return ""
         if fmt:
@@ -757,8 +759,8 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 dt_local = timezone.localtime(dt) if timezone.is_aware(dt) else dt
             except Exception:
                 dt_local = dt
-            return dt_local.strftime(fmt)
-        return format_email_datetime(dt)
+            return strftime_slot_end(dt_local, fmt) if end else dt_local.strftime(fmt)
+        return format_email_end_datetime(dt) if end else format_email_datetime(dt)
 
     def _apply_slot_times_for_recipient(ctx: dict, recipient) -> None:
         recipient_is_staff = getattr(recipient, "user_type", None) in UserType.get_admin_panel_codes()
@@ -777,7 +779,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
                 ctx["booking_date"] = booking_date_str
             else:
                 ctx["start_time"] = _format_local(released.start_datetime) if released else ""
-                ctx["end_time"] = _format_local(released.end_datetime) if released else ""
+                ctx["end_time"] = _format_local(released.end_datetime, end=True) if released else ""
                 ctx["booking_date"] = ""
             ctx["slot_id_display"] = ""
             return
@@ -807,7 +809,7 @@ def send_booking_event_notification(event: BookingEvent) -> None:
             ctx["duration_display"] = ""
         else:
             ctx["start_time"] = _format_local(daily_slots[0].start_datetime)
-            ctx["end_time"] = _format_local(daily_slots[-1].end_datetime)
+            ctx["end_time"] = _format_local(daily_slots[-1].end_datetime, end=True)
             ctx["booking_date"] = ""
             ctx["slot_id_display"] = ""
             if booking.total_time_minutes:

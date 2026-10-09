@@ -19,6 +19,7 @@ from datetime import date, datetime, time, timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import strftime_slot_end
 from iic_booking.equipment.dept_admin_actions import record_staff_action
 from iic_booking.equipment.models import (
     DailySlot,
@@ -28,6 +29,7 @@ from iic_booking.equipment.models import (
     RecurringSlotBlockRuleSlot,
     SlotMaster,
     SlotStatus,
+    format_slot_close_time,
     slot_master_duration_minutes,
 )
 from iic_booking.equipment.slot_utils import SlotGenerator
@@ -82,7 +84,7 @@ def equipment_slot_times(equipment: Equipment) -> list[dict]:
             key,
             {
                 "time": key,
-                "end_time": _hhmm(master.close_time),
+                "end_time": format_slot_close_time(master.close_time),
                 "duration_minutes": slot_master_duration_minutes(master.open_time, master.close_time),
                 "name": master.slot_name or f"Slot {master.slot_number}",
             },
@@ -176,7 +178,7 @@ def _slot_row(slot: DailySlot) -> dict:
         "date": slot.date.isoformat(),
         "weekday": WEEKDAY_LABELS[slot.date.weekday()],
         "start_time": timezone.localtime(slot.start_datetime).strftime("%H:%M"),
-        "end_time": timezone.localtime(slot.end_datetime).strftime("%H:%M"),
+        "end_time": strftime_slot_end(timezone.localtime(slot.end_datetime), "%H:%M"),
     }
 
 

@@ -37,6 +37,8 @@ from .models import (
     EquipmentAdditionRequest,
     EquipmentAdditionRequestStatus,
     EquipmentStatus,
+    format_slot_close_time,
+    normalize_slot_close_input,
 )
 from iic_booking.users.display import get_user_display_name
 
@@ -111,6 +113,11 @@ def _parse_optional_time(value):
         except ValueError:
             continue
     raise serializers.ValidationError("Use HH:MM (24-hour) format.")
+
+
+def _is_midnight(value) -> bool:
+    """An end time of 00:00 (entered as 24:00) is midnight at the end of the day."""
+    return (value.hour, value.minute, value.second) == (0, 0, 0)
 
 
 class EquipmentAdditionRequestCreateSerializer(serializers.Serializer):
@@ -227,12 +234,12 @@ class EquipmentAdditionRequestCreateSerializer(serializers.Serializer):
         return _parse_optional_time(value)
 
     def validate_slot_end_time(self, value):
-        return _parse_optional_time(value)
+        return _parse_optional_time(normalize_slot_close_input(value))
 
     def validate(self, attrs):
         start = attrs.get("slot_start_time")
         end = attrs.get("slot_end_time")
-        if start and end and end <= start:
+        if start and end and end <= start and not _is_midnight(end):
             raise serializers.ValidationError(
                 {"slot_end_time": "End time must be after start time."}
             )
@@ -345,7 +352,7 @@ class EquipmentAdditionRequestUpdateSerializer(serializers.Serializer):
         return _parse_optional_time(value)
 
     def validate_slot_end_time(self, value):
-        return _parse_optional_time(value)
+        return _parse_optional_time(normalize_slot_close_input(value))
 
     def validate_code(self, value):
         code = (value or "").strip()
@@ -380,7 +387,7 @@ class EquipmentAdditionRequestUpdateSerializer(serializers.Serializer):
     def validate(self, attrs):
         start = attrs.get("slot_start_time", getattr(self.instance, "slot_start_time", None))
         end = attrs.get("slot_end_time", getattr(self.instance, "slot_end_time", None))
-        if start and end and end <= start:
+        if start and end and end <= start and not _is_midnight(end):
             raise serializers.ValidationError(
                 {"slot_end_time": "End time must be after start time."}
             )
@@ -667,7 +674,7 @@ def _build_setup_instruction(req: EquipmentAdditionRequest) -> str:
     if req.slot_start_time:
         slot_bits.append(f"start={req.slot_start_time.strftime('%H:%M')}")
     if req.slot_end_time:
-        slot_bits.append(f"end={req.slot_end_time.strftime('%H:%M')}")
+        slot_bits.append(f"end={format_slot_close_time(req.slot_end_time)}")
     if slot_bits:
         lines.append("Slot proposal: " + ", ".join(slot_bits))
     if req.charge_calculation_basis:

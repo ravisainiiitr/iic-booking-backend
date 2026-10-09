@@ -1,6 +1,7 @@
 from django import forms
 from django.contrib import admin, messages
 from django.contrib.admin import SimpleListFilter
+from django.contrib.admin.widgets import AdminTimeWidget
 from django.core.files.storage import default_storage
 from django.utils import timezone
 from django.utils.html import format_html
@@ -17,7 +18,9 @@ logger = logging.getLogger(__name__)
 from .image_utils import persist_equipment_image_upload
 from .models import (
     SLOT_MASTER_CLOSE_TIME_HELP,
-    full_day_slot_conflict,
+    format_slot_close_time,
+    normalize_slot_close_input,
+    slot_masters_conflict,
     BookingDataShare,
     BookingInputTemplate,
     CalendarFeedToken,
@@ -787,11 +790,30 @@ class MultiParamDefinitionInline(admin.TabularInline):
         qs = super().get_queryset(request)
         return qs.order_by('user_type', 'param_name')
 
+class SlotCloseTimeWidget(AdminTimeWidget):
+    """Shows a stored 00:00 close (midnight at the end of the day) as 24:00."""
+
+    def format_value(self, value):
+        if hasattr(value, "hour") and format_slot_close_time(value) == "24:00":
+            return "24:00"
+        return super().format_value(value)
+
+
+class SlotCloseTimeFormField(forms.TimeField):
+    """Accepts 24:00 / 24:00:00 for midnight at the end of the day (stored as 00:00)."""
+
+    widget = SlotCloseTimeWidget
+
+    def to_python(self, value):
+        return super().to_python(normalize_slot_close_input(value))
+
+
 class SlotMasterInlineForm(forms.ModelForm):
+    close_time = SlotCloseTimeFormField(label=_('Close time'), help_text=SLOT_MASTER_CLOSE_TIME_HELP)
+
     class Meta:
         model = SlotMaster
         fields = ['slot_number', 'slot_name', 'open_time', 'close_time', 'is_active']
-        help_texts = {'close_time': SLOT_MASTER_CLOSE_TIME_HELP}
 
     def _post_clean(self):
         # Other rows may change in the same submit; SlotMasterInlineFormSet.clean checks them together.
@@ -808,7 +830,7 @@ class SlotMasterInlineFormSet(forms.BaseInlineFormSet):
             if not data or data.get("DELETE") or not data.get("is_active"):
                 continue
             active.append((data.get("open_time"), data.get("close_time")))
-        error = full_day_slot_conflict(active)
+        error = slot_masters_conflict(active)
         if error:
             raise forms.ValidationError(error)
 

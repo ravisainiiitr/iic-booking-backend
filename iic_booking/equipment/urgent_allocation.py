@@ -18,6 +18,8 @@ from typing import Any, Optional
 from django.db import transaction
 from django.utils import timezone
 
+from iic_booking.communication.email_branding import strftime_slot_end
+
 from .calculators import (
     ChargeCalculationEngine,
     TimeCalculationEngine,
@@ -479,7 +481,7 @@ def allocate_urgent_request(urg_id: int, actor, slot_ids, *, admin_notes=None, e
         charge_profile = quote["charge_profile"]
         actor_label = api_views.get_user_display_name(actor) or "the Officer in charge"
         times = ", ".join(
-            f"{timezone.localtime(s.start_datetime):%d %b %Y %H:%M}–{timezone.localtime(s.end_datetime):%H:%M}"
+            f"{timezone.localtime(s.start_datetime):%d %b %Y %H:%M}–{strftime_slot_end(timezone.localtime(s.end_datetime), '%H:%M')}"
             for s in locked
             if s.start_datetime and s.end_datetime
         )

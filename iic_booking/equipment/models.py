@@ -3108,17 +3108,23 @@ class SlotMaster(models.Model):
     def __str__(self):
         name = f" - {self.slot_name}" if self.slot_name else ""
         equipment_code = self.equipment.code if self.equipment else "N/A"
-        return f"{equipment_code} - Slot {self.slot_number}{name}: {self.open_time} - {self.close_time}"
+        times = (
+            slot_master_range_label(self.open_time, self.close_time)
+            if self.open_time is not None and self.close_time is not None
+            else f"{self.open_time} - {self.close_time}"
+        )
+        return f"{equipment_code} - Slot {self.slot_number}{name}: {times}"
     
     @property
     def is_full_day(self) -> bool:
         return is_full_day_slot(self.open_time, self.close_time)
 
     def clean(self):
-        """Close = Open is a full 24-hour slot, allowed only as the equipment's only active slot.
+        """Active slots of one equipment must not overlap; a full 24-hour slot must be the only active one.
 
-        close_time before open_time is allowed (crosses midnight, e.g. 18:00–00:00). The sibling check
-        reads the database; the admin inline formset validates all rows together instead.
+        Close 00:00 (entered as 24:00) ends at midnight; Close earlier than Open ends the next day; Close = Open
+        is a full 24-hour slot. The sibling check reads the database; the admin inline formset validates all
+        rows together instead.
         """
         if self.open_time is None or self.close_time is None:
             return
@@ -3129,22 +3135,54 @@ class SlotMaster(models.Model):
             .exclude(pk=self.pk)
             .values_list("open_time", "close_time")
         )
-        error = full_day_slot_conflict([(self.open_time, self.close_time)] + others)
+        error = slot_masters_conflict([(self.open_time, self.close_time)] + others)
         if error:
             raise ValidationError({"close_time": error})
 
 
 SLOT_MASTER_CLOSE_TIME_HELP = _(
-    'Set Close = Open for a full 24-hour slot (e.g. 00:00–00:00); if Close is earlier than Open the slot ends next day.'
+    'Use 24:00 for midnight at the end of the day (e.g. 12:00–24:00). For a full-day slot use 00:00–24:00. '
+    'If Close is earlier than Open the slot ends next day.'
 )
 FULL_DAY_SLOT_NOT_ALONE_MESSAGE = _(
-    'A full 24-hour slot (Close = Open) must be the only active slot of this equipment. '
-    'Deactivate or remove the other slots, or set a Close time different from the Open time.'
+    'A full 24-hour slot (00:00–24:00, or Close = Open) must be the only active slot of this equipment. '
+    'Deactivate or remove the other slots, or shorten this one.'
 )
+SLOTS_OVERLAP_MESSAGE = _(
+    'Active slots of the same equipment must not overlap: {first} overlaps {second}. '
+    'Slots may touch, e.g. 00:00–12:00 and 12:00–24:00.'
+)
+
+END_OF_DAY_INPUTS = {"24:00", "24:00:00"}
+
+
+def normalize_slot_close_input(value):
+    """'24:00' / '24:00:00' (midnight at the end of the day) is stored as 00:00; other values pass through."""
+    if isinstance(value, str) and value.strip() in END_OF_DAY_INPUTS:
+        return "00:00"
+    return value
+
+
+def format_slot_close_time(value) -> str:
+    """'24:00' for a close at midnight (the end of the slot's day), else 'HH:MM'."""
+    if value is None:
+        return ""
+    if (value.hour, value.minute, value.second) == (0, 0, 0):
+        return "24:00"
+    return value.strftime("%H:%M:%S" if value.second else "%H:%M")
+
+
+def slot_master_range_label(open_time, close_time) -> str:
+    """'12:00–24:00', '00:00–24:00', '18:00–02:00 (+1 day)'."""
+    open_text = open_time.strftime("%H:%M:%S" if open_time.second else "%H:%M")
+    close_text = format_slot_close_time(close_time)
+    midnight = (close_time.hour, close_time.minute, close_time.second) == (0, 0, 0)
+    overnight = close_time < open_time and not midnight
+    return f"{open_text}–{close_text}{' (+1 day)' if overnight else ''}"
 
 
 def is_full_day_slot(open_time, close_time) -> bool:
-    """Close = Open on a Slot Master means a full 24-hour slot (end = start + 24 h)."""
+    """Close = Open on a Slot Master (00:00–24:00 is stored as 00:00–00:00) is a full 24-hour slot."""
     return open_time is not None and close_time is not None and open_time == close_time
 
 
@@ -3157,11 +3195,30 @@ def slot_master_duration_minutes(open_time, close_time) -> int:
     return end - start
 
 
-def full_day_slot_conflict(active_times) -> str | None:
-    """Error when a full 24-hour slot is not the only one among an equipment's active (open, close) times."""
+def _slot_span_seconds(open_time, close_time) -> tuple[int, int]:
+    start = open_time.hour * 3600 + open_time.minute * 60 + open_time.second
+    end = close_time.hour * 3600 + close_time.minute * 60 + close_time.second
+    if end <= start:
+        end += 86400
+    return start, end
+
+
+def slot_masters_conflict(active_times) -> str | None:
+    """Why an equipment's active (open, close) Slot Master times cannot coexist, or None.
+
+    A full 24-hour slot must be alone; other slots must not overlap on the same day or across midnight
+    (18:00–02:00 overlaps 01:00–03:00 of the next day). Touching slots are fine.
+    """
     times = [(o, c) for o, c in active_times if o is not None and c is not None]
     if len(times) > 1 and any(is_full_day_slot(o, c) for o, c in times):
         return str(FULL_DAY_SLOT_NOT_ALONE_MESSAGE)
+    spans = [(_slot_span_seconds(o, c), o, c) for o, c in times]
+    for i, ((s1, e1), o1, c1) in enumerate(spans):
+        for (s2, e2), o2, c2 in spans[i + 1:]:
+            if any(s1 < e2 + k and s2 + k < e1 for k in (-86400, 0, 86400)):
+                return str(SLOTS_OVERLAP_MESSAGE).format(
+                    first=slot_master_range_label(o1, c1), second=slot_master_range_label(o2, c2)
+                )
     return None
 
 
@@ -3404,10 +3461,10 @@ class DailySlot(models.Model):
             equipment_code = 'N/A'
             slot_number = 'N/A'
         
-        from iic_booking.communication.email_branding import format_local_dt
+        from iic_booking.communication.email_branding import format_local_dt, format_local_end_dt
 
         time_str = (
-            f"({format_local_dt(self.start_datetime, '%H:%M')} - {format_local_dt(self.end_datetime, '%H:%M')})"
+            f"({format_local_dt(self.start_datetime, '%H:%M')} - {format_local_end_dt(self.end_datetime, '%H:%M')})"
             if self.start_datetime and self.end_datetime
             else ""
         )
