@@ -63,6 +63,7 @@ _EXPRESSION_KEYS = {
     "start_time": lambda: Coalesce(_first_slot_start(), _released_range("start_datetime")),
     "end_time": lambda: Coalesce(_last_slot_end(), _released_range("end_datetime")),
     "equipment_name": lambda: Lower("equipment__name"),
+    "equipment_code": lambda: Lower("equipment__code"),
     "user_name": lambda: Lower("user__name"),
     "user_email": lambda: Lower("user__email"),
     "user_phone": lambda: F("user__phone_number"),

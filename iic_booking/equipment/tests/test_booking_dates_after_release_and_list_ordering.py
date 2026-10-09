@@ -214,6 +214,25 @@ def test_every_column_ordering_is_accepted(ordering_setup, ordering):
 
 
 @pytest.mark.django_db
+def test_order_by_equipment_code_ignores_name_and_case(egs_factory):
+    client = egs_factory.client_for(_admin())
+    student = egs_factory.student()
+    base = egs_factory.future(days=3, hour=9)
+    eq_b = egs_factory.equipment(name="Alpha", code="zzB XRD")
+    eq_a = egs_factory.equipment(name="Zeta", code="ZZA TGA")
+    eq_c = egs_factory.equipment(name="Beta", code="zzc nmr")
+    b = egs_factory.booking(student, eq_b, base)
+    a_old = egs_factory.booking(student, eq_a, base + timedelta(days=1))
+    c = egs_factory.booking(student, eq_c, base + timedelta(days=2))
+    a_new = egs_factory.booking(student, eq_a, base + timedelta(days=3))
+    setup = {"client": client, "mine": {b.pk, a_old.pk, c.pk, a_new.pk}}
+
+    assert _ordered_ids(setup, "equipment_code") == [a_new.pk, a_old.pk, b.pk, c.pk]
+    assert _ordered_ids(setup, "-equipment_code") == [c.pk, b.pk, a_new.pk, a_old.pk]
+
+
+@pytest.mark.django_db
 def test_unknown_ordering_falls_back_to_newest_first(ordering_setup):
     s = ordering_setup
     assert _ordered_ids(s, "password; drop table") == _ordered_ids(s, "-created_at")
+    assert _ordered_ids(s, "equipment__code") == _ordered_ids(s, "-created_at")
