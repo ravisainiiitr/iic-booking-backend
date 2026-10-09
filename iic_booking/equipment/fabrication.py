@@ -267,6 +267,7 @@ def build_print_parts(analyses, job_quantity: int = 1) -> list[dict]:
                     "support_mode": est.get("support_mode"),
                     "support_mode_label": est.get("support_mode_label") or est.get("support_mode"),
                     "support_g_each": round(float(est.get("support_g") or 0), 1),
+                    "support_angle_deg": est.get("support_angle_deg"),
                     "support_material_code": support_code if support_each else "",
                     "support_weight_g_each": support_each,
                     "support_weight_g_total": support_each * copies,

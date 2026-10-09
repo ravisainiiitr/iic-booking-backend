@@ -121,6 +121,7 @@ def test_auto_orient_suggests_least_support_and_orientation_is_stored(egs_factor
 
     parts = build_print_parts([analysis])
     assert parts[0]["orientation"] == best["orientation"]
+    assert parts[0]["support_angle_deg"] == analysis.bounding_box["_estimate"]["support_angle_deg"]
     assert "user-selected orientation" in format_part_line(parts[0])
 
     # Reset, and refuse something that is not a rotation.
